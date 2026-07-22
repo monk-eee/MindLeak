@@ -41,7 +41,7 @@ crate, and `target/debug/mindleak-mcp` starts and prints
 |---|---|---|
 | Build | `make build` | `cargo build` |
 | Test | `make test` | `cargo test --all` |
-| Coverage | `make coverage` | Rust LCOV + scoped Vitest coverage; see the target |
+| Coverage | `make coverage` | Rust LCOV + scoped Vitest coverage; both enforce an 80% floor |
 | Format | `make fmt` | `cargo fmt --all` |
 | Format check | `make fmt-check` | `cargo fmt --all -- --check` |
 | Lint (Rust) | `make clippy` | `cargo clippy --all-targets --all-features -- -D warnings` |

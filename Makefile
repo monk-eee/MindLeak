@@ -18,7 +18,7 @@ test: ## Run the Rust test suite
 
 coverage: ## Run Rust + extension tests with coverage reports
 	cargo llvm-cov --workspace --all-features --lcov --output-path coverage.lcov
-	cargo llvm-cov report --summary-only
+	cargo llvm-cov report --summary-only --fail-under-lines 80
 	npm --prefix editors/vscode run test:coverage
 
 fmt: ## Format Rust code
