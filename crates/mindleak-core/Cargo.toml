@@ -8,6 +8,8 @@ description = "MindLeak: Temporal Context Graph Engine (TCGE) core — decay-wei
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }
+pep508_rs = { workspace = true }
 rusqlite = { workspace = true }
 regex = { workspace = true }
 sha2 = { workspace = true }

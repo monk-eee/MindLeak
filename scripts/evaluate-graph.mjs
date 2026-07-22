@@ -454,6 +454,87 @@ try {
     ["extends", "implements"].includes(edge.relation),
   );
 
+  const manifestFixtures = [
+    {
+      path: "Cargo.toml",
+      content:
+        '[dependencies]\nmanifest-alias = { package = "manifest-cargo", version = "1" }\n\n[workspace.dependencies]\nworkspace-only = "1"\n',
+      expected: "package:manifest-cargo",
+    },
+    {
+      path: "web/package.json",
+      content:
+        '{"dependencies":{"manifest-npm":"1"},"overrides":{"override-only":"1"}}',
+      expected: "package:manifest-npm",
+    },
+    {
+      path: "go.mod",
+      content:
+        "module example.com/app\n\nrequire example.com/manifest-go v1.0.0\nreplace example.com/manifest-go => ../manifest-go\n",
+      expected: "package:example.com/manifest-go",
+    },
+    {
+      path: "requirements.txt",
+      content:
+        'Manifest_Python[feature]>=1; python_version >= "3.9"\n-r requirements-dev.txt\n',
+      expected: "package:manifest-python",
+    },
+  ];
+  for (const fixture of manifestFixtures) {
+    await callTool("ingest_file", {
+      path: fixture.path,
+      content: fixture.content,
+    });
+  }
+  const expectedManifestEdges = manifestFixtures.map(
+    (fixture) => `artifact:${fixture.path}|depends_on|${fixture.expected}`,
+  );
+  const observedManifestEdges = [];
+  for (const fixture of manifestFixtures) {
+    const graph = await callTool("graph_multi_hop_query", {
+      seed_entity: `artifact:${fixture.path}`,
+      max_depth: 1,
+      min_weight: 0,
+    });
+    observedManifestEdges.push(
+      ...graph.edges
+        .filter((edge) => edge.relation === "depends_on")
+        .map(hierarchyEdgeKey),
+    );
+  }
+  const manifestTruth = scoreTruthSet(
+    expectedManifestEdges,
+    observedManifestEdges,
+  );
+  const manifestImpact = await callTool("get_impact_radius", {
+    target_artifact: "package:manifest-cargo",
+  });
+  const manifestImpactPresent = manifestImpact.nodes.some(
+    (node) => node.id === "artifact:Cargo.toml",
+  );
+  const reverseManifestImpact = await callTool("get_impact_radius", {
+    target_artifact: "artifact:Cargo.toml",
+  });
+  const reverseManifestPackagePresent = reverseManifestImpact.nodes.some(
+    (node) => node.id === "package:manifest-cargo",
+  );
+  await callTool("ingest_file", {
+    path: "web/package.json",
+    content: "{}",
+  });
+  const staleManifestPackage = await callTool("graph_multi_hop_query", {
+    seed_entity: "package:manifest-npm",
+    max_depth: 1,
+    min_weight: 0,
+  });
+  const staleManifestPackagePresent = staleManifestPackage.nodes.some(
+    (node) => node.id === "package:manifest-npm",
+  );
+  const manifestNegativePackagePresent = [
+    "package:workspace-only",
+    "package:override-only",
+  ].some((id) => observedManifestEdges.some((edge) => edge.endsWith(`|${id}`)));
+
   result = {
     schema_version: 2,
     source_revision: dirty ? `${revision}-dirty` : revision,
@@ -568,6 +649,24 @@ try {
           hierarchyImpactTruth.recall >= 0.85 &&
           !reverseHierarchyPresent &&
           !staleHierarchyPresent,
+      },
+      manifest_dependency_truth_set: {
+        relation_edges: manifestTruth,
+        expected_manifest_impact_present: true,
+        expected_reverse_package_present: false,
+        expected_stale_package_present: false,
+        expected_negative_package_present: false,
+        observed_manifest_impact_present: manifestImpactPresent,
+        observed_reverse_package_present: reverseManifestPackagePresent,
+        observed_stale_package_present: staleManifestPackagePresent,
+        observed_negative_package_present: manifestNegativePackagePresent,
+        passed:
+          manifestTruth.precision >= 0.95 &&
+          manifestTruth.recall >= 0.9 &&
+          manifestImpactPresent &&
+          !reverseManifestPackagePresent &&
+          !staleManifestPackagePresent &&
+          !manifestNegativePackagePresent,
       },
     },
   };

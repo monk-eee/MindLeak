@@ -374,8 +374,10 @@ fn variable_declarators_with_ranges(tokens: &[Token], start: usize) -> Vec<(usiz
         let at_end = index == tokens.len();
         let newline_ends = !at_end
             && tokens[index].is_newline()
-            && previous_non_newline(tokens, index)
-                .is_none_or(|previous| !tokens[previous].is_punctuation(','));
+            && match previous_non_newline(tokens, index) {
+                Some(previous) => !tokens[previous].is_punctuation(','),
+                None => true,
+            };
         let statement_end = !at_end
             && round == 0
             && square == 0
@@ -442,8 +444,10 @@ pub(crate) fn binding_names(tokens: &[Token]) -> Vec<String> {
 fn contains_bare_require_call(tokens: &[Token]) -> bool {
     tokens.iter().enumerate().any(|(index, token)| {
         token.identifier() == Some("require")
-            && previous_non_newline(tokens, index)
-                .is_none_or(|previous| !tokens[previous].is_punctuation('.'))
+            && match previous_non_newline(tokens, index) {
+                Some(previous) => !tokens[previous].is_punctuation('.'),
+                None => true,
+            }
             && next_non_newline(tokens, index + 1)
                 .is_some_and(|next| tokens[next].is_punctuation('('))
     })

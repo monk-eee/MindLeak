@@ -526,6 +526,210 @@ fn shared_package_survives_until_final_import_is_removed() {
 }
 
 #[test]
+fn cargo_manifest_dependencies_drive_impact_and_retract() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file(
+            "Cargo.toml",
+            r#"
+[dependencies]
+serde = "1"
+renamed-anyhow = { package = "anyhow", version = "1" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[workspace.dependencies]
+tracing = "0.1"
+"#,
+        )
+        .unwrap();
+
+    let manifest = engine
+        .multi_hop_query("artifact:Cargo.toml", 1, 0.0)
+        .unwrap();
+    for package in ["serde", "anyhow", "tempfile", "libc"] {
+        assert!(manifest.edges.iter().any(|edge| {
+            edge.relation == mindleak_core::RelationType::DependsOn
+                && edge.source_id == "artifact:Cargo.toml"
+                && edge.target_id == format!("package:{package}")
+        }));
+    }
+    assert!(engine
+        .store()
+        .get_node("package:tracing")
+        .unwrap()
+        .is_none());
+    assert!(engine
+        .store()
+        .get_node("package:renamed-anyhow")
+        .unwrap()
+        .is_none());
+
+    let impact = engine.impact_radius("package:serde").unwrap();
+    assert!(impact
+        .nodes
+        .iter()
+        .any(|node| node.node.id == "artifact:Cargo.toml"));
+    let reverse_impact = engine.impact_radius("artifact:Cargo.toml").unwrap();
+    assert!(!reverse_impact
+        .nodes
+        .iter()
+        .any(|node| node.node.id == "package:serde"));
+
+    engine
+        .ingest_file("Cargo.toml", "[dependencies]\nserde = \"1\"\n")
+        .unwrap();
+    assert!(engine.store().get_node("package:anyhow").unwrap().is_none());
+}
+
+#[test]
+fn package_json_dependencies_are_direct_and_reconcile() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file(
+            "web/package.json",
+            r#"{
+  "name": "fixture",
+  "dependencies": { "react": "^19", "@scope/runtime": "1" },
+  "devDependencies": { "vitest": "3" },
+  "peerDependencies": { "typescript": ">=5" },
+  "optionalDependencies": { "fsevents": "2" },
+  "overrides": { "transitive-only": "1" }
+}"#,
+        )
+        .unwrap();
+
+    let manifest = engine
+        .multi_hop_query("artifact:web/package.json", 1, 0.0)
+        .unwrap();
+    for package in [
+        "react",
+        "@scope/runtime",
+        "vitest",
+        "typescript",
+        "fsevents",
+    ] {
+        assert!(manifest.edges.iter().any(|edge| {
+            edge.relation == mindleak_core::RelationType::DependsOn
+                && edge.target_id == format!("package:{package}")
+        }));
+    }
+    assert!(engine
+        .store()
+        .get_node("package:transitive-only")
+        .unwrap()
+        .is_none());
+
+    engine
+        .ingest_file(
+            "web/package.json",
+            r#"{ "dependencies": { "react": "^19" } }"#,
+        )
+        .unwrap();
+    assert!(engine.store().get_node("package:vitest").unwrap().is_none());
+}
+
+#[test]
+fn go_mod_requirements_ignore_replace_directives() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file(
+            "go.mod",
+            r#"module example.com/app
+
+go 1.24
+
+require example.com/direct v1.2.3
+require (
+    github.com/stretchr/testify v1.10.0
+    golang.org/x/sync v0.12.0 // indirect
+)
+
+replace example.com/direct => ../direct
+exclude example.com/excluded v1.0.0
+"#,
+        )
+        .unwrap();
+
+    let manifest = engine.multi_hop_query("artifact:go.mod", 1, 0.0).unwrap();
+    for package in [
+        "example.com/direct",
+        "github.com/stretchr/testify",
+        "golang.org/x/sync",
+    ] {
+        assert!(manifest.edges.iter().any(|edge| {
+            edge.relation == mindleak_core::RelationType::DependsOn
+                && edge.target_id == format!("package:{package}")
+        }));
+    }
+    assert!(engine
+        .store()
+        .get_node("package:example.com/excluded")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn requirements_txt_extracts_named_pep508_requirements_only() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file(
+            "requirements.txt",
+            r#"requests[security]>=2.31; python_version >= "3.9"
+typing_extensions==4.12
+Flask @ https://example.com/flask.whl
+-r requirements-dev.txt
+--index-url https://example.com/simple
+git+https://example.com/repository.git
+"#,
+        )
+        .unwrap();
+
+    let manifest = engine
+        .multi_hop_query("artifact:requirements.txt", 1, 0.0)
+        .unwrap();
+    for package in ["requests", "typing-extensions", "flask"] {
+        assert!(manifest.edges.iter().any(|edge| {
+            edge.relation == mindleak_core::RelationType::DependsOn
+                && edge.target_id == format!("package:{package}")
+        }));
+    }
+    assert_eq!(
+        manifest
+            .edges
+            .iter()
+            .filter(|edge| edge.relation == mindleak_core::RelationType::DependsOn)
+            .count(),
+        3
+    );
+}
+
+#[test]
+fn malformed_manifest_does_not_erase_last_valid_dependencies() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file(
+            "package.json",
+            r#"{ "dependencies": { "still-valid": "1" } }"#,
+        )
+        .unwrap();
+
+    assert!(engine.ingest_file("package.json", "{").is_err());
+
+    let manifest = engine
+        .multi_hop_query("artifact:package.json", 1, 0.0)
+        .unwrap();
+    assert!(manifest.edges.iter().any(|edge| {
+        edge.relation == mindleak_core::RelationType::DependsOn
+            && edge.target_id == "package:still-valid"
+    }));
+}
+
+#[test]
 fn imported_name_in_comment_or_member_call_does_not_create_call_edge() {
     let engine = MindLeak::open_in_memory().unwrap();
     engine

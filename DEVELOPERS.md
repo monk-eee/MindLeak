@@ -151,6 +151,12 @@ and footguns, with impact and status:
   mixins. Non-JS brace/indent extractors also remain regex-based. — Medium impact
   on graph completeness. — Tracked: expand fixture-backed deterministic parsers;
   Tree-sitter remains the precision upgrade (ADR-0002).
+- **Manifest dependency support is direct-only.** — `Cargo.toml`, `package.json`,
+  `go.mod`, and named PEP 508 lines in `requirements*.txt` emit `depends_on`.
+  Lockfiles, transitive dependencies, npm overrides, Cargo workspace catalogs,
+  Go replacements, requirement includes/options, and unnamed VCS/local Python
+  requirements do not. — Low impact on direct impact analysis; intentional to
+  avoid turning catalogs and resolver output into false direct edges.
 - **The live LLM round-trip runs only on demand, not in CI.** — Ignored tests
   (`cargo test -- --ignored`) exercise the real `/v1/chat/completions` call for
   both planes (MindLeak `consolidate`, Lodestar `decompose`/`judge`) against a

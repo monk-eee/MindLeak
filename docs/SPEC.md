@@ -93,7 +93,7 @@ from there. Similarity finds the door; decay-weighted traversal walks the house.
 | Intent → * | `relates_to` | explicit recorded decision |
 | Agent → * | `observed` | an agent ingested or focused this node (attribution; decays) |
 | Artifact → Artifact/Package | `imports` | shipped for static JS/TS `import` and `require` declarations |
-| Artifact → Package † | `depends_on` | manifest deps (`Cargo.toml`, `package.json`, …) |
+| Artifact → Package † | `depends_on` | shipped for direct deps in `Cargo.toml`, `package.json`, `go.mod`, and `requirements*.txt` |
 | Symbol → Symbol | `extends` | shipped for simple named JS/TS class/interface inheritance |
 | Symbol → Symbol | `implements` | shipped for simple named JS/TS class conformance |
 
@@ -106,7 +106,8 @@ from there. Similarity finds the door; decay-weighted traversal walks the house.
 > Phase 1 is shipped for static JS/TS imports, packages, and named cross-file
 > calls. Phase 2 is shipped for local and named-import JS/TS
 > `extends`/`implements`; expression-based mixins and default/namespace heritage
-> remain unsupported. Phase 3 (manifest `depends_on`) remains in build.
+> remain unsupported. Phase 3 is shipped for direct dependencies in the four
+> supported manifest families; lockfiles and transitive catalogs are excluded.
 > `references`, `consumes`, and `produces` remain deferred.
 
 Episodic edges are append-and-reinforce: re-ingesting one raises its weight

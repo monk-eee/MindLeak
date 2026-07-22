@@ -2,9 +2,10 @@
 
 - **Status:** Accepted
 - **Date:** 2026-07-22
-- **Implementation:** Phases 1-2 shipped 2026-07-22 for static
+- **Implementation:** Phases 1-3 shipped 2026-07-22 for static
   JavaScript/TypeScript imports, package nodes, named cross-file calls, and
-  simple named class/interface hierarchy.
+  simple named class/interface hierarchy, plus direct Cargo/npm/Go/Python
+  manifest dependencies.
 
 ## Context
 
@@ -90,7 +91,8 @@ relations.
 
 1. `imports` + `package` + cross-file `calls` (shipped).
 2. `extends` + `implements` (shipped for JS/TS simple named heritage).
-3. `depends_on` from manifests (planned).
+3. `depends_on` from manifests (shipped for direct dependencies in
+  `Cargo.toml`, `package.json`, `go.mod`, and `requirements*.txt`).
 
 Phases 1-2 currently support static JS/TS `import` and `require` syntax plus
 local and named-import class/interface heritage. Generic constraints are not
@@ -98,3 +100,7 @@ misclassified as inheritance; expression-based mixins and default/namespace
 heritage resolution are explicitly unsupported. Other language syntaxes,
 default/namespace call resolution, path aliases, and re-exports remain future
 fixtures rather than implied support.
+
+Phase 3 intentionally excludes lockfiles, transitive catalogs, npm overrides,
+Cargo workspace catalogs, Go replacements, requirement includes/options, and
+unnamed VCS/local Python requirements.

@@ -284,6 +284,19 @@ impl MindLeak {
             edges.push(Edge::new(source_id, target_id, relation, now));
         }
 
+        if let Some(dependencies) = ingest::manifest::extract(path, content)? {
+            for dependency in dependencies {
+                let target_id = format!("package:{}", dependency.name);
+                nodes.push(Node::new(
+                    &target_id,
+                    NodeType::Package,
+                    dependency.name,
+                    now,
+                ));
+                edges.push(Edge::new(&art_id, target_id, RelationType::DependsOn, now));
+            }
+        }
+
         for reference in &extraction.call_references {
             let Some((target_path, imported_name)) = imported_symbols.get(&reference.callee) else {
                 continue;

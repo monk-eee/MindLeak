@@ -200,10 +200,10 @@ fn hierarchy_target(tokens: &[Token]) -> Option<String> {
         target.push_str(tokens[index + 1].identifier().unwrap_or_default());
         index += 2;
     }
-    tokens
-        .get(index)
-        .is_none_or(|token| token.is_punctuation('<'))
-        .then_some(target)
+    match tokens.get(index) {
+        Some(token) if !token.is_punctuation('<') => None,
+        _ => Some(target),
+    }
 }
 
 fn supports_javascript(path: &str) -> bool {
@@ -454,7 +454,10 @@ fn next_non_newline(tokens: &[Token], start: usize) -> Option<usize> {
 }
 
 fn is_bare_identifier(tokens: &[Token], index: usize) -> bool {
-    previous_non_newline(tokens, index).is_none_or(|previous| !tokens[previous].is_punctuation('.'))
+    match previous_non_newline(tokens, index) {
+        Some(previous) => !tokens[previous].is_punctuation('.'),
+        None => true,
+    }
 }
 
 fn previous_non_newline(tokens: &[Token], index: usize) -> Option<usize> {

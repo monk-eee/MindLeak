@@ -25,6 +25,11 @@ to [Semantic Versioning](https://semver.org/).
   and named imported types. Hierarchy participates in incoming impact traversal,
   consumer-first stub promotion, and artifact-owned retraction; the strict truth
   set measures 100% relation and impacted-type precision/recall.
+- **ADR-0006 manifest dependencies, phase 3**: direct dependencies in
+  `Cargo.toml`, `package.json`, `go.mod`, and `requirements*.txt` create durable
+  artifact-owned `depends_on` edges to package nodes. Structured TOML, JSON, and
+  PEP 508 parsers preserve renamed/canonical identities; malformed manifests
+  fail before reconciliation, preserving the last valid snapshot.
 - **MCP server** (`mindleak-mcp`): newline-delimited JSON-RPC 2.0 over stdio
   exposing 14 tools (`graph_multi_hop_query`, `get_impact_radius`,
   `record_architectural_decision`, plus ingestion/snapshot/prune/stats, an
@@ -105,6 +110,10 @@ to [Semantic Versioning](https://semver.org/).
   Lodestar learned-knowledge remain the next seams.
 
 ### Fixed
+- The committed dependency graph and source now compile with the declared Rust
+  1.75 minimum: `Cargo.lock` uses format 3, parser/TLS transitives are pinned to
+  compatible releases, and post-1.75 `Option` helpers use equivalent stable
+  expressions.
 - The exported `.lodestar/CONSTITUTION.md` is now committable while local
   Lodestar database and lease state remain ignored.
 - Extension compiler and VS Code API typings are pinned to supported versions,

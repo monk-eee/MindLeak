@@ -504,7 +504,11 @@ impl Lodestar {
                 "evidence agent does not own the task".to_string(),
             ));
         }
-        if task.status != TaskStatus::Claimed || task.lease_expires_at.is_none_or(|end| end < now) {
+        let lease_expired = match task.lease_expires_at {
+            Some(end) => end < now,
+            None => true,
+        };
+        if task.status != TaskStatus::Claimed || lease_expired {
             return Err(LodestarError::Invalid(
                 "task does not have a live claim".to_string(),
             ));

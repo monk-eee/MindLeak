@@ -25,7 +25,7 @@ The engine. Modules:
 | [`db.rs`](../crates/mindleak-core/src/db.rs) | Connection setup (WAL, FKs), migrations, and the `effective_weight()` scalar SQL function. |
 | [`decay.rs`](../crates/mindleak-core/src/decay.rs) | The half-life decay formula and prune threshold. |
 | [`graph.rs`](../crates/mindleak-core/src/graph.rs) | `GraphStore`: upsert, structural snapshot reconciliation, FTS search, decay-aware neighbours, BFS traversal, snapshot, prune. |
-| [`ingest/`](../crates/mindleak-core/src/ingest/mod.rs) | Zero-token deterministic extractors: `execution`, `git`, `ast`, `structure` (JS/TS imports and type hierarchy). |
+| [`ingest/`](../crates/mindleak-core/src/ingest/mod.rs) | Zero-token deterministic extractors: `execution`, `git`, `ast`, `structure` (JS/TS imports and type hierarchy), and `manifest` (direct package dependencies). |
 | [`consolidate.rs`](../crates/mindleak-core/src/consolidate.rs) | Optional Ollama consolidation worker. |
 | [`embed.rs`](../crates/mindleak-core/src/embed.rs) | Optional semantic-recall embedding index (ADR-0008): local `/v1/embeddings` client, derived `embeddings` table, cosine recall. Off the zero-token write path. |
 | [`net.rs`](../crates/mindleak-core/src/net.rs) | Network resilience for optional HTTP (ADR-0010): timeouts, bounded retry with backoff, per-endpoint circuit breaker. |
@@ -65,8 +65,7 @@ process and speaks the same MCP protocol.
   (`artifact:src/auth.ts`, `symbol:src/auth.ts:validateSession`).
 - **Edges** — directional, decay-weighted: `contains` · `calls` · `modified` ·
   `failed_on` · `refactored` · `relates_to` · `observed` · `imports` ·
-  `extends` · `implements` (JS/TS, ADR-0006 phases 1-2). **Planned:**
-  `depends_on` from manifests (ADR-0006 phase 3).
+  `extends` · `implements` · `depends_on` (ADR-0006 phases 1-3).
 
 ## Decay
 
@@ -112,7 +111,12 @@ All write-path extraction is pure pattern matching:
   strings, templates, member calls, generic constraints, and basic lexical
   shadowing. Unresolved relative targets store deterministic candidate ids;
   ingesting a real candidate atomically retargets structural symbol edges and
-  removes the stub. Manifests and additional language syntaxes remain in build.
+  removes the stub.
+- **manifest** (ADR-0006 phase 3) — direct dependencies from `Cargo.toml`,
+  `package.json`, `go.mod`, and `requirements*.txt` become artifact-to-package
+  `depends_on` edges. TOML, JSON, and PEP 508 use structured parsers; Go uses its
+  narrow `require` grammar. Re-ingestion retracts removed dependencies, while a
+  malformed supported manifest fails before replacing its last valid snapshot.
 
 ## Optional LLM layer
 

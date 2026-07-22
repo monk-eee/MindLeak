@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS nodes (
 CREATE TABLE IF NOT EXISTS edges (
     source_id       TEXT NOT NULL,
     target_id       TEXT NOT NULL,
-    relation        TEXT NOT NULL,            -- modified | failed_on | contains | refactored | relates_to | calls | observed | imports | extends | implements
+    relation        TEXT NOT NULL,            -- modified | failed_on | contains | refactored | relates_to | calls | observed | imports | extends | implements | depends_on
     weight          REAL NOT NULL DEFAULT 1.0,
     half_life_hours REAL NOT NULL DEFAULT 48.0,
     updated_at      INTEGER NOT NULL,

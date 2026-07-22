@@ -30,11 +30,12 @@ its phase exit gate passes.
 - **Unit-test result accounting remains blocked externally.** Unit Test MCP 1.3.6
   surfaces Cargo failures but reports zero successful tests and no Rust coverage;
   CI remains the complete-suite authority until the adapter is repaired.
-- **ADR-0006 phases 1-2 are green for the JS/TS fixture.** The strict evaluator
+- **ADR-0006 phases 1-3 are green for the supported fixtures.** The strict evaluator
   proves imports, named cross-file calls, and local/imported type hierarchy while
   retaining the ADR-0007 stale-fact guarantees. The hierarchy truth set reaches
-  100% relation and impacted-type precision/recall; manifests and broader
-  language truth sets remain open.
+  100% relation and impacted-type precision/recall; direct Cargo, npm, Go, and
+  Python manifest dependencies reach 100% relation precision/recall. Broader
+  language and real-repository truth sets remain open.
 
 ## 2. Product Claims and Proof Gates
 
@@ -234,7 +235,7 @@ executed command itself.
 | `NodeType::Package` | External dependency identity | Existing enum mappings | Low |
 | `RelationType::{Imports,DependsOn,Extends,Implements}` | Typed structural relations and half-lives | Existing enum mappings | Low |
 | `Extraction.imports` / `Extraction.hierarchy` | Return structured facts, not direct writes | Existing symbols/calls extraction | Medium |
-| `manifest::extract(path, content)` | Parse supported manifests with structured parsers where available | Need to implement | High |
+| `manifest::extract(path, content)` | Parse supported manifests with structured parsers where available | Shipped for Cargo, npm, Go, and requirements files | High |
 | `resolver::resolve_import(source, specifier, index)` | Resolve workspace artifacts or package stubs deterministically | Need to implement | High |
 | `GraphStore::impact_radius(seed, policy, now)` | Traverse only relation/direction pairs relevant to impact | Existing traversal | High |
 

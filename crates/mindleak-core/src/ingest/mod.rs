@@ -5,6 +5,7 @@ pub mod ast;
 pub mod execution;
 pub mod git;
 pub(crate) mod javascript;
+pub mod manifest;
 pub mod structure;
 
 use sha2::{Digest, Sha256};

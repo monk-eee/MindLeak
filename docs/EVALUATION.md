@@ -77,6 +77,27 @@ This is a reviewed deterministic fixture, not a claim of complete TypeScript or
 multi-language parsing. Default/namespace heritage and expression-based mixins
 remain outside the supported truth set.
 
+## Manifest dependency proof
+
+ADR-0006 phase 3 adds deterministic artifact-to-package `depends_on` edges. The
+fixture covers Cargo renamed and target dependencies, npm direct/dev/peer/
+optional sections, Go single/block requirements, canonical PEP 508 names,
+incoming impact, retraction, and fail-closed malformed manifests. Workspace
+catalogs, npm overrides, Go replacements, and requirement directives are
+negative controls rather than dependencies.
+
+| Metric | Gate | Observed | Result |
+|---|---:|---:|---|
+| Manifest relation precision | >= 0.95 | 1.00 (4/4) | Pass |
+| Manifest relation recall | >= 0.90 | 1.00 (4/4) | Pass |
+| Package reaches dependent manifest | Required | Present | Pass |
+| Manifest reaches package in impact direction | Must be absent | Absent | Pass |
+| Removed dependency survives re-ingest | Must be absent | Absent | Pass |
+| Catalog/override-only package emitted | Must be absent | Absent | Pass |
+
+This proves direct dependencies for the four supported manifest families. It
+does not infer transitive dependencies or claim lockfile/resolver coverage.
+
 ## Reproduce
 
 From the repository root:
@@ -101,9 +122,9 @@ The original failures were expected baseline behavior, not flaky tests:
 - source extraction currently emits in-file symbols and calls but no cross-file
   import relation.
 
-Both original gates are now green without weakening their expected values. The
-next impact proof adds manifest `depends_on` edges, then expands language
-fixtures before claiming the broader precision/recall target.
+Both original gates are now green without weakening their expected values.
+Imports, hierarchy, and direct manifest fixtures are green; broader language and
+real-repository truth sets remain required for the product-wide impact claim.
 
 ## Validation limitation
 

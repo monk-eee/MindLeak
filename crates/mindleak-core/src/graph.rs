@@ -761,6 +761,7 @@ fn impact_neighbor(id: &str, edge: &WeightedEdge) -> Option<String> {
         | RelationType::Imports
         | RelationType::Extends
         | RelationType::Implements
+        | RelationType::DependsOn
         | RelationType::Modified
         | RelationType::FailedOn
         | RelationType::Refactored

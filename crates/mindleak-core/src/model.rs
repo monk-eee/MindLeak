@@ -69,6 +69,8 @@ pub enum RelationType {
     Extends,
     /// A class conforms to an interface or type contract.
     Implements,
+    /// A project manifest declares a direct external package dependency.
+    DependsOn,
 }
 
 impl RelationType {
@@ -84,6 +86,7 @@ impl RelationType {
             RelationType::Imports => "imports",
             RelationType::Extends => "extends",
             RelationType::Implements => "implements",
+            RelationType::DependsOn => "depends_on",
         }
     }
 
@@ -99,6 +102,7 @@ impl RelationType {
             "imports" => Some(RelationType::Imports),
             "extends" => Some(RelationType::Extends),
             "implements" => Some(RelationType::Implements),
+            "depends_on" => Some(RelationType::DependsOn),
             _ => None,
         }
     }
@@ -113,7 +117,8 @@ impl RelationType {
             | RelationType::Refactored
             | RelationType::Imports
             | RelationType::Extends
-            | RelationType::Implements => 168.0,
+            | RelationType::Implements
+            | RelationType::DependsOn => 168.0,
             RelationType::RelatesTo | RelationType::Observed => 48.0,
         }
     }
