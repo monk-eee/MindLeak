@@ -23,7 +23,7 @@ jobs:
       tag: ${{ steps.metadata.outputs.tag }}
       prerelease: ${{ steps.metadata.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Match tag to workspace version
         id: metadata
         uses: actions/github-script@v7
@@ -56,7 +56,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -108,7 +108,7 @@ jobs:
             asset: macos-arm64
             extension: ""
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

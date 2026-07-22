@@ -663,10 +663,8 @@ impl GraphStore {
                         }
                         is_commit |= relation == "refactored";
                     }
-                    "failed_on" => {
-                        if failed_seen.insert(target_id.clone()) {
-                            failed_node_ids.push(target_id.clone());
-                        }
+                    "failed_on" if failed_seen.insert(target_id.clone()) => {
+                        failed_node_ids.push(target_id.clone());
                     }
                     _ => {}
                 }
