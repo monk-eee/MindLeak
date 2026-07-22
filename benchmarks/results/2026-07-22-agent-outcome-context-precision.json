@@ -1,0 +1,179 @@
+{
+  "experiment": "agent-outcome: memory-arm context precision",
+  "k": 5,
+  "vector_backend": "tfidf-cosine",
+  "tasks": [
+    {
+      "name": "impact",
+      "question": "what breaks if I change session validation in src/auth.ts",
+      "truth": [
+        "artifact:src/app.ts",
+        "artifact:src/login.ts",
+        "artifact:src/middleware.ts"
+      ]
+    },
+    {
+      "name": "debug",
+      "question": "why is login failing with an undefined session ticket",
+      "truth": [
+        "artifact:src/login.ts",
+        "execution:ee17d3fc75a4"
+      ]
+    },
+    {
+      "name": "rationale",
+      "question": "why must session tokens stay typed in auth and middleware",
+      "truth": [
+        "artifact:src/auth.ts",
+        "artifact:src/middleware.ts",
+        "intent:7c5665628df1"
+      ]
+    }
+  ],
+  "arms": {
+    "none": {
+      "tasks": {
+        "impact": {
+          "precision": 0,
+          "recall": 0,
+          "f1": 0,
+          "predicted": []
+        },
+        "debug": {
+          "precision": 0,
+          "recall": 0,
+          "f1": 0,
+          "predicted": []
+        },
+        "rationale": {
+          "precision": 0,
+          "recall": 0,
+          "f1": 0,
+          "predicted": []
+        }
+      },
+      "meanF1": 0
+    },
+    "flat": {
+      "tasks": {
+        "impact": {
+          "precision": 0.2,
+          "recall": 0.3333333333333333,
+          "f1": 0.25,
+          "predicted": [
+            "artifact:src/app.ts",
+            "artifact:src/auth-legacy.ts",
+            "artifact:src/token-utils.ts",
+            "symbol:src/app.ts:bootstrap",
+            "symbol:src/auth-legacy.ts:validateSessionLegacy"
+          ]
+        },
+        "debug": {
+          "precision": 0,
+          "recall": 0,
+          "f1": 0,
+          "predicted": [
+            "artifact:src/app.ts",
+            "artifact:src/auth-legacy.ts",
+            "artifact:src/token-utils.ts",
+            "symbol:src/app.ts:bootstrap",
+            "symbol:src/auth-legacy.ts:validateSessionLegacy"
+          ]
+        },
+        "rationale": {
+          "precision": 0,
+          "recall": 0,
+          "f1": 0,
+          "predicted": [
+            "artifact:src/app.ts",
+            "artifact:src/auth-legacy.ts",
+            "artifact:src/token-utils.ts",
+            "symbol:src/app.ts:bootstrap",
+            "symbol:src/auth-legacy.ts:validateSessionLegacy"
+          ]
+        }
+      },
+      "meanF1": 0.08333333333333333
+    },
+    "vector": {
+      "tasks": {
+        "impact": {
+          "precision": 0,
+          "recall": 0,
+          "f1": 0,
+          "predicted": [
+            "artifact:src/auth-legacy.ts",
+            "artifact:src/auth.ts",
+            "execution:ee17d3fc75a4",
+            "symbol:src/auth-legacy.ts:validateSessionLegacy",
+            "symbol:src/auth.ts:validateSession"
+          ]
+        },
+        "debug": {
+          "precision": 0.4,
+          "recall": 1,
+          "f1": 0.5714285714285715,
+          "predicted": [
+            "artifact:src/login.test.ts",
+            "artifact:src/login.ts",
+            "execution:ee17d3fc75a4",
+            "intent:7c5665628df1",
+            "symbol:src/login.ts:handleLogin"
+          ]
+        },
+        "rationale": {
+          "precision": 0.6,
+          "recall": 1,
+          "f1": 0.7499999999999999,
+          "predicted": [
+            "artifact:src/auth-legacy.ts",
+            "artifact:src/auth.ts",
+            "artifact:src/middleware.ts",
+            "intent:7c5665628df1",
+            "symbol:src/middleware.ts:requireAuth"
+          ]
+        }
+      },
+      "meanF1": 0.44047619047619047
+    },
+    "mindleak": {
+      "tasks": {
+        "impact": {
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "predicted": [
+            "artifact:src/app.ts",
+            "artifact:src/login.ts",
+            "artifact:src/middleware.ts"
+          ]
+        },
+        "debug": {
+          "precision": 0.4,
+          "recall": 1,
+          "f1": 0.5714285714285715,
+          "predicted": [
+            "artifact:src/auth.ts",
+            "artifact:src/login.test.ts",
+            "artifact:src/login.ts",
+            "execution:ee17d3fc75a4",
+            "intent:7c5665628df1"
+          ]
+        },
+        "rationale": {
+          "precision": 0.6,
+          "recall": 1,
+          "f1": 0.7499999999999999,
+          "predicted": [
+            "artifact:src/auth.ts",
+            "artifact:src/middleware.ts",
+            "artifact:src/token-utils.ts",
+            "intent:7c5665628df1",
+            "symbol:src/token-utils.ts:parseToken"
+          ]
+        }
+      },
+      "meanF1": 0.7738095238095238
+    }
+  }
+}

@@ -15,25 +15,23 @@
 // TF-IDF is a conservative (generous) stand-in for embeddings here: real
 // embeddings would rank the vocabulary-sharing distractors even higher, so the
 // structural advantage shown below is a lower bound, not an artefact of TF-IDF.
+// An OPTIONAL live-embedding arm runs real nomic-embed-text vectors when a local
+// /v1/embeddings server is reachable, and is skipped otherwise so the core
+// comparison stays deterministic and network-free.
 
-import { spawn } from "node:child_process";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import readline from "node:readline";
+import {
+  resolveExe,
+  driveServer,
+  metrics,
+  pct,
+  cosineDense,
+  embedAll,
+  deriveImporters,
+  transitiveImporters,
+} from "./harness.mjs";
 
 const root = process.cwd();
-const exe = path.join(
-  root,
-  "target",
-  "debug",
-  process.platform === "win32" ? "mindleak-mcp.exe" : "mindleak-mcp"
-);
-
-if (!fs.existsSync(exe)) {
-  console.error(`mindleak-mcp not built at ${exe}. Run: cargo build -p mindleak-mcp`);
-  process.exit(2);
-}
+const exe = resolveExe(root);
 
 // ---- fixture: path -> content ---------------------------------------------
 // hub is the "changed" file. Ground truth is derived from imports, below.
@@ -85,51 +83,9 @@ const fixture = {
 };
 
 // ---- ground truth: transitive importers of the hub (depth <= 2) ------------
-function resolveRelative(fromPath, specifier) {
-  if (!specifier.startsWith(".")) return null; // bare package: not a workspace file
-  const dir = fromPath.includes("/") ? fromPath.slice(0, fromPath.lastIndexOf("/")) : "";
-  const parts = (dir ? `${dir}/${specifier}` : specifier).split("/");
-  const stack = [];
-  for (const part of parts) {
-    if (part === "" || part === ".") continue;
-    if (part === "..") stack.pop();
-    else stack.push(part);
-  }
-  const base = stack.join("/");
-  return Object.keys(fixture).find((f) => f === base || f === `${base}.ts` || f === `${base}.tsx`);
-}
-
-// importer edges: target file -> [files that import it]
-const importers = new Map();
-const importRe = /import\s+(?:[^'"]+from\s+)?['"]([^'"]+)['"]/g;
-for (const [file, content] of Object.entries(fixture)) {
-  for (const match of content.matchAll(importRe)) {
-    const target = resolveRelative(file, match[1]);
-    if (!target) continue;
-    if (!importers.has(target)) importers.set(target, new Set());
-    importers.get(target).add(file);
-  }
-}
-
-function transitiveImporters(hub, maxDepth) {
-  const found = new Set();
-  let frontier = [hub];
-  for (let depth = 0; depth < maxDepth; depth++) {
-    const next = [];
-    for (const node of frontier) {
-      for (const importer of importers.get(node) ?? []) {
-        if (!found.has(importer)) {
-          found.add(importer);
-          next.push(importer);
-        }
-      }
-    }
-    frontier = next;
-  }
-  return found;
-}
-
-const groundTruth = transitiveImporters(HUB, 2); // get_impact_radius is depth 2
+// Import-graph derivation is shared with the agent-outcome benchmark.
+const importers = deriveImporters(fixture);
+const groundTruth = transitiveImporters(importers, HUB, 2); // impact radius is depth 2
 
 // ---- similarity arm: TF-IDF cosine over file contents ----------------------
 function tokenize(text) {
@@ -165,66 +121,19 @@ function tfidfRanking(files, hub) {
     .sort((a, b) => b.score - a.score);
 }
 
-// ---- MindLeak arm: drive the MCP server ------------------------------------
-function driveServer() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mindleak-impact-"));
-  const env = { ...process.env, MINDLEAK_DB: path.join(dir, "graph.db") };
-  delete env.MINDLEAK_AGENT; // no attribution noise
-  const server = spawn(exe, [], { cwd: root, env, stdio: ["pipe", "pipe", "inherit"] });
-  let nextId = 1;
-  const pending = new Map();
-  readline.createInterface({ input: server.stdout }).on("line", (line) => {
-    let message;
-    try {
-      message = JSON.parse(line);
-    } catch {
-      return;
-    }
-    const resolve = pending.get(message.id);
-    if (resolve) {
-      pending.delete(message.id);
-      resolve(message);
-    }
-  });
-  const request = (method, params) =>
-    new Promise((resolve) => {
-      const id = nextId++;
-      pending.set(id, resolve);
-      server.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
-    });
-  const tool = async (name, args) => {
-    const response = await request("tools/call", { name, arguments: args });
-    if (response.error || response.result?.isError) throw new Error(JSON.stringify(response));
-    return JSON.parse(response.result.content[0].text);
-  };
-  const cleanup = () =>
-    new Promise((resolve) => {
-      server.once("exit", () => {
-        try {
-          fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-        } catch {
-          /* best-effort: the OS reclaims the temp dir */
-        }
-        resolve();
-      });
-      server.stdin.end();
-      server.kill();
-    });
-  return { request, tool, cleanup };
+// ---- live-embedding arm: real vectors when a local server is reachable -----
+async function embeddingRanking(files, hub) {
+  const vectors = await embedAll(files.map((f) => fixture[f]));
+  if (!vectors) return null; // no reachable /v1/embeddings server -> arm skipped
+  const hubVec = vectors[files.indexOf(hub)];
+  return files
+    .map((file, i) => ({ file, score: cosineDense(hubVec, vectors[i]) }))
+    .filter((entry) => entry.file !== hub)
+    .sort((a, b) => b.score - a.score);
 }
-
-function metrics(predicted, truth) {
-  const hits = [...predicted].filter((p) => truth.has(p));
-  const precision = predicted.size ? hits.length / predicted.size : 0;
-  const recall = truth.size ? hits.length / truth.size : 0;
-  const f1 = precision + recall ? (2 * precision * recall) / (precision + recall) : 0;
-  return { precision, recall, f1, predicted: [...predicted].sort() };
-}
-
-const pct = (x) => `${(x * 100).toFixed(0)}%`;
 
 (async () => {
-  const { request, tool, cleanup } = driveServer();
+  const { request, tool, cleanup } = driveServer(exe, root);
   try {
     await request("initialize", {});
     for (const [file, content] of Object.entries(fixture)) {
@@ -245,20 +154,37 @@ const pct = (x) => `${(x * 100).toFixed(0)}%`;
     const graph = metrics(graphPredicted, groundTruth);
     const similarity = metrics(similarityPredicted, groundTruth);
 
+    const embModel = process.env.MINDLEAK_EMBED_MODEL ?? "nomic-embed-text";
+    const embRanking = await embeddingRanking(Object.keys(fixture), HUB);
+    const embedding = embRanking
+      ? metrics(new Set(embRanking.slice(0, k).map((entry) => entry.file)), groundTruth)
+      : null;
+
     console.log(`\nQuery: "what breaks if I change ${HUB}?"`);
     console.log(`Ground truth (${groundTruth.size} transitive importers): ${[...groundTruth].sort().join(", ")}\n`);
 
-    console.log("| Method                    | Precision | Recall | F1   |");
-    console.log("|---------------------------|-----------|--------|------|");
+    console.log("| Method                     | Precision | Recall | F1   |");
+    console.log("|----------------------------|-----------|--------|------|");
     console.log(
-      `| MindLeak (graph impact)   |    ${pct(graph.precision).padStart(4)} |   ${pct(graph.recall).padStart(4)} | ${graph.f1.toFixed(2)} |`
+      `| MindLeak (graph impact)    |    ${pct(graph.precision).padStart(4)} |   ${pct(graph.recall).padStart(4)} | ${graph.f1.toFixed(2)} |`
     );
     console.log(
-      `| Similarity (TF-IDF top-${k}) |    ${pct(similarity.precision).padStart(4)} |   ${pct(similarity.recall).padStart(4)} | ${similarity.f1.toFixed(2)} |`
+      `| Similarity (TF-IDF top-${k})  |    ${pct(similarity.precision).padStart(4)} |   ${pct(similarity.recall).padStart(4)} | ${similarity.f1.toFixed(2)} |`
     );
+    if (embedding) {
+      console.log(
+        `| Embeddings (live top-${k})    |    ${pct(embedding.precision).padStart(4)} |   ${pct(embedding.recall).padStart(4)} | ${embedding.f1.toFixed(2)} |`
+      );
+    }
 
     console.log(`\nMindLeak retrieved:   ${graph.predicted.join(", ")}`);
     console.log(`Similarity retrieved: ${similarity.predicted.join(", ")}`);
+    if (embedding) {
+      console.log(`Embeddings retrieved: ${embedding.predicted.join(", ")}  (backend: ${embModel})`);
+    } else {
+      const embUrl = process.env.MINDLEAK_EMBED_URL ?? "http://localhost:11434/v1";
+      console.log(`Embeddings arm skipped: no reachable ${embUrl}/embeddings server.`);
+    }
     const falsePositives = similarity.predicted.filter((f) => !groundTruth.has(f));
     console.log(`Similarity false positives (similar vocab, no import): ${falsePositives.join(", ") || "none"}`);
 
@@ -270,6 +196,7 @@ const pct = (x) => `${(x * 100).toFixed(0)}%`;
           ground_truth: [...groundTruth].sort(),
           graph,
           similarity: { ...similarity, backend: "tfidf-cosine" },
+          embedding: embedding ? { ...embedding, backend: embModel } : { skipped: true },
         },
         null,
         2
