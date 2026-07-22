@@ -5,9 +5,12 @@ import {
   boardRows,
   conformanceDiagnostic,
   evidenceRequestForTask,
+  filterChangedPaths,
   parseToolResult,
+  redactTerminalOutput,
   resolveBinaryPath,
   resolveServerPath,
+  shouldCaptureCommand,
   toArtifactId,
 } from "./util";
 
@@ -148,5 +151,33 @@ describe("evidenceRequestForTask", () => {
         150
       )
     ).toThrow("no claim start");
+  });
+});
+
+describe("terminal capture privacy", () => {
+  it("suppresses likely secret-bearing and low-confidence commands", () => {
+    expect(shouldCaptureCommand("npm test", 2)).toBe(true);
+    expect(shouldCaptureCommand("az login", 2)).toBe(false);
+    expect(shouldCaptureCommand("read -s PASSWORD", 2)).toBe(false);
+    expect(shouldCaptureCommand("npm test", 0)).toBe(false);
+  });
+
+  it("strips terminal control sequences, redacts secrets, and bounds output", () => {
+    const output = redactTerminalOutput(
+      "\u001b[31mfailed\u001b[0m token=abc123 Authorization: Bearer secret-value",
+      48
+    );
+    expect(output).not.toContain("\u001b");
+    expect(output).not.toContain("abc123");
+    expect(output).not.toContain("secret-value");
+    expect(output.length).toBeLessThanOrEqual(48);
+  });
+});
+
+describe("workspace change filtering", () => {
+  it("filters configured workspace-relative path prefixes", () => {
+    expect(
+      filterChangedPaths(["src/z.ts", "src/a.ts", "generated/out.ts"], ["generated"], 1)
+    ).toEqual(["src/a.ts"]);
   });
 });

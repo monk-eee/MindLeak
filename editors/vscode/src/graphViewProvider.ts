@@ -11,6 +11,7 @@ export interface GraphHandlers {
 export class GraphViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "mindleak.graphView";
   private view?: vscode.WebviewView;
+  private statusText = "starting…";
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -28,6 +29,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.onDidReceiveMessage((message) => {
       switch (message?.type) {
         case "ready":
+          this.status(this.statusText);
           this.handlers.onReady();
           break;
         case "refresh":
@@ -49,6 +51,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
   }
 
   status(text: string): void {
+    this.statusText = text;
     this.view?.webview.postMessage({ type: "status", text });
   }
 

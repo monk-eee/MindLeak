@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
   "captured_at": "2026-07-22",
-  "source_revision": "cd31176-dirty",
-  "executable_sha256": "93e32abb7eec9764256e8d6415b6c768f63a936743bf0938b623778dfa35f69c",
+  "source_revision": "6ea3516-dirty",
+  "executable_sha256": "7181ac43bb9bc50179ebcfd7af3eaee097b7cb6cc5bcf393ea5c4ad8b5118b25",
   "server_version": "0.1.0",
   "change": "ADR-0006 phases 1-3 imports, calls, hierarchy, and direct manifest dependencies",
   "scenarios": {

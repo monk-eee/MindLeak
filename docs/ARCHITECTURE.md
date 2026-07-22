@@ -55,8 +55,10 @@ tasks, conformance, knowledge). Same newline-delimited JSON-RPC as `mindleak-mcp
 
 ### `editors/vscode` (extension)
 
-A passive sensor + Cytoscape visualizer that spawns `mindleak-mcp` as a child
-process and speaks the same MCP protocol.
+Passive editor, shell-execution, workspace-mutation, and Git commit sensors plus
+a Cytoscape visualizer. It spawns `mindleak-mcp` as a child process and speaks
+the same MCP protocol. Stable shell execution events require VS Code 1.93;
+unsupported shells are visibly degraded rather than inferred from terminal text.
 
 ## Data model
 

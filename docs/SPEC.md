@@ -246,8 +246,17 @@ the deterministic ingest/query path never touches the network.
 
 ## 7. VS Code extension
 
-- **Passive sensor:** `onDidChangeActiveTextEditor` boosts the focused file's
-  node; `onDidSaveTextDocument` ingests its symbols.
+- **Passive editor sensor:** `onDidChangeActiveTextEditor` boosts the focused
+  file's node; `onDidSaveTextDocument` ingests its symbols.
+- **Passive execution sensor (ADR-0011):** on VS Code 1.93+, shell-integration
+  start/end events ingest command, exit code, portable changed-file delta, and
+  optionally bounded/redacted output. Low-confidence or secret-bearing commands
+  are suppressed; missing shell integration is visibly degraded.
+- **Passive Git sensor (ADR-0011):** the built-in Git extension's commit events
+  ingest new HEAD metadata and changed paths without polling or `.git` scraping.
+- **Privacy defaults:** execution metadata is enabled; terminal output retention
+  is opt-in and capped before crossing MCP. Environment variables and terminal
+  input are never captured.
 - **Visualizer:** a `WebviewViewProvider` renders the live subgraph with
   Cytoscape.js (blue = file, orange = symbol, green = intent, red = execution;
   edge width ∝ effective weight). Refresh / Prune / Export controls.

@@ -98,6 +98,36 @@ negative controls rather than dependencies.
 This proves direct dependencies for the four supported manifest families. It
 does not infer transitive dependencies or claim lockfile/resolver coverage.
 
+## Passive sensor proof
+
+ADR-0011 raises the extension floor to VS Code 1.93 and adds shell-execution,
+workspace-mutation, and built-in Git commit sensors. Component fixtures fire
+mocked VS Code terminal/Git events and assert that the sensor itself invokes
+`ingest_execution`/`ingest_commit`; output redaction, secret-command suppression,
+path exclusion/capping, exit-code handling, and visible degradation are covered
+without an agent-authored ingestion call.
+
+The initial before/after Git status design failed its gate: one subprocess
+snapshot measured 71.7 ms p95, before the second snapshot or ingestion. It was
+replaced by one in-process workspace watcher. A second bottleneck was then found
+in per-fact SQLite writes; batching each execution into one transaction moved the
+full 200-file/8 KiB processing + MCP + SQLite path below the target.
+
+| Metric | Gate | Observed | Result |
+|---|---:|---:|---|
+| End-to-end local capture p50 | Report | 21.372 ms | Pass |
+| End-to-end local capture p95 | < 50 ms | 27.769 ms | Pass |
+| End-to-end local capture max | Report | 29.929 ms | Pass |
+| Terminal event fixture invokes ingestion | Required | Yes | Pass |
+| Git commit fixture invokes ingestion | Required | Yes | Pass |
+
+Machine-readable result:
+[2026-07-22-passive-sensor-overhead.json](../benchmarks/results/2026-07-22-passive-sensor-overhead.json).
+Reproduce after building the extension and MCP server with
+`node scripts/evaluate-sensors.mjs` (also included in `make bench`). The timing
+fixture is local and deterministic; actual shell integration remains dependent
+on the user's shell and is reported as degraded when absent.
+
 ## Reproduce
 
 From the repository root:

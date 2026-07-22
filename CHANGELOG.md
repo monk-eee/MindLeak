@@ -48,9 +48,13 @@ to [Semantic Versioning](https://semver.org/).
 - **Multi-agent attribution**: set `MINDLEAK_AGENT=<id>` and each ingest/focus
   also records a decay-weighted `agent:<id> --observed--> <node>` edge — shared
   graph, per-agent attention that fades. Roster via `list_agents`.
-- **VS Code extension**: passive editor sensor (focus boosts a node, save ingests
-  symbols) and an offline Cytoscape graph visualizer (vendored, no CDN) with
-  prune/export controls.
+- **VS Code passive evidence sensors** (ADR-0011): focus boosts a node, save
+  ingests structure, shell-integrated terminal start/end events ingest command
+  outcomes and workspace mutation evidence, and built-in Git commit events
+  ingest commit metadata and changed paths. Output retention is opt-in,
+  redacted, and bounded; capture health reports concrete degraded modes.
+- **Offline Cytoscape graph visualizer** (vendored, no CDN) with prune/export
+  controls.
 - **VS Code Intent Board**: a tree view of the Lodestar task board (who owns
   what) plus save-triggered conformance diagnostics (drift/violation surfaced
   inline) via a second `lodestar-mcp` client. Config: `mindleak.lodestarServerPath`,
@@ -110,6 +114,9 @@ to [Semantic Versioning](https://semver.org/).
   Lodestar learned-knowledge remain the next seams.
 
 ### Fixed
+- Execution ingestion now batches one execution and all artifact edges in a
+  single SQLite transaction. The 200-file/8 KiB passive-sensor benchmark moved
+  from 296 ms to 27.769 ms p95, below the 50 ms gate.
 - The committed dependency graph and source now compile with the declared Rust
   1.75 minimum: `Cargo.lock` uses format 3, parser/TLS transitives are pinned to
   compatible releases, and post-1.75 `Option` helpers use equivalent stable

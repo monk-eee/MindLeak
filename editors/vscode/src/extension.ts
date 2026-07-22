@@ -3,8 +3,11 @@ import * as path from "path";
 import * as vscode from "vscode";
 
 import { BoardItem, BoardViewProvider } from "./boardViewProvider";
+import { WorkspaceChangeDetector } from "./changeDetector";
+import { GitSensor } from "./gitSensor";
 import { GraphViewProvider } from "./graphViewProvider";
 import { McpClient } from "./mcpClient";
+import { TerminalCaptureConfig, TerminalSensor } from "./terminalSensor";
 import {
   conformanceDiagnostic,
   evidenceRequestForTask,
@@ -19,6 +22,9 @@ let provider: GraphViewProvider | undefined;
 let board: BoardViewProvider | undefined;
 let output: vscode.OutputChannel;
 let configuredAgentId = "vscode";
+let serverHealth = "server starting";
+let terminalHealth = "terminal capture starting";
+let gitHealth = "Git capture starting";
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   output = vscode.window.createOutputChannel("MindLeak");
@@ -76,10 +82,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   try {
     await client.start();
-    provider.status("connected");
+    serverHealth = "connected";
+    updateHealth();
     output.appendLine(`Connected to ${serverPath} (db: ${dbPath})`);
   } catch (err) {
-    provider.status("server unavailable");
+    serverHealth = "server unavailable";
+    updateHealth();
     vscode.window.showWarningMessage(
       `MindLeak: could not start '${serverPath}'. Set 'mindleak.serverPath'. (${(err as Error).message})`
     );
@@ -94,6 +102,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       `Lodestar intent plane unavailable ('${lodestarPath}'): ${(err as Error).message}`
     );
   }
+
+  const mindleakClient = client;
+  const changeDetector = new WorkspaceChangeDetector();
+  const terminalSensor = new TerminalSensor(
+    mindleakClient,
+    workspace,
+    changeDetector,
+    terminalCaptureConfig,
+    (message) => output.appendLine(message),
+    (status) => setTerminalHealth(status)
+  );
+  const gitSensor = new GitSensor(
+    mindleakClient,
+    () => vscode.workspace.getConfiguration("mindleak").get<boolean>("captureCommits", true),
+    (message) => output.appendLine(message),
+    (status) => setGitHealth(status)
+  );
+  context.subscriptions.push(changeDetector, terminalSensor, gitSensor);
+  void gitSensor.start().catch((err) => {
+    setGitHealth("Git capture degraded: startup failed");
+    output.appendLine(`Git capture startup error: ${(err as Error).message}`);
+  });
 
   // Passive sensors: focus boosts a node; save ingests its symbols.
   context.subscriptions.push(
@@ -136,6 +166,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 export function deactivate(): void {
   client?.dispose();
   lodestar?.dispose();
+}
+
+function terminalCaptureConfig(): TerminalCaptureConfig {
+  const config = vscode.workspace.getConfiguration("mindleak");
+  return {
+    enabled: config.get<boolean>("captureExecutions", true),
+    captureOutput: config.get<boolean>("captureTerminalOutput", false),
+    maxOutputChars: Math.max(0, config.get<number>("terminalOutputMaxChars", 8192)),
+    maxChangedFiles: Math.max(0, config.get<number>("maxChangedFilesPerExecution", 200)),
+    excludedPathPrefixes: config.get<string[]>("captureExcludePathPrefixes", []),
+  };
+}
+
+function setTerminalHealth(status: string): void {
+  if (terminalHealth !== status) {
+    terminalHealth = status;
+    output.appendLine(status);
+    updateHealth();
+  }
+}
+
+function setGitHealth(status: string): void {
+  if (gitHealth !== status) {
+    gitHealth = status;
+    output.appendLine(status);
+    updateHealth();
+  }
+}
+
+function updateHealth(): void {
+  provider?.status(`${serverHealth} · ${terminalHealth} · ${gitHealth}`);
 }
 
 function artifactId(doc: vscode.TextDocument): string {

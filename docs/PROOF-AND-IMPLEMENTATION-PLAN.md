@@ -36,13 +36,19 @@ its phase exit gate passes.
   100% relation and impacted-type precision/recall; direct Cargo, npm, Go, and
   Python manifest dependencies reach 100% relation precision/recall. Broader
   language and real-repository truth sets remain open.
+- **Phase 2 passive capture is implemented behind VS Code 1.93 shell
+  integration.** Component fixtures drive terminal/Git events into MCP ingestion
+  without test-authored ingestion calls. Output is opt-in/redacted/bounded,
+  capture health is visible, and the 200-file/8 KiB local path measures 27.769 ms
+  p95 against the 50 ms gate. A live Extension Host shell-integration smoke run
+  remains an operator validation, not a deterministic CI fixture.
 
 ## 2. Product Claims and Proof Gates
 
 | Claim | Current truth | Required proof before claiming shipped |
 |---|---|---|
 | Stale context fades | Time decay works, but removed structure is not retracted and focus refreshes incident edges | Removed symbols/edges disappear on the next ingest; focus cannot revive obsolete facts |
-| Passive episodic memory | File focus/save are passive; executions and commits require explicit MCP calls | Terminal and Git fixture scenarios are captured without agent-authored ingestion calls |
+| Passive episodic memory | VS Code 1.93 terminal/Git component fixtures pass; unsupported shells visibly degrade | Live fixture sessions capture execution/failure/commit evidence; p95 remains < 50 ms |
 | Impact analysis | Bidirectional depth-2 graph proximity; mostly in-file structure | Cross-file truth-set precision >= 0.80 and recall >= 0.85 on supported fixtures |
 | Conformance enforcement | A covering task is treated as aligned without inspecting actual changes | Violations, drift, missing evidence, and aligned changes each reach distinct tested outcomes |
 | Decay noise, not signal | Reinforcement count across a time span extends half-life | Repetitive green-build noise fades before rare consequential/corroborated evidence in an adversarial fixture |
@@ -191,7 +197,7 @@ not alter structural or episodic edge timestamps.
 |---|---|---|---|
 | Terminal sensor | VS Code shell-execution start/end events | command, exit code, bounded output, changed files, timestamp | High |
 | Git sensor | HEAD/ref change or repository state event | SHA, message, changed files, timestamp | Medium |
-| Portable change detector | Before/after `git status --porcelain=v1 -z` snapshots | normalized changed-file set | Medium |
+| Portable change detector | VS Code workspace create/change/delete events during a shell execution | normalized changed-file set | Medium |
 | Privacy/size guard | Before MCP submission | redaction, allow/deny patterns, output cap | Medium |
 
 ### Files
@@ -210,6 +216,8 @@ not alter structural or episodic edge timestamps.
 - If shell integration is unavailable, report degraded sensing visibly; do not
   pretend capture is active.
 - Bound output before it crosses MCP.
+- Use the stable VS Code 1.93 shell-execution API and built-in Git extension API
+  as specified by ADR-0011; do not scrape terminal buffers or `.git` internals.
 
 ### Exit gate
 

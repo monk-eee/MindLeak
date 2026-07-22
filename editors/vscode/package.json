@@ -7,7 +7,7 @@
   "license": "MIT",
   "icon": "media/mindleak_128x128.png",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.93.0"
   },
   "categories": [
     "Visualization",
@@ -110,6 +110,50 @@
           "default": true,
           "description": "Ingest a file's symbols into the graph whenever it is saved."
         },
+        "mindleak.captureExecutions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Capture shell-integrated terminal command metadata and exit codes as local execution evidence."
+        },
+        "mindleak.captureTerminalOutput": {
+          "type": "boolean",
+          "default": false,
+          "description": "Retain bounded, redacted terminal output with execution evidence. Disabled by default."
+        },
+        "mindleak.terminalOutputMaxChars": {
+          "type": "number",
+          "default": 8192,
+          "minimum": 0,
+          "maximum": 65536,
+          "description": "Maximum terminal-output characters retained per execution when output capture is enabled."
+        },
+        "mindleak.captureExcludePathPrefixes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            ".git",
+            ".mindleak",
+            ".lodestar",
+            "coverage",
+            "node_modules",
+            "target"
+          ],
+          "description": "Workspace-relative path prefixes excluded from terminal changed-file evidence."
+        },
+        "mindleak.maxChangedFilesPerExecution": {
+          "type": "number",
+          "default": 200,
+          "minimum": 0,
+          "maximum": 2000,
+          "description": "Maximum workspace paths attached to one captured terminal execution."
+        },
+        "mindleak.captureCommits": {
+          "type": "boolean",
+          "default": true,
+          "description": "Capture new Git commits and changed paths as local intent evidence."
+        },
         "mindleak.snapshotLimit": {
           "type": "number",
           "default": 60,
@@ -146,7 +190,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "@types/vscode": "1.85.0",
+    "@types/vscode": "^1.93.0",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
     "@vitest/coverage-v8": "^3.2.7",

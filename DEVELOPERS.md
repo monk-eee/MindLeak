@@ -168,12 +168,12 @@ and footguns, with impact and status:
   access to `mindleak-mcp` can write nodes/edges. — Acceptable for local
   single-user use; the server has no network listener. Do not expose it over a
   network without an auth layer (see [docs/SPEC.md § 8](docs/SPEC.md)).
-- **Uncommitted work still needs explicit mutation telemetry.** — ADR-0009
-  derives conformance evidence from attributed `modified`, `failed_on`, and
-  commit-backed `refactored` edges; editor focus/save only proves observation and
-  structure, not mutation. — Medium impact on automatic completion evidence. —
-  Left open for passive terminal/Git sensors; `observed` must never be promoted
-  to mutation evidence.
+- **Passive execution evidence depends on VS Code shell integration.** — VS Code
+  1.93 shell start/end events provide command/exit evidence; unsupported or
+  conflicting shells report degraded capture and are not guessed from terminal
+  text. Concurrent terminal executions can both observe one workspace mutation,
+  so changed paths prove temporal overlap rather than process-level causality. —
+  Medium impact on provenance precision in overlapping command sessions.
 - **Lodestar worktree sharing is path-based, not git-aware.** — The Intent Plane
   DB resolves from `LODESTAR_DB` else `<cwd>/.lodestar/spec.db`; sibling git
   worktrees share one plane only if pointed at the same path. — Low impact. —

@@ -123,6 +123,24 @@ impl GraphStore {
         upsert_edge_on(&self.conn, edge, None)
     }
 
+    /// Atomically append one deterministic ingestion batch.
+    pub(crate) fn upsert_facts(&self, nodes: &[Node], edges: &[Edge]) -> Result<WriteOutcome> {
+        let transaction = self.conn.unchecked_transaction()?;
+        let mut outcome = WriteOutcome::default();
+        for node in nodes {
+            if upsert_node_on(&transaction, node)? {
+                outcome.nodes_created += 1;
+            }
+        }
+        for edge in edges {
+            if upsert_edge_on(&transaction, edge, None)? {
+                outcome.edges_created += 1;
+            }
+        }
+        transaction.commit()?;
+        Ok(outcome)
+    }
+
     /// Atomically replace all structural facts emitted by one artifact.
     pub fn replace_structure(
         &self,

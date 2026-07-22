@@ -22,6 +22,82 @@ export function parseToolResult(result: unknown): unknown {
   }
 }
 
+const SENSITIVE_COMMAND =
+  /(?:^|\s)(?:read(?:-host)?|passwd|ssh-add|set\s+\/p|sudo\s+-S|az\s+login|gh\s+auth\s+login|npm\s+login|docker\s+login|git\s+credential)(?:\s|$)|(?:--?(?:password|passphrase|token|api[-_]?key)\b)|(?:password|passphrase|token|api[-_]?key)\s*=|authorization\s*:\s*bearer/i;
+
+/** Whether a shell-integrated command is reliable and safe enough to retain. */
+export function shouldCaptureCommand(command: string, confidence: number): boolean {
+  return confidence >= 1 && command.trim().length > 0 && !SENSITIVE_COMMAND.test(command);
+}
+
+/** Strip terminal controls, redact common secret forms, and cap retained output. */
+export function redactTerminalOutput(output: string, maxChars: number): string {
+  if (maxChars <= 0) {
+    return "";
+  }
+  const clean = stripTerminalControls(output)
+    .replace(/(authorization\s*:\s*bearer\s+)[^\s]+/gi, "$1[REDACTED]")
+    .replace(/((?:password|passphrase|token|api[-_]?key)\s*[=:]\s*)[^\s]+/gi, "$1[REDACTED]")
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED]")
+    .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, "[REDACTED]");
+  return Array.from(clean).slice(0, maxChars).join("");
+}
+
+function stripTerminalControls(output: string): string {
+  let clean = "";
+  for (let index = 0; index < output.length; index += 1) {
+    const code = output.charCodeAt(index);
+    if (code === 27) {
+      const kind = output[index + 1];
+      if (kind === "[") {
+        index += 2;
+        while (index < output.length) {
+          const final = output.charCodeAt(index);
+          if (final >= 64 && final <= 126) {
+            break;
+          }
+          index += 1;
+        }
+      } else if (kind === "]") {
+        index += 2;
+        while (index < output.length) {
+          if (output.charCodeAt(index) === 7) {
+            break;
+          }
+          if (output.charCodeAt(index) === 27 && output[index + 1] === "\\") {
+            index += 1;
+            break;
+          }
+          index += 1;
+        }
+      } else {
+        index += 1;
+      }
+      continue;
+    }
+    if (code < 32 && ![9, 10, 13].includes(code)) {
+      continue;
+    }
+    clean += output[index];
+  }
+  return clean;
+}
+
+/** Normalize, exclude, sort, and cap workspace-relative changed paths. */
+export function filterChangedPaths(
+  paths: Iterable<string>,
+  excludedPrefixes: string[],
+  maxFiles = Number.POSITIVE_INFINITY
+): string[] {
+  const prefixes = excludedPrefixes
+    .map((prefix) => prefix.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/$/, ""))
+    .filter(Boolean);
+  return [...new Set([...paths].map((file) => file.replace(/\\/g, "/")))]
+    .filter((file) => !prefixes.some((prefix) => file === prefix || file.startsWith(`${prefix}/`)))
+    .sort()
+    .slice(0, Math.max(0, maxFiles));
+}
+
 export interface ResolveServerOptions {
   platform?: NodeJS.Platform;
   exists?: (candidate: string) => boolean;

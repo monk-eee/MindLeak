@@ -16,8 +16,8 @@ instead of drowning every query in historical noise. It ships as:
   consolidation;
 - a **Rust MCP server** ([`mindleak-mcp`](crates/mindleak-mcp)) — exposes the graph
   to Copilot / Claude / Cursor / CLI agents over stdio;
-- a **VS Code extension** ([`editors/vscode`](editors/vscode)) — a passive editor
-  sensor plus a live Cytoscape graph visualizer.
+- a **VS Code extension** ([`editors/vscode`](editors/vscode)) — passive editor,
+  shell-execution, and Git sensors plus a live Cytoscape graph visualizer.
 
 It is a complete, from-scratch replacement for flat log / vector-only agent
 memory. See [`docs/SPEC.md`](docs/SPEC.md) for the full design and
@@ -55,7 +55,7 @@ memory. See [`docs/SPEC.md`](docs/SPEC.md) for the full design and
 ```mermaid
 flowchart TD
   subgraph editor["VS Code extension (TypeScript)"]
-    S["passive sensor<br/>focus / save"]
+    S["passive sensors<br/>focus · save · terminal · git"]
     V["Cytoscape webview"]
   end
   subgraph core["mindleak-core (Rust)"]
@@ -79,7 +79,7 @@ flowchart TD
 
 ## Build
 
-Requires Rust 1.75+ and (for the extension) Node 18+.
+Requires Rust 1.75+, Node 18+, and VS Code 1.93+ for the extension.
 
 ```bash
 # Both MCP servers

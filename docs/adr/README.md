@@ -17,6 +17,8 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0007](0007-structural-snapshot-reconciliation.md) | Structural snapshots replace owned facts | Accepted |
 | [0008](0008-semantic-recall-embedding-index.md) | Optional semantic recall via a local embedding index | Accepted |
 | [0009](0009-evidence-backed-conformance.md) | Evidence-backed conformance across the memory and intent planes | Accepted |
+| [0010](0010-observability-and-resilience.md) | Observability, telemetry, and network resilience | Accepted |
+| [0011](0011-passive-terminal-and-git-sensors.md) | Passive terminal and Git evidence sensors | Accepted |
 
 ## Writing a new ADR
 

@@ -23,6 +23,11 @@ your machine (`.mindleak/graph.db`) and the MCP server speaks JSON-RPC over
 - **The graph may contain source excerpts, commit messages, and command output.**
   Treat `.mindleak/graph.db` with the same sensitivity as your workspace. It is
   gitignored and regenerable — do not commit it.
+- **Terminal output retention is opt-in.** Passive command metadata does not
+  retain output by default. When enabled, output is stripped of terminal control
+  sequences, redacted for common credential forms, and capped before MCP
+  submission. Secret-bearing command shapes are suppressed entirely; this is
+  defense in depth, not a guarantee that arbitrary output contains no secrets.
 
 ## Supported versions
 
