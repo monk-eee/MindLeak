@@ -6,7 +6,7 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS nodes (
     id               TEXT PRIMARY KEY,        -- e.g. "artifact:src/auth.ts"
-    type             TEXT NOT NULL,           -- symbol | artifact | execution | intent | agent
+    type             TEXT NOT NULL,           -- symbol | artifact | execution | intent | agent | package
     label            TEXT NOT NULL,           -- human-readable name
     content          TEXT,                    -- code snippet, commit msg, or log excerpt
     created_at       INTEGER NOT NULL,        -- unix seconds
@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS nodes (
 CREATE TABLE IF NOT EXISTS edges (
     source_id       TEXT NOT NULL,
     target_id       TEXT NOT NULL,
-    relation        TEXT NOT NULL,            -- modified | failed_on | contains | refactored | relates_to | calls | observed
+    relation        TEXT NOT NULL,            -- modified | failed_on | contains | refactored | relates_to | calls | observed | imports
     weight          REAL NOT NULL DEFAULT 1.0,
     half_life_hours REAL NOT NULL DEFAULT 48.0,
     updated_at      INTEGER NOT NULL,
@@ -31,6 +31,22 @@ CREATE TABLE IF NOT EXISTS edges (
 CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id, weight);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_type   ON nodes(type);
+
+-- Import resolution may need a best-guess artifact before that file is ingested.
+-- Provenance stays internal so a real ingest can promote the same artifact id.
+CREATE TABLE IF NOT EXISTS artifact_stubs (
+    node_id TEXT PRIMARY KEY,
+    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS artifact_stub_candidates (
+    stub_id      TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    PRIMARY KEY (stub_id, candidate_id),
+    FOREIGN KEY (stub_id) REFERENCES artifact_stubs(node_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_stub_candidates_candidate
+    ON artifact_stub_candidates(candidate_id);
 
 -- Full-text index over node label + content for semantic-ish seed lookup.
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(

@@ -2,11 +2,14 @@
 //! SQLite connection setup, migrations, and the `effective_weight` SQL function.
 
 use rusqlite::functions::FunctionFlags;
-use rusqlite::Connection;
+use rusqlite::{Connection, ErrorCode};
+use std::time::{Duration, Instant};
 
 use crate::error::Result;
 
 const SCHEMA: &str = include_str!("schema.sql");
+const WAL_RETRY_DELAY: Duration = Duration::from_millis(25);
+const WAL_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Open (or create) a MindLeak database at `path`, apply the schema, and register
 /// the `effective_weight` scalar SQL function used by graph queries.
@@ -25,12 +28,33 @@ pub fn open_in_memory() -> Result<Connection> {
 
 fn configure(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "busy_timeout", 5000)?;
-    conn.pragma_update(None, "journal_mode", "WAL")?;
+    enable_wal(conn)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.execute_batch(SCHEMA)?;
     migrate(conn)?;
     register_functions(conn)?;
     Ok(())
+}
+
+fn enable_wal(conn: &Connection) -> Result<()> {
+    let deadline = Instant::now() + WAL_RETRY_TIMEOUT;
+    loop {
+        match conn.pragma_update(None, "journal_mode", "WAL") {
+            Ok(()) => return Ok(()),
+            Err(error) if is_busy(&error) && Instant::now() < deadline => {
+                std::thread::sleep(WAL_RETRY_DELAY);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn is_busy(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(code, _)
+            if matches!(code.code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+    )
 }
 
 /// Register `effective_weight(base, half_life_hours, updated_at, now)` so the
@@ -248,7 +272,8 @@ mod tests {
         barrier.wait();
 
         for handle in handles {
-            assert!(handle.join().unwrap().is_ok());
+            let result = handle.join().unwrap();
+            assert!(result.is_ok(), "concurrent open failed: {result:?}");
         }
         let connection = open(&path).unwrap();
         let (first_seen, owner_id): (i64, Option<String>) = connection
@@ -259,6 +284,26 @@ mod tests {
         assert_eq!(first_seen, 10);
         assert_eq!(owner_id.as_deref(), Some("artifact:a"));
         drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn held_lock_does_not_multiply_wal_retry_timeout() {
+        let path = temp_db("bounded-wal-retry");
+        create_legacy_database(&path);
+        let holder = Connection::open(&path).unwrap();
+        holder.execute_batch("BEGIN EXCLUSIVE").unwrap();
+
+        let started = Instant::now();
+        let result = open(&path);
+        let elapsed = started.elapsed();
+
+        assert!(result.is_err());
+        assert!(
+            elapsed < Duration::from_secs(12),
+            "open exceeded bounded retry window: {elapsed:?}"
+        );
+        holder.execute_batch("ROLLBACK").unwrap();
         cleanup(&path);
     }
 }

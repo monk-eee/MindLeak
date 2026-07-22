@@ -16,6 +16,8 @@ pub enum NodeType {
     Intent,
     /// An AI agent / client session (optional attribution).
     Agent,
+    /// External dependency referenced by a bare import specifier.
+    Package,
 }
 
 impl NodeType {
@@ -26,6 +28,7 @@ impl NodeType {
             NodeType::Execution => "execution",
             NodeType::Intent => "intent",
             NodeType::Agent => "agent",
+            NodeType::Package => "package",
         }
     }
 
@@ -36,6 +39,7 @@ impl NodeType {
             "execution" => Some(NodeType::Execution),
             "intent" => Some(NodeType::Intent),
             "agent" => Some(NodeType::Agent),
+            "package" => Some(NodeType::Package),
             _ => None,
         }
     }
@@ -59,6 +63,8 @@ pub enum RelationType {
     Contains,
     /// An agent ingested or focused this node (attribution; decays).
     Observed,
+    /// Artifact imports another workspace artifact or external package.
+    Imports,
 }
 
 impl RelationType {
@@ -71,6 +77,7 @@ impl RelationType {
             RelationType::RelatesTo => "relates_to",
             RelationType::Contains => "contains",
             RelationType::Observed => "observed",
+            RelationType::Imports => "imports",
         }
     }
 
@@ -83,6 +90,7 @@ impl RelationType {
             "relates_to" => Some(RelationType::RelatesTo),
             "contains" => Some(RelationType::Contains),
             "observed" => Some(RelationType::Observed),
+            "imports" => Some(RelationType::Imports),
             _ => None,
         }
     }
@@ -92,7 +100,10 @@ impl RelationType {
     pub fn default_half_life_hours(&self) -> f64 {
         match self {
             RelationType::Modified | RelationType::FailedOn => 24.0,
-            RelationType::Calls | RelationType::Contains | RelationType::Refactored => 168.0,
+            RelationType::Calls
+            | RelationType::Contains
+            | RelationType::Refactored
+            | RelationType::Imports => 168.0,
             RelationType::RelatesTo | RelationType::Observed => 48.0,
         }
     }

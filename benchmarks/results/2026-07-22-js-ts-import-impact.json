@@ -1,0 +1,78 @@
+{
+  "schema_version": 2,
+  "captured_at": "2026-07-22",
+  "source_revision": "c845825-dirty",
+  "executable_sha256": "73b41fa0eac7247b66e873e489edb1bbe73a4a7c4a92a3f8f35614970a1aeec7",
+  "server_version": "0.1.0",
+  "change": "ADR-0006 phase 1 JavaScript/TypeScript imports and cross-file calls",
+  "scenarios": {
+    "stale_structure_retraction": {
+      "expected_old_structure_present": false,
+      "observed_old_contains_present": false,
+      "observed_old_call_present": false,
+      "observed_old_symbol_present": false,
+      "observed_old_fts_entry_present": false,
+      "passed": true
+    },
+    "cross_file_impact": {
+      "expected_dependent_artifact_present": true,
+      "expected_structural_dependency_present": true,
+      "expected_cross_file_call_present": true,
+      "observed_dependent_artifact_present": true,
+      "observed_structural_dependency_present": true,
+      "observed_cross_file_call_present": true,
+      "passed": true
+    },
+    "impact_negative_controls": {
+      "expected_coimported_sibling_present": false,
+      "expected_false_cross_file_call_present": false,
+      "observed_coimported_sibling_present": false,
+      "observed_false_cross_file_call_present": false,
+      "passed": true
+    },
+    "resolution_and_stub_lifecycle": {
+      "expected_mixed_extension_target": "artifact:src/dependency.ts",
+      "expected_wrong_mixed_stub_present": false,
+      "expected_removed_stub_present": false,
+      "observed_mixed_extension_target_present": true,
+      "observed_wrong_mixed_stub_present": false,
+      "observed_removed_stub_present": false,
+      "passed": true
+    },
+    "consumer_first_reconciliation": {
+      "expected_mixed_extension_promoted": true,
+      "expected_cross_file_call_promoted": true,
+      "expected_index_module_promoted": true,
+      "expected_explicit_js_promoted_to_typescript": true,
+      "observed_mixed_extension_promoted": true,
+      "observed_cross_file_call_promoted": true,
+      "observed_index_module_promoted": true,
+      "observed_explicit_js_promoted_to_typescript": true,
+      "passed": true
+    },
+    "require_scope": {
+      "expected_shadowed_package_present": false,
+      "expected_unshadowed_package_present": true,
+      "expected_var_shadowed_package_present": false,
+      "expected_var_unshadowed_package_present": true,
+      "observed_shadowed_package_present": false,
+      "observed_unshadowed_package_present": true,
+      "observed_var_shadowed_package_present": false,
+      "observed_var_unshadowed_package_present": true,
+      "passed": true
+    },
+    "parser_scope_controls": {
+      "expected_local_call_present": true,
+      "expected_destructured_typed_imported_call_present": true,
+      "expected_second_declarator_shadowed_call_present": false,
+      "expected_typed_require_shadowed_package_present": false,
+      "expected_typed_require_outer_package_present": true,
+      "observed_local_call_present": true,
+      "observed_destructured_typed_imported_call_present": true,
+      "observed_second_declarator_shadowed_call_present": false,
+      "observed_typed_require_shadowed_package_present": false,
+      "observed_typed_require_outer_package_present": true,
+      "passed": true
+    }
+  }
+}

@@ -13,6 +13,13 @@ to [Semantic Versioning](https://semver.org/).
   parsing), `git` commits (with `DECISION:`/`HACK:` rationale extraction), and
   heuristic `ast` extraction of symbols **and in-file `calls` edges** for 8
   languages.
+- **ADR-0006 structural imports, phase 1**: static JavaScript/TypeScript
+  `import`/`require` declarations create artifact/package `imports` edges;
+  direct calls to named import bindings create cross-file `calls` edges. Both
+  participate in artifact-owned reconciliation and relation-directed impact.
+  Token-aware extraction filters comments/member calls/basic shadowing, while
+  candidate-backed artifact stubs promote across mixed extensions and index
+  modules or disappear when their final import is removed.
 - **MCP server** (`mindleak-mcp`): newline-delimited JSON-RPC 2.0 over stdio
   exposing 14 tools (`graph_multi_hop_query`, `get_impact_radius`,
   `record_architectural_decision`, plus ingestion/snapshot/prune/stats, an
@@ -47,6 +54,10 @@ to [Semantic Versioning](https://semver.org/).
 - Engineering baseline: pre-commit hooks, rustfmt/clippy/eslint/prettier,
   GitHub Actions CI (Linux + Windows), `.gitattributes`, and the `docs/`
   documentation set.
+- **Tag-driven binary releases**: GitHub Actions gates tags through the full
+  repository CI, builds and smoke-checks both MCP servers for Windows x64,
+  Linux x64, macOS Intel, and macOS Apple Silicon, then publishes attested
+  platform archives with `SHA256SUMS`.
 - **Repeatable graph evaluation harness**: a cross-platform MCP/stdio scenario
   records stale-structure and cross-file-impact behavior against a fresh
   temporary database, with machine-readable baseline results, source revision,

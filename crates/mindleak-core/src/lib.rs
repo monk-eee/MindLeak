@@ -19,17 +19,20 @@ pub mod graph;
 pub mod ingest;
 pub mod model;
 
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use error::{MindLeakError, Result};
 pub use graph::{
-    AgentActivity, Direction, GraphStore, ScoredNode, Subgraph, WeightedEdge, WriteOutcome,
+    AgentActivity, ArtifactStub, Direction, GraphStore, ScoredNode, Subgraph, WeightedEdge,
+    WriteOutcome,
 };
 pub use model::{Edge, Node, NodeType, RelationType};
 
 use consolidate::Consolidator;
 use ingest::execution::ExecutionRecord;
 use ingest::git::CommitRecord;
+use ingest::structure::ImportTarget;
 
 /// Current unix time in whole seconds.
 pub fn now_unix() -> i64 {
@@ -150,6 +153,8 @@ impl MindLeak {
         let art = Node::new(&art_id, NodeType::Artifact, norm.clone(), now);
         let mut nodes = vec![art];
         let mut edges = Vec::new();
+        let mut artifact_stubs = Vec::new();
+        let mut imported_symbols: HashMap<String, (String, String)> = HashMap::new();
 
         let extraction = ingest::ast::extract(path, content);
         for sym in &extraction.symbols {
@@ -168,7 +173,72 @@ impl MindLeak {
             edges.push(Edge::new(&from, &to, RelationType::Calls, now));
         }
 
-        let mut outcome = self.store.replace_structure(&art_id, &nodes, &edges)?;
+        for import in ingest::structure::extract(path, content) {
+            let target_id = match import.target {
+                ImportTarget::ArtifactCandidates(candidates) => {
+                    let known = self.store.resolve_artifact_candidate(&candidates)?;
+                    let is_stub = known.is_none();
+                    let Some(target_path) = known.or_else(|| candidates.first().cloned()) else {
+                        continue;
+                    };
+                    let target_id = format!("artifact:{target_path}");
+                    if is_stub {
+                        artifact_stubs.push(ArtifactStub {
+                            node_id: target_id.clone(),
+                            candidate_ids: candidates
+                                .iter()
+                                .map(|path| format!("artifact:{path}"))
+                                .collect(),
+                        });
+                    }
+                    nodes.push(Node::new(
+                        &target_id,
+                        NodeType::Artifact,
+                        target_path.clone(),
+                        now,
+                    ));
+                    for binding in import.bindings {
+                        if binding.imported != "default" && binding.imported != "*" {
+                            imported_symbols
+                                .insert(binding.local, (target_path.clone(), binding.imported));
+                        }
+                    }
+                    target_id
+                }
+                ImportTarget::Package(package) => {
+                    let target_id = format!("package:{package}");
+                    nodes.push(Node::new(
+                        &target_id,
+                        NodeType::Package,
+                        package.clone(),
+                        now,
+                    ));
+                    target_id
+                }
+            };
+            edges.push(Edge::new(&art_id, target_id, RelationType::Imports, now));
+        }
+
+        for reference in &extraction.call_references {
+            let Some((target_path, imported_name)) = imported_symbols.get(&reference.callee) else {
+                continue;
+            };
+            let from = format!("symbol:{norm}:{}", reference.caller);
+            let to = format!("symbol:{target_path}:{imported_name}");
+            if !self.store.node_exists(&to)? {
+                nodes.push(Node::new(
+                    &to,
+                    NodeType::Symbol,
+                    format!("{imported_name} (imported)"),
+                    now,
+                ));
+            }
+            edges.push(Edge::new(from, to, RelationType::Calls, now));
+        }
+
+        let mut outcome = self
+            .store
+            .replace_structure(&art_id, &nodes, &edges, &artifact_stubs)?;
         outcome.node_ids.push(art_id.clone());
         self.observe(&outcome.node_ids, now)?;
         Ok(outcome)
