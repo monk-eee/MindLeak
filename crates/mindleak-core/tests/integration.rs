@@ -241,6 +241,79 @@ fn relative_import_creates_cross_file_impact_and_call_edges() {
 }
 
 #[test]
+fn hierarchy_edges_resolve_promote_drive_impact_and_retract() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file(
+            "src/child.ts",
+            "import { Base, Contract as LocalContract } from './types';\nclass LocalBase {}\nclass LocalChild extends LocalBase {}\nexport class Child extends Base implements LocalContract {}\n",
+        )
+        .unwrap();
+    engine
+        .ingest_file(
+            "src/types.ts",
+            "export class Base {}\nexport interface Contract {}\n",
+        )
+        .unwrap();
+
+    let child = engine
+        .multi_hop_query("symbol:src/child.ts:Child", 1, 0.0)
+        .unwrap();
+    assert!(child.edges.iter().any(|edge| {
+        edge.relation == mindleak_core::RelationType::Extends
+            && edge.source_id == "symbol:src/child.ts:Child"
+            && edge.target_id == "symbol:src/types.ts:Base"
+    }));
+    assert!(child.edges.iter().any(|edge| {
+        edge.relation == mindleak_core::RelationType::Implements
+            && edge.source_id == "symbol:src/child.ts:Child"
+            && edge.target_id == "symbol:src/types.ts:Contract"
+    }));
+    let local_child = engine
+        .multi_hop_query("symbol:src/child.ts:LocalChild", 1, 0.0)
+        .unwrap();
+    assert!(local_child.edges.iter().any(|edge| {
+        edge.relation == mindleak_core::RelationType::Extends
+            && edge.source_id == "symbol:src/child.ts:LocalChild"
+            && edge.target_id == "symbol:src/child.ts:LocalBase"
+    }));
+    assert!(engine
+        .store()
+        .get_node("symbol:src/types.ts:Base")
+        .unwrap()
+        .is_some());
+    assert!(engine
+        .store()
+        .get_node("symbol:src/types.ts:Contract")
+        .unwrap()
+        .is_some());
+
+    let impact = engine.impact_radius("symbol:src/types.ts:Base").unwrap();
+    assert!(impact
+        .nodes
+        .iter()
+        .any(|node| node.node.id == "symbol:src/child.ts:Child"));
+    let child_impact = engine.impact_radius("symbol:src/child.ts:Child").unwrap();
+    assert!(!child_impact
+        .nodes
+        .iter()
+        .any(|node| node.node.id == "symbol:src/types.ts:Base"));
+
+    engine
+        .ingest_file("src/child.ts", "export class Child {}\n")
+        .unwrap();
+    let child = engine
+        .multi_hop_query("symbol:src/child.ts:Child", 1, 0.0)
+        .unwrap();
+    assert!(!child.edges.iter().any(|edge| {
+        matches!(
+            edge.relation,
+            mindleak_core::RelationType::Extends | mindleak_core::RelationType::Implements
+        )
+    }));
+}
+
+#[test]
 fn bare_import_creates_and_retracts_package_node() {
     let engine = MindLeak::open_in_memory().unwrap();
     engine

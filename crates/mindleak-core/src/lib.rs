@@ -21,7 +21,7 @@ pub mod model;
 pub mod net;
 pub mod telemetry;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use error::{MindLeakError, Result};
@@ -34,7 +34,7 @@ pub use model::{Edge, Node, NodeType, RelationType};
 use consolidate::Consolidator;
 use ingest::execution::ExecutionRecord;
 use ingest::git::CommitRecord;
-use ingest::structure::ImportTarget;
+use ingest::structure::{HierarchyRelation, ImportTarget};
 
 /// Current unix time in whole seconds.
 pub fn now_unix() -> i64 {
@@ -189,6 +189,11 @@ impl MindLeak {
         let mut imported_symbols: HashMap<String, (String, String)> = HashMap::new();
 
         let extraction = ingest::ast::extract(path, content);
+        let local_symbols: HashSet<&str> = extraction
+            .symbols
+            .iter()
+            .map(|symbol| symbol.name.as_str())
+            .collect();
         for sym in &extraction.symbols {
             let sym_id = format!("symbol:{norm}:{}", sym.name);
             let label = format!("{} ({})", sym.name, sym.kind);
@@ -249,6 +254,34 @@ impl MindLeak {
                 }
             };
             edges.push(Edge::new(&art_id, target_id, RelationType::Imports, now));
+        }
+
+        for hierarchy in ingest::structure::extract_hierarchy(path, content) {
+            if !local_symbols.contains(hierarchy.source.as_str()) {
+                continue;
+            }
+            let (target_path, target_name) = if local_symbols.contains(hierarchy.target.as_str()) {
+                (norm.as_str(), hierarchy.target.as_str())
+            } else if let Some((path, name)) = imported_symbols.get(&hierarchy.target) {
+                (path.as_str(), name.as_str())
+            } else {
+                continue;
+            };
+            let source_id = format!("symbol:{norm}:{}", hierarchy.source);
+            let target_id = format!("symbol:{target_path}:{target_name}");
+            if !self.store.node_exists(&target_id)? {
+                nodes.push(Node::new(
+                    &target_id,
+                    NodeType::Symbol,
+                    format!("{target_name} (imported)"),
+                    now,
+                ));
+            }
+            let relation = match hierarchy.relation {
+                HierarchyRelation::Extends => RelationType::Extends,
+                HierarchyRelation::Implements => RelationType::Implements,
+            };
+            edges.push(Edge::new(source_id, target_id, relation, now));
         }
 
         for reference in &extraction.call_references {

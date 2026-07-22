@@ -1,10 +1,10 @@
 {
   "schema_version": 2,
   "captured_at": "2026-07-22",
-  "source_revision": "c845825-dirty",
-  "executable_sha256": "73b41fa0eac7247b66e873e489edb1bbe73a4a7c4a92a3f8f35614970a1aeec7",
+  "source_revision": "b3cd1a0-dirty",
+  "executable_sha256": "f60f124cffc5034b2406fecedf3d998b377cd09348985a4502cd4740abe175e2",
   "server_version": "0.1.0",
-  "change": "ADR-0006 phase 1 JavaScript/TypeScript imports and cross-file calls",
+  "change": "ADR-0006 phases 1-2 JavaScript/TypeScript imports, cross-file calls, and type hierarchy",
   "scenarios": {
     "stale_structure_retraction": {
       "expected_old_structure_present": false,
@@ -72,6 +72,27 @@
       "observed_second_declarator_shadowed_call_present": false,
       "observed_typed_require_shadowed_package_present": false,
       "observed_typed_require_outer_package_present": true,
+      "passed": true
+    },
+    "hierarchy_truth_set": {
+      "relation_edges": {
+        "expected": 5,
+        "observed": 5,
+        "true_positives": 5,
+        "precision": 1,
+        "recall": 1
+      },
+      "impact_nodes": {
+        "expected": 2,
+        "observed": 2,
+        "true_positives": 2,
+        "precision": 1,
+        "recall": 1
+      },
+      "expected_reverse_parent_present": false,
+      "expected_stale_hierarchy_present": false,
+      "observed_reverse_parent_present": false,
+      "observed_stale_hierarchy_present": false,
       "passed": true
     }
   }

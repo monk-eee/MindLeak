@@ -25,7 +25,7 @@ The engine. Modules:
 | [`db.rs`](../crates/mindleak-core/src/db.rs) | Connection setup (WAL, FKs), migrations, and the `effective_weight()` scalar SQL function. |
 | [`decay.rs`](../crates/mindleak-core/src/decay.rs) | The half-life decay formula and prune threshold. |
 | [`graph.rs`](../crates/mindleak-core/src/graph.rs) | `GraphStore`: upsert, structural snapshot reconciliation, FTS search, decay-aware neighbours, BFS traversal, snapshot, prune. |
-| [`ingest/`](../crates/mindleak-core/src/ingest/mod.rs) | Zero-token deterministic extractors: `execution`, `git`, `ast`, `structure` (JS/TS imports). |
+| [`ingest/`](../crates/mindleak-core/src/ingest/mod.rs) | Zero-token deterministic extractors: `execution`, `git`, `ast`, `structure` (JS/TS imports and type hierarchy). |
 | [`consolidate.rs`](../crates/mindleak-core/src/consolidate.rs) | Optional Ollama consolidation worker. |
 | [`embed.rs`](../crates/mindleak-core/src/embed.rs) | Optional semantic-recall embedding index (ADR-0008): local `/v1/embeddings` client, derived `embeddings` table, cosine recall. Off the zero-token write path. |
 | [`net.rs`](../crates/mindleak-core/src/net.rs) | Network resilience for optional HTTP (ADR-0010): timeouts, bounded retry with backoff, per-endpoint circuit breaker. |
@@ -64,9 +64,9 @@ process and speaks the same MCP protocol.
   `package` (ADR-0006). Ids are stable and human-readable
   (`artifact:src/auth.ts`, `symbol:src/auth.ts:validateSession`).
 - **Edges** — directional, decay-weighted: `contains` · `calls` · `modified` ·
-  `failed_on` · `refactored` · `relates_to` · `observed` · `imports` (JS/TS,
-  ADR-0006 phase 1). **Planned:** `depends_on` · `extends` · `implements`
-  (ADR-0006, in build).
+  `failed_on` · `refactored` · `relates_to` · `observed` · `imports` ·
+  `extends` · `implements` (JS/TS, ADR-0006 phases 1-2). **Planned:**
+  `depends_on` from manifests (ADR-0006 phase 3).
 
 ## Decay
 
@@ -105,13 +105,14 @@ All write-path extraction is pure pattern matching:
   replaces the artifact's prior structural snapshot. Structured behind a
   swappable interface; Tree-sitter is the precision upgrade for cross-file/scoped
   calls.
-- **structure** (ADR-0006) — shipped phase 1 parses static JavaScript/TypeScript
-  `import` and `require` declarations into `imports`, `package`, and named
-  cross-file `calls` facts. A lightweight lexer excludes comments, strings,
-  templates, member calls, and basic lexical shadowing. Unresolved relative
-  targets store deterministic candidate ids; ingesting a real candidate
-  atomically retargets imports/calls and removes the stub. `extends`/`implements`,
-  manifests, and additional language import syntaxes remain in build.
+- **structure** (ADR-0006) — shipped phases 1-2 parse static
+  JavaScript/TypeScript `import` and `require` declarations into `imports`,
+  `package`, and named cross-file `calls` facts, plus simple named class/interface
+  heritage into `extends`/`implements`. A lightweight lexer excludes comments,
+  strings, templates, member calls, generic constraints, and basic lexical
+  shadowing. Unresolved relative targets store deterministic candidate ids;
+  ingesting a real candidate atomically retargets structural symbol edges and
+  removes the stub. Manifests and additional language syntaxes remain in build.
 
 ## Optional LLM layer
 

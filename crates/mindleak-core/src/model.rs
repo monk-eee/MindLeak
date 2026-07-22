@@ -65,6 +65,10 @@ pub enum RelationType {
     Observed,
     /// Artifact imports another workspace artifact or external package.
     Imports,
+    /// A class or interface derives from another type.
+    Extends,
+    /// A class conforms to an interface or type contract.
+    Implements,
 }
 
 impl RelationType {
@@ -78,6 +82,8 @@ impl RelationType {
             RelationType::Contains => "contains",
             RelationType::Observed => "observed",
             RelationType::Imports => "imports",
+            RelationType::Extends => "extends",
+            RelationType::Implements => "implements",
         }
     }
 
@@ -91,6 +97,8 @@ impl RelationType {
             "contains" => Some(RelationType::Contains),
             "observed" => Some(RelationType::Observed),
             "imports" => Some(RelationType::Imports),
+            "extends" => Some(RelationType::Extends),
+            "implements" => Some(RelationType::Implements),
             _ => None,
         }
     }
@@ -103,7 +111,9 @@ impl RelationType {
             RelationType::Calls
             | RelationType::Contains
             | RelationType::Refactored
-            | RelationType::Imports => 168.0,
+            | RelationType::Imports
+            | RelationType::Extends
+            | RelationType::Implements => 168.0,
             RelationType::RelatesTo | RelationType::Observed => 48.0,
         }
     }

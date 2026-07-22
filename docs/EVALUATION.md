@@ -57,6 +57,26 @@ Machine-readable result:
 This proves the supported JS/TS fixture only. It is not yet a multi-language
 precision/recall benchmark and does not satisfy the broader product threshold.
 
+## Type hierarchy proof
+
+ADR-0006 phase 2 adds deterministic simple named JS/TS `extends` and
+`implements` edges. The fixture covers same-file and named-import targets,
+consumer-first promotion, generic-constraint exclusion, unsupported mixin
+expressions, reverse-direction exclusion, and retraction on re-ingest.
+
+| Metric | Gate | Observed | Result |
+|---|---:|---:|---|
+| Hierarchy relation precision | >= 0.95 | 1.00 (5/5) | Pass |
+| Hierarchy relation recall | >= 0.90 | 1.00 (5/5) | Pass |
+| Derived-type impact precision | >= 0.80 | 1.00 (2/2) | Pass |
+| Derived-type impact recall | >= 0.85 | 1.00 (2/2) | Pass |
+| Parent reached from changed child | Must be absent | Absent | Pass |
+| Removed hierarchy survives re-ingest | Must be absent | Absent | Pass |
+
+This is a reviewed deterministic fixture, not a claim of complete TypeScript or
+multi-language parsing. Default/namespace heritage and expression-based mixins
+remain outside the supported truth set.
+
 ## Reproduce
 
 From the repository root:
@@ -82,8 +102,8 @@ The original failures were expected baseline behavior, not flaky tests:
   import relation.
 
 Both original gates are now green without weakening their expected values. The
-next impact proof expands fixtures and truth sets before claiming the broader
-precision/recall target.
+next impact proof adds manifest `depends_on` edges, then expands language
+fixtures before claiming the broader precision/recall target.
 
 ## Validation limitation
 

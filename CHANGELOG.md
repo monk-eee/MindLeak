@@ -20,6 +20,11 @@ to [Semantic Versioning](https://semver.org/).
   Token-aware extraction filters comments/member calls/basic shadowing, while
   candidate-backed artifact stubs promote across mixed extensions and index
   modules or disappear when their final import is removed.
+- **ADR-0006 type hierarchy, phase 2**: simple named JavaScript/TypeScript class
+  and interface heritage creates durable `extends`/`implements` edges for local
+  and named imported types. Hierarchy participates in incoming impact traversal,
+  consumer-first stub promotion, and artifact-owned retraction; the strict truth
+  set measures 100% relation and impacted-type precision/recall.
 - **MCP server** (`mindleak-mcp`): newline-delimited JSON-RPC 2.0 over stdio
   exposing 14 tools (`graph_multi_hop_query`, `get_impact_radius`,
   `record_architectural_decision`, plus ingestion/snapshot/prune/stats, an

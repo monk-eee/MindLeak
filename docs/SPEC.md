@@ -94,8 +94,8 @@ from there. Similarity finds the door; decay-weighted traversal walks the house.
 | Agent → * | `observed` | an agent ingested or focused this node (attribution; decays) |
 | Artifact → Artifact/Package | `imports` | shipped for static JS/TS `import` and `require` declarations |
 | Artifact → Package † | `depends_on` | manifest deps (`Cargo.toml`, `package.json`, …) |
-| Symbol → Symbol † | `extends` | class / trait inheritance |
-| Symbol → Symbol † | `implements` | interface / trait conformance |
+| Symbol → Symbol | `extends` | shipped for simple named JS/TS class/interface inheritance |
+| Symbol → Symbol | `implements` | shipped for simple named JS/TS class conformance |
 
 > **`calls` scope.** In-file resolution remains heuristic. ADR-0006 phase 1 also
 > resolves direct calls to named JS/TS import bindings. Default/namespace calls,
@@ -104,8 +104,10 @@ from there. Similarity finds the door; decay-weighted traversal walks the house.
 
 > **Structural enrichment — [ADR-0006](adr/0006-structural-dependency-edges.md).**
 > Phase 1 is shipped for static JS/TS imports, packages, and named cross-file
-> calls. Phase 2 (`extends`/`implements`) and phase 3 (manifest `depends_on`)
-> remain in build. `references`, `consumes`, and `produces` remain deferred.
+> calls. Phase 2 is shipped for local and named-import JS/TS
+> `extends`/`implements`; expression-based mixins and default/namespace heritage
+> remain unsupported. Phase 3 (manifest `depends_on`) remains in build.
+> `references`, `consumes`, and `produces` remain deferred.
 
 Episodic edges are append-and-reinforce: re-ingesting one raises its weight
 (`+0.05`, capped at 1.0) and resets its decay clock. Structural extraction is an

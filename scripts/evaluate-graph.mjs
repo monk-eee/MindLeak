@@ -68,6 +68,25 @@ async function callTool(name, arguments_) {
   return JSON.parse(response.result.content[0].text);
 }
 
+function scoreTruthSet(expected, observed) {
+  const expectedSet = new Set(expected);
+  const observedSet = new Set(observed);
+  const truePositives = [...observedSet].filter((item) =>
+    expectedSet.has(item),
+  ).length;
+  return {
+    expected: expectedSet.size,
+    observed: observedSet.size,
+    true_positives: truePositives,
+    precision: observedSet.size === 0 ? 0 : truePositives / observedSet.size,
+    recall: expectedSet.size === 0 ? 1 : truePositives / expectedSet.size,
+  };
+}
+
+function hierarchyEdgeKey(edge) {
+  return `${edge.source_id}|${edge.relation}|${edge.target_id}`;
+}
+
 try {
   const initialization = await request("initialize", {});
 
@@ -369,6 +388,72 @@ try {
     (node) => node.id === "package:real-typed",
   );
 
+  await callTool("ingest_file", {
+    path: "src/hierarchy-child.ts",
+    content:
+      'import { Base } from "./hierarchy-base";\nimport { Contract as LocalContract } from "./hierarchy-contract";\nclass LocalBase {}\nclass LocalChild extends LocalBase {}\nexport class Child extends Base implements LocalContract {}\nexport interface Combined extends LocalContract {}\nexport class Generic<T extends LocalContract> extends Base<T> {}\n// class Commented extends Base {}\nconst text = "class StringValue implements LocalContract";\nexport class Mixed extends factory(Base) {}\n',
+  });
+  await callTool("ingest_file", {
+    path: "src/hierarchy-base.ts",
+    content: "export class Base {}\n",
+  });
+  await callTool("ingest_file", {
+    path: "src/hierarchy-contract.ts",
+    content: "export interface Contract {}\n",
+  });
+  const hierarchyGraph = await callTool("graph_multi_hop_query", {
+    seed_entity: "artifact:src/hierarchy-child.ts",
+    max_depth: 2,
+    min_weight: 0,
+  });
+  const expectedHierarchyEdges = [
+    "symbol:src/hierarchy-child.ts:LocalChild|extends|symbol:src/hierarchy-child.ts:LocalBase",
+    "symbol:src/hierarchy-child.ts:Child|extends|symbol:src/hierarchy-base.ts:Base",
+    "symbol:src/hierarchy-child.ts:Child|implements|symbol:src/hierarchy-contract.ts:Contract",
+    "symbol:src/hierarchy-child.ts:Combined|extends|symbol:src/hierarchy-contract.ts:Contract",
+    "symbol:src/hierarchy-child.ts:Generic|extends|symbol:src/hierarchy-base.ts:Base",
+  ];
+  const observedHierarchyEdges = hierarchyGraph.edges
+    .filter((edge) => ["extends", "implements"].includes(edge.relation))
+    .map(hierarchyEdgeKey);
+  const hierarchyTruth = scoreTruthSet(
+    expectedHierarchyEdges,
+    observedHierarchyEdges,
+  );
+  const hierarchyImpact = await callTool("get_impact_radius", {
+    target_artifact: "symbol:src/hierarchy-base.ts:Base",
+  });
+  const expectedDerivedTypes = [
+    "symbol:src/hierarchy-child.ts:Child",
+    "symbol:src/hierarchy-child.ts:Generic",
+  ];
+  const observedDerivedTypes = hierarchyImpact.nodes
+    .map((node) => node.id)
+    .filter((id) => id.startsWith("symbol:src/hierarchy-child.ts:"));
+  const hierarchyImpactTruth = scoreTruthSet(
+    expectedDerivedTypes,
+    observedDerivedTypes,
+  );
+  const childImpact = await callTool("get_impact_radius", {
+    target_artifact: "symbol:src/hierarchy-child.ts:Child",
+  });
+  const reverseHierarchyPresent = childImpact.nodes.some(
+    (node) => node.id === "symbol:src/hierarchy-base.ts:Base",
+  );
+  await callTool("ingest_file", {
+    path: "src/hierarchy-child.ts",
+    content:
+      "export class Child {}\nexport interface Combined {}\nexport class Generic<T> {}\n",
+  });
+  const retractedHierarchyGraph = await callTool("graph_multi_hop_query", {
+    seed_entity: "artifact:src/hierarchy-child.ts",
+    max_depth: 2,
+    min_weight: 0,
+  });
+  const staleHierarchyPresent = retractedHierarchyGraph.edges.some((edge) =>
+    ["extends", "implements"].includes(edge.relation),
+  );
+
   result = {
     schema_version: 2,
     source_revision: dirty ? `${revision}-dirty` : revision,
@@ -468,6 +553,21 @@ try {
           !shadowedImportedCallPresent &&
           !ghostTypedPackagePresent &&
           realTypedPackagePresent,
+      },
+      hierarchy_truth_set: {
+        relation_edges: hierarchyTruth,
+        impact_nodes: hierarchyImpactTruth,
+        expected_reverse_parent_present: false,
+        expected_stale_hierarchy_present: false,
+        observed_reverse_parent_present: reverseHierarchyPresent,
+        observed_stale_hierarchy_present: staleHierarchyPresent,
+        passed:
+          hierarchyTruth.precision >= 0.95 &&
+          hierarchyTruth.recall >= 0.9 &&
+          hierarchyImpactTruth.precision >= 0.8 &&
+          hierarchyImpactTruth.recall >= 0.85 &&
+          !reverseHierarchyPresent &&
+          !staleHierarchyPresent,
       },
     },
   };

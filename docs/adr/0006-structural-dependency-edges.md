@@ -2,8 +2,9 @@
 
 - **Status:** Accepted
 - **Date:** 2026-07-22
-- **Implementation:** Phase 1 shipped 2026-07-22 for static JavaScript/TypeScript
-  imports, package nodes, and named cross-file calls.
+- **Implementation:** Phases 1-2 shipped 2026-07-22 for static
+  JavaScript/TypeScript imports, package nodes, named cross-file calls, and
+  simple named class/interface hierarchy.
 
 ## Context
 
@@ -87,10 +88,13 @@ relations.
 
 ## Phasing
 
-1. `imports` + `package` + cross-file `calls` (the unlock).
-2. `extends` + `implements` (type hierarchy).
-3. `depends_on` from manifests.
+1. `imports` + `package` + cross-file `calls` (shipped).
+2. `extends` + `implements` (shipped for JS/TS simple named heritage).
+3. `depends_on` from manifests (planned).
 
-Phase 1 currently supports static JS/TS `import` and `require` syntax. Other
-language syntaxes, default/namespace call resolution, aliases, and re-exports
-remain future fixtures rather than implied support.
+Phases 1-2 currently support static JS/TS `import` and `require` syntax plus
+local and named-import class/interface heritage. Generic constraints are not
+misclassified as inheritance; expression-based mixins and default/namespace
+heritage resolution are explicitly unsupported. Other language syntaxes,
+default/namespace call resolution, path aliases, and re-exports remain future
+fixtures rather than implied support.

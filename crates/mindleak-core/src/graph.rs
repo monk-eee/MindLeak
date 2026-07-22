@@ -759,6 +759,8 @@ fn impact_neighbor(id: &str, edge: &WeightedEdge) -> Option<String> {
         }
         RelationType::Calls
         | RelationType::Imports
+        | RelationType::Extends
+        | RelationType::Implements
         | RelationType::Modified
         | RelationType::FailedOn
         | RelationType::Refactored
@@ -888,11 +890,11 @@ fn promote_artifact_stub(connection: &Connection, stub_id: &str, real_id: &str) 
     let stub_path = stub_id.strip_prefix("artifact:").unwrap_or(stub_id);
     let real_path = real_id.strip_prefix("artifact:").unwrap_or(real_id);
     let stub_symbol_prefix = format!("symbol:{stub_path}:");
-    let call_targets = {
+    let structural_targets = {
         let mut statement = connection.prepare(
             "SELECT DISTINCT target_id
              FROM edges
-             WHERE relation = 'calls'
+             WHERE relation IN ('calls', 'extends', 'implements')
                AND substr(target_id, 1, length(?1)) = ?1",
         )?;
         let rows =
@@ -903,7 +905,7 @@ fn promote_artifact_stub(connection: &Connection, stub_id: &str, real_id: &str) 
         }
         targets
     };
-    for old_target in call_targets {
+    for old_target in structural_targets {
         let symbol_name = &old_target[stub_symbol_prefix.len()..];
         let new_target = format!("symbol:{real_path}:{symbol_name}");
         if node_exists_on(connection, &new_target)? {
@@ -915,12 +917,15 @@ fn promote_artifact_stub(connection: &Connection, stub_id: &str, real_id: &str) 
                  SELECT source_id, ?2, relation, weight, half_life_hours, updated_at,
                         first_seen, reinforcement_count, owner_id
                  FROM edges
-                 WHERE target_id = ?1 AND relation = 'calls'",
+                                 WHERE target_id = ?1
+                                     AND relation IN ('calls', 'extends', 'implements')",
                 params![old_target, new_target],
             )?;
         }
         connection.execute(
-            "DELETE FROM edges WHERE target_id = ?1 AND relation = 'calls'",
+            "DELETE FROM edges
+                         WHERE target_id = ?1
+                             AND relation IN ('calls', 'extends', 'implements')",
             params![old_target],
         )?;
         connection.execute(

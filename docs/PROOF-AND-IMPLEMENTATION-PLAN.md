@@ -30,10 +30,11 @@ its phase exit gate passes.
 - **Unit-test result accounting remains blocked externally.** Unit Test MCP 1.3.6
   surfaces Cargo failures but reports zero successful tests and no Rust coverage;
   CI remains the complete-suite authority until the adapter is repaired.
-- **ADR-0006 phase 1 is green for the JS/TS fixture.** The strict evaluator now
-  proves dependent discovery, a typed `imports` edge, and a named cross-file
-  `calls` edge while retaining the ADR-0007 stale-fact guarantees. Broader
-  language truth sets, hierarchy, and manifests remain open.
+- **ADR-0006 phases 1-2 are green for the JS/TS fixture.** The strict evaluator
+  proves imports, named cross-file calls, and local/imported type hierarchy while
+  retaining the ADR-0007 stale-fact guarantees. The hierarchy truth set reaches
+  100% relation and impacted-type precision/recall; manifests and broader
+  language truth sets remain open.
 
 ## 2. Product Claims and Proof Gates
 
