@@ -1,0 +1,690 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-22T23:01:55.101Z",
+  "source_revision": "1ea2d33-dirty",
+  "runner": "GitHub Copilot CLI 1.0.63 / claude-haiku-4.5",
+  "mindleak_executable_sha256": "7338ef89acfc38d45f6b38861b286e181472dec056179dbb44325b07dd006bc0",
+  "lodestar_executable_sha256": "2c72a152b36ff6c113a6d2f69b03edaccb4aff22fbbe21dcbd9ebea4f402a76d",
+  "fixture_sha256": "206ac7241f583122684c49a77f6e9723f5a0474da7433e876e9898b5ec73c0e4",
+  "isolation": {
+    "fresh_workspace_per_run": true,
+    "fresh_databases_per_run": true,
+    "isolated_copilot_home_per_run": true,
+    "personal_skills_mcp_memory_sessions_loaded": false,
+    "builtin_github_mcp_disabled": true,
+    "network_tools_denied": true
+  },
+  "repeats": 3,
+  "scenario": "resume typed-session regression with impact and invariant",
+  "schedule": [
+    {
+      "repeat": 0,
+      "arm": "flat"
+    },
+    {
+      "repeat": 0,
+      "arm": "mindleak"
+    },
+    {
+      "repeat": 0,
+      "arm": "mindleak+lodestar"
+    },
+    {
+      "repeat": 0,
+      "arm": "none"
+    },
+    {
+      "repeat": 1,
+      "arm": "none"
+    },
+    {
+      "repeat": 1,
+      "arm": "mindleak"
+    },
+    {
+      "repeat": 1,
+      "arm": "mindleak+lodestar"
+    },
+    {
+      "repeat": 1,
+      "arm": "flat"
+    },
+    {
+      "repeat": 2,
+      "arm": "mindleak+lodestar"
+    },
+    {
+      "repeat": 2,
+      "arm": "none"
+    },
+    {
+      "repeat": 2,
+      "arm": "flat"
+    },
+    {
+      "repeat": 2,
+      "arm": "mindleak"
+    }
+  ],
+  "summary": {
+    "none": {
+      "runs": 3,
+      "task_success_rate": 0,
+      "regression_rate": 1,
+      "impacted_file_mean_f1": 1,
+      "exploration_tool_calls_median": 11,
+      "exploration_tool_calls_variance": 0.888888888888889,
+      "output_tokens_median": 3502,
+      "duration_ms_median": 72060
+    },
+    "flat": {
+      "runs": 3,
+      "task_success_rate": 0,
+      "regression_rate": 1,
+      "impacted_file_mean_f1": 1,
+      "exploration_tool_calls_median": 11,
+      "exploration_tool_calls_variance": 1.5555555555555556,
+      "output_tokens_median": 3034,
+      "duration_ms_median": 61273
+    },
+    "mindleak": {
+      "runs": 3,
+      "task_success_rate": 0.6666666666666666,
+      "regression_rate": 0.3333333333333333,
+      "impacted_file_mean_f1": 1,
+      "exploration_tool_calls_median": 9,
+      "exploration_tool_calls_variance": 1.5555555555555556,
+      "output_tokens_median": 2284,
+      "duration_ms_median": 53370
+    },
+    "mindleak+lodestar": {
+      "runs": 3,
+      "task_success_rate": 1,
+      "regression_rate": 0,
+      "impacted_file_mean_f1": 1,
+      "exploration_tool_calls_median": 10,
+      "exploration_tool_calls_variance": 0.2222222222222222,
+      "output_tokens_median": 2275,
+      "duration_ms_median": 50877
+    }
+  },
+  "gate": {
+    "exploration_reduction": 0.18181818181818182,
+    "success_rate_improvement": 1,
+    "no_correctness_regression": true,
+    "passed": true
+  },
+  "runs": [
+    {
+      "arm": "flat",
+      "repeat": 1,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 75418,
+      "model": "claude-haiku-4.5",
+      "total_tool_calls": 16,
+      "exploration_tool_calls": 13,
+      "tool_names": [
+        "report_intent",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "powershell",
+        "edit",
+        "powershell",
+        "view",
+        "create",
+        "view",
+        "powershell"
+      ],
+      "output_tokens": 3717,
+      "premium_requests": 0.33,
+      "api_duration_ms": 48850,
+      "task_success": false,
+      "hidden_passed": 5,
+      "hidden_total": 8,
+      "regression_count": 3,
+      "failures": [
+        "string rejected",
+        "expiry boundary rejected",
+        "middleware rejects string"
+      ],
+      "public_test_passed": true,
+      "protected_files_unchanged": true,
+      "impacted_files": {
+        "predicted": [
+          "src/auth.js",
+          "src/login.js",
+          "src/middleware.js"
+        ],
+        "precision": 1,
+        "recall": 1,
+        "f1": 1
+      }
+    },
+    {
+      "arm": "mindleak",
+      "repeat": 1,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 58725,
+      "model": "claude-haiku-4.5",
+      "total_tool_calls": 14,
+      "exploration_tool_calls": 11,
+      "tool_names": [
+        "report_intent",
+        "mindleak-eval-get_impact_radius",
+        "mindleak-eval-graph_multi_hop_query",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "edit",
+        "powershell",
+        "create",
+        "view",
+        "powershell"
+      ],
+      "output_tokens": 2521,
+      "premium_requests": 0.33,
+      "api_duration_ms": 34958,
+      "task_success": true,
+      "hidden_passed": 8,
+      "hidden_total": 8,
+      "regression_count": 0,
+      "failures": [],
+      "public_test_passed": true,
+      "protected_files_unchanged": true,
+      "impacted_files": {
+        "predicted": [
+          "src/auth.js",
+          "src/login.js",
+          "src/middleware.js"
+        ],
+        "precision": 1,
+        "recall": 1,
+        "f1": 1
+      }
+    },
+    {
+      "arm": "mindleak+lodestar",
+      "repeat": 1,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 50877,
+      "model": "claude-haiku-4.5",
+      "total_tool_calls": 13,
+      "exploration_tool_calls": 10,
+      "tool_names": [
+        "report_intent",
+        "lodestar-eval-get_constitution",
+        "lodestar-eval-board",
+        "mindleak-eval-get_impact_radius",
+        "mindleak-eval-graph_multi_hop_query",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "edit",
+        "powershell",
+        "create"
+      ],
+      "output_tokens": 2095,
+      "premium_requests": 0.33,
+      "api_duration_ms": 29363,
+      "task_success": true,
+      "hidden_passed": 8,
+      "hidden_total": 8,
+      "regression_count": 0,
+      "failures": [],
+      "public_test_passed": true,
+      "protected_files_unchanged": true,
+      "impacted_files": {
+        "predicted": [
+          "src/auth.js",
+          "src/login.js",
+          "src/middleware.js"
+        ],
+        "precision": 1,
+        "recall": 1,
+        "f1": 1
+      }
+    },
+    {
+      "arm": "none",
+      "repeat": 1,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 67248,
+      "model": "claude-haiku-4.5",
+      "total_tool_calls": 14,
+      "exploration_tool_calls": 11,
+      "tool_names": [
+        "report_intent",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "powershell",
+        "edit",
+        "powershell",
+        "create"
+      ],
+      "output_tokens": 3526,
+      "premium_requests": 0.33,
+      "api_duration_ms": 44562,
+      "task_success": false,
+      "hidden_passed": 6,
+      "hidden_total": 8,
+      "regression_count": 2,
+      "failures": [
+        "string rejected",
+        "middleware rejects string"
+      ],
+      "public_test_passed": true,
+      "protected_files_unchanged": true,
+      "impacted_files": {
+        "predicted": [
+          "src/auth.js",
+          "src/login.js",
+          "src/middleware.js"
+        ],
+        "precision": 1,
+        "recall": 1,
+        "f1": 1
+      }
+    },
+    {
+      "arm": "none",
+      "repeat": 2,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 72060,
+      "model": "claude-haiku-4.5",
+      "total_tool_calls": 14,
+      "exploration_tool_calls": 11,
+      "tool_names": [
+        "report_intent",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "powershell",
+        "edit",
+        "powershell",
+        "create",
+        "view"
+      ],
+      "output_tokens": 3502,
+      "premium_requests": 0.33,
+      "api_duration_ms": 48548,
+      "task_success": false,
+      "hidden_passed": 6,
+      "hidden_total": 8,
+      "regression_count": 2,
+      "failures": [
+        "string rejected",
+        "middleware rejects string"
+      ],
+      "public_test_passed": true,
+      "protected_files_unchanged": true,
+      "impacted_files": {
+        "predicted": [
+          "src/auth.js",
+          "src/login.js",
+          "src/middleware.js"
+        ],
+        "precision": 1,
+        "recall": 1,
+        "f1": 1
+      }
+    },
+    {
+      "arm": "mindleak",
+      "repeat": 2,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 44706,
+      "model": "claude-haiku-4.5",
+      "total_tool_calls": 11,
+      "exploration_tool_calls": 8,
+      "tool_names": [
+        "report_intent",
+        "mindleak-eval-get_impact_radius",
+        "mindleak-eval-graph_multi_hop_query",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "edit",
+        "powershell",
+        "create"
+      ],
+      "output_tokens": 1754,
+      "premium_requests": 0.33,
+      "api_duration_ms": 24825,
+      "task_success": false,
+      "hidden_passed": 7,
+      "hidden_total": 8,
+      "regression_count": 1,
+      "failures": [
+        "empty value rejected"
+      ],
+      "public_test_passed": true,
+      "protected_files_unchanged": true,
+      "impacted_files": {
+        "predicted": [
+          "src/auth.js",
+          "src/login.js",
+          "src/middleware.js"
+        ],
+        "precision": 1,
+        "recall": 1,
+        "f1": 1
+      }
+    },
+    {
+      "arm": "mindleak+lodestar",
+      "repeat": 2,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 55364,
+      "model": "claude-haiku-4.5",
+      "total_tool_calls": 14,
+      "exploration_tool_calls": 11,
+      "tool_names": [
+        "report_intent",
+        "lodestar-eval-get_constitution",
+        "lodestar-eval-board",
+        "mindleak-eval-get_impact_radius",
+        "mindleak-eval-graph_multi_hop_query",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "edit",
+        "powershell",
+        "create"
+      ],
+      "output_tokens": 2419,
+      "premium_requests": 0.33,
+      "api_duration_ms": 33554,
+      "task_success": true,
+      "hidden_passed": 8,
+      "hidden_total": 8,
+      "regression_count": 0,
+      "failures": [],
+      "public_test_passed": true,
+      "protected_files_unchanged": true,
+      "impacted_files": {
+        "predicted": [
+          "src/auth.js",
+          "src/login.js",
+          "src/middleware.js"
+        ],
+        "precision": 1,
+        "recall": 1,
+        "f1": 1
+      }
+    },
+    {
+      "arm": "flat",
+      "repeat": 2,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 59581,
+      "model": "claude-haiku-4.5",
+      "total_tool_calls": 14,
+      "exploration_tool_calls": 11,
+      "tool_names": [
+        "report_intent",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "powershell",
+        "edit",
+        "powershell",
+        "create"
+      ],
+      "output_tokens": 2842,
+      "premium_requests": 0.33,
+      "api_duration_ms": 37527,
+      "task_success": false,
+      "hidden_passed": 5,
+      "hidden_total": 8,
+      "regression_count": 3,
+      "failures": [
+        "string rejected",
+        "expiry boundary rejected",
+        "middleware rejects string"
+      ],
+      "public_test_passed": true,
+      "protected_files_unchanged": true,
+      "impacted_files": {
+        "predicted": [
+          "src/auth.js",
+          "src/login.js",
+          "src/middleware.js"
+        ],
+        "precision": 1,
+        "recall": 1,
+        "f1": 1
+      }
+    },
+    {
+      "arm": "mindleak+lodestar",
+      "repeat": 3,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 50561,
+      "model": "claude-haiku-4.5",
+      "total_tool_calls": 14,
+      "exploration_tool_calls": 10,
+      "tool_names": [
+        "lodestar-eval-get_constitution",
+        "lodestar-eval-board",
+        "mindleak-eval-get_impact_radius",
+        "mindleak-eval-graph_multi_hop_query",
+        "report_intent",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "edit",
+        "report_intent",
+        "powershell",
+        "create"
+      ],
+      "output_tokens": 2275,
+      "premium_requests": 0.33,
+      "api_duration_ms": 28190,
+      "task_success": true,
+      "hidden_passed": 8,
+      "hidden_total": 8,
+      "regression_count": 0,
+      "failures": [],
+      "public_test_passed": true,
+      "protected_files_unchanged": true,
+      "impacted_files": {
+        "predicted": [
+          "src/auth.js",
+          "src/login.js",
+          "src/middleware.js"
+        ],
+        "precision": 1,
+        "recall": 1,
+        "f1": 1
+      }
+    },
+    {
+      "arm": "none",
+      "repeat": 3,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 74488,
+      "model": "claude-haiku-4.5",
+      "total_tool_calls": 16,
+      "exploration_tool_calls": 13,
+      "tool_names": [
+        "report_intent",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "powershell",
+        "edit",
+        "powershell",
+        "grep",
+        "create",
+        "view"
+      ],
+      "output_tokens": 3187,
+      "premium_requests": 0.33,
+      "api_duration_ms": 49131,
+      "task_success": false,
+      "hidden_passed": 6,
+      "hidden_total": 8,
+      "regression_count": 2,
+      "failures": [
+        "string rejected",
+        "middleware rejects string"
+      ],
+      "public_test_passed": true,
+      "protected_files_unchanged": true,
+      "impacted_files": {
+        "predicted": [
+          "src/auth.js",
+          "src/login.js",
+          "src/middleware.js"
+        ],
+        "precision": 1,
+        "recall": 1,
+        "f1": 1
+      }
+    },
+    {
+      "arm": "flat",
+      "repeat": 3,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 61273,
+      "model": "claude-haiku-4.5",
+      "total_tool_calls": 13,
+      "exploration_tool_calls": 10,
+      "tool_names": [
+        "report_intent",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "powershell",
+        "edit",
+        "powershell",
+        "create"
+      ],
+      "output_tokens": 3034,
+      "premium_requests": 0.33,
+      "api_duration_ms": 38832,
+      "task_success": false,
+      "hidden_passed": 6,
+      "hidden_total": 8,
+      "regression_count": 2,
+      "failures": [
+        "string rejected",
+        "middleware rejects string"
+      ],
+      "public_test_passed": true,
+      "protected_files_unchanged": true,
+      "impacted_files": {
+        "predicted": [
+          "src/auth.js",
+          "src/login.js",
+          "src/middleware.js"
+        ],
+        "precision": 1,
+        "recall": 1,
+        "f1": 1
+      }
+    },
+    {
+      "arm": "mindleak",
+      "repeat": 3,
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_ms": 53370,
+      "model": "claude-haiku-4.5",
+      "total_tool_calls": 12,
+      "exploration_tool_calls": 9,
+      "tool_names": [
+        "report_intent",
+        "mindleak-eval-get_impact_radius",
+        "mindleak-eval-graph_multi_hop_query",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "view",
+        "edit",
+        "powershell",
+        "create"
+      ],
+      "output_tokens": 2284,
+      "premium_requests": 0.33,
+      "api_duration_ms": 32764,
+      "task_success": true,
+      "hidden_passed": 8,
+      "hidden_total": 8,
+      "regression_count": 0,
+      "failures": [],
+      "public_test_passed": true,
+      "protected_files_unchanged": true,
+      "impacted_files": {
+        "predicted": [
+          "src/auth.js",
+          "src/login.js",
+          "src/middleware.js"
+        ],
+        "precision": 1,
+        "recall": 1,
+        "f1": 1
+      }
+    }
+  ]
+}

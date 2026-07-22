@@ -143,6 +143,14 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **The real-agent product gate is narrow.** — Three runs per arm on one
+  composite typed-session fixture with Copilot CLI 1.0.63 / Haiku 4.5 cross the
+  exploration and success thresholds, but do not establish general performance
+  across repositories, models, or long-running teams. The two-agent duplicate-
+  work scenario is covered by the claim CAS proof, not this agent-loop result. —
+  Medium impact on claim breadth. — Productization may proceed; broader external
+  replications remain required for universal efficacy claims.
+
 - **Signal consequence remains a bounded temporal proxy.** — A failure earns
   consequence only when the same command later succeeds after a related change,
   but this still cannot prove causality. The 8x cap, provenance-bearing handoff,

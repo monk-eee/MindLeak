@@ -91,6 +91,12 @@ to [Semantic Versioning](https://semver.org/).
   temporary database, with machine-readable baseline results, source revision,
   and executable hash. It clears ambient agent attribution and requires a typed
   structural edge before impact can pass.
+- **Pinned real-agent outcome gate**: GitHub Copilot CLI 1.0.63 with
+  `claude-haiku-4.5` runs no-memory, flat-history, MindLeak, and
+  MindLeak+Lodestar arms in randomized fresh workspaces/databases and isolated
+  Copilot homes. Across three runs per arm, MindLeak reduced median exploration
+  18.2% and reached 66.7% success; MindLeak+Lodestar reached 100% success with
+  zero regressions versus 0% for both controls.
 - **Lodestar Intent Plane** (`lodestar-core` + `lodestar-mcp`): the durable "spec
   brain" (ADR-0004) — a versioned constitution (goals/constraints/invariants), an
   executive task ledger with an **atomic claim/lease compare-and-swap** for

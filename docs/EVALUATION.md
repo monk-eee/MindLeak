@@ -194,9 +194,43 @@ is tracked in [DEVELOPERS.md](../DEVELOPERS.md#known-gaps). Until result
 accounting is repaired, this black-box harness plus compile/lint gates provide
 additional executable evidence, while CI remains the unit-test authority.
 
-Agent-outcome comparisons (`none`, `flat-history`, `mindleak`, and
-`mindleak+lodestar`) have not started. No productivity or task-success claim is
-supported by this baseline.
+## Real agent-loop outcome
+
+The product decision gate uses GitHub Copilot CLI 1.0.63 with pinned
+`claude-haiku-4.5` on one composite task: resume an interrupted typed-session
+regression, avoid a recorded failed string-conversion approach, preserve a
+governing invariant, fix hidden/public behavior, and identify all impacted
+production files. Four randomized arms run three times each in fresh workspaces
+and databases. Each run uses an isolated Copilot home containing authentication
+state only; personal skills, MCP configuration, memory, sessions, built-in
+GitHub MCP, and network tools are absent/disabled.
+
+| Arm | Success | Regression rate | Median exploration calls | Median output tokens | Median duration |
+|---|---:|---:|---:|---:|---:|
+| none | 0.0% | 100.0% | 11 | 3,502 | 72.060 s |
+| flat history | 0.0% | 100.0% | 11 | 3,034 | 61.273 s |
+| MindLeak | 66.7% | 33.3% | 9 | 2,284 | 53.370 s |
+| MindLeak + Lodestar | 100.0% | 0.0% | 10 | 2,275 | 50.877 s |
+
+Against the no-memory control, the best MindLeak arm reduces median exploration
+by 18.2%, crossing the 15% primary threshold. MindLeak improves success by 66.7
+percentage points; MindLeak+Lodestar improves it by 100 points, with no
+correctness regression. Impacted-file F1 is 1.00 in every arm after the deliverable
+was made explicit, so success differences come from hidden invariant/boundary
+behavior rather than reporting ambiguity.
+
+Machine-readable result:
+[2026-07-22-agent-loop-outcome.json](../benchmarks/results/2026-07-22-agent-loop-outcome.json).
+Reproduce with `make agent-bench`; this consumes premium model requests. The
+artifact records source, fixture, runner/model, executable hashes, randomized
+schedule, per-run tool names, tokens, duration, hidden checks, and aggregate
+variance without storing prompts or model reasoning.
+
+This passes the go/no-go threshold for productization, not universal efficacy.
+It is one engineered composite scenario with three repetitions per arm and a
+single model/runner. Cross-file repair, impact, resume, failed-approach, and
+invariant behaviors are represented; broader repositories, models, and the
+two-agent duplicate-work scenario remain required before general claims.
 
 ## Memory-arm context precision
 

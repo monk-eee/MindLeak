@@ -47,6 +47,12 @@ its phase exit gate passes.
   decisions, and weak span-qualified reinforcement. In the adversarial fixture,
   400 same-session reinforcements expire at six days while a resolved,
   corroborated failure remains active and still expires by sixty days.
+- **Phase 6 crosses the product decision gate on the pinned composite
+  scenario.** Three randomized runs per arm with Copilot CLI 1.0.63 / Haiku 4.5
+  show 18.2% fewer median exploration calls for MindLeak, 66.7% MindLeak task
+  success, and 100% MindLeak+Lodestar success with zero regressions; no-memory
+  and flat-history controls both score 0% success. Productization is unblocked,
+  while broader scenarios/repeats remain a generalization requirement.
 
 ## 2. Product Claims and Proof Gates
 
@@ -424,7 +430,7 @@ stop the product rather than adding more planes or relations.
 
 ## 12. Phase 7: Productization
 
-Only after Phase 6 passes:
+Phase 6 has passed for the pinned composite scenario. Proceed with:
 
 - one-command cross-platform installation and server registration;
 - signed/versioned binaries for Windows, macOS, and Linux;
