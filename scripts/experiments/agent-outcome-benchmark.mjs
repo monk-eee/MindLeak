@@ -68,11 +68,14 @@ const fixture = {
     "  return { token, session: true };\n}\n",
   // unrelated
   "src/math.ts": "export function add(a, b) { return a + b; }\n",
-  "src/format.ts": "export function formatName(first, last) { return `${first} ${last}`; }\n",
+  "src/format.ts":
+    "export function formatName(first, last) { return `${first} ${last}`; }\n",
 };
 
 const importers = deriveImporters(fixture);
-const impactTruth = new Set([...transitiveImporters(importers, HUB, 2)].map((f) => `artifact:${f}`));
+const impactTruth = new Set(
+  [...transitiveImporters(importers, HUB, 2)].map((f) => `artifact:${f}`),
+);
 
 const pctF1 = (x) => x.toFixed(2);
 
@@ -98,7 +101,9 @@ const pctF1 = (x) => x.toFixed(2);
         "Error: session ticket was undefined\n",
       changed_files: ["src/login.ts"],
     });
-    const executionId = (execOutcome.node_ids ?? []).find((id) => id.startsWith("execution:"));
+    const executionId = (execOutcome.node_ids ?? []).find((id) =>
+      id.startsWith("execution:"),
+    );
 
     // --- intent signal: an architectural decision ---
     const decision = await tool("record_architectural_decision", {
@@ -116,10 +121,14 @@ const pctF1 = (x) => x.toFixed(2);
         question: "what breaks if I change session validation in src/auth.ts",
         truth: impactTruth,
         async mindleak() {
-          const sub = await tool("get_impact_radius", { target_artifact: `artifact:${HUB}` });
+          const sub = await tool("get_impact_radius", {
+            target_artifact: `artifact:${HUB}`,
+          });
           return sub.nodes
             .map((node) => node.id)
-            .filter((id) => id.startsWith("artifact:") && id !== `artifact:${HUB}`);
+            .filter(
+              (id) => id.startsWith("artifact:") && id !== `artifact:${HUB}`,
+            );
         },
       },
       {
@@ -138,7 +147,13 @@ const pctF1 = (x) => x.toFixed(2);
       {
         name: "rationale",
         question: "why must session tokens stay typed in auth and middleware",
-        truth: new Set([intentId, "artifact:src/auth.ts", "artifact:src/middleware.ts"].filter(Boolean)),
+        truth: new Set(
+          [
+            intentId,
+            "artifact:src/auth.ts",
+            "artifact:src/middleware.ts",
+          ].filter(Boolean),
+        ),
         async mindleak() {
           const sub = await tool("graph_multi_hop_query", {
             seed_entity: "session tokens stay typed",
@@ -153,10 +168,16 @@ const pctF1 = (x) => x.toFixed(2);
     // --- query-blind + lexical universe (one snapshot of every node) ---
     const snapshot = await tool("graph_snapshot", { limit: 500 });
     const allNodes = snapshot.nodes ?? [];
-    const corpus = new Map(allNodes.map((node) => [node.id, `${node.label} ${node.content ?? ""}`]));
+    const corpus = new Map(
+      allNodes.map((node) => [node.id, `${node.label} ${node.content ?? ""}`]),
+    );
     const rankLexical = tfidfRanker(corpus);
     const recentIds = [...allNodes]
-      .sort((a, b) => b.created_at - a.created_at || b.last_accessed_at - a.last_accessed_at)
+      .sort(
+        (a, b) =>
+          b.created_at - a.created_at ||
+          b.last_accessed_at - a.last_accessed_at,
+      )
       .map((node) => node.id);
 
     // --- vector backend: prefer the real embedding index, fall back to TF-IDF ---
@@ -177,14 +198,18 @@ const pctF1 = (x) => x.toFixed(2);
           const res = await tool("recall", { query: task.question, limit: K });
           return (res.results ?? []).map((entry) => entry.node.id);
         }
-        return rankLexical(task.question).slice(0, K).map((entry) => entry.id);
+        return rankLexical(task.question)
+          .slice(0, K)
+          .map((entry) => entry.id);
       },
       mindleak: async (task) => (await task.mindleak()).slice(0, K),
     };
     const armNames = ["none", "flat", "vector", "mindleak"];
 
     // --- run every arm on every task ---
-    const perArm = Object.fromEntries(armNames.map((arm) => [arm, { tasks: {}, meanF1: 0 }]));
+    const perArm = Object.fromEntries(
+      armNames.map((arm) => [arm, { tasks: {}, meanF1: 0 }]),
+    );
     for (const task of tasks) {
       for (const arm of armNames) {
         const predicted = new Set(await arms[arm](task));
@@ -197,18 +222,24 @@ const pctF1 = (x) => x.toFixed(2);
     }
 
     // --- report ---
-    console.log(`\nAgent-outcome benchmark  (context budget K=${K}, vector backend: ${vectorBackend})`);
+    console.log(
+      `\nAgent-outcome benchmark  (context budget K=${K}, vector backend: ${vectorBackend})`,
+    );
     for (const task of tasks) {
       console.log(
-        `  task "${task.name}": ${task.question}\n    ground truth: ${[...task.truth].sort().join(", ")}`
+        `  task "${task.name}": ${task.question}\n    ground truth: ${[...task.truth].sort().join(", ")}`,
       );
     }
-    console.log("\n| Memory arm | impact F1 | debug F1 | rationale F1 | mean F1 |");
-    console.log("|------------|-----------|----------|--------------|---------|");
+    console.log(
+      "\n| Memory arm | impact F1 | debug F1 | rationale F1 | mean F1 |",
+    );
+    console.log(
+      "|------------|-----------|----------|--------------|---------|",
+    );
     for (const arm of armNames) {
       const t = perArm[arm].tasks;
       console.log(
-        `| ${arm.padEnd(10)} |      ${pctF1(t.impact.f1)} |     ${pctF1(t.debug.f1)} |         ${pctF1(t.rationale.f1)} |    ${pctF1(perArm[arm].meanF1)} |`
+        `| ${arm.padEnd(10)} |      ${pctF1(t.impact.f1)} |     ${pctF1(t.debug.f1)} |         ${pctF1(t.rationale.f1)} |    ${pctF1(perArm[arm].meanF1)} |`,
       );
     }
 
@@ -216,7 +247,9 @@ const pctF1 = (x) => x.toFixed(2);
     for (const task of tasks) {
       console.log(`  ${task.name}:`);
       for (const arm of armNames) {
-        console.log(`    ${arm.padEnd(9)} ${perArm[arm].tasks[task.name].predicted.join(", ") || "(nothing)"}`);
+        console.log(
+          `    ${arm.padEnd(9)} ${perArm[arm].tasks[task.name].predicted.join(", ") || "(nothing)"}`,
+        );
       }
     }
 
@@ -224,14 +257,21 @@ const pctF1 = (x) => x.toFixed(2);
       experiment: "agent-outcome: memory-arm context precision",
       k: K,
       vector_backend: vectorBackend,
-      tasks: tasks.map((task) => ({ name: task.name, question: task.question, truth: [...task.truth].sort() })),
+      tasks: tasks.map((task) => ({
+        name: task.name,
+        question: task.question,
+        truth: [...task.truth].sort(),
+      })),
       arms: perArm,
     };
     console.log(`\n${JSON.stringify(report, null, 2)}`);
 
     const outDir = path.join(root, "benchmarks", "results");
     fs.mkdirSync(outDir, { recursive: true });
-    const outFile = path.join(outDir, "2026-07-22-agent-outcome-context-precision.json");
+    const outFile = path.join(
+      outDir,
+      "2026-07-22-agent-outcome-context-precision.json",
+    );
     fs.writeFileSync(outFile, `${JSON.stringify(report, null, 2)}\n`);
     console.log(`\nWrote ${path.relative(root, outFile)}`);
   } finally {

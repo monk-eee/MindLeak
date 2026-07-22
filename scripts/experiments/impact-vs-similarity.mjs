@@ -79,7 +79,8 @@ const fixture = {
     "export const sessionTokenNotes = 'validate token, check session, jwt expiry';\n",
   // --- unrelated ---
   "src/math.ts": "export function add(a, b) { return a + b; }\n",
-  "src/format.ts": "export function formatName(first, last) { return `${first} ${last}`; }\n",
+  "src/format.ts":
+    "export function formatName(first, last) { return `${first} ${last}`; }\n",
 };
 
 // ---- ground truth: transitive importers of the hub (depth <= 2) ------------
@@ -89,7 +90,9 @@ const groundTruth = transitiveImporters(importers, HUB, 2); // impact radius is 
 
 // ---- similarity arm: TF-IDF cosine over file contents ----------------------
 function tokenize(text) {
-  return (text.toLowerCase().match(/[a-z_][a-z0-9_]*/g) ?? []).filter((t) => t.length > 1);
+  return (text.toLowerCase().match(/[a-z_][a-z0-9_]*/g) ?? []).filter(
+    (t) => t.length > 1,
+  );
 }
 
 function tfidfRanking(files, hub) {
@@ -103,14 +106,16 @@ function tfidfRanking(files, hub) {
     const tf = new Map();
     for (const term of doc) tf.set(term, (tf.get(term) ?? 0) + 1);
     const vec = new Map();
-    for (const [term, count] of tf) vec.set(term, (count / doc.length) * idf(term));
+    for (const [term, count] of tf)
+      vec.set(term, (count / doc.length) * idf(term));
     return vec;
   };
   const vectors = docs.map(vector);
   const cosine = (a, b) => {
     let dot = 0;
     for (const [term, weight] of a) dot += weight * (b.get(term) ?? 0);
-    const norm = (v) => Math.sqrt([...v.values()].reduce((s, w) => s + w * w, 0));
+    const norm = (v) =>
+      Math.sqrt([...v.values()].reduce((s, w) => s + w * w, 0));
     const denom = norm(a) * norm(b);
     return denom === 0 ? 0 : dot / denom;
   };
@@ -139,17 +144,21 @@ async function embeddingRanking(files, hub) {
     for (const [file, content] of Object.entries(fixture)) {
       await tool("ingest_file", { path: file, content });
     }
-    const impact = await tool("get_impact_radius", { target_artifact: `artifact:${HUB}` });
+    const impact = await tool("get_impact_radius", {
+      target_artifact: `artifact:${HUB}`,
+    });
     const graphPredicted = new Set(
       impact.nodes
         .map((node) => node.id)
         .filter((id) => id.startsWith("artifact:") && id !== `artifact:${HUB}`)
-        .map((id) => id.slice("artifact:".length))
+        .map((id) => id.slice("artifact:".length)),
     );
 
     const k = groundTruth.size;
     const ranking = tfidfRanking(Object.keys(fixture), HUB);
-    const similarityPredicted = new Set(ranking.slice(0, k).map((entry) => entry.file));
+    const similarityPredicted = new Set(
+      ranking.slice(0, k).map((entry) => entry.file),
+    );
 
     const graph = metrics(graphPredicted, groundTruth);
     const similarity = metrics(similarityPredicted, groundTruth);
@@ -157,50 +166,67 @@ async function embeddingRanking(files, hub) {
     const embModel = process.env.MINDLEAK_EMBED_MODEL ?? "nomic-embed-text";
     const embRanking = await embeddingRanking(Object.keys(fixture), HUB);
     const embedding = embRanking
-      ? metrics(new Set(embRanking.slice(0, k).map((entry) => entry.file)), groundTruth)
+      ? metrics(
+          new Set(embRanking.slice(0, k).map((entry) => entry.file)),
+          groundTruth,
+        )
       : null;
 
     console.log(`\nQuery: "what breaks if I change ${HUB}?"`);
-    console.log(`Ground truth (${groundTruth.size} transitive importers): ${[...groundTruth].sort().join(", ")}\n`);
+    console.log(
+      `Ground truth (${groundTruth.size} transitive importers): ${[...groundTruth].sort().join(", ")}\n`,
+    );
 
     console.log("| Method                     | Precision | Recall | F1   |");
     console.log("|----------------------------|-----------|--------|------|");
     console.log(
-      `| MindLeak (graph impact)    |    ${pct(graph.precision).padStart(4)} |   ${pct(graph.recall).padStart(4)} | ${graph.f1.toFixed(2)} |`
+      `| MindLeak (graph impact)    |    ${pct(graph.precision).padStart(4)} |   ${pct(graph.recall).padStart(4)} | ${graph.f1.toFixed(2)} |`,
     );
     console.log(
-      `| Similarity (TF-IDF top-${k})  |    ${pct(similarity.precision).padStart(4)} |   ${pct(similarity.recall).padStart(4)} | ${similarity.f1.toFixed(2)} |`
+      `| Similarity (TF-IDF top-${k})  |    ${pct(similarity.precision).padStart(4)} |   ${pct(similarity.recall).padStart(4)} | ${similarity.f1.toFixed(2)} |`,
     );
     if (embedding) {
       console.log(
-        `| Embeddings (live top-${k})    |    ${pct(embedding.precision).padStart(4)} |   ${pct(embedding.recall).padStart(4)} | ${embedding.f1.toFixed(2)} |`
+        `| Embeddings (live top-${k})    |    ${pct(embedding.precision).padStart(4)} |   ${pct(embedding.recall).padStart(4)} | ${embedding.f1.toFixed(2)} |`,
       );
     }
 
     console.log(`\nMindLeak retrieved:   ${graph.predicted.join(", ")}`);
     console.log(`Similarity retrieved: ${similarity.predicted.join(", ")}`);
     if (embedding) {
-      console.log(`Embeddings retrieved: ${embedding.predicted.join(", ")}  (backend: ${embModel})`);
+      console.log(
+        `Embeddings retrieved: ${embedding.predicted.join(", ")}  (backend: ${embModel})`,
+      );
     } else {
-      const embUrl = process.env.MINDLEAK_EMBED_URL ?? "http://localhost:11434/v1";
-      console.log(`Embeddings arm skipped: no reachable ${embUrl}/embeddings server.`);
+      const embUrl =
+        process.env.MINDLEAK_EMBED_URL ?? "http://localhost:11434/v1";
+      console.log(
+        `Embeddings arm skipped: no reachable ${embUrl}/embeddings server.`,
+      );
     }
-    const falsePositives = similarity.predicted.filter((f) => !groundTruth.has(f));
-    console.log(`Similarity false positives (similar vocab, no import): ${falsePositives.join(", ") || "none"}`);
+    const falsePositives = similarity.predicted.filter(
+      (f) => !groundTruth.has(f),
+    );
+    console.log(
+      `Similarity false positives (similar vocab, no import): ${falsePositives.join(", ") || "none"}`,
+    );
 
     console.log(
       JSON.stringify(
         {
-          experiment: "impact-precision: structural graph vs lexical similarity",
+          experiment:
+            "impact-precision: structural graph vs lexical similarity",
           query: `impact of changing ${HUB}`,
           ground_truth: [...groundTruth].sort(),
           graph,
           similarity: { ...similarity, backend: "tfidf-cosine" },
-          embedding: embedding ? { ...embedding, backend: embModel } : { skipped: true },
+          embedding: embedding
+            ? { ...embedding, backend: embModel }
+            : { skipped: true },
         },
         null,
-        2
-      )
+        2,
+      ),
     );
   } finally {
     await cleanup();
