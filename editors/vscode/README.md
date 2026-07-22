@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="media/mindleak_logo.png" alt="MindLeak" width="420">
+</p>
+
 # MindLeak — Temporal Context Graph (VS Code)
 
 Live visualizer and passive sensor for the [MindLeak](../../README.md) context

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/mindleak_logo.png" alt="MindLeak" width="420">
+</p>
+
 # MindLeak
 
 **A local, decay-weighted context graph brain for coding agents.**

@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "publisher": "monk-eee",
   "license": "MIT",
+  "icon": "media/mindleak_128x128.png",
   "engines": {
     "vscode": "^1.85.0"
   },
