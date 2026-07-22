@@ -18,6 +18,7 @@
 editors/vscode/out
 editors/vscode/*.vsix
 editors/vscode/media/vendor
+editors/vscode/coverage/
 
 # Editor / OS
 .DS_Store

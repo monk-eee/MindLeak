@@ -64,6 +64,26 @@ npm --prefix editors/vscode test
 npm --prefix editors/vscode run compile
 ```
 
+## Publishing a binary release
+
+The tag-driven [release workflow](.github/workflows/release.yml) publishes both
+MCP servers for Windows x64, Linux x64, macOS Intel, and macOS Apple Silicon.
+It reruns `make ci`, performs native MCP initialization/tool-list smoke checks,
+attests the staged files, and publishes platform archives plus `SHA256SUMS`.
+
+1. Update `[workspace.package].version` in [`Cargo.toml`](Cargo.toml) and finish
+  the corresponding changelog entry.
+2. Merge the release commit to `main` and confirm CI is green.
+3. Create and push a matching tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Prerelease tags such as `v0.1.0-preview.1` may share the base workspace version
+`0.1.0`. A mismatched or malformed tag fails before any binaries are built.
+
 ## Pre-commit
 
 Hooks run automatically on `git commit` (formatting, lint, whitespace, JSON/TOML
@@ -119,11 +139,13 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
-- **Symbol/`calls` extraction is heuristic and in-file only.** — `calls` edges
-  are resolved within a single file by name; cross-file calls are not linked, and
-  brace/indent scoping does not account for braces inside strings or comments. —
-  Medium impact on graph completeness. — Tracked: a Tree-sitter backend is the
-  precision upgrade (see [ADR-0002](docs/adr/0002-sqlite-decay-over-vector-llm.md)).
+- **Symbol and import extraction remains heuristic and partially scoped.** —
+  Static JS/TS named imports now produce cross-file `calls`, but default and
+  namespace calls, re-exports, path aliases, dynamic imports, and other language
+  import syntaxes are not resolved. Non-JS brace/indent extractors also remain
+  regex-based. — Medium impact on graph completeness. — Tracked: expand
+  fixture-backed deterministic parsers; Tree-sitter remains the precision
+  upgrade (ADR-0002).
 - **The live LLM round-trip runs only on demand, not in CI.** — Ignored tests
   (`cargo test -- --ignored`) exercise the real `/v1/chat/completions` call for
   both planes (MindLeak `consolidate`, Lodestar `decompose`/`judge`) against a

@@ -13,11 +13,28 @@ to [Semantic Versioning](https://semver.org/).
   parsing), `git` commits (with `DECISION:`/`HACK:` rationale extraction), and
   heuristic `ast` extraction of symbols **and in-file `calls` edges** for 8
   languages.
+- **ADR-0006 structural imports, phase 1**: static JavaScript/TypeScript
+  `import`/`require` declarations create artifact/package `imports` edges;
+  direct calls to named import bindings create cross-file `calls` edges. Both
+  participate in artifact-owned reconciliation and relation-directed impact.
+  Token-aware extraction filters comments/member calls/basic shadowing, while
+  candidate-backed artifact stubs promote across mixed extensions and index
+  modules or disappear when their final import is removed.
 - **MCP server** (`mindleak-mcp`): newline-delimited JSON-RPC 2.0 over stdio
   exposing 14 tools (`graph_multi_hop_query`, `get_impact_radius`,
   `record_architectural_decision`, plus ingestion/snapshot/prune/stats, an
   optional `consolidate_session` helper, `list_agents`, and the optional
   semantic-recall pair `recall`/`index`).
+- **Observability, telemetry & network resilience** (ADR-0010): structured
+  `tracing` to **stderr** (never stdout, which carries the JSON-RPC channel),
+  gated by `MINDLEAK_LOG` / `MINDLEAK_LOG_FORMAT`; a durable, queryable
+  `telemetry_events` audit trail recording every tool call (name, outcome,
+  latency) surfaced through the `telemetry_snapshot` MCP tool; and a `net` layer
+  giving all optional HTTP (embeddings, consolidation, LLM) explicit timeouts,
+  bounded retry with backoff, and a per-endpoint **circuit breaker**. Tunable via
+  `MINDLEAK_HTTP_TIMEOUT_MS` / `MINDLEAK_HTTP_RETRIES` /
+  `MINDLEAK_BREAKER_THRESHOLD` / `MINDLEAK_BREAKER_COOLDOWN_MS`. The deterministic
+  path never touches the network; telemetry never touches stdout or graph state.
 - **Multi-agent attribution**: set `MINDLEAK_AGENT=<id>` and each ingest/focus
   also records a decay-weighted `agent:<id> --observed--> <node>` edge — shared
   graph, per-agent attention that fades. Roster via `list_agents`.
@@ -47,6 +64,10 @@ to [Semantic Versioning](https://semver.org/).
 - Engineering baseline: pre-commit hooks, rustfmt/clippy/eslint/prettier,
   GitHub Actions CI (Linux + Windows), `.gitattributes`, and the `docs/`
   documentation set.
+- **Tag-driven binary releases**: GitHub Actions gates tags through the full
+  repository CI, builds and smoke-checks both MCP servers for Windows x64,
+  Linux x64, macOS Intel, and macOS Apple Silicon, then publishes attested
+  platform archives with `SHA256SUMS`.
 - **Repeatable graph evaluation harness**: a cross-platform MCP/stdio scenario
   records stale-structure and cross-file-impact behavior against a fresh
   temporary database, with machine-readable baseline results, source revision,

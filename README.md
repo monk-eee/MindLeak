@@ -77,8 +77,8 @@ flowchart TD
 Requires Rust 1.75+ and (for the extension) Node 18+.
 
 ```bash
-# Core engine + MCP server
-cargo build --release
+# Both MCP servers
+cargo build --release --locked -p mindleak-mcp -p lodestar-mcp
 
 # Run the test suite
 cargo test
@@ -89,10 +89,32 @@ npm install
 npm run compile
 ```
 
-The MCP server binary lands at `target/release/mindleak-mcp` (or `target/debug/…`).
+The server binaries land at `target/release/mindleak-mcp` and
+`target/release/lodestar-mcp` (with `.exe` on Windows).
 
 For the full local workflow (lint, format, pre-commit, CI), see
 [`DEVELOPERS.md`](DEVELOPERS.md).
+
+---
+
+## Download
+
+Tagged [GitHub Releases](https://github.com/monk-eee/MindLeak/releases) provide
+one archive containing both MCP servers for each supported platform:
+
+| Archive suffix | Platform |
+|---|---|
+| `windows-x64` | Windows x64 |
+| `linux-x64` | Linux x64 (glibc) |
+| `macos-x64` | macOS Intel |
+| `macos-arm64` | macOS Apple Silicon |
+
+Verify the downloaded archive against the release's `SHA256SUMS`, extract both
+servers, and configure their absolute paths in your MCP client. On macOS and
+Linux, mark the extracted binaries executable using the platform's file
+permission tooling. Preview binaries are attested and checksummed but not yet
+code-signed, so the operating system may show a publisher warning. Preview
+versions use tags such as `v0.1.0-preview.1`.
 
 ---
 
@@ -134,12 +156,13 @@ It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
 | `ingest_file` | File → artifact + extracted symbols (`contains`). |
 | `boost_entity` | Record node focus for recency views without rewriting evidence. |
 | `graph_snapshot` | Subgraph for visualization. |
-| `prune_graph` | Purge decayed edges + unreferenced executions/symbols. |
+| `prune_graph` | Purge decayed edges + unreferenced episodic/structural stubs. |
 | `graph_stats` | Node / active-edge counts. |
 | `consolidate_session` | Optional: compress raw logs into one intent node via a local Ollama model. |
 | `list_agents` | Roster of agents + their active observation counts (attribution). |
 | `index` | Optional: embed nodes lacking a current vector via a local `/v1/embeddings` server (ADR-0008). |
 | `recall` | Optional: nearest node ids by cosine similarity — entry points to *seed* `graph_multi_hop_query`. |
+| `telemetry_snapshot` | Observability record (ADR-0010): per-tool call counts, errors, latency, and recent invocations from the durable audit trail. |
 
 ---
 
