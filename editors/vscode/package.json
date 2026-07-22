@@ -139,8 +139,8 @@
     "compile": "npm run copy-assets && tsc -p ./",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
-    "format": "prettier --check \"src/**/*.ts\" \"media/**/*.js\" \"../../scripts/evaluate-graph.mjs\"",
-    "format:fix": "prettier --write \"src/**/*.ts\" \"media/**/*.js\" \"../../scripts/evaluate-graph.mjs\"",
+    "format": "prettier --check \"src/**/*.ts\" \"media/**/*.js\" \"../../scripts/**/*.mjs\"",
+    "format:fix": "prettier --write \"src/**/*.ts\" \"media/**/*.js\" \"../../scripts/**/*.mjs\"",
     "test": "vitest run"
   },
   "devDependencies": {
