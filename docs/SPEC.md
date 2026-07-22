@@ -104,8 +104,10 @@ chronology but not topology. MindLeak gives both, and forgets on purpose.
 > cross-file calls → extends/implements → manifest depends_on. `references`,
 > `consumes`, and `produces` are deferred (determinism/noise cost).
 
-Re-ingesting an existing edge **reinforces** it (weight `+0.05`, capped at 1.0)
-and **resets its decay clock**.
+Episodic edges are append-and-reinforce: re-ingesting one raises its weight
+(`+0.05`, capped at 1.0) and resets its decay clock. Structural extraction is an
+authoritative per-artifact snapshot: re-ingestion transactionally retracts owned
+facts absent from the latest source before orphan cleanup (ADR-0007).
 
 ---
 
@@ -113,6 +115,9 @@ and **resets its decay clock**.
 
 SQLite (bundled, single file) with **FTS5** for text seed lookup and a registered
 `effective_weight()` scalar function so decay math runs in SQL.
+
+Structural edges carry nullable `owner_id` provenance so one artifact snapshot
+can be reconciled atomically. Episodic edges have no structural owner.
 
 ```
 W_effective = W_base · 2^(−Δt_hours / half_life_hours)
@@ -123,7 +128,8 @@ W_effective = W_base · 2^(−Δt_hours / half_life_hours)
   (`contains`, `calls`, `imports`, `extends`, `implements`, `depends_on`) and
   human intent, 48h default (`relates_to`, `observed`).
 * **Prune rule:** edges with `W_effective < 0.05` are ignored at query time and
-  purged during maintenance; orphaned `execution` nodes are dropped.
+  purged during maintenance; unreferenced `execution` and `symbol` nodes are
+  dropped.
 
 Schema: [`crates/mindleak-core/src/schema.sql`](../crates/mindleak-core/src/schema.sql).
 
@@ -143,8 +149,9 @@ Schema: [`crates/mindleak-core/src/schema.sql`](../crates/mindleak-core/src/sche
 
 1. `graph_multi_hop_query(seed_entity, max_depth=2, min_weight=0.2)` — traverse N
    hops from a node id or FTS phrase; returns nodes, decayed edges, and scores.
-2. `get_impact_radius(target_artifact)` — bidirectional depth-2 blast radius:
-   dependents, prior failing executions, related intents.
+2. `get_impact_radius(target_artifact)` — relation-aware depth-2 blast radius:
+  dependents, prior failing executions, related intents; `observed` attention
+  edges are excluded from dependency expansion.
 3. `record_architectural_decision(decision_text, related_nodes[])` — write an
    intent node linked to affected nodes.
 
@@ -235,8 +242,9 @@ Query it with the existing surface plus one helper:
 
 - `graph_multi_hop_query("agent:<id>")` — what an agent has touched (its
   decayed observations).
-- `get_impact_radius(<file>)` — bidirectional, so it surfaces the agents who
-  observed a file alongside its code dependents.
+- `graph_multi_hop_query(<file>)` — use general traversal when agent observations
+  are relevant. `get_impact_radius` excludes `observed` so shared attention
+  cannot manufacture a dependency path.
 - `list_agents` — the roster: each `agent` node with its active observation
   count and last-active time.
 

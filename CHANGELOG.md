@@ -30,10 +30,17 @@ to [Semantic Versioning](https://semver.org/).
 - **Optional local-LLM consolidation** over the **OpenAI-compatible**
   `/v1/chat/completions` API (Ollama `/v1`, LM Studio, llama.cpp, …), configured
   via `MINDLEAK_LLM_URL` / `MINDLEAK_MODEL` / `MINDLEAK_LLM_API_KEY`; async and
-  off the hot path.
+  off the hot path. Both LLM clients (MindLeak + Lodestar) extract the JSON object
+  from model output robustly (fence/prose-tolerant), verified end to end against
+  `glm4:9b` by `#[ignore]`d live round-trip tests.
 - Engineering baseline: pre-commit hooks, rustfmt/clippy/eslint/prettier,
   GitHub Actions CI (Linux + Windows), `.gitattributes`, and the `docs/`
   documentation set.
+- **Repeatable graph evaluation harness**: a cross-platform MCP/stdio scenario
+  records stale-structure and cross-file-impact behavior against a fresh
+  temporary database, with machine-readable baseline results, source revision,
+  and executable hash. It clears ambient agent attribution and requires a typed
+  structural edge before impact can pass.
 - **Lodestar Intent Plane** (`lodestar-core` + `lodestar-mcp`): the durable "spec
   brain" (ADR-0004) — a versioned constitution (goals/constraints/invariants), an
   executive task ledger with an **atomic claim/lease compare-and-swap** for
@@ -61,5 +68,12 @@ to [Semantic Versioning](https://semver.org/).
   Lodestar database and lease state remain ignored.
 - Extension compiler and VS Code API typings are pinned to supported versions,
   preventing installs from silently advancing beyond the declared toolchain.
+- Re-ingesting a source file now atomically replaces its artifact-owned
+  structural snapshot, retracting removed symbols and call edges immediately.
+- Focusing an entity now updates node attention without reviving the weight or
+  decay clock of unrelated failures, modifications, and structural evidence.
+- Impact analysis excludes agent observation edges, orphaned removed symbols are
+  pruned after historical evidence expires, structural ownership conflicts fail
+  atomically, and legacy migrations serialize concurrent openers.
 
 [Unreleased]: https://github.com/monk-eee/MindLeak/commits/main

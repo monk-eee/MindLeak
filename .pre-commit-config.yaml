@@ -45,7 +45,7 @@ repos:
         name: prettier (vscode extension)
         entry: npm --prefix editors/vscode run format
         language: system
-        files: ^editors/vscode/(src|media)/.*\.(ts|js)$
+        files: ^(editors/vscode/(src|media)/.*\.(ts|js)|scripts/.*\.mjs)$
         pass_filenames: false
 
       # Slower gate — runs on push, not every commit.

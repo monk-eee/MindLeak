@@ -23,7 +23,7 @@ The engine. Modules:
 | [`schema.sql`](../crates/mindleak-core/src/schema.sql) | SQLite tables, indexes, FTS5 virtual table + sync triggers. |
 | [`db.rs`](../crates/mindleak-core/src/db.rs) | Connection setup (WAL, FKs), migrations, and the `effective_weight()` scalar SQL function. |
 | [`decay.rs`](../crates/mindleak-core/src/decay.rs) | The half-life decay formula and prune threshold. |
-| [`graph.rs`](../crates/mindleak-core/src/graph.rs) | `GraphStore`: upsert, FTS search, decay-aware neighbours, BFS traversal, snapshot, prune. |
+| [`graph.rs`](../crates/mindleak-core/src/graph.rs) | `GraphStore`: upsert, structural snapshot reconciliation, FTS search, decay-aware neighbours, BFS traversal, snapshot, prune. |
 | [`ingest/`](../crates/mindleak-core/src/ingest/mod.rs) | Zero-token deterministic extractors: `execution`, `git`, `ast`. |
 | [`consolidate.rs`](../crates/mindleak-core/src/consolidate.rs) | Optional Ollama consolidation worker. |
 | [`lib.rs`](../crates/mindleak-core/src/lib.rs) | `MindLeak` facade: ingestion + the three agent-facing queries. |
@@ -74,7 +74,10 @@ W_effective = W_base · 2^(−Δt_hours / half_life_hours)
 Raw execution evidence uses a 24h half-life; human intent 168h; default 48h.
 Edges below `0.05` effective weight are ignored in queries and purged by
 `prune_graph`. Re-ingesting an edge reinforces it (`+0.05`, capped at 1.0) and
-resets its decay clock. `boost_entity` does the same for a focused file.
+resets its decay clock. Structural edges additionally carry artifact ownership:
+re-ingesting a file replaces that owner's structural snapshot, retracting facts
+that disappeared (ADR-0007). `boost_entity` changes attention without refreshing
+unrelated incident evidence.
 
 **Signal-weighted decay (ADR-0005).** The half-life is not fixed. An edge
 reinforced at least 3 times across a ≥48h span earns a longer half-life via
@@ -93,8 +96,10 @@ All write-path extraction is pure pattern matching:
   `DECISION:`/`HACK:`/`WHY:` markers extracted into node content.
 - **ast** — heuristic extraction (pattern-based per language) → `symbol` nodes +
   `contains` edges, plus **in-file `calls` edges** (a definition body referencing
-  another symbol defined in the same file). Structured behind a swappable
-  interface; Tree-sitter is the precision upgrade for cross-file/scoped calls.
+  another symbol defined in the same file). The complete result transactionally
+  replaces the artifact's prior structural snapshot. Structured behind a
+  swappable interface; Tree-sitter is the precision upgrade for cross-file/scoped
+  calls.
 - **structure** (ADR-0006, in build) — `imports` from `use`/`import`/`require`
   statements (→ cross-file `calls` + `package` nodes), `extends`/`implements`
   from inheritance, and `depends_on` from manifests. Same zero-token extractor;

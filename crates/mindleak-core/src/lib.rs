@@ -105,18 +105,14 @@ impl MindLeak {
         Ok(outcome)
     }
 
-    /// Ingest a source file: an artifact node plus its extracted symbols,
-    /// linked with `contains` edges.
+    /// Replace a source file's authoritative structural snapshot.
     pub fn ingest_file(&self, path: &str, content: &str) -> Result<WriteOutcome> {
         let now = now_unix();
-        let mut outcome = WriteOutcome::default();
         let norm = ingest::normalize_path(path);
         let art_id = format!("artifact:{norm}");
         let art = Node::new(&art_id, NodeType::Artifact, norm.clone(), now);
-        if self.store.upsert_node(&art)? {
-            outcome.nodes_created += 1;
-        }
-        outcome.node_ids.push(art_id.clone());
+        let mut nodes = vec![art];
+        let mut edges = Vec::new();
 
         let extraction = ingest::ast::extract(path, content);
         for sym in &extraction.symbols {
@@ -124,29 +120,24 @@ impl MindLeak {
             let label = format!("{} ({})", sym.name, sym.kind);
             let node = Node::new(&sym_id, NodeType::Symbol, label, now)
                 .with_content(format!("{}:{}", norm, sym.line));
-            if self.store.upsert_node(&node)? {
-                outcome.nodes_created += 1;
-            }
-            let edge = Edge::new(&art_id, &sym_id, RelationType::Contains, now);
-            if self.store.upsert_edge(&edge)? {
-                outcome.edges_created += 1;
-            }
+            nodes.push(node);
+            edges.push(Edge::new(&art_id, &sym_id, RelationType::Contains, now));
         }
 
         // In-file call edges (symbol -> symbol); both endpoints exist as nodes.
         for call in &extraction.calls {
             let from = format!("symbol:{norm}:{}", call.caller);
             let to = format!("symbol:{norm}:{}", call.callee);
-            let edge = Edge::new(&from, &to, RelationType::Calls, now);
-            if self.store.upsert_edge(&edge)? {
-                outcome.edges_created += 1;
-            }
+            edges.push(Edge::new(&from, &to, RelationType::Calls, now));
         }
+
+        let mut outcome = self.store.replace_structure(&art_id, &nodes, &edges)?;
+        outcome.node_ids.push(art_id.clone());
         self.observe(&outcome.node_ids, now)?;
         Ok(outcome)
     }
 
-    /// Elevate a node (editor focus) so its context ranks higher immediately.
+    /// Record node attention for recency displays without rewriting evidence.
     pub fn boost(&self, id: &str) -> Result<bool> {
         let now = now_unix();
         let boosted = self.store.boost(id, now)?;
@@ -180,14 +171,15 @@ impl MindLeak {
     }
 
     /// Tool 2: what changes/breaks if `target_artifact` is modified — dependents,
-    /// prior failing executions, and related intents (bidirectional, depth 2).
+    /// prior failing executions, and related intents. Agent observations are not
+    /// dependency paths.
     pub fn impact_radius(&self, target_artifact: &str) -> Result<Subgraph> {
         let now = now_unix();
         let seeds = self.store.resolve_seed(target_artifact, 1)?;
         if seeds.is_empty() {
             return Err(MindLeakError::NotFound(target_artifact.to_string()));
         }
-        self.store.traverse(&seeds, Direction::Both, 2, 0.1, now)
+        self.store.impact_radius(&seeds, now)
     }
 
     /// Tool 3: record an explicit architectural decision as an intent node,

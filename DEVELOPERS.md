@@ -124,10 +124,13 @@ and footguns, with impact and status:
   brace/indent scoping does not account for braces inside strings or comments. —
   Medium impact on graph completeness. — Tracked: a Tree-sitter backend is the
   precision upgrade (see [ADR-0002](docs/adr/0002-sqlite-decay-over-vector-llm.md)).
-- **The consolidation network round-trip is untested.** — Everything around it is
-  covered (client construction, the JSON contract, error propagation), but the
-  live `/v1/chat/completions` call is not exercised in CI (needs a running
-  model). — Low impact. — Unowned; an HTTP-mock test would close it.
+- **The live LLM round-trip runs only on demand, not in CI.** — Ignored tests
+  (`cargo test -- --ignored`) exercise the real `/v1/chat/completions` call for
+  both planes (MindLeak `consolidate`, Lodestar `decompose`/`judge`) against a
+  running model; CI can't run them without one. — Low impact. — Running them
+  surfaced (and fixed) that `glm4:9b` wraps its JSON in prose even with
+  `response_format: json_object`; both clients now extract the JSON object
+  robustly.
 - **Ingest tools are unauthenticated (by design).** — Any client with stdio
   access to `mindleak-mcp` can write nodes/edges. — Acceptable for local
   single-user use; the server has no network listener. Do not expose it over a
@@ -146,6 +149,21 @@ and footguns, with impact and status:
   discovery finds `src/util.test.ts`, but `run_tests` reports a passing total of
   zero even for that explicit path. On Windows, a backslash Cargo root is
   rejected as `INVALID_ROOT_DIR`; normalizing it to forward slashes runs the
-  custom command but also reports a passing total of zero. — High impact on local
-  proof: MCP results cannot currently establish that tests executed. — Left open
-  in the external adapter; CI remains the executable test authority until repaired.
+  custom command and surfaces failures, but successful runs still report zero
+  tests and no coverage. — High impact on local proof: MCP cannot establish test
+  counts or coverage. — Left open in the external adapter; CI remains the
+  authoritative complete-suite signal until repaired.
+- **The extension toolchain has one low-severity development advisory.** —
+  Vitest resolves `esbuild` 0.27.7, affected by GHSA-g7r4-m6w7-qqqr when its
+  development server runs on Windows. `npm audit --omit=dev` is clean and the
+  package is not shipped with the extension; a normal `npm audit fix` finds no
+  compatible update. — Low impact. — Left open until Vitest accepts a fixed
+  `esbuild`; do not use `--force` to hide the compatibility decision.
+- **Lodestar core tests are not isolated from a running local model.** — With an
+  OpenAI-compatible server reachable at the default URL,
+  `decompose_falls_back_to_single_task_without_llm` can return multiple tasks and
+  `conformance_flags_ungoverned_as_aligned_and_governed_as_drift` can escalate
+  drift to violation. — High impact on test determinism: `cargo test --all`
+  depends on the developer's local services. — Left open for a dedicated
+  Lodestar test seam; tests must inject an unreachable/mock client rather than
+  depending on ambient model availability.

@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS edges (
     updated_at      INTEGER NOT NULL,
     first_seen           INTEGER NOT NULL DEFAULT 0,   -- earliest reinforcement (signal span anchor)
     reinforcement_count  INTEGER NOT NULL DEFAULT 1,   -- times reinforced (signal proxy; ADR-0005)
+    owner_id        TEXT,                              -- artifact owning a structural snapshot (ADR-0007)
     PRIMARY KEY (source_id, target_id, relation),
     FOREIGN KEY (source_id) REFERENCES nodes(id) ON DELETE CASCADE,
     FOREIGN KEY (target_id) REFERENCES nodes(id) ON DELETE CASCADE

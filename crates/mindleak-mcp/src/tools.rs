@@ -88,7 +88,7 @@ pub fn list() -> Vec<Value> {
         }),
         json!({
             "name": "boost_entity",
-            "description": "Elevate a node (e.g. the editor focused this file) so its context ranks higher immediately by resetting the decay clock on its edges.",
+            "description": "Record that a node was focused so recency views surface it, without changing incident evidence weights or decay clocks.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "id": { "type": "string" } },
@@ -108,7 +108,7 @@ pub fn list() -> Vec<Value> {
         }),
         json!({
             "name": "prune_graph",
-            "description": "Purge decayed edges (below threshold) and orphaned execution nodes.",
+            "description": "Purge decayed edges and unreferenced execution or symbol nodes.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({

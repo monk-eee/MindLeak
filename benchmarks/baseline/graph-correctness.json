@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-22",
+  "revision": "7ca97a7",
+  "server_version": "0.1.0",
+  "scenarios": {
+    "stale_structure_retraction": {
+      "expected_old_symbol_present": false,
+      "observed_old_symbol_present": true,
+      "passed": false
+    },
+    "cross_file_impact": {
+      "expected_dependent_artifact_present": true,
+      "observed_dependent_artifact_present": false,
+      "passed": false
+    }
+  }
+}

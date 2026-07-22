@@ -1,0 +1,25 @@
+{
+  "schema_version": 2,
+  "captured_at": "2026-07-22",
+  "source_revision": "fa46f62-dirty",
+  "executable_sha256": "72a846a0c8d9ff9f611fc34e45cfc409d0458218da148e9d0fbea3fb2d059664",
+  "server_version": "0.1.0",
+  "change": "ADR-0007 structural snapshot reconciliation",
+  "scenarios": {
+    "stale_structure_retraction": {
+      "expected_old_structure_present": false,
+      "observed_old_contains_present": false,
+      "observed_old_call_present": false,
+      "observed_old_symbol_present": false,
+      "observed_old_fts_entry_present": false,
+      "passed": true
+    },
+    "cross_file_impact": {
+      "expected_dependent_artifact_present": true,
+      "expected_structural_dependency_present": true,
+      "observed_dependent_artifact_present": false,
+      "observed_structural_dependency_present": false,
+      "passed": false
+    }
+  }
+}

@@ -30,9 +30,9 @@ edge to the primary node they wrote.
 - **Attention decays like everything else.** `observed` edges are subject to the
   same half-life, so "who is working here *now*" naturally fades to "who worked
   here once". A column is static and would need a separate timestamp + sweep.
-- **Queryable by the existing engine.** `graph_multi_hop_query("agent:<id>")`
-  and `get_impact_radius` traverse `observed` edges for free; `list_agents` gives
-  the roster. A column would need bespoke query paths.
+- **Queryable by the general graph engine.** `graph_multi_hop_query("agent:<id>")`
+  traverses `observed` edges and `list_agents` gives the roster. Impact analysis
+  deliberately excludes observations because shared attention is not dependency.
 - **Zero-cost when unused.** No `MINDLEAK_AGENT` ⇒ no `agent` nodes, no
   `observed` edges — identical to the pre-attribution graph.
 - **Isolation stays per-database.** Attribution does not add cross-repo id

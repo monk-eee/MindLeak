@@ -16,6 +16,23 @@ This plan follows the repository rule: **design/spec first, implementation
 second, proof before promotion**. A capability remains labelled "in build" until
 its phase exit gate passes.
 
+## Progress - 2026-07-22
+
+- **Phase 0 is in progress.** The repository now has an MIT license, committable
+  Lodestar constitution export, pinned extension compiler/API versions, strict
+  compile/lint/format gates, and a repeatable black-box graph baseline. A first
+  baseline commit now anchors the result; Linux validation and comparative agent
+  fixtures remain open.
+- **Phase 1 graph lifecycle is implemented.** ADR-0007 adds artifact-owned
+  structural snapshots, transactional reconciliation, legacy ownership
+  migration, orphan cleanup, and node-only focus attention. The stale-structure
+  scenario moved from fail to pass; the pre-change baseline remains immutable.
+- **Unit-test result accounting remains blocked externally.** Unit Test MCP 1.3.6
+  surfaces Cargo failures but reports zero successful tests and no Rust coverage;
+  CI remains the complete-suite authority until the adapter is repaired.
+- **ADR-0006 remains red by design.** The same evaluation still fails cross-file
+  impact discovery, making structural imports the next capability gate.
+
 ## 2. Product Claims and Proof Gates
 
 | Claim | Current truth | Required proof before claiming shipped |

@@ -128,9 +128,9 @@ It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
 | `ingest_execution` | Command + exit code → execution/modified/failed_on edges. |
 | `ingest_commit` | Commit → intent node + refactored edges + rationale. |
 | `ingest_file` | File → artifact + extracted symbols (`contains`). |
-| `boost_entity` | Elevate a node (editor focus) by resetting its decay clock. |
+| `boost_entity` | Record node focus for recency views without rewriting evidence. |
 | `graph_snapshot` | Subgraph for visualization. |
-| `prune_graph` | Purge decayed edges + orphaned executions. |
+| `prune_graph` | Purge decayed edges + unreferenced executions/symbols. |
 | `graph_stats` | Node / active-edge counts. |
 | `consolidate_session` | Optional: compress raw logs into one intent node via a local Ollama model. |
 | `list_agents` | Roster of agents + their active observation counts (attribution). |

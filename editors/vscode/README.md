@@ -5,8 +5,9 @@ graph engine.
 
 ## What it does
 
-- **Passive sensing** — focusing a file boosts its node (resets the decay clock);
-  saving a file ingests its symbols into the graph. No manual bookkeeping.
+- **Passive sensing** — focusing a file updates node recency without reviving
+  old evidence; saving a file ingests its symbols into the graph. No manual
+  bookkeeping.
 - **Live graph** — a Cytoscape sidebar renders the current context subgraph:
   - 🔵 file · 🟠 symbol · 🟢 intent · 🔴 execution
   - edge width ∝ time-decayed effective weight
