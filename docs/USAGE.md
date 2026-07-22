@@ -1,0 +1,192 @@
+# Using MindLeak
+
+MindLeak gives a coding agent **durable, decaying memory of the work** — what was
+run, what changed, what failed, what was decided — and lets it query that memory
+before it acts. This guide covers how the tools are used in practice and how to
+configure the servers.
+
+New here? Start with **[QUICKSTART.md](QUICKSTART.md)**.
+
+---
+
+## Mental model: two planes
+
+| Plane | Server | Question it answers | Lifetime |
+|---|---|---|---|
+| **Memory** | `mindleak-mcp` | "What happened, how does the code connect, what breaks if I change this?" | **Decays** — stale context fades on an exponential half-life |
+| **Intent** | `lodestar-mcp` | "What are we trying to do, who owns which task, does this change conform?" | **Durable** — goals and coordination persist |
+
+You can run just the memory plane. Add the intent plane when multiple agents (or
+worktrees) need to coordinate without diluting shared intent.
+
+Everything on the **write path is deterministic** (pattern matching, zero LLM
+tokens). Optional local models only run asynchronously, off the hot path.
+
+---
+
+## The memory loop
+
+A productive agent weaves these calls into its normal work. None of them require
+a model.
+
+### Before you edit — look before you leap
+
+```text
+get_impact_radius(target_artifact = "artifact:src/auth.ts")
+```
+
+Returns the blast radius of a change: dependent symbols, importing files, prior
+failing executions, and related decisions — grouped, not flattened. Ask this
+*before* touching a file so the agent knows what it might break.
+
+### Pull in the right context
+
+```text
+recall(query = "why is login failing", limit = 5)      # semantic, needs the embedding index
+graph_multi_hop_query(seed_entity = "<node id or phrase>", max_depth = 2)
+```
+
+The recommended pattern is **recall → traverse**: `recall` finds the best entry
+nodes by *meaning* (embeddings), then you seed those node ids into
+`graph_multi_hop_query`, which walks the decay-weighted graph to assemble the
+connected context. Similarity finds the door; the graph walks the house.
+
+`recall` needs vectors first — run `index` once (and after big changes) to embed
+nodes that lack a current vector. Without an embedding model, skip `recall` and
+seed `graph_multi_hop_query` with a search phrase directly (it falls back to
+full-text search).
+
+### After something happens — record it (deterministically)
+
+```text
+ingest_execution(command, exit_code, output, changed_files)   # a terminal run / test
+ingest_commit(message, sha, changed_files)                    # a git commit
+ingest_file(path, content)                                    # a file's symbols + imports
+```
+
+- `ingest_execution` creates an execution node, `modified` edges to changed
+  files, and `failed_on` edges parsed from stack traces in the output.
+- `ingest_commit` creates an intent node and extracts `DECISION:` / `HACK:` /
+  `WHY:` rationale markers from the message.
+- `ingest_file` replaces the file's structural snapshot: its symbols
+  (`contains`) and, for JS/TS, static `import`/`require` edges and named
+  cross-file `calls`.
+
+> In the VS Code extension these fire partly on their own (focus boosts a node,
+> save ingests symbols). Fully passive terminal/git capture is on the roadmap;
+> today, executions and commits are ingested via these tool calls.
+
+### Record the *why*
+
+```text
+record_architectural_decision(decision_text, related_nodes = ["artifact:src/auth.ts"])
+```
+
+Persists a decision/tradeoff as an intent node linked to what it affects.
+Decisions decay far slower than raw execution noise, so the reasoning outlives
+the events that prompted it.
+
+### Confirm what actually ran — the record
+
+```text
+telemetry_snapshot(limit = 20)
+```
+
+Returns a durable audit trail of every tool call — per-tool counts, error
+counts, latency, and the most recent invocations. This is how you verify an
+agent did what it claimed, independent of its own narration (ADR-0010).
+
+### Housekeeping
+
+```text
+graph_stats()      # node / active-edge counts
+prune_graph()      # purge decayed edges + unreferenced stubs
+boost_entity(id)   # mark a node as recently focused, without rewriting evidence
+list_agents()      # roster + per-agent attention (needs MINDLEAK_AGENT set)
+```
+
+Decay is the point — don't fight it. If context fades too fast or too slow, tune
+half-lives rather than disabling decay.
+
+---
+
+## The intent plane (Lodestar)
+
+Use `lodestar-mcp` when work spans multiple agents or worktrees. It keeps a
+versioned **constitution** (goals/constraints/invariants) and an **executive task
+ledger** with atomic claim/lease coordination.
+
+Typical flow:
+
+```text
+define_goal(kind, title, statement)          # write the constitution
+get_constitution()                           # read this BEFORE acting
+decompose_goal(goal_id)  /  create_task(...) # produce claimable work
+next_task()                                  # what should I pick up?
+claim_task(task_id, agent)                   # atomic — no two agents win the same task
+renew_lease(task_id, agent)                  # keep your claim alive while working
+complete_task(task_id, agent, evidence)      # owner-guarded; runs conformance
+board()                                      # live who-owns-what
+```
+
+`claim_task` is a compare-and-swap: parallel agents coordinate through one shared
+`.lodestar/spec.db` with **no duplicate winners**. `complete_task` runs a
+conformance check (aligned / drift / violation) and a violation blocks the
+transition.
+
+Full tool list: see the **Intent Plane tools** table in
+[../README.md](../README.md); design in
+[SPEC-INTENT.md](SPEC-INTENT.md) and [ADR-0004](adr/0004-intent-plane-spec-brain.md).
+
+---
+
+## Configuration reference
+
+All configuration is via environment variables. Everything has a sensible local
+default; the servers work with none set.
+
+### `mindleak-mcp`
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MINDLEAK_DB` | `<cwd>/.mindleak/graph.db` | graph database path |
+| `MINDLEAK_AGENT` | *(empty = off)* | agent id for attribution (`observed` edges) |
+| `MINDLEAK_LLM_URL` | `http://localhost:11434/v1` | OpenAI-compatible consolidation server |
+| `MINDLEAK_MODEL` | `glm4:9b` | consolidation model |
+| `MINDLEAK_LLM_API_KEY` | *(empty)* | bearer token for hosted servers |
+| `MINDLEAK_EMBED_URL` | `http://localhost:11434/v1` | embeddings server (for `recall`/`index`) |
+| `MINDLEAK_EMBED_MODEL` | `nomic-embed-text` | embedding model |
+| `MINDLEAK_EMBED_API_KEY` | *(empty)* | bearer token for hosted servers |
+| `MINDLEAK_LOG` | `info` | tracing filter (`off`, `warn`, `debug`, `mindleak_core=debug`, …) — **stderr only** |
+| `MINDLEAK_LOG_FORMAT` | `pretty` | `pretty` or `json` |
+| `MINDLEAK_HTTP_TIMEOUT_MS` | `30000` | connect + read timeout for optional HTTP calls |
+| `MINDLEAK_HTTP_RETRIES` | `2` | extra retry attempts on transient failure |
+| `MINDLEAK_BREAKER_THRESHOLD` | `5` | consecutive failures before the circuit opens |
+| `MINDLEAK_BREAKER_COOLDOWN_MS` | `30000` | how long the circuit stays open before a probe |
+
+### `lodestar-mcp`
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LODESTAR_DB` | `<cwd>/.lodestar/spec.db` | intent-plane database path (share across worktrees) |
+| `LODESTAR_AGENT` | *(empty)* | agent id for task ownership |
+| `LODESTAR_LLM_URL` | `http://localhost:11434/v1` | OpenAI-compatible server for `decompose_goal` / semantic conformance |
+| `LODESTAR_MODEL` | `glm4:9b` | model |
+| `LODESTAR_LLM_API_KEY` | *(empty)* | bearer token for hosted servers |
+| `MINDLEAK_HTTP_TIMEOUT_MS` | `30000` | shared HTTP timeout (also honoured here) |
+
+---
+
+## Principles & gotchas
+
+- **Zero-token write path.** Ingestion never calls a model. Models are optional
+  and asynchronous.
+- **stdout is sacred.** The MCP protocol runs on stdout; all logs go to stderr.
+  Never expect diagnostics on stdout.
+- **Derived, not stored.** Effective edge weight is computed at query time from
+  decay — it is never written back to the row.
+- **Local & unauthenticated by design.** The servers have no network listener;
+  any process with stdio access can write. Do not expose them over a network
+  without adding an auth layer.
+- **The databases are regenerable.** `.mindleak/graph.db` and `.lodestar/spec.db`
+  are gitignored and can be deleted and rebuilt from your work.

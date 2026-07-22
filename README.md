@@ -27,12 +27,17 @@ memory. See [`docs/SPEC.md`](docs/SPEC.md) for the full design and
 > exit code) — no LLM tokens. An optional local Ollama model only runs
 > asynchronously to consolidate noise into high-level intent nodes.
 
+**New here?** → **[Quickstart](docs/QUICKSTART.md)** (running in minutes) ·
+**[Usage guide](docs/USAGE.md)** (how an agent uses the tools).
+
 ---
 
 ## Where everything is
 
 | I want to… | Go to |
 |---|---|
+| **Get running fast** | **[docs/QUICKSTART.md](docs/QUICKSTART.md)** |
+| **Learn how to use the tools** | **[docs/USAGE.md](docs/USAGE.md)** |
 | Understand the design | [docs/SPEC.md](docs/SPEC.md) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Understand the *intent plane* (spec brain) | [docs/SPEC-INTENT.md](docs/SPEC-INTENT.md) · [ADR-0004](docs/adr/0004-intent-plane-spec-brain.md) |
 | Set up & run locally | [DEVELOPERS.md](DEVELOPERS.md) |
@@ -160,6 +165,7 @@ It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
 | `graph_stats` | Node / active-edge counts. |
 | `consolidate_session` | Optional: compress raw logs into one intent node via a local Ollama model. |
 | `list_agents` | Roster of agents + their active observation counts (attribution). |
+| `evidence_for` | Bounded, provenance-bearing evidence bundle from an agent's attributed executions/commits in a work window (ADR-0009). |
 | `index` | Optional: embed nodes lacking a current vector via a local `/v1/embeddings` server (ADR-0008). |
 | `recall` | Optional: nearest node ids by cosine similarity — entry points to *seed* `graph_multi_hop_query`. |
 | `telemetry_snapshot` | Observability record (ADR-0010): per-tool call counts, errors, latency, and recent invocations from the durable audit trail. |
@@ -221,7 +227,7 @@ path — it errors cleanly when no model is reachable.
 ```
 crates/
   mindleak-core/   memory plane: db · model · decay · graph · ingest · consolidate
-  mindleak-mcp/    stdio JSON-RPC MCP server (12 tools)
+  mindleak-mcp/    stdio JSON-RPC MCP server (16 tools)
   lodestar-core/   intent plane: constitution · tasks (claim/lease) · conformance · knowledge
   lodestar-mcp/    stdio JSON-RPC MCP server (21 tools)
 editors/
