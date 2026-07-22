@@ -7,6 +7,10 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Local data lifecycle** (ADR-0013): shared integrity-checked SQLite online
+  backup for both planes; complete active graph JSON export; separately
+  confirmed memory (`RESET MINDLEAK`) and durable intent (`RESET LODESTAR`)
+  resets; and documented upgrade, rollback, retention, and privacy procedures.
 - **Core engine** (`mindleak-core`): SQLite graph + FTS5, exponential half-life
   decay engine, and a registered `effective_weight()` scalar SQL function.
 - **Zero-token deterministic ingestion**: `execution` (stack-trace `failed_on`
@@ -31,7 +35,7 @@ to [Semantic Versioning](https://semver.org/).
   PEP 508 parsers preserve renamed/canonical identities; malformed manifests
   fail before reconciliation, preserving the last valid snapshot.
 - **MCP server** (`mindleak-mcp`): newline-delimited JSON-RPC 2.0 over stdio
-  exposing 17 tools (`graph_multi_hop_query`, `get_impact_radius`,
+  exposing 20 tools (`graph_multi_hop_query`, `get_impact_radius`,
   `record_architectural_decision`, plus ingestion/snapshot/prune/stats, an
   optional `consolidate_session` helper, `list_agents`, and the optional
   semantic-recall pair `recall`/`index`).

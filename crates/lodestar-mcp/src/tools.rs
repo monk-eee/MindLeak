@@ -223,6 +223,28 @@ pub fn list() -> Vec<Value> {
             "description": "Counts: active goals, open/claimed/done tasks, active knowledge.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
+        json!({
+            "name": "backup_database",
+            "description": "Create a verified online SQLite backup of the complete Lodestar intent plane. The destination must not already exist.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Destination path for the SQLite backup." }
+                },
+                "required": ["path"]
+            }
+        }),
+        json!({
+            "name": "reset_database",
+            "description": "Destructively clear the Lodestar constitution, tasks, bindings, conformance audit, and learned knowledge. Requires the exact confirmation token RESET LODESTAR and never touches MindLeak memory.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "confirm": { "type": "string", "description": "Must be exactly RESET LODESTAR." }
+                },
+                "required": ["confirm"]
+            }
+        }),
     ]
 }
 
@@ -385,6 +407,17 @@ pub fn call(engine: &Lodestar, params: &Value) -> Result<Value, String> {
             ok(&json!({ "pruned": pruned }))
         }
         "lodestar_stats" => ok(&engine.stats().map_err(|e| e.to_string())?),
+        "backup_database" => {
+            let path = req_str(&args, "path")?;
+            engine.backup_database(path).map_err(|e| e.to_string())?;
+            ok(&json!({ "backed_up": true, "path": path }))
+        }
+        "reset_database" => {
+            let outcome = engine
+                .reset_database(req_str(&args, "confirm")?)
+                .map_err(|e| e.to_string())?;
+            ok(&outcome)
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -480,5 +513,53 @@ mod tests {
         assert!(call(&engine, &params)
             .unwrap_err()
             .contains("invalid evidence"));
+    }
+
+    #[test]
+    fn lifecycle_tools_backup_and_require_lodestar_reset_token() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        engine
+            .define_goal(
+                GoalKind::Invariant,
+                "Keep intent durable",
+                "Never erase intent with memory reset",
+                None,
+            )
+            .unwrap();
+        let path =
+            std::env::temp_dir().join(format!("lodestar-mcp-backup-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        call(
+            &engine,
+            &json!({
+                "name": "backup_database",
+                "arguments": { "path": path.to_str().unwrap() }
+            }),
+        )
+        .unwrap();
+        let restored = Lodestar::open(path.to_str().unwrap()).unwrap();
+        assert_eq!(restored.get_constitution().unwrap().len(), 1);
+        drop(restored);
+        std::fs::remove_file(path).unwrap();
+
+        let rejected = call(
+            &engine,
+            &json!({
+                "name": "reset_database",
+                "arguments": { "confirm": "RESET MINDLEAK" }
+            }),
+        )
+        .unwrap_err();
+        assert!(rejected.contains("RESET LODESTAR"));
+        call(
+            &engine,
+            &json!({
+                "name": "reset_database",
+                "arguments": { "confirm": "RESET LODESTAR" }
+            }),
+        )
+        .unwrap();
+        assert!(engine.get_constitution().unwrap().is_empty());
     }
 }

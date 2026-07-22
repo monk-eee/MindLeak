@@ -14,6 +14,7 @@ pub mod model;
 pub mod store;
 mod util;
 
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use error::{LodestarError, Result};
@@ -21,7 +22,7 @@ pub use model::{
     CodeBindingMode, ConformanceEvidence, ConformanceResult, EvidenceProvenance, Goal, GoalKind,
     GoalStatus, Knowledge, Task, TaskStatus, Verdict,
 };
-pub use store::{LodestarStore, Stats};
+pub use store::{LodestarStore, ResetOutcome, Stats};
 
 use llm::LlmClient;
 use store::ConformanceAudit;
@@ -585,6 +586,16 @@ impl Lodestar {
 
     pub fn stats(&self) -> Result<Stats> {
         self.store.stats(now_unix())
+    }
+
+    /// Create a verified online SQLite backup without stopping this server.
+    pub fn backup_database(&self, destination: &str) -> Result<()> {
+        self.store.backup_database(Path::new(destination))
+    }
+
+    /// Clear durable intent only after the exact Lodestar confirmation token.
+    pub fn reset_database(&self, confirmation: &str) -> Result<ResetOutcome> {
+        self.store.reset_database(confirmation)
     }
 }
 

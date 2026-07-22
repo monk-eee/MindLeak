@@ -7,6 +7,7 @@
 
 use rusqlite::{params, Connection, Row};
 use serde::Serialize;
+use std::path::Path;
 
 use crate::decay::ACTIVE_THRESHOLD;
 use crate::error::{LodestarError, Result};
@@ -37,6 +38,16 @@ pub struct Stats {
     pub claimed_tasks: i64,
     pub done_tasks: i64,
     pub active_knowledge: i64,
+}
+
+/// Counts removed by an explicitly confirmed intent-plane reset.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ResetOutcome {
+    pub goals_removed: usize,
+    pub tasks_removed: usize,
+    pub code_bindings_removed: usize,
+    pub conformance_records_removed: usize,
+    pub knowledge_removed: usize,
 }
 
 /// The persistent Intent Plane store.
@@ -513,6 +524,37 @@ impl LodestarStore {
             active_knowledge,
         })
     }
+
+    /// Create a consistent SQLite backup while this store remains online.
+    pub fn backup_database(&self, destination: &Path) -> Result<()> {
+        mindleak_storage::backup_database(&self.conn, destination)?;
+        Ok(())
+    }
+
+    /// Clear all durable intent only after the exact, plane-specific token.
+    pub fn reset_database(&self, confirmation: &str) -> Result<ResetOutcome> {
+        if confirmation != "RESET LODESTAR" {
+            return Err(LodestarError::Invalid(
+                "intent reset requires exact confirmation token: RESET LODESTAR".to_string(),
+            ));
+        }
+
+        let transaction = self.conn.unchecked_transaction()?;
+        let conformance_records_removed = transaction.execute("DELETE FROM conformance", [])?;
+        let code_bindings_removed = transaction.execute("DELETE FROM goal_code", [])?;
+        let tasks_removed = transaction.execute("DELETE FROM tasks", [])?;
+        let knowledge_removed = transaction.execute("DELETE FROM knowledge", [])?;
+        let goals_removed = transaction.execute("DELETE FROM goals", [])?;
+        transaction.commit()?;
+
+        Ok(ResetOutcome {
+            goals_removed,
+            tasks_removed,
+            code_bindings_removed,
+            conformance_records_removed,
+            knowledge_removed,
+        })
+    }
 }
 
 fn collect<T>(rows: impl Iterator<Item = rusqlite::Result<T>>) -> Result<Vec<T>> {
@@ -679,6 +721,73 @@ mod tests {
         let old = s.get_goal(&g.id).unwrap().unwrap();
         assert_eq!(old.status, GoalStatus::Superseded);
         assert_eq!(old.superseded_by.as_deref(), Some(v2.id.as_str()));
+    }
+
+    #[test]
+    fn backup_database_preserves_constitution() {
+        let store = store();
+        let goal = goal(&store);
+        let path =
+            std::env::temp_dir().join(format!("lodestar-store-backup-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        store.backup_database(&path).unwrap();
+
+        let restored = LodestarStore::new(db::open(path.to_str().unwrap()).unwrap());
+        assert_eq!(
+            restored.get_goal(&goal.id).unwrap().unwrap().title,
+            goal.title
+        );
+        drop(restored);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn reset_database_requires_exact_token_and_clears_durable_intent() {
+        let store = store();
+        let goal = goal(&store);
+        let task = store
+            .create_task(&goal.id, "Implement reset", "all state gone", None, NOW)
+            .unwrap();
+        store
+            .link_goal_to_code(
+                &goal.id,
+                &["artifact:src/lib.rs".to_string()],
+                CodeBindingMode::Governed,
+            )
+            .unwrap();
+        store.claim_task(&task.id, "agent-a", 60, NOW).unwrap();
+        store
+            .record_conformance_and_transition(
+                &task.id,
+                "agent-a",
+                ConformanceAudit {
+                    evidence_schema_version: 1,
+                    evidence: "{}",
+                    verdict: Verdict::Aligned,
+                    findings: "",
+                },
+                TaskStatus::Done,
+                NOW,
+            )
+            .unwrap();
+        store
+            .record_knowledge("keep tests focused", "{}", 720.0, NOW)
+            .unwrap();
+
+        assert!(store.reset_database("RESET MINDLEAK").is_err());
+        assert!(store.get_goal(&goal.id).unwrap().is_some());
+
+        let outcome = store.reset_database("RESET LODESTAR").unwrap();
+        assert_eq!(outcome.goals_removed, 1);
+        assert_eq!(outcome.tasks_removed, 1);
+        assert_eq!(outcome.code_bindings_removed, 1);
+        assert_eq!(outcome.conformance_records_removed, 1);
+        assert_eq!(outcome.knowledge_removed, 1);
+        assert_eq!(store.stats(NOW).unwrap().active_goals, 0);
+        assert!(store
+            .define_goal(GoalKind::Objective, "New goal", "usable", None, NOW)
+            .is_ok());
     }
 
     #[test]

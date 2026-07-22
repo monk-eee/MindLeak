@@ -256,6 +256,7 @@ dependencies = [
 name = "lodestar-core"
 version = "0.1.0"
 dependencies = [
+ "mindleak-storage",
  "rusqlite",
  "serde",
  "serde_json",
@@ -299,6 +300,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 name = "mindleak-core"
 version = "0.1.0"
 dependencies = [
+ "mindleak-storage",
  "pep508_rs",
  "regex",
  "rusqlite",
@@ -321,6 +323,13 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "mindleak-storage"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
 ]
 
 [[package]]

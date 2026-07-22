@@ -2,6 +2,7 @@
 //! Graph storage and decay-aware traversal over SQLite.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
@@ -97,6 +98,24 @@ pub struct WriteOutcome {
     pub nodes_created: usize,
     pub edges_created: usize,
     pub node_ids: Vec<String>,
+}
+
+/// Complete, human-readable view of the active graph at one point in time.
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphExport {
+    pub schema_version: u32,
+    pub exported_at: i64,
+    pub nodes: Vec<Node>,
+    pub edges: Vec<WeightedEdge>,
+}
+
+/// Counts removed by an explicitly confirmed memory-plane reset.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ResetOutcome {
+    pub nodes_removed: usize,
+    pub edges_removed: usize,
+    pub embeddings_removed: usize,
+    pub telemetry_events_removed: usize,
 }
 
 /// An unresolved artifact plus every deterministic path it may reconcile to.
@@ -1092,6 +1111,74 @@ impl GraphStore {
             edges,
         })
     }
+
+    /// Export every node and every currently active edge with fully derived
+    /// signal and decay weights. This JSON-friendly view is not a backup.
+    pub fn export_graph(&self, now: i64) -> Result<GraphExport> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, type, label, content, created_at, last_accessed_at
+             FROM nodes ORDER BY id",
+        )?;
+        let rows = statement.query_map([], row_to_node)?;
+        let mut nodes = Vec::new();
+        for row in rows {
+            nodes.push(row?);
+        }
+
+        let mut edges = Vec::new();
+        for raw in self.raw_edges()? {
+            let edge = self.weighted_edge(&raw, now)?;
+            if edge.effective >= PRUNE_THRESHOLD {
+                edges.push(edge);
+            }
+        }
+        edges.sort_by(|left, right| {
+            (&left.source_id, &left.target_id, left.relation.as_str()).cmp(&(
+                &right.source_id,
+                &right.target_id,
+                right.relation.as_str(),
+            ))
+        });
+
+        Ok(GraphExport {
+            schema_version: 1,
+            exported_at: now,
+            nodes,
+            edges,
+        })
+    }
+
+    /// Create a consistent SQLite backup while this store remains online.
+    pub fn backup_database(&self, destination: &Path) -> Result<()> {
+        mindleak_storage::backup_database(&self.conn, destination)?;
+        Ok(())
+    }
+
+    /// Clear regenerable memory state while preserving the live database and
+    /// schema. The distinct token prevents accidental intent-plane deletion.
+    pub fn reset_database(&self, confirmation: &str) -> Result<ResetOutcome> {
+        if confirmation != "RESET MINDLEAK" {
+            return Err(MindLeakError::Other(
+                "memory reset requires exact confirmation token: RESET MINDLEAK".to_string(),
+            ));
+        }
+
+        crate::embed::ensure_table(&self.conn)?;
+        crate::telemetry::ensure_table(&self.conn)?;
+        let transaction = self.conn.unchecked_transaction()?;
+        let edges_removed = transaction.execute("DELETE FROM edges", [])?;
+        let embeddings_removed = transaction.execute("DELETE FROM embeddings", [])?;
+        let telemetry_events_removed = transaction.execute("DELETE FROM telemetry_events", [])?;
+        let nodes_removed = transaction.execute("DELETE FROM nodes", [])?;
+        transaction.commit()?;
+
+        Ok(ResetOutcome {
+            nodes_removed,
+            edges_removed,
+            embeddings_removed,
+            telemetry_events_removed,
+        })
+    }
 }
 
 fn impact_neighbor(id: &str, edge: &WeightedEdge) -> Option<String> {
@@ -1993,6 +2080,86 @@ mod tests {
         // Edge to n1 excluded because n1 is outside the snapshot node set.
         assert_eq!(snap.edges.len(), 1);
         assert_eq!(snap.edges[0].target_id, "n2");
+    }
+
+    #[test]
+    fn export_graph_includes_all_nodes_and_only_active_edges() {
+        let graph = store();
+        add_node(&graph, "artifact:a", NodeType::Artifact, "a", NOW);
+        add_node(&graph, "artifact:b", NodeType::Artifact, "b", NOW);
+        add_node(&graph, "artifact:c", NodeType::Artifact, "c", NOW);
+        graph
+            .upsert_edge(&raw_edge(
+                "artifact:a",
+                "artifact:b",
+                RelationType::Imports,
+                1.0,
+                168.0,
+                NOW,
+            ))
+            .unwrap();
+        graph
+            .upsert_edge(&raw_edge(
+                "artifact:b",
+                "artifact:c",
+                RelationType::RelatesTo,
+                0.01,
+                1.0,
+                NOW - 10 * HOUR,
+            ))
+            .unwrap();
+
+        let export = graph.export_graph(NOW).unwrap();
+
+        assert_eq!(export.schema_version, 1);
+        assert_eq!(export.nodes.len(), 3);
+        assert_eq!(export.edges.len(), 1);
+        assert_eq!(export.edges[0].relation, RelationType::Imports);
+    }
+
+    #[test]
+    fn backup_database_preserves_graph_state() {
+        let graph = store();
+        add_node(&graph, "artifact:a", NodeType::Artifact, "a", NOW);
+        let path = std::env::temp_dir().join(format!(
+            "mindleak-graph-backup-{}-{}.db",
+            std::process::id(),
+            NOW
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        graph.backup_database(&path).unwrap();
+
+        let restored = GraphStore::new(db::open(path.to_str().unwrap()).unwrap());
+        assert!(restored.get_node("artifact:a").unwrap().is_some());
+        drop(restored);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn reset_database_requires_exact_token_and_clears_memory_state() {
+        let graph = store();
+        add_node(&graph, "artifact:a", NodeType::Artifact, "a", NOW);
+        crate::embed::upsert(&graph.conn, "artifact:a", "test", &[1.0], NOW).unwrap();
+        crate::telemetry::record(
+            &graph.conn,
+            NOW,
+            "tool_call",
+            "graph_stats",
+            "ok",
+            Some(1),
+            None,
+        )
+        .unwrap();
+
+        assert!(graph.reset_database("yes").is_err());
+        assert!(graph.get_node("artifact:a").unwrap().is_some());
+
+        let outcome = graph.reset_database("RESET MINDLEAK").unwrap();
+        assert_eq!(outcome.nodes_removed, 1);
+        assert_eq!(outcome.embeddings_removed, 1);
+        assert_eq!(outcome.telemetry_events_removed, 1);
+        assert_eq!(graph.counts(NOW).unwrap(), (0, 0));
     }
 
     #[test]

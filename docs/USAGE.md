@@ -103,10 +103,16 @@ graph_stats()      # node / active-edge counts
 prune_graph()      # purge decayed edges + unreferenced stubs
 boost_entity(id)   # mark a node as recently focused, without rewriting evidence
 list_agents()      # roster + per-agent attention (needs MINDLEAK_AGENT set)
+export_graph()     # complete active graph JSON for review (not a backup)
+backup_database(path) # verified online backup; destination must not exist
 ```
 
 Decay is the point — don't fight it. If context fades too fast or too slow, tune
 half-lives rather than disabling decay.
+
+Destructive reset requires exact, plane-specific confirmation tokens. See
+**[DATA-LIFECYCLE.md](DATA-LIFECYCLE.md)** for backup, upgrade/rollback, export,
+reset, retention, and privacy procedures.
 
 ---
 

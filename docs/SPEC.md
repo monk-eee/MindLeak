@@ -172,6 +172,13 @@ maintenance never invokes an LLM. `consolidate_signal` uses the optional local
 model, persists an intent and provenance links, then acknowledges raw candidates
 only after success.
 
+**Local data lifecycle (ADR-0013):** `backup_database(path)` exists on each
+plane and uses SQLite online backup plus integrity verification. MindLeak also
+exposes `export_graph()` for human-readable active graph JSON and
+`reset_database(confirm="RESET MINDLEAK")`; Lodestar reset requires the distinct
+`RESET LODESTAR` token. Export is not a restorable backup, live restore is not
+supported, and resetting one plane never touches the other.
+
 **Optional semantic recall (ADR-0008):** `index` embeds nodes lacking a current
 vector; `recall(query, limit)` returns the nearest node ids by cosine similarity
 — entry points to *seed* `graph_multi_hop_query`, not a replacement for it.

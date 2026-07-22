@@ -118,6 +118,33 @@ pub fn list() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
+            "name": "export_graph",
+            "description": "Export every node and currently active, fully derived edge as human-readable JSON. This is an inspection/export format, not a restorable database backup.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "backup_database",
+            "description": "Create a verified online SQLite backup of the complete MindLeak memory plane. The destination must not already exist.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Destination path for the SQLite backup." }
+                },
+                "required": ["path"]
+            }
+        }),
+        json!({
+            "name": "reset_database",
+            "description": "Destructively clear the regenerable MindLeak graph, embeddings, and telemetry. Requires the exact confirmation token RESET MINDLEAK and never touches Lodestar intent.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "confirm": { "type": "string", "description": "Must be exactly RESET MINDLEAK." }
+                },
+                "required": ["confirm"]
+            }
+        }),
+        json!({
             "name": "consolidate_session",
             "description": "Optional: compress a batch of raw execution logs into a single intent node using a local, OpenAI-compatible model server (MINDLEAK_LLM_URL / MINDLEAK_MODEL); off the deterministic hot path and errors cleanly if no model is reachable.",
             "inputSchema": {
@@ -299,6 +326,22 @@ fn dispatch(engine: &MindLeak, params: &Value) -> Result<Value, String> {
                 &json!({ "nodes": nodes, "active_edges": edges }),
             ))
         }
+        "export_graph" => {
+            let export = engine.export_graph().map_err(|e| e.to_string())?;
+            Ok(text_result(&json!(export)))
+        }
+        "backup_database" => {
+            let path = req_str(&args, "path")?;
+            engine.backup_database(&path).map_err(|e| e.to_string())?;
+            Ok(text_result(&json!({ "backed_up": true, "path": path })))
+        }
+        "reset_database" => {
+            let confirmation = req_str(&args, "confirm")?;
+            let outcome = engine
+                .reset_database(&confirmation)
+                .map_err(|e| e.to_string())?;
+            Ok(text_result(&json!(outcome)))
+        }
         "consolidate_session" => {
             let logs = str_array(&args, "logs");
             let (id, outcome) = engine
@@ -424,6 +467,9 @@ mod tests {
             "index",
             "telemetry_snapshot",
             "consolidate_signal",
+            "export_graph",
+            "backup_database",
+            "reset_database",
         ] {
             assert!(
                 names.contains(&expected.to_string()),
@@ -463,6 +509,50 @@ mod tests {
         let text = content_text(&call_ok(&engine, "graph_stats", json!({})));
         assert!(text.contains("\"nodes\""));
         assert!(text.contains("\"active_edges\""));
+    }
+
+    #[test]
+    fn lifecycle_tools_export_backup_and_confirm_reset() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        call_ok(
+            &engine,
+            "ingest_file",
+            json!({ "path": "src/lib.rs", "content": "pub fn mindleak() {}" }),
+        );
+
+        let export: Value =
+            serde_json::from_str(&content_text(&call_ok(&engine, "export_graph", json!({}))))
+                .unwrap();
+        assert!(export["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["id"] == "artifact:src/lib.rs"));
+
+        let path =
+            std::env::temp_dir().join(format!("mindleak-mcp-backup-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        call_ok(
+            &engine,
+            "backup_database",
+            json!({ "path": path.to_str().unwrap() }),
+        );
+        assert!(path.exists());
+        std::fs::remove_file(path).unwrap();
+
+        let rejected = call(
+            &engine,
+            &json!({ "name": "reset_database", "arguments": { "confirm": "yes" } }),
+        )
+        .unwrap_err();
+        assert!(rejected.contains("RESET MINDLEAK"));
+        let reset = call_ok(
+            &engine,
+            "reset_database",
+            json!({ "confirm": "RESET MINDLEAK" }),
+        );
+        assert!(content_text(&reset).contains("nodes_removed"));
+        assert_eq!(engine.counts().unwrap(), (0, 0));
     }
 
     #[test]

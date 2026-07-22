@@ -142,5 +142,7 @@ deterministic path.
 
 - **[USAGE.md](USAGE.md)** — how an agent actually uses the tools (the memory
   loop, the intent plane, the full config reference).
+- **[DATA-LIFECYCLE.md](DATA-LIFECYCLE.md)** — backup, upgrade/rollback, export,
+  reset, retention, and privacy.
 - **[SPEC.md](SPEC.md)** / **[ARCHITECTURE.md](ARCHITECTURE.md)** — the design.
 - **[../DEVELOPERS.md](../DEVELOPERS.md)** — building, testing, and contributing.

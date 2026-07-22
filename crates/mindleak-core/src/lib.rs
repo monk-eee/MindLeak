@@ -22,13 +22,14 @@ pub mod net;
 pub mod telemetry;
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use error::{MindLeakError, Result};
 pub use graph::{
-    AgentActivity, ArtifactStub, ConformanceEvidence, Direction, EvidenceProvenance, GraphStore,
-    PruneOutcome, ScoredNode, SignalCandidate, SignalConsolidationOutcome, Subgraph, WeightedEdge,
-    WriteOutcome,
+    AgentActivity, ArtifactStub, ConformanceEvidence, Direction, EvidenceProvenance, GraphExport,
+    GraphStore, PruneOutcome, ResetOutcome, ScoredNode, SignalCandidate,
+    SignalConsolidationOutcome, Subgraph, WeightedEdge, WriteOutcome,
 };
 pub use model::{Edge, Node, NodeType, RelationType};
 
@@ -406,6 +407,22 @@ impl MindLeak {
 
     pub fn counts(&self) -> Result<(i64, i64)> {
         self.store.counts(now_unix())
+    }
+
+    /// Export the complete active graph as a human-readable, JSON-friendly
+    /// structure. This is intentionally distinct from a restorable backup.
+    pub fn export_graph(&self) -> Result<GraphExport> {
+        self.store.export_graph(now_unix())
+    }
+
+    /// Create a verified online SQLite backup without stopping this server.
+    pub fn backup_database(&self, destination: &str) -> Result<()> {
+        self.store.backup_database(Path::new(destination))
+    }
+
+    /// Clear regenerable memory only after the exact confirmation token.
+    pub fn reset_database(&self, confirmation: &str) -> Result<ResetOutcome> {
+        self.store.reset_database(confirmation)
     }
 
     /// The agent roster: `agent` nodes with their active observation counts.

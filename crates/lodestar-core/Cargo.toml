@@ -6,6 +6,7 @@ license.workspace = true
 description = "Lodestar: the Intent Plane for MindLeak — durable constitution, task coordination (claim/lease), conformance, and consolidated learned knowledge."
 
 [dependencies]
+mindleak-storage = { path = "../mindleak-storage" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rusqlite = { workspace = true }

@@ -163,6 +163,9 @@ It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
 | `graph_snapshot` | Subgraph for visualization. |
 | `prune_graph` | Surface near-expiry proven signal for consolidation, then purge decayed noise and unreferenced stubs. |
 | `graph_stats` | Node / active-edge counts. |
+| `export_graph` | Complete active graph JSON with fully derived edge weights (not a backup). |
+| `backup_database` | Create an integrity-checked online SQLite backup of the memory plane. |
+| `reset_database` | Clear regenerable memory only with the exact `RESET MINDLEAK` token. |
 | `consolidate_session` | Optional: compress raw logs into one intent node via a local Ollama model. |
 | `consolidate_signal` | Optional: consolidate queued proven signal, persist provenance links, then acknowledge raw evidence. |
 | `list_agents` | Roster of agents + their active observation counts (attribution). |
@@ -197,11 +200,16 @@ coordinate through one plane.
 | `consolidate` / `record_knowledge` | Gated promotion of learned regularities. |
 | `active_knowledge` / `reconfirm_knowledge` / `prune_knowledge` | Durable-but-revalidated knowledge. |
 | `lodestar_stats` | Goal / task / knowledge counts. |
+| `backup_database` | Create an integrity-checked online SQLite backup of the intent plane. |
+| `reset_database` | Clear durable intent only with the exact `RESET LODESTAR` token. |
 
 Design: [docs/SPEC-INTENT.md](docs/SPEC-INTENT.md) ·
 [ADR-0004](docs/adr/0004-intent-plane-spec-brain.md) ·
 [ADR-0005](docs/adr/0005-signal-weighted-decay.md) ·
 [ADR-0012](docs/adr/0012-derived-signal-evidence.md).
+
+Backup, upgrade, rollback, export, reset, and retention guidance:
+[docs/DATA-LIFECYCLE.md](docs/DATA-LIFECYCLE.md).
 
 ---
 

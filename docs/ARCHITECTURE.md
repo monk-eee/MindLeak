@@ -14,6 +14,12 @@ Agents · VS Code ─┬─ MCP/stdio ─▶ mindleak-mcp ─▶ mindleak-core �
 
 ## Crates
 
+### `mindleak-storage` (library)
+
+Shared platform-independent SQLite online backup and integrity verification
+(ADR-0013). Both planes call this primitive through their own stores; reset and
+export remain plane-specific operations.
+
 ### `mindleak-core` (library)
 
 The engine. Modules:
@@ -50,7 +56,7 @@ model), and `lib` (the `Lodestar` facade + conformance and gated consolidation).
 
 ### `lodestar-mcp` (binary)
 
-A second MCP stdio server exposing the Intent Plane (21 tools: constitution,
+A second MCP stdio server exposing the Intent Plane (23 tools: constitution,
 tasks, conformance, knowledge). Same newline-delimited JSON-RPC as `mindleak-mcp`.
 
 ### `editors/vscode` (extension)

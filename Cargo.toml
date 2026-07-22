@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/mindleak-storage",
     "crates/mindleak-core",
     "crates/mindleak-mcp",
     "crates/lodestar-core",
@@ -19,7 +20,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "=0.8.10"
 pep508_rs = "=0.6.1"
-rusqlite = { version = "0.31", features = ["bundled", "functions"] }
+rusqlite = { version = "0.31", features = ["backup", "bundled", "functions"] }
 regex = "1"
 sha2 = "0.10"
 thiserror = "1"
