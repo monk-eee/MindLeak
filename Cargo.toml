@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mindleak-core",
+    "crates/mindleak-mcp",
+    "crates/lodestar-core",
+    "crates/lodestar-mcp",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/monk-eee/MindLeak"
+rust-version = "1.75"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.31", features = ["bundled", "functions"] }
+regex = "1"
+sha2 = "0.10"
+thiserror = "1"
+ureq = { version = "2", features = ["json"] }
+anyhow = "1"
+
+[profile.release]
+lto = "thin"
+strip = true

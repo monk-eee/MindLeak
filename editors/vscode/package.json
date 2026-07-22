@@ -1,0 +1,154 @@
+{
+  "name": "mindleak",
+  "displayName": "MindLeak — Temporal Context Graph",
+  "description": "Live, decay-weighted context graph for coding agents. Visualizes the MindLeak MCP memory engine and passively feeds editor focus into it.",
+  "version": "0.1.0",
+  "publisher": "monk-eee",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Visualization",
+    "Machine Learning",
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "mindleak",
+          "title": "MindLeak",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "mindleak": [
+        {
+          "id": "mindleak.graphView",
+          "name": "Context Graph",
+          "type": "webview"
+        },
+        {
+          "id": "mindleak.boardView",
+          "name": "Intent Board",
+          "type": "tree"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "mindleak.refresh",
+        "title": "MindLeak: Refresh Graph",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "mindleak.prune",
+        "title": "MindLeak: Prune Decayed Edges"
+      },
+      {
+        "command": "mindleak.export",
+        "title": "MindLeak: Export Graph Snapshot (JSON)"
+      },
+      {
+        "command": "mindleak.ingestActiveFile",
+        "title": "MindLeak: Ingest Active File"
+      },
+      {
+        "command": "mindleak.board.refresh",
+        "title": "MindLeak: Refresh Intent Board",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "mindleak.checkConformance",
+        "title": "MindLeak: Check Conformance of Active File"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "mindleak.refresh",
+          "when": "view == mindleak.graphView",
+          "group": "navigation"
+        },
+        {
+          "command": "mindleak.board.refresh",
+          "when": "view == mindleak.boardView",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "MindLeak",
+      "properties": {
+        "mindleak.serverPath": {
+          "type": "string",
+          "default": "mindleak-mcp",
+          "description": "Path to the mindleak-mcp executable. Defaults to 'mindleak-mcp' on PATH; the extension also auto-detects a debug/release build in the workspace target/ folder."
+        },
+        "mindleak.databasePath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the MindLeak graph database (MINDLEAK_DB). Empty uses <workspace>/.mindleak/graph.db."
+        },
+        "mindleak.autoIngestOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ingest a file's symbols into the graph whenever it is saved."
+        },
+        "mindleak.snapshotLimit": {
+          "type": "number",
+          "default": 60,
+          "description": "Maximum number of nodes to render in the visualizer."
+        },
+        "mindleak.agentId": {
+          "type": "string",
+          "default": "vscode",
+          "description": "Agent id recorded for attribution (MINDLEAK_AGENT). Empty disables attribution from this editor."
+        },
+        "mindleak.lodestarServerPath": {
+          "type": "string",
+          "default": "lodestar-mcp",
+          "description": "Path to the lodestar-mcp executable (the Intent Plane). Defaults to 'lodestar-mcp' on PATH; a workspace target/ build is auto-detected."
+        },
+        "mindleak.lodestarDatabasePath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the Lodestar intent database (LODESTAR_DB). Empty uses <workspace>/.lodestar/spec.db."
+        },
+        "mindleak.conformanceOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "On save, check the file against governing intent and surface drift/violation as diagnostics."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "copy-assets": "node scripts/copy-assets.js",
+    "compile": "npm run copy-assets && tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "format": "prettier --check \"src/**/*.ts\" \"media/**/*.js\"",
+    "format:fix": "prettier --write \"src/**/*.ts\" \"media/**/*.js\"",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "1.85.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "cytoscape": "^3.30.0",
+    "eslint": "^8.57.0",
+    "prettier": "^3.2.0",
+    "typescript": "5.4.5",
+    "vitest": "^3.2.0"
+  }
+}
+

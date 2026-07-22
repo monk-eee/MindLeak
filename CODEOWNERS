@@ -1,0 +1,23 @@
+# CODEOWNERS for MindLeak
+#
+# GitHub honours this file for path-based review requests.
+# Each line maps a path glob to one or more owners. Last matching line wins.
+#
+# Format: <path-glob>   @<user-or-team>
+
+# Default owner for everything not matched below
+*                       @monk-eee
+
+# Core engine — the load-bearing graph + decay + ingestion logic
+/crates/mindleak-core/   @monk-eee
+
+# MCP server surface
+/crates/mindleak-mcp/    @monk-eee
+
+# VS Code extension
+/editors/vscode/         @monk-eee
+
+# Docs and design contract — keep current as part of every change
+/docs/                   @monk-eee
+/README.md               @monk-eee
+/AGENTS.md               @monk-eee

@@ -1,0 +1,15 @@
+[package]
+name = "mindleak-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MindLeak: Temporal Context Graph Engine (TCGE) core — decay-weighted graph memory for coding agents."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+regex = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+ureq = { workspace = true }

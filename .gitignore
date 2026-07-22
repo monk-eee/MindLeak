@@ -1,0 +1,24 @@
+# Rust
+/target
+**/*.rs.bk
+
+# MindLeak graph database (regenerable)
+.mindleak/
+*.db
+*.db-wal
+*.db-shm
+
+# Lodestar Intent Plane: task/lease state is local & regenerable; the exported
+# constitution is committable.
+/.lodestar/*
+!.lodestar/CONSTITUTION.md
+
+# Node / VS Code extension
+**/node_modules
+editors/vscode/out
+editors/vscode/*.vsix
+editors/vscode/media/vendor
+
+# Editor / OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,16 @@
+[package]
+name = "lodestar-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MCP server exposing the Lodestar Intent Plane (constitution, tasks, conformance, knowledge) to coding agents over stdio."
+
+[[bin]]
+name = "lodestar-mcp"
+path = "src/main.rs"
+
+[dependencies]
+lodestar-core = { path = "../lodestar-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

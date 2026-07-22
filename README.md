@@ -1,0 +1,205 @@
+# MindLeak
+
+**A local, decay-weighted context graph brain for coding agents.**
+
+MindLeak is a **Temporal Context Graph Engine (TCGE)** that turns raw developer
+telemetry (terminal runs, git commits, file symbols) into a directional knowledge
+graph whose edges **decay on an exponential half-life**, so stale context fades
+instead of drowning every query in historical noise. It ships as:
+
+- a **Rust core engine** ([`mindleak-core`](crates/mindleak-core)) — SQLite graph +
+  FTS5, decay engine, zero-token deterministic ingestion, optional local-LLM
+  consolidation;
+- a **Rust MCP server** ([`mindleak-mcp`](crates/mindleak-mcp)) — exposes the graph
+  to Copilot / Claude / Cursor / CLI agents over stdio;
+- a **VS Code extension** ([`editors/vscode`](editors/vscode)) — a passive editor
+  sensor plus a live Cytoscape graph visualizer.
+
+It is a complete, from-scratch replacement for flat log / vector-only agent
+memory. See [`docs/SPEC.md`](docs/SPEC.md) for the full design and
+[`docs/`](docs/) for architecture and development guides.
+
+> **Zero-token write path.** Ingestion uses pure pattern matching (regex + path +
+> exit code) — no LLM tokens. An optional local Ollama model only runs
+> asynchronously to consolidate noise into high-level intent nodes.
+
+---
+
+## Where everything is
+
+| I want to… | Go to |
+|---|---|
+| Understand the design | [docs/SPEC.md](docs/SPEC.md) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| Understand the *intent plane* (spec brain) | [docs/SPEC-INTENT.md](docs/SPEC-INTENT.md) · [ADR-0004](docs/adr/0004-intent-plane-spec-brain.md) |
+| Set up & run locally | [DEVELOPERS.md](DEVELOPERS.md) |
+| Contribute a change | [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) |
+| Constraints for AI agents | [AGENTS.md](AGENTS.md) |
+| Know *why* it's shaped this way | [RATIONALE.md](RATIONALE.md) · [docs/adr/](docs/adr/) |
+| See what changed | [CHANGELOG.md](CHANGELOG.md) |
+| Report a vulnerability | [SECURITY.md](SECURITY.md) |
+| Know who owns what | [CODEOWNERS](CODEOWNERS) |
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TD
+  subgraph editor["VS Code extension (TypeScript)"]
+    S["passive sensor<br/>focus / save"]
+    V["Cytoscape webview"]
+  end
+  subgraph core["mindleak-core (Rust)"]
+    I["deterministic ingest<br/>execution · git · ast"]
+    G[("SQLite graph + FTS5<br/>decay-weighted edges")]
+    D["decay + prune"]
+  end
+  M["mindleak-mcp<br/>MCP stdio server"]
+  O["Ollama (optional)<br/>glm4 / codegeex4"]
+  A["Agents<br/>Copilot · Claude · Cursor"]
+
+  S -->|MCP| M
+  V -->|MCP| M
+  M --> I --> G
+  D --> G
+  G -.async.-> O -.intent nodes.-> G
+  A <-->|MCP tools| M
+```
+
+---
+
+## Build
+
+Requires Rust 1.75+ and (for the extension) Node 18+.
+
+```bash
+# Core engine + MCP server
+cargo build --release
+
+# Run the test suite
+cargo test
+
+# VS Code extension
+cd editors/vscode
+npm install
+npm run compile
+```
+
+The MCP server binary lands at `target/release/mindleak-mcp` (or `target/debug/…`).
+
+For the full local workflow (lint, format, pre-commit, CI), see
+[`DEVELOPERS.md`](DEVELOPERS.md).
+
+---
+
+## Run the MCP server
+
+```bash
+# Uses MINDLEAK_DB if set, else <cwd>/.mindleak/graph.db
+MINDLEAK_DB="$PWD/.mindleak/graph.db" ./target/release/mindleak-mcp
+```
+
+It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
+
+### Register with an MCP client (VS Code / Copilot example)
+
+`.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "mindleak": {
+      "command": "${workspaceFolder}/target/release/mindleak-mcp",
+      "env": { "MINDLEAK_DB": "${workspaceFolder}/.mindleak/graph.db" }
+    }
+  }
+}
+```
+
+---
+
+## MCP tools
+
+| Tool | Purpose |
+|---|---|
+| `graph_multi_hop_query` | Traverse N hops from a seed node/phrase, decay-filtered. |
+| `get_impact_radius` | Blast radius of editing a file/symbol. |
+| `record_architectural_decision` | Persist a decision as a linked intent node. |
+| `ingest_execution` | Command + exit code → execution/modified/failed_on edges. |
+| `ingest_commit` | Commit → intent node + refactored edges + rationale. |
+| `ingest_file` | File → artifact + extracted symbols (`contains`). |
+| `boost_entity` | Elevate a node (editor focus) by resetting its decay clock. |
+| `graph_snapshot` | Subgraph for visualization. |
+| `prune_graph` | Purge decayed edges + orphaned executions. |
+| `graph_stats` | Node / active-edge counts. |
+| `consolidate_session` | Optional: compress raw logs into one intent node via a local Ollama model. |
+| `list_agents` | Roster of agents + their active observation counts (attribution). |
+
+---
+
+## Intent Plane tools (Lodestar)
+
+A second, **durable** MCP server ([`lodestar-mcp`](crates/lodestar-mcp)) — the
+"spec brain" that keeps parallel agents aligned to shared intent instead of
+diluting it. Register it alongside `mindleak-mcp`; it uses `LODESTAR_DB` (else
+`<cwd>/.lodestar/spec.db`), a shared file so local agents and worktrees
+coordinate through one plane.
+
+| Tool | Purpose |
+|---|---|
+| `define_goal` / `supersede_goal` | Write/version the constitution (objective · constraint · invariant). |
+| `get_constitution` | The authoritative intent to read **before acting**. |
+| `link_goal_to_code` | Bind a goal to MindLeak `artifact:`/`symbol:` nodes. |
+| `export_constitution` | Render the constitution to committed-friendly markdown. |
+| `create_task` / `decompose_goal` | Add claimable work (SLM-assisted, deterministic fallback). |
+| `next_task` | Suggest the next unblocked, claimable task. |
+| `claim_task` / `renew_lease` | **Atomic claim + lease** — collision-free parallel coordination. |
+| `complete_task` | Finish (owner-guarded), then run conformance; a violation blocks. |
+| `release_task` / `block_task` | Return or block work. |
+| `board` | Live who-owns-what snapshot. |
+| `check_conformance` | aligned · drift · violation against governing intent. |
+| `consolidate` / `record_knowledge` | Gated promotion of learned regularities. |
+| `active_knowledge` / `reconfirm_knowledge` / `prune_knowledge` | Durable-but-revalidated knowledge. |
+| `lodestar_stats` | Goal / task / knowledge counts. |
+
+Design: [docs/SPEC-INTENT.md](docs/SPEC-INTENT.md) ·
+[ADR-0004](docs/adr/0004-intent-plane-spec-brain.md) ·
+[ADR-0005](docs/adr/0005-signal-weighted-decay.md).
+
+---
+
+## Optional local-LLM consolidation
+
+The consolidator speaks the **OpenAI-compatible** `/v1/chat/completions` API, so
+it works with Ollama's `/v1` endpoint, LM Studio, llama.cpp's server, or any
+compatible host. Point it at your local server:
+
+```bash
+export MINDLEAK_LLM_URL="http://localhost:11434/v1"   # Ollama's OpenAI endpoint
+export MINDLEAK_MODEL="glm4:9b"                        # or codegeex4:9b, qwen2.5-coder…
+# export MINDLEAK_LLM_API_KEY="sk-…"                    # only for hosted servers
+```
+
+The consolidator ([`consolidate.rs`](crates/mindleak-core/src/consolidate.rs))
+uses a strict JSON `response_format` to compress raw logs into a single `intent`
+node via the `consolidate_session` tool. It is optional and never on the hot
+path — it errors cleanly when no model is reachable.
+
+---
+
+## Layout
+
+```
+crates/
+  mindleak-core/   memory plane: db · model · decay · graph · ingest · consolidate
+  mindleak-mcp/    stdio JSON-RPC MCP server (12 tools)
+  lodestar-core/   intent plane: constitution · tasks (claim/lease) · conformance · knowledge
+  lodestar-mcp/    stdio JSON-RPC MCP server (21 tools)
+editors/
+  vscode/          passive sensor + Cytoscape visualizer
+docs/              SPEC · SPEC-INTENT · ARCHITECTURE · CONTRIBUTING
+```
+
+## License
+
+MIT.

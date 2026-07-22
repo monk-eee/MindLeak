@@ -1,0 +1,13 @@
+out
+node_modules
+src
+scripts
+tsconfig.json
+vitest.config.ts
+.eslintrc.json
+.prettierrc.json
+.prettierignore
+**/*.map
+**/*.ts
+!out/**/*.js
+.gitignore

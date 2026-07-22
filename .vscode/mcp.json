@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "mindleak": {
+      "command": "${workspaceFolder}/target/release/mindleak-mcp",
+      "env": {
+        "MINDLEAK_DB": "${workspaceFolder}/.mindleak/graph.db"
+      }
+    }
+  }
+}

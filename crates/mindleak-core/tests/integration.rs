@@ -1,0 +1,152 @@
+//! End-to-end integration tests over the MindLeak facade.
+
+use mindleak_core::ingest::execution::ExecutionRecord;
+use mindleak_core::ingest::git::CommitRecord;
+use mindleak_core::{now_unix, MindLeak, NodeType};
+
+fn exec(command: &str, exit: i32, output: &str, changed: &[&str]) -> ExecutionRecord {
+    ExecutionRecord {
+        command: command.to_string(),
+        exit_code: exit,
+        output: output.to_string(),
+        cwd: None,
+        changed_files: changed.iter().map(|s| s.to_string()).collect(),
+        timestamp: now_unix(),
+    }
+}
+
+#[test]
+fn ingest_execution_creates_execution_and_artifact_nodes() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    let outcome = engine
+        .ingest_execution(&exec("cargo build", 0, "ok", &["src/auth.rs"]))
+        .unwrap();
+    assert!(outcome.nodes_created >= 2); // execution + artifact
+    assert!(outcome.edges_created >= 1); // modified edge
+
+    let art = engine.store().get_node("artifact:src/auth.rs").unwrap();
+    assert!(art.is_some());
+    assert_eq!(art.unwrap().node_type, NodeType::Artifact);
+}
+
+#[test]
+fn failed_execution_links_failed_on_edges_from_stack_trace() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_execution(&exec(
+            "cargo test",
+            101,
+            "thread panicked at src/graph.rs:120: boom",
+            &[],
+        ))
+        .unwrap();
+
+    let sub = engine.impact_radius("artifact:src/graph.rs").unwrap();
+    assert!(sub.edges.iter().any(|e| e.relation.as_str() == "failed_on"));
+}
+
+#[test]
+fn multi_hop_query_reaches_symbols_two_hops_out() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    // file -> contains -> symbol
+    engine
+        .ingest_file("src/auth.ts", "export function validateSession() {}\n")
+        .unwrap();
+    // execution -> modified -> file
+    engine
+        .ingest_execution(&exec("npm test", 0, "", &["src/auth.ts"]))
+        .unwrap();
+
+    let sub = engine
+        .multi_hop_query("artifact:src/auth.ts", 2, 0.05)
+        .unwrap();
+    assert!(sub
+        .nodes
+        .iter()
+        .any(|n| n.node.id == "symbol:src/auth.ts:validateSession"));
+}
+
+#[test]
+fn record_decision_creates_intent_linked_to_related_nodes() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("src/db.rs", "pub fn open() {}\n")
+        .unwrap();
+
+    let (intent_id, outcome) = engine
+        .record_decision(
+            "Opted for SQLite over Neo4j for zero-dependency local runs",
+            &["artifact:src/db.rs".to_string()],
+        )
+        .unwrap();
+    assert!(intent_id.starts_with("intent:"));
+    assert_eq!(outcome.edges_created, 1);
+
+    let node = engine.store().get_node(&intent_id).unwrap().unwrap();
+    assert_eq!(node.node_type, NodeType::Intent);
+}
+
+#[test]
+fn commit_ingestion_extracts_rationale() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    let rec = CommitRecord {
+        sha: Some("abc123".to_string()),
+        message: "Fix token crash\n\n// DECISION: null-guard the JWT path".to_string(),
+        changed_files: vec!["src/auth.rs".to_string()],
+        timestamp: now_unix(),
+    };
+    engine.ingest_commit(&rec).unwrap();
+    let node = engine.store().get_node("intent:abc123").unwrap().unwrap();
+    assert!(node.content.unwrap().contains("null-guard the JWT path"));
+}
+
+#[test]
+fn snapshot_returns_recent_nodes() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine.ingest_file("src/a.rs", "fn a() {}\n").unwrap();
+    engine.ingest_file("src/b.rs", "fn b() {}\n").unwrap();
+    let sub = engine.snapshot(None, 50).unwrap();
+    assert!(sub.nodes.len() >= 4);
+}
+
+#[test]
+fn ingest_file_creates_in_file_call_edges() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("src/lib.rs", "fn a() {\n    b();\n}\nfn b() {}\n")
+        .unwrap();
+    let sub = engine
+        .multi_hop_query("symbol:src/lib.rs:a", 1, 0.05)
+        .unwrap();
+    assert!(sub.edges.iter().any(|e| e.relation.as_str() == "calls"
+        && e.source_id == "symbol:src/lib.rs:a"
+        && e.target_id == "symbol:src/lib.rs:b"));
+}
+
+#[test]
+fn agent_attribution_records_observed_edges_and_roster() {
+    let engine = MindLeak::open_in_memory()
+        .unwrap()
+        .with_agent(Some("claude".into()));
+    engine.ingest_file("src/auth.rs", "fn a() {}\n").unwrap();
+
+    // The agent observed the artifact it ingested.
+    let sub = engine.multi_hop_query("agent:claude", 1, 0.05).unwrap();
+    assert!(sub.edges.iter().any(|e| e.relation.as_str() == "observed"
+        && e.source_id == "agent:claude"
+        && e.target_id == "artifact:src/auth.rs"));
+
+    // The roster reflects the activity.
+    let agents = engine.list_agents().unwrap();
+    assert!(agents
+        .iter()
+        .any(|a| a.id == "agent:claude" && a.observations >= 1));
+}
+
+#[test]
+fn no_agent_means_no_attribution() {
+    let engine = MindLeak::open_in_memory().unwrap(); // no MINDLEAK_AGENT
+    engine.ingest_file("src/x.rs", "fn a() {}\n").unwrap();
+    assert!(engine.list_agents().unwrap().is_empty());
+    assert!(engine.store().get_node("agent:claude").unwrap().is_none());
+}

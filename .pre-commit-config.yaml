@@ -1,0 +1,58 @@
+# Pre-commit hooks for MindLeak.
+# Install once:  pip install pre-commit  &&  pre-commit install  &&  pre-commit install --hook-type pre-push
+# Run manually:  pre-commit run --all-files
+minimum_pre_commit_version: "3.5.0"
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all --
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --all-targets --all-features -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: eslint
+        name: eslint (vscode extension)
+        entry: npm --prefix editors/vscode run lint
+        language: system
+        files: ^editors/vscode/src/.*\.ts$
+        pass_filenames: false
+
+      - id: prettier
+        name: prettier (vscode extension)
+        entry: npm --prefix editors/vscode run format
+        language: system
+        files: ^editors/vscode/(src|media)/.*\.(ts|js)$
+        pass_filenames: false
+
+      # Slower gate — runs on push, not every commit.
+      - id: cargo-test
+        name: cargo test
+        entry: cargo test --all
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]

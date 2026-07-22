@@ -1,0 +1,37 @@
+# Normalise all text to LF in the repo, regardless of contributor OS.
+# This is the source of truth the pre-commit `mixed-line-ending --fix=lf`
+# hook enforces — without it, Windows checkouts can reintroduce CRLF and make
+# the shell hook scripts fail with `bad interpreter: /bin/sh^M`.
+* text=auto eol=lf
+
+# Rust / Node / config — always LF.
+*.rs        text eol=lf
+*.toml      text eol=lf
+*.ts        text eol=lf
+*.js        text eol=lf
+*.json      text eol=lf
+*.jsonc     text eol=lf
+*.css       text eol=lf
+*.html      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.md        text eol=lf
+*.sh        text eol=lf
+*.sql       text eol=lf
+
+# Windows-only scripts must stay CRLF or cmd.exe mis-parses them.
+*.cmd       text eol=crlf
+*.bat       text eol=crlf
+
+# Lockfiles are text but noisy — keep LF, let git handle them.
+Cargo.lock       text eol=lf
+package-lock.json text eol=lf
+
+# Binaries — never normalise or diff as text.
+*.png       binary
+*.jpg       binary
+*.gif       binary
+*.ico       binary
+*.webp      binary
+*.db        binary
+*.vsix      binary
