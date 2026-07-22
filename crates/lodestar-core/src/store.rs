@@ -10,15 +10,24 @@ use serde::Serialize;
 
 use crate::decay::ACTIVE_THRESHOLD;
 use crate::error::{LodestarError, Result};
-use crate::model::{Goal, GoalKind, GoalStatus, Knowledge, Task, TaskStatus, Verdict};
+use crate::model::{
+    CodeBinding, CodeBindingMode, Goal, GoalKind, GoalStatus, Knowledge, Task, TaskStatus, Verdict,
+};
 use crate::util::{short_hash, slugify};
 
 const GOAL_COLS: &str =
     "id, slug, kind, title, statement, status, version, parent_id, superseded_by, reason, created_at";
 const TASK_COLS: &str = "id, goal_id, parent_task_id, title, acceptance, status, owner, \
-     lease_expires_at, blocked_by, created_at, updated_at";
+    claim_started_at, lease_expires_at, blocked_by, created_at, updated_at";
 const KNOWLEDGE_COLS: &str =
     "id, statement, evidence, weight, half_life_hours, confirmed_at, created_at";
+
+pub(crate) struct ConformanceAudit<'a> {
+    pub evidence_schema_version: u32,
+    pub evidence: &'a str,
+    pub verdict: Verdict,
+    pub findings: &'a str,
+}
 
 /// Summary counts for status displays.
 #[derive(Debug, Clone, Serialize)]
@@ -161,12 +170,18 @@ impl LodestarStore {
 
     // ---- goal ↔ code seam --------------------------------------------------
 
-    pub fn link_goal_to_code(&self, goal_id: &str, node_ids: &[String]) -> Result<usize> {
+    pub fn link_goal_to_code(
+        &self,
+        goal_id: &str,
+        node_ids: &[String],
+        mode: CodeBindingMode,
+    ) -> Result<usize> {
         let mut linked = 0;
         for node in node_ids {
             linked += self.conn.execute(
-                "INSERT OR IGNORE INTO goal_code (goal_id, node_id) VALUES (?1, ?2)",
-                params![goal_id, node],
+                "INSERT INTO goal_code (goal_id, node_id, mode) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(goal_id, node_id) DO UPDATE SET mode = excluded.mode",
+                params![goal_id, node, mode.as_str()],
             )?;
         }
         Ok(linked)
@@ -180,10 +195,10 @@ impl LodestarStore {
         collect(rows)
     }
 
-    /// Active goals governing a given code node (used by conformance).
-    pub fn active_goals_for_node(&self, node_id: &str) -> Result<Vec<Goal>> {
+    /// Active goal policies governing a given code node.
+    pub fn active_bindings_for_node(&self, node_id: &str) -> Result<Vec<CodeBinding>> {
         let sql = format!(
-            "SELECT {} FROM goal_code c JOIN goals g ON g.id = c.goal_id
+            "SELECT {}, c.mode FROM goal_code c JOIN goals g ON g.id = c.goal_id
              WHERE c.node_id = ?1 AND g.status = 'active'",
             GOAL_COLS
                 .split(", ")
@@ -192,7 +207,13 @@ impl LodestarStore {
                 .join(", ")
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![node_id], row_to_goal)?;
+        let rows = stmt.query_map(params![node_id], |row| {
+            let mode: String = row.get(11)?;
+            Ok(CodeBinding {
+                goal: row_to_goal(row)?,
+                mode: CodeBindingMode::from_tag(&mode).unwrap_or(CodeBindingMode::Governed),
+            })
+        })?;
         collect(rows)
     }
 
@@ -218,6 +239,7 @@ impl LodestarStore {
             acceptance: acceptance.to_string(),
             status: TaskStatus::Open,
             owner: None,
+            claim_started_at: None,
             lease_expires_at: None,
             blocked_by: None,
             created_at: now,
@@ -225,8 +247,8 @@ impl LodestarStore {
         };
         self.conn.execute(
             "INSERT INTO tasks
-                (id, goal_id, parent_task_id, title, acceptance, status, owner, lease_expires_at, blocked_by, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'open', NULL, NULL, NULL, ?6, ?6)",
+                     (id, goal_id, parent_task_id, title, acceptance, status, owner, claim_started_at, lease_expires_at, blocked_by, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'open', NULL, NULL, NULL, NULL, ?6, ?6)",
             params![
                 task.id,
                 task.goal_id,
@@ -255,7 +277,11 @@ impl LodestarStore {
     pub fn claim_task(&self, id: &str, agent: &str, lease_secs: i64, now: i64) -> Result<bool> {
         let changed = self.conn.execute(
             "UPDATE tasks
-                SET status = 'claimed', owner = ?2, lease_expires_at = ?3, updated_at = ?4
+                SET status = 'claimed', owner = ?2,
+                    claim_started_at = CASE
+                        WHEN status = 'claimed' AND owner = ?2 AND lease_expires_at >= ?4
+                        THEN claim_started_at ELSE ?4 END,
+                    lease_expires_at = ?3, updated_at = ?4
               WHERE id = ?1
                 AND (status = 'open'
                      OR (status = 'claimed' AND lease_expires_at < ?4)
@@ -271,22 +297,6 @@ impl LodestarStore {
             "UPDATE tasks SET lease_expires_at = ?3, updated_at = ?4
               WHERE id = ?1 AND owner = ?2 AND status = 'claimed'",
             params![id, agent, now + lease_secs, now],
-        )?;
-        Ok(changed == 1)
-    }
-
-    /// Owner-guarded status transition out of `claimed` (e.g. into `in_review`).
-    pub fn set_task_status(
-        &self,
-        id: &str,
-        agent: &str,
-        status: TaskStatus,
-        now: i64,
-    ) -> Result<bool> {
-        let changed = self.conn.execute(
-            "UPDATE tasks SET status = ?3, updated_at = ?4
-              WHERE id = ?1 AND owner = ?2 AND status = 'claimed'",
-            params![id, agent, status.as_str(), now],
         )?;
         Ok(changed == 1)
     }
@@ -310,7 +320,8 @@ impl LodestarStore {
     /// Release a claim back to `open` (owner-guarded).
     pub fn release_task(&self, id: &str, agent: &str, now: i64) -> Result<bool> {
         let changed = self.conn.execute(
-            "UPDATE tasks SET status = 'open', owner = NULL, lease_expires_at = NULL, updated_at = ?3
+            "UPDATE tasks SET status = 'open', owner = NULL, claim_started_at = NULL,
+                                                            lease_expires_at = NULL, updated_at = ?3
               WHERE id = ?1 AND owner = ?2",
             params![id, agent, now],
         )?;
@@ -342,18 +353,63 @@ impl LodestarStore {
 
     // ---- conformance audit -------------------------------------------------
 
-    pub fn record_conformance(
+    pub(crate) fn record_conformance(
         &self,
         task_id: Option<&str>,
-        verdict: Verdict,
-        findings: &str,
+        audit: ConformanceAudit<'_>,
         now: i64,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO conformance (task_id, verdict, findings, checked_at) VALUES (?1, ?2, ?3, ?4)",
-            params![task_id, verdict.as_str(), findings, now],
+            "INSERT INTO conformance
+                 (task_id, evidence_schema_version, evidence, verdict, findings, checked_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                task_id,
+                audit.evidence_schema_version,
+                audit.evidence,
+                audit.verdict.as_str(),
+                audit.findings,
+                now
+            ],
         )?;
         Ok(())
+    }
+
+    /// Atomically leave `claimed` and persist the evidence-backed verdict.
+    pub(crate) fn record_conformance_and_transition(
+        &self,
+        task_id: &str,
+        agent: &str,
+        audit: ConformanceAudit<'_>,
+        target_status: TaskStatus,
+        now: i64,
+    ) -> Result<bool> {
+        let transaction = self.conn.unchecked_transaction()?;
+        let changed = transaction.execute(
+            "UPDATE tasks
+                SET status = ?3, lease_expires_at = NULL, updated_at = ?4
+              WHERE id = ?1 AND owner = ?2 AND status = 'claimed'
+                AND lease_expires_at >= ?4",
+            params![task_id, agent, target_status.as_str(), now],
+        )?;
+        if changed != 1 {
+            return Ok(false);
+        }
+        transaction.execute(
+            "INSERT INTO conformance
+                 (task_id, evidence_schema_version, evidence, verdict, findings, checked_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                task_id,
+                audit.evidence_schema_version,
+                audit.evidence,
+                audit.verdict.as_str(),
+                audit.findings,
+                now
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(true)
     }
 
     // ---- knowledge: consolidated experience --------------------------------
@@ -495,10 +551,11 @@ fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
         acceptance: row.get(4)?,
         status: TaskStatus::from_tag(&status).unwrap_or(TaskStatus::Open),
         owner: row.get(6)?,
-        lease_expires_at: row.get(7)?,
-        blocked_by: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
+        claim_started_at: row.get(7)?,
+        lease_expires_at: row.get(8)?,
+        blocked_by: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
     })
 }
 
@@ -570,18 +627,40 @@ mod tests {
     }
 
     #[test]
-    fn only_owner_can_transition_or_release() {
+    fn only_owner_can_record_conformance_or_release() {
         let s = store();
         let g = goal(&s);
         let t = s.create_task(&g.id, "task", "", None, NOW).unwrap();
         s.claim_task(&t.id, "alice", 60, NOW).unwrap();
 
         assert!(!s
-            .set_task_status(&t.id, "bob", TaskStatus::InReview, NOW)
+            .record_conformance_and_transition(
+                &t.id,
+                "bob",
+                ConformanceAudit {
+                    evidence_schema_version: 1,
+                    evidence: "{}",
+                    verdict: Verdict::NeedsHuman,
+                    findings: "missing evidence",
+                },
+                TaskStatus::InReview,
+                NOW,
+            )
             .unwrap());
         assert!(!s.release_task(&t.id, "bob", NOW).unwrap());
         assert!(s
-            .set_task_status(&t.id, "alice", TaskStatus::InReview, NOW)
+            .record_conformance_and_transition(
+                &t.id,
+                "alice",
+                ConformanceAudit {
+                    evidence_schema_version: 1,
+                    evidence: "{}",
+                    verdict: Verdict::NeedsHuman,
+                    findings: "missing evidence",
+                },
+                TaskStatus::InReview,
+                NOW,
+            )
             .unwrap());
     }
 
@@ -606,11 +685,16 @@ mod tests {
     fn goal_code_seam_resolves_active_governors() {
         let s = store();
         let g = goal(&s);
-        s.link_goal_to_code(&g.id, &["artifact:src/x.rs".into()])
-            .unwrap();
-        let governors = s.active_goals_for_node("artifact:src/x.rs").unwrap();
-        assert_eq!(governors.len(), 1);
-        assert_eq!(governors[0].id, g.id);
+        s.link_goal_to_code(
+            &g.id,
+            &["artifact:src/x.rs".into()],
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
+        let bindings = s.active_bindings_for_node("artifact:src/x.rs").unwrap();
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].goal.id, g.id);
+        assert_eq!(bindings[0].mode, CodeBindingMode::Governed);
     }
 
     #[test]

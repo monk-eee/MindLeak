@@ -14,7 +14,10 @@ fn main() -> anyhow::Result<()> {
     if let Some(parent) = Path::new(&db_path).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let engine = Lodestar::open(&db_path)?;
+    let agent = std::env::var("LODESTAR_AGENT")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let engine = Lodestar::open(&db_path)?.with_agent(agent);
     eprintln!("[lodestar-mcp] ready — intent plane at {db_path}");
     server::run(engine)
 }

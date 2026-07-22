@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   boardRows,
   conformanceDiagnostic,
+  evidenceRequestForTask,
   parseToolResult,
   resolveBinaryPath,
   resolveServerPath,
@@ -106,5 +107,46 @@ describe("conformanceDiagnostic", () => {
       "error"
     );
     expect(conformanceDiagnostic({ verdict: "drift", findings: [] })?.severity).toBe("warning");
+  });
+});
+
+describe("evidenceRequestForTask", () => {
+  it("uses the owner and stable claim window", () => {
+    expect(
+      evidenceRequestForTask(
+        {
+          id: "task:auth",
+          goal_id: "goal:auth",
+          title: "Harden auth",
+          status: "claimed",
+          owner: "agent-a",
+          claim_started_at: 100,
+        },
+        "fallback",
+        150
+      )
+    ).toEqual({
+      task_id: "task:auth",
+      agent_id: "agent-a",
+      started_at: 100,
+      ended_at: 150,
+    });
+  });
+
+  it("rejects an unclaimed task or missing claim window", () => {
+    expect(() =>
+      evidenceRequestForTask(
+        { id: "task:x", goal_id: "goal:x", title: "x", status: "open" },
+        "agent-a",
+        150
+      )
+    ).toThrow("not claimed");
+    expect(() =>
+      evidenceRequestForTask(
+        { id: "task:x", goal_id: "goal:x", title: "x", status: "claimed" },
+        "agent-a",
+        150
+      )
+    ).toThrow("no claim start");
   });
 });

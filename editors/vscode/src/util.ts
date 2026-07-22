@@ -73,7 +73,42 @@ export interface LodestarTask {
   acceptance?: string;
   status: string;
   owner?: string | null;
+  claim_started_at?: number | null;
   lease_expires_at?: number | null;
+}
+
+export interface EvidenceRequest {
+  task_id: string;
+  agent_id: string;
+  started_at: number;
+  ended_at: number;
+}
+
+/** Build the MindLeak evidence request for one live Lodestar claim. */
+export function evidenceRequestForTask(
+  task: LodestarTask,
+  fallbackAgent: string,
+  endedAt: number
+): EvidenceRequest {
+  if (task.status !== "claimed") {
+    throw new Error(`task ${task.id} is not claimed`);
+  }
+  const agent = task.owner?.trim() || fallbackAgent.trim();
+  if (!agent) {
+    throw new Error(`task ${task.id} has no agent identity`);
+  }
+  if (typeof task.claim_started_at !== "number") {
+    throw new Error(`task ${task.id} has no claim start`);
+  }
+  if (endedAt < task.claim_started_at) {
+    throw new Error(`task ${task.id} claim starts after the evidence window`);
+  }
+  return {
+    task_id: task.id,
+    agent_id: agent,
+    started_at: task.claim_started_at,
+    ended_at: endedAt,
+  };
 }
 
 /** A display row for the board tree. */

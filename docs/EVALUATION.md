@@ -34,6 +34,29 @@ Machine-readable result:
 This is a correctness improvement, not evidence of agent productivity. The
 baseline remains immutable so later results cannot erase the pre-change state.
 
+## Structural impact unlock
+
+ADR-0006 phase 1 added deterministic JavaScript/TypeScript imports, package
+nodes, and named cross-file call resolution. The strict fixture now requires all
+three structural outcomes:
+
+| Scenario | After ADR-0007 | After ADR-0006 phase 1 |
+|---|---|---|
+| Stale structure retraction | Pass | Pass |
+| Importing artifact discovered | Fail | Pass |
+| Typed `imports` edge present | Fail | Pass |
+| Named cross-file `calls` edge present | Fail | Pass |
+| Co-imported sibling excluded | Not measured | Pass |
+| Comment/member-call false edge excluded | Not measured | Pass |
+| Mixed/index/explicit consumer-first stub promoted | Not measured | Pass |
+| Scoped `require` shadowing respected | Not measured | Pass |
+
+Machine-readable result:
+[2026-07-22-js-ts-import-impact.json](../benchmarks/results/2026-07-22-js-ts-import-impact.json).
+
+This proves the supported JS/TS fixture only. It is not yet a multi-language
+precision/recall benchmark and does not satisfy the broader product threshold.
+
 ## Reproduce
 
 From the repository root:
@@ -51,16 +74,16 @@ scenario returns a nonzero exit code.
 
 ## Interpretation
 
-These are expected baseline failures, not flaky tests:
+The original failures were expected baseline behavior, not flaky tests:
 
 - file ingestion currently reinforces newly observed structure but does not
   retract facts absent from the latest file snapshot;
 - source extraction currently emits in-file symbols and calls but no cross-file
   import relation.
 
-The stale-structure scenario is the Phase 1 correctness gate. The cross-file
-scenario is the first ADR-0006 capability gate. Each result must turn green
-without weakening its expected value.
+Both original gates are now green without weakening their expected values. The
+next impact proof expands fixtures and truth sets before claiming the broader
+precision/recall target.
 
 ## Validation limitation
 

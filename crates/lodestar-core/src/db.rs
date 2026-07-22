@@ -29,8 +29,42 @@ fn configure(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "busy_timeout", 5000)?;
     conn.execute_batch(SCHEMA)?;
+    migrate(conn)?;
     register_functions(conn)?;
     Ok(())
+}
+
+fn migrate(conn: &Connection) -> Result<()> {
+    for (table, column, definition) in [
+        ("tasks", "claim_started_at", "INTEGER"),
+        ("goal_code", "mode", "TEXT NOT NULL DEFAULT 'governed'"),
+        ("conformance", "evidence_schema_version", "INTEGER"),
+        ("conformance", "evidence", "TEXT"),
+    ] {
+        if !column_exists(conn, table, column)? {
+            conn.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+            ))?;
+        }
+    }
+    conn.execute(
+        "UPDATE tasks
+         SET claim_started_at = updated_at
+         WHERE status = 'claimed' AND claim_started_at IS NULL",
+        [],
+    )?;
+    Ok(())
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for row in rows {
+        if row? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn register_functions(conn: &Connection) -> Result<()> {

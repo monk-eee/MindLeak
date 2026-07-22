@@ -2,17 +2,23 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 
-import { BoardViewProvider } from "./boardViewProvider";
+import { BoardItem, BoardViewProvider } from "./boardViewProvider";
 import { GraphViewProvider } from "./graphViewProvider";
 import { McpClient } from "./mcpClient";
-import { conformanceDiagnostic, resolveBinaryPath, resolveServerPath, toArtifactId } from "./util";
+import {
+  conformanceDiagnostic,
+  evidenceRequestForTask,
+  resolveBinaryPath,
+  resolveServerPath,
+  toArtifactId,
+} from "./util";
 
 let client: McpClient | undefined;
 let lodestar: McpClient | undefined;
 let provider: GraphViewProvider | undefined;
 let board: BoardViewProvider | undefined;
-let diagnostics: vscode.DiagnosticCollection | undefined;
 let output: vscode.OutputChannel;
+let configuredAgentId = "vscode";
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   output = vscode.window.createOutputChannel("MindLeak");
@@ -30,6 +36,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const dbPath =
     config.get<string>("databasePath", "") || path.join(workspace, ".mindleak", "graph.db");
   const agentId = config.get<string>("agentId", "vscode");
+  configuredAgentId = agentId;
 
   client = new McpClient(
     serverPath,
@@ -52,9 +59,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider(BoardViewProvider.viewType, board)
   );
-  diagnostics = vscode.languages.createDiagnosticCollection("mindleak-conformance");
-  context.subscriptions.push(diagnostics);
-
   const lodestarPath = resolveBinaryPath(
     config.get<string>("lodestarServerPath", "lodestar-mcp"),
     workspace,
@@ -104,9 +108,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (config.get<boolean>("autoIngestOnSave", true)) {
         void onSave(doc);
       }
-      if (config.get<boolean>("conformanceOnSave", true)) {
-        void checkConformance(doc);
-      }
     })
   );
 
@@ -121,11 +122,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     vscode.commands.registerCommand("mindleak.board.refresh", () => refreshBoard()),
-    vscode.commands.registerCommand("mindleak.checkConformance", () => {
-      const doc = vscode.window.activeTextEditor?.document;
-      if (doc) {
-        void checkConformance(doc);
-      }
+    vscode.commands.registerCommand("mindleak.task.completeWithEvidence", (item?: BoardItem) => {
+      void completeWithEvidence(item);
     })
   );
 
@@ -239,29 +237,40 @@ async function refreshBoard(): Promise<void> {
   }
 }
 
-async function checkConformance(doc: vscode.TextDocument): Promise<void> {
-  if (!lodestar?.isReady() || !diagnostics || doc.uri.scheme !== "file") {
+async function completeWithEvidence(item?: BoardItem): Promise<void> {
+  if (!client?.isReady() || !lodestar?.isReady()) {
+    vscode.window.showWarningMessage("MindLeak and Lodestar must both be connected.");
+    return;
+  }
+  if (!item) {
+    vscode.window.showWarningMessage("Run this command from a claimed task in the Intent Board.");
     return;
   }
   try {
-    const result = await lodestar.callTool("check_conformance", {
-      change_node_ids: [artifactId(doc)],
+    const request = evidenceRequestForTask(
+      item.task,
+      configuredAgentId,
+      Math.floor(Date.now() / 1000)
+    );
+    const evidence = await client.callTool("evidence_for", { ...request });
+    const result = await lodestar.callTool("complete_task", {
+      task_id: item.task.id,
+      evidence,
     });
-    const diag = conformanceDiagnostic(result);
-    if (!diag) {
-      diagnostics.delete(doc.uri);
-      return;
+    const conformance = result.conformance ?? result;
+    const diagnostic = conformanceDiagnostic(conformance);
+    const message = diagnostic?.message ?? `MindLeak conformance: aligned — ${item.task.title}`;
+    if (diagnostic?.severity === "error") {
+      vscode.window.showErrorMessage(message);
+    } else if (diagnostic?.severity === "warning") {
+      vscode.window.showWarningMessage(message);
+    } else {
+      vscode.window.showInformationMessage(message);
     }
-    const severity =
-      diag.severity === "error"
-        ? vscode.DiagnosticSeverity.Error
-        : diag.severity === "warning"
-          ? vscode.DiagnosticSeverity.Warning
-          : vscode.DiagnosticSeverity.Information;
-    const entry = new vscode.Diagnostic(new vscode.Range(0, 0, 0, 1), diag.message, severity);
-    entry.source = "MindLeak";
-    diagnostics.set(doc.uri, [entry]);
+    await refreshBoard();
   } catch (err) {
-    output.appendLine(`conformance error: ${(err as Error).message}`);
+    vscode.window.showErrorMessage(
+      `MindLeak evidence completion failed: ${(err as Error).message}`
+    );
   }
 }

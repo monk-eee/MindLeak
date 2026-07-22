@@ -55,6 +55,13 @@ pub struct WriteOutcome {
     pub node_ids: Vec<String>,
 }
 
+/// An unresolved artifact plus every deterministic path it may reconcile to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactStub {
+    pub node_id: String,
+    pub candidate_ids: Vec<String>,
+}
+
 /// An `agent` node with its current activity (roster entry).
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentActivity {
@@ -63,6 +70,35 @@ pub struct AgentActivity {
     pub observations: i64,
     pub last_active: i64,
 }
+
+/// One graph fact supporting a conformance evidence claim (ADR-0009).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EvidenceProvenance {
+    pub source_id: String,
+    pub target_id: String,
+    pub relation: String,
+}
+
+/// Bounded, versioned evidence passed across the loose MindLeak/Lodestar seam.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConformanceEvidence {
+    pub schema_version: u32,
+    pub task_id: Option<String>,
+    pub agent_id: String,
+    pub started_at: i64,
+    pub ended_at: i64,
+    pub changed_node_ids: Vec<String>,
+    pub failed_node_ids: Vec<String>,
+    pub execution_ids: Vec<String>,
+    pub successful_execution_ids: Vec<String>,
+    pub commit_ids: Vec<String>,
+    pub summary: String,
+    pub provenance: Vec<EvidenceProvenance>,
+}
+
+const EVIDENCE_SCHEMA_VERSION: u32 = 1;
+const EVIDENCE_MAX_EVENTS: usize = 200;
+const EVIDENCE_MAX_PROVENANCE: usize = 1_000;
 
 /// The persistent graph store.
 pub struct GraphStore {
@@ -93,6 +129,7 @@ impl GraphStore {
         owner_id: &str,
         nodes: &[Node],
         edges: &[Edge],
+        artifact_stubs: &[ArtifactStub],
     ) -> Result<WriteOutcome> {
         if let Some(edge) = edges
             .iter()
@@ -104,6 +141,40 @@ impl GraphStore {
             )));
         }
         let transaction = self.conn.unchecked_transaction()?;
+        let aliases = {
+            let mut statement = transaction.prepare(
+                "SELECT DISTINCT stub_id
+                 FROM artifact_stub_candidates
+                 WHERE candidate_id = ?1 AND stub_id <> ?1",
+            )?;
+            let rows = statement.query_map(params![owner_id], |row| row.get::<_, String>(0))?;
+            let mut aliases = Vec::new();
+            for row in rows {
+                aliases.push(row?);
+            }
+            aliases
+        };
+        transaction.execute(
+            "DELETE FROM artifact_stubs WHERE node_id = ?1",
+            params![owner_id],
+        )?;
+        let mut real_artifacts = HashSet::new();
+        for stub in artifact_stubs {
+            let is_real: bool = transaction.query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM nodes n
+                     WHERE n.id = ?1
+                       AND NOT EXISTS (
+                           SELECT 1 FROM artifact_stubs s WHERE s.node_id = n.id
+                       )
+                 )",
+                params![stub.node_id],
+                |row| row.get(0),
+            )?;
+            if is_real {
+                real_artifacts.insert(stub.node_id.clone());
+            }
+        }
         let artifact_path = owner_id.strip_prefix("artifact:").unwrap_or(owner_id);
         let symbol_prefix = format!("symbol:{artifact_path}:");
         transaction.execute(
@@ -136,16 +207,35 @@ impl GraphStore {
             keys
         };
         let desired: HashSet<(String, String, String)> = edges.iter().map(edge_key).collect();
-        let stale_symbol_ids: Vec<String> = existing
+        let stale_node_ids: HashSet<String> = existing
             .iter()
-            .filter(|(source, _, relation)| source == owner_id && relation == "contains")
-            .map(|(_, target, _)| target.clone())
+            .flat_map(|(source, target, _)| [source, target])
+            .filter(|id| id.starts_with("symbol:") || id.starts_with("package:"))
+            .cloned()
             .collect();
 
         let mut outcome = WriteOutcome::default();
         for node in nodes {
             if upsert_node_on(&transaction, node)? {
                 outcome.nodes_created += 1;
+            }
+        }
+        for alias in aliases {
+            promote_artifact_stub(&transaction, &alias, owner_id)?;
+        }
+        for stub in artifact_stubs {
+            if !real_artifacts.contains(&stub.node_id) {
+                transaction.execute(
+                    "INSERT OR IGNORE INTO artifact_stubs (node_id) VALUES (?1)",
+                    params![stub.node_id],
+                )?;
+                for candidate_id in &stub.candidate_ids {
+                    transaction.execute(
+                        "INSERT OR IGNORE INTO artifact_stub_candidates
+                             (stub_id, candidate_id) VALUES (?1, ?2)",
+                        params![stub.node_id, candidate_id],
+                    )?;
+                }
             }
         }
 
@@ -162,16 +252,17 @@ impl GraphStore {
             }
         }
 
-        for symbol_id in stale_symbol_ids {
+        for node_id in stale_node_ids {
             transaction.execute(
                 "DELETE FROM nodes
-                 WHERE id = ?1 AND type = 'symbol'
+                 WHERE id = ?1 AND type IN ('symbol', 'package')
                    AND NOT EXISTS (
                        SELECT 1 FROM edges WHERE source_id = ?1 OR target_id = ?1
                    )",
-                params![symbol_id],
+                params![node_id],
             )?;
         }
+        delete_orphan_artifact_stubs(&transaction)?;
 
         transaction.commit()?;
         Ok(outcome)
@@ -204,6 +295,28 @@ impl GraphStore {
             Some(row) => Ok(Some(row_to_node(row)?)),
             None => Ok(None),
         }
+    }
+
+    /// Pick the first already-ingested artifact from deterministic candidates.
+    pub fn resolve_artifact_candidate(&self, candidates: &[String]) -> Result<Option<String>> {
+        for path in candidates {
+            let id = format!("artifact:{path}");
+            let is_real: bool = self.conn.query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM nodes n
+                     WHERE n.id = ?1
+                       AND NOT EXISTS (
+                           SELECT 1 FROM artifact_stubs s WHERE s.node_id = n.id
+                       )
+                 )",
+                params![id],
+                |row| row.get(0),
+            )?;
+            if is_real {
+                return Ok(Some(path.clone()));
+            }
+        }
+        Ok(None)
     }
 
     /// Full-text search over node labels + content. Returns best matches first.
@@ -294,15 +407,18 @@ impl GraphStore {
         min_weight: f64,
         now: i64,
     ) -> Result<Subgraph> {
-        self.traverse_where(seeds, direction, max_depth, min_weight, now, |_| true)
+        self.traverse_where(seeds, direction, max_depth, min_weight, now, |id, edge| {
+            Some(if edge.source_id == id {
+                edge.target_id.clone()
+            } else {
+                edge.source_id.clone()
+            })
+        })
     }
 
-    /// Impact traversal excludes agent attention: observing two artifacts does
-    /// not make either one a dependency of the other.
+    /// Impact traversal follows dependencies toward affected callers/importers.
     pub fn impact_radius(&self, seeds: &[String], now: i64) -> Result<Subgraph> {
-        self.traverse_where(seeds, Direction::Both, 2, 0.1, now, |edge| {
-            edge.relation != RelationType::Observed
-        })
+        self.traverse_where(seeds, Direction::Both, 2, 0.1, now, impact_neighbor)
     }
 
     fn traverse_where(
@@ -312,7 +428,7 @@ impl GraphStore {
         max_depth: u32,
         min_weight: f64,
         now: i64,
-        include_edge: impl Fn(&WeightedEdge) -> bool,
+        neighbor_for: impl Fn(&str, &WeightedEdge) -> Option<String>,
     ) -> Result<Subgraph> {
         let mut best: HashMap<String, (u32, f64)> = HashMap::new();
         let mut edge_seen: HashSet<(String, String, String)> = HashSet::new();
@@ -331,13 +447,8 @@ impl GraphStore {
                 continue;
             }
             for we in self.edges_for(&id, direction, min_weight, now)? {
-                if !include_edge(&we) {
+                let Some(neighbor) = neighbor_for(&id, &we) else {
                     continue;
-                }
-                let neighbor = if we.source_id == id {
-                    we.target_id.clone()
-                } else {
-                    we.source_id.clone()
                 };
                 let key = (
                     we.source_id.clone(),
@@ -398,14 +509,18 @@ impl GraphStore {
         )?;
         let symbols_removed = self.conn.execute(
             "DELETE FROM nodes
-             WHERE type = 'symbol'
+             WHERE type IN ('symbol', 'package')
                AND NOT EXISTS (
                    SELECT 1 FROM edges
                    WHERE source_id = nodes.id OR target_id = nodes.id
                )",
             [],
         )?;
-        Ok((edges_removed, executions_removed + symbols_removed))
+        let stubs_removed = delete_orphan_artifact_stubs(&self.conn)?;
+        Ok((
+            edges_removed,
+            executions_removed + symbols_removed + stubs_removed,
+        ))
     }
 
     /// Total node / edge counts (for status displays).
@@ -448,6 +563,148 @@ impl GraphStore {
         Ok(out)
     }
 
+    /// Reconstruct attributed episodic evidence in a bounded work window.
+    /// Observation establishes attribution; only mutation relations establish
+    /// changed nodes.
+    pub fn evidence_for(
+        &self,
+        task_id: Option<&str>,
+        agent: &str,
+        started_at: i64,
+        ended_at: i64,
+    ) -> Result<ConformanceEvidence> {
+        if started_at > ended_at {
+            return Err(MindLeakError::Other(
+                "evidence start must not be after its end".to_string(),
+            ));
+        }
+        let agent = agent.trim().strip_prefix("agent:").unwrap_or(agent.trim());
+        if agent.is_empty() {
+            return Err(MindLeakError::Other(
+                "evidence agent must not be empty".to_string(),
+            ));
+        }
+        let agent_node_id = format!("agent:{agent}");
+        let mut event_statement = self.conn.prepare(
+            "SELECT n.id, n.type, n.content
+             FROM edges observation
+             JOIN nodes n ON n.id = observation.target_id
+             WHERE observation.source_id = ?1
+               AND observation.relation = 'observed'
+               AND n.type IN ('execution', 'intent')
+               AND n.created_at >= ?2 AND n.created_at <= ?3
+             ORDER BY n.created_at, n.id
+             LIMIT ?4",
+        )?;
+        let event_rows = event_statement.query_map(
+            params![
+                agent_node_id,
+                started_at,
+                ended_at,
+                EVIDENCE_MAX_EVENTS as i64
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )?;
+        let mut events = Vec::new();
+        for row in event_rows {
+            events.push(row?);
+        }
+
+        let mut changed_node_ids = Vec::new();
+        let mut failed_node_ids = Vec::new();
+        let mut execution_ids = Vec::new();
+        let mut successful_execution_ids = Vec::new();
+        let mut commit_ids = Vec::new();
+        let mut provenance = Vec::new();
+        let mut changed_seen = HashSet::new();
+        let mut failed_seen = HashSet::new();
+
+        for (event_id, event_type, content) in events {
+            if provenance.len() < EVIDENCE_MAX_PROVENANCE {
+                provenance.push(EvidenceProvenance {
+                    source_id: agent_node_id.clone(),
+                    target_id: event_id.clone(),
+                    relation: RelationType::Observed.as_str().to_string(),
+                });
+            }
+            if event_type == NodeType::Execution.as_str() {
+                execution_ids.push(event_id.clone());
+                if content.as_deref().and_then(|value| value.lines().next()) == Some("exit=0") {
+                    successful_execution_ids.push(event_id.clone());
+                }
+            }
+
+            let mut fact_statement = self.conn.prepare(
+                "SELECT target_id, relation
+                 FROM edges
+                 WHERE source_id = ?1
+                   AND relation IN ('modified', 'failed_on', 'refactored')
+                 ORDER BY relation, target_id",
+            )?;
+            let fact_rows = fact_statement.query_map(params![event_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            let mut is_commit = false;
+            for row in fact_rows {
+                if provenance.len() >= EVIDENCE_MAX_PROVENANCE {
+                    break;
+                }
+                let (target_id, relation) = row?;
+                match relation.as_str() {
+                    "modified" | "refactored" => {
+                        if changed_seen.insert(target_id.clone()) {
+                            changed_node_ids.push(target_id.clone());
+                        }
+                        is_commit |= relation == "refactored";
+                    }
+                    "failed_on" => {
+                        if failed_seen.insert(target_id.clone()) {
+                            failed_node_ids.push(target_id.clone());
+                        }
+                    }
+                    _ => {}
+                }
+                provenance.push(EvidenceProvenance {
+                    source_id: event_id.clone(),
+                    target_id,
+                    relation,
+                });
+            }
+            if event_type == NodeType::Intent.as_str() && is_commit {
+                commit_ids.push(event_id);
+            }
+        }
+
+        let summary = format!(
+            "agent={agent}; executions={}; successful={}; commits={}; changed={}; failed={}",
+            execution_ids.len(),
+            successful_execution_ids.len(),
+            commit_ids.len(),
+            changed_node_ids.len(),
+            failed_node_ids.len()
+        );
+        Ok(ConformanceEvidence {
+            schema_version: EVIDENCE_SCHEMA_VERSION,
+            task_id: task_id.map(str::to_string),
+            agent_id: agent.to_string(),
+            started_at,
+            ended_at,
+            changed_node_ids,
+            failed_node_ids,
+            execution_ids,
+            successful_execution_ids,
+            commit_ids,
+            summary,
+            provenance,
+        })
+    }
+
     /// A snapshot of the most recently accessed nodes and the active edges
     /// among them — used by the editor visualizer.
     pub fn snapshot(&self, limit: usize, now: i64) -> Result<Subgraph> {
@@ -488,6 +745,27 @@ impl GraphStore {
             nodes,
             edges,
         })
+    }
+}
+
+fn impact_neighbor(id: &str, edge: &WeightedEdge) -> Option<String> {
+    match edge.relation {
+        RelationType::Contains => {
+            if edge.source_id == id {
+                Some(edge.target_id.clone())
+            } else if edge.target_id == id {
+                Some(edge.source_id.clone())
+            } else {
+                None
+            }
+        }
+        RelationType::Calls
+        | RelationType::Imports
+        | RelationType::Modified
+        | RelationType::FailedOn
+        | RelationType::Refactored
+        | RelationType::RelatesTo => (edge.target_id == id).then(|| edge.source_id.clone()),
+        RelationType::Observed => None,
     }
 }
 
@@ -578,6 +856,93 @@ fn structural_source_belongs_to_owner(edge: &Edge, owner_id: &str) -> bool {
     let artifact_path = owner_id.strip_prefix("artifact:").unwrap_or(owner_id);
     edge.source_id
         .starts_with(&format!("symbol:{artifact_path}:"))
+}
+
+fn delete_orphan_artifact_stubs(connection: &Connection) -> Result<usize> {
+    Ok(connection.execute(
+        "DELETE FROM nodes
+         WHERE id IN (SELECT node_id FROM artifact_stubs)
+           AND NOT EXISTS (
+               SELECT 1 FROM edges
+               WHERE source_id = nodes.id OR target_id = nodes.id
+           )",
+        [],
+    )?)
+}
+
+fn promote_artifact_stub(connection: &Connection, stub_id: &str, real_id: &str) -> Result<()> {
+    connection.execute(
+        "INSERT OR IGNORE INTO edges (
+             source_id, target_id, relation, weight, half_life_hours, updated_at,
+             first_seen, reinforcement_count, owner_id
+         )
+         SELECT source_id, ?2, relation, weight, half_life_hours, updated_at,
+                first_seen, reinforcement_count, owner_id
+         FROM edges
+         WHERE target_id = ?1 AND relation = 'imports'",
+        params![stub_id, real_id],
+    )?;
+    connection.execute(
+        "DELETE FROM edges WHERE target_id = ?1 AND relation = 'imports'",
+        params![stub_id],
+    )?;
+
+    let stub_path = stub_id.strip_prefix("artifact:").unwrap_or(stub_id);
+    let real_path = real_id.strip_prefix("artifact:").unwrap_or(real_id);
+    let stub_symbol_prefix = format!("symbol:{stub_path}:");
+    let call_targets = {
+        let mut statement = connection.prepare(
+            "SELECT DISTINCT target_id
+             FROM edges
+             WHERE relation = 'calls'
+               AND substr(target_id, 1, length(?1)) = ?1",
+        )?;
+        let rows =
+            statement.query_map(params![stub_symbol_prefix], |row| row.get::<_, String>(0))?;
+        let mut targets = Vec::new();
+        for row in rows {
+            targets.push(row?);
+        }
+        targets
+    };
+    for old_target in call_targets {
+        let symbol_name = &old_target[stub_symbol_prefix.len()..];
+        let new_target = format!("symbol:{real_path}:{symbol_name}");
+        if node_exists_on(connection, &new_target)? {
+            connection.execute(
+                "INSERT OR IGNORE INTO edges (
+                     source_id, target_id, relation, weight, half_life_hours, updated_at,
+                     first_seen, reinforcement_count, owner_id
+                 )
+                 SELECT source_id, ?2, relation, weight, half_life_hours, updated_at,
+                        first_seen, reinforcement_count, owner_id
+                 FROM edges
+                 WHERE target_id = ?1 AND relation = 'calls'",
+                params![old_target, new_target],
+            )?;
+        }
+        connection.execute(
+            "DELETE FROM edges WHERE target_id = ?1 AND relation = 'calls'",
+            params![old_target],
+        )?;
+        connection.execute(
+            "DELETE FROM nodes
+             WHERE id = ?1 AND type = 'symbol'
+               AND NOT EXISTS (
+                   SELECT 1 FROM edges WHERE source_id = ?1 OR target_id = ?1
+               )",
+            params![old_target],
+        )?;
+    }
+    connection.execute(
+        "DELETE FROM nodes
+         WHERE id = ?1
+           AND NOT EXISTS (
+               SELECT 1 FROM edges WHERE source_id = ?1 OR target_id = ?1
+           )",
+        params![stub_id],
+    )?;
+    Ok(())
 }
 
 fn row_to_node(row: &Row) -> rusqlite::Result<Node> {
@@ -752,8 +1117,13 @@ mod tests {
             RelationType::Contains,
             NOW,
         );
-        s.replace_structure("artifact:a", &[owner.clone(), original], &[original_edge])
-            .unwrap();
+        s.replace_structure(
+            "artifact:a",
+            &[owner.clone(), original],
+            &[original_edge],
+            &[],
+        )
+        .unwrap();
 
         let replacement = Node::new("symbol:a:new", NodeType::Symbol, "new", NOW);
         let invalid_edge = Edge::new(
@@ -763,7 +1133,7 @@ mod tests {
             NOW,
         );
         assert!(s
-            .replace_structure("artifact:a", &[owner, replacement], &[invalid_edge])
+            .replace_structure("artifact:a", &[owner, replacement], &[invalid_edge], &[],)
             .is_err());
 
         assert!(s.get_node("symbol:a:original").unwrap().is_some());
@@ -808,7 +1178,7 @@ mod tests {
 
         let current_contains =
             Edge::new("artifact:a", "symbol:a:caller", RelationType::Contains, NOW);
-        s.replace_structure("artifact:a", &[owner, caller], &[current_contains])
+        s.replace_structure("artifact:a", &[owner, caller], &[current_contains], &[])
             .unwrap();
 
         assert!(s.get_node("symbol:a:removed").unwrap().is_none());
@@ -837,6 +1207,7 @@ mod tests {
             "artifact:a",
             &[owner.clone(), symbol.clone()],
             std::slice::from_ref(&contains),
+            &[],
         )
         .unwrap();
         s.conn
@@ -847,7 +1218,7 @@ mod tests {
             .unwrap();
 
         let error = s
-            .replace_structure("artifact:a", &[owner, symbol], &[contains])
+            .replace_structure("artifact:a", &[owner, symbol], &[contains], &[])
             .unwrap_err();
         assert!(error.to_string().contains("owned by artifact:other"));
         let owner_id: String = s
@@ -1018,7 +1389,7 @@ mod tests {
         let owner = Node::new("artifact:a", NodeType::Artifact, "a", NOW);
         let symbol = Node::new("symbol:a:old", NodeType::Symbol, "old", NOW);
         let contains = Edge::new("artifact:a", "symbol:a:old", RelationType::Contains, NOW);
-        s.replace_structure("artifact:a", &[owner.clone(), symbol], &[contains])
+        s.replace_structure("artifact:a", &[owner.clone(), symbol], &[contains], &[])
             .unwrap();
         add_node(&s, "agent:a", NodeType::Agent, "a", NOW);
         s.upsert_edge(&raw_edge(
@@ -1031,7 +1402,8 @@ mod tests {
         ))
         .unwrap();
 
-        s.replace_structure("artifact:a", &[owner], &[]).unwrap();
+        s.replace_structure("artifact:a", &[owner], &[], &[])
+            .unwrap();
         assert!(s.get_node("symbol:a:old").unwrap().is_some());
 
         let (edges_removed, nodes_removed) = s.prune(NOW).unwrap();
@@ -1069,6 +1441,32 @@ mod tests {
             .edges
             .iter()
             .all(|edge| edge.relation != RelationType::Observed));
+    }
+
+    #[test]
+    fn impact_radius_does_not_cross_to_coimported_dependencies() {
+        let s = store();
+        for id in ["artifact:a", "artifact:b", "artifact:consumer"] {
+            add_node(&s, id, NodeType::Artifact, id, NOW);
+        }
+        for target in ["artifact:a", "artifact:b"] {
+            s.upsert_edge(&raw_edge(
+                "artifact:consumer",
+                target,
+                RelationType::Imports,
+                1.0,
+                168.0,
+                NOW,
+            ))
+            .unwrap();
+        }
+
+        let impact = s.impact_radius(&["artifact:a".into()], NOW).unwrap();
+        assert!(impact
+            .nodes
+            .iter()
+            .any(|node| node.node.id == "artifact:consumer"));
+        assert!(!impact.nodes.iter().any(|node| node.node.id == "artifact:b"));
     }
 
     #[test]

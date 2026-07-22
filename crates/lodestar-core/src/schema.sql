@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     acceptance       TEXT NOT NULL DEFAULT '',
     status           TEXT NOT NULL,        -- open|claimed|in_review|done|blocked|abandoned
     owner            TEXT,                 -- agent id holding the claim
+    claim_started_at INTEGER,              -- start of the current owner's evidence window
     lease_expires_at INTEGER,              -- unix seconds; past this is reclaimable
     blocked_by       TEXT,                 -- optional task id
     created_at       INTEGER NOT NULL,
@@ -43,6 +44,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_goal   ON tasks(goal_id);
 CREATE TABLE IF NOT EXISTS goal_code (
     goal_id TEXT NOT NULL,
     node_id TEXT NOT NULL,
+    mode    TEXT NOT NULL DEFAULT 'governed', -- governed | forbid_change
     PRIMARY KEY (goal_id, node_id)
 );
 CREATE INDEX IF NOT EXISTS idx_goal_code_node ON goal_code(node_id);
@@ -51,6 +53,8 @@ CREATE INDEX IF NOT EXISTS idx_goal_code_node ON goal_code(node_id);
 CREATE TABLE IF NOT EXISTS conformance (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id    TEXT,
+    evidence_schema_version INTEGER,
+    evidence   TEXT,
     verdict    TEXT NOT NULL,             -- aligned | drift | violation | needs_human
     findings   TEXT NOT NULL DEFAULT '',
     checked_at INTEGER NOT NULL

@@ -118,6 +118,63 @@ pub enum Verdict {
     NeedsHuman,
 }
 
+/// How an active goal governs a linked MindLeak code node (ADR-0009).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeBindingMode {
+    Governed,
+    ForbidChange,
+}
+
+impl CodeBindingMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CodeBindingMode::Governed => "governed",
+            CodeBindingMode::ForbidChange => "forbid_change",
+        }
+    }
+
+    pub fn from_tag(value: &str) -> Option<Self> {
+        match value {
+            "governed" => Some(CodeBindingMode::Governed),
+            "forbid_change" => Some(CodeBindingMode::ForbidChange),
+            _ => None,
+        }
+    }
+}
+
+/// An active goal plus the policy governing one linked code node.
+#[derive(Debug, Clone)]
+pub struct CodeBinding {
+    pub goal: Goal,
+    pub mode: CodeBindingMode,
+}
+
+/// One MindLeak graph fact supporting an evidence claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvidenceProvenance {
+    pub source_id: String,
+    pub target_id: String,
+    pub relation: String,
+}
+
+/// Versioned evidence received across the loose MindLeak/Lodestar seam.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConformanceEvidence {
+    pub schema_version: u32,
+    pub task_id: Option<String>,
+    pub agent_id: String,
+    pub started_at: i64,
+    pub ended_at: i64,
+    pub changed_node_ids: Vec<String>,
+    pub failed_node_ids: Vec<String>,
+    pub execution_ids: Vec<String>,
+    pub successful_execution_ids: Vec<String>,
+    pub commit_ids: Vec<String>,
+    pub summary: String,
+    pub provenance: Vec<EvidenceProvenance>,
+}
+
 impl Verdict {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -155,6 +212,7 @@ pub struct Task {
     pub acceptance: String,
     pub status: TaskStatus,
     pub owner: Option<String>,
+    pub claim_started_at: Option<i64>,
     pub lease_expires_at: Option<i64>,
     pub blocked_by: Option<String>,
     pub created_at: i64,

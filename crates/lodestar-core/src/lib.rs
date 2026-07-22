@@ -18,15 +18,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use error::{LodestarError, Result};
 pub use model::{
-    ConformanceResult, Goal, GoalKind, GoalStatus, Knowledge, Task, TaskStatus, Verdict,
+    CodeBindingMode, ConformanceEvidence, ConformanceResult, EvidenceProvenance, Goal, GoalKind,
+    GoalStatus, Knowledge, Task, TaskStatus, Verdict,
 };
 pub use store::{LodestarStore, Stats};
 
 use llm::LlmClient;
+use store::ConformanceAudit;
 
 /// Gating thresholds for consolidation (ADR-0005: don't launder coincidence).
 const MIN_EVIDENCE_COUNT: usize = 3;
 const MIN_EVIDENCE_SPAN_SECS: i64 = 3 * 24 * 3600; // proven across days, not one session
+const MAX_EVIDENCE_EVENTS: usize = 200;
+const MAX_EVIDENCE_PROVENANCE: usize = 1_000;
+const MAX_EVIDENCE_SUMMARY_BYTES: usize = 4_096;
 
 /// Current unix time in whole seconds.
 pub fn now_unix() -> i64 {
@@ -40,6 +45,7 @@ pub fn now_unix() -> i64 {
 pub struct Lodestar {
     store: LodestarStore,
     llm: LlmClient,
+    agent: Option<String>,
 }
 
 impl Lodestar {
@@ -47,6 +53,7 @@ impl Lodestar {
         Ok(Lodestar {
             store: LodestarStore::new(db::open(path)?),
             llm: LlmClient::default(),
+            agent: None,
         })
     }
 
@@ -54,6 +61,7 @@ impl Lodestar {
         Ok(Lodestar {
             store: LodestarStore::new(db::open_in_memory()?),
             llm: LlmClient::default(),
+            agent: None,
         })
     }
 
@@ -61,6 +69,11 @@ impl Lodestar {
     /// deterministic no-model fallback regardless of any local server).
     pub fn with_llm(mut self, llm: LlmClient) -> Self {
         self.llm = llm;
+        self
+    }
+
+    pub fn with_agent(mut self, agent: Option<String>) -> Self {
+        self.agent = agent.filter(|value| !value.trim().is_empty());
         self
     }
 
@@ -91,11 +104,25 @@ impl Lodestar {
         self.store.goals_by_status(GoalStatus::Active)
     }
 
-    pub fn link_goal_to_code(&self, goal_id: &str, node_ids: &[String]) -> Result<usize> {
+    pub fn link_goal_to_code(
+        &self,
+        goal_id: &str,
+        node_ids: &[String],
+        mode: CodeBindingMode,
+    ) -> Result<usize> {
         if !self.store.goal_exists(goal_id)? {
             return Err(LodestarError::NotFound(goal_id.to_string()));
         }
-        self.store.link_goal_to_code(goal_id, node_ids)
+        let goal = self
+            .store
+            .get_goal(goal_id)?
+            .ok_or_else(|| LodestarError::NotFound(goal_id.to_string()))?;
+        if mode == CodeBindingMode::ForbidChange && !goal.kind.is_normative() {
+            return Err(LodestarError::Invalid(
+                "forbid_change is valid only for constraints and invariants".to_string(),
+            ));
+        }
+        self.store.link_goal_to_code(goal_id, node_ids, mode)
     }
 
     /// Render the active constitution as committed-friendly markdown; optionally
@@ -149,14 +176,17 @@ impl Lodestar {
     }
 
     pub fn claim_task(&self, id: &str, agent: &str, lease_secs: i64) -> Result<bool> {
+        let agent = self.resolve_agent(agent)?;
         self.store.claim_task(id, agent, lease_secs, now_unix())
     }
 
     pub fn renew_lease(&self, id: &str, agent: &str, lease_secs: i64) -> Result<bool> {
+        let agent = self.resolve_agent(agent)?;
         self.store.renew_lease(id, agent, lease_secs, now_unix())
     }
 
     pub fn release_task(&self, id: &str, agent: &str) -> Result<bool> {
+        let agent = self.resolve_agent(agent)?;
         self.store.release_task(id, agent, now_unix())
     }
 
@@ -169,100 +199,328 @@ impl Lodestar {
         self.store.board()
     }
 
-    /// Complete a task (owner-guarded), then run conformance over the code its
-    /// goal governs. A `violation` blocks the task instead of completing it.
-    /// Returns `(completed, conformance)`.
-    pub fn complete_task(&self, id: &str, agent: &str) -> Result<(bool, ConformanceResult)> {
+    /// Complete a task only when claim-bounded evidence conforms (ADR-0009).
+    pub fn complete_task(
+        &self,
+        id: &str,
+        agent: &str,
+        evidence: &ConformanceEvidence,
+    ) -> Result<(bool, ConformanceResult)> {
         let now = now_unix();
+        let agent = self.resolve_agent(agent)?;
         let task = self
             .store
             .get_task(id)?
             .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
-        if !self
-            .store
-            .set_task_status(id, agent, TaskStatus::InReview, now)?
-        {
+        self.validate_claim_evidence(&task, agent, evidence, now)?;
+        let conformance = self.evaluate_conformance(evidence, Some(&task))?;
+        let target_status = match conformance.verdict {
+            Verdict::Aligned => TaskStatus::Done,
+            Verdict::Violation => TaskStatus::Blocked,
+            Verdict::Drift | Verdict::NeedsHuman => TaskStatus::InReview,
+        };
+        let serialized = serde_json::to_string(evidence)?;
+        let findings = conformance.findings.join("; ");
+        if !self.store.record_conformance_and_transition(
+            id,
+            agent,
+            ConformanceAudit {
+                evidence_schema_version: evidence.schema_version,
+                evidence: &serialized,
+                verdict: conformance.verdict,
+                findings: &findings,
+            },
+            target_status,
+            now,
+        )? {
             return Err(LodestarError::Invalid(format!(
-                "task {id} is not claimed by {agent}"
+                "task {id} claim changed before conformance could be recorded"
             )));
         }
-        let nodes = self.store.code_for_goal(&task.goal_id)?;
-        let conformance = self.evaluate_conformance(&nodes, Some(id))?;
-        if conformance.verdict == Verdict::Violation {
-            self.store
-                .force_status(id, TaskStatus::Blocked, None, now)?;
-            Ok((false, conformance))
-        } else {
-            self.store.force_status(id, TaskStatus::Done, None, now)?;
-            Ok((true, conformance))
-        }
+        Ok((conformance.verdict == Verdict::Aligned, conformance))
     }
 
     // ---- conformance -------------------------------------------------------
 
-    /// Check whether a set of changed code nodes conforms to governing intent.
+    /// Check evidence without changing task state; uses the completion evaluator.
     pub fn check_conformance(
         &self,
-        change_node_ids: &[String],
+        evidence: &ConformanceEvidence,
         task_id: Option<&str>,
     ) -> Result<ConformanceResult> {
-        self.evaluate_conformance(change_node_ids, task_id)
+        let resolved_task_id = match (task_id, evidence.task_id.as_deref()) {
+            (Some(left), Some(right)) if left != right => {
+                return Err(LodestarError::Invalid(
+                    "evidence task_id does not match requested task".to_string(),
+                ));
+            }
+            (Some(id), _) | (_, Some(id)) => Some(id),
+            (None, None) => None,
+        };
+        let task = match resolved_task_id {
+            Some(id) => Some(
+                self.store
+                    .get_task(id)?
+                    .ok_or_else(|| LodestarError::NotFound(id.to_string()))?,
+            ),
+            None => None,
+        };
+        if let Some(task) = task.as_ref() {
+            let agent = self.resolve_agent(&evidence.agent_id)?;
+            self.validate_claim_evidence(task, agent, evidence, now_unix())?;
+        } else {
+            self.validate_evidence_shape(evidence)?;
+        }
+        let conformance = self.evaluate_conformance(evidence, task.as_ref())?;
+        let serialized = serde_json::to_string(evidence)?;
+        let findings = conformance.findings.join("; ");
+        self.store.record_conformance(
+            resolved_task_id,
+            ConformanceAudit {
+                evidence_schema_version: evidence.schema_version,
+                evidence: &serialized,
+                verdict: conformance.verdict,
+                findings: &findings,
+            },
+            now_unix(),
+        )?;
+        Ok(conformance)
     }
 
     fn evaluate_conformance(
         &self,
-        change_node_ids: &[String],
-        task_id: Option<&str>,
+        evidence: &ConformanceEvidence,
+        task: Option<&Task>,
     ) -> Result<ConformanceResult> {
-        let now = now_unix();
-        let mut findings: Vec<String> = Vec::new();
-        let mut governed: Vec<Goal> = Vec::new();
-        for node in change_node_ids {
-            for g in self.store.active_goals_for_node(node)? {
-                if !governed.iter().any(|x| x.id == g.id) {
-                    governed.push(g);
+        let mut findings = Vec::new();
+        if evidence.changed_node_ids.is_empty() || evidence.provenance.is_empty() {
+            findings.push("evidence contains no provenance-bearing mutation".to_string());
+            return Ok(ConformanceResult {
+                verdict: Verdict::NeedsHuman,
+                findings,
+            });
+        }
+
+        let mut touched_task_goal = false;
+        let mut wrong_goals = Vec::new();
+        for node in &evidence.changed_node_ids {
+            for binding in self.store.active_bindings_for_node(node)? {
+                if binding.mode == CodeBindingMode::ForbidChange {
+                    findings.push(format!("{} forbids changes to {node}", binding.goal.id));
+                    return Ok(ConformanceResult {
+                        verdict: Verdict::Violation,
+                        findings,
+                    });
+                }
+                match task {
+                    Some(task) if binding.goal.id == task.goal_id => touched_task_goal = true,
+                    Some(_) => wrong_goals.push(binding.goal.id),
+                    None => wrong_goals.push(binding.goal.id),
                 }
             }
         }
 
-        let verdict = if governed.is_empty() {
+        if !wrong_goals.is_empty() {
+            wrong_goals.sort();
+            wrong_goals.dedup();
+            findings.push(format!(
+                "governed code changed without a covering task: {}",
+                wrong_goals.join(", ")
+            ));
+            return Ok(ConformanceResult {
+                verdict: Verdict::Drift,
+                findings,
+            });
+        }
+
+        let Some(task) = task else {
             findings.push("no governed code touched".to_string());
-            Verdict::Aligned
-        } else {
-            let goal_ids: Vec<&str> = governed.iter().map(|g| g.id.as_str()).collect();
-            findings.push(format!("governed by: {}", goal_ids.join(", ")));
-
-            let sanctioned = match task_id {
-                Some(tid) => match self.store.get_task(tid)? {
-                    Some(t) => governed.iter().any(|g| g.id == t.goal_id),
-                    None => false,
-                },
-                None => false,
-            };
-
-            if sanctioned {
-                Verdict::Aligned
-            } else {
-                findings.push("governed code changed with no covering task".to_string());
-                let mut verdict = Verdict::Drift;
-                // Optional semantic escalation on normative goals (SLM; best-effort).
-                for g in governed.iter().filter(|g| g.kind.is_normative()) {
-                    if let Ok((v, rationale)) =
-                        self.llm.judge(&g.statement, &change_node_ids.join(", "))
-                    {
-                        if v == "violation" {
-                            verdict = Verdict::Violation;
-                            findings.push(format!("SLM: violates {} — {rationale}", g.id));
-                        }
-                    }
-                }
-                verdict
-            }
+            return Ok(ConformanceResult {
+                verdict: Verdict::Aligned,
+                findings,
+            });
         };
+        if !touched_task_goal {
+            findings.push("evidence does not touch code bound to the task goal".to_string());
+            return Ok(ConformanceResult {
+                verdict: Verdict::NeedsHuman,
+                findings,
+            });
+        }
 
-        self.store
-            .record_conformance(task_id, verdict, &findings.join("; "), now)?;
-        Ok(ConformanceResult { verdict, findings })
+        let goal = self
+            .store
+            .get_goal(&task.goal_id)?
+            .ok_or_else(|| LodestarError::NotFound(task.goal_id.clone()))?;
+        if goal.kind.is_normative() {
+            match self.llm.judge(&goal.statement, &evidence.summary) {
+                Ok((verdict, rationale)) if verdict == "aligned" => {
+                    findings.push(format!("semantic check aligned: {rationale}"));
+                }
+                Ok((verdict, rationale)) if verdict == "violation" => {
+                    findings.push(format!("semantic check found a violation: {rationale}"));
+                    return Ok(ConformanceResult {
+                        verdict: Verdict::Violation,
+                        findings,
+                    });
+                }
+                Ok((_, rationale)) => {
+                    findings.push(format!("semantic check needs human review: {rationale}"));
+                    return Ok(ConformanceResult {
+                        verdict: Verdict::NeedsHuman,
+                        findings,
+                    });
+                }
+                Err(_) => {
+                    findings.push("semantic check unavailable".to_string());
+                    return Ok(ConformanceResult {
+                        verdict: Verdict::NeedsHuman,
+                        findings,
+                    });
+                }
+            }
+        }
+
+        findings.push(format!("evidence covers task goal {}", task.goal_id));
+        Ok(ConformanceResult {
+            verdict: Verdict::Aligned,
+            findings,
+        })
+    }
+
+    fn resolve_agent<'a>(&'a self, supplied: &'a str) -> Result<&'a str> {
+        let supplied = supplied.trim();
+        if supplied.is_empty() {
+            return self.agent.as_deref().ok_or_else(|| {
+                LodestarError::Invalid(
+                    "agent is required when LODESTAR_AGENT is not configured".to_string(),
+                )
+            });
+        }
+        if let Some(configured) = self.agent.as_deref() {
+            if configured != supplied {
+                return Err(LodestarError::Invalid(format!(
+                    "agent {supplied} does not match configured identity {configured}"
+                )));
+            }
+            Ok(configured)
+        } else {
+            Ok(supplied)
+        }
+    }
+
+    fn validate_evidence_shape(&self, evidence: &ConformanceEvidence) -> Result<()> {
+        if evidence.schema_version != 1 {
+            return Err(LodestarError::Invalid(format!(
+                "unsupported evidence schema version {}",
+                evidence.schema_version
+            )));
+        }
+        if evidence.started_at > evidence.ended_at {
+            return Err(LodestarError::Invalid(
+                "evidence start must not be after its end".to_string(),
+            ));
+        }
+        if evidence.agent_id.trim().is_empty() {
+            return Err(LodestarError::Invalid(
+                "evidence agent must not be empty".to_string(),
+            ));
+        }
+        if evidence.execution_ids.len() > MAX_EVIDENCE_EVENTS
+            || evidence.commit_ids.len() > MAX_EVIDENCE_EVENTS
+            || evidence.provenance.len() > MAX_EVIDENCE_PROVENANCE
+            || evidence.summary.len() > MAX_EVIDENCE_SUMMARY_BYTES
+        {
+            return Err(LodestarError::Invalid(
+                "evidence exceeds the bounded ADR-0009 contract".to_string(),
+            ));
+        }
+        if !evidence
+            .successful_execution_ids
+            .iter()
+            .all(|id| evidence.execution_ids.contains(id))
+        {
+            return Err(LodestarError::Invalid(
+                "successful executions must be included in execution_ids".to_string(),
+            ));
+        }
+        let agent_node_id = format!("agent:{}", evidence.agent_id);
+        for event_id in evidence
+            .execution_ids
+            .iter()
+            .chain(evidence.commit_ids.iter())
+        {
+            if !evidence.provenance.iter().any(|fact| {
+                fact.source_id == agent_node_id
+                    && fact.target_id == *event_id
+                    && fact.relation == "observed"
+            }) {
+                return Err(LodestarError::Invalid(format!(
+                    "event {event_id} lacks agent observation provenance"
+                )));
+            }
+        }
+        for changed_id in &evidence.changed_node_ids {
+            if !evidence.provenance.iter().any(|fact| {
+                fact.target_id == *changed_id
+                    && matches!(fact.relation.as_str(), "modified" | "refactored")
+                    && (evidence.execution_ids.contains(&fact.source_id)
+                        || evidence.commit_ids.contains(&fact.source_id))
+            }) {
+                return Err(LodestarError::Invalid(format!(
+                    "changed node {changed_id} lacks mutation provenance"
+                )));
+            }
+        }
+        for failed_id in &evidence.failed_node_ids {
+            if !evidence.provenance.iter().any(|fact| {
+                fact.target_id == *failed_id
+                    && fact.relation == "failed_on"
+                    && evidence.execution_ids.contains(&fact.source_id)
+            }) {
+                return Err(LodestarError::Invalid(format!(
+                    "failed node {failed_id} lacks failure provenance"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_claim_evidence(
+        &self,
+        task: &Task,
+        agent: &str,
+        evidence: &ConformanceEvidence,
+        now: i64,
+    ) -> Result<()> {
+        self.validate_evidence_shape(evidence)?;
+        if evidence.task_id.as_deref() != Some(task.id.as_str()) {
+            return Err(LodestarError::Invalid(
+                "evidence task_id does not identify the claimed task".to_string(),
+            ));
+        }
+        if evidence.agent_id != agent || task.owner.as_deref() != Some(agent) {
+            return Err(LodestarError::Invalid(
+                "evidence agent does not own the task".to_string(),
+            ));
+        }
+        if task.status != TaskStatus::Claimed || task.lease_expires_at.is_none_or(|end| end < now) {
+            return Err(LodestarError::Invalid(
+                "task does not have a live claim".to_string(),
+            ));
+        }
+        let claim_started_at = task.claim_started_at.ok_or_else(|| {
+            LodestarError::Invalid("task claim has no evidence-window start".to_string())
+        })?;
+        if evidence.started_at < claim_started_at
+            || evidence.ended_at > now
+            || evidence.ended_at > task.lease_expires_at.unwrap_or(evidence.ended_at)
+        {
+            return Err(LodestarError::Invalid(
+                "evidence interval falls outside the live claim".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     // ---- knowledge / consolidation -----------------------------------------
@@ -412,33 +670,85 @@ mod tests {
                 None,
             )
             .unwrap();
-        e.link_goal_to_code(&g.id, &["artifact:src/auth.rs".into()])
-            .unwrap();
+        e.link_goal_to_code(
+            &g.id,
+            &["artifact:src/auth.rs".into()],
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
 
-        let free = e
-            .check_conformance(&["artifact:src/unrelated.rs".into()], None)
-            .unwrap();
+        let free_evidence = test_evidence(None, "agent-a", "artifact:src/unrelated.rs");
+        let free = e.check_conformance(&free_evidence, None).unwrap();
         assert_eq!(free.verdict, Verdict::Aligned);
 
-        let drift = e
-            .check_conformance(&["artifact:src/auth.rs".into()], None)
-            .unwrap();
+        let drift_evidence = test_evidence(None, "agent-a", "artifact:src/auth.rs");
+        let drift = e.check_conformance(&drift_evidence, None).unwrap();
         assert_eq!(drift.verdict, Verdict::Drift);
     }
 
     #[test]
-    fn conformance_is_aligned_when_task_covers_the_goal() {
+    fn covering_task_without_evidence_needs_human_review() {
         let e = engine();
         let g = e
-            .define_goal(GoalKind::Constraint, "Auth typed", "no stringly auth", None)
+            .define_goal(GoalKind::Objective, "Auth typed", "harden auth", None)
             .unwrap();
-        e.link_goal_to_code(&g.id, &["artifact:src/auth.rs".into()])
-            .unwrap();
+        e.link_goal_to_code(
+            &g.id,
+            &["artifact:src/auth.rs".into()],
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
         let t = e.create_task(&g.id, "harden auth", "").unwrap();
-        let res = e
-            .check_conformance(&["artifact:src/auth.rs".into()], Some(&t.id))
-            .unwrap();
-        assert_eq!(res.verdict, Verdict::Aligned);
+        e.claim_task(&t.id, "agent-a", 300).unwrap();
+        let claimed = e.store.get_task(&t.id).unwrap().unwrap();
+        let evidence = ConformanceEvidence {
+            schema_version: 1,
+            task_id: Some(t.id.clone()),
+            agent_id: "agent-a".into(),
+            started_at: claimed.claim_started_at.unwrap(),
+            ended_at: now_unix(),
+            changed_node_ids: Vec::new(),
+            failed_node_ids: Vec::new(),
+            execution_ids: Vec::new(),
+            successful_execution_ids: Vec::new(),
+            commit_ids: Vec::new(),
+            summary: "no activity".into(),
+            provenance: Vec::new(),
+        };
+        let res = e.check_conformance(&evidence, Some(&t.id)).unwrap();
+        assert_eq!(res.verdict, Verdict::NeedsHuman);
+    }
+
+    fn test_evidence(
+        task_id: Option<String>,
+        agent: &str,
+        changed_node_id: &str,
+    ) -> ConformanceEvidence {
+        ConformanceEvidence {
+            schema_version: 1,
+            task_id,
+            agent_id: agent.into(),
+            started_at: 1,
+            ended_at: 2,
+            changed_node_ids: vec![changed_node_id.into()],
+            failed_node_ids: Vec::new(),
+            execution_ids: vec!["execution:proof".into()],
+            successful_execution_ids: vec!["execution:proof".into()],
+            commit_ids: Vec::new(),
+            summary: format!("changed {changed_node_id}"),
+            provenance: vec![
+                EvidenceProvenance {
+                    source_id: format!("agent:{agent}"),
+                    target_id: "execution:proof".into(),
+                    relation: "observed".into(),
+                },
+                EvidenceProvenance {
+                    source_id: "execution:proof".into(),
+                    target_id: changed_node_id.into(),
+                    relation: "modified".into(),
+                },
+            ],
+        }
     }
 
     #[test]

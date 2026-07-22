@@ -45,7 +45,17 @@ impl LlmClient {
             ]
         });
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let mut req = ureq::post(&url).set("Content-Type", "application/json");
+        let timeout = std::time::Duration::from_millis(
+            std::env::var("MINDLEAK_HTTP_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30_000),
+        );
+        let agent = ureq::builder()
+            .timeout_connect(timeout)
+            .timeout_read(timeout)
+            .build();
+        let mut req = agent.post(&url);
         if !self.api_key.is_empty() {
             req = req.set("Authorization", &format!("Bearer {}", self.api_key));
         }

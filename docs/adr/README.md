@@ -15,6 +15,8 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0005](0005-signal-weighted-decay.md) | Signal-weighted decay ("decay noise, not signal") | Accepted |
 | [0006](0006-structural-dependency-edges.md) | Structural & dependency edges (graph enrichment for impact analysis) | Accepted |
 | [0007](0007-structural-snapshot-reconciliation.md) | Structural snapshots replace owned facts | Accepted |
+| [0008](0008-semantic-recall-embedding-index.md) | Optional semantic recall via a local embedding index | Accepted |
+| [0009](0009-evidence-backed-conformance.md) | Evidence-backed conformance across the memory and intent planes | Accepted |
 
 ## Writing a new ADR
 

@@ -2,6 +2,8 @@
 
 - **Status:** Accepted
 - **Date:** 2026-07-22
+- **Implementation:** Phase 1 shipped 2026-07-22 for static JavaScript/TypeScript
+  imports, package nodes, and named cross-file calls.
 
 ## Context
 
@@ -55,17 +57,18 @@ New node type **`package`** (`package:<name>`) for external, non-workspace deps.
 ### Determinism & resolution
 
 Import target resolution is **heuristic** (extension / index-file guessing). We
-emit a best-guess **stub** `artifact:` node and let normal ingestion **reconcile
-by id** — the same content-addressed merge the whole system relies on.
-Occasionally an edge points at a slightly-wrong id; that is the documented
-heuristic cost, and Tree-sitter remains the precision upgrade (ADR-0002).
+emit a best-guess **stub** `artifact:` node plus its deterministic candidate ids.
+Normal ingestion promotes exact matches or any candidate match, atomically
+retargets owned `imports` and resolvable `calls`, then removes the orphan stub.
+This remains heuristic; Tree-sitter is the precision upgrade (ADR-0002).
 
 ### Decay
 
 Structural/dependency edges are durable → the **168h** tier. They are not
-immortal: ADR-0005 keeps *load-bearing* structure alive via centrality and lets
-leaf structure fade, so a deleted import's edge decays out naturally rather than
-being rewritten.
+immortal. Current file structure is authoritative: ADR-0007 retracts a deleted
+import immediately on the next ingest. Decay still governs unrefreshed structural
+evidence between snapshots, while ADR-0005 may later extend proven load-bearing
+relations.
 
 ## Consequences
 
@@ -76,7 +79,8 @@ being rewritten.
 - **Do not** add `references` / `consumes` / `produces` as cheap regexes on the
   hot path — the determinism/noise cost is real; they are separate, gated work.
 - **Do not** hard-require exact import resolution; **stub-and-reconcile** is the
-  contract. A dangling best-guess is acceptable and self-heals on ingest.
+  contract. A dangling best-guess is acceptable, self-heals when a candidate is
+  ingested, and is deleted when its final import disappears.
 - Import/manifest parsing stays zero-token (invariant 1), off any LLM path.
 - New tests: cross-file `imports` + `calls` resolution, `package` node creation,
   `extends`/`implements` extraction, manifest `depends_on`, reconcile-by-id.
@@ -86,3 +90,7 @@ being rewritten.
 1. `imports` + `package` + cross-file `calls` (the unlock).
 2. `extends` + `implements` (type hierarchy).
 3. `depends_on` from manifests.
+
+Phase 1 currently supports static JS/TS `import` and `require` syntax. Other
+language syntaxes, default/namespace call resolution, aliases, and re-exports
+remain future fixtures rather than implied support.

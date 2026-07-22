@@ -16,6 +16,8 @@ parallel agents' work conforms to the spec instead of diluting it.
 
 See [ADR-0004](adr/0004-intent-plane-spec-brain.md) for the decision and the
 inverted-invariant argument; this document is the design contract.
+Evidence crossing from MindLeak into conformance is governed by
+[ADR-0009](adr/0009-evidence-backed-conformance.md).
 
 ---
 
@@ -142,20 +144,25 @@ Live coordination state. Not versioned; churny.
 | `title` / `acceptance` | what "done" means |
 | `status` | `open` · `claimed` · `in_review` · `done` · `blocked` · `abandoned` |
 | `owner` | agent id holding the claim (from `MINDLEAK_AGENT` / `LODESTAR_AGENT`) |
+| `claim_started_at` | start of the current owner's evidence window; lease renewal does not move it |
 | `lease_expires_at` | unix seconds; a claim past this is reclaimable |
 | `blocked_by` | optional task id |
 | `created_at` / `updated_at` | unix seconds |
 
 ### Goal ↔ code (the seam)
 
-`goal_code(goal_id, node_id)` — links a goal to the MindLeak `artifact:` /
-`symbol:` nodes that realise it. Enables "which code serves goal G?" and, in
-reverse, "which intent governs the file I'm about to change?"
+`goal_code(goal_id, node_id, mode)` — links a goal to the MindLeak `artifact:` /
+`symbol:` nodes that realise it. `mode` is `governed` by default;
+`forbid_change` is available for constraints and invariants. Enables "which code
+serves goal G?" and, in reverse, "which intent governs the file I'm about to
+change?"
 
 ### Conformance record
 
-`conformance(id, task_id, verdict, findings, checked_at)` where `verdict ∈
-{aligned, drift, violation}`. An audit trail of every check.
+`conformance(id, task_id, evidence_schema_version, evidence, verdict, findings,
+checked_at)` where `verdict ∈ {aligned, drift, violation, needs_human}`. The
+bounded, provenance-bearing evidence is retained with every verdict even after
+its raw MindLeak episodes decay.
 
 ---
 
@@ -240,21 +247,26 @@ No cross-process locks beyond SQLite; WAL handles concurrent readers.
 
 ## 7. Conformance — the anti-dilution enforcement
 
-Two tiers, mirroring MindLeak's "deterministic first, LLM optional" posture:
+MindLeak produces one versioned `ConformanceEvidence` bundle for an agent and
+claim-bounded time window. Changed nodes come from mutation relations such as
+`modified` and `refactored`; `observed` proves attribution, never mutation.
+Lodestar validates the bundle without opening the MindLeak database.
 
-- **Structural (deterministic, always on, zero-token):** touched a node bound to
-  an `invariant` with a forbidden-change rule? changed goal-linked code with **no
-  claimed task** (unsanctioned drift)? a task marked done whose acceptance files
-  were never touched (per MindLeak telemetry)? These are pure queries over
-  `goal_code` + MindLeak's actual `modified` / `failed_on` edges.
+Two tiers then run, mirroring MindLeak's "deterministic first, LLM optional"
+posture:
+
+- **Structural (deterministic, always on, zero-token):** missing or out-of-window
+  evidence becomes `needs_human`; a `governed` node changed without a task for
+  its goal becomes `drift`; changing an active `forbid_change` binding becomes
+  `violation`; evidence matching the task goal passes the deterministic tier.
 - **Semantic (optional local SLM):** "does this change contradict the *statement*
-  of constraint C?" Uses the local OpenAI-compatible server (§8). Returns
-  `aligned` / `violation` / `needs_human` with a rationale, and **degrades to
-  `needs_human` when no model is reachable** — it never blocks and never invents
-  a verdict.
+  of constraint C?" Uses a bounded evidence summary. An unavailable or uncertain
+  model yields `needs_human`; it never fabricates alignment.
 
-A `violation` blocks task completion and raises a follow-up task; `drift` warns;
-`aligned` lets completion through.
+Only `aligned` completes a task. `drift` and `needs_human` remain `in_review`;
+`violation` moves the task to `blocked`. The evidence, verdict, and transition
+are recorded together in Lodestar after rechecking the live claim. Full contract:
+[ADR-0009](adr/0009-evidence-backed-conformance.md).
 
 ---
 
@@ -285,7 +297,7 @@ Newline-delimited JSON-RPC 2.0 over stdio, exactly like `mindleak-mcp`.
 2. `supersede_goal(goal_id, new_statement, reason)` → new `goal_id` (version bump).
 3. `get_constitution(status="active")` → the authoritative goals/constraints an
    agent reads **before acting**.
-4. `link_goal_to_code(goal_id, node_ids[])` → the seam to MindLeak.
+4. `link_goal_to_code(goal_id, node_ids[], mode="governed")` → the seam to MindLeak.
 5. `export_constitution(path?)` → write a committed, human-reviewable markdown
    snapshot (durability + PR review without any network infra).
 
@@ -305,7 +317,7 @@ Newline-delimited JSON-RPC 2.0 over stdio, exactly like `mindleak-mcp`.
 
 **Conformance**
 
-14. `check_conformance(change_node_ids[], task_id?)` → `{ verdict, findings[] }`.
+14. `check_conformance(evidence, task_id?)` → `{ verdict, findings[] }`.
 
 ---
 

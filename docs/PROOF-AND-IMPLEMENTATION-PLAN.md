@@ -30,8 +30,10 @@ its phase exit gate passes.
 - **Unit-test result accounting remains blocked externally.** Unit Test MCP 1.3.6
   surfaces Cargo failures but reports zero successful tests and no Rust coverage;
   CI remains the complete-suite authority until the adapter is repaired.
-- **ADR-0006 remains red by design.** The same evaluation still fails cross-file
-  impact discovery, making structural imports the next capability gate.
+- **ADR-0006 phase 1 is green for the JS/TS fixture.** The strict evaluator now
+  proves dependent discovery, a typed `imports` edge, and a named cross-file
+  `calls` edge while retaining the ADR-0007 stale-fact guarantees. Broader
+  language truth sets, hierarchy, and manifests remain open.
 
 ## 2. Product Claims and Proof Gates
 
@@ -264,25 +266,32 @@ presence of a task as proof of alignment.
 
 ### Design decision required
 
-Amend ADR-0004 with the evidence contract. The stores remain separate. MindLeak
-emits a bounded evidence bundle; Lodestar validates and records it. No shared
-tables or cross-database transaction are introduced.
+[ADR-0009](adr/0009-evidence-backed-conformance.md) records the evidence
+contract without modifying immutable ADR-0004. The stores remain separate.
+MindLeak emits a bounded evidence bundle; Lodestar validates and records it. No
+shared tables or cross-database transaction are introduced.
 
 ### Evidence contract
 
 ```text
 ConformanceEvidence {
-  task_id, agent_id, started_at, ended_at,
-  changed_node_ids[], failed_node_ids[], execution_ids[], commit_ids[],
+  schema_version, task_id, agent_id, started_at, ended_at,
+  changed_node_ids[], failed_node_ids[],
+  execution_ids[], successful_execution_ids[], commit_ids[],
   summary, provenance[]
 }
 ```
+
+`observed` establishes agent attribution but never counts as a change. The first
+implementation derives changed nodes from `modified` and commit-backed
+`refactored` evidence; uncommitted editor changes require an explicit episodic
+mutation signal rather than reinterpreting focus.
 
 ### Interfaces
 
 | Method | Responsibility | Can copy from | Effort |
 |---|---|---|---|
-| `MindLeak::evidence_for(agent, since, until)` | Build a provenance-bearing bundle from active episodic edges | Existing traversal/query methods | High |
+| `MindLeak::evidence_for(agent, since, until)` | Build a provenance-bearing bundle from attributed episodic edges in the claim window | Existing traversal/query methods | High |
 | `check_conformance(evidence, task_id)` | Detect ungoverned drift, task/goal mismatch, missing evidence, and semantic contradiction | Existing evaluator, rewritten | High |
 | `complete_task(task_id, agent, evidence)` | Guard ownership, evaluate evidence, then transition based on verdict | Existing completion guard | High |
 | `record_conformance(...)` | Persist evidence/provenance with verdict | Existing audit insert | Medium |
@@ -294,7 +303,7 @@ ConformanceEvidence {
 | No evidence for a claimed implementation task | `needs_human`; remain `in_review` |
 | Governed node changed without a covering task | `drift`; remain `in_review` |
 | Task covers a different governing goal | `drift`; remain `in_review` |
-| Deterministic invariant violation | `violation`; block |
+| Active `forbid_change` binding changed | `violation`; block |
 | Normative semantic check unavailable or uncertain | `needs_human`; remain `in_review` |
 | Evidence matches task and deterministic checks pass | `aligned`; complete |
 

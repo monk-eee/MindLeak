@@ -79,7 +79,7 @@ from there. Similarity finds the door; decay-weighted traversal walks the house.
 | `execution` | `execution:<hash>` | terminal command + exit code |
 | `intent` | `intent:<sha\|hash>` | commit, decision, tradeoff |
 | `agent` | `agent:<id>` | an AI agent / client session (optional attribution) |
-| `package` † | `package:<name>` | external dependency (non-workspace) |
+| `package` | `package:<name>` | external dependency (non-workspace) |
 
 ### Edge types & extraction triggers (0-token)
 
@@ -92,25 +92,20 @@ from there. Similarity finds the door; decay-weighted traversal walks the house.
 | Intent → Artifact/Symbol | `refactored` | commit diff ∩ symbol boundaries |
 | Intent → * | `relates_to` | explicit recorded decision |
 | Agent → * | `observed` | an agent ingested or focused this node (attribution; decays) |
-| Artifact → Artifact/Package † | `imports` | `use` / `import` / `require` / `from` statements |
+| Artifact → Artifact/Package | `imports` | shipped for static JS/TS `import` and `require` declarations |
 | Artifact → Package † | `depends_on` | manifest deps (`Cargo.toml`, `package.json`, …) |
 | Symbol → Symbol † | `extends` | class / trait inheritance |
 | Symbol → Symbol † | `implements` | interface / trait conformance |
 
-> **`calls` scope.** Resolution is **in-file and heuristic**: a function/method
-> body is bracket- or indentation-scoped, and callee names are matched against
-> the symbols defined in the same file. **Cross-file** resolution arrives with
-> `imports` (ADR-0006) via the per-file import table; precise, scope-accurate
-> resolution remains the Tree-sitter upgrade (see
-> [ADR-0002](adr/0002-sqlite-decay-over-vector-llm.md)).
+> **`calls` scope.** In-file resolution remains heuristic. ADR-0006 phase 1 also
+> resolves direct calls to named JS/TS import bindings. Default/namespace calls,
+> re-exports, path aliases, and other languages remain unsupported; precise,
+> scope-accurate resolution remains the Tree-sitter upgrade (ADR-0002).
 
-> **† Structural enrichment — [ADR-0006](adr/0006-structural-dependency-edges.md)
-> (approved, in build).** `imports`, cross-file `calls`, `extends`, `implements`,
-> `depends_on`, and the `package` node make impact analysis **cross-file** and
-> give [ADR-0005](adr/0005-signal-weighted-decay.md) the structural substrate
-> (centrality, corroboration) it needs. Delivered in phases: imports + package +
-> cross-file calls → extends/implements → manifest depends_on. `references`,
-> `consumes`, and `produces` are deferred (determinism/noise cost).
+> **Structural enrichment — [ADR-0006](adr/0006-structural-dependency-edges.md).**
+> Phase 1 is shipped for static JS/TS imports, packages, and named cross-file
+> calls. Phase 2 (`extends`/`implements`) and phase 3 (manifest `depends_on`)
+> remain in build. `references`, `consumes`, and `produces` remain deferred.
 
 Episodic edges are append-and-reinforce: re-ingesting one raises its weight
 (`+0.05`, capped at 1.0) and resets its decay clock. Structural extraction is an
@@ -136,8 +131,8 @@ W_effective = W_base · 2^(−Δt_hours / half_life_hours)
   (`contains`, `calls`, `imports`, `extends`, `implements`, `depends_on`) and
   human intent, 48h default (`relates_to`, `observed`).
 * **Prune rule:** edges with `W_effective < 0.05` are ignored at query time and
-  purged during maintenance; unreferenced `execution` and `symbol` nodes are
-  dropped.
+  purged during maintenance; unreferenced `execution`, `symbol`, `package`, and
+  unresolved artifact-stub nodes are dropped.
 
 Schema: [`crates/mindleak-core/src/schema.sql`](../crates/mindleak-core/src/schema.sql).
 
@@ -213,6 +208,36 @@ authoritative, and never consulted on the deterministic ingest/query hot path.
 | `MINDLEAK_EMBED_API_KEY` | *(empty)* | bearer token for hosted servers; Ollama ignores it |
 
 Like consolidation, it errors cleanly when no embedding server is reachable.
+
+### 6.2 Observability, telemetry & resilience (ADR-0010)
+
+Observability is a first-class instrument: alongside tests, it is how an operator
+confirms an agent did what was asked. Three parts, all local and all stdout-safe:
+
+- **Structured tracing** to **stderr only** (stdout carries JSON-RPC), gated by
+  `MINDLEAK_LOG` (filter, default `info`) and `MINDLEAK_LOG_FORMAT`
+  (`pretty` | `json`). Every tool dispatch is a timed span.
+- **Durable audit trail.** Every tool call is recorded to an append-only
+  `telemetry_events` table the telemetry module owns — never graph state, never
+  decayed. The `telemetry_snapshot` tool returns per-tool counts, error counts,
+  latency, and recent events: the queryable record of what ran and whether it
+  worked.
+- **Network resilience** (`net`). All optional HTTP (embeddings, consolidation,
+  LLM) gets explicit timeouts, bounded retry with backoff, and a per-endpoint
+  circuit breaker, so a degraded server fast-fails instead of hanging the agent.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MINDLEAK_LOG` | `info` | tracing/`RUST_LOG`-style filter; `off` silences |
+| `MINDLEAK_LOG_FORMAT` | `pretty` | `pretty` or `json` (both to stderr) |
+| `MINDLEAK_HTTP_TIMEOUT_MS` | `30000` | connect + read timeout per attempt |
+| `MINDLEAK_HTTP_RETRIES` | `2` | extra attempts on transient failure |
+| `MINDLEAK_BREAKER_THRESHOLD` | `5` | consecutive failures before the circuit opens |
+| `MINDLEAK_BREAKER_COOLDOWN_MS` | `30000` | how long the circuit stays open before a probe |
+
+Telemetry is deterministic (no LLM calls), best-effort (a telemetry write failure
+never changes a tool's result), and the breaker guards only optional endpoints —
+the deterministic ingest/query path never touches the network.
 
 ---
 

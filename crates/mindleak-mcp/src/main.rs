@@ -9,6 +9,7 @@ use std::path::Path;
 use mindleak_core::MindLeak;
 
 fn main() -> anyhow::Result<()> {
+    mindleak_core::telemetry::init_tracing();
     let db_path = resolve_db_path();
     if let Some(parent) = Path::new(&db_path).parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -18,8 +19,8 @@ fn main() -> anyhow::Result<()> {
         .filter(|a| !a.trim().is_empty());
     let engine = MindLeak::open(&db_path)?.with_agent(agent.clone());
     match &agent {
-        Some(a) => eprintln!("[mindleak-mcp] ready — graph at {db_path} (agent: {a})"),
-        None => eprintln!("[mindleak-mcp] ready — graph at {db_path}"),
+        Some(a) => tracing::info!(%db_path, agent = %a, "mindleak-mcp ready"),
+        None => tracing::info!(%db_path, "mindleak-mcp ready"),
     }
     server::run(engine)
 }

@@ -1,15 +1,18 @@
 import * as vscode from "vscode";
 
-import { boardRows, LodestarTask } from "./util";
+import { BoardRow, boardRows, LodestarTask } from "./util";
 
 /** A single task row in the board tree. */
-class BoardItem extends vscode.TreeItem {
-  constructor(label: string, description: string, tooltip: string, status: string) {
-    super(label, vscode.TreeItemCollapsibleState.None);
-    this.description = description;
-    this.tooltip = tooltip;
-    this.contextValue = status;
-    this.iconPath = iconFor(status);
+export class BoardItem extends vscode.TreeItem {
+  constructor(
+    readonly task: LodestarTask,
+    row: BoardRow
+  ) {
+    super(row.label, vscode.TreeItemCollapsibleState.None);
+    this.description = row.description;
+    this.tooltip = row.tooltip;
+    this.contextValue = row.status;
+    this.iconPath = iconFor(row.status);
   }
 }
 
@@ -51,8 +54,9 @@ export class BoardViewProvider implements vscode.TreeDataProvider<BoardItem> {
   }
 
   getChildren(): BoardItem[] {
-    return boardRows(this.tasks).map(
-      (r) => new BoardItem(r.label, r.description, r.tooltip, r.status)
-    );
+    return boardRows(this.tasks).map((row) => {
+      const task = this.tasks.find((candidate) => candidate.id === row.id);
+      return new BoardItem(task!, row);
+    });
   }
 }

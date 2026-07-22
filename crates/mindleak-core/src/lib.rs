@@ -18,18 +18,23 @@ pub mod error;
 pub mod graph;
 pub mod ingest;
 pub mod model;
+pub mod net;
+pub mod telemetry;
 
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use error::{MindLeakError, Result};
 pub use graph::{
-    AgentActivity, Direction, GraphStore, ScoredNode, Subgraph, WeightedEdge, WriteOutcome,
+    AgentActivity, ArtifactStub, ConformanceEvidence, Direction, EvidenceProvenance, GraphStore,
+    ScoredNode, Subgraph, WeightedEdge, WriteOutcome,
 };
 pub use model::{Edge, Node, NodeType, RelationType};
 
 use consolidate::Consolidator;
 use ingest::execution::ExecutionRecord;
 use ingest::git::CommitRecord;
+use ingest::structure::ImportTarget;
 
 /// Current unix time in whole seconds.
 pub fn now_unix() -> i64 {
@@ -109,6 +114,36 @@ impl MindLeak {
         Ok(indexed)
     }
 
+    /// Record one observability event about a tool invocation (ADR-0010).
+    /// Best-effort: a telemetry write failure is logged and swallowed so it can
+    /// never change the result of the operation being observed.
+    pub fn record_tool_call(
+        &self,
+        tool: &str,
+        ok: bool,
+        duration_ms: i64,
+        detail: Option<serde_json::Value>,
+    ) {
+        let outcome = if ok { "ok" } else { "error" };
+        if let Err(e) = telemetry::record(
+            &self.store.conn,
+            now_unix(),
+            "tool_call",
+            tool,
+            outcome,
+            Some(duration_ms),
+            detail.as_ref(),
+        ) {
+            tracing::warn!(target: "mindleak::telemetry", tool, error = %e, "failed to record telemetry");
+        }
+    }
+
+    /// A point-in-time observability snapshot: aggregate metrics per tool plus
+    /// the most recent `recent_limit` events (ADR-0010).
+    pub fn telemetry_snapshot(&self, recent_limit: usize) -> Result<telemetry::Snapshot> {
+        telemetry::snapshot(&self.store.conn, recent_limit)
+    }
+
     /// Record that the active agent (if any) observed these nodes.
     fn observe(&self, ids: &[String], now: i64) -> Result<()> {
         let Some(agent) = &self.agent else {
@@ -150,6 +185,8 @@ impl MindLeak {
         let art = Node::new(&art_id, NodeType::Artifact, norm.clone(), now);
         let mut nodes = vec![art];
         let mut edges = Vec::new();
+        let mut artifact_stubs = Vec::new();
+        let mut imported_symbols: HashMap<String, (String, String)> = HashMap::new();
 
         let extraction = ingest::ast::extract(path, content);
         for sym in &extraction.symbols {
@@ -168,7 +205,72 @@ impl MindLeak {
             edges.push(Edge::new(&from, &to, RelationType::Calls, now));
         }
 
-        let mut outcome = self.store.replace_structure(&art_id, &nodes, &edges)?;
+        for import in ingest::structure::extract(path, content) {
+            let target_id = match import.target {
+                ImportTarget::ArtifactCandidates(candidates) => {
+                    let known = self.store.resolve_artifact_candidate(&candidates)?;
+                    let is_stub = known.is_none();
+                    let Some(target_path) = known.or_else(|| candidates.first().cloned()) else {
+                        continue;
+                    };
+                    let target_id = format!("artifact:{target_path}");
+                    if is_stub {
+                        artifact_stubs.push(ArtifactStub {
+                            node_id: target_id.clone(),
+                            candidate_ids: candidates
+                                .iter()
+                                .map(|path| format!("artifact:{path}"))
+                                .collect(),
+                        });
+                    }
+                    nodes.push(Node::new(
+                        &target_id,
+                        NodeType::Artifact,
+                        target_path.clone(),
+                        now,
+                    ));
+                    for binding in import.bindings {
+                        if binding.imported != "default" && binding.imported != "*" {
+                            imported_symbols
+                                .insert(binding.local, (target_path.clone(), binding.imported));
+                        }
+                    }
+                    target_id
+                }
+                ImportTarget::Package(package) => {
+                    let target_id = format!("package:{package}");
+                    nodes.push(Node::new(
+                        &target_id,
+                        NodeType::Package,
+                        package.clone(),
+                        now,
+                    ));
+                    target_id
+                }
+            };
+            edges.push(Edge::new(&art_id, target_id, RelationType::Imports, now));
+        }
+
+        for reference in &extraction.call_references {
+            let Some((target_path, imported_name)) = imported_symbols.get(&reference.callee) else {
+                continue;
+            };
+            let from = format!("symbol:{norm}:{}", reference.caller);
+            let to = format!("symbol:{target_path}:{imported_name}");
+            if !self.store.node_exists(&to)? {
+                nodes.push(Node::new(
+                    &to,
+                    NodeType::Symbol,
+                    format!("{imported_name} (imported)"),
+                    now,
+                ));
+            }
+            edges.push(Edge::new(from, to, RelationType::Calls, now));
+        }
+
+        let mut outcome = self
+            .store
+            .replace_structure(&art_id, &nodes, &edges, &artifact_stubs)?;
         outcome.node_ids.push(art_id.clone());
         self.observe(&outcome.node_ids, now)?;
         Ok(outcome)
@@ -262,6 +364,19 @@ impl MindLeak {
     /// The agent roster: `agent` nodes with their active observation counts.
     pub fn list_agents(&self) -> Result<Vec<AgentActivity>> {
         self.store.list_agents(now_unix())
+    }
+
+    /// Return the bounded episodic evidence attributed to `agent` in a task
+    /// work window (ADR-0009).
+    pub fn evidence_for(
+        &self,
+        task_id: Option<&str>,
+        agent: &str,
+        started_at: i64,
+        ended_at: i64,
+    ) -> Result<ConformanceEvidence> {
+        self.store
+            .evidence_for(task_id, agent, started_at, ended_at)
     }
 
     /// A visualization snapshot: either the neighbourhood of `seed` (both

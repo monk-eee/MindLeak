@@ -6,7 +6,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use lodestar_core::{GoalKind, Lodestar, TaskStatus, Verdict};
+use lodestar_core::{
+    now_unix, CodeBindingMode, ConformanceEvidence, EvidenceProvenance, GoalKind, Lodestar,
+    TaskStatus, Verdict,
+};
 
 /// A unique temp DB path per test (file-backed so multiple connections share it).
 fn temp_db(tag: &str) -> String {
@@ -32,15 +35,219 @@ fn goal_task_claim_complete_flow() {
         .define_goal(GoalKind::Objective, "Ship search", "Add FTS search", None)
         .unwrap();
     let t = engine.create_task(&g.id, "wire fts", "tests pass").unwrap();
+    engine
+        .link_goal_to_code(
+            &g.id,
+            &["artifact:src/search.rs".into()],
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
 
     assert!(engine.claim_task(&t.id, "agent-a", 300).unwrap());
-    let (completed, conformance) = engine.complete_task(&t.id, "agent-a").unwrap();
+    let claim = engine.store().get_task(&t.id).unwrap().unwrap();
+    let evidence = evidence(
+        &t.id,
+        "agent-a",
+        "artifact:src/search.rs",
+        claim.claim_started_at.unwrap(),
+    );
+    let (completed, conformance) = engine.complete_task(&t.id, "agent-a", &evidence).unwrap();
     assert!(completed);
-    // No linked code -> nothing to violate.
     assert_eq!(conformance.verdict, Verdict::Aligned);
     assert_eq!(
         engine.store().get_task(&t.id).unwrap().unwrap().status,
         TaskStatus::Done
+    );
+}
+
+fn evidence(
+    task_id: &str,
+    agent: &str,
+    changed_node_id: &str,
+    started_at: i64,
+) -> ConformanceEvidence {
+    ConformanceEvidence {
+        schema_version: 1,
+        task_id: Some(task_id.into()),
+        agent_id: agent.into(),
+        started_at,
+        ended_at: now_unix(),
+        changed_node_ids: vec![changed_node_id.into()],
+        failed_node_ids: Vec::new(),
+        execution_ids: vec!["execution:proof".into()],
+        successful_execution_ids: vec!["execution:proof".into()],
+        commit_ids: Vec::new(),
+        summary: format!("changed {changed_node_id}"),
+        provenance: vec![
+            EvidenceProvenance {
+                source_id: format!("agent:{agent}"),
+                target_id: "execution:proof".into(),
+                relation: "observed".into(),
+            },
+            EvidenceProvenance {
+                source_id: "execution:proof".into(),
+                target_id: changed_node_id.into(),
+                relation: "modified".into(),
+            },
+        ],
+    }
+}
+
+#[test]
+fn missing_evidence_stays_in_review() {
+    let engine = Lodestar::open_in_memory().unwrap();
+    let goal = engine
+        .define_goal(GoalKind::Objective, "Ship auth", "change auth", None)
+        .unwrap();
+    engine
+        .link_goal_to_code(
+            &goal.id,
+            &["artifact:src/auth.rs".into()],
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
+    let task = engine.create_task(&goal.id, "change auth", "").unwrap();
+    engine.claim_task(&task.id, "agent-a", 300).unwrap();
+    let claim = engine.store().get_task(&task.id).unwrap().unwrap();
+    let empty = ConformanceEvidence {
+        schema_version: 1,
+        task_id: Some(task.id.clone()),
+        agent_id: "agent-a".into(),
+        started_at: claim.claim_started_at.unwrap(),
+        ended_at: now_unix(),
+        changed_node_ids: Vec::new(),
+        failed_node_ids: Vec::new(),
+        execution_ids: Vec::new(),
+        successful_execution_ids: Vec::new(),
+        commit_ids: Vec::new(),
+        summary: "no activity".into(),
+        provenance: Vec::new(),
+    };
+
+    let (completed, result) = engine.complete_task(&task.id, "agent-a", &empty).unwrap();
+    assert!(!completed);
+    assert_eq!(result.verdict, Verdict::NeedsHuman);
+    assert_eq!(
+        engine.store().get_task(&task.id).unwrap().unwrap().status,
+        TaskStatus::InReview
+    );
+}
+
+#[test]
+fn wrong_goal_drift_stays_in_review() {
+    let engine = Lodestar::open_in_memory().unwrap();
+    let task_goal = engine
+        .define_goal(GoalKind::Objective, "Ship auth", "change auth", None)
+        .unwrap();
+    let other_goal = engine
+        .define_goal(GoalKind::Objective, "Ship billing", "change billing", None)
+        .unwrap();
+    engine
+        .link_goal_to_code(
+            &other_goal.id,
+            &["artifact:src/billing.rs".into()],
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
+    let task = engine
+        .create_task(&task_goal.id, "change auth", "")
+        .unwrap();
+    engine.claim_task(&task.id, "agent-a", 300).unwrap();
+    let claim = engine.store().get_task(&task.id).unwrap().unwrap();
+    let evidence = evidence(
+        &task.id,
+        "agent-a",
+        "artifact:src/billing.rs",
+        claim.claim_started_at.unwrap(),
+    );
+
+    let (completed, result) = engine
+        .complete_task(&task.id, "agent-a", &evidence)
+        .unwrap();
+    assert!(!completed);
+    assert_eq!(result.verdict, Verdict::Drift);
+    assert_eq!(
+        engine.store().get_task(&task.id).unwrap().unwrap().status,
+        TaskStatus::InReview
+    );
+}
+
+#[test]
+fn forbidden_change_blocks_completion() {
+    let engine = Lodestar::open_in_memory().unwrap();
+    let goal = engine
+        .define_goal(
+            GoalKind::Invariant,
+            "Protect schema",
+            "schema cannot change",
+            None,
+        )
+        .unwrap();
+    engine
+        .link_goal_to_code(
+            &goal.id,
+            &["artifact:src/schema.sql".into()],
+            CodeBindingMode::ForbidChange,
+        )
+        .unwrap();
+    let task = engine.create_task(&goal.id, "inspect schema", "").unwrap();
+    engine.claim_task(&task.id, "agent-a", 300).unwrap();
+    let claim = engine.store().get_task(&task.id).unwrap().unwrap();
+    let evidence = evidence(
+        &task.id,
+        "agent-a",
+        "artifact:src/schema.sql",
+        claim.claim_started_at.unwrap(),
+    );
+
+    let (completed, result) = engine
+        .complete_task(&task.id, "agent-a", &evidence)
+        .unwrap();
+    assert!(!completed);
+    assert_eq!(result.verdict, Verdict::Violation);
+    assert_eq!(
+        engine.store().get_task(&task.id).unwrap().unwrap().status,
+        TaskStatus::Blocked
+    );
+}
+
+#[test]
+fn cross_agent_and_out_of_window_evidence_are_rejected() {
+    let engine = Lodestar::open_in_memory().unwrap();
+    let goal = engine
+        .define_goal(GoalKind::Objective, "Ship auth", "change auth", None)
+        .unwrap();
+    engine
+        .link_goal_to_code(
+            &goal.id,
+            &["artifact:src/auth.rs".into()],
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
+    let task = engine.create_task(&goal.id, "change auth", "").unwrap();
+    engine.claim_task(&task.id, "agent-a", 300).unwrap();
+    let claim = engine.store().get_task(&task.id).unwrap().unwrap();
+
+    let wrong_agent = evidence(
+        &task.id,
+        "agent-b",
+        "artifact:src/auth.rs",
+        claim.claim_started_at.unwrap(),
+    );
+    assert!(engine
+        .complete_task(&task.id, "agent-a", &wrong_agent)
+        .is_err());
+
+    let outside = evidence(
+        &task.id,
+        "agent-a",
+        "artifact:src/auth.rs",
+        claim.claim_started_at.unwrap() - 1,
+    );
+    assert!(engine.complete_task(&task.id, "agent-a", &outside).is_err());
+    assert_eq!(
+        engine.store().get_task(&task.id).unwrap().unwrap().status,
+        TaskStatus::Claimed
     );
 }
 

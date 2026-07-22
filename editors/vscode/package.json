@@ -66,8 +66,9 @@
         "icon": "$(refresh)"
       },
       {
-        "command": "mindleak.checkConformance",
-        "title": "MindLeak: Check Conformance of Active File"
+        "command": "mindleak.task.completeWithEvidence",
+        "title": "MindLeak: Complete Task With Evidence",
+        "icon": "$(verified-filled)"
       }
     ],
     "menus": {
@@ -81,6 +82,13 @@
           "command": "mindleak.board.refresh",
           "when": "view == mindleak.boardView",
           "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "mindleak.task.completeWithEvidence",
+          "when": "view == mindleak.boardView && viewItem == claimed",
+          "group": "inline"
         }
       ]
     },
@@ -121,11 +129,6 @@
           "type": "string",
           "default": "",
           "description": "Path to the Lodestar intent database (LODESTAR_DB). Empty uses <workspace>/.lodestar/spec.db."
-        },
-        "mindleak.conformanceOnSave": {
-          "type": "boolean",
-          "default": true,
-          "description": "On save, check the file against governing intent and surface drift/violation as diagnostics."
         }
       }
     }
@@ -136,8 +139,8 @@
     "compile": "npm run copy-assets && tsc -p ./",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
-    "format": "prettier --check \"src/**/*.ts\" \"media/**/*.js\" \"../../scripts/**/*.mjs\"",
-    "format:fix": "prettier --write \"src/**/*.ts\" \"media/**/*.js\" \"../../scripts/**/*.mjs\"",
+    "format": "prettier --check \"src/**/*.ts\" \"media/**/*.js\" \"../../scripts/evaluate-graph.mjs\"",
+    "format:fix": "prettier --write \"src/**/*.ts\" \"media/**/*.js\" \"../../scripts/evaluate-graph.mjs\"",
     "test": "vitest run"
   },
   "devDependencies": {
@@ -145,6 +148,7 @@
     "@types/vscode": "1.85.0",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
+    "@vitest/coverage-v8": "^3.2.7",
     "cytoscape": "^3.30.0",
     "eslint": "^8.57.0",
     "prettier": "^3.2.0",
@@ -152,4 +156,3 @@
     "vitest": "^3.2.0"
   }
 }
-

@@ -209,3 +209,395 @@ fn reingest_file_retracts_removed_call_when_both_symbols_remain() {
             && edge.target_id == "symbol:src/reconcile.rs:callee"
     }));
 }
+
+#[test]
+fn relative_import_creates_cross_file_impact_and_call_edges() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("src/dependency.ts", "export function dependency() {}\n")
+        .unwrap();
+    engine
+        .ingest_file(
+            "src/consumer.ts",
+            "import { dependency } from './dependency';\nexport function consumer() { dependency(); }\n",
+        )
+        .unwrap();
+
+    let impact = engine.impact_radius("artifact:src/dependency.ts").unwrap();
+    assert!(impact
+        .nodes
+        .iter()
+        .any(|node| { node.node.id == "artifact:src/consumer.ts" }));
+    assert!(impact.edges.iter().any(|edge| {
+        edge.relation == mindleak_core::RelationType::Imports
+            && edge.source_id == "artifact:src/consumer.ts"
+            && edge.target_id == "artifact:src/dependency.ts"
+    }));
+    assert!(impact.edges.iter().any(|edge| {
+        edge.relation == mindleak_core::RelationType::Calls
+            && edge.source_id == "symbol:src/consumer.ts:consumer"
+            && edge.target_id == "symbol:src/dependency.ts:dependency"
+    }));
+}
+
+#[test]
+fn bare_import_creates_and_retracts_package_node() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file(
+            "src/consumer.ts",
+            "import { render } from '@scope/ui/button';\nexport function consumer() { render(); }\n",
+        )
+        .unwrap();
+
+    let package = engine
+        .store()
+        .get_node("package:@scope/ui")
+        .unwrap()
+        .unwrap();
+    assert_eq!(package.node_type, NodeType::Package);
+    let graph = engine
+        .multi_hop_query("artifact:src/consumer.ts", 1, 0.0)
+        .unwrap();
+    assert!(graph.edges.iter().any(|edge| {
+        edge.relation == mindleak_core::RelationType::Imports
+            && edge.target_id == "package:@scope/ui"
+    }));
+
+    engine
+        .ingest_file("src/consumer.ts", "export function consumer() {}\n")
+        .unwrap();
+    assert!(engine
+        .store()
+        .get_node("package:@scope/ui")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn mixed_extension_import_prefers_known_artifact() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("src/dependency.ts", "export function dependency() {}\n")
+        .unwrap();
+    engine
+        .ingest_file(
+            "src/consumer.tsx",
+            "import { dependency } from './dependency';\nexport function consumer() { dependency(); }\n",
+        )
+        .unwrap();
+
+    let graph = engine
+        .multi_hop_query("artifact:src/consumer.tsx", 1, 0.0)
+        .unwrap();
+    assert!(graph.edges.iter().any(|edge| {
+        edge.relation == mindleak_core::RelationType::Imports
+            && edge.target_id == "artifact:src/dependency.ts"
+    }));
+    assert!(engine
+        .store()
+        .get_node("artifact:src/dependency.tsx")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn unresolved_artifact_stub_is_removed_with_its_final_import() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("src/consumer.ts", "import './ghost';\n")
+        .unwrap();
+    assert!(engine
+        .store()
+        .get_node("artifact:src/ghost.ts")
+        .unwrap()
+        .is_some());
+
+    engine.ingest_file("src/consumer.ts", "").unwrap();
+    assert!(engine
+        .store()
+        .get_node("artifact:src/ghost.ts")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn consumer_first_stub_is_promoted_by_real_ingestion() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file(
+            "src/consumer.ts",
+            "import { dependency } from './dependency';\nexport function consumer() { dependency(); }\n",
+        )
+        .unwrap();
+    engine
+        .ingest_file("src/dependency.ts", "export function dependency() {}\n")
+        .unwrap();
+    engine
+        .ingest_file("src/consumer.ts", "export function consumer() {}\n")
+        .unwrap();
+
+    assert!(engine
+        .store()
+        .get_node("artifact:src/dependency.ts")
+        .unwrap()
+        .is_some());
+    assert!(engine
+        .store()
+        .get_node("symbol:src/dependency.ts:dependency")
+        .unwrap()
+        .is_some());
+}
+
+#[test]
+fn consumer_first_mixed_extension_stub_retargets_to_real_artifact_and_symbol() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file(
+            "src/consumer.tsx",
+            "import { dependency } from './dependency';\nexport function consumer() { dependency(); }\n",
+        )
+        .unwrap();
+    engine
+        .ingest_file("src/dependency.ts", "export function dependency() {}\n")
+        .unwrap();
+
+    let graph = engine
+        .multi_hop_query("artifact:src/consumer.tsx", 2, 0.0)
+        .unwrap();
+    assert!(graph.edges.iter().any(|edge| {
+        edge.relation == mindleak_core::RelationType::Imports
+            && edge.target_id == "artifact:src/dependency.ts"
+    }));
+    assert!(graph.edges.iter().any(|edge| {
+        edge.relation == mindleak_core::RelationType::Calls
+            && edge.target_id == "symbol:src/dependency.ts:dependency"
+    }));
+    assert!(engine
+        .store()
+        .get_node("artifact:src/dependency.tsx")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn consumer_first_directory_stub_retargets_to_index_artifact() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("src/consumer.ts", "import './feature';\n")
+        .unwrap();
+    engine
+        .ingest_file("src/feature/index.ts", "export const value = 1;\n")
+        .unwrap();
+
+    let graph = engine
+        .multi_hop_query("artifact:src/consumer.ts", 1, 0.0)
+        .unwrap();
+    assert!(graph.edges.iter().any(|edge| {
+        edge.relation == mindleak_core::RelationType::Imports
+            && edge.target_id == "artifact:src/feature/index.ts"
+    }));
+    assert!(engine
+        .store()
+        .get_node("artifact:src/feature.ts")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn consumer_first_explicit_js_stub_retargets_to_typescript_artifact() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("src/consumer.ts", "import './explicit.js';\n")
+        .unwrap();
+    engine
+        .ingest_file("src/explicit.ts", "export const value = 1;\n")
+        .unwrap();
+
+    let graph = engine
+        .multi_hop_query("artifact:src/consumer.ts", 1, 0.0)
+        .unwrap();
+    assert!(graph.edges.iter().any(|edge| {
+        edge.relation == mindleak_core::RelationType::Imports
+            && edge.target_id == "artifact:src/explicit.ts"
+    }));
+    assert!(engine
+        .store()
+        .get_node("artifact:src/explicit.js")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn shared_package_survives_until_final_import_is_removed() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    for path in ["src/a.ts", "src/b.ts"] {
+        engine
+            .ingest_file(path, "import 'shared-package';\n")
+            .unwrap();
+    }
+
+    engine.ingest_file("src/a.ts", "").unwrap();
+    assert!(engine
+        .store()
+        .get_node("package:shared-package")
+        .unwrap()
+        .is_some());
+
+    engine.ingest_file("src/b.ts", "").unwrap();
+    assert!(engine
+        .store()
+        .get_node("package:shared-package")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn imported_name_in_comment_or_member_call_does_not_create_call_edge() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("src/dependency.ts", "export function dependency() {}\n")
+        .unwrap();
+    engine
+        .ingest_file(
+            "src/consumer.ts",
+            "import { dependency } from './dependency';\nexport function consumer() {\n  // dependency();\n  other.dependency();\n}\n",
+        )
+        .unwrap();
+
+    let graph = engine
+        .multi_hop_query("symbol:src/consumer.ts:consumer", 1, 0.0)
+        .unwrap();
+    assert!(!graph
+        .edges
+        .iter()
+        .any(|edge| edge.relation == mindleak_core::RelationType::Calls));
+}
+
+#[test]
+fn require_parameter_shadows_only_its_function_scope() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file(
+            "src/consumer.js",
+            "function scoped(require) { require('ghost-package'); }\nconst real = require('real-package');\n",
+        )
+        .unwrap();
+
+    assert!(engine
+        .store()
+        .get_node("package:ghost-package")
+        .unwrap()
+        .is_none());
+    assert!(engine
+        .store()
+        .get_node("package:real-package")
+        .unwrap()
+        .is_some());
+}
+
+#[test]
+fn var_shadowing_is_function_scoped_for_imported_calls_and_require() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("src/dependency.ts", "export function dependency() {}\n")
+        .unwrap();
+    engine
+        .ingest_file(
+            "src/consumer.ts",
+            "import { dependency } from './dependency';\nexport function consumer() { dependency(); if (condition) { var dependency = local; } }\n",
+        )
+        .unwrap();
+    let graph = engine
+        .multi_hop_query("symbol:src/consumer.ts:consumer", 1, 0.0)
+        .unwrap();
+    assert!(!graph
+        .edges
+        .iter()
+        .any(|edge| edge.relation == mindleak_core::RelationType::Calls));
+
+    engine
+        .ingest_file(
+            "src/require-var.js",
+            "function scoped() { if (condition) { var require = local; } require('ghost'); }\nrequire('real');\n",
+        )
+        .unwrap();
+    assert!(engine.store().get_node("package:ghost").unwrap().is_none());
+    assert!(engine.store().get_node("package:real").unwrap().is_some());
+}
+
+#[test]
+fn evidence_bundle_uses_attributed_mutations_within_the_work_window() {
+    // Regression: conformance previously inferred activity from goal-linked
+    // files, so task presence could masquerade as proof of actual work.
+    let engine = MindLeak::open_in_memory()
+        .unwrap()
+        .with_agent(Some("agent-a".into()));
+    engine
+        .ingest_execution(&ExecutionRecord {
+            command: "old command".into(),
+            exit_code: 0,
+            output: String::new(),
+            cwd: None,
+            changed_files: vec!["src/old.rs".into()],
+            timestamp: 50,
+        })
+        .unwrap();
+    engine
+        .ingest_execution(&ExecutionRecord {
+            command: "cargo test".into(),
+            exit_code: 101,
+            output: "error at src/failing.rs:7".into(),
+            cwd: None,
+            changed_files: vec!["src/auth.rs".into()],
+            timestamp: 100,
+        })
+        .unwrap();
+    engine
+        .ingest_execution(&ExecutionRecord {
+            command: "cargo test".into(),
+            exit_code: 0,
+            output: "ok".into(),
+            cwd: None,
+            changed_files: vec!["src/auth.rs".into()],
+            timestamp: 110,
+        })
+        .unwrap();
+    engine
+        .ingest_commit(&CommitRecord {
+            sha: Some("proof123".into()),
+            message: "fix auth".into(),
+            changed_files: vec!["src/auth.rs".into()],
+            timestamp: 115,
+        })
+        .unwrap();
+    engine
+        .ingest_file("src/focus_only.rs", "fn seen() {}\n")
+        .unwrap();
+
+    let evidence = engine
+        .evidence_for(Some("task:auth"), "agent-a", 90, 120)
+        .unwrap();
+
+    assert_eq!(evidence.schema_version, 1);
+    assert_eq!(evidence.task_id.as_deref(), Some("task:auth"));
+    assert_eq!(evidence.agent_id, "agent-a");
+    assert_eq!(evidence.execution_ids.len(), 2);
+    assert_eq!(evidence.successful_execution_ids.len(), 1);
+    assert_eq!(evidence.commit_ids, vec!["intent:proof123"]);
+    assert_eq!(evidence.changed_node_ids, vec!["artifact:src/auth.rs"]);
+    assert_eq!(evidence.failed_node_ids, vec!["artifact:src/failing.rs"]);
+    assert!(!evidence
+        .changed_node_ids
+        .iter()
+        .any(|id| id == "artifact:src/old.rs" || id == "artifact:src/focus_only.rs"));
+    assert!(evidence.provenance.iter().any(|fact| {
+        fact.source_id == "agent:agent-a"
+            && fact.relation == "observed"
+            && evidence.execution_ids.contains(&fact.target_id)
+    }));
+    assert!(evidence
+        .provenance
+        .iter()
+        .any(|fact| { fact.relation == "refactored" && fact.target_id == "artifact:src/auth.rs" }));
+}

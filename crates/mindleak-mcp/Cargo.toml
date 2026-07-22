@@ -14,3 +14,4 @@ mindleak-core = { path = "../mindleak-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+tracing = { workspace = true }

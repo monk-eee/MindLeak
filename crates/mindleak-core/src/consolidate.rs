@@ -73,17 +73,12 @@ impl Consolidator {
         });
 
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let mut req = ureq::post(&url).set("Content-Type", "application/json");
-        if !self.api_key.is_empty() {
-            req = req.set("Authorization", &format!("Bearer {}", self.api_key));
-        }
-        let resp = req
-            .send_json(body)
-            .map_err(|e| MindLeakError::Http(e.to_string()))?;
-
-        let value: serde_json::Value = resp
-            .into_json()
-            .map_err(|e| MindLeakError::Http(e.to_string()))?;
+        let value = crate::net::post_json(
+            &crate::net::HttpConfig::default(),
+            &url,
+            &self.api_key,
+            &body,
+        )?;
         let content = value
             .get("choices")
             .and_then(|c| c.get(0))

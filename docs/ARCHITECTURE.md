@@ -28,7 +28,9 @@ The engine. Modules:
 | [`ingest/`](../crates/mindleak-core/src/ingest/mod.rs) | Zero-token deterministic extractors: `execution`, `git`, `ast`, `structure` (JS/TS imports). |
 | [`consolidate.rs`](../crates/mindleak-core/src/consolidate.rs) | Optional Ollama consolidation worker. |
 | [`embed.rs`](../crates/mindleak-core/src/embed.rs) | Optional semantic-recall embedding index (ADR-0008): local `/v1/embeddings` client, derived `embeddings` table, cosine recall. Off the zero-token write path. |
-| [`lib.rs`](../crates/mindleak-core/src/lib.rs) | `MindLeak` facade: ingestion + the agent-facing queries (traversal · impact · recall). |
+| [`net.rs`](../crates/mindleak-core/src/net.rs) | Network resilience for optional HTTP (ADR-0010): timeouts, bounded retry with backoff, per-endpoint circuit breaker. |
+| [`telemetry.rs`](../crates/mindleak-core/src/telemetry.rs) | Observability (ADR-0010): durable `telemetry_events` audit trail, metrics snapshot, stderr-only `tracing` init. |
+| [`lib.rs`](../crates/mindleak-core/src/lib.rs) | `MindLeak` facade: ingestion + the agent-facing queries (traversal · impact · recall) + telemetry. |
 
 ### `mindleak-mcp` (binary)
 
@@ -103,10 +105,13 @@ All write-path extraction is pure pattern matching:
   replaces the artifact's prior structural snapshot. Structured behind a
   swappable interface; Tree-sitter is the precision upgrade for cross-file/scoped
   calls.
-- **structure** (ADR-0006, in build) — `imports` from `use`/`import`/`require`
-  statements (→ cross-file `calls` + `package` nodes), `extends`/`implements`
-  from inheritance, and `depends_on` from manifests. Same zero-token extractor;
-  gives cross-file impact analysis and the structural substrate ADR-0005 needs.
+- **structure** (ADR-0006) — shipped phase 1 parses static JavaScript/TypeScript
+  `import` and `require` declarations into `imports`, `package`, and named
+  cross-file `calls` facts. A lightweight lexer excludes comments, strings,
+  templates, member calls, and basic lexical shadowing. Unresolved relative
+  targets store deterministic candidate ids; ingesting a real candidate
+  atomically retargets imports/calls and removes the stub. `extends`/`implements`,
+  manifests, and additional language import syntaxes remain in build.
 
 ## Optional LLM layer
 
