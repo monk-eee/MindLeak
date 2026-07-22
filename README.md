@@ -138,6 +138,8 @@ It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
 | `graph_stats` | Node / active-edge counts. |
 | `consolidate_session` | Optional: compress raw logs into one intent node via a local Ollama model. |
 | `list_agents` | Roster of agents + their active observation counts (attribution). |
+| `index` | Optional: embed nodes lacking a current vector via a local `/v1/embeddings` server (ADR-0008). |
+| `recall` | Optional: nearest node ids by cosine similarity — entry points to *seed* `graph_multi_hop_query`. |
 
 ---
 

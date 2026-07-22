@@ -13,6 +13,7 @@
 pub mod consolidate;
 pub mod db;
 pub mod decay;
+pub mod embed;
 pub mod error;
 pub mod graph;
 pub mod ingest;
@@ -70,6 +71,42 @@ impl MindLeak {
 
     pub fn store(&self) -> &GraphStore {
         &self.store
+    }
+
+    /// Semantic recall: return nodes whose content is closest in meaning to
+    /// `query`, via the optional local embedding index (ADR-0008). Complements
+    /// FTS/graph search — seed the results into `multi_hop_query`. Errors
+    /// cleanly when no embedding model is reachable.
+    pub fn recall(&self, query: &str, limit: usize) -> Result<Vec<ScoredNode>> {
+        let embedder = embed::Embedder::default();
+        let query_vec = embedder.embed(query)?;
+        let hits = embed::recall(&self.store.conn, &query_vec, &embedder.model, limit)?;
+        let mut out = Vec::new();
+        for (id, score) in hits {
+            if let Some(node) = self.store.get_node(&id)? {
+                out.push(ScoredNode {
+                    node,
+                    depth: 0,
+                    score: score as f64,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Populate the semantic embedding index for nodes missing a current vector
+    /// (off the zero-token hot path). Returns how many nodes were indexed.
+    pub fn index_nodes(&self, limit: usize) -> Result<usize> {
+        let embedder = embed::Embedder::default();
+        let now = now_unix();
+        let pending = embed::nodes_missing_embeddings(&self.store.conn, &embedder.model, limit)?;
+        let mut indexed = 0;
+        for (id, text) in pending {
+            let vector = embedder.embed(&text)?;
+            embed::upsert(&self.store.conn, &id, &embedder.model, &vector, now)?;
+            indexed += 1;
+        }
+        Ok(indexed)
     }
 
     /// Record that the active agent (if any) observed these nodes.

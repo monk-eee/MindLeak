@@ -57,6 +57,13 @@ impl Lodestar {
         })
     }
 
+    /// Override the LLM client (dependency injection; used by tests to force the
+    /// deterministic no-model fallback regardless of any local server).
+    pub fn with_llm(mut self, llm: LlmClient) -> Self {
+        self.llm = llm;
+        self
+    }
+
     pub fn store(&self) -> &LodestarStore {
         &self.store
     }
@@ -350,7 +357,14 @@ mod tests {
     use super::*;
 
     fn engine() -> Lodestar {
-        Lodestar::open_in_memory().unwrap()
+        // Deterministic: point the optional LLM at an unreachable endpoint so
+        // model-optional paths (decompose, semantic conformance) take their
+        // fallback regardless of any local server that happens to be running.
+        Lodestar::open_in_memory().unwrap().with_llm(LlmClient {
+            base_url: "http://127.0.0.1:1/v1".to_string(),
+            model: "unreachable".to_string(),
+            api_key: String::new(),
+        })
     }
 
     #[test]

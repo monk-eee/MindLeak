@@ -14,9 +14,10 @@ to [Semantic Versioning](https://semver.org/).
   heuristic `ast` extraction of symbols **and in-file `calls` edges** for 8
   languages.
 - **MCP server** (`mindleak-mcp`): newline-delimited JSON-RPC 2.0 over stdio
-  exposing 12 tools (`graph_multi_hop_query`, `get_impact_radius`,
+  exposing 14 tools (`graph_multi_hop_query`, `get_impact_radius`,
   `record_architectural_decision`, plus ingestion/snapshot/prune/stats, an
-  optional `consolidate_session` helper, and `list_agents`).
+  optional `consolidate_session` helper, `list_agents`, and the optional
+  semantic-recall pair `recall`/`index`).
 - **Multi-agent attribution**: set `MINDLEAK_AGENT=<id>` and each ingest/focus
   also records a decay-weighted `agent:<id> --observed--> <node>` edge — shared
   graph, per-agent attention that fades. Roster via `list_agents`.
@@ -33,6 +34,16 @@ to [Semantic Versioning](https://semver.org/).
   off the hot path. Both LLM clients (MindLeak + Lodestar) extract the JSON object
   from model output robustly (fence/prose-tolerant), verified end to end against
   `glm4:9b` by `#[ignore]`d live round-trip tests.
+- **Optional semantic-recall embedding index** (ADR-0008): an off-hot-path
+  vector *lens onto the graph*, complementing decay traversal rather than
+  replacing it (ADR-0002). `index` embeds nodes lacking a current vector through
+  a local **OpenAI-compatible** `/v1/embeddings` server (Ollama, LM Studio,
+  llama.cpp, …), and `recall` returns the nearest node ids by cosine similarity —
+  entry points to *seed* `graph_multi_hop_query`, not a substitute for it.
+  Embeddings live in a derived, recall-only `embeddings` table and never touch
+  the zero-token write path. Configured via `MINDLEAK_EMBED_URL` /
+  `MINDLEAK_EMBED_MODEL` / `MINDLEAK_EMBED_API_KEY`; errors cleanly when no
+  embedding server is reachable.
 - Engineering baseline: pre-commit hooks, rustfmt/clippy/eslint/prettier,
   GitHub Actions CI (Linux + Windows), `.gitattributes`, and the `docs/`
   documentation set.

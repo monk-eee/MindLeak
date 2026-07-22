@@ -132,6 +132,28 @@ pub fn list() -> Vec<Value> {
             "description": "List the agent roster: each agent that has ingested or focused nodes, with its active observation count and last-active time. Attribution is recorded only when the server is launched with MINDLEAK_AGENT set.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
+        json!({
+            "name": "recall",
+            "description": "Semantic recall: return nodes whose content is closest in meaning to a free-text query, using an optional local embedding index (ADR-0008; MINDLEAK_EMBED_URL / MINDLEAK_EMBED_MODEL). Complements FTS and graph search — seed the results into graph_multi_hop_query. Errors cleanly when no embedding model is reachable.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "limit": { "type": "integer", "default": 10, "minimum": 1, "maximum": 100 }
+                },
+                "required": ["query"]
+            }
+        }),
+        json!({
+            "name": "index",
+            "description": "Populate the semantic embedding index for nodes lacking a current vector (off the zero-token hot path). Returns how many nodes were indexed. Optional; requires a local embedding model.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "integer", "default": 200, "minimum": 1, "maximum": 5000 }
+                }
+            }
+        }),
     ]
 }
 
@@ -232,6 +254,17 @@ pub fn call(engine: &MindLeak, params: &Value) -> Result<Value, String> {
             let agents = engine.list_agents().map_err(|e| e.to_string())?;
             Ok(text_result(&json!({ "agents": agents })))
         }
+        "recall" => {
+            let query = req_str(&args, "query")?;
+            let limit = opt_i64(&args, "limit", 10).clamp(1, 100) as usize;
+            let results = engine.recall(&query, limit).map_err(|e| e.to_string())?;
+            Ok(text_result(&json!({ "results": results })))
+        }
+        "index" => {
+            let limit = opt_i64(&args, "limit", 200).clamp(1, 5000) as usize;
+            let indexed = engine.index_nodes(limit).map_err(|e| e.to_string())?;
+            Ok(text_result(&json!({ "indexed": indexed })))
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -296,7 +329,7 @@ mod tests {
         assert!(names.contains(&"graph_multi_hop_query".to_string()));
         assert!(names.contains(&"get_impact_radius".to_string()));
         assert!(names.contains(&"record_architectural_decision".to_string()));
-        assert_eq!(names.len(), 12);
+        assert_eq!(names.len(), 14);
     }
 
     #[test]

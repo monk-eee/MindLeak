@@ -66,7 +66,7 @@ pub struct AgentActivity {
 
 /// The persistent graph store.
 pub struct GraphStore {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 impl GraphStore {

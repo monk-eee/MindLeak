@@ -7,9 +7,12 @@ tokens on the write path** — converts it into a decay-weighted directional gra
 and exposes graph-traversal tools to LLM agents over MCP. An optional local model
 (Ollama / GLM) consolidates noisy logs into high-level intent nodes asynchronously.
 
-This is a **complete replacement** for flat log / vector-only memory: instead of
-storing sequential events forever, MindLeak maps explicit **nodes** and **edges**
-whose weights **decay on an exponential half-life** so stale context fades out.
+This **replaces flat-log / vector-*only* memory**: instead of storing sequential
+events forever, MindLeak maps explicit **nodes** and **edges** whose weights
+**decay on an exponential half-life** so stale context fades out. Vectors are not
+thrown away but *subordinated* — an optional embedding index
+([ADR-0008](adr/0008-semantic-recall-embedding-index.md)) is a recall *lens* that
+seeds graph traversal, never the primary substrate.
 
 > **Scope.** This document specifies the *episodic* plane — memory of the act,
 > which decays. Its durable counterpart, the **Intent Plane** (authoritative
@@ -29,6 +32,11 @@ whose weights **decay on an exponential half-life** so stale context fades out.
 Vector search matches keywords with extra steps; it can't do multi-hop
 structural reasoning ("what breaks if I change this schema?"). Flat logs give
 chronology but not topology. MindLeak gives both, and forgets on purpose.
+
+Vectors still earn a **subordinate** role: an optional local embedding index
+([ADR-0008](adr/0008-semantic-recall-embedding-index.md)) answers *"what is
+semantically near this phrase?"* to pick an entry node, then the graph reasons
+from there. Similarity finds the door; decay-weighted traversal walks the house.
 
 ---
 
@@ -159,6 +167,10 @@ Schema: [`crates/mindleak-core/src/schema.sql`](../crates/mindleak-core/src/sche
 `ingest_file`, `boost_entity`, `graph_snapshot`, `prune_graph`, `graph_stats`,
 `consolidate_session`, `list_agents`.
 
+**Optional semantic recall (ADR-0008):** `index` embeds nodes lacking a current
+vector; `recall(query, limit)` returns the nearest node ids by cosine similarity
+— entry points to *seed* `graph_multi_hop_query`, not a replacement for it.
+
 ---
 
 ## 6. Optional LLM augmentation (local, async)
@@ -184,6 +196,23 @@ Configuration (all optional; sensible local defaults):
 Nothing leaves the machine when pointed at a local server; the model is optional
 and never on the hot path. Exposed as the `consolidate_session` MCP tool, which
 errors cleanly when no model is reachable.
+
+### 6.1 Semantic-recall embedding index (ADR-0008)
+
+A second optional augmentation, also local and off the write path. An async
+`index` pass embeds graph nodes through the **OpenAI-compatible** `/v1/embeddings`
+API and stores vectors in a derived, recall-only `embeddings` table; `recall`
+scores a query embedding against them by cosine similarity and returns the
+nearest node ids to seed traversal. Embeddings are *derived* — regenerable, never
+authoritative, and never consulted on the deterministic ingest/query hot path.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MINDLEAK_EMBED_URL` | `http://localhost:11434/v1` | OpenAI-compatible embeddings base URL |
+| `MINDLEAK_EMBED_MODEL` | `nomic-embed-text` | embedding model name |
+| `MINDLEAK_EMBED_API_KEY` | *(empty)* | bearer token for hosted servers; Ollama ignores it |
+
+Like consolidation, it errors cleanly when no embedding server is reachable.
 
 ---
 
