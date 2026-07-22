@@ -75,20 +75,6 @@ fn register_functions(conn: &Connection) -> Result<()> {
             ))
         },
     )?;
-    conn.create_scalar_function(
-        "signal_half_life",
-        4,
-        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-        |ctx| {
-            let base: f64 = ctx.get(0)?;
-            let count: i64 = ctx.get(1)?;
-            let first_seen: i64 = ctx.get(2)?;
-            let updated_at: i64 = ctx.get(3)?;
-            Ok(crate::decay::signal_half_life(
-                base, count, first_seen, updated_at,
-            ))
-        },
-    )?;
     Ok(())
 }
 

@@ -39,9 +39,14 @@ its phase exit gate passes.
 - **Phase 2 passive capture is implemented behind VS Code 1.93 shell
   integration.** Component fixtures drive terminal/Git events into MCP ingestion
   without test-authored ingestion calls. Output is opt-in/redacted/bounded,
-  capture health is visible, and the 200-file/8 KiB local path measures 27.769 ms
+  capture health is visible, and the 200-file/8 KiB local path measures 28.651 ms
   p95 against the 50 ms gate. A live Extension Host shell-integration smoke run
   remains an operator validation, not a deterministic CI fixture.
+- **Phase 5 signal-weighted decay is green.** ADR-0012 derives bounded evidence
+  from consequence, source diversity, surprise, structural degree, deliberate
+  decisions, and weak span-qualified reinforcement. In the adversarial fixture,
+  400 same-session reinforcements expire at six days while a resolved,
+  corroborated failure remains active and still expires by sixty days.
 
 ## 2. Product Claims and Proof Gates
 
@@ -51,7 +56,7 @@ its phase exit gate passes.
 | Passive episodic memory | VS Code 1.93 terminal/Git component fixtures pass; unsupported shells visibly degrade | Live fixture sessions capture execution/failure/commit evidence; p95 remains < 50 ms |
 | Impact analysis | Bidirectional depth-2 graph proximity; mostly in-file structure | Cross-file truth-set precision >= 0.80 and recall >= 0.85 on supported fixtures |
 | Conformance enforcement | A covering task is treated as aligned without inspecting actual changes | Violations, drift, missing evidence, and aligned changes each reach distinct tested outcomes |
-| Decay noise, not signal | Reinforcement count across a time span extends half-life | Repetitive green-build noise fades before rare consequential/corroborated evidence in an adversarial fixture |
+| Decay noise, not signal | Adversarial and ablation fixtures pass with a bounded 1x-8x derived multiplier | Repetitive green-build noise fades before rare consequential/corroborated evidence |
 | Better agents | No comparative evaluation | >= 15% fewer exploration tool calls or >= 10% higher task success, with no correctness regression |
 | Collision-free local coordination | SQLite claim CAS has a concurrent race test | Zero duplicate winners across 10,000 repeated multi-connection claim races |
 
@@ -330,8 +335,8 @@ alignment.
 
 **Purpose:** retain rare consequential evidence while repetitive noise fades.
 
-The current count-plus-span half-life graduation is retained as one weak signal,
-not treated as completion of ADR-0005.
+The former count-plus-span graduation is retained as one weak term inside the
+completed ADR-0012 evidence model.
 
 ### Signal components
 
@@ -348,10 +353,10 @@ not treated as completion of ADR-0005.
 
 | Method | Responsibility | Can copy from | Effort |
 |---|---|---|---|
-| `GraphStore::signal_evidence(edge, now)` | Compute source diversity, consequence, and structural proxies | Existing graph SQL | High |
-| `decay::signal_multiplier(evidence)` | Pure bounded mapping from evidence to half-life multiplier | Existing `signal_half_life` | Medium |
-| `GraphStore::expiring_signal_candidates(now)` | Find proven signal near expiry for consolidation | Existing prune query | High |
-| `prune()` | Consolidate eligible signal before deleting noise | Existing prune path plus worker boundary | High |
+| `GraphStore::signal_evidence(edge, now)` | Compute source diversity, consequence, and structural proxies | Shipped | High |
+| `decay::signal_multiplier(evidence)` | Pure bounded mapping from evidence to half-life multiplier | Shipped | Medium |
+| `GraphStore::expiring_signal_candidates(now)` | Find proven signal near expiry for consolidation | Shipped | High |
+| `prune()` | Surface eligible signal before deleting noise; optional consumer consolidates | Shipped handoff | High |
 
 Effective weight remains derived. Stored fields are raw evidence/provenance only.
 

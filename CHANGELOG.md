@@ -31,7 +31,7 @@ to [Semantic Versioning](https://semver.org/).
   PEP 508 parsers preserve renamed/canonical identities; malformed manifests
   fail before reconciliation, preserving the last valid snapshot.
 - **MCP server** (`mindleak-mcp`): newline-delimited JSON-RPC 2.0 over stdio
-  exposing 14 tools (`graph_multi_hop_query`, `get_impact_radius`,
+  exposing 17 tools (`graph_multi_hop_query`, `get_impact_radius`,
   `record_architectural_decision`, plus ingestion/snapshot/prune/stats, an
   optional `consolidate_session` helper, `list_agents`, and the optional
   semantic-recall pair `recall`/`index`).
@@ -101,22 +101,18 @@ to [Semantic Versioning](https://semver.org/).
   conformance with deterministic fallbacks; shared `.lodestar/spec.db` (WAL) with
   the constitution exportable to committed markdown.
 
-- **Signal-weighted decay in MindLeak** (ADR-0005): edges now carry a
-  `reinforcement_count` and `first_seen`, and a derived `signal_half_life()`
-  extends the half-life of edges reinforced across a span — proven signal resists
-  decay while one-offs and same-session spam fade ("decay noise, not signal").
-  Wired into every decay query; effective weight stays derived, never stored.
-
-### Design
-- **Fuller signal proxies** (ADR-0005): the episodic signal term ships as
-  reinforcement-over-span; the further proxies (corroboration/centrality,
-  surprise/prediction-error) and consolidating proven episodic clusters into
-  Lodestar learned-knowledge remain the next seams.
+- **Derived signal-weighted decay** (ADR-0005/0012): every graph read derives a
+  bounded half-life multiplier from span-qualified reinforcement, independent
+  source diversity, failure/change/success consequence, surprise, structural
+  in-degree, and explicit decisions. Effective weight remains derived and the
+  multiplier is capped at 8x. `prune_graph` returns near-expiry proven signal
+  with provenance and retains expired candidates until optional
+  `consolidate_signal` succeeds, then acknowledges the raw evidence.
 
 ### Fixed
 - Execution ingestion now batches one execution and all artifact edges in a
   single SQLite transaction. The 200-file/8 KiB passive-sensor benchmark moved
-  from 296 ms to 27.769 ms p95, below the 50 ms gate.
+  from 296 ms to 28.651 ms p95, below the 50 ms gate.
 - The committed dependency graph and source now compile with the declared Rust
   1.75 minimum: `Cargo.lock` uses format 3, parser/TLS transitives are pinned to
   compatible releases, and post-1.75 `Option` helpers use equivalent stable

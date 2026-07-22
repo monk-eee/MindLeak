@@ -161,9 +161,10 @@ It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
 | `ingest_file` | File → artifact + extracted symbols (`contains`). |
 | `boost_entity` | Record node focus for recency views without rewriting evidence. |
 | `graph_snapshot` | Subgraph for visualization. |
-| `prune_graph` | Purge decayed edges + unreferenced episodic/structural stubs. |
+| `prune_graph` | Surface near-expiry proven signal for consolidation, then purge decayed noise and unreferenced stubs. |
 | `graph_stats` | Node / active-edge counts. |
 | `consolidate_session` | Optional: compress raw logs into one intent node via a local Ollama model. |
+| `consolidate_signal` | Optional: consolidate queued proven signal, persist provenance links, then acknowledge raw evidence. |
 | `list_agents` | Roster of agents + their active observation counts (attribution). |
 | `evidence_for` | Bounded, provenance-bearing evidence bundle from an agent's attributed executions/commits in a work window (ADR-0009). |
 | `index` | Optional: embed nodes lacking a current vector via a local `/v1/embeddings` server (ADR-0008). |
@@ -199,7 +200,8 @@ coordinate through one plane.
 
 Design: [docs/SPEC-INTENT.md](docs/SPEC-INTENT.md) ·
 [ADR-0004](docs/adr/0004-intent-plane-spec-brain.md) ·
-[ADR-0005](docs/adr/0005-signal-weighted-decay.md).
+[ADR-0005](docs/adr/0005-signal-weighted-decay.md) ·
+[ADR-0012](docs/adr/0012-derived-signal-evidence.md).
 
 ---
 

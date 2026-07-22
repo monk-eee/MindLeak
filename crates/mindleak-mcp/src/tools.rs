@@ -109,7 +109,7 @@ pub fn list() -> Vec<Value> {
         }),
         json!({
             "name": "prune_graph",
-            "description": "Purge decayed edges and unreferenced execution or symbol nodes.",
+            "description": "Surface near-expiry proven signal for optional consolidation, then purge decayed noise and unreferenced nodes.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
@@ -126,6 +126,16 @@ pub fn list() -> Vec<Value> {
                     "logs": { "type": "array", "items": { "type": "string" } }
                 },
                 "required": ["logs"]
+            }
+        }),
+        json!({
+            "name": "consolidate_signal",
+            "description": "Optional: consolidate queued high-signal episodic evidence through the local OpenAI-compatible model, persist deterministic provenance links, then acknowledge raw candidates only after success.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "integer", "default": 20, "minimum": 1, "maximum": 200 }
+                }
             }
         }),
         json!({
@@ -280,10 +290,8 @@ fn dispatch(engine: &MindLeak, params: &Value) -> Result<Value, String> {
             Ok(text_result(&json!(sub)))
         }
         "prune_graph" => {
-            let (edges, nodes) = engine.prune().map_err(|e| e.to_string())?;
-            Ok(text_result(
-                &json!({ "edges_removed": edges, "nodes_removed": nodes }),
-            ))
+            let outcome = engine.prune().map_err(|e| e.to_string())?;
+            Ok(text_result(&json!(outcome)))
         }
         "graph_stats" => {
             let (nodes, edges) = engine.counts().map_err(|e| e.to_string())?;
@@ -297,6 +305,13 @@ fn dispatch(engine: &MindLeak, params: &Value) -> Result<Value, String> {
                 .consolidate_session(&logs)
                 .map_err(|e| e.to_string())?;
             Ok(text_result(&json!({ "intent_id": id, "outcome": outcome })))
+        }
+        "consolidate_signal" => {
+            let limit = opt_i64(&args, "limit", 20).clamp(1, 200) as usize;
+            let outcome = engine
+                .consolidate_signal(limit)
+                .map_err(|e| e.to_string())?;
+            Ok(text_result(&json!(outcome)))
         }
         "list_agents" => {
             let agents = engine.list_agents().map_err(|e| e.to_string())?;
@@ -408,6 +423,7 @@ mod tests {
             "recall",
             "index",
             "telemetry_snapshot",
+            "consolidate_signal",
         ] {
             assert!(
                 names.contains(&expected.to_string()),
@@ -528,5 +544,13 @@ mod tests {
         let params = json!({ "name": "consolidate_session", "arguments": { "logs": ["ran test", "failed"] } });
         assert!(call(&engine, &params).is_err());
         std::env::remove_var("MINDLEAK_LLM_URL");
+    }
+
+    #[test]
+    fn consolidate_signal_errors_cleanly_without_candidates() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        let params = json!({ "name": "consolidate_signal", "arguments": {} });
+        let error = call(&engine, &params).unwrap_err();
+        assert!(error.contains("no signal candidates"));
     }
 }

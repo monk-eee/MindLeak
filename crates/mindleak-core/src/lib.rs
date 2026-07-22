@@ -27,7 +27,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub use error::{MindLeakError, Result};
 pub use graph::{
     AgentActivity, ArtifactStub, ConformanceEvidence, Direction, EvidenceProvenance, GraphStore,
-    ScoredNode, Subgraph, WeightedEdge, WriteOutcome,
+    PruneOutcome, ScoredNode, SignalCandidate, SignalConsolidationOutcome, Subgraph, WeightedEdge,
+    WriteOutcome,
 };
 pub use model::{Edge, Node, NodeType, RelationType};
 
@@ -399,8 +400,8 @@ impl MindLeak {
 
     // ---- maintenance --------------------------------------------------------
 
-    pub fn prune(&self) -> Result<(usize, usize)> {
-        self.store.prune(now_unix())
+    pub fn prune(&self) -> Result<PruneOutcome> {
+        self.store.prune_with_signal(now_unix())
     }
 
     pub fn counts(&self) -> Result<(i64, i64)> {
@@ -449,5 +450,70 @@ impl MindLeak {
     /// reachable.
     pub fn consolidate_session(&self, logs: &[String]) -> Result<(String, WriteOutcome)> {
         Consolidator::default().consolidate_and_store(&self.store, logs, now_unix())
+    }
+
+    /// Consolidate queued high-signal episodics, then acknowledge their raw
+    /// edges only after the durable intent and provenance links are stored.
+    pub fn consolidate_signal(&self, limit: usize) -> Result<SignalConsolidationOutcome> {
+        let now = now_unix();
+        let candidates: Vec<SignalCandidate> = self
+            .store
+            .expiring_signal_candidates(now)?
+            .into_iter()
+            .take(limit.max(1))
+            .collect();
+        if candidates.is_empty() {
+            return Err(MindLeakError::NotFound(
+                "no signal candidates are ready for consolidation".to_string(),
+            ));
+        }
+
+        let mut logs = Vec::new();
+        for candidate in &candidates {
+            let source = self.store.get_node(&candidate.source_id)?;
+            let content = source
+                .as_ref()
+                .and_then(|node| node.content.as_deref())
+                .unwrap_or("");
+            logs.push(ingest::clamp(
+                &format!(
+                    "{} --{}--> {} | signal={} | evidence={} | {}",
+                    candidate.source_id,
+                    candidate.relation.as_str(),
+                    candidate.target_id,
+                    candidate.signal_multiplier,
+                    serde_json::to_string(&candidate.evidence)?,
+                    content
+                ),
+                4_000,
+            ));
+        }
+
+        let (intent_id, mut write_outcome) =
+            Consolidator::default().consolidate_and_store(&self.store, &logs, now)?;
+        let mut targets: HashSet<String> = HashSet::new();
+        let mut links = Vec::new();
+        for candidate in &candidates {
+            if targets.insert(candidate.target_id.clone()) {
+                links.push(Edge::new(
+                    &intent_id,
+                    &candidate.target_id,
+                    RelationType::RelatesTo,
+                    now,
+                ));
+            }
+        }
+        let linked = self.store.upsert_facts(&[], &links)?;
+        write_outcome.nodes_created += linked.nodes_created;
+        write_outcome.edges_created += linked.edges_created;
+        let (edges_removed, nodes_removed) =
+            self.store.acknowledge_signal_candidates(&candidates)?;
+        Ok(SignalConsolidationOutcome {
+            intent_id,
+            candidates_consolidated: candidates.len(),
+            edges_removed,
+            nodes_removed,
+            write_outcome,
+        })
     }
 }

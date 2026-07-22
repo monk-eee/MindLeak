@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
   "captured_at": "2026-07-22",
-  "source_revision": "6ea3516-dirty",
-  "executable_sha256": "7181ac43bb9bc50179ebcfd7af3eaee097b7cb6cc5bcf393ea5c4ad8b5118b25",
+  "source_revision": "cd71fdb-dirty",
+  "executable_sha256": "7338ef89acfc38d45f6b38861b286e181472dec056179dbb44325b07dd006bc0",
   "samples": 50,
   "changed_files_per_sample": 200,
   "retained_output_chars": 8192,
-  "p50_ms": 21.372,
-  "p95_ms": 27.769,
-  "max_ms": 29.929,
+  "p50_ms": 22.352,
+  "p95_ms": 28.651,
+  "max_ms": 30.096,
   "gate_ms": 50,
   "passed": true
 }

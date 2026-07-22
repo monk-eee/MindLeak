@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-22",
+  "source_revision": "cd71fdb-dirty",
+  "executable_sha256": "e821c7f193e399976544d328782f8493a67fcaa91d5fc5fe10d80ad097ec56fe",
+  "threshold": 0.05,
+  "scenarios": {
+    "same_session_spam": {
+      "reinforcement_count": 400,
+      "signal_multiplier": 1,
+      "effective_after_six_days": 0.015625,
+      "active": false
+    },
+    "resolved_failure": {
+      "signal_multiplier": 7.244650542118226,
+      "effective_after_six_days": 0.5632325834473468,
+      "active": true,
+      "evidence": {
+        "reinforcement_count": 1,
+        "reinforcement_span_hours": 0,
+        "source_diversity": 4,
+        "consequence": true,
+        "surprise": true,
+        "structural_in_degree": 1,
+        "deliberate_attention": true
+      }
+    },
+    "eventual_decay": {
+      "effective_after_sixty_days": 0.0032127557636232556,
+      "active": false
+    },
+    "consolidation_handoff": {
+      "candidate_count": 1,
+      "contains_failure": true,
+      "expired_failure_retained": true
+    }
+  },
+  "ablation": {
+    "baseline": 1,
+    "span_qualified_reinforcement": 1.4481203125901445,
+    "source_diversity": 2.5,
+    "consequence": 3.5,
+    "surprise": 1.75,
+    "structural_centrality": 2,
+    "deliberate_attention": 2.25,
+    "maximal": 8
+  },
+  "snapshot_200_edge_p95_ms": 16.757,
+  "passed": true
+}

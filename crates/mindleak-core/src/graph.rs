@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
 
-use crate::decay::PRUNE_THRESHOLD;
+use crate::decay::{effective_weight, signal_multiplier, SignalEvidence, PRUNE_THRESHOLD};
 use crate::error::{MindLeakError, Result};
 use crate::model::{Edge, Node, NodeType, RelationType};
 
@@ -27,7 +27,51 @@ pub struct WeightedEdge {
     pub base_weight: f64,
     pub effective: f64,
     pub half_life_hours: f64,
+    pub effective_half_life_hours: f64,
+    pub signal_multiplier: f64,
+    pub signal_evidence: SignalEvidence,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+struct RawEdge {
+    source_id: String,
+    target_id: String,
+    relation: RelationType,
+    weight: f64,
+    half_life_hours: f64,
+    updated_at: i64,
+    first_seen: i64,
+    reinforcement_count: i64,
+}
+
+/// Proven signal approaching expiry, ready for optional consolidation.
+#[derive(Debug, Clone, Serialize)]
+pub struct SignalCandidate {
+    pub source_id: String,
+    pub target_id: String,
+    pub relation: RelationType,
+    pub effective: f64,
+    pub signal_multiplier: f64,
+    pub evidence: SignalEvidence,
+}
+
+/// Maintenance result including signal routed to optional consolidation.
+#[derive(Debug, Clone, Serialize)]
+pub struct PruneOutcome {
+    pub edges_removed: usize,
+    pub nodes_removed: usize,
+    pub signal_candidates: Vec<SignalCandidate>,
+}
+
+/// Result of optional consolidation for queued signal candidates.
+#[derive(Debug, Clone, Serialize)]
+pub struct SignalConsolidationOutcome {
+    pub intent_id: String,
+    pub candidates_consolidated: usize,
+    pub edges_removed: usize,
+    pub nodes_removed: usize,
+    pub write_outcome: WriteOutcome,
 }
 
 /// A node reached during traversal, with its depth and path score.
@@ -401,19 +445,272 @@ impl GraphStore {
         let col = if outgoing { "source_id" } else { "target_id" };
         let sql = format!(
             "SELECT source_id, target_id, relation, weight, half_life_hours, updated_at,
-                    effective_weight(weight, signal_half_life(half_life_hours, reinforcement_count, first_seen, updated_at), updated_at, ?2) AS eff
-             FROM edges
-             WHERE {col} = ?1
-               AND effective_weight(weight, signal_half_life(half_life_hours, reinforcement_count, first_seen, updated_at), updated_at, ?2) >= ?3
-             ORDER BY eff DESC"
+                    first_seen, reinforcement_count
+             FROM edges WHERE {col} = ?1"
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![id, now, min_weight], row_to_weighted_edge)?;
+        let rows = stmt.query_map(params![id], row_to_raw_edge)?;
         let mut out = Vec::new();
         for r in rows {
-            out.push(r?);
+            let edge = self.weighted_edge(&r?, now)?;
+            if edge.effective >= min_weight {
+                out.push(edge);
+            }
         }
+        out.sort_by(|left, right| {
+            right
+                .effective
+                .partial_cmp(&left.effective)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(out)
+    }
+
+    /// Derive signal evidence from raw edge provenance and current graph state.
+    pub fn signal_evidence(&self, edge: &Edge, now: i64) -> Result<SignalEvidence> {
+        let raw = self
+            .conn
+            .query_row(
+                "SELECT source_id, target_id, relation, weight, half_life_hours, updated_at,
+                        first_seen, reinforcement_count
+                 FROM edges
+                 WHERE source_id = ?1 AND target_id = ?2 AND relation = ?3",
+                params![edge.source_id, edge.target_id, edge.relation.as_str()],
+                row_to_raw_edge,
+            )
+            .optional()?
+            .ok_or_else(|| {
+                MindLeakError::NotFound(format!(
+                    "{} --{}--> {}",
+                    edge.source_id,
+                    edge.relation.as_str(),
+                    edge.target_id
+                ))
+            })?;
+        self.signal_evidence_for(&raw, now)
+    }
+
+    /// Return high-signal episodic edges within one threshold band of expiry.
+    pub fn expiring_signal_candidates(&self, now: i64) -> Result<Vec<SignalCandidate>> {
+        let mut statement = self.conn.prepare(
+            "SELECT source_id, target_id, relation, weight, half_life_hours, updated_at,
+                    first_seen, reinforcement_count FROM edges",
+        )?;
+        let rows = statement.query_map([], row_to_raw_edge)?;
+        let mut candidates = Vec::new();
+        for row in rows {
+            let raw = row?;
+            if !matches!(
+                raw.relation,
+                RelationType::FailedOn | RelationType::Refactored
+            ) {
+                continue;
+            }
+            let edge = self.weighted_edge(&raw, now)?;
+            if edge.signal_multiplier > 1.0 && edge.effective < PRUNE_THRESHOLD * 2.0 {
+                candidates.push(SignalCandidate {
+                    source_id: edge.source_id,
+                    target_id: edge.target_id,
+                    relation: edge.relation,
+                    effective: edge.effective,
+                    signal_multiplier: edge.signal_multiplier,
+                    evidence: edge.signal_evidence,
+                });
+            }
+        }
+        candidates.sort_by(|left, right| {
+            left.effective
+                .partial_cmp(&right.effective)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        Ok(candidates)
+    }
+
+    /// Delete signal edges only after optional consolidation has succeeded.
+    pub(crate) fn acknowledge_signal_candidates(
+        &self,
+        candidates: &[SignalCandidate],
+    ) -> Result<(usize, usize)> {
+        let transaction = self.conn.unchecked_transaction()?;
+        let mut edges_removed = 0;
+        for candidate in candidates {
+            edges_removed += transaction.execute(
+                "DELETE FROM edges
+                 WHERE source_id = ?1 AND target_id = ?2 AND relation = ?3",
+                params![
+                    candidate.source_id,
+                    candidate.target_id,
+                    candidate.relation.as_str()
+                ],
+            )?;
+        }
+        let mut nodes_removed = 0;
+        for candidate in candidates {
+            nodes_removed += transaction.execute(
+                "DELETE FROM nodes
+                 WHERE id = ?1 AND type IN ('execution', 'intent')
+                   AND NOT EXISTS (
+                       SELECT 1 FROM edges
+                       WHERE source_id = ?1 OR target_id = ?1
+                   )",
+                params![candidate.source_id],
+            )?;
+        }
+        nodes_removed += transaction.execute(
+            "DELETE FROM nodes
+             WHERE type IN ('execution', 'symbol', 'package')
+               AND NOT EXISTS (
+                   SELECT 1 FROM edges
+                   WHERE source_id = nodes.id OR target_id = nodes.id
+               )",
+            [],
+        )?;
+        transaction.commit()?;
+        Ok((edges_removed, nodes_removed))
+    }
+
+    fn weighted_edge(&self, raw: &RawEdge, now: i64) -> Result<WeightedEdge> {
+        let evidence = self.signal_evidence_for(raw, now)?;
+        let multiplier = signal_multiplier(evidence);
+        let adjusted_half_life = raw.half_life_hours * multiplier;
+        Ok(WeightedEdge {
+            source_id: raw.source_id.clone(),
+            target_id: raw.target_id.clone(),
+            relation: raw.relation,
+            base_weight: raw.weight,
+            effective: effective_weight(raw.weight, adjusted_half_life, raw.updated_at, now),
+            half_life_hours: raw.half_life_hours,
+            effective_half_life_hours: adjusted_half_life,
+            signal_multiplier: multiplier,
+            signal_evidence: evidence,
+            updated_at: raw.updated_at,
+        })
+    }
+
+    fn raw_edges(&self) -> Result<Vec<RawEdge>> {
+        let mut statement = self.conn.prepare(
+            "SELECT source_id, target_id, relation, weight, half_life_hours, updated_at,
+                    first_seen, reinforcement_count FROM edges",
+        )?;
+        let rows = statement.query_map([], row_to_raw_edge)?;
+        let mut edges = Vec::new();
+        for row in rows {
+            edges.push(row?);
+        }
+        Ok(edges)
+    }
+
+    fn signal_evidence_for(&self, raw: &RawEdge, now: i64) -> Result<SignalEvidence> {
+        let mut evidence = SignalEvidence {
+            reinforcement_count: raw.reinforcement_count,
+            reinforcement_span_hours: ((raw.updated_at - raw.first_seen) as f64 / 3600.0).max(0.0),
+            ..SignalEvidence::default()
+        };
+        if !matches!(
+            raw.relation,
+            RelationType::FailedOn
+                | RelationType::Refactored
+                | RelationType::RelatesTo
+                | RelationType::Calls
+                | RelationType::Imports
+                | RelationType::DependsOn
+                | RelationType::Extends
+                | RelationType::Implements
+        ) {
+            return Ok(evidence);
+        }
+
+        evidence.source_diversity = self.conn.query_row(
+            "SELECT COUNT(DISTINCT CASE
+                 WHEN e.relation = 'refactored' THEN 'commit'
+                 WHEN e.relation = 'relates_to' THEN 'decision'
+                 WHEN n.type = 'execution' THEN 'execution'
+                 WHEN e.relation IN ('calls','imports','depends_on','extends','implements')
+                   THEN 'structure'
+                 ELSE NULL END)
+             FROM edges e JOIN nodes n ON n.id = e.source_id
+             WHERE e.target_id = ?1 AND e.updated_at <= ?2",
+            params![raw.target_id, now],
+            |row| row.get(0),
+        )?;
+        evidence.structural_in_degree = self.conn.query_row(
+            "SELECT COUNT(1) FROM edges
+             WHERE target_id = ?1
+               AND relation IN ('calls','imports','depends_on','extends','implements')
+               AND updated_at <= ?2",
+            params![raw.target_id, now],
+            |row| row.get(0),
+        )?;
+        evidence.deliberate_attention = raw.relation == RelationType::RelatesTo
+            || self.conn.query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM edges
+                     WHERE target_id = ?1 AND relation = 'relates_to' AND updated_at <= ?2
+                 )",
+                params![raw.target_id, now],
+                |row| row.get(0),
+            )?;
+
+        if raw.relation == RelationType::FailedOn {
+            evidence.consequence = self.conn.query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM edges changed
+                     WHERE changed.target_id = ?1
+                       AND changed.relation IN ('modified','refactored')
+                       AND changed.updated_at > ?2 AND changed.updated_at <= ?3
+                       AND EXISTS (
+                                                     SELECT 1
+                                                     FROM nodes succeeded
+                                                     JOIN nodes failed_execution ON failed_execution.id = ?4
+                           WHERE succeeded.type = 'execution'
+                             AND succeeded.created_at > changed.updated_at
+                             AND succeeded.created_at <= ?3
+                             AND succeeded.content LIKE 'exit=0%'
+                                                         AND succeeded.label = failed_execution.label
+                       )
+                 )",
+                                params![raw.target_id, raw.updated_at, now, raw.source_id],
+                |row| row.get(0),
+            )?;
+            let old_target: bool = self.conn.query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM nodes
+                     WHERE id = ?1 AND created_at <= ?2
+                 )",
+                params![raw.target_id, raw.updated_at - 7 * 24 * 3600],
+                |row| row.get(0),
+            )?;
+            let prior_failure: bool = self.conn.query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM edges
+                     WHERE target_id = ?1 AND relation = 'failed_on' AND updated_at < ?2
+                 )",
+                params![raw.target_id, raw.updated_at],
+                |row| row.get(0),
+            )?;
+            evidence.surprise = old_target && !prior_failure;
+        } else if raw.relation == RelationType::Refactored {
+            evidence.consequence = self.conn.query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM edges failed
+                     WHERE failed.target_id = ?1 AND failed.relation = 'failed_on'
+                       AND failed.updated_at < ?2
+                       AND EXISTS (
+                                                     SELECT 1
+                                                     FROM nodes succeeded
+                                                     JOIN nodes failed_execution ON failed_execution.id = failed.source_id
+                           WHERE succeeded.type = 'execution'
+                             AND succeeded.created_at > ?2
+                             AND succeeded.created_at <= ?3
+                             AND succeeded.content LIKE 'exit=0%'
+                                                         AND succeeded.label = failed_execution.label
+                       )
+                 )",
+                params![raw.target_id, raw.updated_at, now],
+                |row| row.get(0),
+            )?;
+        }
+        Ok(evidence)
     }
 
     /// Breadth-first, decay-filtered traversal from one or more seed nodes.
@@ -512,20 +809,49 @@ impl GraphStore {
         })
     }
 
-    /// Purge decayed edges, then drop orphaned episodic and structural nodes.
-    pub fn prune(&self, now: i64) -> Result<(usize, usize)> {
-        let edges_removed = self.conn.execute(
-            "DELETE FROM edges WHERE effective_weight(weight, signal_half_life(half_life_hours, reinforcement_count, first_seen, updated_at), updated_at, ?1) < ?2",
-            params![now, PRUNE_THRESHOLD],
-        )?;
-        let executions_removed = self.conn.execute(
+    /// Purge decayed noise after surfacing near-expiry proven signal.
+    pub fn prune_with_signal(&self, now: i64) -> Result<PruneOutcome> {
+        let signal_candidates = self.expiring_signal_candidates(now)?;
+        let protected: HashSet<(String, String, String)> = signal_candidates
+            .iter()
+            .map(|candidate| {
+                (
+                    candidate.source_id.clone(),
+                    candidate.target_id.clone(),
+                    candidate.relation.as_str().to_string(),
+                )
+            })
+            .collect();
+        let mut stale = Vec::new();
+        for raw in self.raw_edges()? {
+            let key = (
+                raw.source_id.clone(),
+                raw.target_id.clone(),
+                raw.relation.as_str().to_string(),
+            );
+            if self.weighted_edge(&raw, now)?.effective < PRUNE_THRESHOLD
+                && !protected.contains(&key)
+            {
+                stale.push((raw.source_id, raw.target_id, raw.relation));
+            }
+        }
+        let transaction = self.conn.unchecked_transaction()?;
+        let mut edges_removed = 0;
+        for (source, target, relation) in stale {
+            edges_removed += transaction.execute(
+                "DELETE FROM edges
+                 WHERE source_id = ?1 AND target_id = ?2 AND relation = ?3",
+                params![source, target, relation.as_str()],
+            )?;
+        }
+        let executions_removed = transaction.execute(
             "DELETE FROM nodes
              WHERE type = 'execution'
                AND id NOT IN (SELECT source_id FROM edges)
                AND id NOT IN (SELECT target_id FROM edges)",
             [],
         )?;
-        let symbols_removed = self.conn.execute(
+        let symbols_removed = transaction.execute(
             "DELETE FROM nodes
              WHERE type IN ('symbol', 'package')
                AND NOT EXISTS (
@@ -534,11 +860,13 @@ impl GraphStore {
                )",
             [],
         )?;
-        let stubs_removed = delete_orphan_artifact_stubs(&self.conn)?;
-        Ok((
+        let stubs_removed = delete_orphan_artifact_stubs(&transaction)?;
+        transaction.commit()?;
+        Ok(PruneOutcome {
             edges_removed,
-            executions_removed + symbols_removed + stubs_removed,
-        ))
+            nodes_removed: executions_removed + symbols_removed + stubs_removed,
+            signal_candidates,
+        })
     }
 
     /// Total node / edge counts (for status displays).
@@ -546,11 +874,12 @@ impl GraphStore {
         let nodes: i64 = self
             .conn
             .query_row("SELECT COUNT(1) FROM nodes", [], |r| r.get(0))?;
-        let edges: i64 = self.conn.query_row(
-            "SELECT COUNT(1) FROM edges WHERE effective_weight(weight, signal_half_life(half_life_hours, reinforcement_count, first_seen, updated_at), updated_at, ?1) >= ?2",
-            params![now, PRUNE_THRESHOLD],
-            |r| r.get(0),
-        )?;
+        let mut edges = 0_i64;
+        for raw in self.raw_edges()? {
+            if self.weighted_edge(&raw, now)?.effective >= PRUNE_THRESHOLD {
+                edges += 1;
+            }
+        }
         Ok((nodes, edges))
     }
 
@@ -558,25 +887,30 @@ impl GraphStore {
     /// last-active time (most recently active first).
     pub fn list_agents(&self, now: i64) -> Result<Vec<AgentActivity>> {
         let mut stmt = self.conn.prepare(
-            "SELECT n.id, n.label, n.last_accessed_at,
-                    (SELECT COUNT(1) FROM edges e
-                      WHERE e.source_id = n.id AND e.relation = 'observed'
-                        AND effective_weight(e.weight, e.half_life_hours, e.updated_at, ?1) >= ?2)
-             FROM nodes n
-             WHERE n.type = 'agent'
-             ORDER BY n.last_accessed_at DESC",
+            "SELECT id, label, last_accessed_at FROM nodes
+             WHERE type = 'agent' ORDER BY last_accessed_at DESC",
         )?;
-        let rows = stmt.query_map(params![now, PRUNE_THRESHOLD], |r| {
-            Ok(AgentActivity {
-                id: r.get(0)?,
-                label: r.get(1)?,
-                last_active: r.get(2)?,
-                observations: r.get(3)?,
-            })
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
         })?;
         let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
+        for row in rows {
+            let (id, label, last_active) = row?;
+            let observations = self
+                .directed_edges(&id, true, PRUNE_THRESHOLD, now)?
+                .into_iter()
+                .filter(|edge| edge.relation == RelationType::Observed)
+                .count() as i64;
+            out.push(AgentActivity {
+                id,
+                label,
+                last_active,
+                observations,
+            });
         }
         Ok(out)
     }
@@ -741,17 +1075,13 @@ impl GraphStore {
             });
         }
 
-        let mut edge_stmt = self.conn.prepare(
-            "SELECT source_id, target_id, relation, weight, half_life_hours, updated_at,
-                    effective_weight(weight, signal_half_life(half_life_hours, reinforcement_count, first_seen, updated_at), updated_at, ?1) AS eff
-             FROM edges
-             WHERE effective_weight(weight, signal_half_life(half_life_hours, reinforcement_count, first_seen, updated_at), updated_at, ?1) >= ?2",
-        )?;
-        let edge_rows = edge_stmt.query_map(params![now, PRUNE_THRESHOLD], row_to_weighted_edge)?;
         let mut edges = Vec::new();
-        for r in edge_rows {
-            let we = r?;
-            if ids.contains(&we.source_id) && ids.contains(&we.target_id) {
+        for raw in self.raw_edges()? {
+            let we = self.weighted_edge(&raw, now)?;
+            if we.effective >= PRUNE_THRESHOLD
+                && ids.contains(&we.source_id)
+                && ids.contains(&we.target_id)
+            {
                 edges.push(we);
             }
         }
@@ -979,16 +1309,17 @@ fn row_to_node(row: &Row) -> rusqlite::Result<Node> {
     })
 }
 
-fn row_to_weighted_edge(row: &Row) -> rusqlite::Result<WeightedEdge> {
+fn row_to_raw_edge(row: &Row) -> rusqlite::Result<RawEdge> {
     let relation_str: String = row.get(2)?;
-    Ok(WeightedEdge {
+    Ok(RawEdge {
         source_id: row.get(0)?,
         target_id: row.get(1)?,
         relation: RelationType::from_tag(&relation_str).unwrap_or(RelationType::RelatesTo),
-        base_weight: row.get(3)?,
+        weight: row.get(3)?,
         half_life_hours: row.get(4)?,
         updated_at: row.get(5)?,
-        effective: row.get(6)?,
+        first_seen: row.get(6)?,
+        reinforcement_count: row.get(7)?,
     })
 }
 
@@ -1124,6 +1455,297 @@ mod tests {
             .find(|e| e.target_id == "artifact:proven")
             .unwrap();
         assert!(proven.effective > one_off.effective);
+    }
+
+    #[test]
+    fn resolved_failure_outlives_same_session_modified_spam() {
+        let s = store();
+        let stable_created = NOW - 10 * 24 * HOUR;
+        s.upsert_node(&Node::new(
+            "artifact:stable",
+            NodeType::Artifact,
+            "stable",
+            stable_created,
+        ))
+        .unwrap();
+        add_node(&s, "artifact:consumer", NodeType::Artifact, "consumer", NOW);
+        add_node(&s, "artifact:spam", NodeType::Artifact, "spam", NOW);
+
+        let failure = Node::new("execution:failure", NodeType::Execution, "cargo test", NOW)
+            .with_content("exit=1\n");
+        let success = Node::new(
+            "execution:success",
+            NodeType::Execution,
+            "cargo test",
+            NOW + 2 * HOUR,
+        )
+        .with_content("exit=0\n");
+        let spam =
+            Node::new("execution:spam", NodeType::Execution, "green", NOW).with_content("exit=0\n");
+        let commit = Node::new("intent:commit", NodeType::Intent, "fix stable", NOW + HOUR);
+        let decision = Node::new(
+            "intent:decision",
+            NodeType::Intent,
+            "DECISION: preserve stable",
+            NOW + HOUR,
+        );
+        for node in [failure, success, spam, commit, decision] {
+            s.upsert_node(&node).unwrap();
+        }
+
+        let failed_on = raw_edge(
+            "execution:failure",
+            "artifact:stable",
+            RelationType::FailedOn,
+            1.0,
+            24.0,
+            NOW,
+        );
+        s.upsert_edge(&failed_on).unwrap();
+        s.upsert_edge(&raw_edge(
+            "intent:commit",
+            "artifact:stable",
+            RelationType::Refactored,
+            1.0,
+            168.0,
+            NOW + HOUR,
+        ))
+        .unwrap();
+        s.upsert_edge(&raw_edge(
+            "artifact:consumer",
+            "artifact:stable",
+            RelationType::Imports,
+            1.0,
+            168.0,
+            NOW,
+        ))
+        .unwrap();
+        s.upsert_edge(&raw_edge(
+            "intent:decision",
+            "artifact:stable",
+            RelationType::RelatesTo,
+            1.0,
+            48.0,
+            NOW + HOUR,
+        ))
+        .unwrap();
+        for _ in 0..400 {
+            s.upsert_edge(&raw_edge(
+                "execution:spam",
+                "artifact:spam",
+                RelationType::Modified,
+                1.0,
+                24.0,
+                NOW,
+            ))
+            .unwrap();
+        }
+
+        let evidence = s.signal_evidence(&failed_on, NOW + 6 * 24 * HOUR).unwrap();
+        assert!(evidence.consequence);
+        assert!(evidence.surprise);
+        assert!(evidence.source_diversity >= 3);
+        assert!(evidence.deliberate_attention);
+
+        let failure_graph = s
+            .traverse(
+                &["artifact:stable".into()],
+                Direction::Incoming,
+                1,
+                PRUNE_THRESHOLD,
+                NOW + 6 * 24 * HOUR,
+            )
+            .unwrap();
+        assert!(failure_graph
+            .edges
+            .iter()
+            .any(|edge| edge.relation == RelationType::FailedOn));
+        let spam_graph = s
+            .traverse(
+                &["artifact:spam".into()],
+                Direction::Incoming,
+                1,
+                PRUNE_THRESHOLD,
+                NOW + 6 * 24 * HOUR,
+            )
+            .unwrap();
+        assert!(spam_graph.edges.is_empty());
+    }
+
+    #[test]
+    fn near_expiry_proven_signal_is_routed_to_consolidation() {
+        let s = store();
+        let target = Node::new(
+            "artifact:stable",
+            NodeType::Artifact,
+            "stable",
+            NOW - 10 * 24 * HOUR,
+        );
+        let failure = Node::new("execution:failure", NodeType::Execution, "cargo test", NOW)
+            .with_content("exit=1\n");
+        let success = Node::new(
+            "execution:success",
+            NodeType::Execution,
+            "cargo test",
+            NOW + 2 * HOUR,
+        )
+        .with_content("exit=0\n");
+        let commit = Node::new("intent:commit", NodeType::Intent, "fix", NOW + HOUR);
+        for node in [target, failure, success, commit] {
+            s.upsert_node(&node).unwrap();
+        }
+        let failed_on = raw_edge(
+            "execution:failure",
+            "artifact:stable",
+            RelationType::FailedOn,
+            1.0,
+            24.0,
+            NOW,
+        );
+        s.upsert_edge(&failed_on).unwrap();
+        s.upsert_edge(&raw_edge(
+            "intent:commit",
+            "artifact:stable",
+            RelationType::Refactored,
+            1.0,
+            168.0,
+            NOW + HOUR,
+        ))
+        .unwrap();
+
+        let candidates = s.expiring_signal_candidates(NOW + 20 * 24 * HOUR).unwrap();
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate.relation == RelationType::FailedOn));
+    }
+
+    #[test]
+    fn expired_proven_signal_waits_for_consolidation_acknowledgement() {
+        let s = store();
+        s.upsert_node(&Node::new(
+            "artifact:stable",
+            NodeType::Artifact,
+            "stable",
+            NOW - 10 * 24 * HOUR,
+        ))
+        .unwrap();
+        for node in [
+            Node::new("execution:failure", NodeType::Execution, "cargo test", NOW)
+                .with_content("exit=1\n"),
+            Node::new(
+                "execution:success",
+                NodeType::Execution,
+                "cargo test",
+                NOW + 2 * HOUR,
+            )
+            .with_content("exit=0\n"),
+            Node::new("intent:commit", NodeType::Intent, "fix stable", NOW + HOUR),
+        ] {
+            s.upsert_node(&node).unwrap();
+        }
+        s.upsert_edge(&raw_edge(
+            "execution:failure",
+            "artifact:stable",
+            RelationType::FailedOn,
+            1.0,
+            24.0,
+            NOW,
+        ))
+        .unwrap();
+        s.upsert_edge(&raw_edge(
+            "intent:commit",
+            "artifact:stable",
+            RelationType::Refactored,
+            1.0,
+            168.0,
+            NOW + HOUR,
+        ))
+        .unwrap();
+
+        let outcome = s.prune_with_signal(NOW + 60 * 24 * HOUR).unwrap();
+        assert!(outcome
+            .signal_candidates
+            .iter()
+            .any(|candidate| candidate.relation == RelationType::FailedOn));
+        assert!(s.get_node("execution:failure").unwrap().is_some());
+
+        s.acknowledge_signal_candidates(&outcome.signal_candidates)
+            .unwrap();
+        assert!(s.get_node("execution:failure").unwrap().is_none());
+    }
+
+    #[test]
+    fn authored_decision_is_not_an_episodic_consolidation_candidate() {
+        let s = store();
+        add_node(&s, "artifact:stable", NodeType::Artifact, "stable", NOW);
+        add_node(
+            &s,
+            "intent:decision",
+            NodeType::Intent,
+            "DECISION: stable",
+            NOW,
+        );
+        s.upsert_edge(&raw_edge(
+            "intent:decision",
+            "artifact:stable",
+            RelationType::RelatesTo,
+            1.0,
+            48.0,
+            NOW,
+        ))
+        .unwrap();
+
+        let candidates = s.expiring_signal_candidates(NOW + 60 * 24 * HOUR).unwrap();
+        assert!(candidates.is_empty());
+        s.prune_with_signal(NOW + 60 * 24 * HOUR).unwrap();
+        assert!(s.get_node("intent:decision").unwrap().is_some());
+    }
+
+    #[test]
+    fn unrelated_green_execution_does_not_award_consequence() {
+        let s = store();
+        s.upsert_node(&Node::new(
+            "artifact:stable",
+            NodeType::Artifact,
+            "stable",
+            NOW - 10 * 24 * HOUR,
+        ))
+        .unwrap();
+        for node in [
+            Node::new("execution:failure", NodeType::Execution, "cargo test", NOW)
+                .with_content("exit=1\n"),
+            Node::new(
+                "execution:unrelated",
+                NodeType::Execution,
+                "cargo build",
+                NOW + 2 * HOUR,
+            )
+            .with_content("exit=0\n"),
+            Node::new("intent:commit", NodeType::Intent, "fix stable", NOW + HOUR),
+        ] {
+            s.upsert_node(&node).unwrap();
+        }
+        let failed_on = raw_edge(
+            "execution:failure",
+            "artifact:stable",
+            RelationType::FailedOn,
+            1.0,
+            24.0,
+            NOW,
+        );
+        s.upsert_edge(&failed_on).unwrap();
+        s.upsert_edge(&raw_edge(
+            "intent:commit",
+            "artifact:stable",
+            RelationType::Refactored,
+            1.0,
+            168.0,
+            NOW + HOUR,
+        ))
+        .unwrap();
+
+        let evidence = s.signal_evidence(&failed_on, NOW + 3 * HOUR).unwrap();
+        assert!(!evidence.consequence);
     }
 
     #[test]
@@ -1398,9 +2020,9 @@ mod tests {
         ))
         .unwrap();
 
-        let (edges_removed, nodes_removed) = s.prune(NOW).unwrap();
-        assert_eq!(edges_removed, 1); // only the decayed a->b
-        assert_eq!(nodes_removed, 1); // the orphan execution node
+        let outcome = s.prune_with_signal(NOW).unwrap();
+        assert_eq!(outcome.edges_removed, 1); // only the decayed a->b
+        assert_eq!(outcome.nodes_removed, 1); // the orphan execution node
         assert!(s.get_node("execution:orphan").unwrap().is_none());
         assert!(s.get_node("a").unwrap().is_some());
     }
@@ -1428,9 +2050,9 @@ mod tests {
             .unwrap();
         assert!(s.get_node("symbol:a:old").unwrap().is_some());
 
-        let (edges_removed, nodes_removed) = s.prune(NOW).unwrap();
-        assert_eq!(edges_removed, 1);
-        assert_eq!(nodes_removed, 1);
+        let outcome = s.prune_with_signal(NOW).unwrap();
+        assert_eq!(outcome.edges_removed, 1);
+        assert_eq!(outcome.nodes_removed, 1);
         assert!(s.get_node("symbol:a:old").unwrap().is_none());
         assert!(s.search_nodes("old", 5).unwrap().is_empty());
     }

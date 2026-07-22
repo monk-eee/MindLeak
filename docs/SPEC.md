@@ -142,10 +142,12 @@ Schema: [`crates/mindleak-core/src/schema.sql`](../crates/mindleak-core/src/sche
 > **Signal-weighted decay (ADR-0005).** Pure time-decay treats signal and noise
 > alike; frequency and recency are weak proxies. *Signal-weighted decay*
 > ([ADR-0005](adr/0005-signal-weighted-decay.md)) adds an evidence term so proven
-> signal resists decay and noise fades — "decay noise, not signal". **Shipped:**
-> reinforcement-graduated half-life (`signal_half_life()` over an edge's
-> `reinforcement_count`/`first_seen`). Richer proxies (corroboration, surprise)
-> and consolidating proven clusters into durable learned-knowledge are next.
+> signal resists decay and noise fades — "decay noise, not signal". **Shipped
+> (ADR-0012):** a derived, bounded 1x-8x half-life multiplier over
+> span-qualified reinforcement, independent source diversity, consequence,
+> surprise, structural centrality, and explicit decisions. Effective weight is
+> never stored. `prune_graph` surfaces near-expiry proven signal with provenance
+> and retains expired candidates until optional `consolidate_signal` succeeds.
 
 ---
 
@@ -164,6 +166,11 @@ Schema: [`crates/mindleak-core/src/schema.sql`](../crates/mindleak-core/src/sche
 **Ingestion & maintenance (also over MCP):** `ingest_execution`, `ingest_commit`,
 `ingest_file`, `boost_entity`, `graph_snapshot`, `prune_graph`, `graph_stats`,
 `consolidate_session`, `list_agents`.
+
+`prune_graph` returns deletion counts plus `signal_candidates`; deterministic
+maintenance never invokes an LLM. `consolidate_signal` uses the optional local
+model, persists an intent and provenance links, then acknowledges raw candidates
+only after success.
 
 **Optional semantic recall (ADR-0008):** `index` embeds nodes lacking a current
 vector; `recall(query, limit)` returns the nearest node ids by cosine similarity

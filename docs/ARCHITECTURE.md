@@ -74,7 +74,7 @@ unsupported shells are visibly degraded rather than inferred from terminal text.
 Effective weight is computed at query time, never by rewriting rows:
 
 ```
-W_effective = W_base · 2^(−Δt_hours / half_life_hours)
+W_effective = W_base · 2^(−Δt_hours / (half_life_hours · signal_multiplier))
 ```
 
 Raw execution evidence uses a 24h half-life; human intent 168h; default 48h.
@@ -85,12 +85,15 @@ re-ingesting a file replaces that owner's structural snapshot, retracting facts
 that disappeared (ADR-0007). `boost_entity` changes attention without refreshing
 unrelated incident evidence.
 
-**Signal-weighted decay (ADR-0005).** The half-life is not fixed. An edge
-reinforced at least 3 times across a ≥48h span earns a longer half-life via
-`signal_half_life()` — derived at query time from the edge's `reinforcement_count`
-and `first_seen` — so corroborated-over-time signal resists decay while one-offs
-and same-session spam fade on the base clock ("decay noise, not signal"). Only the
-raw count and first-seen timestamp are stored; the effective weight stays derived.
+**Signal-weighted decay (ADR-0005/0012).** At query/prune time, `GraphStore`
+derives raw `SignalEvidence` from reinforcement span, independent source classes,
+failure/change/success consequence, surprise, incoming structural degree, and
+explicit decisions. `decay::signal_multiplier` maps those proxies to a bounded
+1x-8x half-life multiplier. Returned edges expose the evidence/multiplier for
+auditability; neither multiplier nor effective weight is stored. Near-expiry
+high-signal episodics are returned by `prune_graph`; expired candidates remain
+inactive but retained until optional `consolidate_signal` persists an intent and
+acknowledges them, leaving model access off deterministic maintenance.
 
 ## Ingestion (zero-token)
 

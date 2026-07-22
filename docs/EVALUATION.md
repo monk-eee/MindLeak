@@ -115,9 +115,9 @@ full 200-file/8 KiB processing + MCP + SQLite path below the target.
 
 | Metric | Gate | Observed | Result |
 |---|---:|---:|---|
-| End-to-end local capture p50 | Report | 21.372 ms | Pass |
-| End-to-end local capture p95 | < 50 ms | 27.769 ms | Pass |
-| End-to-end local capture max | Report | 29.929 ms | Pass |
+| End-to-end local capture p50 | Report | 22.352 ms | Pass |
+| End-to-end local capture p95 | < 50 ms | 28.651 ms | Pass |
+| End-to-end local capture max | Report | 30.096 ms | Pass |
 | Terminal event fixture invokes ingestion | Required | Yes | Pass |
 | Git commit fixture invokes ingestion | Required | Yes | Pass |
 
@@ -127,6 +127,35 @@ Reproduce after building the extension and MCP server with
 `node scripts/evaluate-sensors.mjs` (also included in `make bench`). The timing
 fixture is local and deterministic; actual shell integration remains dependent
 on the user's shell and is reported as degraded when absent.
+
+## Signal-weighted decay proof
+
+ADR-0012 completes ADR-0005 with one derived signal path used by traversal,
+impact, snapshots, counts, agent activity, and prune. The adversarial benchmark
+constructs real graph evidence and compares 400 same-session green-build
+reinforcements with one failure corroborated by structure, a related commit and
+decision, and a later successful execution of the same command. An unrelated
+green command is a negative control and earns no consequence term.
+
+| Scenario | Observed | Result |
+|---|---:|---|
+| Same-session spam multiplier | 1.000x | Pass |
+| Same-session spam after six days | 0.015625, inactive | Pass |
+| Resolved failure multiplier | 7.245x | Pass |
+| Resolved failure after six days | 0.563233, active | Pass |
+| Resolved failure after sixty days | 0.003213, inactive | Pass |
+| Expired failure reaches handoff and remains queued | Present/retained | Pass |
+| Maximum multiplier | 8.000x | Pass |
+| 200-edge snapshot p95 | 16.757 ms | Pass |
+
+The ablation isolates each multiplier: baseline 1.000, span reinforcement 1.448,
+source diversity 2.500, consequence 3.500, surprise 1.750, structural centrality
+2.000, and deliberate attention 2.250. Consequence and independent sources
+therefore outweigh repetition as required.
+
+Machine-readable result:
+[2026-07-22-signal-weighted-decay.json](../benchmarks/results/2026-07-22-signal-weighted-decay.json).
+Reproduce with `node scripts/evaluate-signal.mjs` or `make bench`.
 
 ## Reproduce
 

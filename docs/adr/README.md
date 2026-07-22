@@ -19,6 +19,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0009](0009-evidence-backed-conformance.md) | Evidence-backed conformance across the memory and intent planes | Accepted |
 | [0010](0010-observability-and-resilience.md) | Observability, telemetry, and network resilience | Accepted |
 | [0011](0011-passive-terminal-and-git-sensors.md) | Passive terminal and Git evidence sensors | Accepted |
+| [0012](0012-derived-signal-evidence.md) | Derived bounded signal evidence | Accepted |
 
 ## Writing a new ADR
 

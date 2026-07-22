@@ -39,6 +39,7 @@ bench: ## Run graph, sensor, and four-arm context experiments
 	cargo build -p mindleak-mcp
 	npm --prefix editors/vscode run compile
 	node scripts/evaluate-sensors.mjs
+	node scripts/evaluate-signal.mjs
 	node scripts/experiments/impact-vs-similarity.mjs
 	node scripts/experiments/agent-outcome-benchmark.mjs
 

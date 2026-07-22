@@ -89,7 +89,12 @@ pub fn ingest_execution(
         let art_id = format!("artifact:{path}");
         let art = Node::new(&art_id, NodeType::Artifact, path.clone(), now);
         nodes.push(art);
-        edges.push(Edge::new(&exec_id, &art_id, RelationType::Modified, now));
+        edges.push(Edge::new(
+            &exec_id,
+            &art_id,
+            RelationType::Modified,
+            rec.timestamp,
+        ));
     }
 
     // failed_on edges when the command errored
@@ -98,7 +103,12 @@ pub fn ingest_execution(
             let art_id = format!("artifact:{path}");
             let art = Node::new(&art_id, NodeType::Artifact, path.clone(), now);
             nodes.push(art);
-            edges.push(Edge::new(&exec_id, &art_id, RelationType::FailedOn, now));
+            edges.push(Edge::new(
+                &exec_id,
+                &art_id,
+                RelationType::FailedOn,
+                rec.timestamp,
+            ));
         }
     }
 
@@ -117,5 +127,30 @@ mod tests {
         let locs = parse_error_locations(out);
         assert!(locs.contains(&("src/auth.ts".to_string(), 42)));
         assert!(locs.contains(&("app/main.py".to_string(), 7)));
+    }
+
+    #[test]
+    fn execution_edges_use_the_authoritative_record_timestamp() {
+        let store = GraphStore::new(crate::db::open_in_memory().unwrap());
+        let record = ExecutionRecord {
+            command: "test".to_string(),
+            exit_code: 0,
+            output: String::new(),
+            cwd: None,
+            changed_files: vec!["src/lib.rs".to_string()],
+            timestamp: 123,
+        };
+        let outcome = ingest_execution(&store, &record, 999).unwrap();
+
+        let graph = store
+            .traverse(
+                &[outcome.node_ids[0].clone()],
+                crate::graph::Direction::Outgoing,
+                1,
+                0.0,
+                123,
+            )
+            .unwrap();
+        assert_eq!(graph.edges[0].updated_at, 123);
     }
 }

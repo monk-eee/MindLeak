@@ -143,6 +143,22 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **Signal consequence remains a bounded temporal proxy.** — A failure earns
+  consequence only when the same command later succeeds after a related change,
+  but this still cannot prove causality. The 8x cap, provenance-bearing handoff,
+  and eventual decay limit coincidence laundering. — Medium impact on salience
+  precision. — Left explicit; stronger causal tracing needs process/test
+  attribution rather than another heuristic.
+- **Derived signal queries are benchmarked, not asymptotically free.** — Evidence
+  is computed per edge from graph state; a 200-edge snapshot measured 16.757 ms
+  p95, but much larger dense graphs may need batched SQL/materialized raw
+  provenance. — Low current impact. — Left as a measured scaling boundary.
+- **Episodic edges previously used ingestion wall-clock time.** — Delayed passive
+  execution/commit ingestion could invert failure/change/success chronology and
+  fabricate or hide consequence. — High impact on signal correctness. — Fixed
+  this run: execution and commit edges now use authoritative record timestamps,
+  with regression tests.
+
 - **Symbol and import extraction remains heuristic and partially scoped.** —
   Static JS/TS named imports now produce cross-file `calls`, but default and
   namespace calls, re-exports, path aliases, dynamic imports, and other language
