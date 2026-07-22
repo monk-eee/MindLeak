@@ -1,7 +1,7 @@
 # MindLeak developer commands. On Windows, run the underlying commands directly
 # (see DEVELOPERS.md) if `make` is unavailable.
 
-.PHONY: setup build test lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
+.PHONY: setup build test bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
 
 setup: ## Install pre-commit hooks and extension deps
 	pip install pre-commit
@@ -28,6 +28,11 @@ lint: fmt-check clippy ext-lint ## Run all linters
 
 run: ## Build and run the MCP server
 	cargo run -p mindleak-mcp
+
+bench: ## Run experiments (impact-precision + four-arm agent-outcome)
+	cargo build -p mindleak-mcp
+	node scripts/experiments/impact-vs-similarity.mjs
+	node scripts/experiments/agent-outcome-benchmark.mjs
 
 ext-install: ## Install VS Code extension dependencies
 	npm --prefix editors/vscode install
