@@ -64,6 +64,10 @@ to [Semantic Versioning](https://semver.org/).
 - Engineering baseline: pre-commit hooks, rustfmt/clippy/eslint/prettier,
   GitHub Actions CI (Linux + Windows), `.gitattributes`, and the `docs/`
   documentation set.
+- **Test coverage pipeline**: CI runs workspace-wide Rust tests under
+  `cargo-llvm-cov`, enforces 80% line and branch coverage on the extension's
+  unit-testable `util.ts` surface, and uploads both LCOV reports for every push
+  and pull request.
 - **Tag-driven binary releases**: GitHub Actions gates tags through the full
   repository CI, builds and smoke-checks both MCP servers for Windows x64,
   Linux x64, macOS Intel, and macOS Apple Silicon, then publishes attested

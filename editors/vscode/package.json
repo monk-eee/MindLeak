@@ -141,7 +141,8 @@
     "lint": "eslint src --ext ts",
     "format": "prettier --check \"src/**/*.ts\" \"media/**/*.js\" \"../../scripts/**/*.mjs\"",
     "format:fix": "prettier --write \"src/**/*.ts\" \"media/**/*.js\" \"../../scripts/**/*.mjs\"",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.thresholds.lines 80 --coverage.thresholds.branches 80"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

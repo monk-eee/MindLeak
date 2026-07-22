@@ -1,12 +1,13 @@
 # MindLeak developer commands. On Windows, run the underlying commands directly
 # (see DEVELOPERS.md) if `make` is unavailable.
 
-.PHONY: setup build test bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
+.PHONY: setup build test coverage bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
 
 setup: ## Install pre-commit hooks and extension deps
 	pip install pre-commit
 	pre-commit install
 	pre-commit install --hook-type pre-push
+	cargo install cargo-llvm-cov --locked
 	npm --prefix editors/vscode install
 
 build: ## Build the workspace (debug)
@@ -14,6 +15,11 @@ build: ## Build the workspace (debug)
 
 test: ## Run the Rust test suite
 	cargo test --all
+
+coverage: ## Run Rust + extension tests with coverage reports
+	cargo llvm-cov --workspace --all-features --lcov --output-path coverage.lcov
+	cargo llvm-cov report --summary-only
+	npm --prefix editors/vscode run test:coverage
 
 fmt: ## Format Rust code
 	cargo fmt --all

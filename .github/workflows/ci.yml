@@ -43,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
@@ -58,3 +58,37 @@ jobs:
         run: npm test
       - name: Compile
         run: npm run compile
+
+  coverage:
+    name: Coverage (Rust + VS Code)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - name: Install extension dependencies
+        run: npm --prefix editors/vscode ci
+      - name: Run tests with coverage
+        run: make coverage
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.sha }}
+          path: |
+            coverage.lcov
+            editors/vscode/coverage/vitest
+          if-no-files-found: error
+          retention-days: 14

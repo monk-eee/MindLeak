@@ -6,6 +6,7 @@ If you get stuck, that is a defect — fix it or add it to [Known gaps](#known-g
 ## Prerequisites
 
 - **Rust** 1.75+ (via [rustup](https://rustup.rs)); MSVC toolchain on Windows.
+- **cargo-llvm-cov** for local Rust coverage (`cargo install cargo-llvm-cov --locked`).
 - **Node** 18+ and npm (for the VS Code extension).
 - **Python** 3.8+ with `pip` (for the `pre-commit` framework).
 
@@ -17,6 +18,7 @@ cd MindLeak
 
 # Rust components
 rustup component add rustfmt clippy
+cargo install cargo-llvm-cov --locked
 
 # Pre-commit hooks (client-side enforcement)
 pip install pre-commit
@@ -39,6 +41,7 @@ crate, and `target/debug/mindleak-mcp` starts and prints
 |---|---|---|
 | Build | `make build` | `cargo build` |
 | Test | `make test` | `cargo test --all` |
+| Coverage | `make coverage` | Rust LCOV + scoped Vitest coverage; see the target |
 | Format | `make fmt` | `cargo fmt --all` |
 | Format check | `make fmt-check` | `cargo fmt --all -- --check` |
 | Lint (Rust) | `make clippy` | `cargo clippy --all-targets --all-features -- -D warnings` |
@@ -62,6 +65,7 @@ cargo test --all
 npm --prefix editors/vscode run lint
 npm --prefix editors/vscode test
 npm --prefix editors/vscode run compile
+make coverage
 ```
 
 ## Publishing a binary release
@@ -157,12 +161,12 @@ and footguns, with impact and status:
   access to `mindleak-mcp` can write nodes/edges. — Acceptable for local
   single-user use; the server has no network listener. Do not expose it over a
   network without an auth layer (see [docs/SPEC.md § 8](docs/SPEC.md)).
-- **Lodestar conformance reads caller-supplied node ids, not live MindLeak
-  telemetry.** — `check_conformance` computes drift/violation from the goal↔code
-  links plus the change set the caller passes; it does not yet query MindLeak's
-  actual `modified`/`failed_on` edges to confirm what really changed. — Medium
-  impact on conformance accuracy. — Deferred; the loose node-id seam (ADR-0004)
-  is intentional, the deeper read is a follow-up.
+- **Uncommitted work still needs explicit mutation telemetry.** — ADR-0009
+  derives conformance evidence from attributed `modified`, `failed_on`, and
+  commit-backed `refactored` edges; editor focus/save only proves observation and
+  structure, not mutation. — Medium impact on automatic completion evidence. —
+  Left open for passive terminal/Git sensors; `observed` must never be promoted
+  to mutation evidence.
 - **Lodestar worktree sharing is path-based, not git-aware.** — The Intent Plane
   DB resolves from `LODESTAR_DB` else `<cwd>/.lodestar/spec.db`; sibling git
   worktrees share one plane only if pointed at the same path. — Low impact. —
@@ -173,8 +177,8 @@ and footguns, with impact and status:
   rejected as `INVALID_ROOT_DIR`; normalizing it to forward slashes runs the
   custom command and surfaces failures, but successful runs still report zero
   tests and no coverage. — High impact on local proof: MCP cannot establish test
-  counts or coverage. — Left open in the external adapter; CI remains the
-  authoritative complete-suite signal until repaired.
+  counts or coverage. — Left open in the external adapter; CI's test jobs and
+  `cargo-llvm-cov`/Vitest coverage artifacts remain authoritative until repaired.
 - **The extension toolchain has one low-severity development advisory.** —
   Vitest resolves `esbuild` 0.27.7, affected by GHSA-g7r4-m6w7-qqqr when its
   development server runs on Windows. `npm audit --omit=dev` is clean and the
