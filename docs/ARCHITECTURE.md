@@ -1,14 +1,15 @@
 # Architecture
 
-MindLeak is a **Temporal Context Graph Engine (TCGE)**. It has three processes
-that communicate only over the Model Context Protocol (MCP) — no shared memory,
-no sockets beyond stdio.
+MindLeak is a **Temporal Context Graph Engine (TCGE)** with two planes: an
+**episodic memory graph** (`mindleak-*`) whose edges decay, and a durable
+**Intent Plane** (`lodestar-*`, ADR-0004) that does not. Each plane is a Rust
+library behind its own MCP stdio server; everything communicates only over the
+Model Context Protocol — no shared memory, no sockets beyond stdio.
 
 ```
-VS Code extension ──MCP/stdio──▶ mindleak-mcp ──in-process──▶ mindleak-core ──▶ SQLite
-   (TypeScript)                    (Rust bin)                   (Rust lib)        (.mindleak/graph.db)
-                                                                     │
-                                                                     └─async─▶ Ollama (optional)
+Agents · VS Code ─┬─ MCP/stdio ─▶ mindleak-mcp ─▶ mindleak-core ─▶ .mindleak/graph.db  (decays)
+                  │                                     └── async ──▶ Ollama (optional)
+                  └─ MCP/stdio ─▶ lodestar-mcp ─▶ lodestar-core ─▶ .lodestar/spec.db   (durable)
 ```
 
 ## Crates
@@ -24,7 +25,7 @@ The engine. Modules:
 | [`db.rs`](../crates/mindleak-core/src/db.rs) | Connection setup (WAL, FKs), migrations, and the `effective_weight()` scalar SQL function. |
 | [`decay.rs`](../crates/mindleak-core/src/decay.rs) | The half-life decay formula and prune threshold. |
 | [`graph.rs`](../crates/mindleak-core/src/graph.rs) | `GraphStore`: upsert, structural snapshot reconciliation, FTS search, decay-aware neighbours, BFS traversal, snapshot, prune. |
-| [`ingest/`](../crates/mindleak-core/src/ingest/mod.rs) | Zero-token deterministic extractors: `execution`, `git`, `ast`. |
+| [`ingest/`](../crates/mindleak-core/src/ingest/mod.rs) | Zero-token deterministic extractors: `execution`, `git`, `ast`, `structure` (JS/TS imports). |
 | [`consolidate.rs`](../crates/mindleak-core/src/consolidate.rs) | Optional Ollama consolidation worker. |
 | [`lib.rs`](../crates/mindleak-core/src/lib.rs) | `MindLeak` facade: ingestion + the three agent-facing queries. |
 
@@ -56,12 +57,13 @@ process and speaks the same MCP protocol.
 
 ## Data model
 
-- **Nodes** — `symbol` · `artifact` · `execution` · `intent` · `agent` (and
-  `package`, per ADR-0006). Ids are stable and human-readable
+- **Nodes** — `symbol` · `artifact` · `execution` · `intent` · `agent` ·
+  `package` (ADR-0006). Ids are stable and human-readable
   (`artifact:src/auth.ts`, `symbol:src/auth.ts:validateSession`).
 - **Edges** — directional, decay-weighted: `contains` · `calls` · `modified` ·
-  `failed_on` · `refactored` · `relates_to` · `observed` (and `imports` ·
-  `depends_on` · `extends` · `implements`, per ADR-0006).
+  `failed_on` · `refactored` · `relates_to` · `observed` · `imports` (JS/TS,
+  ADR-0006 phase 1). **Planned:** `depends_on` · `extends` · `implements`
+  (ADR-0006, in build).
 
 ## Decay
 
