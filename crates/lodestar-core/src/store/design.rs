@@ -5,7 +5,10 @@
 
 use rusqlite::{params, Row};
 
-use crate::design::{DesignItem, DesignPromotion, DesignPromotionStatus, DesignStatus};
+use crate::design::{
+    design_id_from_path, DesignItem, DesignMetadata, DesignPromotion, DesignPromotionStatus,
+    DesignStatus,
+};
 use crate::error::{LodestarError, Result};
 use crate::model::{Goal, GoalKind, Task};
 
@@ -15,6 +18,31 @@ const DESIGN_COLS: &str =
     "id, adr_path, title, summary, status, proposed_by, decided_by, reason, created_at, updated_at, promotion_status, spawned_goal_id";
 
 impl LodestarStore {
+    /// Reconcile structured repository ADR metadata into the durable design
+    /// ledger. Existing rows always win: repository discovery must never
+    /// overwrite a Design Board decision or re-arm promotion.
+    pub fn reconcile_design_item(&self, metadata: &DesignMetadata, now: i64) -> Result<DesignItem> {
+        let id = design_id_from_path(&metadata.adr_path);
+        self.conn.execute(
+            "INSERT OR IGNORE INTO design_items
+                (id, adr_path, title, summary, status, proposed_by, decided_by,
+                 reason, created_at, updated_at, promotion_status, spawned_goal_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, ?7, ?7,
+                     'not_required', NULL)",
+            params![
+                id,
+                metadata.adr_path,
+                metadata.title,
+                metadata.summary,
+                metadata.status.as_str(),
+                metadata.proposed_by,
+                now
+            ],
+        )?;
+        self.get_design_item(&id)?
+            .ok_or_else(|| LodestarError::NotFound(id))
+    }
+
     /// Register a new proposed design item. Fails if the ADR is already
     /// registered (its id is derived from the ADR path, so this is idempotent
     /// per ADR).
@@ -74,6 +102,20 @@ impl LodestarStore {
                 collect(rows)
             }
         }
+    }
+
+    /// Human-actionable Design Board rows: proposed decisions plus accepted
+    /// designs whose implementation promotion is pending or retryable.
+    pub fn actionable_design_items(&self) -> Result<Vec<DesignItem>> {
+        let sql = format!(
+            "SELECT {DESIGN_COLS} FROM design_items
+             WHERE status = 'proposed'
+                OR (status = 'accepted' AND promotion_status = 'pending')
+             ORDER BY created_at ASC, id ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], row_to_design)?;
+        collect(rows)
     }
 
     /// Guarded CAS: move a *proposed* item to accepted/rejected. Returns `false`
@@ -273,4 +315,143 @@ fn row_to_design(row: &Row) -> rusqlite::Result<DesignItem> {
             .unwrap_or(DesignPromotionStatus::NotRequired),
         spawned_goal_id: row.get(11)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::test_support::{goal, store, NOW};
+
+    #[test]
+    fn reconciliation_is_idempotent_and_never_creates_tasks() {
+        let store = store();
+        let metadata = DesignMetadata {
+            adr_path: "docs/adr/0026-constitution.md".into(),
+            title: "Constitution".into(),
+            summary: "review governance".into(),
+            status: DesignStatus::Proposed,
+            proposed_by: Some("workspace-sensor".into()),
+        };
+        let first = store.reconcile_design_item(&metadata, NOW).unwrap();
+        let retry = store
+            .reconcile_design_item(
+                &DesignMetadata {
+                    title: "Changed metadata must not overwrite review state".into(),
+                    summary: "changed".into(),
+                    status: DesignStatus::Rejected,
+                    proposed_by: Some("different-sensor".into()),
+                    ..metadata
+                },
+                NOW + 1,
+            )
+            .unwrap();
+
+        assert_eq!(retry, first);
+        assert_eq!(store.list_design_items(None).unwrap(), vec![first]);
+        assert!(store.next_task(NOW + 1).unwrap().is_none());
+    }
+
+    #[test]
+    fn historical_terminal_adrs_import_without_arming_promotion() {
+        let store = store();
+        for (id, status) in [
+            ("design:0001-accepted", DesignStatus::Accepted),
+            ("design:0002-rejected", DesignStatus::Rejected),
+        ] {
+            let item = store
+                .reconcile_design_item(
+                    &DesignMetadata {
+                        adr_path: format!("docs/adr/{}.md", &id[7..]),
+                        title: id.into(),
+                        summary: "historical".into(),
+                        status,
+                        proposed_by: None,
+                    },
+                    NOW,
+                )
+                .unwrap();
+            assert_eq!(item.status, status);
+            assert_eq!(item.promotion_status, DesignPromotionStatus::NotRequired);
+        }
+
+        assert!(store.actionable_design_items().unwrap().is_empty());
+        assert!(store.next_task(NOW).unwrap().is_none());
+    }
+
+    #[test]
+    fn actionable_board_preserves_decisions_and_tracks_pending_only() {
+        let store = store();
+        let proposed = store
+            .reconcile_design_item(
+                &DesignMetadata {
+                    adr_path: "docs/adr/0030-proposed.md".into(),
+                    title: "Proposed".into(),
+                    summary: "review me".into(),
+                    status: DesignStatus::Proposed,
+                    proposed_by: Some("planner".into()),
+                },
+                NOW,
+            )
+            .unwrap();
+        let pending = store
+            .register_design_item(
+                "design:0031-pending",
+                "docs/adr/0031-pending.md",
+                "Pending",
+                "promote me",
+                Some("planner"),
+                NOW + 1,
+            )
+            .unwrap();
+        assert!(store
+            .decide_design_item(
+                &pending.id,
+                DesignStatus::Accepted,
+                "reviewer",
+                None,
+                NOW + 2,
+            )
+            .unwrap());
+
+        let before = store.get_design_item(&pending.id).unwrap().unwrap();
+        let reconciled = store
+            .reconcile_design_item(
+                &DesignMetadata {
+                    adr_path: pending.adr_path.clone(),
+                    title: "Repository status must not overwrite the decision".into(),
+                    summary: "changed".into(),
+                    status: DesignStatus::Rejected,
+                    proposed_by: None,
+                },
+                NOW + 3,
+            )
+            .unwrap();
+        assert_eq!(reconciled, before);
+
+        let rows = store.actionable_design_items().unwrap();
+        assert_eq!(
+            rows.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            vec![proposed.id.as_str(), pending.id.as_str(),]
+        );
+
+        let objective = goal(&store);
+        store
+            .promote_design_item(
+                &pending.id,
+                &objective.id,
+                &[("Implement pending".into(), "done".into())],
+                &[],
+                NOW + 4,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .actionable_design_items()
+                .unwrap()
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![proposed.id.as_str()]
+        );
+    }
 }

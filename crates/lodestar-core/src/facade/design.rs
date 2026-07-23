@@ -3,7 +3,9 @@
 //! read the Design Board, and the human accept/reject decision that completes
 //! design work without code conformance.
 
-use crate::design::{design_id_from_path, DesignItem, DesignPromotion, DesignStatus};
+use crate::design::{
+    design_id_from_path, DesignItem, DesignMetadata, DesignPromotion, DesignStatus,
+};
 use crate::{now_unix, GoalKind, Lodestar, LodestarError, Result};
 
 impl Lodestar {
@@ -28,9 +30,36 @@ impl Lodestar {
         )
     }
 
-    /// The Design Board: items still awaiting a human decision.
+    /// Reconcile structured repository ADR metadata without inferring or
+    /// scheduling implementation work. Existing durable decisions always win.
+    pub fn reconcile_designs(&self, entries: &[DesignMetadata]) -> Result<Vec<DesignItem>> {
+        let now = now_unix();
+        let mut reconciled = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let adr_path = entry.adr_path.trim().replace('\\', "/");
+            if adr_path.is_empty() || entry.title.trim().is_empty() {
+                return Err(LodestarError::Invalid(
+                    "reconciled ADR metadata requires a path and title".to_string(),
+                ));
+            }
+            reconciled.push(self.store.reconcile_design_item(
+                &DesignMetadata {
+                    adr_path,
+                    title: entry.title.trim().to_string(),
+                    summary: entry.summary.trim().to_string(),
+                    status: entry.status,
+                    proposed_by: entry.proposed_by.clone(),
+                },
+                now,
+            )?);
+        }
+        Ok(reconciled)
+    }
+
+    /// The actionable Design Board: proposed decisions plus accepted designs
+    /// whose implementation promotion is pending or retryable.
     pub fn design_board(&self) -> Result<Vec<DesignItem>> {
-        self.store.list_design_items(Some(DesignStatus::Proposed))
+        self.store.actionable_design_items()
     }
 
     /// Every design item (durable audit view), or those in one status.
@@ -148,6 +177,7 @@ impl Lodestar {
 
 #[cfg(test)]
 mod tests {
+    use crate::design::DesignMetadata;
     use crate::facade::test_support::engine;
     use crate::{DesignPromotionStatus, DesignStatus, GoalKind, Lodestar, LodestarError};
 
@@ -178,7 +208,7 @@ mod tests {
         assert_eq!(accepted.decided_by.as_deref(), Some("human-reviewer"));
         assert_eq!(accepted.promotion_status, DesignPromotionStatus::Pending);
         assert!(e.next_task().unwrap().is_none());
-        assert!(e.design_board().unwrap().is_empty());
+        assert_eq!(e.design_board().unwrap(), vec![accepted.clone()]);
 
         // The human selects an objective; promote materialises the work.
         let objective = e
@@ -193,6 +223,7 @@ mod tests {
         assert!(!promo.tasks.is_empty());
         assert!(promo.tasks.iter().all(|t| t.goal_id == objective.id));
         assert_eq!(e.next_task().unwrap().unwrap().goal_id, objective.id);
+        assert!(e.design_board().unwrap().is_empty());
 
         // Idempotent: a retry returns the same tasks, creating no duplicates.
         let again = e.promote_design(&item.id, &objective.id, &[]).unwrap();
@@ -303,5 +334,54 @@ mod tests {
             .register_design("docs/adr/0102-dup.md", "Dup again", "")
             .unwrap_err();
         assert!(matches!(err, LodestarError::Invalid(_)));
+    }
+
+    #[test]
+    fn reconciliation_imports_history_without_scheduling_or_overwriting_decisions() {
+        let e = agent_engine("workspace-sensor");
+        let entries = vec![
+            DesignMetadata {
+                adr_path: "docs\\adr\\0026-constitution.md".into(),
+                title: "Constitution".into(),
+                summary: "review governance".into(),
+                status: DesignStatus::Proposed,
+                proposed_by: Some("planner".into()),
+            },
+            DesignMetadata {
+                adr_path: "docs/adr/0001-historical.md".into(),
+                title: "Historical".into(),
+                summary: String::new(),
+                status: DesignStatus::Accepted,
+                proposed_by: None,
+            },
+            DesignMetadata {
+                adr_path: "docs/adr/0002-rejected.md".into(),
+                title: "Rejected".into(),
+                summary: String::new(),
+                status: DesignStatus::Rejected,
+                proposed_by: None,
+            },
+        ];
+
+        let reconciled = e.reconcile_designs(&entries).unwrap();
+        assert_eq!(reconciled.len(), 3);
+        assert_eq!(reconciled[0].adr_path, "docs/adr/0026-constitution.md");
+        assert!(reconciled
+            .iter()
+            .all(|item| item.promotion_status == DesignPromotionStatus::NotRequired));
+        assert_eq!(e.design_board().unwrap(), vec![reconciled[0].clone()]);
+        assert!(e.next_task().unwrap().is_none());
+
+        let accepted = e.accept_design(&reconciled[0].id, "reviewer").unwrap();
+        let retry = e
+            .reconcile_designs(&[DesignMetadata {
+                status: DesignStatus::Rejected,
+                title: "Must not overwrite".into(),
+                ..entries[0].clone()
+            }])
+            .unwrap();
+        assert_eq!(retry, vec![accepted.clone()]);
+        assert_eq!(e.design_board().unwrap(), vec![accepted]);
+        assert!(e.next_task().unwrap().is_none());
     }
 }

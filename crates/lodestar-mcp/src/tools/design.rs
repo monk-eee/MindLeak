@@ -2,6 +2,7 @@
 //! MCP tools for the design-item bridge (ADR-0023): register an ADR for review,
 //! read the Design Board, and the human accept/reject decision.
 
+use lodestar_core::design::DesignMetadata;
 use lodestar_core::{GoalKind, Lodestar};
 use serde_json::{json, Value};
 
@@ -23,8 +24,32 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "reconcile_designs",
+            "description": "Idempotently reconcile structured repository ADR metadata into durable design items. Never invokes a model or creates goals/tasks; existing human decisions and promotion state always win.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "designs": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "adr_path": { "type": "string" },
+                                "title": { "type": "string" },
+                                "summary": { "type": "string" },
+                                "status": { "type": "string", "enum": ["proposed", "accepted", "rejected"] },
+                                "proposed_by": { "type": "string" }
+                            },
+                            "required": ["adr_path", "title", "status"]
+                        }
+                    }
+                },
+                "required": ["designs"]
+            }
+        }),
+        json!({
             "name": "design_board",
-            "description": "List design items awaiting a human decision (the Design Board), distinct from the executive task board.",
+            "description": "List actionable design items: proposed ADRs awaiting a human decision plus accepted designs awaiting or retrying promotion. Distinct from the executive task board.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
@@ -96,6 +121,12 @@ pub(super) fn dispatch(
                 .map_err(|e| e.to_string())?;
             ok(&item)
         })()),
+        "reconcile_designs" => Some((|| {
+            let designs = parse_design_metadata(args)?;
+            ok(&engine
+                .reconcile_designs(&designs)
+                .map_err(|e| e.to_string())?)
+        })()),
         "design_board" => Some((|| {
             ok(&engine.design_board().map_err(|e| e.to_string())?)
         })()),
@@ -128,6 +159,14 @@ pub(super) fn dispatch(
         })()),
         _ => None,
     }
+}
+
+fn parse_design_metadata(args: &Value) -> Result<Vec<DesignMetadata>, String> {
+    let designs = args
+        .get("designs")
+        .cloned()
+        .ok_or_else(|| "missing required array arg: designs".to_string())?;
+    serde_json::from_value(designs).map_err(|error| format!("invalid design metadata: {error}"))
 }
 
 /// Parse the optional `constraints` array on `promote_design` into
@@ -208,7 +247,8 @@ mod tests {
             payload(call(&engine, &json!({ "name": "design_board", "arguments": {} })).unwrap());
         assert_eq!(board.as_array().unwrap().len(), 1);
 
-        // Accept is decision-only: accepted + pending, no tasks, off the board.
+        // Accept is decision-only: accepted + pending, no tasks, still visible
+        // for promotion or retry.
         let accepted = payload(
             call(
                 &engine,
@@ -218,12 +258,10 @@ mod tests {
         );
         assert_eq!(accepted["status"], "accepted");
         assert_eq!(accepted["promotion_status"], "pending");
-        assert!(payload(
-            call(&engine, &json!({ "name": "design_board", "arguments": {} })).unwrap()
-        )
-        .as_array()
-        .unwrap()
-        .is_empty());
+        let pending =
+            payload(call(&engine, &json!({ "name": "design_board", "arguments": {} })).unwrap());
+        assert_eq!(pending.as_array().unwrap().len(), 1);
+        assert_eq!(pending[0]["promotion_status"], "pending");
 
         // Promote materialises tasks under a chosen objective goal.
         let objective = engine
@@ -242,6 +280,12 @@ mod tests {
         assert_eq!(promo["item"]["promotion_status"], "materialized");
         assert_eq!(promo["goal"]["id"], objective.id);
         assert!(!promo["tasks"].as_array().unwrap().is_empty());
+        assert!(payload(
+            call(&engine, &json!({ "name": "design_board", "arguments": {} })).unwrap()
+        )
+        .as_array()
+        .unwrap()
+        .is_empty());
     }
 
     #[test]
@@ -307,5 +351,59 @@ mod tests {
         let constraints = promo["constraints"].as_array().unwrap();
         assert_eq!(constraints.len(), 1);
         assert_eq!(constraints[0]["kind"], "constraint");
+    }
+
+    #[test]
+    fn reconcile_designs_is_idempotent_and_never_creates_tasks() {
+        let engine = engine();
+        let arguments = json!({
+            "designs": [
+                {
+                    "adr_path": "docs/adr/0026-constitution.md",
+                    "title": "Constitution",
+                    "summary": "review governance",
+                    "status": "proposed",
+                    "proposed_by": "workspace-sensor"
+                },
+                {
+                    "adr_path": "docs/adr/0001-historical.md",
+                    "title": "Historical",
+                    "status": "accepted"
+                },
+                {
+                    "adr_path": "docs/adr/0002-rejected.md",
+                    "title": "Rejected",
+                    "status": "rejected"
+                }
+            ]
+        });
+
+        let first = payload(
+            call(
+                &engine,
+                &json!({ "name": "reconcile_designs", "arguments": arguments }),
+            )
+            .unwrap(),
+        );
+        let retry = payload(
+            call(
+                &engine,
+                &json!({ "name": "reconcile_designs", "arguments": arguments }),
+            )
+            .unwrap(),
+        );
+        assert_eq!(first, retry);
+        assert_eq!(first.as_array().unwrap().len(), 3);
+        assert!(first
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["promotion_status"] == "not_required"));
+        assert!(engine.next_task().unwrap().is_none());
+
+        let board =
+            payload(call(&engine, &json!({ "name": "design_board", "arguments": {} })).unwrap());
+        assert_eq!(board.as_array().unwrap().len(), 1);
+        assert_eq!(board[0]["id"], "design:0026-constitution");
     }
 }
