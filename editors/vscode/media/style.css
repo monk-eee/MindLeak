@@ -13,12 +13,13 @@ body {
 
 #brandbar {
   padding: 8px 8px 4px;
+  background: transparent;
 }
 
 #brand {
   display: block;
-  height: 30px;
-  width: auto;
+  height: 44px;
+  width: 44px;
 }
 
 #toolbar {

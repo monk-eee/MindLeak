@@ -67,7 +67,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
       vscode.Uri.joinPath(this.extensionUri, "media", "vendor", "cytoscape.min.js")
     );
     const logoUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "media", "mindleak_logo.png")
+      vscode.Uri.joinPath(this.extensionUri, "media", "mindleak_128x128.png")
     );
     const csp = [
       `default-src 'none'`,
@@ -87,7 +87,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <div id="brandbar">
-    <img id="brand" src="${logoUri}" alt="MindLeak" height="30" />
+    <img id="brand" src="${logoUri}" alt="MindLeak" height="44" />
   </div>
   <div id="toolbar">
     <button id="refresh" title="Refresh">Refresh</button>
