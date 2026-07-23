@@ -171,9 +171,9 @@ describe("formatTaskEvidence", () => {
     evidence: JSON.stringify({
       summary: "changed auth",
       changed_node_ids: ["artifact:src/auth.rs"],
-      failed_node_ids: [],
+      failed_node_ids: ["artifact:src/auth.test.rs"],
       execution_ids: ["execution:1"],
-      commit_ids: [],
+      commit_ids: ["intent:abc123"],
     }),
     verdict: "aligned",
     findings: "evidence covers task goal",
@@ -192,6 +192,9 @@ describe("formatTaskEvidence", () => {
     expect(markdown).toContain("**Verdict:** aligned");
     expect(markdown).toContain("**Summary:** changed auth");
     expect(markdown).toContain("**Changed nodes:** artifact:src/auth.rs");
+    expect(markdown).toContain("**Failed nodes:** artifact:src/auth.test.rs");
+    expect(markdown).toContain("**Executions:** execution:1");
+    expect(markdown).toContain("**Commits:** intent:abc123");
     expect(markdown).toContain("**Findings:** evidence covers task goal");
   });
 
