@@ -1,4 +1,4 @@
-use super::{opt_i64, text_result};
+use super::{opt_i64, rendered_result};
 use mindleak_core::MindLeak;
 use serde_json::{json, Value};
 
@@ -26,7 +26,17 @@ pub(super) fn dispatch(
             let snapshot = engine
                 .telemetry_snapshot(limit)
                 .map_err(|e| e.to_string())?;
-            Ok(text_result(&json!(snapshot)))
+            let mut markdown = format!(
+                "**MindLeak telemetry** - {} events, {} errors\n\n| Tool | Calls | Errors | Avg ms | Max ms |\n|---|--:|--:|--:|--:|\n",
+                snapshot.total_events, snapshot.total_errors
+            );
+            for metric in &snapshot.by_name {
+                markdown.push_str(&format!(
+                    "| {} | {} | {} | {:.1} | {} |\n",
+                    metric.name, metric.calls, metric.errors, metric.avg_ms, metric.max_ms
+                ));
+            }
+            Ok(rendered_result(markdown, &json!(snapshot)))
         })()),
         _ => None,
     }

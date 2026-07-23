@@ -19,9 +19,9 @@ to [Semantic Versioning](https://semver.org/).
   formatted table instead of raw JSON without breaking the programmatic consumers
   (the VS Code extension's panes, agents). The extension's `parseToolResult` now
   prefers `structuredContent`, falling back to today's JSON parse. Wired so far:
-  `graph_stats`, `lodestar_stats` (count tables), and `next_task` (a task summary
-  card); other inline read tools follow the same `rendered_result` / `rendered`
-  pattern.
+  `graph_stats`, `lodestar_stats` (count tables), `next_task` (a task summary
+  card), and `telemetry_snapshot` (a per-tool metrics table); other inline read
+  tools follow the same `rendered_result` / `rendered` pattern.
 - **Pause and resume a claimed task from the Intent Board (ADR-0020).** The board
   now shows an inline pause action on a `claimed` task and a resume action on a
   `paused` one, calling the owner-guarded `pause_task` / `resume_task` tools for the
