@@ -81,6 +81,17 @@ fn text_result(value: &Value) -> Value {
     json!({ "content": [{ "type": "text", "text": text }] })
 }
 
+/// A tool result that renders as Markdown in chat while keeping the structured
+/// JSON in `structuredContent` for programmatic consumers (the extension client
+/// and agents). VS Code renders `content`; machine consumers read
+/// `structuredContent`, so the display can be rich without breaking parsers.
+fn rendered_result(markdown: impl Into<String>, value: &Value) -> Value {
+    json!({
+        "content": [{ "type": "text", "text": markdown.into() }],
+        "structuredContent": value,
+    })
+}
+
 fn req_str(args: &Value, key: &str) -> Result<String, String> {
     args.get(key)
         .and_then(Value::as_str)

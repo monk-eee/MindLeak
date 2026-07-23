@@ -7,10 +7,16 @@ export function toArtifactId(relPath: string): string {
 }
 
 /**
- * Parse an MCP tool result's first text-content block as JSON. Falls back to the
- * raw text (or the whole result) when it is not JSON.
+ * Parse an MCP tool result. Prefers the machine-readable `structuredContent`
+ * (present when a tool renders Markdown for chat but still exposes JSON for
+ * programmatic consumers); otherwise parses the first text-content block as JSON,
+ * falling back to the raw text (or the whole result) when it is not JSON.
  */
 export function parseToolResult(result: unknown): unknown {
+  const structured = (result as { structuredContent?: unknown })?.structuredContent;
+  if (structured !== undefined && structured !== null) {
+    return structured;
+  }
   const text = (result as { content?: Array<{ text?: unknown }> })?.content?.[0]?.text;
   if (typeof text !== "string") {
     return result;

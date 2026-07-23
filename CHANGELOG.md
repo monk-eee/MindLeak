@@ -7,6 +7,14 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Read tools render as rich Markdown in chat while staying machine-parseable.**
+  MCP tool results can now carry a chat-facing Markdown rendering in `content`
+  *and* the structured JSON in `structuredContent`, so Copilot Chat shows a
+  formatted table instead of raw JSON without breaking the programmatic consumers
+  (the VS Code extension's panes, agents). The extension's `parseToolResult` now
+  prefers `structuredContent`, falling back to today's JSON parse. First tool wired:
+  `graph_stats` (node/edge counts as a table); more read/query tools follow the
+  same `rendered_result` pattern.
 - **Pause and resume a claimed task from the Intent Board (ADR-0020).** The board
   now shows an inline pause action on a `claimed` task and a resume action on a
   `paused` one, calling the owner-guarded `pause_task` / `resume_task` tools for the

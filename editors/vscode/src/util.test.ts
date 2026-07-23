@@ -58,6 +58,15 @@ describe("toArtifactId", () => {
 });
 
 describe("parseToolResult", () => {
+  it("prefers structuredContent over the Markdown content block", () => {
+    // A tool that renders Markdown for chat still exposes JSON for the client.
+    const result = {
+      content: [{ type: "text", text: "| Nodes | 2 |" }],
+      structuredContent: { nodes: 2, active_edges: 5 },
+    };
+    expect(parseToolResult(result)).toEqual({ nodes: 2, active_edges: 5 });
+  });
+
   it("parses JSON from the first text content block", () => {
     const result = { content: [{ type: "text", text: '{"nodes":2}' }] };
     expect(parseToolResult(result)).toEqual({ nodes: 2 });
