@@ -7,6 +7,14 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **`decompose_goal` refuses normative goals, so `next_task` stops handing out
+  zombie tasks.** Decomposing a `constraint`/`invariant` goal produced tasks that
+  merely restate the rule and can never accrue completion evidence; `next_task`
+  (oldest-first) then surfaced one on every call, burying real work. Decompose now
+  returns a typed `LodestarError::Invalid` for normative goals (only `objective`
+  goals decompose), the four pre-existing restatement tasks were retired with
+  `abandon_task`, and a regression test proves `next_task` surfaces actionable
+  work instead of a restatement.
 - **`index` and `consolidate_session` no longer stall on the model network path.**
   The optional embedding `index` pass embedded one node per HTTP request; it now
   batches up to 64 nodes per `/v1/embeddings` call (OpenAI-compatible array

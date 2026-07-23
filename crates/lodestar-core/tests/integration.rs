@@ -71,6 +71,47 @@ fn redefining_an_identical_goal_is_a_typed_error_not_a_raw_sqlite_fault() {
 }
 
 #[test]
+fn constraint_goals_cannot_seed_junk_and_next_task_surfaces_actionable_work() {
+    // Root cause of a session-long footgun: a `constraint` goal had been
+    // decomposed into tasks that merely restate the rule and can never accrue
+    // completion evidence, and next_task (oldest-first) handed one out on every
+    // call, burying real work. Source fix: decompose_goal refuses normative
+    // goals, so no non-actionable task is ever seeded; next_task then only
+    // surfaces genuinely completable work. Fails pre-fix (decompose seeds a
+    // task and next_task returns it), passes post-fix.
+    let engine = Lodestar::open_in_memory().unwrap();
+
+    // A constraint is enforced by conformance, not decomposed into tasks.
+    let constraint = engine
+        .define_goal(
+            GoalKind::Constraint,
+            "No unwrap in prod",
+            "no unwrap outside tests",
+            None,
+        )
+        .unwrap();
+    let err = engine.decompose_goal(&constraint.id).unwrap_err();
+    assert!(
+        matches!(err, LodestarError::Invalid(_)),
+        "decompose of a constraint must be rejected, got {err:?}"
+    );
+
+    // Nothing was seeded, so next_task has no non-actionable task to hand out.
+    assert!(engine.next_task().unwrap().is_none());
+
+    // Real, actionable work lives under an objective goal.
+    let objective = engine
+        .define_goal(GoalKind::Objective, "Ship search", "add FTS search", None)
+        .unwrap();
+    let task = engine
+        .create_task(&objective.id, "wire FTS", "search returns hits")
+        .unwrap();
+
+    // next_task surfaces the actionable task, never a constraint restatement.
+    assert_eq!(engine.next_task().unwrap().unwrap().id, task.id);
+}
+
+#[test]
 fn goal_task_claim_complete_flow() {
     let engine = Lodestar::open_in_memory().unwrap();
     let g = engine

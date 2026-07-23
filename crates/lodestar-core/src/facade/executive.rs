@@ -25,6 +25,19 @@ impl Lodestar {
             .store
             .get_goal(goal_id)?
             .ok_or_else(|| LodestarError::NotFound(goal_id.to_string()))?;
+        // Only objectives decompose into claimable work. Constraints and
+        // invariants are enforced continuously by conformance, so decomposing
+        // them only yields tasks that restate the rule and can never accrue
+        // completion evidence — the noise that buries real work in next_task.
+        if goal.kind.is_normative() {
+            return Err(LodestarError::Invalid(format!(
+                "goal {goal_id} is a {} enforced by conformance, not completed as \
+                 discrete tasks; decomposing it only produces non-actionable \
+                 restatements. Define an objective goal for the work that \
+                 satisfies it instead.",
+                goal.kind.as_str()
+            )));
+        }
         let now = now_unix();
         let drafts = match self.llm.decompose(&goal.title, &goal.statement) {
             Ok(d) if !d.is_empty() => d,

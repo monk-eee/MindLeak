@@ -340,7 +340,8 @@ Newline-delimited JSON-RPC 2.0 over stdio, exactly like `mindleak-mcp`.
 6. `create_task(goal_id, title, acceptance, blocked_by?)` → `task_id`; a
   dependency opens automatically only after aligned predecessor completion.
 7. `decompose_goal(goal_id)` → candidate tasks (SLM-assisted; deterministic stub
-   otherwise).
+   otherwise). Objective goals only — constraints and invariants are enforced
+   continuously by conformance, not broken into completable tasks.
 8. `next_task(agent_id, capabilities?)` → a suggested unclaimed, unblocked task.
 9. `claim_task(task_id, agent_id, lease_secs)` → `{ won, lease_expires_at }` (§6).
 10. `renew_lease(task_id, agent_id, lease_secs)` → heartbeat.
