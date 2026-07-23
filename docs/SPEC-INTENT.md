@@ -142,7 +142,7 @@ Live coordination state. Not versioned; churny.
 | `goal_id` | the goal this task serves |
 | `parent_task_id` | optional — decomposition tree |
 | `title` / `acceptance` | what "done" means |
-| `status` | `open` · `claimed` · `in_review` · `done` · `blocked` · `abandoned` |
+| `status` | `open` · `claimed` · `in_review` · `done` · `blocked` · `abandoned` · `needs_input`† · `paused`† |
 | `owner` | agent id holding the claim (from `MINDLEAK_AGENT` / `LODESTAR_AGENT`) |
 | `claim_started_at` | start of the current owner's evidence window; lease renewal does not move it |
 | `lease_expires_at` | unix seconds; a claim past this is reclaimable |
@@ -159,6 +159,18 @@ ownership without claiming symbol or filesystem locking (ADR-0015).
 Durable `task_handoffs` lineage preserves the one-successor invariant after the
 transient `blocked_by` field clears. Startup backfills legacy blocked tasks in one
 transaction and fails closed if an old database contains ambiguous fan-out.
+
+† **Parking states (proposed, [ADR-0020](adr/0020-task-lifecycle-states.md)).**
+`needs_input` and `paused` are reachable only from `claimed` by the current owner
+and both **clear the live lease while preserving `owner` and `claim_started_at`** —
+deliberate parking, not release or abandonment. `needs_input` records a durable
+question for a human and returns to `claimed` (same owner, fresh lease) when the
+human answers; `paused` suspends work and returns to `claimed` on `resume`. Both
+are non-terminal, sit off the `blocked_by` handoff path (a task must be `claimed`
+to enter them, so a dependency is never bypassed), and — to prevent a vanished
+owner stranding the task — become reclaimable to `open` after a bounded parking
+grace distinct from the active lease. Coordination state, never decays
+([ADR-0004](adr/0004-intent-plane-spec-brain.md)).
 
 ### Goal ↔ code (the seam)
 
