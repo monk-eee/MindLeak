@@ -9,6 +9,7 @@
 // Defaults: --commit HEAD  --remote origin  --branch <current branch>
 
 import { execFileSync } from "node:child_process";
+import { existsSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -36,6 +37,19 @@ const worktree = join(tmpdir(), `mindleak-isolated-push-${process.pid}`);
 let code = 0;
 try {
   gitInherit(["worktree", "add", "--detach", "--quiet", worktree, commit]);
+  // Link gitignored tool deps so npm-based hooks (eslint/prettier) work in the
+  // throwaway worktree, which only checks out tracked files.
+  for (const dir of ["editors/vscode/node_modules"]) {
+    const src = join(repoRoot, dir);
+    const dst = join(worktree, dir);
+    if (existsSync(src) && !existsSync(dst)) {
+      try {
+        symlinkSync(src, dst, "junction");
+      } catch {
+        /* fall through — the npm hook reports if deps are missing */
+      }
+    }
+  }
   execFileSync("git", ["push", remote, `HEAD:${branch}`], {
     cwd: worktree,
     stdio: "inherit",
