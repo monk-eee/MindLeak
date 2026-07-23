@@ -21,6 +21,25 @@ CREATE TABLE IF NOT EXISTS goals (
 CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
 CREATE INDEX IF NOT EXISTS idx_goals_slug   ON goals(slug);
 
+-- Design items: an ADR under human review (ADR-0023). The taint is the ADR's
+-- own 'proposed' status; a human accept/reject is the completion path for design
+-- work (no code conformance -- there is no code to conform to). A proposed item
+-- is not claimable and never appears in next_task/the executive board. Rejection
+-- is durable, never deleted (archive-not-delete, ADR-0019).
+CREATE TABLE IF NOT EXISTS design_items (
+    id           TEXT PRIMARY KEY,     -- e.g. "design:0023-design-board-accept-bridge"
+    adr_path     TEXT NOT NULL,        -- docs/adr/NNNN-....md (forward slashes)
+    title        TEXT NOT NULL,
+    summary      TEXT NOT NULL DEFAULT '',
+    status       TEXT NOT NULL,        -- proposed | accepted | rejected
+    proposed_by  TEXT,                 -- agent that registered it (may not decide it)
+    decided_by   TEXT,                 -- human that accepted/rejected it
+    reason       TEXT,                 -- acceptance/rejection rationale
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_design_items_status ON design_items(status);
+
 -- Tasks: the executive ledger. Live coordination state; not versioned.
 CREATE TABLE IF NOT EXISTS tasks (
     id               TEXT PRIMARY KEY,     -- e.g. "task:9f3a1c"

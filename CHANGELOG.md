@@ -6,6 +6,19 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Design items — an accept/reject bridge for ADRs (ADR-0023, slice 1).** An ADR
+  can be registered as a first-class *design item* that carries the ADR's review
+  lifecycle: while `proposed` it is tainted — it lives on a new **Design Board**
+  and never appears in `next_task` or the executive board. A human `accept_design`
+  is the completion path for design work and, unlike an implementation task, does
+  **not** run ADR-0009 code conformance (there is no code for a design decision to
+  conform to) — resolving the `in_review` dead-end where design/ADR tasks stranded
+  forever. `reject_design` is durable and auditable (archive-not-delete). No agent
+  may decide its own design (human-in-the-loop). New tools: `register_design`,
+  `design_board`, `accept_design`, `reject_design`. The accept→decompose step
+  (spawning implementation tasks) is the next slice.
+
 ### Fixed
 - **Expired leases can no longer be renewed with a stale evidence window.**
   `renew_lease` now succeeds only while the caller's lease is still live. After

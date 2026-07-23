@@ -237,6 +237,8 @@ coordinate through one plane.
 | `pause_task` / `resume_task` | Owner deliberately parks (`paused`) and resumes work, keeping the claim and evidence window. |
 | `task_qa` | The durable, append-only question/answer thread for a task. |
 | `board` | Who-owns-what snapshot; `include_terminal=false` for only live/actionable work. |
+| `register_design` / `design_board` | Register an ADR as a design item under review (ADR-0023); list items awaiting a human decision (distinct from the executive board). |
+| `accept_design` / `reject_design` | Human completion path for design work — accept (no code conformance) or durably reject; no agent may decide its own design. |
 | `check_conformance` | Persist and return `{ id, token, verdict, findings }` for exact checked completion. |
 | `conformance_history` | Resolve a task's durable evidence chain — the recorded bundle, verdict, and stable id per check. |
 | `consolidate` / `record_knowledge` | Gated promotion of learned regularities. |

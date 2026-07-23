@@ -12,6 +12,7 @@ use serde::Serialize;
 use crate::error::Result;
 
 mod coordination;
+mod design;
 mod goals;
 mod knowledge;
 mod lifecycle;

@@ -3,6 +3,7 @@
 
 mod conformance;
 mod constitution;
+mod design;
 mod executive;
 mod knowledge;
 mod lifecycle;
@@ -18,6 +19,7 @@ pub fn list() -> Vec<Value> {
     tools.extend(conformance::definitions());
     tools.extend(knowledge::definitions());
     tools.extend(lifecycle::definitions());
+    tools.extend(design::definitions());
     tools
 }
 
@@ -39,6 +41,9 @@ pub fn call(engine: &Lodestar, params: &Value) -> Result<Value, String> {
         return result;
     }
     if let Some(result) = lifecycle::dispatch(engine, name, &args) {
+        return result;
+    }
+    if let Some(result) = design::dispatch(engine, name, &args) {
         return result;
     }
 

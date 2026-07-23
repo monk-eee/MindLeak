@@ -8,6 +8,7 @@
 
 pub mod db;
 pub mod decay;
+pub mod design;
 pub mod error;
 mod facade;
 pub mod llm;
@@ -18,6 +19,7 @@ mod util;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub use design::{DesignItem, DesignStatus};
 pub use error::{LodestarError, Result};
 pub use model::{
     CodeBinding, CodeBindingMode, ConformanceCheck, ConformanceEvidence, ConformanceRecord,
