@@ -87,6 +87,20 @@ The database files, schemas, and running connections remain valid after reset.
 - `prune_graph` removes evidence below the active threshold after surfacing
   proven near-expiry signal for optional consolidation. `prune_knowledge`
   removes unconfirmed Lodestar knowledge below its longer-lived threshold.
+- Node reaping is prune-time only and edge-deletion-first: within one prune
+  transaction sub-threshold edges are deleted first, then orphans are detected
+  against the post-deletion edge set, so a node orphaned by the pass is reaped in
+  that same pass. Unreferenced `execution`, `symbol`, `package`, and unresolved
+  `artifact` **stubs** are dropped; real (ingested) `artifact`, `intent`, and
+  `agent` nodes are **retained** by design — durable structure, not a leak. Full
+  per-type contract: [ADR-0021](adr/0021-node-lifecycle-and-reaping.md).
+- **Stale-binary hygiene.** Reaping is exercised by the running `mindleak-mcp`
+  binary, not the source tree. If `prune`/`prune_graph` reports `nodes_removed: 0`
+  for a node you expect reaped, first confirm the server is running the current
+  build — rebuild (`cargo build -p mindleak-mcp`) and restart the server (reload
+  the VS Code window / relaunch the MCP process) before treating it as a logic
+  bug. A stale binary once made an 8-day-old orphan `execution` node appear to
+  survive prune; the source and its tests were correct.
 - MCP tool and autonomous maintenance telemetry form an append-only local audit
   and do not decay. Maintenance events contain counts/coarse outcomes, not model
   inputs or responses. Reset the memory plane to erase telemetry and persisted

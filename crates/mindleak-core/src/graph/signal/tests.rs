@@ -2,7 +2,7 @@
 use crate::db;
 use crate::decay::{SignalEvidence, PRUNE_THRESHOLD};
 use crate::graph::test_support::*;
-use crate::graph::{Direction, GraphStore, SignalCandidate};
+use crate::graph::{ArtifactStub, Direction, GraphStore, SignalCandidate};
 use crate::model::{Edge, Node, NodeType, RelationType};
 
 #[test]
@@ -802,6 +802,113 @@ fn prune_removes_removed_symbol_after_historical_edges_decay() {
     assert_eq!(outcome.nodes_removed, 1);
     assert!(s.get_node("symbol:a:old").unwrap().is_none());
     assert!(s.search_nodes("old", 5).unwrap().is_empty());
+}
+
+// ADR-0021 ordering invariant: within one prune transaction, sub-threshold edges
+// are deleted FIRST, then orphans are detected against the post-deletion edge set,
+// so a node orphaned by the pass is reaped in that SAME pass — no second prune is
+// ever required. A regression here (detecting orphans before deleting edges) would
+// leave the execution node stranded until a later prune, the exact stale-looking
+// "nodes_removed:0" symptom ADR-0021 pins against.
+#[test]
+fn prune_reaps_orphan_in_the_same_pass_that_deletes_its_last_edge() {
+    let s = store();
+    add_node(&s, "artifact:a", NodeType::Artifact, "a", NOW);
+    add_node(&s, "execution:run", NodeType::Execution, "a run", NOW);
+    // The execution's only edge is already decayed at prune time.
+    s.upsert_edge(&raw_edge(
+        "execution:run",
+        "artifact:a",
+        RelationType::Modified,
+        1.0,
+        1.0,
+        NOW - 10 * HOUR,
+    ))
+    .unwrap();
+
+    let outcome = s.prune_with_signal(NOW).unwrap();
+    assert_eq!(outcome.edges_removed, 1); // the decayed edge
+    assert_eq!(outcome.nodes_removed, 1); // the now-orphan execution, same pass
+    assert!(s.get_node("execution:run").unwrap().is_none());
+    assert!(s.get_node("artifact:a").unwrap().is_some());
+
+    // A second prune has nothing left to do: single-pass reaping is complete.
+    let second = s.prune_with_signal(NOW).unwrap();
+    assert_eq!(second.edges_removed, 0);
+    assert_eq!(second.nodes_removed, 0);
+}
+
+// ADR-0021 per-type retention contract: prune reaps transient/unresolved nodes
+// (execution, symbol, package, and unresolved artifact STUBS) once edgeless, but
+// RETAINS durable structure — a real ingested artifact, an intent, and an agent —
+// even after every edge that referenced them has decayed away. Reaping a real
+// artifact or an intent would churn stable ids / erase decision history, which the
+// ADR forbids.
+#[test]
+fn prune_reaps_stub_but_retains_real_artifact_intent_and_agent() {
+    let s = store();
+    // A real consumer artifact importing an unresolved "ghost" (registered as a stub).
+    let consumer = Node::new(
+        "artifact:consumer.rs",
+        NodeType::Artifact,
+        "consumer.rs",
+        NOW,
+    );
+    let ghost = Node::new("artifact:ghost.rs", NodeType::Artifact, "ghost.rs", NOW);
+    let import = Edge::new(
+        "artifact:consumer.rs",
+        "artifact:ghost.rs",
+        RelationType::Imports,
+        NOW,
+    );
+    s.replace_structure(
+        "artifact:consumer.rs",
+        &[consumer, ghost],
+        &[import],
+        &[ArtifactStub {
+            node_id: "artifact:ghost.rs".to_string(),
+            candidate_ids: vec!["artifact:ghost.rs".to_string()],
+        }],
+    )
+    .unwrap();
+
+    // A durable intent and an agent, each reachable only via edges that will decay.
+    add_node(&s, "intent:d", NodeType::Intent, "a decision", NOW);
+    add_node(&s, "agent:a", NodeType::Agent, "a", NOW);
+    add_node(&s, "execution:run", NodeType::Execution, "a run", NOW);
+    s.upsert_edge(&raw_edge(
+        "agent:a",
+        "intent:d",
+        RelationType::Observed,
+        1.0,
+        1.0,
+        NOW,
+    ))
+    .unwrap();
+    s.upsert_edge(&raw_edge(
+        "intent:d",
+        "execution:run",
+        RelationType::RelatesTo,
+        1.0,
+        1.0,
+        NOW,
+    ))
+    .unwrap();
+
+    // Far enough out that every edge — including the 168h import — decays below the
+    // prune threshold, leaving each node edgeless.
+    let later = NOW + 60 * 24 * HOUR;
+    let outcome = s.prune_with_signal(later).unwrap();
+
+    // Reaped: the unresolved stub and the orphaned execution.
+    assert!(s.get_node("artifact:ghost.rs").unwrap().is_none());
+    assert!(s.get_node("execution:run").unwrap().is_none());
+    assert_eq!(outcome.nodes_removed, 2);
+
+    // Retained by design: the real artifact, the intent, and the agent.
+    assert!(s.get_node("artifact:consumer.rs").unwrap().is_some());
+    assert!(s.get_node("intent:d").unwrap().is_some());
+    assert!(s.get_node("agent:a").unwrap().is_some());
 }
 
 #[test]
