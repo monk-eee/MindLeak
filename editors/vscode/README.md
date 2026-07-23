@@ -24,6 +24,15 @@ graph engine.
   active edges), tool-call success and error rates, average latency, and
   per-tool metrics, refreshed live while the pane is visible. A **Live log**
   toggle (off by default) streams recent tool/maintenance events on demand.
+- **Design Board** — repository ADRs are synchronized into Lodestar without
+  inferring tasks from Markdown. Proposed designs can be accepted or rejected by
+  an attributed human reviewer; accepted designs remain visibly pending until a
+  reviewer promotes them under an active objective. Materialized rows expose
+  their persisted objective, tasks, and constraints, and failed promotion stays
+  retryable.
+- **Intent Board** — active task ownership and evidence actions remain separate
+  from design review, so proposed ADRs never appear as claimable implementation
+  work.
 - **Controls** — Refresh, Prune decayed edges, Export complete graph JSON, back
   up both planes, and modal reset of regenerable memory only.
 
@@ -70,6 +79,24 @@ The extension settings above are the authority for its child process and
 override inherited `MINDLEAK_AUTONOMOUS_CONSOLIDATION` / scheduler environment
 values. Reload the extension host after changing them; the worker configuration
 is intentionally resolved once at server startup.
+
+## Design workflow
+
+The extension synchronizes `docs/adr/*.md` on activation and file changes using
+only the ADR path, H1 title, and declared `Status`. Use **MindLeak: Sync ADRs**
+for an explicit refresh. Reconciliation is idempotent and creates no tasks.
+
+From the Design Board:
+
+- Proposed rows expose **Accept** and **Reject** actions.
+- Accepted/pending rows expose **Promote** and remain visible after a failed
+  attempt so promotion can be retried safely.
+- Promotion requires selecting an active objective goal; Lodestar then
+  materializes the reviewed work exactly once.
+- Materialized rows expose a readable objective/task/constraint provenance view.
+
+Human acceptance and rejection require an identity different from the proposing
+agent. ADR discovery never auto-accepts or auto-promotes a design.
 
 ## Develop
 

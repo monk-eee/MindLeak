@@ -49,6 +49,11 @@
           "type": "tree"
         },
         {
+          "id": "mindleak.designView",
+          "name": "Design Board",
+          "type": "tree"
+        },
+        {
           "id": "mindleak.telemetryView",
           "name": "Telemetry",
           "type": "webview"
@@ -86,6 +91,41 @@
         "command": "mindleak.board.refresh",
         "title": "MindLeak: Refresh Intent Board",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "mindleak.design.refresh",
+        "title": "MindLeak: Refresh Design Board",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "mindleak.design.sync",
+        "title": "MindLeak: Sync ADRs",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "mindleak.design.accept",
+        "title": "MindLeak: Accept Design",
+        "icon": "$(check)"
+      },
+      {
+        "command": "mindleak.design.reject",
+        "title": "MindLeak: Reject Design",
+        "icon": "$(close)"
+      },
+      {
+        "command": "mindleak.design.promote",
+        "title": "MindLeak: Promote Design",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "mindleak.design.openAdr",
+        "title": "MindLeak: Open ADR",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "mindleak.design.inspectPromotion",
+        "title": "MindLeak: Inspect Design Materialization",
+        "icon": "$(list-tree)"
       },
       {
         "command": "mindleak.telemetry.refresh",
@@ -136,6 +176,16 @@
           "group": "navigation"
         },
         {
+          "command": "mindleak.design.refresh",
+          "when": "view == mindleak.designView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "mindleak.design.sync",
+          "when": "view == mindleak.designView",
+          "group": "navigation@2"
+        },
+        {
           "command": "mindleak.telemetry.refresh",
           "when": "view == mindleak.telemetryView",
           "group": "navigation"
@@ -147,6 +197,31 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "mindleak.design.accept",
+          "when": "view == mindleak.designView && viewItem == design.proposed",
+          "group": "inline@1"
+        },
+        {
+          "command": "mindleak.design.reject",
+          "when": "view == mindleak.designView && viewItem == design.proposed",
+          "group": "inline@2"
+        },
+        {
+          "command": "mindleak.design.promote",
+          "when": "view == mindleak.designView && viewItem == design.pending",
+          "group": "inline@1"
+        },
+        {
+          "command": "mindleak.design.inspectPromotion",
+          "when": "view == mindleak.designView && viewItem == design.materialized",
+          "group": "inline@1"
+        },
+        {
+          "command": "mindleak.design.openAdr",
+          "when": "view == mindleak.designView",
+          "group": "navigation"
+        },
         {
           "command": "mindleak.task.completeWithEvidence",
           "when": "view == mindleak.boardView && viewItem == claimed",
@@ -184,6 +259,12 @@
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "mindleak.designView",
+        "contents": "No design items are registered.\n[Sync repository ADRs](command:mindleak.design.sync)"
+      }
+    ],
     "configuration": {
       "title": "MindLeak",
       "properties": {

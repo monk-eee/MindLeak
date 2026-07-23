@@ -20,6 +20,13 @@ async function run() {
   for (const command of [
     "mindleak.refresh",
     "mindleak.board.refresh",
+    "mindleak.design.refresh",
+    "mindleak.design.sync",
+    "mindleak.design.accept",
+    "mindleak.design.reject",
+    "mindleak.design.promote",
+    "mindleak.design.openAdr",
+    "mindleak.design.inspectPromotion",
     "mindleak.ingestActiveFile",
     "mindleak.export",
     "mindleak.backup",
@@ -33,6 +40,15 @@ async function run() {
   await vscode.commands.executeCommand("mindleak.ingestActiveFile");
   await vscode.commands.executeCommand("mindleak.refresh");
   await vscode.commands.executeCommand("mindleak.board.refresh");
+
+  const adrDirectory = path.join(workspace, "docs", "adr");
+  fs.mkdirSync(adrDirectory, { recursive: true });
+  fs.writeFileSync(
+    path.join(adrDirectory, "0099-smoke-design.md"),
+    "# Smoke design\n\n- Status: Proposed\n"
+  );
+  await vscode.commands.executeCommand("mindleak.design.sync");
+  await vscode.commands.executeCommand("mindleak.design.refresh");
 
   await waitForFile(path.join(workspace, ".mindleak", "graph.db"));
   await waitForFile(path.join(workspace, ".lodestar", "spec.db"));

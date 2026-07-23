@@ -59,8 +59,12 @@ to [Semantic Versioning](https://semver.org/).
   goals or tasks; existing human decisions and promotion state always win.
   `design_board` now returns proposed decisions plus accepted designs awaiting
   promotion or retry. New tools: `register_design`, `reconcile_designs`,
-  `design_board`, `accept_design`, `promote_design`, `reject_design`. The portal
-  Design Board view and workspace ADR sensor are the remaining slice.
+  `design_board`, `accept_design`, `promote_design`, `reject_design`. The VS Code
+  sidebar now ships the separate Design Board and workspace ADR sensor: it syncs
+  structured ADR metadata on activation/change or manual command, exposes
+  attributed accept/reject and objective selection for promotion, keeps failed
+  promotion pending/retryable, and renders persisted objective/task/constraint
+  provenance for materialized designs.
 
 ### Changed
 - **The install and usage on-ramp is action-first and easier to follow.** The

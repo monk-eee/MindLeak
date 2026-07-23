@@ -261,6 +261,11 @@ Design: [docs/SPEC-INTENT.md](docs/SPEC-INTENT.md) ·
 Backup, upgrade, rollback, export, reset, and retention guidance:
 [docs/DATA-LIFECYCLE.md](docs/DATA-LIFECYCLE.md).
 
+The VS Code sidebar includes a separate **Design Board**. It synchronizes
+structured ADR metadata, keeps human review separate from executable task
+coordination, supports attributed accept/reject decisions, and exposes
+idempotent promotion plus persisted implementation provenance.
+
 ---
 
 ## Optional local-LLM consolidation

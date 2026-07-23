@@ -4,6 +4,8 @@ import * as vscode from "vscode";
 
 import { BoardItem, BoardViewProvider } from "./boardViewProvider";
 import { WorkspaceChangeDetector } from "./changeDetector";
+import { DesignBoardController } from "./designBoardController";
+import { DesignBoardItem, DesignBoardViewProvider } from "./designBoardViewProvider";
 import { GitSensor } from "./gitSensor";
 import { GraphViewProvider } from "./graphViewProvider";
 import { McpClient } from "./mcpClient";
@@ -33,6 +35,8 @@ let lodestar: McpClient | undefined;
 let provider: GraphViewProvider | undefined;
 let telemetry: TelemetryViewProvider | undefined;
 let board: BoardViewProvider | undefined;
+let designBoard: DesignBoardViewProvider | undefined;
+let designController: DesignBoardController | undefined;
 let output: vscode.OutputChannel;
 let configuredAgentId = "vscode";
 let serverHealth = "memory starting";
@@ -117,6 +121,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider(BoardViewProvider.viewType, board)
   );
+  designBoard = new DesignBoardViewProvider();
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider(DesignBoardViewProvider.viewType, designBoard)
+  );
   const lodestarPath = resolveBinaryPath(
     config.get<string>("lodestarServerPath", "lodestar-mcp"),
     workspace,
@@ -130,6 +138,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     workspace,
     { LODESTAR_DB: lodestarDb, LODESTAR_AGENT: agentId },
     (m) => output.appendLine(m)
+  );
+  designController = new DesignBoardController(
+    lodestar,
+    designBoard,
+    configuredAgentId,
+    (message) => output.appendLine(message),
+    refreshBoard
+  );
+  const adrWatcher = vscode.workspace.createFileSystemWatcher("**/docs/adr/*.md");
+  context.subscriptions.push(
+    adrWatcher,
+    adrWatcher.onDidCreate(() => void designController?.sync()),
+    adrWatcher.onDidChange(() => void designController?.sync()),
+    adrWatcher.onDidDelete(() => void designController?.sync())
   );
 
   try {
@@ -151,6 +173,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     updateHealth();
     output.appendLine(`Connected to ${lodestarPath} (intent plane: ${lodestarDb})`);
     void refreshBoard();
+    void designController.sync();
   } catch (err) {
     intentHealth = "intent unavailable";
     updateHealth();
@@ -210,6 +233,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
       }
     }),
     vscode.commands.registerCommand("mindleak.board.refresh", () => refreshBoard()),
+    vscode.commands.registerCommand("mindleak.design.refresh", () => designController?.refresh()),
+    vscode.commands.registerCommand("mindleak.design.sync", () => designController?.sync()),
+    vscode.commands.registerCommand("mindleak.design.accept", (item?: DesignBoardItem) => {
+      void designController?.accept(item);
+    }),
+    vscode.commands.registerCommand("mindleak.design.reject", (item?: DesignBoardItem) => {
+      void designController?.reject(item);
+    }),
+    vscode.commands.registerCommand("mindleak.design.promote", (item?: DesignBoardItem) => {
+      void designController?.promote(item);
+    }),
+    vscode.commands.registerCommand("mindleak.design.openAdr", (item?: DesignBoardItem) => {
+      void designController?.openAdr(item);
+    }),
+    vscode.commands.registerCommand(
+      "mindleak.design.inspectPromotion",
+      (item?: DesignBoardItem) => {
+        void designController?.inspectPromotion(item);
+      }
+    ),
     vscode.commands.registerCommand("mindleak.telemetry.refresh", () => refreshTelemetry()),
     vscode.commands.registerCommand("mindleak.task.completeWithEvidence", (item?: BoardItem) => {
       void completeWithEvidence(item);
