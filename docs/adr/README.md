@@ -29,6 +29,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0019](0019-task-retention-and-board-hygiene.md) | Task retention and board hygiene (archive, never decay) | Proposed |
 | [0020](0020-task-lifecycle-states.md) | Task lifecycle states — `needs_input` and `paused` | Proposed |
 | [0021](0021-node-lifecycle-and-reaping.md) | Node lifecycle and maintenance reaping semantics | Proposed |
+| [0022](0022-learned-knowledge-loop.md) | Learned-knowledge loop — promotion, revalidation, advisory conformance | Proposed |
 
 ## Writing a new ADR
 

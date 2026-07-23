@@ -229,6 +229,12 @@ automatic:
 - **SLM-bounded, async, reviewable** — distillation runs off every hot path (§8),
   its quality is capped by the local model, and promotions are inspectable like
   the constitution export.
+- **Advisory in conformance, never a hard block** — active knowledge informs a
+  conformance check only as an *advisory finding* (at most nudging a verdict to
+  `needs_human` so a human looks), never a `violation`; a decaying, revalidated
+  regularity must not block valid work the way a Constitution `invariant` does.
+  Promotion-from-signal and conformance-consumption wiring:
+  [ADR-0022](adr/0022-learned-knowledge-loop.md).
 
 The mechanism: when signal-weighted decay marks an episodic cluster as *proven
 signal about to expire*, the consolidation worker distils it into a `knowledge:`
