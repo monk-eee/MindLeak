@@ -74,6 +74,15 @@ waivers, and a draft-to-active onboarding lifecycle. Common and domain policy
 packs propose locally materialised clauses rather than creating live inherited
 law. See [`SPEC-CONSTITUTION.md`](SPEC-CONSTITUTION.md).
 
+[ADR-0024](adr/0024-preflight-overlap-detection.md) designs the next
+coordination layer above the compare-and-swap claim: a read-only, decay-aware
+**pre-flight overlap check** that fuses Lodestar active claims with MindLeak's
+recent `observed`/`modified` attribution, so an agent can see — *before*
+claiming — whether another agent is already touching the paths/symbols it intends
+to change. It is advisory (never a lock, per ADR-0015), crosses the plane seam by
+opaque node id only (ADR-0004), and complements the physical worktree isolation
+of ADR-0018. Designed here; not yet implemented.
+
 ### `lodestar-mcp` (binary)
 
 A second MCP stdio server exposing the Intent Plane tools for constitution,

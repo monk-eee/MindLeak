@@ -100,8 +100,9 @@ seam by node id only, with no shared tables or transactions
 - Defines the **two-agent duplicate-work benchmark** [EVALUATION.md](../EVALUATION.md)
   calls for: agent B's pre-flight check detects agent A's overlapping in-progress
   work (claim scope and/or MindLeak footprint) and steers B away.
-- SPEC-INTENT (coordination section) and the README tool table are updated at
-  implementation; ARCHITECTURE.md notes the cross-plane check.
+- SPEC-INTENT (§6.1) documents the designed check and ARCHITECTURE.md notes the
+  cross-plane seam as of this design task; the README tool table gains the
+  `check_overlap` row at implementation, when the tool actually ships.
 - This ADR carries no behavioural code; it is the design-first predecessor for the
   implementation task, and coordinates with
   [ADR-0018](0018-conflict-safe-concurrent-editing.md) (physical isolation) and the

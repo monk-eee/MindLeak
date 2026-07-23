@@ -295,6 +295,39 @@ UPDATE tasks
 
 No cross-process locks beyond SQLite; WAL handles concurrent readers.
 
+### 6.1 Pre-flight overlap awareness (designed — ADR-0024)
+
+The compare-and-swap above is exact for the **same task**, but it says nothing
+about two agents touching the **same files or symbols under different tasks**, or
+solving the same problem in parallel — the duplicate-work gap
+[EVALUATION.md](EVALUATION.md) still calls out. The designed answer is a
+read-only, advisory, **decay-aware** pre-flight check
+([ADR-0024](adr/0024-preflight-overlap-detection.md)) run *before* claiming or
+starting work — not a lock (Lodestar does not own the filesystem, so it must not
+pretend to, per [ADR-0015](adr/0015-advisory-symbol-leases.md)).
+
+- **Optional scope declaration.** A claim may declare the paths (globs) and/or
+  symbol ids it intends to touch. This is the *same* scope-declaration model as
+  [ADR-0018](adr/0018-conflict-safe-concurrent-editing.md)'s path-ownership
+  advisory — one mechanism, surfaced on the board as a planning hint, not forked.
+- **`check_overlap(paths[], symbols[])`.** A read-only query that fuses both
+  planes and returns (1) **active claims** whose declared scope intersects the
+  request, and (2) other agents' **recent above-threshold `observed`/`modified`
+  footprint** on the same artifact/symbol nodes from MindLeak
+  ([ADR-0003](adr/0003-agent-attribution-as-observed-edges.md)). Decay means
+  stale attention has already faded below threshold, so only *currently hot*
+  overlap raises a flag — no false alarms from last week's edits.
+- **Advisory, never enforcing.** The check *warns*; it never blocks or grants
+  false safety. On a warning an agent coordinates, picks different work, or
+  converts to a `blocked_by` handoff (the supported same-file serialization).
+- **Loose seam.** The cross-plane read crosses by opaque MindLeak node id only —
+  no shared tables or transactions
+  ([ADR-0004](adr/0004-intent-plane-spec-brain.md)).
+
+This is a design contract, not yet implemented: the `check_overlap` tool enters
+the §9 tool surface at implementation, and effective weight stays derived, never
+a stored lock.
+
 ---
 
 ## 7. Conformance — the anti-dilution enforcement
