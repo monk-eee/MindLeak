@@ -5,6 +5,14 @@
   "version": "0.1.0",
   "publisher": "monk-eee",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/monk-eee/MindLeak.git"
+  },
+  "homepage": "https://github.com/monk-eee/MindLeak#readme",
+  "bugs": {
+    "url": "https://github.com/monk-eee/MindLeak/issues"
+  },
   "icon": "media/mindleak_128x128.png",
   "engines": {
     "vscode": "^1.93.0"
@@ -54,7 +62,16 @@
       },
       {
         "command": "mindleak.export",
-        "title": "MindLeak: Export Graph Snapshot (JSON)"
+        "title": "MindLeak: Export Complete Graph (JSON)"
+      },
+      {
+        "command": "mindleak.backup",
+        "title": "MindLeak: Back Up Memory and Intent",
+        "icon": "$(save-all)"
+      },
+      {
+        "command": "mindleak.resetMemory",
+        "title": "MindLeak: Reset Workspace Memory"
       },
       {
         "command": "mindleak.ingestActiveFile",
@@ -81,6 +98,11 @@
         {
           "command": "mindleak.board.refresh",
           "when": "view == mindleak.boardView",
+          "group": "navigation"
+        },
+        {
+          "command": "mindleak.backup",
+          "when": "view == mindleak.graphView",
           "group": "navigation"
         }
       ],
@@ -180,24 +202,36 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "copy-assets": "node scripts/copy-assets.js",
+    "stage-native": "node scripts/stage-native.mjs",
+    "bundle:installer": "esbuild scripts/install.mjs --bundle --platform=node --format=esm --target=node20 --outfile=../../dist/install.mjs",
+    "bundle:release": "node scripts/package-bundle.mjs",
+    "verify:vsix": "node scripts/verify-vsix.mjs",
     "compile": "npm run copy-assets && tsc -p ./",
+    "package:vsix": "vsce package",
     "watch": "tsc -watch -p ./",
-    "lint": "eslint src --ext ts",
-    "format": "prettier --check \"src/**/*.ts\" \"media/**/*.js\" \"../../scripts/**/*.mjs\"",
-    "format:fix": "prettier --write \"src/**/*.ts\" \"media/**/*.js\" \"../../scripts/**/*.mjs\"",
+    "lint": "eslint src scripts --ext ts,mjs,cjs",
+    "format": "prettier --check \"src/**/*.ts\" \"scripts/**/*.mjs\" \"scripts/**/*.cjs\" \"media/**/*.js\" \"../../scripts/**/*.mjs\"",
+    "format:fix": "prettier --write \"src/**/*.ts\" \"scripts/**/*.mjs\" \"scripts/**/*.cjs\" \"media/**/*.js\" \"../../scripts/**/*.mjs\"",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage --coverage.thresholds.lines 80 --coverage.thresholds.branches 80"
+    "test:coverage": "vitest run --coverage --coverage.thresholds.lines 80 --coverage.thresholds.branches 80",
+    "test:extension-host": "npm run compile && npm run stage-native && node scripts/extension-host/run.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.93.0",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
-    "@vitest/coverage-v8": "^3.2.7",
+    "@vitest/coverage-v8": "3.2.7",
+    "@vscode/test-electron": "2.5.2",
+    "@vscode/vsce": "3.3.2",
     "cytoscape": "^3.30.0",
+    "esbuild": "0.28.1",
     "eslint": "^8.57.0",
+    "jsonc-parser": "3.3.1",
     "prettier": "^3.2.0",
     "typescript": "5.4.5",
-    "vitest": "^3.2.0"
+    "vitest": "3.2.7",
+    "yauzl": "3.2.1",
+    "yazl": "3.3.1"
   }
 }

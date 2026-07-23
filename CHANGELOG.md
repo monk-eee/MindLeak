@@ -7,6 +7,14 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Productized distribution** (ADR-0016): one-command, JSONC-preserving
+  two-plane workspace installer; self-contained platform-targeted VSIX packages;
+  versioned native bundles for Windows x64, Linux x64, macOS Intel, and macOS
+  Apple Silicon; SHA-256 checksums and signed GitHub provenance attestations;
+  and a pinned VS Code 1.93.1 live Extension Host CI smoke.
+- **VS Code lifecycle controls and complete health**: complete active-graph
+  export, two-plane online backup, modal memory-only reset, and visible memory,
+  intent, terminal, and Git health/degraded status.
 - **Local data lifecycle** (ADR-0013): shared integrity-checked SQLite online
   backup for both planes; complete active graph JSON export; separately
   confirmed memory (`RESET MINDLEAK`) and durable intent (`RESET LODESTAR`)
@@ -107,7 +115,7 @@ to [Semantic Versioning](https://semver.org/).
   collision-free coordination of parallel local agents across worktrees, a
   conformance check (aligned/drift/violation), and **consolidated learned
   knowledge** that is durable-but-revalidated (ADR-0005). A second stdio MCP
-  server with 21 tools; optional local SLM for decomposition and semantic
+  server with 23 tools; optional local SLM for decomposition and semantic
   conformance with deterministic fallbacks; shared `.lodestar/spec.db` (WAL) with
   the constitution exportable to committed markdown.
 

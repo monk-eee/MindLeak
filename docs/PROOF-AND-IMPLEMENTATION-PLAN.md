@@ -430,17 +430,25 @@ stop the product rather than adding more planes or relations.
 
 ## 12. Phase 7: Productization
 
-Phase 6 has passed for the pinned composite scenario. Proceed with:
+Implementation completed on 2026-07-22 after Phase 6 passed:
 
-- one-command cross-platform installation and server registration;
-- signed/versioned binaries for Windows, macOS, and Linux;
-- VS Code package with server health, capture health, and degraded-mode status;
-- migration and backup documentation;
-- retention/privacy controls and graph reset/export;
-- a combined onboarding path for the two MCP servers without merging their
-  stores or invariants;
-- release notes containing benchmark results, limitations, and supported
-  language matrices.
+- one-command cross-platform installation and JSONC-preserving registration of
+  both servers;
+- versioned Windows, Linux, and macOS bundle/VSIX matrices with SHA-256 sums and
+  signed GitHub provenance attestations (native OS publisher signing is not
+  claimed and requires release credentials);
+- self-contained VS Code packages with separate memory, intent, terminal, and
+  Git health/degraded status, validated in a pinned VS Code 1.93.1 Extension
+  Host;
+- integrity-checked online backups plus upgrade/rollback documentation;
+- retention/privacy guidance, complete graph export, two-plane backup, and
+  separately confirmed reset contracts;
+- combined two-server onboarding without merging databases or invariants;
+- release notes containing measured benchmark scope, limitations, and supported
+  language/platform matrices.
+
+The first public tag remains an operational publication step; the repository is
+release-ready but this plan does not claim an unpushed/unpublished asset exists.
 
 ## 13. Parallel Work and Dependencies
 

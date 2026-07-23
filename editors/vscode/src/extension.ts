@@ -11,6 +11,7 @@ import { TerminalCaptureConfig, TerminalSensor } from "./terminalSensor";
 import {
   conformanceDiagnostic,
   evidenceRequestForTask,
+  healthSummary,
   resolveBinaryPath,
   resolveServerPath,
   toArtifactId,
@@ -22,11 +23,21 @@ let provider: GraphViewProvider | undefined;
 let board: BoardViewProvider | undefined;
 let output: vscode.OutputChannel;
 let configuredAgentId = "vscode";
-let serverHealth = "server starting";
+let serverHealth = "memory starting";
+let intentHealth = "intent starting";
 let terminalHealth = "terminal capture starting";
 let gitHealth = "Git capture starting";
 
-export async function activate(context: vscode.ExtensionContext): Promise<void> {
+export interface MindLeakExtensionApi {
+  health(): {
+    memory: string;
+    intent: string;
+    terminal: string;
+    git: string;
+  };
+}
+
+export async function activate(context: vscode.ExtensionContext): Promise<MindLeakExtensionApi> {
   output = vscode.window.createOutputChannel("MindLeak");
   context.subscriptions.push(output);
 
@@ -37,6 +48,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     workspace,
     {
       exists: fs.existsSync,
+      extensionPath: context.extensionPath,
     }
   );
   const dbPath =
@@ -69,7 +81,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     config.get<string>("lodestarServerPath", "lodestar-mcp"),
     workspace,
     "lodestar-mcp",
-    { exists: fs.existsSync }
+    { exists: fs.existsSync, extensionPath: context.extensionPath }
   );
   const lodestarDb =
     config.get<string>("lodestarDatabasePath", "") || path.join(workspace, ".lodestar", "spec.db");
@@ -82,11 +94,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   try {
     await client.start();
-    serverHealth = "connected";
+    serverHealth = "memory connected";
     updateHealth();
     output.appendLine(`Connected to ${serverPath} (db: ${dbPath})`);
   } catch (err) {
-    serverHealth = "server unavailable";
+    serverHealth = "memory unavailable";
     updateHealth();
     vscode.window.showWarningMessage(
       `MindLeak: could not start '${serverPath}'. Set 'mindleak.serverPath'. (${(err as Error).message})`
@@ -95,9 +107,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   try {
     await lodestar.start();
+    intentHealth = "intent connected";
+    updateHealth();
     output.appendLine(`Connected to ${lodestarPath} (intent plane: ${lodestarDb})`);
     void refreshBoard();
   } catch (err) {
+    intentHealth = "intent unavailable";
+    updateHealth();
     output.appendLine(
       `Lodestar intent plane unavailable ('${lodestarPath}'): ${(err as Error).message}`
     );
@@ -145,6 +161,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("mindleak.refresh", () => refresh()),
     vscode.commands.registerCommand("mindleak.prune", () => prune()),
     vscode.commands.registerCommand("mindleak.export", () => exportSnapshot()),
+    vscode.commands.registerCommand("mindleak.backup", () => backupBoth()),
+    vscode.commands.registerCommand("mindleak.resetMemory", () => resetMemory()),
     vscode.commands.registerCommand("mindleak.ingestActiveFile", () => {
       const doc = vscode.window.activeTextEditor?.document;
       if (doc) {
@@ -161,6 +179,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   if (vscode.window.activeTextEditor) {
     void onFocus(vscode.window.activeTextEditor.document);
   }
+
+  return {
+    health: () => ({
+      memory: serverHealth,
+      intent: intentHealth,
+      terminal: terminalHealth,
+      git: gitHealth,
+    }),
+  };
 }
 
 export function deactivate(): void {
@@ -196,7 +223,7 @@ function setGitHealth(status: string): void {
 }
 
 function updateHealth(): void {
-  provider?.status(`${serverHealth} · ${terminalHealth} · ${gitHealth}`);
+  provider?.status(healthSummary(serverHealth, intentHealth, terminalHealth, gitHealth));
 }
 
 function artifactId(doc: vscode.TextDocument): string {
@@ -272,17 +299,68 @@ async function exportSnapshot(): Promise<void> {
     return;
   }
   try {
-    const subgraph = await client.callTool("graph_snapshot", { limit: 500 });
+    const graph = await client.callTool("export_graph", {});
     const target = await vscode.window.showSaveDialog({
       filters: { JSON: ["json"] },
       saveLabel: "Export MindLeak Graph",
     });
     if (target) {
-      fs.writeFileSync(target.fsPath, JSON.stringify(subgraph, null, 2));
+      fs.writeFileSync(target.fsPath, JSON.stringify(graph, null, 2));
       vscode.window.showInformationMessage(`MindLeak graph exported to ${target.fsPath}`);
     }
   } catch (err) {
     vscode.window.showErrorMessage(`MindLeak export failed: ${(err as Error).message}`);
+  }
+}
+
+async function backupBoth(): Promise<void> {
+  if (!client?.isReady() || !lodestar?.isReady()) {
+    vscode.window.showWarningMessage("MindLeak and Lodestar must both be connected.");
+    return;
+  }
+  const selected = await vscode.window.showOpenDialog({
+    canSelectFiles: false,
+    canSelectFolders: true,
+    canSelectMany: false,
+    openLabel: "Back Up Both Planes",
+  });
+  if (!selected?.[0]) {
+    return;
+  }
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const memoryPath = path.join(selected[0].fsPath, `mindleak-${timestamp}.db`);
+  const intentPath = path.join(selected[0].fsPath, `lodestar-${timestamp}.db`);
+  try {
+    await client.callTool("backup_database", { path: memoryPath });
+    await lodestar.callTool("backup_database", { path: intentPath });
+    vscode.window.showInformationMessage(`MindLeak backups created in ${selected[0].fsPath}`);
+  } catch (err) {
+    vscode.window.showErrorMessage(`MindLeak backup failed: ${(err as Error).message}`);
+  }
+}
+
+async function resetMemory(): Promise<void> {
+  if (!client?.isReady()) {
+    vscode.window.showWarningMessage("MindLeak memory plane is not connected.");
+    return;
+  }
+  const confirmed = await vscode.window.showWarningMessage(
+    "Reset all MindLeak memory for this workspace?",
+    {
+      modal: true,
+      detail: "This clears the graph, embeddings, and telemetry. Lodestar intent is preserved.",
+    },
+    "Reset Memory"
+  );
+  if (confirmed !== "Reset Memory") {
+    return;
+  }
+  try {
+    await client.callTool("reset_database", { confirm: "RESET MINDLEAK" });
+    vscode.window.showInformationMessage("MindLeak memory reset. Lodestar intent was preserved.");
+    await refresh();
+  } catch (err) {
+    vscode.window.showErrorMessage(`MindLeak reset failed: ${(err as Error).message}`);
   }
 }
 

@@ -234,11 +234,10 @@ two-agent duplicate-work scenario remain required before general claims.
 
 ## Memory-arm context precision
 
-The end-to-end task-success comparison named above has not started. What *has*
-started is a narrower, deterministic benchmark of **context precision**: before
-an agent can act, does its memory surface the right context at all? This is a
-proxy for agent benefit, not a productivity claim, and it runs with no model
-dependency.
+Separate from the completed agent-loop outcome above, this deterministic
+benchmark asks a narrower question: before an agent can act, does its memory
+surface the right context at all? It is a retrieval proxy, not another
+productivity claim, and it runs with no model dependency.
 
 Two experiments run under `make bench`.
 
@@ -281,6 +280,5 @@ make bench
 ```
 
 This is a retrieval-quality proxy on small, engineered fixtures. It is not a
-multi-language precision/recall benchmark, and the end-to-end task-success
-comparison (with an agent in the loop, and eventually `mindleak+lodestar`)
-remains future work.
+multi-language precision/recall benchmark. Broader replication of both this
+proxy and the completed end-to-end agent outcome remains future work.

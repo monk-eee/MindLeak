@@ -72,9 +72,10 @@ ingest_file(path, content)                                    # a file's symbols
   (`contains`) and, for JS/TS, static `import`/`require` edges and named
   cross-file `calls`.
 
-> In the VS Code extension these fire partly on their own (focus boosts a node,
-> save ingests symbols). Fully passive terminal/git capture is on the roadmap;
-> today, executions and commits are ingested via these tool calls.
+> In the VS Code extension these fire passively: focus boosts a node, save
+> ingests symbols, shell-integrated terminal events ingest command outcomes, and
+> built-in Git events ingest commits. Unsupported capture paths report a visible
+> degraded status; agents can still call the tools directly.
 
 ### Record the *why*
 

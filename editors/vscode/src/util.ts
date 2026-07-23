@@ -101,6 +101,17 @@ export function filterChangedPaths(
 export interface ResolveServerOptions {
   platform?: NodeJS.Platform;
   exists?: (candidate: string) => boolean;
+  extensionPath?: string;
+}
+
+/** Stable, scan-friendly status text for both planes and passive sensors. */
+export function healthSummary(
+  memory: string,
+  intent: string,
+  terminal: string,
+  git: string
+): string {
+  return `${memory} · ${intent} · ${terminal} · ${git}`;
 }
 
 /**
@@ -116,9 +127,9 @@ export function resolveServerPath(
 }
 
 /**
- * Prefer a workspace-built binary when the configured path is the bare default
- * name. Generic over the binary (`mindleak-mcp` / `lodestar-mcp`); `exists` and
- * `platform` are injectable so this stays pure and testable.
+ * Prefer the packaged binary, then a workspace build, when the configured path
+ * is the bare default name. Generic over both MCP server binaries; filesystem
+ * inputs are injectable so this stays pure and testable.
  */
 export function resolveBinaryPath(
   configured: string,
@@ -132,6 +143,12 @@ export function resolveBinaryPath(
     return configured;
   }
   const exe = platform === "win32" ? `${binaryName}.exe` : binaryName;
+  if (opts.extensionPath) {
+    const packaged = path.join(opts.extensionPath, "bin", exe);
+    if (exists(packaged)) {
+      return packaged;
+    }
+  }
   for (const profile of ["release", "debug"]) {
     const candidate = path.join(workspace, "target", profile, exe);
     if (exists(candidate)) {

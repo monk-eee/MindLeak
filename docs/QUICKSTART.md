@@ -13,13 +13,23 @@ local: a single SQLite file per plane, no network listener, no cloud.
 
 ---
 
-## 1. Get the binaries
+## 1. Install and register both planes
 
 ### Option A — download a release (fastest)
 
 Grab the archive for your platform from
 [GitHub Releases](https://github.com/monk-eee/MindLeak/releases), verify it
-against the release's `SHA256SUMS`, and extract `mindleak-mcp` and `lodestar-mcp`.
+against the release's `SHA256SUMS` and signed GitHub artifact attestation, then
+extract it. From the workspace you want MindLeak to remember, run:
+
+```text
+node /path/to/extracted/install.mjs
+```
+
+Node.js 20 or newer is required for the installer. It smoke-tests both servers,
+installs them under `.mindleak/bin/<version>/`, merges both registrations into
+`.vscode/mcp.json` without removing unrelated servers/comments, and adds local
+database paths to `.gitignore`. Set a stable identity with `--agent <id>`.
 
 | Archive suffix | Platform |
 |---|---|
@@ -28,8 +38,11 @@ against the release's `SHA256SUMS`, and extract `mindleak-mcp` and `lodestar-mcp
 | `macos-x64` | macOS Intel |
 | `macos-arm64` | macOS Apple Silicon |
 
-On macOS/Linux, mark them executable with your platform's permission tooling.
-Preview builds are checksummed but not code-signed, so the OS may warn.
+Each release also includes a platform-targeted VSIX containing the same two
+servers. Install it with VS Code's **Extensions: Install from VSIX** command for
+the graph, intent board, passive sensors, health status, backup, export, and
+memory reset controls. Preview assets are checksummed and have signed GitHub
+provenance; native binaries are not OS publisher-signed, so the OS may warn.
 
 ### Option B — build from source
 
@@ -44,9 +57,10 @@ The binaries land at `target/release/mindleak-mcp` and
 
 ---
 
-## 2. Register the servers with your agent
+## 2. Register manually (only when not using the installer)
 
-MindLeak is an MCP server, so you point your agent's MCP config at the binary.
+The release installer already performs this step. For source builds or other
+clients, point the agent's MCP config at each binary.
 Use **absolute paths**. Set `MINDLEAK_AGENT` (and `LODESTAR_AGENT`) to a stable
 id per agent/session so attribution and task ownership work.
 
@@ -144,5 +158,7 @@ deterministic path.
   loop, the intent plane, the full config reference).
 - **[DATA-LIFECYCLE.md](DATA-LIFECYCLE.md)** — backup, upgrade/rollback, export,
   reset, retention, and privacy.
+- **[RELEASE-NOTES.md](RELEASE-NOTES.md)** — measured outcomes, supported
+  platform/language matrix, and limitations.
 - **[SPEC.md](SPEC.md)** / **[ARCHITECTURE.md](ARCHITECTURE.md)** — the design.
 - **[../DEVELOPERS.md](../DEVELOPERS.md)** — building, testing, and contributing.

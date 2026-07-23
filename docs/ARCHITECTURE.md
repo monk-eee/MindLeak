@@ -65,6 +65,8 @@ Passive editor, shell-execution, workspace-mutation, and Git commit sensors plus
 a Cytoscape visualizer. It spawns `mindleak-mcp` as a child process and speaks
 the same MCP protocol. Stable shell execution events require VS Code 1.93;
 unsupported shells are visibly degraded rather than inferred from terminal text.
+Platform-targeted VSIX packages contain both native servers under `bin/` and
+report memory, intent, terminal, and Git health independently (ADR-0016).
 
 ## Data model
 

@@ -114,12 +114,16 @@ one archive containing both MCP servers for each supported platform:
 | `macos-x64` | macOS Intel |
 | `macos-arm64` | macOS Apple Silicon |
 
-Verify the downloaded archive against the release's `SHA256SUMS`, extract both
-servers, and configure their absolute paths in your MCP client. On macOS and
-Linux, mark the extracted binaries executable using the platform's file
-permission tooling. Preview binaries are attested and checksummed but not yet
-code-signed, so the operating system may show a publisher warning. Preview
-versions use tags such as `v0.1.0-preview.1`.
+Verify the archive against the release's `SHA256SUMS` and signed GitHub artifact
+attestation, extract it, then run `node /path/to/extracted/install.mjs` from a
+workspace. The dependency-free Node 20+ installer smoke-tests and registers both
+servers without overwriting unrelated MCP entries. Each platform also publishes
+a targeted VSIX with both native servers included. The binaries are not OS
+publisher-signed, so the operating system may show a warning. Preview versions
+use tags such as `v0.1.0-preview.1`.
+
+Measured outcomes, supported language/platform matrices, and limitations:
+[`docs/RELEASE-NOTES.md`](docs/RELEASE-NOTES.md).
 
 ---
 
@@ -239,7 +243,7 @@ crates/
   mindleak-core/   memory plane: db · model · decay · graph · ingest · consolidate
   mindleak-mcp/    stdio JSON-RPC MCP server (16 tools)
   lodestar-core/   intent plane: constitution · tasks (claim/lease) · conformance · knowledge
-  lodestar-mcp/    stdio JSON-RPC MCP server (21 tools)
+  lodestar-mcp/    stdio JSON-RPC MCP server (23 tools)
 editors/
   vscode/          passive sensor + Cytoscape visualizer
 docs/              SPEC · SPEC-INTENT · ARCHITECTURE · CONTRIBUTING

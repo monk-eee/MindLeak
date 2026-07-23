@@ -72,11 +72,14 @@ make coverage
 
 The tag-driven [release workflow](.github/workflows/release.yml) publishes both
 MCP servers for Windows x64, Linux x64, macOS Intel, and macOS Apple Silicon.
-It reruns `make ci`, performs native MCP initialization/tool-list smoke checks,
-attests the staged files, and publishes platform archives plus `SHA256SUMS`.
+Each target gets a one-command installer archive and a VSIX containing both
+native servers. The workflow reruns `make ci`, performs native MCP
+initialization/tool-list smoke checks, packages runtime-only VSIX files,
+attests the ZIP/VSIX assets, and publishes `SHA256SUMS`. CI separately runs a
+live pinned VS Code 1.93.1 Extension Host smoke on Windows.
 
-1. Update `[workspace.package].version` in [`Cargo.toml`](Cargo.toml) and finish
-  the corresponding changelog entry.
+1. Update `[workspace.package].version` in [`Cargo.toml`](Cargo.toml), the VS Code
+  package version, and the corresponding changelog/release notes.
 2. Merge the release commit to `main` and confirm CI is green.
 3. Create and push a matching tag:
 

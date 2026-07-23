@@ -21,6 +21,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0011](0011-passive-terminal-and-git-sensors.md) | Passive terminal and Git evidence sensors | Accepted |
 | [0012](0012-derived-signal-evidence.md) | Derived bounded signal evidence | Accepted |
 | [0013](0013-local-data-lifecycle.md) | Local data backup, export, and reset lifecycle | Accepted |
+| [0016](0016-platform-packaging-and-registration.md) | Platform packaging and workspace registration | Accepted |
 
 ## Writing a new ADR
 

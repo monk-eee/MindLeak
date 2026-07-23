@@ -31,6 +31,7 @@ jobs:
           script: |
             const fs = require("fs");
             const manifest = fs.readFileSync("Cargo.toml", "utf8");
+            const extension = JSON.parse(fs.readFileSync("editors/vscode/package.json", "utf8"));
             const workspace = manifest.match(/\[workspace\.package\]([\s\S]*?)(?:\n\[|$)/);
             const version = workspace?.[1].match(/^\s*version\s*=\s*"([^"]+)"/m)?.[1];
             const tag = process.env.GITHUB_REF_NAME;
@@ -44,6 +45,10 @@ jobs:
             }
             if (tag.slice(1).split("-", 1)[0] !== version) {
               core.setFailed(`release tag '${tag}' does not match workspace version '${version}'`);
+              return;
+            }
+            if (extension.version !== version) {
+              core.setFailed(`extension version '${extension.version}' does not match workspace version '${version}'`);
               return;
             }
             core.setOutput("tag", tag);
@@ -91,21 +96,25 @@ jobs:
             target: x86_64-pc-windows-msvc
             architecture: x64
             asset: windows-x64
+            vscode_target: win32-x64
             extension: .exe
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             architecture: x64
             asset: linux-x64
+            vscode_target: linux-x64
             extension: ""
           - os: macos-14
             target: x86_64-apple-darwin
             architecture: x64
             asset: macos-x64
+            vscode_target: darwin-x64
             extension: ""
           - os: macos-14
             target: aarch64-apple-darwin
             architecture: arm64
             asset: macos-arm64
+            vscode_target: darwin-arm64
             extension: ""
     steps:
       - uses: actions/checkout@v5
@@ -117,6 +126,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.target }}
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - name: Install extension release dependencies
+        run: npm --prefix editors/vscode ci
       - name: Build servers
         run: >-
           cargo build --release --locked --target ${{ matrix.target }}
@@ -204,34 +221,65 @@ jobs:
             const directory = path.join("target", process.env.TARGET, "release");
             const extension = process.env.EXECUTABLE_EXTENSION;
             fs.mkdirSync("dist", { recursive: true });
+            fs.mkdirSync(path.join("editors", "vscode", "bin"), { recursive: true });
             for (const server of ["mindleak-mcp", "lodestar-mcp"]) {
               const source = path.join(directory, `${server}${extension}`);
               const destination = path.join("dist", `${server}${extension}`);
+              const extensionDestination = path.join("editors", "vscode", "bin", `${server}${extension}`);
               fs.copyFileSync(source, destination);
-              if (process.platform !== "win32") fs.chmodSync(destination, 0o755);
+              fs.copyFileSync(source, extensionDestination);
+              if (process.platform !== "win32") {
+                fs.chmodSync(destination, 0o755);
+                fs.chmodSync(extensionDestination, 0o755);
+              }
             }
             fs.copyFileSync("LICENSE", path.join("dist", "LICENSE"));
+            fs.writeFileSync(path.join("dist", "VERSION"), `${process.env.GITHUB_REF_NAME}\n`);
             fs.writeFileSync(
               path.join("dist", "README.txt"),
               [
                 `MindLeak ${process.env.GITHUB_REF_NAME} (${process.env.ASSET})`,
                 "",
                 "This bundle contains mindleak-mcp and lodestar-mcp.",
-                "Configure them as local stdio MCP servers in your client.",
-                "On macOS and Linux, mark both files executable after extraction.",
-                "Preview binaries are not code-signed; your operating system may show a publisher warning.",
+                "From your workspace, run: node /path/to/extracted/install.mjs",
+                "The installer smoke-tests and registers both local stdio MCP servers.",
+                "GitHub provenance attestations and SHA-256 checksums are published with this release.",
+                "The binaries are not OS publisher-signed; your operating system may show a warning.",
                 "",
               ].join("\n"),
             );
+      - name: Bundle installer
+        run: npm --prefix editors/vscode run bundle:installer
+      - name: Package targeted VS Code extension
+        run: >-
+          npm --prefix editors/vscode run package:vsix --
+          --target ${{ matrix.vscode_target }}
+          --out ${{ github.workspace }}/dist/mindleak-${{ needs.metadata.outputs.tag }}-${{ matrix.asset }}.vsix
+      - name: Verify targeted VS Code extension
+        run: >-
+          npm --prefix editors/vscode run verify:vsix --
+          --file ../../dist/mindleak-${{ needs.metadata.outputs.tag }}-${{ matrix.asset }}.vsix
+          --extension ${{ matrix.extension }}
+      - name: Package native installer bundle
+        run: >-
+          npm --prefix editors/vscode run bundle:release --
+          --source ../../dist
+          --out ../../dist/mindleak-${{ needs.metadata.outputs.tag }}-${{ matrix.asset }}.zip
+          --files mindleak-mcp${{ matrix.extension }} lodestar-mcp${{ matrix.extension }}
+          install.mjs VERSION LICENSE README.txt
       - name: Attest release contents
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: dist/*
+          subject-path: |
+            dist/*.zip
+            dist/*.vsix
       - name: Upload platform bundle
         uses: actions/upload-artifact@v7
         with:
           name: mindleak-${{ needs.metadata.outputs.tag }}-${{ matrix.asset }}
-          path: dist/*
+          path: |
+            dist/*.zip
+            dist/*.vsix
           if-no-files-found: error
           retention-days: 7
 
@@ -244,7 +292,13 @@ jobs:
       actions: read
       contents: write
     steps:
-      - name: Download bundles and generate checksums
+      - name: Download release assets
+        uses: actions/download-artifact@v8
+        with:
+          pattern: mindleak-${{ needs.metadata.outputs.tag }}-*
+          path: dist
+          merge-multiple: true
+      - name: Validate assets and generate checksums
         id: assets
         uses: actions/github-script@v7
         env:
@@ -254,34 +308,22 @@ jobs:
             const crypto = require("crypto");
             const fs = require("fs");
             const path = require("path");
-            fs.mkdirSync("dist", { recursive: true });
-            const response = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              run_id: context.runId,
-              per_page: 100,
-            });
-            const prefix = `mindleak-${process.env.RELEASE_TAG}-`;
-            const artifacts = response
-              .filter((artifact) => artifact.name.startsWith(prefix))
-              .sort((left, right) => left.name.localeCompare(right.name));
-            if (artifacts.length !== 4) {
-              core.setFailed(`expected 4 platform bundles, found ${artifacts.length}`);
+            const platforms = ["windows-x64", "linux-x64", "macos-x64", "macos-arm64"];
+            const expected = platforms.flatMap((platform) => [
+              `mindleak-${process.env.RELEASE_TAG}-${platform}.zip`,
+              `mindleak-${process.env.RELEASE_TAG}-${platform}.vsix`,
+            ]).sort();
+            const actual = fs.readdirSync("dist").sort();
+            const missing = expected.filter((name) => !actual.includes(name));
+            const unexpected = actual.filter((name) => !expected.includes(name));
+            if (missing.length || unexpected.length) {
+              core.setFailed(`release asset mismatch; missing=${missing.join(",")}; unexpected=${unexpected.join(",")}`);
               return;
             }
-            const checksums = [];
-            for (const artifact of artifacts) {
-              const archive = await github.rest.actions.downloadArtifact({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                artifact_id: artifact.id,
-                archive_format: "zip",
-              });
-              const bytes = Buffer.from(archive.data);
-              const name = `${artifact.name}.zip`;
-              fs.writeFileSync(path.join("dist", name), bytes);
-              checksums.push(`${crypto.createHash("sha256").update(bytes).digest("hex")}  ${name}`);
-            }
+            const checksums = expected.map((name) => {
+              const bytes = fs.readFileSync(path.join("dist", name));
+              return `${crypto.createHash("sha256").update(bytes).digest("hex")}  ${name}`;
+            });
             fs.writeFileSync(path.join("dist", "SHA256SUMS"), checksums.join("\n") + "\n");
       - name: Create release and upload assets
         uses: actions/github-script@v7
@@ -310,10 +352,10 @@ jobs:
                 prerelease: process.env.PRERELEASE === "true",
                 generate_release_notes: true,
                 body: [
-                  "Each platform archive contains `mindleak-mcp` and `lodestar-mcp`.",
-                  "Verify the archive against `SHA256SUMS` before installation.",
-                  "On macOS and Linux, mark both binaries executable after extraction.",
-                  "Preview binaries are attested and checksummed but are not yet code-signed.",
+                  "Each platform archive contains both MCP servers plus the one-command `install.mjs` workspace registrar.",
+                  "Each targeted VSIX contains the same platform's servers for a self-contained VS Code experience.",
+                  "Verify assets against `SHA256SUMS`; signed GitHub provenance attestations are also available.",
+                  "The binaries are not OS publisher-signed, so your operating system may show a warning.",
                 ].join("\n\n"),
               }));
             }

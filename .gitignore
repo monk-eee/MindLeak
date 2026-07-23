@@ -2,6 +2,7 @@
 /target
 **/*.rs.bk
 /coverage.lcov
+/dist
 
 # MindLeak graph database (regenerable)
 .mindleak/
@@ -17,6 +18,8 @@
 # Node / VS Code extension
 **/node_modules
 editors/vscode/out
+editors/vscode/bin
+editors/vscode/.vscode-test
 editors/vscode/*.vsix
 editors/vscode/media/vendor
 editors/vscode/coverage/

@@ -20,20 +20,25 @@ graph engine.
 - **Live graph** — a Cytoscape sidebar renders the current context subgraph:
   - 🔵 file · 🟠 symbol · 🟢 intent · 🔴 execution
   - edge width ∝ time-decayed effective weight
-- **Controls** — Refresh, Prune decayed edges, Export snapshot JSON.
+- **Controls** — Refresh, Prune decayed edges, Export complete graph JSON, back
+  up both planes, and modal reset of regenerable memory only.
 
 ## Requirements
 
 - VS Code 1.93 or newer.
 
-Build the MCP server first:
+A platform-targeted release VSIX includes both MCP servers and prefers those
+packaged binaries automatically. No Rust toolchain or global `PATH` change is
+required. Source development still auto-detects `target/release` (or `debug`),
+and explicit server path settings take precedence over both.
+
+For source development, build both MCP servers first:
 
 ```bash
 cargo build --release
 ```
 
-The extension auto-detects `target/release/mindleak-mcp` (or `debug`) in the
-workspace. Override with the `mindleak.serverPath` setting.
+Override with `mindleak.serverPath` / `mindleak.lodestarServerPath`.
 
 ## Settings
 
@@ -41,6 +46,8 @@ workspace. Override with the `mindleak.serverPath` setting.
 |---|---|---|
 | `mindleak.serverPath` | `mindleak-mcp` | Path to the `mindleak-mcp` binary. |
 | `mindleak.databasePath` | `` | Graph DB path; empty = `<workspace>/.mindleak/graph.db`. |
+| `mindleak.lodestarServerPath` | `lodestar-mcp` | Path to the Intent Plane server. |
+| `mindleak.lodestarDatabasePath` | `` | Intent DB path; empty = `<workspace>/.lodestar/spec.db`. |
 | `mindleak.autoIngestOnSave` | `true` | Ingest a file's symbols on save. |
 | `mindleak.captureExecutions` | `true` | Capture shell-integrated command metadata and outcomes. |
 | `mindleak.captureTerminalOutput` | `false` | Retain bounded, redacted output with executions. |
