@@ -53,7 +53,8 @@ store so the zero-token decay engine stays uncontaminated. Modules: `model`
 scalar), `decay` (long-horizon revalidation), `store` (`LodestarStore`: the
 constitution, the task ledger with the atomic claim/lease compare-and-swap, the
 goal↔code seam, conformance audit, and learned knowledge), `llm` (optional local
-model), and `lib` (the `Lodestar` facade + conformance and gated consolidation).
+model), and `lib` (the `Lodestar` facade wiring). Facade behavior is grouped
+under `facade/`: `constitution`, `executive`, `conformance`, and `knowledge`.
 
 ### `lodestar-mcp` (binary)
 
