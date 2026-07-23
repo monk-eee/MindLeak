@@ -45,6 +45,25 @@ fn main() -> anyhow::Result<()> {
         Some(a) => tracing::info!(%db_path, agent = %a, "mindleak-mcp ready"),
         None => tracing::info!(%db_path, "mindleak-mcp ready"),
     }
+    // Non-blocking startup health probe for the optional semantic-recall backend
+    // (ADR-0008): a detached thread reports whether recall is reachable, so an
+    // operator sees `enabled`/`disabled` every run instead of a mystery 404 later.
+    // It never delays startup or touches the deterministic hot path; on failure
+    // the embedder's actionable error names the exact remediation (`ollama pull`).
+    std::thread::spawn(|| {
+        let embedder = mindleak_core::Embedder::default();
+        match embedder.embed("startup recall health probe") {
+            Ok(vector) => tracing::info!(
+                model = %embedder.model,
+                dims = vector.len(),
+                "semantic recall: enabled"
+            ),
+            Err(error) => tracing::warn!(
+                %error,
+                "semantic recall: disabled (optional; the rest of MindLeak works without it)"
+            ),
+        }
+    });
     let result = server::run(engine, maintenance.activity());
     maintenance.shutdown();
     result
