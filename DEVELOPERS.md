@@ -253,7 +253,11 @@ and footguns, with impact and status:
 - **Lodestar worktree sharing is path-based, not git-aware.** — The Intent Plane
   DB resolves from `LODESTAR_DB` else `<cwd>/.lodestar/spec.db`; sibling git
   worktrees share one plane only if pointed at the same path. — Low impact. —
-  Git-common-dir auto-resolution is a documented follow-up (SPEC-INTENT §3).
+  **Fixed Jul 2026:** resolution now falls to the git *common* dir's parent
+  (`git rev-parse --git-common-dir`) so every worktree of a repo shares
+  `<repo-root>/.lodestar/spec.db` by default (`LODESTAR_DB` still overrides; cwd
+  fallback outside a git repo). Pure `resolve_db_path_from` is unit-tested for all
+  three cases.
 - **Unit Test MCP 1.3.6 cannot validate this workspace reliably.** — Its Vitest
   discovery finds `src/util.test.ts`, but `run_tests` reports a passing total of
   zero even for that explicit path. On Windows, a backslash Cargo root is

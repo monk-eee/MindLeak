@@ -27,6 +27,13 @@ to [Semantic Versioning](https://semver.org/).
   deterministic zero-token write/query path is untouched.
 
 ### Changed
+- **Lodestar's Intent Plane is shared across git worktrees by default.** With no
+  `LODESTAR_DB` override, `lodestar-mcp` now resolves the DB to the git *common*
+  dir's parent (`git rev-parse --git-common-dir`) — the main repo root — so every
+  worktree of a repo opens the same `<repo-root>/.lodestar/spec.db` and coordinates
+  through one plane (ADR-0018), instead of each worktree silently getting its own
+  `<cwd>/.lodestar/spec.db`. `LODESTAR_DB` still overrides; outside a git repo it
+  falls back to the current directory. The resolver is a pure, unit-tested function.
 - **Conformance completion now consumes one authoritative checked verdict
   (ADR-0025).** `check_conformance` persists and returns
   `{ id, token, verdict, findings }`; `complete_task` requires that exact object,
