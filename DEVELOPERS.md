@@ -263,9 +263,12 @@ and footguns, with impact and status:
   zero even for that explicit path. On Windows, a backslash Cargo root is
   rejected as `INVALID_ROOT_DIR`; normalizing it to forward slashes runs the
   custom command and surfaces failures, but successful runs still report zero
-  tests and no coverage. — High impact on local proof: MCP cannot establish test
-  counts or coverage. — Left open in the external adapter; CI's test jobs and
-  `cargo-llvm-cov`/Vitest coverage artifacts remain authoritative until repaired.
+  tests. Vitest coverage also depends on drive-letter casing: a lowercase `c:`
+  root duplicates every covered source as an uppercase `C:` zero-hit shadow,
+  falsely reporting 38.64% lines; the canonical uppercase root produces the
+  correct unique-file aggregate (89.19% lines / 84.85% branches). — High impact
+  on local proof. — Left open in the external adapter; use a canonical uppercase
+  Windows drive root for coverage, while CI's test counts remain authoritative.
 - **The extension toolchain has one low-severity development advisory.** —
   Vitest resolves `esbuild` 0.27.7, affected by GHSA-g7r4-m6w7-qqqr when its
   development server runs on Windows. `npm audit --omit=dev` is clean and the
