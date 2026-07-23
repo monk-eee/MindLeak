@@ -182,18 +182,26 @@ and footguns, with impact and status:
   model → error) and `recall_returns_empty_not_error_when_the_index_is_unpopulated`
   (reachable model, empty index → empty, not error); observed on
   `task:2c86cc1f51ea`.
-- **The Intent-Plane governance graph accumulates cross-goal code bindings.** —
-  Over a long multi-agent session, repeated `link_goal_to_code` calls leave many
-  lodestar source files bound to several goals at once (e.g.
-  `crates/lodestar-mcp/src/tools/knowledge.rs` ends up governed by both
-  `goal:durable-intent-plane-...` and `goal:local-temporal-context-graph`).
-  `evaluate_conformance` flags any changed node bound to a *non-task* goal as
-  Drift, so a correct commit serving one goal now reports drift against the
-  others, and there is no `unlink_goal_from_code` verb to prune a stale binding. —
-  Medium impact on conformance signal (false drift): the ADR-0022 wiring landed
-  tested + pushed (commit `4267aaa`) but its conformance verdict is `drift`, not
-  `aligned`, purely for this reason. — Left for later: add an unbind / govern-audit
-  verb plus a one-time binding cleanup; observed on `task:85b9114ba31f`.
+- **Cross-goal bindings on shared *source* files still cause false drift — TAGGED
+  FOR LATER.** — Repeated per-task `link_goal_to_code` calls left 10 lodestar /
+  mindleak source files each bound to two active goals (e.g. `model.rs`, `lib.rs`,
+  `store/coordination.rs`, `facade/conformance.rs`,
+  `crates/mindleak-core/src/graph/evidence.rs`), so a commit serving goal A reports
+  drift against goal B. — RESOLVED for documentation: goals govern code, not the
+  shared prose every task touches, so `evaluate_conformance` now ignores `governed`
+  bindings on documentation nodes **at read time** — deleting nothing (commit
+  `8ce8516`, which superseded and removed the rejected auto-delete-on-restart
+  *clobber* `b55f2a0`; an explicit `forbid_change` lock on a doc is still honoured).
+  The one-time clobber had already dropped the 10 documentation bindings (89 → 79)
+  before removal; those were benign pollution and are re-linkable. `unlink_goal_from_code`
+  + `governing_goals` (commit `6b22bca`) provide an explicit, audited prune path. —
+  LEFT FOR LATER (tagged): the *source-file* over-bindings are **not** auto-pruned —
+  unlike a doc, a source file legitimately realises a goal, so guessing which of two
+  bindings to drop would itself clobber. Resolve with either human-in-the-loop
+  `unlink_goal_from_code` triage or a conformance-semantics decision (should a
+  `governed` cross-goal binding be advisory rather than a hard drift? — ADR
+  territory, overlaps ADR-0026). — Medium impact on completion verdicts; worked
+  around by scoping evidence to the task goal's artifacts.
 
 - **The `evidence_for` → Lodestar conformance seam is sound, but convention-
   sensitive.** — The producer and consumer agree on schema version 1, normalized
