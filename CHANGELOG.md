@@ -105,6 +105,12 @@ to [Semantic Versioning](https://semver.org/).
   separators before applying the 48-character cap, so a title whose boundary
   landed on a dash produced a goal id ending in `-`. Truncation now runs before
   trimming, with a regression test.
+- **Duplicate `define_goal` returns a typed error instead of a raw SQLite fault.**
+  Defining the same title and statement a third time collides on the derived
+  `goal:{slug}-{hash(statement)}` id; it previously surfaced an opaque
+  `UNIQUE constraint failed` error. `store::define_goal` now pre-checks the
+  derived id and returns `LodestarError::Invalid`, pointing the author at
+  `supersede_goal`, with a fail-pre/pass-post regression test.
 
 ## [0.1.0-preview.1] - 2026-07-23
 

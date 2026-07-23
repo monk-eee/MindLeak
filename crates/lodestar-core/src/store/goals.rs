@@ -46,6 +46,12 @@ impl LodestarStore {
         } else {
             base
         };
+        if self.goal_exists(&id)? {
+            return Err(LodestarError::Invalid(format!(
+                "a goal with this title and statement already exists ({id}); \
+                 revise intent through supersede_goal instead of redefining it"
+            )));
+        }
         let goal = Goal {
             id,
             slug,

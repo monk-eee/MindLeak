@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use lodestar_core::{
     now_unix, CodeBindingMode, ConformanceEvidence, EvidenceProvenance, GoalKind, Lodestar,
-    SignalPromotion, TaskStatus, Verdict,
+    LodestarError, SignalPromotion, TaskStatus, Verdict,
 };
 
 /// A unique temp DB path per test (file-backed so multiple connections share it).
@@ -26,6 +26,48 @@ fn cleanup(path: &str) {
     let _ = std::fs::remove_file(path);
     let _ = std::fs::remove_file(format!("{path}-wal"));
     let _ = std::fs::remove_file(format!("{path}-shm"));
+}
+
+#[test]
+fn redefining_an_identical_goal_is_a_typed_error_not_a_raw_sqlite_fault() {
+    // Bug: defining the same (title, statement) a third time collides on the
+    // derived `goal:{slug}-{hash(statement)}` id. It previously surfaced an
+    // opaque `UNIQUE constraint failed` SQLite fault; callers must instead get a
+    // typed LodestarError::Invalid they can recognise and act on (e.g. route the
+    // author to supersede_goal). Fails pre-fix (error is Sqlite), passes post-fix.
+    let engine = Lodestar::open_in_memory().unwrap();
+    // The first two defines are accepted: the base id, then the hash-suffixed
+    // sibling the id scheme derives when the base slug is already taken.
+    engine
+        .define_goal(
+            GoalKind::Objective,
+            "Ship auth",
+            "harden the login flow",
+            None,
+        )
+        .unwrap();
+    engine
+        .define_goal(
+            GoalKind::Objective,
+            "Ship auth",
+            "harden the login flow",
+            None,
+        )
+        .unwrap();
+    // The third define collides on the already-derived id.
+    let err = engine
+        .define_goal(
+            GoalKind::Objective,
+            "Ship auth",
+            "harden the login flow",
+            None,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, LodestarError::Invalid(_)),
+        "expected a typed Invalid error, got {err:?}"
+    );
+    assert!(err.to_string().contains("already exists"));
 }
 
 #[test]

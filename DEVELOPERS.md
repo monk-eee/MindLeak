@@ -270,8 +270,10 @@ and footguns, with impact and status:
   third goal sharing a title and statement collides on the derived
   `goal:{slug}-{hash(statement)}` id and fails with an opaque `UNIQUE
   constraint` error instead of a typed `LodestarError::Invalid`. — Low impact
-  (edge case; goals are rarely exact duplicates). — Left open; a pre-check or
-  typed error would improve the message.
+  (edge case; goals are rarely exact duplicates). — **Fixed Jul 2026:**
+  `store::define_goal` pre-checks the derived id and returns a typed
+  `LodestarError::Invalid` pointing the author at `supersede_goal`; regression
+  test `redefining_an_identical_goal_is_a_typed_error_not_a_raw_sqlite_fault`.
 - **A dead defensive guard remains in `record_conformance_and_transition`.** —
   It errors when a predecessor has more than one successor, but
   `task_handoffs.predecessor_id` is the PRIMARY KEY, so the count is always at
