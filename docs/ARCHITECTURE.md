@@ -37,7 +37,7 @@ The engine. Modules:
 | [`embed.rs`](../crates/mindleak-core/src/embed.rs) | Optional semantic-recall embedding index (ADR-0008): local `/v1/embeddings` client, derived `embeddings` table, cosine recall. Off the zero-token write path. |
 | [`net.rs`](../crates/mindleak-core/src/net.rs) | Network resilience for optional HTTP (ADR-0010): timeouts, bounded retry with backoff, per-endpoint circuit breaker. |
 | [`telemetry.rs`](../crates/mindleak-core/src/telemetry.rs) | Observability (ADR-0010): durable `telemetry_events` audit trail, metrics snapshot, stderr-only `tracing` init. |
-| [`lib.rs`](../crates/mindleak-core/src/lib.rs) | `MindLeak` facade: ingestion + the agent-facing queries (traversal · impact · recall) + telemetry. |
+| [`lib.rs`](../crates/mindleak-core/src/lib.rs) | `MindLeak` facade wiring; behavior is grouped under `facade/`: `ingestion`, `query`, `observability`, `lifecycle`, and `consolidation`. |
 
 ### `mindleak-mcp` (binary)
 
