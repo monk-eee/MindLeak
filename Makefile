@@ -1,7 +1,7 @@
 # MindLeak developer commands. On Windows, run the underlying commands directly
 # (see DEVELOPERS.md) if `make` is unavailable.
 
-.PHONY: setup build test coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
+.PHONY: setup build test coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci collision-harness
 
 setup: ## Install pre-commit hooks and extension deps
 	pip install pre-commit
@@ -47,6 +47,9 @@ bench: ## Run graph, sensor, and four-arm context experiments
 agent-bench: ## Run the premium 12-run pinned-agent product decision gate
 	cargo build -p mindleak-mcp -p lodestar-mcp
 	node scripts/evaluate-agent-loop.mjs --repeats=3
+
+collision-harness: ## Prove concurrent-agent worktree safety (ADR-0018)
+	node scripts/collision-harness.mjs
 
 ext-install: ## Install VS Code extension dependencies
 	npm --prefix editors/vscode install

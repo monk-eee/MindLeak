@@ -19,7 +19,9 @@ to [Semantic Versioning](https://semver.org/).
   (pathspec; never `git add -A`), so another agent's staged work is never swept
   into your commit; `scripts/isolated-push.mjs` pushes a commit through the hooks
   from a throwaway worktree so another agent's broken WIP cannot poison your
-  pre-push validation.
+  pre-push validation. A collision harness (`scripts/collision-harness.mjs`,
+  `make collision-harness`) proves the no-clobber, independent-commit, and
+  honest-merge-conflict properties in a throwaway sandbox repo.
 
 ### Added
 - **`abandon_task` retires a task to terminal `abandoned`.** `TaskStatus::Abandoned`
