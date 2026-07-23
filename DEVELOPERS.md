@@ -195,6 +195,19 @@ and footguns, with impact and status:
   `aligned`, purely for this reason. — Left for later: add an unbind / govern-audit
   verb plus a one-time binding cleanup; observed on `task:85b9114ba31f`.
 
+- **The `evidence_for` → Lodestar conformance seam is sound, but convention-
+  sensitive.** — The producer and consumer agree on schema version 1, normalized
+  `agent:<id>` observation provenance, successful-execution subset rules, and
+  inclusive claim bounds. Executions source `modified` / `failed_on`; commit
+  intent nodes source `refactored`, so every changed or failed node names a
+  source accepted by `validate_evidence_shape`. This is not a product bug. The
+  otherwise-unenforced ingestion convention is pinned by
+  `evidence_for_emits_self_consistent_provenance`, which exercises execution,
+  failure, and commit evidence and fails if a future ingester emits an unusable
+  bundle; `evidence_for_normalizes_prefixed_agent_and_includes_window_boundaries`
+  pins agent normalization and inclusive endpoints. — Verified Jul 2026 on
+  `task:40c4e757e601`.
+
 - **The real-agent product gate is narrow.** — Three runs per arm on one
   composite typed-session fixture with Copilot CLI 1.0.63 / Haiku 4.5 cross the
   exploration and success thresholds, but do not establish general performance

@@ -92,3 +92,54 @@ fn evidence_for_emits_self_consistent_provenance() {
         .iter()
         .all(|id| ev.execution_ids.contains(id)));
 }
+
+#[test]
+fn evidence_for_normalizes_prefixed_agent_and_includes_window_boundaries() {
+    let s = store();
+    add_node(&s, "agent:a", NodeType::Agent, "a", NOW);
+    for (event, artifact, created_at) in [
+        ("execution:start", "artifact:start", NOW),
+        ("execution:end", "artifact:end", NOW + HOUR),
+        ("execution:outside", "artifact:outside", NOW + HOUR + 1),
+    ] {
+        add_node(&s, event, NodeType::Execution, "exit=0", created_at);
+        add_node(&s, artifact, NodeType::Artifact, artifact, created_at);
+        s.upsert_edge(&raw_edge(
+            "agent:a",
+            event,
+            RelationType::Observed,
+            1.0,
+            168.0,
+            created_at,
+        ))
+        .unwrap();
+        s.upsert_edge(&raw_edge(
+            event,
+            artifact,
+            RelationType::Modified,
+            1.0,
+            168.0,
+            created_at,
+        ))
+        .unwrap();
+    }
+
+    let evidence = s
+        .evidence_for(Some("task:t"), "agent:a", NOW, NOW + HOUR)
+        .unwrap();
+
+    assert_eq!(evidence.agent_id, "a");
+    assert_eq!(
+        evidence.execution_ids,
+        vec!["execution:start", "execution:end"]
+    );
+    assert_eq!(
+        evidence.changed_node_ids,
+        vec!["artifact:start", "artifact:end"]
+    );
+    assert!(evidence
+        .provenance
+        .iter()
+        .filter(|fact| fact.relation == "observed")
+        .all(|fact| fact.source_id == "agent:a"));
+}
