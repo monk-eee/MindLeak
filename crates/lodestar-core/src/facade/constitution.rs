@@ -43,16 +43,7 @@ impl Lodestar {
                 "forbid_change is valid only for constraints and invariants".to_string(),
             ));
         }
-        // Goals govern *code*, not the shared prose every task touches: a
-        // documentation artifact is never governable (binding one makes unrelated
-        // commits drift against whatever goal owns the changelog). Doc nodes are
-        // silently skipped so a mixed batch still binds its code nodes.
-        let code_nodes: Vec<String> = node_ids
-            .iter()
-            .filter(|node| !is_documentation_node(node))
-            .cloned()
-            .collect();
-        self.store.link_goal_to_code(goal_id, &code_nodes, mode)
+        self.store.link_goal_to_code(goal_id, node_ids, mode)
     }
 
     /// Remove goal↔code bindings (ADR-0009 seam upkeep). The inverse of
@@ -75,25 +66,6 @@ impl Lodestar {
         self.store.active_bindings_for_node(node_id)
     }
 
-    /// Binding-hygiene sweep — safe to run automatically on every server start.
-    /// Removes every goal↔code binding to a documentation artifact: goals govern
-    /// code, so a doc binding is always a mistake that makes unrelated commits
-    /// drift. Idempotent; never touches code bindings. Returns how many were
-    /// pruned. (Prevention lives in `link_goal_to_code`; this heals bindings that
-    /// predate the rule or were created by another client.)
-    pub fn prune_ungovernable_bindings(&self) -> Result<usize> {
-        let docs: Vec<String> = self
-            .store
-            .distinct_bound_nodes()?
-            .into_iter()
-            .filter(|node| is_documentation_node(node))
-            .collect();
-        if docs.is_empty() {
-            return Ok(0);
-        }
-        self.store.delete_bindings_for_nodes(&docs)
-    }
-
     /// Render the active constitution as committed-friendly markdown; optionally
     /// write it to `path`.
     pub fn export_constitution(&self, path: Option<&str>) -> Result<String> {
@@ -111,10 +83,11 @@ impl Lodestar {
 
 /// A goal is realised by *code*, not by the shared prose many goals touch.
 /// Documentation artifacts — markdown, and the root operational/meta files — are
-/// therefore never goal-governed: binding one makes every unrelated task's commit
-/// drift against whatever goal happens to own the changelog. This single rule
-/// backs both link-time prevention and the startup hygiene sweep.
-fn is_documentation_node(node_id: &str) -> bool {
+/// therefore treated as never goal-governed **at conformance read time**: a
+/// documentation node never drives a drift verdict, even when a binding to it
+/// exists. This is derived, never enforced by mutating stored bindings — nothing
+/// is deleted, so it can never clobber a legitimately-recorded binding.
+pub(crate) fn is_documentation_node(node_id: &str) -> bool {
     let path = node_id.strip_prefix("artifact:").unwrap_or(node_id);
     let file = path.rsplit('/').next().unwrap_or(path);
     path.to_ascii_lowercase().ends_with(".md") || matches!(file, "LICENSE" | "CODEOWNERS")
@@ -186,52 +159,6 @@ mod tests {
         ] {
             assert!(!is_documentation_node(code), "{code} should be code");
         }
-    }
-
-    #[test]
-    fn link_skips_docs_and_startup_sweep_heals_existing_doc_bindings() {
-        let e = engine();
-        let g = e
-            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
-            .unwrap();
-
-        // A mixed link binds only the code node; the doc is silently skipped.
-        let linked = e
-            .link_goal_to_code(
-                &g.id,
-                &["artifact:src/app.rs".into(), "artifact:CHANGELOG.md".into()],
-                CodeBindingMode::Governed,
-            )
-            .unwrap();
-        assert_eq!(linked, 1);
-        assert!(e
-            .governing_goals("artifact:CHANGELOG.md")
-            .unwrap()
-            .is_empty());
-        assert_eq!(e.governing_goals("artifact:src/app.rs").unwrap().len(), 1);
-
-        // A doc binding that predates the rule (inserted straight through the
-        // store, bypassing the filter) is healed by the startup sweep, while the
-        // code binding survives.
-        e.store
-            .link_goal_to_code(
-                &g.id,
-                &["artifact:DEVELOPERS.md".into()],
-                CodeBindingMode::Governed,
-            )
-            .unwrap();
-        assert_eq!(
-            e.governing_goals("artifact:DEVELOPERS.md").unwrap().len(),
-            1
-        );
-        assert_eq!(e.prune_ungovernable_bindings().unwrap(), 1);
-        assert!(e
-            .governing_goals("artifact:DEVELOPERS.md")
-            .unwrap()
-            .is_empty());
-        assert_eq!(e.governing_goals("artifact:src/app.rs").unwrap().len(), 1);
-        // Idempotent: a second sweep removes nothing.
-        assert_eq!(e.prune_ungovernable_bindings().unwrap(), 0);
     }
 
     #[test]

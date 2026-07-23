@@ -73,11 +73,6 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "prune_ungovernable_bindings",
-            "description": "Binding-hygiene sweep: remove every goal↔code binding to a documentation artifact (goals govern code, not the shared prose every task touches). Idempotent and safe; also runs automatically on server startup. Returns how many were pruned.",
-            "inputSchema": { "type": "object", "properties": {} }
-        }),
-        json!({
             "name": "export_constitution",
             "description": "Render the active constitution as committed-friendly markdown; optionally write it to a path for review in a PR.",
             "inputSchema": {
@@ -144,12 +139,6 @@ pub(super) fn dispatch(
             ok(&engine
                 .governing_goals(req_str(args, "node_id")?)
                 .map_err(|e| e.to_string())?)
-        })()),
-        "prune_ungovernable_bindings" => Some((|| {
-            let removed = engine
-                .prune_ungovernable_bindings()
-                .map_err(|e| e.to_string())?;
-            ok(&json!({ "removed": removed }))
         })()),
         "export_constitution" => Some((|| {
             let md = engine

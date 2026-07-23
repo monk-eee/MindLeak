@@ -3,6 +3,7 @@ use std::collections::HashSet;
 
 use sha2::{Digest, Sha256};
 
+use super::constitution::is_documentation_node;
 use crate::store::ConformanceAudit;
 use crate::{
     now_unix, CodeBindingMode, ConformanceCheck, ConformanceEvidence, ConformanceResult, Lodestar,
@@ -265,6 +266,13 @@ impl Lodestar {
         let mut touched_task_goal = false;
         let mut wrong_goals = Vec::new();
         for node in &evidence.changed_node_ids {
+            // Goals govern code, not the shared prose every task touches. A
+            // documentation node never drives a drift verdict: an explicit
+            // forbid_change lock is still honoured, but a `governed` binding to a
+            // doc is ignored so an unrelated commit that also touches the
+            // changelog does not drift against whatever goal owns it. Derived at
+            // read time — no stored binding is deleted, so nothing is clobbered.
+            let node_is_doc = is_documentation_node(node);
             for binding in self.store.active_bindings_for_node(node)? {
                 if binding.mode == CodeBindingMode::ForbidChange {
                     findings.push(format!("{} forbids changes to {node}", binding.goal.id));
@@ -272,6 +280,9 @@ impl Lodestar {
                         verdict: Verdict::Violation,
                         findings,
                     });
+                }
+                if node_is_doc {
+                    continue;
                 }
                 match task {
                     Some(task) if binding.goal.id == task.goal_id => touched_task_goal = true,
@@ -752,6 +763,32 @@ mod tests {
         };
         let res = e.check_conformance(&evidence, Some(&t.id)).unwrap();
         assert_eq!(res.verdict, Verdict::NeedsHuman);
+    }
+
+    #[test]
+    fn a_governed_documentation_binding_never_drifts_and_is_never_deleted() {
+        // Goals govern code, not the shared prose every task touches. If a doc
+        // (e.g. the changelog) is bound to a goal, an unrelated commit that also
+        // touches it must NOT drift — the binding is ignored at read time. And,
+        // crucially, nothing is deleted to achieve that: no clobber of the
+        // durable intent plane.
+        let e = engine();
+        let g = e
+            .define_goal(GoalKind::Objective, "Docs", "own the changelog", None)
+            .unwrap();
+        e.link_goal_to_code(
+            &g.id,
+            &["artifact:CHANGELOG.md".into()],
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
+
+        let evidence = test_evidence(None, "agent-a", "artifact:CHANGELOG.md");
+        let res = e.check_conformance(&evidence, None).unwrap();
+        assert_eq!(res.verdict, Verdict::Aligned);
+
+        // The binding is untouched — the fix is derived at read time, not a delete.
+        assert_eq!(e.governing_goals("artifact:CHANGELOG.md").unwrap().len(), 1);
     }
 
     fn test_evidence(
