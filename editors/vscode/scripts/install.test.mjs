@@ -11,6 +11,7 @@ import { parse } from "jsonc-parser";
 import {
   install,
   parseArguments,
+  probeEmbeddingCapability,
   registrations,
   smokeServer,
   updateGitignore,
@@ -126,6 +127,7 @@ describe("install", () => {
       platform: "win32",
       executableExtension: ".exe",
       smoke: async (directory) => smokedDirectories.push(directory),
+      probeEmbedding: async () => ({ available: false, url: "http://x/v1", model: "m", hint: "h" }),
     };
     const options = { workspace, agent: "agent-a", force: false };
 
@@ -159,6 +161,7 @@ describe("install", () => {
       platform: "win32",
       executableExtension: ".exe",
       smoke: async () => undefined,
+      probeEmbedding: async () => ({ available: false, url: "http://x/v1", model: "m", hint: "h" }),
     });
 
     expect(fs.readFileSync(path.join(installed, "mindleak-mcp.exe"), "utf8")).toBe("new-memory");
@@ -180,6 +183,44 @@ describe("install", () => {
       })
     ).rejects.toThrow("missing lodestar-mcp.exe");
     expect(fs.existsSync(path.join(workspace, ".vscode", "mcp.json"))).toBe(false);
+  });
+});
+
+describe("probeEmbeddingCapability", () => {
+  it("reports recall enabled when the embeddings endpoint responds ok", async () => {
+    const calls = [];
+    const result = await probeEmbeddingCapability({
+      fetch: async (url, init) => {
+        calls.push({ url, init });
+        return { ok: true };
+      },
+      embedUrl: "http://host/v1/",
+      embedModel: "nomic-embed-text",
+    });
+    expect(result.available).toBe(true);
+    expect(result.hint).toBeNull();
+    expect(calls[0].url).toBe("http://host/v1/embeddings");
+  });
+
+  it("reports recall disabled with an actionable hint on a non-ok response", async () => {
+    const result = await probeEmbeddingCapability({
+      fetch: async () => ({ ok: false, status: 404 }),
+      embedModel: "nomic-embed-text",
+    });
+    expect(result.available).toBe(false);
+    expect(result.hint).toContain("ollama pull nomic-embed-text");
+    expect(result.hint).toContain("MINDLEAK_EMBED_URL");
+  });
+
+  it("never throws when the endpoint is unreachable", async () => {
+    const result = await probeEmbeddingCapability({
+      fetch: async () => {
+        throw new Error("ECONNREFUSED");
+      },
+      embedModel: "custom-embed",
+    });
+    expect(result.available).toBe(false);
+    expect(result.hint).toContain("ollama pull custom-embed");
   });
 });
 

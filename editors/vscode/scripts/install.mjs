@@ -12,6 +12,46 @@ const SERVERS = [
   { name: "lodestar", binary: "lodestar-mcp", databaseVariable: "LODESTAR_DB" },
 ];
 
+const DEFAULT_EMBED_URL = "http://localhost:11434/v1";
+const DEFAULT_EMBED_MODEL = "nomic-embed-text";
+
+/**
+ * Best-effort check of the optional semantic-recall embedding backend (ADR-0008)
+ * so a new user learns at install time whether recall works — and exactly how to
+ * enable it — instead of hitting a mysterious 404 the first time they call it.
+ * Never throws: recall is optional and this must not fail the install. Injectable
+ * via `runtime.fetch` / `runtime.embedUrl` / `runtime.embedModel` for tests.
+ */
+export async function probeEmbeddingCapability(runtime = {}) {
+  const url = (runtime.embedUrl ?? process.env.MINDLEAK_EMBED_URL ?? DEFAULT_EMBED_URL).replace(
+    /\/+$/,
+    ""
+  );
+  const model = runtime.embedModel ?? process.env.MINDLEAK_EMBED_MODEL ?? DEFAULT_EMBED_MODEL;
+  const hint = `run \`ollama pull ${model}\` (or set MINDLEAK_EMBED_URL / MINDLEAK_EMBED_MODEL to a reachable model). Recall is optional — the rest of MindLeak works without it.`;
+  const doFetch = runtime.fetch ?? globalThis.fetch;
+  if (typeof doFetch !== "function") {
+    return { available: false, url, model, hint };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), runtime.probeTimeoutMs ?? 3000);
+  try {
+    const response = await doFetch(`${url}/embeddings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, input: "ok" }),
+      signal: controller.signal,
+    });
+    return response && response.ok
+      ? { available: true, url, model, hint: null }
+      : { available: false, url, model, hint };
+  } catch {
+    return { available: false, url, model, hint };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function parseArguments(argv, cwd = process.cwd()) {
   const options = { workspace: cwd, agent: "copilot", version: undefined, force: false };
   for (let index = 0; index < argv.length; index += 1) {
@@ -156,6 +196,14 @@ export async function install(
 
   console.log(`Installed MindLeak ${version} in ${installDirectory}`);
   console.log(`Registered mindleak and lodestar in ${configPath}`);
+
+  const probeEmbedding = runtime.probeEmbedding ?? probeEmbeddingCapability;
+  const recall = await probeEmbedding(runtime);
+  if (recall.available) {
+    console.log(`Semantic recall: enabled (${recall.model} at ${recall.url}).`);
+  } else {
+    console.log(`Semantic recall: disabled (optional) — to enable it, ${recall.hint}`);
+  }
 }
 
 async function stageInstallation(
