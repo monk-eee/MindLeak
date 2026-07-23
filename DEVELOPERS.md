@@ -261,3 +261,32 @@ and footguns, with impact and status:
   most one and the branch can never fire. — No functional impact; kept as
   documented defense-in-depth rather than removed, since the PK is the real
   guard. — Noted during the Jul 2026 audit.
+- **A stale running MCP binary can masquerade as a bug.** — Live `prune_graph`
+  reported `nodes_removed: 0` for a decayed-edge orphan even though
+  `graph/signal.rs::prune_with_signal` reaps orphan executions after edge deletion
+  in source (its test passes); the running `mindleak-mcp` predated the fix.
+  Separately, `reopen_task` — wired in facade + MCP per the abandon-verb gap above
+  — is **not exposed by the running `lodestar-mcp`**, so stranded tasks could not
+  be recovered live. — Medium impact: dogfood debugging chases phantom bugs and
+  coordination recovery silently unavailable. — Rebuild and restart both MCP
+  servers after changes; a build/version check on startup would prevent it
+  (observed Jul 2026).
+- **Docs-only (design/ADR) tasks cannot complete via conformance, stranding
+  successors.** — A design task produces a docs commit; `complete_task` runs
+  ADR-0009 code conformance, which returns `needs_human` ("evidence does not touch
+  code bound to the task goal") and parks the task in `in_review` forever. Any
+  implementation task chained `blocked_by` a docs-ADR predecessor then never opens
+  (`blocked_by` clears only on predecessor `done`), and with no live `reopen_task`
+  it cannot be un-gated — clearing the gate via `block_task(id, None)` leaves it
+  `blocked` with no predecessor and no path back to `open`. — High impact on the
+  design-first workflow. — The intended fix is the accept→decompose bridge
+  ([ADR-0023](docs/adr/0023-design-board-accept-bridge.md)): a human `accept_design`
+  completes design work without code conformance and decomposes it. Until then, do
+  not chain implementation tasks behind docs-ADR design tasks (observed Jul 2026).
+- **`next_task` surfaces non-actionable policy tasks.** — A `constraint` goal was
+  decomposed into four tasks that merely restate the constraint and can never
+  accrue completion evidence; `next_task` (oldest-first) hands one out on every
+  call. — Low-medium impact: agents are handed a zombie. — Do not decompose
+  `constraint`/`invariant` goals (only `objective` goals decompose); the archive
+  verb and the rule are specified in
+  [ADR-0019](docs/adr/0019-task-retention-and-board-hygiene.md) (observed Jul 2026).
