@@ -1,9 +1,29 @@
-# MindLeak 0.1.0 Preview Release Notes
+# MindLeak 0.1.1 Release Notes
 
-MindLeak 0.1.0 is the first productized preview of the local Temporal Context
-Graph Engine and its separate Lodestar Intent Plane. The release includes both
-native MCP servers, targeted VS Code packages, passive evidence capture, local
-data lifecycle controls, and reproducible evaluation artifacts.
+MindLeak 0.1.1 turns the local Temporal Context Graph and Lodestar Intent Plane
+into a usable multi-agent coordination surface. The release includes both native
+MCP servers, targeted VS Code packages, a human Design Board, task allocation and
+lease controls, passive evidence capture, autonomous graph maintenance, and
+versioned constitutional design documentation.
+
+## Highlights
+
+- **Design Board** — repository ADRs synchronize into a separate review queue.
+  Human reviewers can accept or reject proposed designs, promote accepted work
+  under an objective, retry pending promotion, and inspect persisted objective,
+  task, and constraint provenance.
+- **Task allocation** — the Intent Board can allocate open or expired work to a
+  named agent, claim for the configured extension identity, renew or release
+  live leases, and reveal the next claimable task without auto-claiming it.
+- **Reliable coordination** — authoritative checked conformance prevents
+  preflight/completion verdict drift; build identities expose stale binaries;
+  worktree-aware Lodestar storage and scoped isolated hooks support concurrent
+  local agents.
+- **Self-maintaining memory** — idle maintenance prunes decayed graph state, and
+  model-backed embeddings/consolidation use bounded no-retry network behavior.
+- **Better operator experience** — rich Markdown read tools, actionable install
+  guidance, deterministic ADR reconciliation, Design Board/Intent Board/Q&A/
+  pause-resume workflows, and Windows-safe coverage accounting.
 
 ## Install
 
@@ -83,7 +103,7 @@ so operating-system trust prompts may appear.
 | Failure locations | Generic `path:line`; Python `File "path", line N` | Failed execution to artifact evidence |
 | Direct dependencies | Cargo.toml, package.json, go.mod, requirements.txt / PEP 508 | Direct declarations only; fail closed when malformed |
 
-Not supported in 0.1.0: transitive/lockfile dependency resolution; TypeScript
+Not supported in 0.1.1: transitive/lockfile dependency resolution; TypeScript
 path aliases, re-exports, namespace/default cross-file calls, or expression-based
 mixins; precise cross-file structure for languages other than JavaScript and
 TypeScript; shared graph databases across unrelated repositories.

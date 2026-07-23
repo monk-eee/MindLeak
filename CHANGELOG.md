@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-24
+
 ### Added
 - **Two productization decisions make the viability gaps explicit.** ADR-0027
   proposes an extension-led, five-minute first-value workflow over the existing
