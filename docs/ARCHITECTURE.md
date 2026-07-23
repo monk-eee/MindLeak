@@ -51,10 +51,10 @@ The **durable** counterpart to the decay graph (ADR-0004): a separate crate and
 store so the zero-token decay engine stays uncontaminated. Modules: `model`
 (goals/tasks/knowledge), `schema.sql`, `db` (+ a knowledge `effective_weight`
 scalar), `decay` (long-horizon revalidation), `store` (`LodestarStore`: the
-constitution, the task ledger with the atomic claim/lease compare-and-swap, the
-goal↔code seam, conformance audit, and learned knowledge), `llm` (optional local
-model), and `lib` (the `Lodestar` facade wiring). Facade behavior is grouped
-under `facade/`: `constitution`, `executive`, `conformance`, and `knowledge`.
+`goals` and goal↔code seam, `coordination` task/handoff/conformance ledger,
+learned `knowledge`, and `lifecycle` operations), `llm` (optional local model),
+and `lib` (the `Lodestar` facade wiring). Facade behavior is grouped under
+`facade/`: `constitution`, `executive`, `conformance`, and `knowledge`.
 
 ### `lodestar-mcp` (binary)
 
