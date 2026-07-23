@@ -353,6 +353,7 @@ fn impact_neighbor(id: &str, edge: &WeightedEdge) -> Option<String> {
         | RelationType::Modified
         | RelationType::FailedOn
         | RelationType::Refactored
+        | RelationType::Fixed
         | RelationType::RelatesTo => (edge.target_id == id).then(|| edge.source_id.clone()),
         RelationType::Observed => None,
     }

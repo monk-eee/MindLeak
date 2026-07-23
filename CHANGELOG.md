@@ -7,6 +7,12 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Inspect a task's conformance evidence from the Intent Board.** Done and
+  in-review tasks gain an "Inspect Task Evidence" action that opens the recorded
+  evidence — verdict, findings, summary, and the changed/failed node and
+  execution/commit ids — as a readable markdown view, resolved read-only from the
+  existing `conformance_history` audit (no recomputation, no state change). The
+  MindLeak activity-bar icon is now the brain mascot.
 - **`conformance_history` resolves a task's durable evidence link.** Completing a
   task records its evidence bundle, verdict, and findings in the append-only
   conformance audit; the new facade method and MCP tool return that chain (each
@@ -25,6 +31,15 @@ to [Semantic Versioning](https://semver.org/).
   with no predecessor previously had no path back to a claimable state. The new
   facade method and MCP tool return such a task to `open`, while refusing to
   bypass a handoff dependency, disturb an active claim, or revive terminal work.
+
+### Changed
+- **Consolidation classifies edge relations instead of always `refactored`.** The
+  sleep-phase consolidation prompt now constrains the local model to a closed
+  relation vocabulary — `fixed`, `relates_to`, `refactored` — and a new
+  `RelationType::Fixed` variant is added. The deterministic layer is authoritative:
+  any omitted, unknown, or structural relation the model returns is coerced to
+  `refactored`, so fix/bug work and `DECISION:`/`WHY:` rationale links are no
+  longer mislabelled as `refactored`.
 
 ### Fixed
 - **`record_knowledge` now honours a revised half-life.** Re-recording an

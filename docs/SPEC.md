@@ -218,6 +218,13 @@ compatible host — not just Ollama) with a strict JSON `response_format` to:
 - **Signal consolidation** — distil near-expiry proven failure/refactor evidence
   and preserve deterministic provenance links before acknowledging raw details.
 
+Sleep-phase consolidation asks the model to choose one relation per impacted file
+from a closed set — `fixed` (fix/bug work), `relates_to` (a `DECISION:`/`WHY:`
+rationale marker), or `refactored` (the default). The deterministic layer is
+authoritative: any omitted, unknown, or structurally-invalid relation is coerced
+to `refactored`, so the engine — never the model's free text — decides the
+persisted `RelationType`.
+
 Configuration (all optional; sensible local defaults):
 
 | Variable | Default | Meaning |

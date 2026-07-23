@@ -19,12 +19,49 @@ use crate::model::{Edge, Node, NodeType, RelationType};
 const MAX_IMPACTED_FILES: usize = 200;
 const MAX_IMPACTED_PATH_BYTES: usize = 1_024;
 
+/// One file the consolidated intent touched, with the model's chosen relation.
+///
+/// Deserialization is tolerant of the LLM boundary: the model may return either a
+/// bare path string or a `{ "path": ..., "relation": ... }` object. The relation
+/// is advisory — [`consolidation_relation`] validates it deterministically before
+/// any edge is created, so the engine (not the model) decides the final relation.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImpactedFile {
+    pub path: String,
+    pub relation: String,
+}
+
+impl<'de> Deserialize<'de> for ImpactedFile {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Path(String),
+            Object {
+                path: String,
+                #[serde(default)]
+                relation: String,
+            },
+        }
+        Ok(match Raw::deserialize(deserializer)? {
+            Raw::Path(path) => ImpactedFile {
+                path,
+                relation: String::new(),
+            },
+            Raw::Object { path, relation } => ImpactedFile { path, relation },
+        })
+    }
+}
+
 /// Structured summary the model is asked to return.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntentSummary {
     pub intent_label: String,
     #[serde(default)]
-    pub impacted_files: Vec<String>,
+    pub impacted_files: Vec<ImpactedFile>,
     #[serde(default)]
     pub status: String,
 }
@@ -91,7 +128,7 @@ impl Consolidator {
             "messages": [
                 {
                     "role": "system",
-                    "content": "You are a background graph extraction engine. Compress raw execution logs into a single structured intent node. Respond with ONLY a JSON object with keys: intent_label (string), impacted_files (array of strings), status (string)."
+                    "content": "You are a background graph extraction engine. Compress raw execution logs into a single structured intent node. Respond with ONLY a JSON object with keys: intent_label (string), impacted_files (array of objects, each with keys path (string) and relation (string)), status (string). For each impacted file choose exactly one relation from this closed set: \"fixed\", \"refactored\", \"relates_to\". Use \"fixed\" for a file addressed by a fix:/bug line, \"relates_to\" for a file tied to a DECISION:/WHY: rationale marker, and \"refactored\" otherwise. Do not invent relation names outside that set."
                 },
                 { "role": "user", "content": logs.join("\n") }
             ]
@@ -165,7 +202,7 @@ pub fn facts_from_summary(
     let mut edges = Vec::new();
     let mut seen = HashSet::new();
     for file in summary.impacted_files.iter().take(MAX_IMPACTED_FILES) {
-        let path = normalize_path(file);
+        let path = normalize_path(&file.path);
         if path.trim().is_empty()
             || path.len() > MAX_IMPACTED_PATH_BYTES
             || !seen.insert(path.clone())
@@ -182,7 +219,7 @@ pub fn facts_from_summary(
         edges.push(Edge::new(
             &intent_id,
             &artifact_id,
-            RelationType::Refactored,
+            consolidation_relation(&file.relation),
             now,
         ));
     }
@@ -191,6 +228,33 @@ pub fn facts_from_summary(
         nodes,
         edges,
     })
+}
+
+/// Map the model's advisory relation string onto the closed set of relations
+/// valid for a consolidation intent -> artifact edge. The engine — not the LLM —
+/// decides the final [`RelationType`]: anything outside `fixed` / `refactored` /
+/// `relates_to` (omitted, unknown, or a structural/execution relation the model
+/// should never emit here) is coerced to the safe `refactored` default. The match
+/// is exhaustive so a newly added [`RelationType`] variant forces a decision here
+/// rather than being silently swallowed.
+fn consolidation_relation(model_relation: &str) -> RelationType {
+    let Some(parsed) = RelationType::from_tag(model_relation.trim()) else {
+        return RelationType::Refactored;
+    };
+    match parsed {
+        RelationType::Fixed => RelationType::Fixed,
+        RelationType::RelatesTo => RelationType::RelatesTo,
+        RelationType::Refactored => RelationType::Refactored,
+        RelationType::Modified
+        | RelationType::FailedOn
+        | RelationType::Calls
+        | RelationType::Contains
+        | RelationType::Observed
+        | RelationType::Imports
+        | RelationType::Extends
+        | RelationType::Implements
+        | RelationType::DependsOn => RelationType::Refactored,
+    }
 }
 
 /// Extract the first JSON object from model content that may be wrapped in a
@@ -233,9 +297,15 @@ mod tests {
 
     #[test]
     fn intent_summary_parses_full_payload() {
-        let json = r#"{"intent_label":"refactor auth","impacted_files":["src/auth.rs"],"status":"PASSING"}"#;
+        // Tolerant at the LLM boundary: accepts both an object with a relation and
+        // a bare path string (which yields an empty, later-defaulted relation).
+        let json = r#"{"intent_label":"refactor auth","impacted_files":[{"path":"src/auth.rs","relation":"fixed"},"src/util.rs"],"status":"PASSING"}"#;
         let s: IntentSummary = serde_json::from_str(json).unwrap();
-        assert_eq!(s.impacted_files, vec!["src/auth.rs"]);
+        assert_eq!(s.impacted_files.len(), 2);
+        assert_eq!(s.impacted_files[0].path, "src/auth.rs");
+        assert_eq!(s.impacted_files[0].relation, "fixed");
+        assert_eq!(s.impacted_files[1].path, "src/util.rs");
+        assert_eq!(s.impacted_files[1].relation, "");
         assert_eq!(s.status, "PASSING");
     }
 
@@ -243,7 +313,16 @@ mod tests {
     fn summary_facts_normalize_and_deduplicate_impacted_files() {
         let summary = IntentSummary {
             intent_label: "fix auth".to_string(),
-            impacted_files: vec!["src\\auth.rs".to_string(), "src/auth.rs".to_string()],
+            impacted_files: vec![
+                ImpactedFile {
+                    path: "src\\auth.rs".to_string(),
+                    relation: String::new(),
+                },
+                ImpactedFile {
+                    path: "src/auth.rs".to_string(),
+                    relation: String::new(),
+                },
+            ],
             status: "passing".to_string(),
         };
 
@@ -269,7 +348,10 @@ mod tests {
 
         let valid = IntentSummary {
             intent_label: "gist".to_string(),
-            impacted_files: vec!["  ".to_string()],
+            impacted_files: vec![ImpactedFile {
+                path: "  ".to_string(),
+                relation: String::new(),
+            }],
             status: String::new(),
         };
         let facts = facts_from_summary(&valid, 1, 100).unwrap();
@@ -279,10 +361,13 @@ mod tests {
 
     #[test]
     fn summary_facts_bound_model_supplied_files_and_paths() {
-        let mut impacted_files: Vec<String> = (0..250)
-            .map(|index| format!("src/file-{index}.rs"))
+        let mut impacted_files: Vec<ImpactedFile> = (0..250)
+            .map(|index| ImpactedFile {
+                path: format!("src/file-{index}.rs"),
+                relation: String::new(),
+            })
             .collect();
-        impacted_files[0] = "x".repeat(MAX_IMPACTED_PATH_BYTES + 1);
+        impacted_files[0].path = "x".repeat(MAX_IMPACTED_PATH_BYTES + 1);
         let summary = IntentSummary {
             intent_label: "bounded gist".to_string(),
             impacted_files,
@@ -293,6 +378,81 @@ mod tests {
 
         assert_eq!(facts.edges.len(), MAX_IMPACTED_FILES - 1);
         assert_eq!(facts.nodes.len(), MAX_IMPACTED_FILES);
+    }
+
+    #[test]
+    fn fix_relation_maps_to_fixed_not_refactored() {
+        // Regression: fix:/bug work must not be mislabelled as `refactored`.
+        let summary = IntentSummary {
+            intent_label: "fix null token".to_string(),
+            impacted_files: vec![ImpactedFile {
+                path: "src/auth.rs".to_string(),
+                relation: "fixed".to_string(),
+            }],
+            status: "passing".to_string(),
+        };
+        let facts = facts_from_summary(&summary, 1, 100).unwrap();
+        assert_eq!(facts.edges[0].relation, RelationType::Fixed);
+    }
+
+    #[test]
+    fn decision_rationale_maps_to_relates_to_not_refactored() {
+        // Regression: a DECISION:/WHY: rationale link is `relates_to`, not `refactored`.
+        let summary = IntentSummary {
+            intent_label: "record decision".to_string(),
+            impacted_files: vec![ImpactedFile {
+                path: "src/lib.rs".to_string(),
+                relation: "relates_to".to_string(),
+            }],
+            status: String::new(),
+        };
+        let facts = facts_from_summary(&summary, 1, 100).unwrap();
+        assert_eq!(facts.edges[0].relation, RelationType::RelatesTo);
+    }
+
+    #[test]
+    fn out_of_vocabulary_relation_coerces_to_the_default() {
+        // The engine, not the model, decides: an unknown string is not persisted verbatim.
+        let summary = IntentSummary {
+            intent_label: "weird".to_string(),
+            impacted_files: vec![ImpactedFile {
+                path: "src/x.rs".to_string(),
+                relation: "teleported".to_string(),
+            }],
+            status: String::new(),
+        };
+        let facts = facts_from_summary(&summary, 1, 100).unwrap();
+        assert_eq!(facts.edges[0].relation, RelationType::Refactored);
+    }
+
+    #[test]
+    fn structural_relation_is_not_a_valid_consolidation_edge() {
+        // A valid RelationType that is nonetheless wrong for an intent -> artifact
+        // edge (a structural/execution relation) is coerced to the safe default.
+        let summary = IntentSummary {
+            intent_label: "misclassified".to_string(),
+            impacted_files: vec![ImpactedFile {
+                path: "src/y.rs".to_string(),
+                relation: "modified".to_string(),
+            }],
+            status: String::new(),
+        };
+        let facts = facts_from_summary(&summary, 1, 100).unwrap();
+        assert_eq!(facts.edges[0].relation, RelationType::Refactored);
+    }
+
+    #[test]
+    fn omitted_relation_defaults_to_refactored() {
+        let summary = IntentSummary {
+            intent_label: "no relation given".to_string(),
+            impacted_files: vec![ImpactedFile {
+                path: "src/z.rs".to_string(),
+                relation: String::new(),
+            }],
+            status: String::new(),
+        };
+        let facts = facts_from_summary(&summary, 1, 100).unwrap();
+        assert_eq!(facts.edges[0].relation, RelationType::Refactored);
     }
 
     /// Live round-trip against a running OpenAI-compatible server (Ollama +

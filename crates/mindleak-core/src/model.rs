@@ -57,6 +57,8 @@ pub enum RelationType {
     Calls,
     /// Intent refactored a symbol/artifact.
     Refactored,
+    /// Intent fixed a bug in a symbol/artifact (consolidated from fix/bug logs).
+    Fixed,
     /// Weak semantic association.
     RelatesTo,
     /// Artifact contains a symbol.
@@ -80,6 +82,7 @@ impl RelationType {
             RelationType::FailedOn => "failed_on",
             RelationType::Calls => "calls",
             RelationType::Refactored => "refactored",
+            RelationType::Fixed => "fixed",
             RelationType::RelatesTo => "relates_to",
             RelationType::Contains => "contains",
             RelationType::Observed => "observed",
@@ -96,6 +99,7 @@ impl RelationType {
             "failed_on" => Some(RelationType::FailedOn),
             "calls" => Some(RelationType::Calls),
             "refactored" => Some(RelationType::Refactored),
+            "fixed" => Some(RelationType::Fixed),
             "relates_to" => Some(RelationType::RelatesTo),
             "contains" => Some(RelationType::Contains),
             "observed" => Some(RelationType::Observed),
@@ -115,6 +119,7 @@ impl RelationType {
             RelationType::Calls
             | RelationType::Contains
             | RelationType::Refactored
+            | RelationType::Fixed
             | RelationType::Imports
             | RelationType::Extends
             | RelationType::Implements
