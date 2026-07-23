@@ -7,6 +7,11 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Pause and resume a claimed task from the Intent Board (ADR-0020).** The board
+  now shows an inline pause action on a `claimed` task and a resume action on a
+  `paused` one, calling the owner-guarded `pause_task` / `resume_task` tools for the
+  task's owner, so work can be parked and picked up again without releasing the
+  claim. A pure `leaseActionFor` helper guards a possibly-stale board row (vitest).
 - **The graph now self-cleans: the maintenance worker prunes on idle.** Decay hid
   low-weight edges at query time, but the physical rows only left via a manual
   `prune_graph`, so the graph grew unbounded between calls. The idle maintenance

@@ -13,6 +13,7 @@ import {
   formatQaThread,
   formatTaskEvidence,
   healthSummary,
+  leaseActionFor,
   logLines,
   parseToolResult,
   pendingQuestion,
@@ -243,6 +244,19 @@ describe("canRetireTask", () => {
     expect(canRetireTask(task("paused"), 100)).toBe(false);
     expect(canRetireTask(task("done"), 100)).toBe(false);
     expect(canRetireTask(task("abandoned"), 100)).toBe(false);
+  });
+});
+
+describe("leaseActionFor", () => {
+  it("offers pause on a claimed task and resume on a paused one", () => {
+    expect(leaseActionFor({ id: "a", goal_id: "g", title: "a", status: "claimed" })).toBe("pause");
+    expect(leaseActionFor({ id: "b", goal_id: "g", title: "b", status: "paused" })).toBe("resume");
+  });
+
+  it("offers nothing for any other lifecycle state", () => {
+    for (const status of ["open", "needs_input", "in_review", "blocked", "done", "abandoned"]) {
+      expect(leaseActionFor({ id: status, goal_id: "g", title: status, status })).toBeUndefined();
+    }
   });
 });
 

@@ -106,11 +106,21 @@
         "command": "mindleak.task.answer",
         "title": "MindLeak: Answer Task Question",
         "icon": "$(comment)"
-            },
-            {
+      },
+      {
         "command": "mindleak.task.retire",
         "title": "MindLeak: Retire Task",
         "icon": "$(archive)"
+      },
+      {
+        "command": "mindleak.task.pause",
+        "title": "MindLeak: Pause Task",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "mindleak.task.resume",
+        "title": "MindLeak: Resume Task",
+        "icon": "$(debug-continue)"
       }
     ],
     "menus": {
@@ -160,6 +170,16 @@
         {
           "command": "mindleak.task.answer",
           "when": "view == mindleak.boardView && viewItem == needs_input",
+          "group": "inline"
+        },
+        {
+          "command": "mindleak.task.pause",
+          "when": "view == mindleak.boardView && viewItem == claimed",
+          "group": "inline"
+        },
+        {
+          "command": "mindleak.task.resume",
+          "when": "view == mindleak.boardView && viewItem == paused",
           "group": "inline"
         }
       ]

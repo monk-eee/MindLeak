@@ -17,6 +17,7 @@ import {
   formatTaskEvidence,
   GraphCounts,
   healthSummary,
+  leaseActionFor,
   logLines,
   pendingQuestion,
   resolveBinaryPath,
@@ -221,6 +222,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     }),
     vscode.commands.registerCommand("mindleak.task.retire", (item?: BoardItem) => {
       void retireTask(item);
+    }),
+    vscode.commands.registerCommand("mindleak.task.pause", (item?: BoardItem) => {
+      void changeTaskLease("pause", item);
+    }),
+    vscode.commands.registerCommand("mindleak.task.resume", (item?: BoardItem) => {
+      void changeTaskLease("resume", item);
     })
   );
 
@@ -584,5 +591,36 @@ async function retireTask(item?: BoardItem): Promise<void> {
     await refreshBoard();
   } catch (err) {
     vscode.window.showErrorMessage(`MindLeak task retirement failed: ${(err as Error).message}`);
+  }
+}
+
+async function changeTaskLease(action: "pause" | "resume", item?: BoardItem): Promise<void> {
+  if (!lodestar?.isReady()) {
+    vscode.window.showWarningMessage(`Lodestar must be connected to ${action} a task.`);
+    return;
+  }
+  if (!item) {
+    vscode.window.showWarningMessage("Run this command from a task in the Intent Board.");
+    return;
+  }
+  if (leaseActionFor(item.task) !== action) {
+    vscode.window.showWarningMessage(
+      `Task ${item.task.title} cannot be ${action}d (it is ${item.task.status}).`
+    );
+    return;
+  }
+  try {
+    await lodestar.callTool(`${action}_task`, {
+      task_id: item.task.id,
+      ...(item.task.owner ? { agent: item.task.owner } : {}),
+    });
+    vscode.window.showInformationMessage(
+      action === "pause"
+        ? `MindLeak: paused — ${item.task.title} suspended for its owner.`
+        : `MindLeak: resumed — ${item.task.title} is claimed again.`
+    );
+    await refreshBoard();
+  } catch (err) {
+    vscode.window.showErrorMessage(`MindLeak ${action} failed: ${(err as Error).message}`);
   }
 }

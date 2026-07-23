@@ -223,6 +223,23 @@ export function evidenceRequestForTask(
   };
 }
 
+/**
+ * The lease action a board task offers, if any: a `claimed` task can be
+ * `pause`d; a `paused` task can be `resume`d. Any other state offers neither.
+ * Pure so the portal can validate a possibly-stale board row before invoking
+ * the owner-guarded lifecycle tool.
+ */
+export function leaseActionFor(task: LodestarTask): "pause" | "resume" | undefined {
+  switch (task.status) {
+    case "claimed":
+      return "pause";
+    case "paused":
+      return "resume";
+    default:
+      return undefined;
+  }
+}
+
 /** A display row for the board tree. */
 export interface BoardRow {
   id: string;
