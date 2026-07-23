@@ -5,14 +5,14 @@
 
 use rusqlite::{params, Row};
 
-use crate::design::{DesignItem, DesignStatus};
+use crate::design::{DesignItem, DesignPromotion, DesignPromotionStatus, DesignStatus};
 use crate::error::{LodestarError, Result};
 use crate::model::{Goal, GoalKind, Task};
 
 use super::{collect, LodestarStore};
 
 const DESIGN_COLS: &str =
-    "id, adr_path, title, summary, status, proposed_by, decided_by, reason, created_at, updated_at, spawned_goal_id";
+    "id, adr_path, title, summary, status, proposed_by, decided_by, reason, created_at, updated_at, promotion_status, spawned_goal_id";
 
 impl LodestarStore {
     /// Register a new proposed design item. Fails if the ADR is already
@@ -87,58 +87,173 @@ impl LodestarStore {
         reason: Option<&str>,
         now: i64,
     ) -> Result<bool> {
+        // Accepting arms promotion (pending); any other decision leaves it off.
+        let promotion = if target == DesignStatus::Accepted {
+            DesignPromotionStatus::Pending
+        } else {
+            DesignPromotionStatus::NotRequired
+        };
         let changed = self.conn.execute(
-            "UPDATE design_items SET status = ?2, decided_by = ?3, reason = ?4, updated_at = ?5
+            "UPDATE design_items SET status = ?2, decided_by = ?3, reason = ?4, promotion_status = ?5, updated_at = ?6
              WHERE id = ?1 AND status = 'proposed'",
-            params![id, target.as_str(), decided_by, reason, now],
+            params![id, target.as_str(), decided_by, reason, promotion.as_str(), now],
         )?;
         Ok(changed == 1)
     }
 
-    /// Accept a *proposed* design item and spawn its work: mark it accepted
-    /// (guarded CAS), create the objective goal, add one claimable task per draft
-    /// under that goal, and link the goal back to the item. Returns `None` when
-    /// the item is not currently proposed (missing or already decided) so a
-    /// concurrent second decider cannot double-spawn.
-    ///
-    /// The CAS is the atomic gate: it flips `proposed`→`accepted` for exactly one
-    /// caller, so the spawn below runs at most once. The spawn steps are then
-    /// individually atomic (`define_goal` is a single statement; `create_task`
-    /// manages its own immediate transaction) — the reason this is not one outer
-    /// transaction is that `create_task` already opens its own, and SQLite does
-    /// not nest.
-    pub fn accept_and_spawn(
+    /// Idempotent promotion of an accepted design into implementation work
+    /// (ADR-0023). Materialises exactly once via a guarded CAS on
+    /// `promotion_status`; a retry after materialisation returns the already
+    /// linked plan rather than creating duplicates. A failed decomposition
+    /// leaves promotion `pending` and never rolls back the human acceptance.
+    pub fn promote_design_item(
         &self,
         id: &str,
-        decided_by: &str,
-        goal_title: &str,
-        goal_statement: &str,
+        objective_goal_id: &str,
         drafts: &[(String, String)],
+        constraints: &[(GoalKind, String, String)],
         now: i64,
-    ) -> Result<Option<(DesignItem, Goal, Vec<Task>)>> {
-        let won = self.conn.execute(
-            "UPDATE design_items SET status = 'accepted', decided_by = ?2, updated_at = ?3
-             WHERE id = ?1 AND status = 'proposed'",
-            params![id, decided_by, now],
-        )?;
-        if won != 1 {
-            return Ok(None);
-        }
-        // Objectives decompose into claimable work; the spawned goal is an
-        // objective by construction (a design decision becomes work to do).
-        let goal = self.define_goal(GoalKind::Objective, goal_title, goal_statement, None, now)?;
-        let mut tasks = Vec::with_capacity(drafts.len());
-        for (title, acceptance) in drafts {
-            tasks.push(self.create_task(&goal.id, title, acceptance, None, now)?);
-        }
-        self.conn.execute(
-            "UPDATE design_items SET spawned_goal_id = ?2, updated_at = ?3 WHERE id = ?1",
-            params![id, goal.id, now],
-        )?;
+    ) -> Result<DesignPromotion> {
         let item = self
             .get_design_item(id)?
             .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
-        Ok(Some((item, goal, tasks)))
+        if item.status != DesignStatus::Accepted {
+            return Err(LodestarError::Invalid(format!(
+                "design item {id} is {}; only an accepted design can be promoted",
+                item.status.as_str()
+            )));
+        }
+        // Already materialised: return the linked plan (idempotent retry).
+        if item.promotion_status == DesignPromotionStatus::Materialized {
+            return self.resolve_promotion(&item);
+        }
+        let goal = self
+            .get_goal(objective_goal_id)?
+            .ok_or_else(|| LodestarError::NotFound(objective_goal_id.to_string()))?;
+        if goal.kind != GoalKind::Objective {
+            return Err(LodestarError::Invalid(format!(
+                "promotion target {objective_goal_id} is a {}; tasks must serve an objective",
+                goal.kind.as_str()
+            )));
+        }
+        // Guarded CAS: claim materialisation exactly once.
+        let won = self.conn.execute(
+            "UPDATE design_items SET promotion_status = 'materialized', spawned_goal_id = ?2, updated_at = ?3
+             WHERE id = ?1 AND status = 'accepted' AND promotion_status = 'pending'",
+            params![id, objective_goal_id, now],
+        )?;
+        if won != 1 {
+            // A concurrent caller materialised first; return the linked plan.
+            let item = self
+                .get_design_item(id)?
+                .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
+            return self.resolve_promotion(&item);
+        }
+        // Record objective provenance, then the tasks under it.
+        self.link_design_goal(id, &goal.id, "objective", 0)?;
+        let mut tasks = Vec::with_capacity(drafts.len());
+        for (position, (title, acceptance)) in drafts.iter().enumerate() {
+            let task = self.create_task(&goal.id, title, acceptance, None, now)?;
+            self.link_design_task(id, &task.id, position as i64)?;
+            tasks.push(task);
+        }
+        // Register the mandated constraints into the constitution and link them.
+        let mut registered = Vec::with_capacity(constraints.len());
+        for (position, (kind, title, statement)) in constraints.iter().enumerate() {
+            let constraint = self.define_goal(*kind, title, statement, None, now)?;
+            self.link_design_goal(id, &constraint.id, kind.as_str(), (position as i64) + 1)?;
+            registered.push(constraint);
+        }
+        let item = self
+            .get_design_item(id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
+        Ok(DesignPromotion {
+            item,
+            goal,
+            tasks,
+            constraints: registered,
+        })
+    }
+
+    /// Reconstruct a materialised promotion from its durable provenance links so
+    /// a retry returns the same plan without re-running planning.
+    fn resolve_promotion(&self, item: &DesignItem) -> Result<DesignPromotion> {
+        let goal_id = item.spawned_goal_id.clone().ok_or_else(|| {
+            LodestarError::Invalid(format!(
+                "design item {} is materialised but has no objective goal",
+                item.id
+            ))
+        })?;
+        let goal = self
+            .get_goal(&goal_id)?
+            .ok_or_else(|| LodestarError::NotFound(goal_id.clone()))?;
+        let tasks = self.linked_tasks(&item.id)?;
+        let constraints = self.linked_constraint_goals(&item.id)?;
+        Ok(DesignPromotion {
+            item: item.clone(),
+            goal,
+            tasks,
+            constraints,
+        })
+    }
+
+    fn link_design_goal(
+        &self,
+        design_id: &str,
+        goal_id: &str,
+        role: &str,
+        position: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO design_goal_links (design_id, goal_id, role, position)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![design_id, goal_id, role, position],
+        )?;
+        Ok(())
+    }
+
+    fn link_design_task(&self, design_id: &str, task_id: &str, position: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO design_task_links (design_id, task_id, position)
+             VALUES (?1, ?2, ?3)",
+            params![design_id, task_id, position],
+        )?;
+        Ok(())
+    }
+
+    fn linked_tasks(&self, design_id: &str) -> Result<Vec<Task>> {
+        let ids: Vec<String> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT task_id FROM design_task_links WHERE design_id = ?1 ORDER BY position ASC",
+            )?;
+            let rows = stmt.query_map(params![design_id], |row| row.get::<_, String>(0))?;
+            collect(rows)?
+        };
+        let mut tasks = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(task) = self.get_task(&id)? {
+                tasks.push(task);
+            }
+        }
+        Ok(tasks)
+    }
+
+    fn linked_constraint_goals(&self, design_id: &str) -> Result<Vec<Goal>> {
+        let ids: Vec<String> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT goal_id FROM design_goal_links
+                 WHERE design_id = ?1 AND role <> 'objective' ORDER BY position ASC",
+            )?;
+            let rows = stmt.query_map(params![design_id], |row| row.get::<_, String>(0))?;
+            collect(rows)?
+        };
+        let mut goals = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(goal) = self.get_goal(&id)? {
+                goals.push(goal);
+            }
+        }
+        Ok(goals)
     }
 }
 
@@ -154,6 +269,8 @@ fn row_to_design(row: &Row) -> rusqlite::Result<DesignItem> {
         reason: row.get(7)?,
         created_at: row.get(8)?,
         updated_at: row.get(9)?,
-        spawned_goal_id: row.get(10)?,
+        promotion_status: DesignPromotionStatus::from_tag(&row.get::<_, String>(10)?)
+            .unwrap_or(DesignPromotionStatus::NotRequired),
+        spawned_goal_id: row.get(11)?,
     })
 }

@@ -7,22 +7,26 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **Design items — an accept/reject/decompose bridge for ADRs (ADR-0023, slices 1–2).** An ADR
+- **Design items — an accept→promote→decompose bridge for ADRs (ADR-0023).** An ADR
   can be registered as a first-class *design item* that carries the ADR's review
   lifecycle: while `proposed` it is tainted — it lives on a new **Design Board**
-  and never appears in `next_task` or the executive board. A human `accept_design`
-  is the completion path for design work and, unlike an implementation task, does
-  **not** run ADR-0009 code conformance (there is no code for a design decision to
-  conform to) — resolving the `in_review` dead-end where design/ADR tasks stranded
-  forever. Accepting also runs the **accept→decompose bridge**: it spawns an
-  objective goal from the ADR and decomposes it into claimable implementation
-  tasks (model-assisted with the same deterministic single-task fallback as
-  `decompose_goal`), linked back to the item for provenance, so `accept_design`
-  returns `{ item, goal, tasks }`. `reject_design` is durable and auditable
-  (archive-not-delete). No agent may decide its own design (human-in-the-loop).
-  New tools: `register_design`, `design_board`, `accept_design`, `reject_design`.
-  Registering an ADR's stated constraints into the constitution and the portal
-  Design Board view are the remaining slices.
+  and never appears in `next_task` or the executive board. `accept_design` is the
+  attributed human decision *only* — it does **not** run ADR-0009 code conformance
+  (a design decision has no code to conform to) and does **not** create tasks,
+  resolving the `in_review` dead-end where design/ADR tasks stranded forever; the
+  design becomes `accepted` with promotion state `pending`. The separate,
+  **idempotent** `promote_design(id, objective_goal_id)` then materialises the work
+  in one step: it decomposes the reviewed design into claimable tasks under the
+  chosen objective (model-assisted, deterministic single-task fallback), registers
+  any mandated constraints/invariants into the constitution, and records durable
+  design→goal / design→task provenance links — so a retry returns the same plan
+  instead of duplicating it, and a failed decomposition leaves promotion `pending`
+  without undoing the acceptance. Keeping the optional model call out of the
+  acceptance write means it never serializes unrelated writers. `reject_design` is
+  durable and auditable (archive-not-delete). No agent may decide its own design
+  (human-in-the-loop). New tools: `register_design`, `design_board`, `accept_design`,
+  `promote_design`, `reject_design`. The portal Design Board view and
+  `reconcile_designs` ADR discovery (editors/vscode) are the remaining slice.
 
 ### Fixed
 - **Expired leases can no longer be renewed with a stale evidence window.**

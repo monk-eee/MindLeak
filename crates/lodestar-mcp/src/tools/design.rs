@@ -2,7 +2,7 @@
 //! MCP tools for the design-item bridge (ADR-0023): register an ADR for review,
 //! read the Design Board, and the human accept/reject decision.
 
-use lodestar_core::Lodestar;
+use lodestar_core::{GoalKind, Lodestar};
 use serde_json::{json, Value};
 
 use super::{ok, opt_str, req_str};
@@ -29,7 +29,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "accept_design",
-            "description": "Human acceptance of a design item (ADR-0023): the completion path for design work that does NOT run code conformance, and the accept→decompose bridge — it spawns an objective goal from the ADR and decomposes it into claimable implementation tasks. Returns { item, goal, tasks }. No agent may accept its own design.",
+            "description": "Human acceptance of a design item (ADR-0023): the attributed, guarded human decision only. The design becomes accepted with promotion state 'pending' — it does NOT run code conformance and does NOT create tasks. Materialise the work with promote_design. No agent may accept its own design.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -37,6 +37,31 @@ pub(super) fn definitions() -> Vec<Value> {
                     "human": { "type": "string", "description": "The human reviewer's identity (must differ from the proposing agent)." }
                 },
                 "required": ["id", "human"]
+            }
+        }),
+        json!({
+            "name": "promote_design",
+            "description": "Promote an accepted design into implementation work under an objective goal (ADR-0023): decompose the reviewed design into claimable tasks (model-assisted, deterministic single-task fallback) and register any mandated constraints into the constitution, with durable provenance links. Idempotent — a retry returns the already-materialised { item, goal, tasks, constraints } without creating duplicates.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Accepted design item id." },
+                    "objective_goal_id": { "type": "string", "description": "The objective goal the spawned tasks serve." },
+                    "constraints": {
+                        "type": "array",
+                        "description": "Durable constraints/invariants the ADR mandates, registered into the constitution.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "kind": { "type": "string", "enum": ["constraint", "invariant"] },
+                                "title": { "type": "string" },
+                                "statement": { "type": "string" }
+                            },
+                            "required": ["kind", "title", "statement"]
+                        }
+                    }
+                },
+                "required": ["id", "objective_goal_id"]
             }
         }),
         json!({
@@ -80,6 +105,17 @@ pub(super) fn dispatch(
                 .map_err(|e| e.to_string())?;
             ok(&item)
         })()),
+        "promote_design" => Some((|| {
+            let constraints = parse_constraints(args)?;
+            let promotion = engine
+                .promote_design(
+                    req_str(args, "id")?,
+                    req_str(args, "objective_goal_id")?,
+                    &constraints,
+                )
+                .map_err(|e| e.to_string())?;
+            ok(&promotion)
+        })()),
         "reject_design" => Some((|| {
             let item = engine
                 .reject_design(
@@ -94,15 +130,49 @@ pub(super) fn dispatch(
     }
 }
 
+/// Parse the optional `constraints` array on `promote_design` into
+/// `(kind, title, statement)` triples. Each must be a `constraint`/`invariant`
+/// (an objective is not a constraint), so conformance can enforce it.
+fn parse_constraints(args: &Value) -> Result<Vec<(GoalKind, String, String)>, String> {
+    let Some(entries) = args.get("constraints").and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let kind = entry
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or("each constraint needs a string 'kind'")?;
+        let kind =
+            GoalKind::from_tag(kind).ok_or_else(|| format!("unknown constraint kind: {kind}"))?;
+        if !kind.is_normative() {
+            return Err(
+                "a registered constraint must be a constraint or invariant, not an objective"
+                    .to_string(),
+            );
+        }
+        let title = entry
+            .get("title")
+            .and_then(Value::as_str)
+            .ok_or("each constraint needs a string 'title'")?;
+        let statement = entry
+            .get("statement")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        out.push((kind, title.to_string(), statement.to_string()));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::call;
     use lodestar_core::llm::LlmClient;
-    use lodestar_core::Lodestar;
+    use lodestar_core::{GoalKind, Lodestar};
     use serde_json::{json, Value};
 
     fn engine() -> Lodestar {
-        // Unreachable model so accept_design's decompose takes its deterministic
+        // Unreachable model so promote_design's decompose takes its deterministic
         // single-task fallback — independent of any ambient local model.
         Lodestar::open_in_memory()
             .unwrap()
@@ -115,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn register_board_accept_round_trips_through_the_tool_surface() {
+    fn register_accept_promote_round_trips_through_the_tool_surface() {
         let engine = engine();
         let registered = payload(
             call(
@@ -138,6 +208,7 @@ mod tests {
             payload(call(&engine, &json!({ "name": "design_board", "arguments": {} })).unwrap());
         assert_eq!(board.as_array().unwrap().len(), 1);
 
+        // Accept is decision-only: accepted + pending, no tasks, off the board.
         let accepted = payload(
             call(
                 &engine,
@@ -145,17 +216,32 @@ mod tests {
             )
             .unwrap(),
         );
-        assert_eq!(accepted["item"]["status"], "accepted");
-        // The accept→decompose bridge spawned an objective goal and >= 1 task.
-        assert!(accepted["goal"]["id"]
-            .as_str()
-            .unwrap()
-            .starts_with("goal:"));
-        assert!(!accepted["tasks"].as_array().unwrap().is_empty());
+        assert_eq!(accepted["status"], "accepted");
+        assert_eq!(accepted["promotion_status"], "pending");
+        assert!(payload(
+            call(&engine, &json!({ "name": "design_board", "arguments": {} })).unwrap()
+        )
+        .as_array()
+        .unwrap()
+        .is_empty());
 
-        let board_after =
-            payload(call(&engine, &json!({ "name": "design_board", "arguments": {} })).unwrap());
-        assert!(board_after.as_array().unwrap().is_empty());
+        // Promote materialises tasks under a chosen objective goal.
+        let objective = engine
+            .define_goal(GoalKind::Objective, "Ship the bridge", "wire it", None)
+            .unwrap();
+        let promo = payload(
+            call(
+                &engine,
+                &json!({
+                    "name": "promote_design",
+                    "arguments": { "id": id, "objective_goal_id": objective.id }
+                }),
+            )
+            .unwrap(),
+        );
+        assert_eq!(promo["item"]["promotion_status"], "materialized");
+        assert_eq!(promo["goal"]["id"], objective.id);
+        assert!(!promo["tasks"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -178,5 +264,48 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("own design"));
+    }
+
+    #[test]
+    fn promote_registers_mandated_constraints_through_the_tool() {
+        let engine = engine();
+        let registered = payload(
+            call(
+                &engine,
+                &json!({
+                    "name": "register_design",
+                    "arguments": { "adr_path": "docs/adr/0030-typed.md", "title": "Typed errors" }
+                }),
+            )
+            .unwrap(),
+        );
+        let id = registered["id"].as_str().unwrap().to_string();
+        call(
+            &engine,
+            &json!({ "name": "accept_design", "arguments": { "id": id, "human": "reviewer" } }),
+        )
+        .unwrap();
+        let objective = engine
+            .define_goal(GoalKind::Objective, "Type the errors", "do it", None)
+            .unwrap();
+        let promo = payload(
+            call(
+                &engine,
+                &json!({
+                    "name": "promote_design",
+                    "arguments": {
+                        "id": id,
+                        "objective_goal_id": objective.id,
+                        "constraints": [
+                            { "kind": "constraint", "title": "No unwrap", "statement": "no unwrap in prod" }
+                        ]
+                    }
+                }),
+            )
+            .unwrap(),
+        );
+        let constraints = promo["constraints"].as_array().unwrap();
+        assert_eq!(constraints.len(), 1);
+        assert_eq!(constraints[0]["kind"], "constraint");
     }
 }

@@ -37,9 +37,30 @@ CREATE TABLE IF NOT EXISTS design_items (
     reason       TEXT,                 -- acceptance/rejection rationale
     created_at   INTEGER NOT NULL,
     updated_at   INTEGER NOT NULL,
-    spawned_goal_id TEXT               -- objective goal spawned on accept (ADR-0023)
+    promotion_status TEXT NOT NULL DEFAULT 'not_required',
+    spawned_goal_id TEXT               -- objective selected during promotion
 );
 CREATE INDEX IF NOT EXISTS idx_design_items_status ON design_items(status);
+
+-- Durable provenance from an accepted design to the goals/tasks materialized by
+-- promotion. These links make retries resolvable without re-running planning.
+CREATE TABLE IF NOT EXISTS design_goal_links (
+    design_id TEXT NOT NULL,
+    goal_id   TEXT NOT NULL,
+    role      TEXT NOT NULL,            -- objective | constraint | invariant
+    position  INTEGER NOT NULL,
+    PRIMARY KEY (design_id, goal_id),
+    FOREIGN KEY (design_id) REFERENCES design_items(id) ON DELETE CASCADE,
+    FOREIGN KEY (goal_id) REFERENCES goals(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS design_task_links (
+    design_id TEXT NOT NULL,
+    task_id   TEXT NOT NULL,
+    position  INTEGER NOT NULL,
+    PRIMARY KEY (design_id, task_id),
+    FOREIGN KEY (design_id) REFERENCES design_items(id) ON DELETE CASCADE,
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
 
 -- Tasks: the executive ledger. Live coordination state; not versioned.
 CREATE TABLE IF NOT EXISTS tasks (

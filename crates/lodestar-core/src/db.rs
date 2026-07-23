@@ -55,6 +55,11 @@ fn migrate_locked(conn: &Connection) -> Result<()> {
         ("conformance", "evidence_schema_version", "INTEGER"),
         ("conformance", "evidence", "TEXT"),
         ("design_items", "spawned_goal_id", "TEXT"),
+        (
+            "design_items",
+            "promotion_status",
+            "TEXT NOT NULL DEFAULT 'not_required'",
+        ),
     ] {
         if !column_exists(conn, table, column)? {
             conn.execute_batch(&format!(
@@ -66,6 +71,15 @@ fn migrate_locked(conn: &Connection) -> Result<()> {
         "UPDATE tasks
          SET claim_started_at = updated_at
          WHERE status = 'claimed' AND claim_started_at IS NULL",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE design_items
+         SET promotion_status = CASE
+             WHEN status = 'accepted' AND spawned_goal_id IS NOT NULL THEN 'materialized'
+             WHEN status = 'accepted' THEN 'pending'
+             ELSE 'not_required'
+         END",
         [],
     )?;
     conn.execute(

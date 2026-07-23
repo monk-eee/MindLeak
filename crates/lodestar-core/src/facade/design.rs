@@ -3,8 +3,8 @@
 //! read the Design Board, and the human accept/reject decision that completes
 //! design work without code conformance.
 
-use crate::design::{design_id_from_path, DesignAcceptance, DesignItem, DesignStatus};
-use crate::{now_unix, Lodestar, LodestarError, Result};
+use crate::design::{design_id_from_path, DesignItem, DesignPromotion, DesignStatus};
+use crate::{now_unix, GoalKind, Lodestar, LodestarError, Result};
 
 impl Lodestar {
     /// Register an ADR as a design item under review. It is *proposed* (tainted)
@@ -38,36 +38,55 @@ impl Lodestar {
         self.store.list_design_items(status)
     }
 
-    /// Human acceptance — the completion path for design work. It does **not**
-    /// run ADR-0009 code conformance; a design decision has no code to conform
-    /// to. Per the ADR-0023 bridge it also spawns the implementation: an
-    /// objective goal derived from the ADR, decomposed into claimable tasks
-    /// (model-assisted, deterministic single-task fallback). No agent may accept
-    /// its own design (human-in-the-loop).
-    pub fn accept_design(&self, id: &str, human: &str) -> Result<DesignAcceptance> {
+    /// Human acceptance — the attributed, guarded human decision *only*
+    /// (ADR-0023). The design becomes `accepted` with promotion `pending`; it
+    /// does **not** run ADR-0009 code conformance and does **not** invoke a
+    /// model or create tasks. Materialising the work is the separate, idempotent
+    /// `promote_design` step, so an optional model call never runs inside the
+    /// acceptance write. No agent may accept its own design (human-in-the-loop).
+    pub fn accept_design(&self, id: &str, human: &str) -> Result<DesignItem> {
         let human = human.trim();
-        let item = self.load_for_decision(id, human)?;
-        // The accepted ADR becomes an objective goal; an empty summary still
-        // yields actionable work by pointing at the ADR.
+        self.load_for_decision(id, human)?;
+        let won =
+            self.store
+                .decide_design_item(id, DesignStatus::Accepted, human, None, now_unix())?;
+        if !won {
+            return Err(LodestarError::Invalid(format!(
+                "design item {id} was decided concurrently"
+            )));
+        }
+        self.store
+            .get_design_item(id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))
+    }
+
+    /// Promote an accepted design into implementation work under
+    /// `objective_goal_id` (ADR-0023): decompose the reviewed design into
+    /// claimable tasks (model-assisted, deterministic single-task fallback) and
+    /// register any mandated `constraints` into the constitution, all with
+    /// durable provenance links. **Idempotent** — a retry returns the already
+    /// materialised plan rather than creating duplicates; a failed decomposition
+    /// leaves promotion `pending` and never undoes the acceptance.
+    pub fn promote_design(
+        &self,
+        id: &str,
+        objective_goal_id: &str,
+        constraints: &[(GoalKind, String, String)],
+    ) -> Result<DesignPromotion> {
+        let item = self
+            .store
+            .get_design_item(id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
+        // The reviewed design text is the planner's input; an empty summary
+        // still yields actionable work by pointing at the ADR.
         let statement = if item.summary.trim().is_empty() {
             format!("Implement the design recorded in {}", item.adr_path)
         } else {
             item.summary.clone()
         };
         let drafts = self.decompose_drafts(&item.title, &statement);
-        match self.store.accept_and_spawn(
-            id,
-            human,
-            &item.title,
-            &statement,
-            &drafts,
-            now_unix(),
-        )? {
-            Some((item, goal, tasks)) => Ok(DesignAcceptance { item, goal, tasks }),
-            None => Err(LodestarError::Invalid(format!(
-                "design item {id} was decided concurrently"
-            ))),
-        }
+        self.store
+            .promote_design_item(id, objective_goal_id, &drafts, constraints, now_unix())
     }
 
     /// Human rejection — durable and auditable (archive-not-delete); spawns no
@@ -130,14 +149,14 @@ impl Lodestar {
 #[cfg(test)]
 mod tests {
     use crate::facade::test_support::engine;
-    use crate::{DesignStatus, Lodestar, LodestarError};
+    use crate::{DesignPromotionStatus, DesignStatus, GoalKind, Lodestar, LodestarError};
 
     fn agent_engine(agent: &str) -> Lodestar {
         engine().with_agent(Some(agent.to_string()))
     }
 
     #[test]
-    fn accepting_a_proposed_item_completes_it_and_spawns_implementation_tasks() {
+    fn accept_marks_pending_and_promote_materialises_tasks_idempotently() {
         let e = agent_engine("planner");
         let item = e
             .register_design(
@@ -148,24 +167,54 @@ mod tests {
             .unwrap();
         assert_eq!(item.id, "design:0023-design-board-accept-bridge");
         assert_eq!(item.status, DesignStatus::Proposed);
+        assert_eq!(item.promotion_status, DesignPromotionStatus::NotRequired);
         assert_eq!(item.proposed_by.as_deref(), Some("planner"));
         assert_eq!(e.design_board().unwrap().len(), 1);
 
-        // A human (not the proposing agent) accepts — no code conformance runs.
+        // Accept is the human decision only: no code conformance, no tasks yet,
+        // promotion armed `pending`.
         let accepted = e.accept_design(&item.id, "human-reviewer").unwrap();
-        assert_eq!(accepted.item.status, DesignStatus::Accepted);
-        assert_eq!(accepted.item.decided_by.as_deref(), Some("human-reviewer"));
-        // The bridge spawned an objective goal and >= 1 claimable task linked to it.
-        assert_eq!(
-            accepted.item.spawned_goal_id.as_deref(),
-            Some(accepted.goal.id.as_str())
-        );
-        assert!(!accepted.tasks.is_empty());
-        assert!(accepted.tasks.iter().all(|t| t.goal_id == accepted.goal.id));
-        // The spawned work is actionable: next_task now surfaces it.
-        assert_eq!(e.next_task().unwrap().unwrap().goal_id, accepted.goal.id);
-        // Accepted items leave the board.
+        assert_eq!(accepted.status, DesignStatus::Accepted);
+        assert_eq!(accepted.decided_by.as_deref(), Some("human-reviewer"));
+        assert_eq!(accepted.promotion_status, DesignPromotionStatus::Pending);
+        assert!(e.next_task().unwrap().is_none());
         assert!(e.design_board().unwrap().is_empty());
+
+        // The human selects an objective; promote materialises the work.
+        let objective = e
+            .define_goal(GoalKind::Objective, "Ship the bridge", "wire it", None)
+            .unwrap();
+        let promo = e.promote_design(&item.id, &objective.id, &[]).unwrap();
+        assert_eq!(
+            promo.item.promotion_status,
+            DesignPromotionStatus::Materialized
+        );
+        assert_eq!(promo.goal.id, objective.id);
+        assert!(!promo.tasks.is_empty());
+        assert!(promo.tasks.iter().all(|t| t.goal_id == objective.id));
+        assert_eq!(e.next_task().unwrap().unwrap().goal_id, objective.id);
+
+        // Idempotent: a retry returns the same tasks, creating no duplicates.
+        let again = e.promote_design(&item.id, &objective.id, &[]).unwrap();
+        assert_eq!(
+            again.tasks.iter().map(|t| t.id.clone()).collect::<Vec<_>>(),
+            promo.tasks.iter().map(|t| t.id.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn promote_requires_an_accepted_design_and_an_objective_target() {
+        let e = agent_engine("planner");
+        let item = e.register_design("docs/adr/0031-x.md", "X", "x").unwrap();
+        let objective = e
+            .define_goal(GoalKind::Objective, "Obj", "o", None)
+            .unwrap();
+        // A proposed (not yet accepted) design cannot be promoted.
+        assert!(e.promote_design(&item.id, &objective.id, &[]).is_err());
+        e.accept_design(&item.id, "reviewer").unwrap();
+        // A constraint goal is not a valid promotion target.
+        let constraint = e.define_goal(GoalKind::Constraint, "C", "c", None).unwrap();
+        assert!(e.promote_design(&item.id, &constraint.id, &[]).is_err());
     }
 
     #[test]
@@ -191,6 +240,41 @@ mod tests {
             .reject_design(&item.id, "human", "changed my mind")
             .unwrap_err();
         assert!(matches!(err, LodestarError::Invalid(_)));
+    }
+
+    #[test]
+    fn promote_registers_mandated_constraints_into_the_constitution() {
+        let e = agent_engine("planner");
+        let item = e
+            .register_design(
+                "docs/adr/0030-typed-errors.md",
+                "Typed errors everywhere",
+                "all fallible IO returns a typed error",
+            )
+            .unwrap();
+        e.accept_design(&item.id, "reviewer").unwrap();
+        let objective = e
+            .define_goal(GoalKind::Objective, "Type the errors", "do it", None)
+            .unwrap();
+        let constraints = vec![(
+            GoalKind::Constraint,
+            "No unwrap in prod".to_string(),
+            "no unwrap()/expect() on fallible IO outside tests".to_string(),
+        )];
+        let promo = e
+            .promote_design(&item.id, &objective.id, &constraints)
+            .unwrap();
+        // The mandated constraint was registered as a normative goal...
+        assert_eq!(promo.constraints.len(), 1);
+        assert_eq!(promo.constraints[0].kind, GoalKind::Constraint);
+        // ...and it is now part of the active constitution conformance enforces.
+        assert!(e
+            .get_constitution()
+            .unwrap()
+            .iter()
+            .any(|g| g.title == "No unwrap in prod"));
+        // The objective work was materialised alongside it.
+        assert!(!promo.tasks.is_empty());
     }
 
     #[test]

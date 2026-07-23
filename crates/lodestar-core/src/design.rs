@@ -49,6 +49,37 @@ impl DesignStatus {
     }
 }
 
+/// Whether an accepted design still needs to materialize implementation work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesignPromotionStatus {
+    /// Rejected, proposed, or historical work that should not create tasks.
+    NotRequired,
+    /// Accepted by a human and waiting for an idempotent promotion attempt.
+    Pending,
+    /// Objective/constraint goals and implementation tasks were persisted.
+    Materialized,
+}
+
+impl DesignPromotionStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DesignPromotionStatus::NotRequired => "not_required",
+            DesignPromotionStatus::Pending => "pending",
+            DesignPromotionStatus::Materialized => "materialized",
+        }
+    }
+
+    pub fn from_tag(value: &str) -> Option<Self> {
+        match value {
+            "not_required" => Some(DesignPromotionStatus::NotRequired),
+            "pending" => Some(DesignPromotionStatus::Pending),
+            "materialized" => Some(DesignPromotionStatus::Materialized),
+            _ => None,
+        }
+    }
+}
+
 /// An ADR under review in the Intent Plane.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DesignItem {
@@ -67,18 +98,20 @@ pub struct DesignItem {
     pub reason: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
-    /// The objective goal spawned when this item was accepted (the ADR-0023
-    /// accept→decompose bridge); `None` until accepted.
+    /// Promotion is separate from the human decision so optional planning never
+    /// runs while the acceptance transaction is open.
+    pub promotion_status: DesignPromotionStatus,
+    /// Objective selected when implementation work was materialized.
     pub spawned_goal_id: Option<String>,
 }
 
-/// The outcome of accepting a design item (ADR-0023): the accepted item plus the
-/// objective goal and claimable implementation tasks the bridge spawned from it.
+/// The durable result of promoting an accepted design into implementation work.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DesignAcceptance {
+pub struct DesignPromotion {
     pub item: DesignItem,
     pub goal: Goal,
     pub tasks: Vec<Task>,
+    pub constraints: Vec<Goal>,
 }
 
 /// Derive a stable design-item id from an ADR path: the file stem, prefixed
@@ -128,5 +161,20 @@ mod tests {
             assert_eq!(DesignStatus::from_tag(s.as_str()), Some(s));
         }
         assert_eq!(DesignStatus::from_tag("bogus"), None);
+    }
+
+    #[test]
+    fn promotion_status_tags_round_trip() {
+        for status in [
+            DesignPromotionStatus::NotRequired,
+            DesignPromotionStatus::Pending,
+            DesignPromotionStatus::Materialized,
+        ] {
+            assert_eq!(
+                DesignPromotionStatus::from_tag(status.as_str()),
+                Some(status)
+            );
+        }
+        assert_eq!(DesignPromotionStatus::from_tag("bogus"), None);
     }
 }
