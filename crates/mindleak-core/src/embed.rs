@@ -35,7 +35,9 @@ impl Default for Embedder {
 
 impl Embedder {
     /// Embed `text` into a dense vector. Errors cleanly when no model is
-    /// reachable — the feature is optional and never on the hot path.
+    /// reachable — the feature is optional and never on the hot path. The error
+    /// is *actionable*: it names the model, the URL, and the exact remediation so
+    /// a missing embedding model can never be a silent 404 again (ADR-0008).
     pub fn embed(&self, text: &str) -> Result<Vec<f32>> {
         let url = format!("{}/embeddings", self.base_url.trim_end_matches('/'));
         let body = json!({ "model": self.model, "input": text });
@@ -44,7 +46,17 @@ impl Embedder {
             &url,
             &self.api_key,
             &body,
-        )?;
+        )
+        .map_err(|error| {
+            MindLeakError::Http(format!(
+                "semantic recall is unavailable: embedding model '{model}' could not be reached \
+                 at {url} ({error}). recall/index are optional (ADR-0008) and require a local \
+                 OpenAI-compatible embeddings server. If you use Ollama, run \
+                 `ollama pull {model}`; otherwise set MINDLEAK_EMBED_MODEL / MINDLEAK_EMBED_URL \
+                 to a reachable model, or ignore this if you are not using semantic recall.",
+                model = self.model,
+            ))
+        })?;
         let embedding = value
             .get("data")
             .and_then(|d| d.get(0))
@@ -241,6 +253,32 @@ mod tests {
         let hits = recall(&conn, &[0.0, 1.0], "m", 5).unwrap();
         assert_eq!(hits.len(), 1);
         assert!((hits[0].1 - 1.0).abs() < 1e-6);
+    }
+
+    /// Regression: a missing/unreachable embedding model must produce an
+    /// *actionable* error (naming the model, `ollama pull`, and the env
+    /// overrides), never a bare mysterious HTTP status. Uses an unreachable URL
+    /// so no live model is required.
+    #[test]
+    fn embed_error_is_actionable_when_model_unreachable() {
+        let embedder = Embedder {
+            base_url: "http://127.0.0.1:1/v1".to_string(),
+            model: "nomic-embed-text".to_string(),
+            api_key: String::new(),
+        };
+        let message = embedder.embed("hello").unwrap_err().to_string();
+        assert!(
+            message.contains("nomic-embed-text"),
+            "error must name the model: {message}"
+        );
+        assert!(
+            message.contains("ollama pull"),
+            "error must name the remediation: {message}"
+        );
+        assert!(
+            message.contains("MINDLEAK_EMBED_MODEL"),
+            "error must name the config override: {message}"
+        );
     }
 
     /// Live round-trip against a running embedding model (e.g.
