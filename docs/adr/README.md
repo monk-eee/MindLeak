@@ -30,6 +30,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0020](0020-task-lifecycle-states.md) | Task lifecycle states — `needs_input` and `paused` | Proposed |
 | [0021](0021-node-lifecycle-and-reaping.md) | Node lifecycle and maintenance reaping semantics | Proposed |
 | [0022](0022-learned-knowledge-loop.md) | Learned-knowledge loop — promotion, revalidation, advisory conformance | Proposed |
+| [0023](0023-design-board-accept-bridge.md) | Design items, the Design Board, and the accept→decompose bridge | Proposed |
 
 ## Writing a new ADR
 
