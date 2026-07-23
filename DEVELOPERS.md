@@ -166,6 +166,19 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **The Intent-Plane governance graph accumulates cross-goal code bindings.** —
+  Over a long multi-agent session, repeated `link_goal_to_code` calls leave many
+  lodestar source files bound to several goals at once (e.g.
+  `crates/lodestar-mcp/src/tools/knowledge.rs` ends up governed by both
+  `goal:durable-intent-plane-...` and `goal:local-temporal-context-graph`).
+  `evaluate_conformance` flags any changed node bound to a *non-task* goal as
+  Drift, so a correct commit serving one goal now reports drift against the
+  others, and there is no `unlink_goal_from_code` verb to prune a stale binding. —
+  Medium impact on conformance signal (false drift): the ADR-0022 wiring landed
+  tested + pushed (commit `4267aaa`) but its conformance verdict is `drift`, not
+  `aligned`, purely for this reason. — Left for later: add an unbind / govern-audit
+  verb plus a one-time binding cleanup; observed on `task:85b9114ba31f`.
+
 - **The real-agent product gate is narrow.** — Three runs per arm on one
   composite typed-session fixture with Copilot CLI 1.0.63 / Haiku 4.5 cross the
   exploration and success thresholds, but do not establish general performance
