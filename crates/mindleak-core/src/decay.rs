@@ -2,12 +2,12 @@
 //! Exponential half-life decay for edge weights.
 //!
 //! Effective weight `W_eff = W_base * 2^(-Δt_hours / half_life)`.
-//! An edge whose effective weight falls below [`PRUNE_THRESHOLD`] is treated
-//! as inactive at query time and is eligible for background purging.
+//! [`PRUNE_THRESHOLD`] is the built-in default; the startup-resolved
+//! `DecayPolicy` owns the active threshold used by graph queries and pruning.
 
 use serde::Serialize;
 
-/// Edges below this effective weight are ignored in queries and pruned.
+/// Built-in active-edge threshold when no project/environment override exists.
 pub const PRUNE_THRESHOLD: f64 = 0.05;
 
 /// Compute the time-decayed effective weight of an edge.
@@ -25,11 +25,6 @@ pub fn effective_weight(base: f64, half_life_hours: f64, updated_at: i64, now: i
         return base;
     }
     base * 2f64.powf(-dt_hours / half_life_hours)
-}
-
-/// True if an edge is still considered active given its effective weight.
-pub fn is_active(effective: f64) -> bool {
-    effective >= PRUNE_THRESHOLD
 }
 
 /// Minimum reinforcements before an edge can earn a longer half-life.
@@ -116,7 +111,6 @@ mod tests {
         let now = 5 * 24 * 3600;
         let w = effective_weight(1.0, 24.0, 0, now);
         assert!(w < PRUNE_THRESHOLD);
-        assert!(!is_active(w));
     }
 
     #[test]

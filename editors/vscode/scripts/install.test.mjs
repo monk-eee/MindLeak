@@ -35,6 +35,7 @@ describe("registrations", () => {
     );
     expect(windows.lodestar.command).toContain("lodestar-mcp.exe");
     expect(windows.mindleak.env.MINDLEAK_AGENT).toBe("copilot");
+    expect(windows.mindleak.env.MINDLEAK_WORKSPACE).toBe("${workspaceFolder}");
     expect(linux.mindleak.command.endsWith("mindleak-mcp")).toBe(true);
     expect(linux.lodestar.env.LODESTAR_AGENT).toBe("agent-a");
   });

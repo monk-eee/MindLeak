@@ -7,7 +7,8 @@ use std::path::Path;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
 
-use crate::decay::{effective_weight, signal_multiplier, SignalEvidence, PRUNE_THRESHOLD};
+use crate::config::DecayPolicy;
+use crate::decay::{effective_weight, signal_multiplier, SignalEvidence};
 use crate::error::{MindLeakError, Result};
 use crate::model::{Edge, Node, NodeType, RelationType};
 
@@ -166,11 +167,24 @@ const EVIDENCE_MAX_PROVENANCE: usize = 1_000;
 /// The persistent graph store.
 pub struct GraphStore {
     pub(crate) conn: Connection,
+    decay_policy: DecayPolicy,
 }
 
 impl GraphStore {
     pub fn new(conn: Connection) -> Self {
-        GraphStore { conn }
+        GraphStore {
+            conn,
+            decay_policy: DecayPolicy::default(),
+        }
+    }
+
+    pub fn with_decay_policy(mut self, decay_policy: DecayPolicy) -> Self {
+        self.decay_policy = decay_policy;
+        self
+    }
+
+    pub fn decay_policy(&self) -> &DecayPolicy {
+        &self.decay_policy
     }
 
     // ---- writes -------------------------------------------------------------
@@ -526,7 +540,9 @@ impl GraphStore {
                 continue;
             }
             let edge = self.weighted_edge(&raw, now)?;
-            if edge.signal_multiplier > 1.0 && edge.effective < PRUNE_THRESHOLD * 2.0 {
+            if edge.signal_multiplier > 1.0
+                && edge.effective < self.decay_policy.prune_threshold() * 2.0
+            {
                 candidates.push(SignalCandidate {
                     source_id: edge.source_id,
                     target_id: edge.target_id,
@@ -591,14 +607,17 @@ impl GraphStore {
     fn weighted_edge(&self, raw: &RawEdge, now: i64) -> Result<WeightedEdge> {
         let evidence = self.signal_evidence_for(raw, now)?;
         let multiplier = signal_multiplier(evidence);
-        let adjusted_half_life = raw.half_life_hours * multiplier;
+        let base_half_life = self
+            .decay_policy
+            .base_half_life(raw.relation, raw.half_life_hours);
+        let adjusted_half_life = base_half_life * multiplier;
         Ok(WeightedEdge {
             source_id: raw.source_id.clone(),
             target_id: raw.target_id.clone(),
             relation: raw.relation,
             base_weight: raw.weight,
             effective: effective_weight(raw.weight, adjusted_half_life, raw.updated_at, now),
-            half_life_hours: raw.half_life_hours,
+            half_life_hours: base_half_life,
             effective_half_life_hours: adjusted_half_life,
             signal_multiplier: multiplier,
             signal_evidence: evidence,
@@ -752,7 +771,7 @@ impl GraphStore {
 
     /// Impact traversal follows dependencies toward affected callers/importers.
     pub fn impact_radius(&self, seeds: &[String], now: i64) -> Result<Subgraph> {
-        self.traverse_where(seeds, Direction::Both, 2, 0.1, now, impact_neighbor)
+        self.traverse_where(seeds, Direction::Both, 2, 0.0, now, impact_neighbor)
     }
 
     fn traverse_where(
@@ -764,6 +783,7 @@ impl GraphStore {
         now: i64,
         neighbor_for: impl Fn(&str, &WeightedEdge) -> Option<String>,
     ) -> Result<Subgraph> {
+        let min_weight = min_weight.max(self.decay_policy.prune_threshold());
         let mut best: HashMap<String, (u32, f64)> = HashMap::new();
         let mut edge_seen: HashSet<(String, String, String)> = HashSet::new();
         let mut edges: Vec<WeightedEdge> = Vec::new();
@@ -848,7 +868,7 @@ impl GraphStore {
                 raw.target_id.clone(),
                 raw.relation.as_str().to_string(),
             );
-            if self.weighted_edge(&raw, now)?.effective < PRUNE_THRESHOLD
+            if self.weighted_edge(&raw, now)?.effective < self.decay_policy.prune_threshold()
                 && !protected.contains(&key)
             {
                 stale.push((raw.source_id, raw.target_id, raw.relation));
@@ -895,7 +915,7 @@ impl GraphStore {
             .query_row("SELECT COUNT(1) FROM nodes", [], |r| r.get(0))?;
         let mut edges = 0_i64;
         for raw in self.raw_edges()? {
-            if self.weighted_edge(&raw, now)?.effective >= PRUNE_THRESHOLD {
+            if self.weighted_edge(&raw, now)?.effective >= self.decay_policy.prune_threshold() {
                 edges += 1;
             }
         }
@@ -920,7 +940,7 @@ impl GraphStore {
         for row in rows {
             let (id, label, last_active) = row?;
             let observations = self
-                .directed_edges(&id, true, PRUNE_THRESHOLD, now)?
+                .directed_edges(&id, true, self.decay_policy.prune_threshold(), now)?
                 .into_iter()
                 .filter(|edge| edge.relation == RelationType::Observed)
                 .count() as i64;
@@ -1097,7 +1117,7 @@ impl GraphStore {
         let mut edges = Vec::new();
         for raw in self.raw_edges()? {
             let we = self.weighted_edge(&raw, now)?;
-            if we.effective >= PRUNE_THRESHOLD
+            if we.effective >= self.decay_policy.prune_threshold()
                 && ids.contains(&we.source_id)
                 && ids.contains(&we.target_id)
             {
@@ -1128,7 +1148,7 @@ impl GraphStore {
         let mut edges = Vec::new();
         for raw in self.raw_edges()? {
             let edge = self.weighted_edge(&raw, now)?;
-            if edge.effective >= PRUNE_THRESHOLD {
+            if edge.effective >= self.decay_policy.prune_threshold() {
                 edges.push(edge);
             }
         }
@@ -1424,8 +1444,12 @@ fn build_fts_query(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     // Generated by AI (UnitTest MCP)
+    use std::collections::BTreeMap;
+
     use super::*;
+    use crate::config::DecayPolicy;
     use crate::db;
+    use crate::decay::PRUNE_THRESHOLD;
     use crate::model::{Edge, Node, NodeType, RelationType};
 
     const NOW: i64 = 1_000_000;
@@ -1433,6 +1457,16 @@ mod tests {
 
     fn store() -> GraphStore {
         GraphStore::new(db::open_in_memory().unwrap())
+    }
+
+    fn policy(half_lives: &[(RelationType, f64)], prune_threshold: f64) -> DecayPolicy {
+        DecayPolicy {
+            half_life_overrides: half_lives
+                .iter()
+                .map(|(relation, value)| (relation.as_str().to_string(), *value))
+                .collect::<BTreeMap<_, _>>(),
+            prune_threshold,
+        }
     }
 
     fn add_node(s: &GraphStore, id: &str, ty: NodeType, label: &str, now: i64) {
@@ -1491,6 +1525,130 @@ mod tests {
             .find(|x| x.target_id == "artifact:b")
             .unwrap();
         assert!((edge.base_weight - 0.55).abs() < 1e-9);
+    }
+
+    #[test]
+    fn decay_policy_retroactively_overrides_the_stored_half_life() {
+        let graph = store();
+        add_node(&graph, "artifact:a", NodeType::Artifact, "a", NOW);
+        add_node(&graph, "artifact:b", NodeType::Artifact, "b", NOW);
+        graph
+            .upsert_edge(&raw_edge(
+                "artifact:a",
+                "artifact:b",
+                RelationType::Modified,
+                1.0,
+                24.0,
+                NOW,
+            ))
+            .unwrap();
+
+        let before = graph
+            .traverse(
+                &["artifact:a".to_string()],
+                Direction::Outgoing,
+                1,
+                0.0,
+                NOW + 24 * HOUR,
+            )
+            .unwrap();
+        assert!((before.edges[0].effective - 0.5).abs() < 1e-9);
+
+        let graph = graph.with_decay_policy(policy(&[(RelationType::Modified, 48.0)], 0.05));
+        let after = graph
+            .traverse(
+                &["artifact:a".to_string()],
+                Direction::Outgoing,
+                1,
+                0.0,
+                NOW + 24 * HOUR,
+            )
+            .unwrap();
+        assert_eq!(after.edges[0].half_life_hours, 48.0);
+        assert!((after.edges[0].effective - 2f64.sqrt() / 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn configured_threshold_controls_all_active_edge_surfaces_and_prune() {
+        let graph = store().with_decay_policy(policy(&[], 0.6));
+        add_node(&graph, "agent:a", NodeType::Agent, "a", NOW);
+        add_node(&graph, "artifact:a", NodeType::Artifact, "a", NOW);
+        add_node(&graph, "artifact:b", NodeType::Artifact, "b", NOW);
+        for (source, target, relation) in [
+            ("artifact:a", "artifact:b", RelationType::Modified),
+            ("agent:a", "artifact:a", RelationType::Observed),
+        ] {
+            graph
+                .upsert_edge(&raw_edge(source, target, relation, 1.0, 1.0, NOW))
+                .unwrap();
+        }
+        let later = NOW + HOUR;
+
+        assert_eq!(graph.counts(later).unwrap(), (3, 0));
+        assert!(graph.snapshot(10, later).unwrap().edges.is_empty());
+        assert!(graph.export_graph(later).unwrap().edges.is_empty());
+        assert!(graph
+            .impact_radius(&["artifact:b".to_string()], later)
+            .unwrap()
+            .edges
+            .is_empty());
+        assert_eq!(graph.list_agents(later).unwrap()[0].observations, 0);
+
+        let outcome = graph.prune_with_signal(later).unwrap();
+        assert_eq!(outcome.edges_removed, 2);
+    }
+
+    #[test]
+    fn caller_minimum_cannot_resurrect_inactive_edges() {
+        let graph = store().with_decay_policy(policy(&[], 0.6));
+        add_node(&graph, "artifact:a", NodeType::Artifact, "a", NOW);
+        add_node(&graph, "artifact:b", NodeType::Artifact, "b", NOW);
+        graph
+            .upsert_edge(&raw_edge(
+                "artifact:a",
+                "artifact:b",
+                RelationType::Imports,
+                0.5,
+                168.0,
+                NOW,
+            ))
+            .unwrap();
+
+        let traversed = graph
+            .traverse(
+                &["artifact:a".to_string()],
+                Direction::Outgoing,
+                1,
+                0.0,
+                NOW,
+            )
+            .unwrap();
+
+        assert!(traversed.edges.is_empty());
+    }
+
+    #[test]
+    fn impact_has_no_threshold_beyond_the_active_policy() {
+        let graph = store().with_decay_policy(policy(&[], 0.05));
+        add_node(&graph, "artifact:source", NodeType::Artifact, "source", NOW);
+        add_node(&graph, "artifact:target", NodeType::Artifact, "target", NOW);
+        graph
+            .upsert_edge(&raw_edge(
+                "artifact:source",
+                "artifact:target",
+                RelationType::Imports,
+                0.08,
+                168.0,
+                NOW,
+            ))
+            .unwrap();
+
+        let impact = graph
+            .impact_radius(&["artifact:target".to_string()], NOW)
+            .unwrap();
+
+        assert_eq!(impact.edges.len(), 1);
+        assert_eq!(impact.edges[0].relation, RelationType::Imports);
     }
 
     #[test]
@@ -1704,6 +1862,22 @@ mod tests {
         assert!(candidates
             .iter()
             .any(|candidate| candidate.relation == RelationType::FailedOn));
+
+        let early = NOW + 24 * HOUR;
+        let s = s.with_decay_policy(policy(&[], 0.5));
+        assert!(s
+            .expiring_signal_candidates(early)
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate.relation == RelationType::FailedOn));
+        let s = s.with_decay_policy(policy(&[], 0.001));
+        assert!(s.expiring_signal_candidates(early).unwrap().is_empty());
+
+        let s = s.with_decay_policy(policy(&[(RelationType::FailedOn, 8_760.0)], 0.05));
+        assert!(s
+            .expiring_signal_candidates(NOW + 20 * 24 * HOUR)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -2133,6 +2307,60 @@ mod tests {
         let restored = GraphStore::new(db::open(path.to_str().unwrap()).unwrap());
         assert!(restored.get_node("artifact:a").unwrap().is_some());
         drop(restored);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn reopened_legacy_edge_uses_the_new_read_time_policy() {
+        let path = std::env::temp_dir().join(format!(
+            "mindleak-policy-reopen-{}-{}.db",
+            std::process::id(),
+            NOW
+        ));
+        let _ = std::fs::remove_file(&path);
+        {
+            let graph = GraphStore::new(db::open(path.to_str().unwrap()).unwrap());
+            add_node(&graph, "artifact:a", NodeType::Artifact, "a", NOW);
+            add_node(&graph, "artifact:b", NodeType::Artifact, "b", NOW);
+            graph
+                .upsert_edge(&raw_edge(
+                    "artifact:a",
+                    "artifact:b",
+                    RelationType::Modified,
+                    1.0,
+                    37.0,
+                    NOW,
+                ))
+                .unwrap();
+        }
+
+        let graph = GraphStore::new(db::open(path.to_str().unwrap()).unwrap());
+        let legacy = graph
+            .traverse(
+                &["artifact:a".to_string()],
+                Direction::Outgoing,
+                1,
+                0.0,
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(legacy.edges[0].half_life_hours, 37.0);
+        drop(graph);
+
+        let graph = GraphStore::new(db::open(path.to_str().unwrap()).unwrap())
+            .with_decay_policy(policy(&[(RelationType::Modified, 48.0)], 0.05));
+        let traversed = graph
+            .traverse(
+                &["artifact:a".to_string()],
+                Direction::Outgoing,
+                1,
+                0.0,
+                NOW,
+            )
+            .unwrap();
+
+        assert_eq!(traversed.edges[0].half_life_hours, 48.0);
+        drop(graph);
         std::fs::remove_file(path).unwrap();
     }
 

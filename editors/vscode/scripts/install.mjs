@@ -51,6 +51,7 @@ export function registrations(version, platform, agent) {
       env: {
         MINDLEAK_DB: "${workspaceFolder}/.mindleak/graph.db",
         MINDLEAK_AGENT: agent,
+        MINDLEAK_WORKSPACE: "${workspaceFolder}",
       },
     },
     lodestar: {

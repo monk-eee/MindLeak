@@ -145,7 +145,10 @@ It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
   "servers": {
     "mindleak": {
       "command": "${workspaceFolder}/target/release/mindleak-mcp",
-      "env": { "MINDLEAK_DB": "${workspaceFolder}/.mindleak/graph.db" }
+      "env": {
+        "MINDLEAK_DB": "${workspaceFolder}/.mindleak/graph.db",
+        "MINDLEAK_WORKSPACE": "${workspaceFolder}"
+      }
     }
   }
 }

@@ -73,7 +73,8 @@ id per agent/session so attribution and task ownership work.
       "command": "${workspaceFolder}/target/release/mindleak-mcp",
       "env": {
         "MINDLEAK_DB": "${workspaceFolder}/.mindleak/graph.db",
-        "MINDLEAK_AGENT": "copilot"
+        "MINDLEAK_AGENT": "copilot",
+        "MINDLEAK_WORKSPACE": "${workspaceFolder}"
       }
     },
     "lodestar": {
@@ -97,7 +98,11 @@ use the `mcpServers` key:
   "mcpServers": {
     "mindleak": {
       "command": "/abs/path/to/mindleak-mcp",
-      "env": { "MINDLEAK_DB": "/abs/path/to/project/.mindleak/graph.db", "MINDLEAK_AGENT": "claude" }
+      "env": {
+        "MINDLEAK_DB": "/abs/path/to/project/.mindleak/graph.db",
+        "MINDLEAK_AGENT": "claude",
+        "MINDLEAK_WORKSPACE": "/abs/path/to/project"
+      }
     },
     "lodestar": {
       "command": "/abs/path/to/lodestar-mcp",

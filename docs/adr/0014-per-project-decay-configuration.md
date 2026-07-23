@@ -1,6 +1,6 @@
 # ADR-0014: Per-project decay configuration
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-23
 - Deciders: MindLeak maintainers
 - Related: [ADR-0002](0002-sqlite-decay-over-vector-llm.md) (decay over vectors),
@@ -53,30 +53,52 @@ Precedence (highest wins):
      `..._REFACTORED_HOURS`, `..._RELATES_TO_HOURS`, `..._OBSERVED_HOURS`,
      `..._EXTENDS_HOURS`, `..._IMPLEMENTS_HOURS`;
    - `MINDLEAK_PRUNE_THRESHOLD`.
-2. **Committable per-project file** — a `[decay]` section in the project's
-   MindLeak config file (align the exact path/format with whatever
-   [ADR-0013](0013-local-data-lifecycle.md) established; otherwise
-   `.mindleak/config.toml`). This lets a team commit its rhythm and share it
-   across agents/worktrees.
+2. **Committable per-project file** — `[decay]` and
+  `[decay.half_life_hours]` sections in `<workspace>/.mindleak.toml`. This path
+  is intentionally outside the ignored `.mindleak/` data directory so a team
+  can commit its rhythm and share it across agents/worktrees. A non-empty
+  `MINDLEAK_CONFIG` selects another path, resolved relative to the workspace.
+  `MINDLEAK_WORKSPACE` explicitly identifies that project root for MCP hosts
+  whose process working directory is not the workspace; otherwise startup uses
+  the process working directory.
 3. **Built-in defaults** — the current constants.
+
+The file schema is explicit and rejects unknown keys so misspellings cannot
+silently select defaults:
+
+```toml
+[decay]
+prune_threshold = 0.05
+
+[decay.half_life_hours]
+modified = 24
+failed_on = 24
+imports = 168
+```
 
 Configuration is read **once at startup** into a resolved decay policy passed to
 the `GraphStore`; it is not re-read per query (effective weight stays a cheap
-pure function). The registered `effective_weight()` SQL function and
-`GraphStore` receive the resolved half-lives rather than reading constants.
+pure function). The `GraphStore` uses the resolved half-life and threshold in
+every active-edge, signal-handoff, count, snapshot, export, and prune decision.
 
 ### Guards (non-negotiable)
 
-- **Decay stays on.** A half-life must be finite and `> 0`; values `<= 0`, `NaN`,
-  or absurd magnitudes are rejected (logged at `warn`) and fall back to the
-  default for that relation. There is no "infinite half-life" escape hatch —
+- **Decay stays on.** A half-life must be finite and `> 0`; individual wrong
+  types, values `<= 0`, `NaN`, or environment parse failures are rejected
+  (logged at `warn`) and the next valid layer wins. Malformed TOML syntax and
+  unknown keys fail startup. There is no "infinite half-life" escape hatch —
   that would be disabling decay, which the invariants forbid.
-- **Bounded range.** Half-lives clamp to a sane window (e.g. 1h .. 1 year) and
-  the prune threshold to `(0.0, 1.0)`. Out-of-range values clamp, not crash.
+- **Bounded range.** Finite positive half-lives clamp to `1h .. 8760h` and a
+  finite positive prune threshold clamps to `0.001 .. 0.999`. Rejected values
+  fall through; out-of-range positive values clamp rather than crashing.
 - **Derived, not stored.** Effective weight remains computed at read time; no
   stored weight is rewritten when config changes. Re-tuning takes effect on the
   next query, retroactively, because weight is a pure function of `base`, the
   resolved half-life, and age.
+- **Stored compatibility.** Existing `edges.half_life_hours` values remain the
+  fallback when a relation has no file/environment override. A configured
+  relation overrides that legacy value at read time; no migration or row rewrite
+  is required.
 
 ## Consequences
 
@@ -93,11 +115,7 @@ pure function). The registered `effective_weight()` SQL function and
 - **Invariants preserved.** Decay remains mandatory and derived; the prune
   threshold remains a single global; signal multipliers still apply on top.
 
-## Open questions
+## Scope boundary
 
-- **Config file location/format** — reuse ADR-0013's mechanism if it introduced
-  one, else `.mindleak/config.toml`. Decide before implementing to avoid two
-  config systems.
-- **Granularity** — per-relation only (this ADR), or eventually per-node-type or
-  per-edge overrides? Start per-relation; resist finer granularity until a real
-  need appears.
+Configuration is per relation only. Per-node-type and per-edge configuration are
+deliberately excluded until measured use demonstrates a need.

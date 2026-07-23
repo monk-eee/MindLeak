@@ -74,7 +74,9 @@ The database files, schemas, and running connections remain valid after reset.
 
 - Raw failure/mutation evidence has a 24-hour default half-life; structural and
   intent-linked code edges use 168 hours; weak association and agent attention
-  use 48 hours. Effective weight is derived at query time.
+  use 48 hours. Teams may commit bounded overrides in `.mindleak.toml` (ADR-0014).
+  Effective weight is derived at query time; changing policy does not rewrite
+  database rows.
 - `prune_graph` removes evidence below the active threshold after surfacing
   proven near-expiry signal for optional consolidation. `prune_knowledge`
   removes unconfirmed Lodestar knowledge below its longer-lived threshold.

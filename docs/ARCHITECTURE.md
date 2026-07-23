@@ -26,6 +26,7 @@ The engine. Modules:
 
 | Module | Responsibility |
 |---|---|
+| [`config.rs`](../crates/mindleak-core/src/config.rs) | Strict, layered startup configuration for bounded per-project decay policy (ADR-0014). |
 | [`model.rs`](../crates/mindleak-core/src/model.rs) | `Node`, `Edge`, `NodeType`, `RelationType`, per-relation half-lives. |
 | [`schema.sql`](../crates/mindleak-core/src/schema.sql) | SQLite tables, indexes, FTS5 virtual table + sync triggers. |
 | [`db.rs`](../crates/mindleak-core/src/db.rs) | Connection setup (WAL, FKs), migrations, and the `effective_weight()` scalar SQL function. |
@@ -86,9 +87,11 @@ W_effective = W_base · 2^(−Δt_hours / (half_life_hours · signal_multiplier)
 ```
 
 Raw execution evidence uses a 24h half-life; human intent 168h; default 48h.
-Edges below `0.05` effective weight are ignored in queries and purged by
-`prune_graph`. Re-ingesting an edge reinforces it (`+0.05`, capped at 1.0) and
-resets its decay clock. Structural edges additionally carry artifact ownership:
+Edges below the resolved threshold (`0.05` by default) are ignored in queries
+and purged by `prune_graph`. Base half-lives and the threshold can be tuned in a
+strict `.mindleak.toml` or by environment (ADR-0014); the immutable policy is
+loaded once and applied at read time. Re-ingesting an edge reinforces it
+(`+0.05`, capped at 1.0) and resets its decay clock. Structural edges additionally carry artifact ownership:
 re-ingesting a file replaces that owner's structural snapshot, retracting facts
 that disappeared (ADR-0007). `boost_entity` changes attention without refreshing
 unrelated incident evidence.

@@ -132,10 +132,12 @@ W_effective = W_base · 2^(−Δt_hours / half_life_hours)
 * `Δt` — hours since the edge was last reinforced (`updated_at`).
 * `half_life` — 24h for raw execution evidence, 168h for durable structure
   (`contains`, `calls`, `imports`, `extends`, `implements`, `depends_on`) and
-  human intent, 48h default (`relates_to`, `observed`).
-* **Prune rule:** edges with `W_effective < 0.05` are ignored at query time and
-  purged during maintenance; unreferenced `execution`, `symbol`, `package`, and
-  unresolved artifact-stub nodes are dropped.
+  human intent, 48h default (`relates_to`, `observed`). ADR-0014 permits bounded
+  per-relation overrides from `.mindleak.toml` and environment variables.
+* **Prune rule:** edges below the resolved threshold (`0.05` by default, with a
+  bounded ADR-0014 project override) are ignored at query time and purged during
+  maintenance; unreferenced `execution`, `symbol`, `package`, and unresolved
+  artifact-stub nodes are dropped.
 
 Schema: [`crates/mindleak-core/src/schema.sql`](../crates/mindleak-core/src/schema.sql).
 
@@ -148,6 +150,13 @@ Schema: [`crates/mindleak-core/src/schema.sql`](../crates/mindleak-core/src/sche
 > surprise, structural centrality, and explicit decisions. Effective weight is
 > never stored. `prune_graph` surfaces near-expiry proven signal with provenance
 > and retains expired candidates until optional `consolidate_signal` succeeds.
+
+> **Project decay policy (ADR-0014).** The server resolves defaults, a strict
+> committable `.mindleak.toml`, and environment overrides once at startup.
+> `GraphStore` applies the resolved base half-life and threshold at read time in
+> traversal, signal handoff, counts, snapshots, exports, and prune. Existing edge
+> rows are not rewritten, so a policy change takes effect retroactively without
+> storing effective weight.
 
 ---
 

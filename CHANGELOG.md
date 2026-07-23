@@ -7,6 +7,11 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Per-project decay policy** (ADR-0014): strict committable
+  `.mindleak.toml`, optional `MINDLEAK_CONFIG`, per-relation environment
+  overrides, and bounded prune-threshold tuning. `GraphStore` applies the
+  startup-resolved policy retroactively at read/prune time without rewriting
+  stored edges or effective weights.
 - **Productized distribution** (ADR-0016): one-command, JSONC-preserving
   two-plane workspace installer; self-contained platform-targeted VSIX packages;
   versioned native bundles for Windows x64, Linux x64, macOS Intel, and macOS

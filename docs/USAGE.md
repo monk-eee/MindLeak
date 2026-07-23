@@ -149,15 +149,40 @@ Full tool list: see the **Intent Plane tools** table in
 
 ## Configuration reference
 
-All configuration is via environment variables. Everything has a sensible local
-default; the servers work with none set.
+Runtime endpoints and identities use environment variables. Decay tuning also
+supports a committable `<workspace>/.mindleak.toml`; environment overrides win
+over file values, and built-in defaults remain when neither is set.
+
+```toml
+[decay]
+prune_threshold = 0.05
+
+[decay.half_life_hours]
+modified = 24
+failed_on = 24
+calls = 168
+contains = 168
+imports = 168
+depends_on = 168
+```
+
+All relation keys are supported: `modified`, `failed_on`, `calls`, `refactored`,
+`relates_to`, `contains`, `observed`, `imports`, `extends`, `implements`, and
+`depends_on`. Half-lives clamp to 1-8760 hours; the threshold clamps to
+0.001-0.999. Non-finite, non-positive, or unparseable overrides are ignored so
+the next valid layer wins. Unknown TOML keys fail startup rather than silently
+selecting a default.
 
 ### `mindleak-mcp`
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MINDLEAK_DB` | `<cwd>/.mindleak/graph.db` | graph database path |
+| `MINDLEAK_WORKSPACE` | process working directory | project root used for default database/config paths |
+| `MINDLEAK_DB` | `<workspace>/.mindleak/graph.db` | graph database path |
 | `MINDLEAK_AGENT` | *(empty = off)* | agent id for attribution (`observed` edges) |
+| `MINDLEAK_CONFIG` | `<workspace>/.mindleak.toml` | explicit config path; relative paths resolve from the workspace |
+| `MINDLEAK_PRUNE_THRESHOLD` | file or `0.05` | active-edge/prune threshold override |
+| `MINDLEAK_HALFLIFE_<RELATION>_HOURS` | file or relation default | base half-life override, e.g. `MINDLEAK_HALFLIFE_FAILED_ON_HOURS` |
 | `MINDLEAK_LLM_URL` | `http://localhost:11434/v1` | OpenAI-compatible consolidation server |
 | `MINDLEAK_MODEL` | `glm4:9b` | consolidation model |
 | `MINDLEAK_LLM_API_KEY` | *(empty)* | bearer token for hosted servers |

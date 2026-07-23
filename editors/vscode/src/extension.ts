@@ -59,7 +59,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   client = new McpClient(
     serverPath,
     workspace,
-    { MINDLEAK_DB: dbPath, MINDLEAK_AGENT: agentId },
+    { MINDLEAK_DB: dbPath, MINDLEAK_AGENT: agentId, MINDLEAK_WORKSPACE: workspace },
     (m) => output.appendLine(m)
   );
 
