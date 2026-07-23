@@ -388,11 +388,25 @@ Newline-delimited JSON-RPC 2.0 over stdio, exactly like `mindleak-mcp`.
     needs_input, paused, in_review, blocked); done/abandoned stay durable but out
     of the operational view used by the VS Code Intent Board.
 
+**Design**
+
+14. `register_design(adr_path, title, summary?)` → one proposed design item.
+15. `reconcile_designs(designs[])` → idempotently import structured ADR path,
+  title, summary, and declared status. Reconciliation is deterministic: it
+  never invokes a model or creates goals/tasks, and never overwrites an
+  existing Design Board decision or promotion state.
+16. `design_board()` → actionable design work: proposed items awaiting a human
+  decision plus accepted items whose promotion is pending or retryable.
+17. `accept_design(id, human)` / `reject_design(id, human, reason)` → attributed
+  human decision; no code conformance and no self-acceptance.
+18. `promote_design(id, objective_goal_id, constraints?)` → idempotently
+  materialize tasks and mandated normative goals with durable provenance.
+
 **Conformance**
 
-14. `check_conformance(evidence, task_id?)` →
+19. `check_conformance(evidence, task_id?)` →
   `{ id, token, verdict, findings[] }`; persists one authoritative audit row.
-15. `conformance_history(task_id)` → the append-only evidence chain for a task:
+20. `conformance_history(task_id)` → the append-only evidence chain for a task:
     each record's stable `id`, the recorded evidence bundle, `verdict`,
     `findings`, and `checked_at` — the durable, resolvable link proving how (and
     whether) a task reached completion.

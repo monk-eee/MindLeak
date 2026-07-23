@@ -34,9 +34,13 @@ to [Semantic Versioning](https://semver.org/).
   without undoing the acceptance. Keeping the optional model call out of the
   acceptance write means it never serializes unrelated writers. `reject_design` is
   durable and auditable (archive-not-delete). No agent may decide its own design
-  (human-in-the-loop). New tools: `register_design`, `design_board`, `accept_design`,
-  `promote_design`, `reject_design`. The portal Design Board view and
-  `reconcile_designs` ADR discovery (editors/vscode) are the remaining slice.
+  (human-in-the-loop). `reconcile_designs` idempotently imports structured
+  Proposed/Accepted/Rejected ADR metadata without a model and without creating
+  goals or tasks; existing human decisions and promotion state always win.
+  `design_board` now returns proposed decisions plus accepted designs awaiting
+  promotion or retry. New tools: `register_design`, `reconcile_designs`,
+  `design_board`, `accept_design`, `promote_design`, `reject_design`. The portal
+  Design Board view and workspace ADR sensor are the remaining slice.
 
 ### Fixed
 - **Intent Board cleanup now handles stale live work, not only completed rows

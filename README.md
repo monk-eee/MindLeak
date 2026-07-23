@@ -237,8 +237,8 @@ coordinate through one plane.
 | `pause_task` / `resume_task` | Owner deliberately parks (`paused`) and resumes work, keeping the claim and evidence window. |
 | `task_qa` | The durable, append-only question/answer thread for a task. |
 | `board` | Who-owns-what snapshot; the VS Code Intent Board defaults to live/actionable work, while `include_terminal=true` returns durable history. |
-| `register_design` / `design_board` | Register an ADR as a design item under review (ADR-0023); list items awaiting a human decision (distinct from the executive board). |
-| `accept_design` / `reject_design` | Human completion path for design work — accept (no code conformance) or durably reject; no agent may decide its own design. |
+| `register_design` / `reconcile_designs` / `design_board` | Register one ADR or idempotently import structured repository ADR metadata; list proposed decisions and accepted designs awaiting promotion, without creating tasks during reconciliation. |
+| `accept_design` / `promote_design` / `reject_design` | Human completion path for design work — accept (no code conformance), idempotently materialize reviewed work under an objective, or durably reject; no agent may decide its own design. |
 | `check_conformance` | Persist and return `{ id, token, verdict, findings }` for exact checked completion. |
 | `conformance_history` | Resolve a task's durable evidence chain — the recorded bundle, verdict, and stable id per check. |
 | `consolidate` / `record_knowledge` | Gated promotion of learned regularities. |
