@@ -66,6 +66,14 @@ intersects a proven regularity attaches an **advisory** finding and may nudge an
 otherwise-`Aligned` verdict to `NeedsHuman`, but can never emit `Violation` (only
 the Constitution hard-fails). The read path stays deterministic — no LLM.
 
+ADR-0026 proposes the next governance layer above this implementation. The
+current `Goal` model remains authoritative today; the target model adds an
+explicit philosophy/preamble, broad principles, constitution versions, clause
+provenance and consequences, typed controls (including ratchets), bounded
+waivers, and a draft-to-active onboarding lifecycle. Common and domain policy
+packs propose locally materialised clauses rather than creating live inherited
+law. See [`SPEC-CONSTITUTION.md`](SPEC-CONSTITUTION.md).
+
 ### `lodestar-mcp` (binary)
 
 A second MCP stdio server exposing the Intent Plane tools for constitution,

@@ -29,6 +29,12 @@ to [Semantic Versioning](https://semver.org/).
   `reconcile_designs` ADR discovery (editors/vscode) are the remaining slice.
 
 ### Fixed
+- **The VS Code Intent Board no longer grows forever with completed history.**
+  It now requests Lodestar's live/actionable view and defensively filters
+  terminal `done` / `abandoned` rows before rendering. The durable task and
+  conformance records are unchanged and remain available through
+  `board(include_terminal=true)`; stale live work can still be deliberately
+  retired with `abandon_task`.
 - **Expired leases can no longer be renewed with a stale evidence window.**
   `renew_lease` now succeeds only while the caller's lease is still live. After
   expiry, the owner must win `claim_task` again, which resets `claim_started_at`
@@ -104,6 +110,14 @@ to [Semantic Versioning](https://semver.org/).
   honest-merge-conflict properties in a throwaway sandbox repo.
 
 ### Added
+- **Constitutional governance now has a holistic adoption design (ADR-0026).**
+  The Constitution is the policy authority; tests, scanners, and ratchets are
+  evidence-producing controls beneath it. The proposed lifecycle handles repos
+  with no constitution through deterministic discovery, an opt-in five-principle
+  Common Core, versioned extension packs, clause-by-clause adopt/tailor/reject
+  review, atomic activation, and explicit expiring waivers. Philosophy is part of
+  the architecture: observed habits may propose policy but never become law
+  without attributed project adoption.
 - **`unlink_goal_from_code` + `governing_goals` keep the ADR-0009 seam honest.**
   `link_goal_to_code` had no inverse, so a goal↔code binding — including one
   mistakenly attached to a shared doc — was permanent. Over a long multi-agent

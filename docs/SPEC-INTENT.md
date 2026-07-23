@@ -18,6 +18,10 @@ See [ADR-0004](adr/0004-intent-plane-spec-brain.md) for the decision and the
 inverted-invariant argument; this document is the design contract.
 Evidence crossing from MindLeak into conformance is governed by
 [ADR-0009](adr/0009-evidence-backed-conformance.md).
+The proposed constitutional authority hierarchy, philosophy, repository
+onboarding, common core, and extension-pack contract are specified separately in
+[SPEC-CONSTITUTION.md](SPEC-CONSTITUTION.md) and
+[ADR-0026](adr/0026-constitutional-policy-over-mechanistic-ratchets.md).
 
 ---
 
@@ -37,6 +41,21 @@ constitution rots at the speed of the todo list:
 The Constitution is the *why/what*; the Executive is the *who/when/status*. A
 goal outlives ten thousand tasks. They reference each other but keep separate
 lifetimes.
+
+### 1.1 Constitutional authority (proposed)
+
+The Constitution governs through adopted policy, not through a collection of
+mechanical quality gates. Tests, scanners, thresholds, and ratchets remain
+valuable, but they are subordinate controls: they produce evidence for a clause
+and have no independent authority to block work.
+
+A repository with no constitution begins **ungoverned**, not non-compliant and
+not silently governed by Lodestar defaults. The proposed bootstrap flow discovers
+cited project facts, combines them with an opt-in Common Core and selected
+extension packs, then requires a maintainer to adopt, tailor, or reject each
+proposal before activation. MindLeak observations and learned knowledge may
+suggest amendments but can never turn repeated behaviour into law automatically.
+Full contract: [SPEC-CONSTITUTION.md](SPEC-CONSTITUTION.md).
 
 ---
 
@@ -284,6 +303,12 @@ MindLeak produces one versioned `ConformanceEvidence` bundle for an agent and
 claim-bounded time window. Changed nodes come from mutation relations such as
 `modified` and `refactored`; `observed` proves attribution, never mutation.
 Lodestar validates the bundle without opening the MindLeak database.
+
+> **Proposed constitutional resolution (ADR-0026).** Conformance first resolves
+> the exact active constitutional version, governing clauses, and valid scoped
+> waivers. Controls — including ratchets — contribute observations; the adopted
+> clause determines their consequence. With no active constitution, policy
+> judgment returns `needs_human`, never false alignment or violation.
 
 Two tiers then run, mirroring MindLeak's "deterministic first, LLM optional"
 posture:

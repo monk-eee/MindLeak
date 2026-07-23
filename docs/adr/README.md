@@ -33,6 +33,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0023](0023-design-board-accept-bridge.md) | Design items, the Design Board, and the accept→decompose bridge | Proposed |
 | [0024](0024-preflight-overlap-detection.md) | Pre-flight work-overlap detection across both planes | Proposed |
 | [0025](0025-authoritative-checked-conformance.md) | Authoritative checked conformance | Accepted |
+| [0026](0026-constitutional-policy-over-mechanistic-ratchets.md) | Constitutional policy over mechanistic ratchets | Proposed |
 
 ## Writing a new ADR
 

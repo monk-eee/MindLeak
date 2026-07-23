@@ -60,7 +60,7 @@ architecture and development guides.
 | **Get running fast** | **[docs/QUICKSTART.md](docs/QUICKSTART.md)** |
 | **Learn how to use the tools** | **[docs/USAGE.md](docs/USAGE.md)** |
 | Understand the design | [docs/SPEC.md](docs/SPEC.md) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
-| Understand the *intent plane* (spec brain) | [docs/SPEC-INTENT.md](docs/SPEC-INTENT.md) · [ADR-0004](docs/adr/0004-intent-plane-spec-brain.md) |
+| Understand the *intent plane* (spec brain) | [docs/SPEC-INTENT.md](docs/SPEC-INTENT.md) · [docs/SPEC-CONSTITUTION.md](docs/SPEC-CONSTITUTION.md) · [ADR-0004](docs/adr/0004-intent-plane-spec-brain.md) |
 | Set up & run locally | [DEVELOPERS.md](DEVELOPERS.md) |
 | Contribute a change | [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) |
 | Constraints for AI agents | [AGENTS.md](AGENTS.md) |
@@ -236,7 +236,7 @@ coordinate through one plane.
 | `ask_question` / `answer` | Park a claimed task in `needs_input` with a durable question; a human `answer` resumes it under the same owner with a fresh lease. |
 | `pause_task` / `resume_task` | Owner deliberately parks (`paused`) and resumes work, keeping the claim and evidence window. |
 | `task_qa` | The durable, append-only question/answer thread for a task. |
-| `board` | Who-owns-what snapshot; `include_terminal=false` for only live/actionable work. |
+| `board` | Who-owns-what snapshot; the VS Code Intent Board defaults to live/actionable work, while `include_terminal=true` returns durable history. |
 | `register_design` / `design_board` | Register an ADR as a design item under review (ADR-0023); list items awaiting a human decision (distinct from the executive board). |
 | `accept_design` / `reject_design` | Human completion path for design work — accept (no code conformance) or durably reject; no agent may decide its own design. |
 | `check_conformance` | Persist and return `{ id, token, verdict, findings }` for exact checked completion. |
@@ -249,9 +249,11 @@ coordinate through one plane.
 | `reset_database` | Clear durable intent only with the exact `RESET LODESTAR` token. |
 
 Design: [docs/SPEC-INTENT.md](docs/SPEC-INTENT.md) ·
+[docs/SPEC-CONSTITUTION.md](docs/SPEC-CONSTITUTION.md) ·
 [ADR-0004](docs/adr/0004-intent-plane-spec-brain.md) ·
 [ADR-0005](docs/adr/0005-signal-weighted-decay.md) ·
-[ADR-0012](docs/adr/0012-derived-signal-evidence.md).
+[ADR-0012](docs/adr/0012-derived-signal-evidence.md) ·
+[ADR-0026](docs/adr/0026-constitutional-policy-over-mechanistic-ratchets.md).
 
 Backup, upgrade, rollback, export, reset, and retention guidance:
 [docs/DATA-LIFECYCLE.md](docs/DATA-LIFECYCLE.md).
