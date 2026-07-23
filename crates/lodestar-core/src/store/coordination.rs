@@ -134,12 +134,13 @@ impl LodestarStore {
         Ok(changed == 1)
     }
 
-    /// Extend the lease on a task the caller still owns (heartbeat).
+    /// Extend a still-live lease on a task the caller owns (heartbeat). Once a
+    /// lease lapses, the owner must re-claim so a fresh evidence window opens.
     pub fn renew_lease(&self, id: &str, agent: &str, lease_secs: i64, now: i64) -> Result<bool> {
         let changed = self.conn.execute(
             "UPDATE tasks SET lease_expires_at = ?3, updated_at = ?4
                             WHERE id = ?1 AND owner = ?2 AND status = 'claimed'
-                                AND blocked_by IS NULL",
+                                AND lease_expires_at >= ?4 AND blocked_by IS NULL",
             params![id, agent, now + lease_secs, now],
         )?;
         Ok(changed == 1)
@@ -1414,6 +1415,27 @@ mod tests {
             s.get_task(&t.id).unwrap().unwrap().owner.as_deref(),
             Some("bob")
         );
+    }
+
+    #[test]
+    fn expired_renewal_requires_reclaim_and_opens_a_fresh_evidence_window() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "task", "", None, NOW).unwrap();
+
+        assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
+        assert!(s.renew_lease(&t.id, "alice", 60, NOW + 30).unwrap());
+        assert_eq!(
+            s.get_task(&t.id).unwrap().unwrap().claim_started_at,
+            Some(NOW)
+        );
+
+        let after_expiry = NOW + 2 * HOUR;
+        assert!(!s.renew_lease(&t.id, "alice", 60, after_expiry).unwrap());
+        assert!(s.claim_task(&t.id, "alice", 60, after_expiry).unwrap());
+        let reclaimed = s.get_task(&t.id).unwrap().unwrap();
+        assert_eq!(reclaimed.claim_started_at, Some(after_expiry));
+        assert_eq!(reclaimed.lease_expires_at, Some(after_expiry + 60));
     }
 
     #[test]
