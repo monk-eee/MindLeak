@@ -93,7 +93,10 @@ fn goal_task_claim_complete_flow() {
         "artifact:src/search.rs",
         claim.claim_started_at.unwrap(),
     );
-    let (completed, conformance) = engine.complete_task(&t.id, "agent-a", &evidence).unwrap();
+    let check = engine.check_conformance(&evidence, Some(&t.id)).unwrap();
+    let (completed, conformance) = engine
+        .complete_task(&t.id, "agent-a", &evidence, &check)
+        .unwrap();
     assert!(completed);
     assert_eq!(conformance.verdict, Verdict::Aligned);
     assert_eq!(
@@ -177,7 +180,10 @@ fn missing_evidence_stays_in_review() {
         provenance: Vec::new(),
     };
 
-    let (completed, result) = engine.complete_task(&task.id, "agent-a", &empty).unwrap();
+    let check = engine.check_conformance(&empty, Some(&task.id)).unwrap();
+    let (completed, result) = engine
+        .complete_task(&task.id, "agent-a", &empty, &check)
+        .unwrap();
     assert!(!completed);
     assert_eq!(result.verdict, Verdict::NeedsHuman);
     assert_eq!(
@@ -214,8 +220,9 @@ fn wrong_goal_drift_stays_in_review() {
         claim.claim_started_at.unwrap(),
     );
 
+    let check = engine.check_conformance(&evidence, Some(&task.id)).unwrap();
     let (completed, result) = engine
-        .complete_task(&task.id, "agent-a", &evidence)
+        .complete_task(&task.id, "agent-a", &evidence, &check)
         .unwrap();
     assert!(!completed);
     assert_eq!(result.verdict, Verdict::Drift);
@@ -253,8 +260,9 @@ fn forbidden_change_blocks_completion() {
         claim.claim_started_at.unwrap(),
     );
 
+    let check = engine.check_conformance(&evidence, Some(&task.id)).unwrap();
     let (completed, result) = engine
-        .complete_task(&task.id, "agent-a", &evidence)
+        .complete_task(&task.id, "agent-a", &evidence, &check)
         .unwrap();
     assert!(!completed);
     assert_eq!(result.verdict, Verdict::Violation);
@@ -288,7 +296,7 @@ fn cross_agent_and_out_of_window_evidence_are_rejected() {
         claim.claim_started_at.unwrap(),
     );
     assert!(engine
-        .complete_task(&task.id, "agent-a", &wrong_agent)
+        .check_conformance(&wrong_agent, Some(&task.id))
         .is_err());
 
     let outside = evidence(
@@ -297,7 +305,7 @@ fn cross_agent_and_out_of_window_evidence_are_rejected() {
         "artifact:src/auth.rs",
         claim.claim_started_at.unwrap() - 1,
     );
-    assert!(engine.complete_task(&task.id, "agent-a", &outside).is_err());
+    assert!(engine.check_conformance(&outside, Some(&task.id)).is_err());
     assert_eq!(
         engine.store().get_task(&task.id).unwrap().unwrap().status,
         TaskStatus::Claimed

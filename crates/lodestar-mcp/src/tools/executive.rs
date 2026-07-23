@@ -64,15 +64,16 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "complete_task",
-            "description": "Complete a task only when claim-bounded ADR-0009 evidence conforms. Aligned completes; drift/uncertainty stay in review; violation blocks.",
+            "description": "Consume an authoritative check_conformance result for the same claim-bounded ADR-0009 evidence. Aligned completes; drift/uncertainty stay in review; violation blocks.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "task_id": { "type": "string" },
                     "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." },
-                    "evidence": { "type": "object", "description": "Versioned ConformanceEvidence returned by MindLeak evidence_for." }
+                    "evidence": { "type": "object", "description": "Versioned ConformanceEvidence returned by MindLeak evidence_for." },
+                    "check": { "type": "object", "description": "The exact id/token/verdict/findings object returned by check_conformance." }
                 },
-                "required": ["task_id", "evidence"]
+                "required": ["task_id", "evidence", "check"]
             }
         }),
         json!({
@@ -243,11 +244,18 @@ pub(super) fn dispatch(
         })()),
         "complete_task" => Some((|| {
             let evidence = parse_evidence(args)?;
+            let check = serde_json::from_value(
+                args.get("check")
+                    .cloned()
+                    .ok_or_else(|| "missing required object arg: check".to_string())?,
+            )
+            .map_err(|error| format!("invalid conformance check: {error}"))?;
             let (completed, conformance) = engine
                 .complete_task(
                     req_str(args, "task_id")?,
                     opt_str(args, "agent").unwrap_or_default().as_str(),
                     &evidence,
+                    &check,
                 )
                 .map_err(|e| e.to_string())?;
             ok(&json!({ "completed": completed, "conformance": conformance }))
@@ -343,7 +351,81 @@ mod tests {
     use super::super::call;
     use super::*;
     use lodestar_core::llm::LlmClient;
-    use lodestar_core::GoalKind;
+    use lodestar_core::{now_unix, CodeBindingMode, GoalKind};
+
+    #[test]
+    fn checked_conformance_completes_with_one_authoritative_audit() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship search", "add search", None)
+            .unwrap();
+        let node_id = "artifact:src/search.rs";
+        engine
+            .link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "wire search", "done").unwrap();
+        engine.claim_task(&task.id, "agent-a", 300).unwrap();
+        let claimed = engine.store().get_task(&task.id).unwrap().unwrap();
+        let evidence = json!({
+            "schema_version": 1,
+            "task_id": task.id,
+            "agent_id": "agent-a",
+            "started_at": claimed.claim_started_at.unwrap(),
+            "ended_at": now_unix(),
+            "changed_node_ids": [node_id],
+            "failed_node_ids": [],
+            "execution_ids": ["execution:proof"],
+            "successful_execution_ids": ["execution:proof"],
+            "commit_ids": [],
+            "summary": "wired search",
+            "provenance": [
+                {
+                    "source_id": "agent:agent-a",
+                    "target_id": "execution:proof",
+                    "relation": "observed"
+                },
+                {
+                    "source_id": "execution:proof",
+                    "target_id": node_id,
+                    "relation": "modified"
+                }
+            ]
+        });
+
+        let checked_response = call(
+            &engine,
+            &json!({
+                "name": "check_conformance",
+                "arguments": { "task_id": task.id, "evidence": evidence }
+            }),
+        )
+        .unwrap();
+        let checked: Value =
+            serde_json::from_str(checked_response["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(checked["id"].as_i64().unwrap() > 0);
+        assert_eq!(checked["token"].as_str().unwrap().len(), 64);
+        assert_eq!(checked["verdict"], "aligned");
+
+        let completed_response = call(
+            &engine,
+            &json!({
+                "name": "complete_task",
+                "arguments": {
+                    "task_id": task.id,
+                    "agent": "agent-a",
+                    "evidence": evidence,
+                    "check": checked
+                }
+            }),
+        )
+        .unwrap();
+        let completed: Value =
+            serde_json::from_str(completed_response["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(completed["completed"], true);
+        assert_eq!(completed["conformance"]["verdict"], "aligned");
+        assert_eq!(engine.conformance_history(&task.id).unwrap().len(), 1);
+    }
 
     #[test]
     fn create_task_dispatch_accepts_a_predecessor() {

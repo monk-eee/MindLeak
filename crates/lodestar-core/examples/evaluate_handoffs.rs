@@ -108,7 +108,9 @@ fn progressive_arm(path: &Path) -> Result<serde_json::Value> {
     let concurrent_before = claimed_count(&agent_a)?;
     let claimed_first = agent_a.store().get_task(&first.id)?.unwrap();
     let evidence = aligned_evidence(&claimed_first, "agent-a");
-    let (first_completed, conformance) = agent_a.complete_task(&first.id, "agent-a", &evidence)?;
+    let check = agent_a.check_conformance(&evidence, Some(&first.id))?;
+    let (first_completed, conformance) =
+        agent_a.complete_task(&first.id, "agent-a", &evidence, &check)?;
     let successor_after_completion = agent_b.store().get_task(&second.id)?.unwrap();
     let second_claimed_after_handoff = agent_b.claim_task(&second.id, "agent-b", LEASE_SECS)?;
     let concurrent_after = claimed_count(&agent_b)?;

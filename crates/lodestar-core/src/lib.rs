@@ -20,8 +20,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use error::{LodestarError, Result};
 pub use model::{
-    CodeBindingMode, ConformanceEvidence, ConformanceRecord, ConformanceResult, EvidenceProvenance,
-    Goal, GoalKind, GoalStatus, Knowledge, SignalPromotion, Task, TaskQa, TaskStatus, Verdict,
+    CodeBindingMode, ConformanceCheck, ConformanceEvidence, ConformanceRecord, ConformanceResult,
+    EvidenceProvenance, Goal, GoalKind, GoalStatus, Knowledge, SignalPromotion, Task, TaskQa,
+    TaskStatus, Verdict,
 };
 pub use store::{LodestarStore, ResetOutcome, Stats};
 
@@ -39,7 +40,12 @@ pub struct Lodestar {
     store: LodestarStore,
     llm: LlmClient,
     agent: Option<String>,
+    #[cfg(test)]
+    test_judge: Option<Box<TestJudge>>,
 }
+
+#[cfg(test)]
+type TestJudge = dyn Fn(&str, &str) -> Result<(String, String)> + Send + Sync;
 
 impl Lodestar {
     pub fn open(path: &str) -> Result<Self> {
@@ -47,6 +53,8 @@ impl Lodestar {
             store: LodestarStore::new(db::open(path)?),
             llm: LlmClient::default(),
             agent: None,
+            #[cfg(test)]
+            test_judge: None,
         })
     }
 
@@ -55,6 +63,8 @@ impl Lodestar {
             store: LodestarStore::new(db::open_in_memory()?),
             llm: LlmClient::default(),
             agent: None,
+            #[cfg(test)]
+            test_judge: None,
         })
     }
 
@@ -63,6 +73,23 @@ impl Lodestar {
     pub fn with_llm(mut self, llm: LlmClient) -> Self {
         self.llm = llm;
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_judge(
+        mut self,
+        judge: impl Fn(&str, &str) -> Result<(String, String)> + Send + Sync + 'static,
+    ) -> Self {
+        self.test_judge = Some(Box::new(judge));
+        self
+    }
+
+    fn judge_conformance(&self, constraint: &str, summary: &str) -> Result<(String, String)> {
+        #[cfg(test)]
+        if let Some(judge) = self.test_judge.as_ref() {
+            return judge(constraint, summary);
+        }
+        self.llm.judge(constraint, summary)
     }
 
     pub fn with_agent(mut self, agent: Option<String>) -> Self {

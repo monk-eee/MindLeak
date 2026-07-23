@@ -3,6 +3,11 @@
 - **Status:** Accepted
 - **Date:** 2026-07-22
 
+> **Amended by [ADR-0025](0025-authoritative-checked-conformance.md):**
+> `check_conformance` now persists and returns the authoritative result;
+> `complete_task` consumes that exact checked result without evaluating the
+> optional semantic judge again.
+
 ## Context
 
 [ADR-0004](0004-intent-plane-spec-brain.md) separated durable intent from
@@ -98,11 +103,11 @@ A covering task alone can never produce `aligned`. Only `aligned` reaches
 `done`; non-violation ambiguity remains reviewable rather than being silently
 accepted.
 
-`complete_task(task_id, agent_id, evidence)` performs conformance and owns this
-transition. `check_conformance(evidence, task_id?)` uses the same evaluator
-without inventing a parallel evidence-submission path. After any optional
-semantic work, Lodestar rechecks the live owner/status and atomically records
-the evidence, verdict, and resulting state in its own transaction.
+`check_conformance(evidence, task_id?)` performs conformance and persists one
+authoritative audit result. Per ADR-0025,
+`complete_task(task_id, agent_id, evidence, check)` verifies and consumes that
+exact result without invoking the semantic judge again, then rechecks the live
+owner/status and atomically applies the resulting state transition.
 
 ### Durable audit, loose stores
 

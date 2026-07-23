@@ -280,6 +280,13 @@ and footguns, with impact and status:
   most one and the branch can never fire. — No functional impact; kept as
   documented defense-in-depth rather than removed, since the PK is the real
   guard. — Noted during the Jul 2026 audit.
+- **Conformance preflight and completion could disagree on identical evidence.**
+  — `check_conformance` returned `aligned` for task `task:aae950aecd78`, then
+  `complete_task` immediately reran the optional semantic judge, returned
+  `needs_human`, and stranded the task in review despite no evidence or intent
+  change. — High impact on verified delivery. — Resolved Jul 2026 by ADR-0025:
+  checks now return a durable id + state token, and completion consumes that
+  exact audit result without a second model call (task `task:1b5bdafd5e99`).
 - **MCP build identity exposes stale running binaries.** Both servers now report
   `serverInfo.version` as `<package-version>+<12-character-git-sha>` during MCP
   initialize. Compare the suffix with `git rev-parse --short=12 HEAD`; a mismatch

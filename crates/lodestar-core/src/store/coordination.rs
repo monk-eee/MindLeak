@@ -421,7 +421,7 @@ impl LodestarStore {
         task_id: Option<&str>,
         audit: ConformanceAudit<'_>,
         now: i64,
-    ) -> Result<()> {
+    ) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO conformance
                  (task_id, evidence_schema_version, evidence, verdict, findings, checked_at)
@@ -435,7 +435,15 @@ impl LodestarStore {
                 now
             ],
         )?;
-        Ok(())
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub(crate) fn conformance_record(&self, id: i64) -> Result<Option<ConformanceRecord>> {
+        let sql = format!("SELECT {CONFORMANCE_COLS} FROM conformance WHERE id = ?1");
+        Ok(self
+            .conn
+            .query_row(&sql, params![id], row_to_conformance)
+            .optional()?)
     }
 
     /// The append-only conformance audit chain for a task, oldest first. Each
@@ -451,6 +459,7 @@ impl LodestarStore {
     }
 
     /// Atomically leave `claimed` and persist the evidence-backed verdict.
+    #[cfg(test)]
     pub(crate) fn record_conformance_and_transition(
         &self,
         task_id: &str,
@@ -509,6 +518,78 @@ impl LodestarStore {
                 now
             ],
         )?;
+        if target_status == TaskStatus::Done {
+            open_blocked_successor_on(&transaction, task_id, now)?;
+        }
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    /// Atomically transition a claimed task using one existing, authoritative
+    /// conformance audit. No second audit row is written: the checked record is
+    /// the durable evidence link that controls this transition.
+    pub(crate) fn transition_with_checked_conformance(
+        &self,
+        task_id: &str,
+        agent: &str,
+        conformance_id: i64,
+        verdict: Verdict,
+        target_status: TaskStatus,
+        now: i64,
+    ) -> Result<bool> {
+        let expected_status = match verdict {
+            Verdict::Aligned => TaskStatus::Done,
+            Verdict::Violation => TaskStatus::Blocked,
+            Verdict::Drift | Verdict::NeedsHuman => TaskStatus::InReview,
+        };
+        if target_status != expected_status {
+            return Err(LodestarError::Invalid(format!(
+                "verdict {} requires status {}, not {}",
+                verdict.as_str(),
+                expected_status.as_str(),
+                target_status.as_str()
+            )));
+        }
+
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let stored_verdict = transaction
+            .query_row(
+                "SELECT verdict FROM conformance WHERE id = ?1 AND task_id = ?2",
+                params![conformance_id, task_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if stored_verdict.as_deref() != Some(verdict.as_str()) {
+            return Err(LodestarError::Invalid(format!(
+                "conformance check {conformance_id} does not authorise verdict {}",
+                verdict.as_str()
+            )));
+        }
+
+        if target_status == TaskStatus::Done {
+            let successors: i64 = transaction.query_row(
+                "SELECT COUNT(1) FROM task_handoffs WHERE predecessor_id = ?1",
+                params![task_id],
+                |row| row.get(0),
+            )?;
+            if successors > 1 {
+                return Err(LodestarError::Invalid(format!(
+                    "task {task_id} has {successors} successors; progressive handoff must be linear"
+                )));
+            }
+        }
+
+        let changed = transaction.execute(
+            "UPDATE tasks
+                SET status = ?3, owner = NULL, claim_started_at = NULL,
+                    lease_expires_at = NULL, updated_at = ?4
+              WHERE id = ?1 AND owner = ?2 AND status = 'claimed'
+                AND lease_expires_at >= ?4 AND blocked_by IS NULL",
+            params![task_id, agent, target_status.as_str(), now],
+        )?;
+        if changed != 1 {
+            return Ok(false);
+        }
         if target_status == TaskStatus::Done {
             open_blocked_successor_on(&transaction, task_id, now)?;
         }

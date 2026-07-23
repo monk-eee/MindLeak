@@ -293,9 +293,14 @@ posture:
   model yields `needs_human`; it never fabricates alignment.
 
 Only `aligned` completes a task. `drift` and `needs_human` remain `in_review`;
-`violation` moves the task to `blocked`. The evidence, verdict, and transition
-are recorded together in Lodestar after rechecking the live claim. Full contract:
-[ADR-0009](adr/0009-evidence-backed-conformance.md).
+`violation` moves the task to `blocked`. `check_conformance` evaluates once and
+persists an authoritative `{ id, token, verdict, findings }` result. The token
+covers the exact evidence and relevant current intent/knowledge state.
+`complete_task` verifies and consumes that checked result without invoking the
+optional semantic judge again; changed evidence or state requires a new check.
+The checked audit row is the sole durable evidence link controlling the atomic
+transition. Full contract: [ADR-0009](adr/0009-evidence-backed-conformance.md),
+as amended by [ADR-0025](adr/0025-authoritative-checked-conformance.md).
 
 ---
 
@@ -339,8 +344,9 @@ Newline-delimited JSON-RPC 2.0 over stdio, exactly like `mindleak-mcp`.
 8. `next_task(agent_id, capabilities?)` → a suggested unclaimed, unblocked task.
 9. `claim_task(task_id, agent_id, lease_secs)` → `{ won, lease_expires_at }` (§6).
 10. `renew_lease(task_id, agent_id, lease_secs)` → heartbeat.
-11. `complete_task(task_id, agent_id, evidence)` → `in_review` / `done` (triggers
-    conformance).
+11. `complete_task(task_id, agent_id, evidence, check)` → `blocked` /
+  `in_review` / `done`; consumes the exact authoritative check and rejects it
+  if evidence or relevant intent state changed.
 12. `release_task(task_id, agent_id)` / `block_task(task_id, reason, blocked_by?)` /
     `reopen_task(task_id)` → return a stranded task (`in_review`, or a manual
     hold with no live predecessor gate) to claimable `open`; refuses to bypass a
@@ -352,7 +358,8 @@ Newline-delimited JSON-RPC 2.0 over stdio, exactly like `mindleak-mcp`.
 
 **Conformance**
 
-14. `check_conformance(evidence, task_id?)` → `{ verdict, findings[] }`.
+14. `check_conformance(evidence, task_id?)` →
+  `{ id, token, verdict, findings[] }`; persists one authoritative audit row.
 15. `conformance_history(task_id)` → the append-only evidence chain for a task:
     each record's stable `id`, the recorded evidence bundle, `verdict`,
     `findings`, and `checked_at` — the durable, resolvable link proving how (and

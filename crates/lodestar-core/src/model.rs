@@ -220,6 +220,18 @@ pub struct ConformanceRecord {
     pub checked_at: i64,
 }
 
+/// An authoritative conformance preflight. `complete_task` consumes this exact
+/// persisted result and rejects it if the evidence or relevant intent state has
+/// changed, so an optional semantic judge is never invoked twice for one task
+/// transition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConformanceCheck {
+    pub id: i64,
+    pub token: String,
+    pub verdict: Verdict,
+    pub findings: Vec<String>,
+}
+
 /// A goal row: a unit of the constitution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Goal {

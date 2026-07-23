@@ -228,7 +228,7 @@ coordinate through one plane.
 | `create_task` / `decompose_goal` | Add claimable work; `create_task(blocked_by=...)` creates a progressive handoff. |
 | `next_task` | Suggest the next unblocked, claimable task. |
 | `claim_task` / `renew_lease` | **Atomic claim + lease** — collision-free parallel coordination. |
-| `complete_task` | Finish (owner-guarded), then run conformance; a violation blocks. |
+| `complete_task` | Consume the exact authoritative `check_conformance` result (owner-guarded); aligned completes, uncertainty reviews, violation blocks. |
 | `release_task` / `block_task` | Return or block work. |
 | `reopen_task` | Return a stranded task (in review, or a manual hold) to claimable `open`. |
 | `abandon_task` | Permanently retire a nonterminal task to terminal `abandoned` (distinct from reopen/reset). |
@@ -236,7 +236,7 @@ coordinate through one plane.
 | `pause_task` / `resume_task` | Owner deliberately parks (`paused`) and resumes work, keeping the claim and evidence window. |
 | `task_qa` | The durable, append-only question/answer thread for a task. |
 | `board` | Who-owns-what snapshot; `include_terminal=false` for only live/actionable work. |
-| `check_conformance` | aligned · drift · violation against governing intent. |
+| `check_conformance` | Persist and return `{ id, token, verdict, findings }` for exact checked completion. |
 | `conformance_history` | Resolve a task's durable evidence chain — the recorded bundle, verdict, and stable id per check. |
 | `consolidate` / `record_knowledge` | Gated promotion of learned regularities. |
 | `promote_signals` | Promotion bridge (ADR-0022): batch-feed proven-signal candidates into the gated consolidator; deterministic, model-optional. |

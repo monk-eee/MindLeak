@@ -19,6 +19,13 @@ to [Semantic Versioning](https://semver.org/).
   deterministic zero-token write/query path is untouched.
 
 ### Changed
+- **Conformance completion now consumes one authoritative checked verdict
+  (ADR-0025).** `check_conformance` persists and returns
+  `{ id, token, verdict, findings }`; `complete_task` requires that exact object,
+  verifies unchanged evidence and relevant goal-binding/knowledge state, and
+  transitions without invoking the optional semantic judge again. Identical
+  evidence can no longer preflight `aligned` and complete as `needs_human`, and
+  completion no longer writes a duplicate audit row.
 - **MCP initialize metadata now identifies the exact source build.** MindLeak and
   Lodestar report `serverInfo.version` as
   `<package-version>+<12-character-git-sha>`, so clients can compare it with
