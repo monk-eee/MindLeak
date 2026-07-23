@@ -67,6 +67,13 @@ impl Lodestar {
         self.store.list_design_items(status)
     }
 
+    /// Read the persisted objective/task/constraint provenance for a
+    /// materialized design. Proposed and pending designs return `None`; this
+    /// operation never invokes planning or mutates the design.
+    pub fn design_promotion(&self, id: &str) -> Result<Option<DesignPromotion>> {
+        self.store.design_promotion(id)
+    }
+
     /// Human acceptance — the attributed, guarded human decision *only*
     /// (ADR-0023). The design becomes `accepted` with promotion `pending`; it
     /// does **not** run ADR-0009 code conformance and does **not** invoke a
@@ -209,6 +216,7 @@ mod tests {
         assert_eq!(accepted.promotion_status, DesignPromotionStatus::Pending);
         assert!(e.next_task().unwrap().is_none());
         assert_eq!(e.design_board().unwrap(), vec![accepted.clone()]);
+        assert!(e.design_promotion(&item.id).unwrap().is_none());
 
         // The human selects an objective; promote materialises the work.
         let objective = e
@@ -224,6 +232,16 @@ mod tests {
         assert!(promo.tasks.iter().all(|t| t.goal_id == objective.id));
         assert_eq!(e.next_task().unwrap().unwrap().goal_id, objective.id);
         assert!(e.design_board().unwrap().is_empty());
+        let persisted = e.design_promotion(&item.id).unwrap().unwrap();
+        assert_eq!(persisted.goal.id, promo.goal.id);
+        assert_eq!(
+            persisted
+                .tasks
+                .iter()
+                .map(|task| &task.id)
+                .collect::<Vec<_>>(),
+            promo.tasks.iter().map(|task| &task.id).collect::<Vec<_>>()
+        );
 
         // Idempotent: a retry returns the same tasks, creating no duplicates.
         let again = e.promote_design(&item.id, &objective.id, &[]).unwrap();

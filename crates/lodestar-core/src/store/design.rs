@@ -118,6 +118,19 @@ impl LodestarStore {
         collect(rows)
     }
 
+    /// Resolve the durable objective/task/constraint provenance for a
+    /// materialized design. Proposed and pending designs have no materialized
+    /// plan yet and return `None`; this read never invokes planning.
+    pub fn design_promotion(&self, id: &str) -> Result<Option<DesignPromotion>> {
+        let item = self
+            .get_design_item(id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
+        if item.promotion_status != DesignPromotionStatus::Materialized {
+            return Ok(None);
+        }
+        self.resolve_promotion(&item).map(Some)
+    }
+
     /// Guarded CAS: move a *proposed* item to accepted/rejected. Returns `false`
     /// when the item is not currently proposed (missing or already decided), so
     /// a concurrent second decider cannot overwrite the first.
@@ -453,5 +466,69 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![proposed.id.as_str()]
         );
+    }
+
+    #[test]
+    fn design_promotion_is_read_only_and_resolves_materialized_provenance() {
+        let store = store();
+        let item = store
+            .register_design_item(
+                "design:0040-materialized",
+                "docs/adr/0040-materialized.md",
+                "Materialized",
+                "ship it",
+                Some("planner"),
+                NOW,
+            )
+            .unwrap();
+        assert!(store.design_promotion(&item.id).unwrap().is_none());
+        assert!(store
+            .decide_design_item(&item.id, DesignStatus::Accepted, "reviewer", None, NOW + 1,)
+            .unwrap());
+        assert!(store.design_promotion(&item.id).unwrap().is_none());
+
+        let objective = goal(&store);
+        let created = store
+            .promote_design_item(
+                &item.id,
+                &objective.id,
+                &[("Implement materialized".into(), "done".into())],
+                &[(
+                    GoalKind::Constraint,
+                    "Keep it deterministic".into(),
+                    "no model on reconciliation".into(),
+                )],
+                NOW + 2,
+            )
+            .unwrap();
+        let resolved = store.design_promotion(&item.id).unwrap().unwrap();
+
+        assert_eq!(resolved.item, created.item);
+        assert_eq!(resolved.goal.id, created.goal.id);
+        assert_eq!(
+            resolved
+                .tasks
+                .iter()
+                .map(|task| &task.id)
+                .collect::<Vec<_>>(),
+            created
+                .tasks
+                .iter()
+                .map(|task| &task.id)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            resolved
+                .constraints
+                .iter()
+                .map(|goal| &goal.id)
+                .collect::<Vec<_>>(),
+            created
+                .constraints
+                .iter()
+                .map(|goal| &goal.id)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(store.list_design_items(None).unwrap().len(), 1);
     }
 }

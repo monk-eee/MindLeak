@@ -3,7 +3,7 @@
 //! read the Design Board, and the human accept/reject decision.
 
 use lodestar_core::design::DesignMetadata;
-use lodestar_core::{GoalKind, Lodestar};
+use lodestar_core::{DesignStatus, GoalKind, Lodestar};
 use serde_json::{json, Value};
 
 use super::{ok, opt_str, req_str};
@@ -51,6 +51,25 @@ pub(super) fn definitions() -> Vec<Value> {
             "name": "design_board",
             "description": "List actionable design items: proposed ADRs awaiting a human decision plus accepted designs awaiting or retrying promotion. Distinct from the executive task board.",
             "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "list_designs",
+            "description": "Read the durable design-item ledger, optionally filtered by proposed, accepted, or rejected status. Includes historical and materialized items; read-only.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "status": { "type": "string", "enum": ["proposed", "accepted", "rejected"] }
+                }
+            }
+        }),
+        json!({
+            "name": "design_promotion",
+            "description": "Read the persisted objective, tasks, and constraints materialized for a design. Returns null while proposed or pending; never invokes planning.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"]
+            }
         }),
         json!({
             "name": "accept_design",
@@ -129,6 +148,23 @@ pub(super) fn dispatch(
         })()),
         "design_board" => Some((|| {
             ok(&engine.design_board().map_err(|e| e.to_string())?)
+        })()),
+        "list_designs" => Some((|| {
+            let status = match opt_str(args, "status") {
+                Some(value) => Some(
+                    DesignStatus::from_tag(&value)
+                        .ok_or_else(|| format!("unknown design status: {value}"))?,
+                ),
+                None => None,
+            };
+            ok(&engine
+                .list_design_items(status)
+                .map_err(|e| e.to_string())?)
+        })()),
+        "design_promotion" => Some((|| {
+            ok(&engine
+                .design_promotion(req_str(args, "id")?)
+                .map_err(|e| e.to_string())?)
         })()),
         "accept_design" => Some((|| {
             let item = engine
@@ -247,6 +283,15 @@ mod tests {
             payload(call(&engine, &json!({ "name": "design_board", "arguments": {} })).unwrap());
         assert_eq!(board.as_array().unwrap().len(), 1);
 
+        let ledger = payload(
+            call(
+                &engine,
+                &json!({ "name": "list_designs", "arguments": { "status": "proposed" } }),
+            )
+            .unwrap(),
+        );
+        assert_eq!(ledger.as_array().unwrap().len(), 1);
+
         // Accept is decision-only: accepted + pending, no tasks, still visible
         // for promotion or retry.
         let accepted = payload(
@@ -280,6 +325,16 @@ mod tests {
         assert_eq!(promo["item"]["promotion_status"], "materialized");
         assert_eq!(promo["goal"]["id"], objective.id);
         assert!(!promo["tasks"].as_array().unwrap().is_empty());
+        let persisted = payload(
+            call(
+                &engine,
+                &json!({ "name": "design_promotion", "arguments": { "id": id } }),
+            )
+            .unwrap(),
+        );
+        assert_eq!(persisted["goal"]["id"], objective.id);
+        assert_eq!(persisted["tasks"], promo["tasks"]);
+        assert_eq!(persisted["constraints"], promo["constraints"]);
         assert!(payload(
             call(&engine, &json!({ "name": "design_board", "arguments": {} })).unwrap()
         )
