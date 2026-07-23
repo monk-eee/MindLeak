@@ -111,6 +111,17 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "abandon_task",
+            "description": "Permanently retire a nonterminal task to abandoned (terminal) — the deliberate 'this work should not be done' verb, distinct from reopen_task (recover to claimable) and reset_database (wipe everything). Refuses to disturb an active claim (release_task first) or re-retire terminal work.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string" }
+                },
+                "required": ["task_id"]
+            }
+        }),
+        json!({
             "name": "board",
             "description": "The live coordination snapshot: every task with owner, status, and lease.",
             "inputSchema": { "type": "object", "properties": {} }
@@ -198,6 +209,12 @@ pub(super) fn dispatch(
                 .reopen_task(req_str(args, "task_id")?)
                 .map_err(|e| e.to_string())?;
             ok(&json!({ "reopened": reopened }))
+        })()),
+        "abandon_task" => Some((|| {
+            let abandoned = engine
+                .abandon_task(req_str(args, "task_id")?)
+                .map_err(|e| e.to_string())?;
+            ok(&json!({ "abandoned": abandoned }))
         })()),
         "board" => Some((|| ok(&engine.board().map_err(|e| e.to_string())?))()),
         _ => None,

@@ -38,6 +38,12 @@ validate a throwaway worktree snapshot instead of the shared working tree. This
 keeps a concurrent agent's broken crate or uncommitted WIP from failing your
 commit or push in a shared checkout (ADR-0018).
 
+Two helpers make the safe path the easy path when agents share one checkout:
+`node scripts/scoped-commit.mjs -m "<msg>" -- <path>...` stages and commits only
+your declared paths (never `git add -A`), and `node scripts/isolated-push.mjs`
+pushes the current commit through the hooks from a throwaway worktree so another
+agent's broken WIP cannot poison your push.
+
 **Success looks like:** `cargo test --all` reports `test result: ok` for every
 crate, and `target/debug/mindleak-mcp` starts and prints
 `[mindleak-mcp] ready — graph at …` on stderr.
@@ -241,14 +247,13 @@ and footguns, with impact and status:
   depends on the developer's local services. — Left open for a dedicated
   Lodestar test seam; tests must inject an unreachable/mock client rather than
   depending on ambient model availability.
-- **Lodestar `TaskStatus::Abandoned` is still unreachable.** — `reopen_task` now
-  returns a task stranded in `in_review` or a manual `blocked` hold to claimable
-  `open` (facade + MCP tool, with tests), closing the main dead-end. What remains
-  is that `TaskStatus::Abandoned` is defined but no code path produces it, so
-  there is no way to permanently retire a task that should not be reopened. —
-  Low impact: the recovery path exists; only the terminal-abandon verb is
-  missing. — Left open pending a decision on an `abandon_task` verb (audit,
-  Jul 2026).
+- **Lodestar task recovery and retirement verbs.** — `reopen_task` returns a task
+  stranded in `in_review` or a manual `blocked` hold to claimable `open`, and
+  `abandon_task` retires a nonterminal task to terminal `abandoned` (facade + MCP
+  tool, regression-tested), making `TaskStatus::Abandoned` reachable and closing
+  the retire-a-mis-filed-task gap. — Resolved Jul 2026. Note: the verbs are wired
+  in source, but a stale running MCP binary may not expose them until
+  rebuilt/restarted (see the stale-binary gap above).
 - **`renew_lease` and re-claim disagree on the evidence window.** — Re-claiming
   an expired lease resets `claim_started_at` (a fresh evidence window), but
   `renew_lease` extends the lease without checking expiry and preserves the

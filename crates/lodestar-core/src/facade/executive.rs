@@ -74,6 +74,14 @@ impl Lodestar {
         self.store.reopen_task(id, now_unix())
     }
 
+    /// Permanently retire a nonterminal task to `abandoned` (terminal). The
+    /// deliberate "do not do this work" verb, distinct from `reopen_task`
+    /// (recover) and `reset` (wipe). Refuses to disturb an active claim or
+    /// re-retire terminal work.
+    pub fn abandon_task(&self, id: &str) -> Result<bool> {
+        self.store.abandon_task(id, now_unix())
+    }
+
     pub fn board(&self) -> Result<Vec<Task>> {
         self.store.board()
     }

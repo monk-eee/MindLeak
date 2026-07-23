@@ -224,6 +224,40 @@ impl LodestarStore {
         Ok(changed == 1)
     }
 
+    /// Permanently retire a nonterminal task to `abandoned` (terminal) — the
+    /// deliberate "this work should not be done" verb, distinct from
+    /// `reopen_task` (recover to claimable) and `reset` (wipe everything). It
+    /// makes `TaskStatus::Abandoned` reachable. Refuses to disturb an active
+    /// claim (`claimed` — `release_task` first) or re-retire terminal work.
+    pub fn abandon_task(&self, id: &str, now: i64) -> Result<bool> {
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let task = get_task_on(&transaction, id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
+        match task.status {
+            TaskStatus::Claimed => {
+                return Err(LodestarError::Invalid(format!(
+                    "task {id} is claimed; release it before abandoning"
+                )));
+            }
+            TaskStatus::Done | TaskStatus::Abandoned => {
+                return Err(LodestarError::Invalid(format!(
+                    "task {id} is {} and cannot be abandoned",
+                    task.status.as_str()
+                )));
+            }
+            _ => {}
+        }
+        let changed = transaction.execute(
+            "UPDATE tasks
+             SET status = 'abandoned', owner = NULL, claim_started_at = NULL,
+                 lease_expires_at = NULL, blocked_by = NULL, updated_at = ?2
+             WHERE id = ?1",
+            params![id, now],
+        )?;
+        transaction.commit()?;
+        Ok(changed == 1)
+    }
+
     /// Release a claim back to `open` (owner-guarded).
     pub fn release_task(&self, id: &str, agent: &str, now: i64) -> Result<bool> {
         let changed = self.conn.execute(
@@ -937,6 +971,64 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("cannot be reopened"));
+    }
+
+    // Regression: `TaskStatus::Abandoned` was defined but unreachable — no verb
+    // produced it, so a task that should never be done (e.g. a mis-filed policy
+    // task) could not be retired short of wiping the database.
+    #[test]
+    fn abandon_retires_nonterminal_tasks_and_refuses_claimed_and_terminal() {
+        let store = store();
+        let goal = goal(&store);
+
+        // An open task (e.g. a zombie policy task) retires to terminal abandoned.
+        let open = store
+            .create_task(&goal.id, "Zombie", "done", None, NOW)
+            .unwrap();
+        assert!(store.abandon_task(&open.id, NOW + 1).unwrap());
+        let retired = store.get_task(&open.id).unwrap().unwrap();
+        assert_eq!(retired.status, TaskStatus::Abandoned);
+        assert!(retired.owner.is_none());
+        // Abandoned is terminal: not claimable, not re-abandonable.
+        assert!(!store.claim_task(&open.id, "agent-a", 60, NOW + 2).unwrap());
+        assert!(store
+            .abandon_task(&open.id, NOW + 3)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot be abandoned"));
+
+        // A stranded manual-hold (blocked, no predecessor) can also be retired.
+        let held = store
+            .create_task(&goal.id, "Held", "done", None, NOW)
+            .unwrap();
+        assert!(store.block_task(&held.id, None, NOW + 1).unwrap());
+        assert!(store.abandon_task(&held.id, NOW + 2).unwrap());
+        assert_eq!(
+            store.get_task(&held.id).unwrap().unwrap().status,
+            TaskStatus::Abandoned
+        );
+
+        // A live claim must be released first, never silently retired.
+        let claimed = store
+            .create_task(&goal.id, "Claimed", "done", None, NOW)
+            .unwrap();
+        assert!(store.claim_task(&claimed.id, "agent-b", 60, NOW).unwrap());
+        assert!(store
+            .abandon_task(&claimed.id, NOW + 1)
+            .unwrap_err()
+            .to_string()
+            .contains("release it before abandoning"));
+
+        // Terminal (done) work stays terminal.
+        let done = store
+            .create_task(&goal.id, "Done", "done", None, NOW)
+            .unwrap();
+        complete_aligned(&store, &done.id, "agent-c", NOW);
+        assert!(store
+            .abandon_task(&done.id, NOW + 1)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot be abandoned"));
     }
 
     #[test]

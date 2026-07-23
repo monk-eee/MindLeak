@@ -14,8 +14,21 @@ to [Semantic Versioning](https://semver.org/).
   rather than the shared dirty tree. An unrelated agent's broken crate or
   uncommitted WIP can no longer fail your commit or push (portable runner
   `scripts/cargo-precommit.mjs`; ADR-0018).
+- **Two helper scripts for safe concurrent git in a shared tree (ADR-0018).**
+  `scripts/scoped-commit.mjs` stages and commits only the paths you declare
+  (pathspec; never `git add -A`), so another agent's staged work is never swept
+  into your commit; `scripts/isolated-push.mjs` pushes a commit through the hooks
+  from a throwaway worktree so another agent's broken WIP cannot poison your
+  pre-push validation.
 
 ### Added
+- **`abandon_task` retires a task to terminal `abandoned`.** `TaskStatus::Abandoned`
+  was defined but unreachable — a mis-filed or superseded task could not be retired
+  short of `reset_database`. The new store/facade method and MCP tool move a
+  nonterminal task (open, in_review, or blocked) to terminal `abandoned`, clearing
+  any owner and dependency, while refusing to disturb an active claim (release
+  first) or re-retire terminal work. Distinct from `reopen_task` (recover) and
+  `reset_database` (wipe). Regression-tested.
 - **Inspect a task's conformance evidence from the Intent Board.** Done and
   in-review tasks gain an "Inspect Task Evidence" action that opens the recorded
   evidence — verdict, findings, summary, and the changed/failed node and
