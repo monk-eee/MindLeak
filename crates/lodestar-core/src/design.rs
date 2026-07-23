@@ -10,6 +10,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::model::{Goal, Task};
+
 /// Where a design item sits in its human-review lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -65,6 +67,18 @@ pub struct DesignItem {
     pub reason: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// The objective goal spawned when this item was accepted (the ADR-0023
+    /// accept→decompose bridge); `None` until accepted.
+    pub spawned_goal_id: Option<String>,
+}
+
+/// The outcome of accepting a design item (ADR-0023): the accepted item plus the
+/// objective goal and claimable implementation tasks the bridge spawned from it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DesignAcceptance {
+    pub item: DesignItem,
+    pub goal: Goal,
+    pub tasks: Vec<Task>,
 }
 
 /// Derive a stable design-item id from an ADR path: the file stem, prefixed

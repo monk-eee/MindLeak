@@ -29,7 +29,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "accept_design",
-            "description": "Human acceptance of a design item — the completion path for design work that does NOT run code conformance (ADR-0023). No agent may accept its own design.",
+            "description": "Human acceptance of a design item (ADR-0023): the completion path for design work that does NOT run code conformance, and the accept→decompose bridge — it spawns an objective goal from the ADR and decomposes it into claimable implementation tasks. Returns { item, goal, tasks }. No agent may accept its own design.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -97,13 +97,17 @@ pub(super) fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::super::call;
+    use lodestar_core::llm::LlmClient;
     use lodestar_core::Lodestar;
     use serde_json::{json, Value};
 
     fn engine() -> Lodestar {
+        // Unreachable model so accept_design's decompose takes its deterministic
+        // single-task fallback — independent of any ambient local model.
         Lodestar::open_in_memory()
             .unwrap()
             .with_agent(Some("planner".to_string()))
+            .with_llm(LlmClient::unreachable())
     }
 
     fn payload(result: Value) -> Value {
@@ -141,7 +145,13 @@ mod tests {
             )
             .unwrap(),
         );
-        assert_eq!(accepted["status"], "accepted");
+        assert_eq!(accepted["item"]["status"], "accepted");
+        // The accept→decompose bridge spawned an objective goal and >= 1 task.
+        assert!(accepted["goal"]["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("goal:"));
+        assert!(!accepted["tasks"].as_array().unwrap().is_empty());
 
         let board_after =
             payload(call(&engine, &json!({ "name": "design_board", "arguments": {} })).unwrap());

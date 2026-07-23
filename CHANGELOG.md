@@ -7,17 +7,22 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **Design items — an accept/reject bridge for ADRs (ADR-0023, slice 1).** An ADR
+- **Design items — an accept/reject/decompose bridge for ADRs (ADR-0023, slices 1–2).** An ADR
   can be registered as a first-class *design item* that carries the ADR's review
   lifecycle: while `proposed` it is tainted — it lives on a new **Design Board**
   and never appears in `next_task` or the executive board. A human `accept_design`
   is the completion path for design work and, unlike an implementation task, does
   **not** run ADR-0009 code conformance (there is no code for a design decision to
   conform to) — resolving the `in_review` dead-end where design/ADR tasks stranded
-  forever. `reject_design` is durable and auditable (archive-not-delete). No agent
-  may decide its own design (human-in-the-loop). New tools: `register_design`,
-  `design_board`, `accept_design`, `reject_design`. The accept→decompose step
-  (spawning implementation tasks) is the next slice.
+  forever. Accepting also runs the **accept→decompose bridge**: it spawns an
+  objective goal from the ADR and decomposes it into claimable implementation
+  tasks (model-assisted with the same deterministic single-task fallback as
+  `decompose_goal`), linked back to the item for provenance, so `accept_design`
+  returns `{ item, goal, tasks }`. `reject_design` is durable and auditable
+  (archive-not-delete). No agent may decide its own design (human-in-the-loop).
+  New tools: `register_design`, `design_board`, `accept_design`, `reject_design`.
+  Registering an ADR's stated constraints into the constitution and the portal
+  Design Board view are the remaining slices.
 
 ### Fixed
 - **Expired leases can no longer be renewed with a stale evidence window.**

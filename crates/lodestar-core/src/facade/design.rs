@@ -3,7 +3,7 @@
 //! read the Design Board, and the human accept/reject decision that completes
 //! design work without code conformance.
 
-use crate::design::{design_id_from_path, DesignItem, DesignStatus};
+use crate::design::{design_id_from_path, DesignAcceptance, DesignItem, DesignStatus};
 use crate::{now_unix, Lodestar, LodestarError, Result};
 
 impl Lodestar {
@@ -40,9 +40,34 @@ impl Lodestar {
 
     /// Human acceptance — the completion path for design work. It does **not**
     /// run ADR-0009 code conformance; a design decision has no code to conform
-    /// to. No agent may accept its own design (human-in-the-loop).
-    pub fn accept_design(&self, id: &str, human: &str) -> Result<DesignItem> {
-        self.decide_design(id, DesignStatus::Accepted, human, None)
+    /// to. Per the ADR-0023 bridge it also spawns the implementation: an
+    /// objective goal derived from the ADR, decomposed into claimable tasks
+    /// (model-assisted, deterministic single-task fallback). No agent may accept
+    /// its own design (human-in-the-loop).
+    pub fn accept_design(&self, id: &str, human: &str) -> Result<DesignAcceptance> {
+        let human = human.trim();
+        let item = self.load_for_decision(id, human)?;
+        // The accepted ADR becomes an objective goal; an empty summary still
+        // yields actionable work by pointing at the ADR.
+        let statement = if item.summary.trim().is_empty() {
+            format!("Implement the design recorded in {}", item.adr_path)
+        } else {
+            item.summary.clone()
+        };
+        let drafts = self.decompose_drafts(&item.title, &statement);
+        match self.store.accept_and_spawn(
+            id,
+            human,
+            &item.title,
+            &statement,
+            &drafts,
+            now_unix(),
+        )? {
+            Some((item, goal, tasks)) => Ok(DesignAcceptance { item, goal, tasks }),
+            None => Err(LodestarError::Invalid(format!(
+                "design item {id} was decided concurrently"
+            ))),
+        }
     }
 
     /// Human rejection — durable and auditable (archive-not-delete); spawns no
@@ -53,17 +78,29 @@ impl Lodestar {
                 "a rejection reason is required".to_string(),
             ));
         }
-        self.decide_design(id, DesignStatus::Rejected, human, Some(reason))
+        let human = human.trim();
+        self.load_for_decision(id, human)?;
+        let won = self.store.decide_design_item(
+            id,
+            DesignStatus::Rejected,
+            human,
+            Some(reason),
+            now_unix(),
+        )?;
+        if !won {
+            return Err(LodestarError::Invalid(format!(
+                "design item {id} was decided concurrently"
+            )));
+        }
+        self.store
+            .get_design_item(id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))
     }
 
-    fn decide_design(
-        &self,
-        id: &str,
-        target: DesignStatus,
-        human: &str,
-        reason: Option<&str>,
-    ) -> Result<DesignItem> {
-        let human = human.trim();
+    /// Load a design item and enforce the human-decision guards: a non-empty
+    /// human identity that is not the proposing agent (human-in-the-loop), and an
+    /// item still open to a decision.
+    fn load_for_decision(&self, id: &str, human: &str) -> Result<DesignItem> {
         if human.is_empty() {
             return Err(LodestarError::Invalid(
                 "a human decider identity is required".to_string(),
@@ -86,17 +123,7 @@ impl Lodestar {
                 item.status.as_str()
             )));
         }
-        let won = self
-            .store
-            .decide_design_item(id, target, human, reason, now_unix())?;
-        if !won {
-            return Err(LodestarError::Invalid(format!(
-                "design item {id} was decided concurrently"
-            )));
-        }
-        self.store
-            .get_design_item(id)?
-            .ok_or_else(|| LodestarError::NotFound(id.to_string()))
+        Ok(item)
     }
 }
 
@@ -110,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn a_proposed_item_sits_on_the_board_and_accept_completes_it_without_conformance() {
+    fn accepting_a_proposed_item_completes_it_and_spawns_implementation_tasks() {
         let e = agent_engine("planner");
         let item = e
             .register_design(
@@ -126,8 +153,17 @@ mod tests {
 
         // A human (not the proposing agent) accepts — no code conformance runs.
         let accepted = e.accept_design(&item.id, "human-reviewer").unwrap();
-        assert_eq!(accepted.status, DesignStatus::Accepted);
-        assert_eq!(accepted.decided_by.as_deref(), Some("human-reviewer"));
+        assert_eq!(accepted.item.status, DesignStatus::Accepted);
+        assert_eq!(accepted.item.decided_by.as_deref(), Some("human-reviewer"));
+        // The bridge spawned an objective goal and >= 1 claimable task linked to it.
+        assert_eq!(
+            accepted.item.spawned_goal_id.as_deref(),
+            Some(accepted.goal.id.as_str())
+        );
+        assert!(!accepted.tasks.is_empty());
+        assert!(accepted.tasks.iter().all(|t| t.goal_id == accepted.goal.id));
+        // The spawned work is actionable: next_task now surfaces it.
+        assert_eq!(e.next_task().unwrap().unwrap().goal_id, accepted.goal.id);
         // Accepted items leave the board.
         assert!(e.design_board().unwrap().is_empty());
     }

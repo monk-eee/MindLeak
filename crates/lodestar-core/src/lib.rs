@@ -19,7 +19,7 @@ mod util;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub use design::{DesignItem, DesignStatus};
+pub use design::{DesignAcceptance, DesignItem, DesignStatus};
 pub use error::{LodestarError, Result};
 pub use model::{
     CodeBinding, CodeBindingMode, ConformanceCheck, ConformanceEvidence, ConformanceRecord,

@@ -7,11 +7,12 @@ use rusqlite::{params, Row};
 
 use crate::design::{DesignItem, DesignStatus};
 use crate::error::{LodestarError, Result};
+use crate::model::{Goal, GoalKind, Task};
 
 use super::{collect, LodestarStore};
 
 const DESIGN_COLS: &str =
-    "id, adr_path, title, summary, status, proposed_by, decided_by, reason, created_at, updated_at";
+    "id, adr_path, title, summary, status, proposed_by, decided_by, reason, created_at, updated_at, spawned_goal_id";
 
 impl LodestarStore {
     /// Register a new proposed design item. Fails if the ADR is already
@@ -93,6 +94,52 @@ impl LodestarStore {
         )?;
         Ok(changed == 1)
     }
+
+    /// Accept a *proposed* design item and spawn its work: mark it accepted
+    /// (guarded CAS), create the objective goal, add one claimable task per draft
+    /// under that goal, and link the goal back to the item. Returns `None` when
+    /// the item is not currently proposed (missing or already decided) so a
+    /// concurrent second decider cannot double-spawn.
+    ///
+    /// The CAS is the atomic gate: it flips `proposed`→`accepted` for exactly one
+    /// caller, so the spawn below runs at most once. The spawn steps are then
+    /// individually atomic (`define_goal` is a single statement; `create_task`
+    /// manages its own immediate transaction) — the reason this is not one outer
+    /// transaction is that `create_task` already opens its own, and SQLite does
+    /// not nest.
+    pub fn accept_and_spawn(
+        &self,
+        id: &str,
+        decided_by: &str,
+        goal_title: &str,
+        goal_statement: &str,
+        drafts: &[(String, String)],
+        now: i64,
+    ) -> Result<Option<(DesignItem, Goal, Vec<Task>)>> {
+        let won = self.conn.execute(
+            "UPDATE design_items SET status = 'accepted', decided_by = ?2, updated_at = ?3
+             WHERE id = ?1 AND status = 'proposed'",
+            params![id, decided_by, now],
+        )?;
+        if won != 1 {
+            return Ok(None);
+        }
+        // Objectives decompose into claimable work; the spawned goal is an
+        // objective by construction (a design decision becomes work to do).
+        let goal = self.define_goal(GoalKind::Objective, goal_title, goal_statement, None, now)?;
+        let mut tasks = Vec::with_capacity(drafts.len());
+        for (title, acceptance) in drafts {
+            tasks.push(self.create_task(&goal.id, title, acceptance, None, now)?);
+        }
+        self.conn.execute(
+            "UPDATE design_items SET spawned_goal_id = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, goal.id, now],
+        )?;
+        let item = self
+            .get_design_item(id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
+        Ok(Some((item, goal, tasks)))
+    }
 }
 
 fn row_to_design(row: &Row) -> rusqlite::Result<DesignItem> {
@@ -107,5 +154,6 @@ fn row_to_design(row: &Row) -> rusqlite::Result<DesignItem> {
         reason: row.get(7)?,
         created_at: row.get(8)?,
         updated_at: row.get(9)?,
+        spawned_goal_id: row.get(10)?,
     })
 }

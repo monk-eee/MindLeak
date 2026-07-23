@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS design_items (
     decided_by   TEXT,                 -- human that accepted/rejected it
     reason       TEXT,                 -- acceptance/rejection rationale
     created_at   INTEGER NOT NULL,
-    updated_at   INTEGER NOT NULL
+    updated_at   INTEGER NOT NULL,
+    spawned_goal_id TEXT               -- objective goal spawned on accept (ADR-0023)
 );
 CREATE INDEX IF NOT EXISTS idx_design_items_status ON design_items(status);
 

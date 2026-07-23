@@ -54,6 +54,7 @@ fn migrate_locked(conn: &Connection) -> Result<()> {
         ("goal_code", "mode", "TEXT NOT NULL DEFAULT 'governed'"),
         ("conformance", "evidence_schema_version", "INTEGER"),
         ("conformance", "evidence", "TEXT"),
+        ("design_items", "spawned_goal_id", "TEXT"),
     ] {
         if !column_exists(conn, table, column)? {
             conn.execute_batch(&format!(
