@@ -42,8 +42,10 @@ The engine. Modules:
 ### `mindleak-mcp` (binary)
 
 A minimal MCP stdio server (newline-delimited JSON-RPC 2.0). Handles
-`initialize`, `tools/list`, `tools/call`, `ping`, `shutdown`. Tool definitions
-and dispatch live in [`tools.rs`](../crates/mindleak-mcp/src/tools.rs).
+`initialize`, `tools/list`, `tools/call`, `ping`, `shutdown`. Schemas and
+handlers live under [`tools/`](../crates/mindleak-mcp/src/tools/mod.rs), grouped
+by graph, ingestion, lifecycle, consolidation, embeddings, and telemetry; the
+root retains the single timed telemetry wrapper around dispatch.
 
 ### `lodestar-core` (library) — the Intent Plane
 
