@@ -27,7 +27,7 @@
   },
   "scenario": "same_file_progressive_handoff",
   "schema_version": 1,
-  "source_revision": "84d0c84-dirty",
+  "source_revision": "c386bcc",
   "source_sha256": "2c34d4509f74ba9789eaff660be893ba8950945960e937933f8c83e8a6c0e27b",
   "executable_sha256": "c618dc4efa8c6cf363cee7664b264793154e443898f4b85b1cdbf94586493760",
   "build": {
