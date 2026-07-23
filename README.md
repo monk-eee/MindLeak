@@ -230,6 +230,7 @@ coordinate through one plane.
 | `claim_task` / `renew_lease` | **Atomic claim + lease** — collision-free parallel coordination. |
 | `complete_task` | Finish (owner-guarded), then run conformance; a violation blocks. |
 | `release_task` / `block_task` | Return or block work. |
+| `reopen_task` | Return a stranded task (in review, or a manual hold) to claimable `open`. |
 | `board` | Live who-owns-what snapshot. |
 | `check_conformance` | aligned · drift · violation against governing intent. |
 | `consolidate` / `record_knowledge` | Gated promotion of learned regularities. |

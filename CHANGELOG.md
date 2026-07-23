@@ -14,6 +14,22 @@ to [Semantic Versioning](https://semver.org/).
   logging is opt-in via a **Live log** toggle (off by default). Numbers are
   derived from the existing `graph_stats` and `telemetry_snapshot` tools; no new
   server surface or hot-path cost.
+- **`reopen_task` recovers stranded Lodestar tasks.** A task that landed in
+  `in_review` (a drift or needs-human completion outcome) or was manually blocked
+  with no predecessor previously had no path back to a claimable state. The new
+  facade method and MCP tool return such a task to `open`, while refusing to
+  bypass a handoff dependency, disturb an active claim, or revive terminal work.
+
+### Fixed
+- **`record_knowledge` now honours a revised half-life.** Re-recording an
+  existing statement previously updated weight, evidence, and the revalidation
+  clock but silently kept the original `half_life_hours`, so a caller's changed
+  revalidation cadence was lost. The `ON CONFLICT` clause now updates it, with a
+  regression test.
+- **Lodestar goal slugs no longer emit a trailing dash.** `slugify` trimmed
+  separators before applying the 48-character cap, so a title whose boundary
+  landed on a dash produced a goal id ending in `-`. Truncation now runs before
+  trimming, with a regression test.
 
 ## [0.1.0-preview.1] - 2026-07-23
 

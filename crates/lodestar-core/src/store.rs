@@ -398,6 +398,42 @@ impl LodestarStore {
         Ok(changed == 1)
     }
 
+    /// Return a stranded task to `open` so it can be reclaimed. A task is
+    /// stranded when it is `in_review` (a drift or needs-human completion
+    /// outcome) or manually `blocked` with no live predecessor gate. Refuses to
+    /// bypass a handoff dependency (`blocked` with a `blocked_by`), to disturb an
+    /// active claim (`claimed` — use `release_task`), or to revive terminal work.
+    pub fn reopen_task(&self, id: &str, now: i64) -> Result<bool> {
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let task = get_task_on(&transaction, id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
+        match task.status {
+            TaskStatus::InReview => {}
+            TaskStatus::Blocked if task.blocked_by.is_none() => {}
+            TaskStatus::Blocked => {
+                return Err(LodestarError::Invalid(format!(
+                    "task {id} is gated by predecessor {}; it opens when that predecessor completes",
+                    task.blocked_by.as_deref().unwrap_or_default()
+                )));
+            }
+            other => {
+                return Err(LodestarError::Invalid(format!(
+                    "task {id} is {} and cannot be reopened",
+                    other.as_str()
+                )));
+            }
+        }
+        let changed = transaction.execute(
+            "UPDATE tasks
+             SET status = 'open', owner = NULL, claim_started_at = NULL,
+                 lease_expires_at = NULL, blocked_by = NULL, updated_at = ?2
+             WHERE id = ?1",
+            params![id, now],
+        )?;
+        transaction.commit()?;
+        Ok(changed == 1)
+    }
+
     /// Release a claim back to `open` (owner-guarded).
     pub fn release_task(&self, id: &str, agent: &str, now: i64) -> Result<bool> {
         let changed = self.conn.execute(
@@ -550,6 +586,7 @@ impl LodestarStore {
              ON CONFLICT(id) DO UPDATE SET
                  weight = MIN(1.0, knowledge.weight + 0.1),
                  evidence = excluded.evidence,
+                 half_life_hours = excluded.half_life_hours,
                  confirmed_at = excluded.confirmed_at",
             params![id, statement, evidence, half_life_hours, now],
         )?;
@@ -1208,6 +1245,109 @@ mod tests {
         assert!(!store.claim_task(&task.id, "agent-b", 60, NOW + 3).unwrap());
     }
 
+    // Regression: before `reopen_task`, a task that landed in `in_review` (a
+    // drift/needs-human completion) or was manually blocked with no predecessor
+    // had no path back to a claimable state — it stranded until a manual DB edit.
+    #[test]
+    fn reopen_returns_stranded_tasks_to_claimable() {
+        let store = store();
+        let goal = goal(&store);
+
+        // A manual hold (blocked with no predecessor) reopens and is claimable.
+        let held = store
+            .create_task(&goal.id, "Held", "done", None, NOW)
+            .unwrap();
+        assert!(store.block_task(&held.id, None, NOW + 1).unwrap());
+        assert!(store.reopen_task(&held.id, NOW + 2).unwrap());
+        let reopened = store.get_task(&held.id).unwrap().unwrap();
+        assert_eq!(reopened.status, TaskStatus::Open);
+        assert!(reopened.blocked_by.is_none());
+        assert!(store.claim_task(&held.id, "agent-a", 60, NOW + 3).unwrap());
+
+        // A drift outcome (in_review) reopens too.
+        let review = store
+            .create_task(&goal.id, "Review", "done", None, NOW)
+            .unwrap();
+        assert!(store.claim_task(&review.id, "agent-b", 60, NOW).unwrap());
+        assert!(store
+            .record_conformance_and_transition(
+                &review.id,
+                "agent-b",
+                ConformanceAudit {
+                    evidence_schema_version: 1,
+                    evidence: "{}",
+                    verdict: Verdict::Drift,
+                    findings: "",
+                },
+                TaskStatus::InReview,
+                NOW,
+            )
+            .unwrap());
+        assert_eq!(
+            store.get_task(&review.id).unwrap().unwrap().status,
+            TaskStatus::InReview
+        );
+        assert!(store.reopen_task(&review.id, NOW + 1).unwrap());
+        assert_eq!(
+            store.get_task(&review.id).unwrap().unwrap().status,
+            TaskStatus::Open
+        );
+    }
+
+    #[test]
+    fn reopen_refuses_gated_active_and_terminal_tasks() {
+        let store = store();
+        let goal = goal(&store);
+
+        // A handoff-gated task must not be reopened around its predecessor.
+        let predecessor = store
+            .create_task(&goal.id, "Pred", "done", None, NOW)
+            .unwrap();
+        let gated = store
+            .create_task_after(
+                &goal.id,
+                "Gated",
+                "done",
+                None,
+                Some(predecessor.id.clone()),
+                NOW + 1,
+            )
+            .unwrap();
+        assert_eq!(gated.status, TaskStatus::Blocked);
+        assert!(store
+            .reopen_task(&gated.id, NOW + 2)
+            .unwrap_err()
+            .to_string()
+            .contains("gated by predecessor"));
+
+        // An open task is not stranded; a claimed task must be released instead.
+        let open = store
+            .create_task(&goal.id, "Open", "done", None, NOW)
+            .unwrap();
+        assert!(store
+            .reopen_task(&open.id, NOW + 1)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot be reopened"));
+        assert!(store.claim_task(&open.id, "agent-a", 60, NOW + 2).unwrap());
+        assert!(store
+            .reopen_task(&open.id, NOW + 3)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot be reopened"));
+
+        // Terminal work stays terminal.
+        let done = store
+            .create_task(&goal.id, "Done", "done", None, NOW)
+            .unwrap();
+        complete_aligned(&store, &done.id, "agent-c", NOW);
+        assert!(store
+            .reopen_task(&done.id, NOW + 1)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot be reopened"));
+    }
+
     #[test]
     fn store_rejects_verdict_status_mismatch() {
         let store = store();
@@ -1523,5 +1663,18 @@ mod tests {
         // Reconfirming resets the clock so it is active again at that time.
         assert!(s.reconfirm_knowledge(&k.id, far).unwrap());
         assert_eq!(s.active_knowledge(far).unwrap().len(), 1);
+    }
+
+    // Regression: re-recording an existing statement silently kept the original
+    // half-life (the ON CONFLICT clause updated weight/evidence/confirmed_at but
+    // not half_life_hours), so a caller's revised revalidation cadence was lost.
+    #[test]
+    fn record_knowledge_updates_half_life_on_conflict() {
+        let s = store();
+        let first = s.record_knowledge("X breaks Y", "{}", 720.0, NOW).unwrap();
+        assert_eq!(first.half_life_hours, 720.0);
+        let second = s.record_knowledge("X breaks Y", "{}", 24.0, NOW).unwrap();
+        assert_eq!(second.id, first.id);
+        assert_eq!(second.half_life_hours, 24.0);
     }
 }

@@ -24,11 +24,14 @@ pub(crate) fn slugify(input: &str) -> String {
             prev_dash = true;
         }
     }
-    let slug: String = out.trim_matches('-').chars().take(48).collect();
+    // Truncate first, then trim: trimming before the length cap can leave a
+    // trailing separator when the 48-char boundary lands on a dash.
+    let truncated: String = out.chars().take(48).collect();
+    let slug = truncated.trim_matches('-');
     if slug.is_empty() {
         short_hash(input)
     } else {
-        slug
+        slug.to_string()
     }
 }
 
@@ -47,6 +50,17 @@ mod tests {
         let s = slugify("!!!");
         assert!(!s.is_empty());
         assert!(s.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    // Regression: trimming '-' before the 48-char cap could leave a trailing
+    // dash when the truncation boundary landed on a separator, producing goal
+    // ids like "goal:...-". Truncating first, then trimming, prevents it.
+    #[test]
+    fn slugify_never_ends_with_dash_after_truncation() {
+        let slug = slugify(&"a ".repeat(30));
+        assert!(slug.starts_with('a'));
+        assert!(!slug.ends_with('-'), "slug had a trailing dash: {slug}");
+        assert!(slug.chars().count() <= 48);
     }
 
     #[test]

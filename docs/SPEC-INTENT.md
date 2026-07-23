@@ -323,7 +323,10 @@ Newline-delimited JSON-RPC 2.0 over stdio, exactly like `mindleak-mcp`.
 10. `renew_lease(task_id, agent_id, lease_secs)` → heartbeat.
 11. `complete_task(task_id, agent_id, evidence)` → `in_review` / `done` (triggers
     conformance).
-12. `release_task(task_id, agent_id)` / `block_task(task_id, reason, blocked_by?)`.
+12. `release_task(task_id, agent_id)` / `block_task(task_id, reason, blocked_by?)` /
+    `reopen_task(task_id)` → return a stranded task (`in_review`, or a manual
+    hold with no live predecessor gate) to claimable `open`; refuses to bypass a
+    handoff dependency, disturb an active claim, or revive terminal work.
 13. `board()` → live coordination snapshot: every task, owner, status, lease — so
     humans and agents can see the parallel state at a glance.
 

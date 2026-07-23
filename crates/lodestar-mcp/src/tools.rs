@@ -155,6 +155,17 @@ pub fn list() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "reopen_task",
+            "description": "Return a stranded task (in_review after a drift/needs-human completion, or manually blocked with no predecessor gate) to open so an agent can claim it again. Refuses to bypass a handoff dependency, to disturb an active claim (use release_task), or to revive terminal work.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string" }
+                },
+                "required": ["task_id"]
+            }
+        }),
+        json!({
             "name": "board",
             "description": "The live coordination snapshot: every task with owner, status, and lease.",
             "inputSchema": { "type": "object", "properties": {} }
@@ -365,6 +376,12 @@ pub fn call(engine: &Lodestar, params: &Value) -> Result<Value, String> {
                 )
                 .map_err(|e| e.to_string())?;
             ok(&json!({ "blocked": blocked }))
+        }
+        "reopen_task" => {
+            let reopened = engine
+                .reopen_task(req_str(&args, "task_id")?)
+                .map_err(|e| e.to_string())?;
+            ok(&json!({ "reopened": reopened }))
         }
         "board" => ok(&engine.board().map_err(|e| e.to_string())?),
         "check_conformance" => {
@@ -608,6 +625,31 @@ mod tests {
 
         assert_eq!(task["status"], "blocked");
         assert!(task["blocked_by"].as_str().unwrap().starts_with("task:"));
+    }
+
+    #[test]
+    fn reopen_task_dispatch_returns_a_manual_hold_to_open() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Recover", "unstick work", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Held", "done").unwrap();
+        // A manual hold with no predecessor was previously unrecoverable via the
+        // tool surface; reopen_task must return it to a claimable state.
+        engine.block_task(&task.id, None).unwrap();
+
+        let result = call(
+            &engine,
+            &json!({ "name": "reopen_task", "arguments": { "task_id": task.id } }),
+        )
+        .unwrap();
+        let payload: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["reopened"], true);
+
+        let board = engine.board().unwrap();
+        let reopened = board.iter().find(|t| t.id == task.id).unwrap();
+        assert_eq!(reopened.status.as_str(), "open");
     }
 
     #[test]

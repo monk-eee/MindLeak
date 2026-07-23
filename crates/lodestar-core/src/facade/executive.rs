@@ -66,6 +66,14 @@ impl Lodestar {
         self.store.block_task(id, blocked_by, now_unix())
     }
 
+    /// Return a stranded task (in review, or manually blocked with no live
+    /// predecessor gate) to `open` so an agent can claim it again. Refuses to
+    /// bypass a handoff dependency, disturb an active claim, or revive terminal
+    /// work.
+    pub fn reopen_task(&self, id: &str) -> Result<bool> {
+        self.store.reopen_task(id, now_unix())
+    }
+
     pub fn board(&self) -> Result<Vec<Task>> {
         self.store.board()
     }

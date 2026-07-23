@@ -234,3 +234,30 @@ and footguns, with impact and status:
   depends on the developer's local services. — Left open for a dedicated
   Lodestar test seam; tests must inject an unreachable/mock client rather than
   depending on ambient model availability.
+- **Lodestar `TaskStatus::Abandoned` is still unreachable.** — `reopen_task` now
+  returns a task stranded in `in_review` or a manual `blocked` hold to claimable
+  `open` (facade + MCP tool, with tests), closing the main dead-end. What remains
+  is that `TaskStatus::Abandoned` is defined but no code path produces it, so
+  there is no way to permanently retire a task that should not be reopened. —
+  Low impact: the recovery path exists; only the terminal-abandon verb is
+  missing. — Left open pending a decision on an `abandon_task` verb (audit,
+  Jul 2026).
+- **`renew_lease` and re-claim disagree on the evidence window.** — Re-claiming
+  an expired lease resets `claim_started_at` (a fresh evidence window), but
+  `renew_lease` extends the lease without checking expiry and preserves the
+  original `claim_started_at`. Two "recover an expired lease" paths therefore
+  yield different evidence-window starts. — Low impact on conformance-window
+  precision. — Left open; the correct unification (does renewal after lapse open
+  a new window?) is a small semantic decision, not yet made.
+- **Duplicate `define_goal` title+statement surfaces a raw SQLite error.** — A
+  third goal sharing a title and statement collides on the derived
+  `goal:{slug}-{hash(statement)}` id and fails with an opaque `UNIQUE
+  constraint` error instead of a typed `LodestarError::Invalid`. — Low impact
+  (edge case; goals are rarely exact duplicates). — Left open; a pre-check or
+  typed error would improve the message.
+- **A dead defensive guard remains in `record_conformance_and_transition`.** —
+  It errors when a predecessor has more than one successor, but
+  `task_handoffs.predecessor_id` is the PRIMARY KEY, so the count is always at
+  most one and the branch can never fire. — No functional impact; kept as
+  documented defense-in-depth rather than removed, since the PK is the real
+  guard. — Noted during the Jul 2026 audit.
