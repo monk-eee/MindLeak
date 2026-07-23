@@ -141,13 +141,27 @@ describe("resolveBinaryPath", () => {
 
 describe("boardRows", () => {
   it("orders by lifecycle and formats the owner", () => {
-    const rows = boardRows([
-      { id: "t1", goal_id: "g", title: "done thing", status: "done" },
-      { id: "t2", goal_id: "g", title: "mine", status: "claimed", owner: "alice" },
-    ]);
+    const rows = boardRows(
+      [
+        { id: "t1", goal_id: "g", title: "done thing", status: "done" },
+        { id: "t2", goal_id: "g", title: "mine", status: "claimed", owner: "alice" },
+      ],
+      true
+    );
     expect(rows[0].label).toBe("mine");
     expect(rows[0].description).toBe("claimed \u00b7 alice");
     expect(rows[1].status).toBe("done");
+  });
+
+  it("hides terminal history by default and retains an explicit history view", () => {
+    const tasks = [
+      { id: "open", goal_id: "g", title: "open", status: "open" },
+      { id: "done", goal_id: "g", title: "done", status: "done" },
+      { id: "abandoned", goal_id: "g", title: "abandoned", status: "abandoned" },
+    ];
+
+    expect(boardRows(tasks).map((row) => row.id)).toEqual(["open"]);
+    expect(boardRows(tasks, true).map((row) => row.id)).toEqual(["open", "done", "abandoned"]);
   });
 });
 

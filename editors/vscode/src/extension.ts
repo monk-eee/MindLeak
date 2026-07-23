@@ -408,7 +408,7 @@ async function refreshBoard(): Promise<void> {
     return;
   }
   try {
-    const tasks = await lodestar.callTool("board", {});
+    const tasks = await lodestar.callTool("board", { include_terminal: false });
     board.update(Array.isArray(tasks) ? tasks : []);
   } catch (err) {
     output.appendLine(`board error: ${(err as Error).message}`);

@@ -214,14 +214,16 @@ export interface BoardRow {
 }
 
 const BOARD_STATUS_ORDER = ["claimed", "open", "in_review", "blocked", "done", "abandoned"];
+const TERMINAL_TASK_STATUSES = new Set(["done", "abandoned"]);
 
-/** Order tasks by lifecycle and render display fields. Pure and testable. */
-export function boardRows(tasks: LodestarTask[]): BoardRow[] {
+/** Render the active board by default; terminal history remains explicitly available. */
+export function boardRows(tasks: LodestarTask[], includeTerminal = false): BoardRow[] {
   const rank = (s: string): number => {
     const i = BOARD_STATUS_ORDER.indexOf(s);
     return i === -1 ? BOARD_STATUS_ORDER.length : i;
   };
   return [...tasks]
+    .filter((task) => includeTerminal || !TERMINAL_TASK_STATUSES.has(task.status))
     .sort((a, b) => rank(a.status) - rank(b.status))
     .map((t) => ({
       id: t.id,
