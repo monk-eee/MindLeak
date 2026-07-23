@@ -239,14 +239,6 @@ and footguns, with impact and status:
   package is not shipped with the extension; a normal `npm audit fix` finds no
   compatible update. — Low impact. — Left open until Vitest accepts a fixed
   `esbuild`; do not use `--force` to hide the compatibility decision.
-- **Lodestar core tests are not isolated from a running local model.** — With an
-  OpenAI-compatible server reachable at the default URL,
-  `decompose_falls_back_to_single_task_without_llm` can return multiple tasks and
-  `conformance_flags_ungoverned_as_aligned_and_governed_as_drift` can escalate
-  drift to violation. — High impact on test determinism: `cargo test --all`
-  depends on the developer's local services. — Left open for a dedicated
-  Lodestar test seam; tests must inject an unreachable/mock client rather than
-  depending on ambient model availability.
 - **Lodestar task recovery and retirement verbs.** — `reopen_task` returns a task
   stranded in `in_review` or a manual `blocked` hold to claimable `open`, and
   `abandon_task` retires a nonterminal task to terminal `abandoned` (facade + MCP

@@ -11,10 +11,8 @@ pub(super) mod test_support {
     pub(super) fn engine() -> Lodestar {
         // Deterministic: point the optional LLM at an unreachable endpoint so
         // model-optional paths take their fallback regardless of local services.
-        Lodestar::open_in_memory().unwrap().with_llm(LlmClient {
-            base_url: "http://127.0.0.1:1/v1".to_string(),
-            model: "unreachable".to_string(),
-            api_key: String::new(),
-        })
+        Lodestar::open_in_memory()
+            .unwrap()
+            .with_llm(LlmClient::unreachable())
     }
 }

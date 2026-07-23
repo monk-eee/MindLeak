@@ -7,6 +7,14 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- **Lodestar tests are structurally isolated from any ambient local model.** A
+  reusable `LlmClient::unreachable()` seam points the optional planning/judging
+  model at an unroutable endpoint, so `decompose` and `judge` take their
+  deterministic fallback regardless of whatever server a developer is running.
+  The core test helper now uses it, and the previously untested `decompose_goal`
+  MCP dispatch gains coverage that asserts the single-task fallback offline
+  (closes the "Lodestar core tests are not isolated from a running local model"
+  known gap).
 - **`board` can hide terminal tasks.** The tool and facade gain
   `include_terminal` (default `true`, unchanged behaviour); `false` returns only
   the live/actionable set (open, claimed, in_review, blocked), so completed and

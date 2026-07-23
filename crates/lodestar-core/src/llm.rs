@@ -33,6 +33,19 @@ impl Default for LlmClient {
 }
 
 impl LlmClient {
+    /// A client pointed at an unroutable endpoint (`127.0.0.1:1`). Every request
+    /// fails fast, forcing model-optional callers (`decompose`, `judge`) down
+    /// their deterministic fallback. Use this to keep tests independent of any
+    /// ambient local model instead of hand-rolling an unreachable URL per call
+    /// site.
+    pub fn unreachable() -> Self {
+        LlmClient {
+            base_url: "http://127.0.0.1:1/v1".to_string(),
+            model: "unreachable".to_string(),
+            api_key: String::new(),
+        }
+    }
+
     /// POST `/chat/completions` with a strict JSON response and parse the content.
     fn chat_json(&self, system: &str, user: &str) -> Result<serde_json::Value> {
         let body = json!({

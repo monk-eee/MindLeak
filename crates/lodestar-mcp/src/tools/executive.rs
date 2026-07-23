@@ -234,6 +234,7 @@ pub(super) fn dispatch(
 mod tests {
     use super::super::call;
     use super::*;
+    use lodestar_core::llm::LlmClient;
     use lodestar_core::GoalKind;
 
     #[test]
@@ -262,6 +263,39 @@ mod tests {
 
         assert_eq!(task["status"], "blocked");
         assert!(task["blocked_by"].as_str().unwrap().starts_with("task:"));
+    }
+
+    #[test]
+    fn decompose_goal_dispatch_falls_back_to_a_single_task_offline() {
+        // The decompose_goal tool calls the optional planning model. With no
+        // model reachable it must degrade to a single seed task rather than
+        // error — and the test must stay deterministic regardless of whatever
+        // model a developer happens to be running locally.
+        let engine = Lodestar::open_in_memory()
+            .unwrap()
+            .with_llm(LlmClient::unreachable());
+        let goal = engine
+            .define_goal(
+                GoalKind::Objective,
+                "Add search",
+                "Implement FTS search",
+                None,
+            )
+            .unwrap();
+
+        let result = call(
+            &engine,
+            &json!({
+                "name": "decompose_goal",
+                "arguments": { "goal_id": goal.id }
+            }),
+        )
+        .unwrap();
+        let tasks: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        let tasks = tasks.as_array().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert!(tasks[0]["title"].as_str().unwrap().contains("Add search"));
     }
 
     #[test]
