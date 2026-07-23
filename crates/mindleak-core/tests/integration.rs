@@ -990,3 +990,22 @@ fn recall_and_index_degrade_cleanly_when_the_embedder_is_unreachable() {
         .iter()
         .any(|edge| edge.relation.as_str() == "calls"));
 }
+
+// Investigation task:2c86cc1f51ea (recall "100% failure"): the observed failure
+// was a `/v1/embeddings` 404 because the embedding model was not yet pulled — an
+// environment issue, not a defect. This pins the *other* half of the contract:
+// with a reachable embedder but no vectors indexed yet, recall must return an
+// EMPTY result set, not an error. "No matches" is a successful empty answer; only
+// a missing/unreachable model is an error (covered above). Regression: recall
+// must never conflate an unpopulated index with a failure.
+#[test]
+fn recall_returns_empty_not_error_when_the_index_is_unpopulated() {
+    let engine = MindLeak::open_in_memory()
+        .unwrap()
+        .with_embedder(Box::new(StubEmbedder));
+    engine.ingest_file("src/auth.rs", "fn a() {}\n").unwrap();
+    // Deliberately no index_nodes() call — the embeddings table stays empty.
+
+    let hits = engine.recall("auth session", 5).unwrap();
+    assert!(hits.is_empty());
+}
