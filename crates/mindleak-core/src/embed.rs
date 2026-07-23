@@ -69,7 +69,11 @@ impl Embedder {
 /// embedder in tests, never depending on a live model. The concrete
 /// [`Embedder`] talks to a local `/v1/embeddings` server; callers inject an
 /// alternative via `MindLeak::with_embedder`.
-pub trait TextEmbedder {
+///
+/// `Send + Sync` is required because `MindLeak` owns a boxed `TextEmbedder` and
+/// the async maintenance worker moves the whole `MindLeak` into a background
+/// thread (see the `Send` assertion in `lib.rs`).
+pub trait TextEmbedder: Send + Sync {
     /// The model tag under which vectors are stored and queried.
     fn model(&self) -> &str;
     /// Embed `text` into a dense vector, erroring cleanly when unavailable.

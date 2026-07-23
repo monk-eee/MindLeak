@@ -53,6 +53,15 @@ pub struct MindLeak {
     embedder: Box<dyn embed::TextEmbedder>,
 }
 
+// The async maintenance worker (`mindleak-mcp`) moves a `MindLeak` into
+// `std::thread::spawn`, so `MindLeak` must stay `Send`. This fails to compile if
+// a field regresses that (e.g. a non-thread-safe embedder) — the `Send + Sync`
+// bound on `embed::TextEmbedder` is what keeps the boxed embedder `Send`.
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<MindLeak>();
+};
+
 impl MindLeak {
     /// Open (or create) a MindLeak database at `path`.
     pub fn open(path: &str) -> Result<Self> {
@@ -110,5 +119,19 @@ impl MindLeak {
 
     pub fn store(&self) -> &GraphStore {
         &self.store
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MindLeak;
+
+    fn assert_send<T: Send>() {}
+
+    // Regression: an injected trait object without Send made MindLeak unusable
+    // by the maintenance worker's std::thread::spawn boundary.
+    #[test]
+    fn mindleak_remains_send_for_maintenance_workers() {
+        assert_send::<MindLeak>();
     }
 }
