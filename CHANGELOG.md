@@ -62,6 +62,17 @@ to [Semantic Versioning](https://semver.org/).
   `design_board`, `accept_design`, `promote_design`, `reject_design`. The portal
   Design Board view and workspace ADR sensor are the remaining slice.
 
+### Changed
+- **The install and usage on-ramp is action-first and easier to follow.** The
+  Quickstart now leads with a three-step download-register-restart happy path,
+  adds a "confirm it's connected" tool-list check with the one common failure
+  cause, and hands the reader a ready-to-paste first prompt that exercises the
+  full query -> act -> write-back memory loop. Verifying the release archive is
+  presented as a recommended step rather than a prerequisite that blocks first
+  value. The README download section leads with the install command and links to
+  the walkthrough, and its `.vscode/mcp.json` example now sets `MINDLEAK_AGENT`
+  so agent attribution works out of the box.
+
 ### Fixed
 - **Intent Board cleanup now handles stale live work, not only completed rows
   (ADR-0019).** Eligible open, in-review, blocked, and expired-claim rows expose

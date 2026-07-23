@@ -141,15 +141,17 @@ one archive containing both MCP servers for each supported platform:
 | `macos-x64` | macOS Intel |
 | `macos-arm64` | macOS Apple Silicon |
 
-Verify the archive against the release's `SHA256SUMS` and signed GitHub artifact
-attestation, extract it, then run `node /path/to/extracted/install.mjs` from a
-workspace. The dependency-free Node 20+ installer smoke-tests and registers both
-servers without overwriting unrelated MCP entries. Each platform also publishes
-a targeted VSIX with both native servers included. The binaries are not OS
-publisher-signed, so the operating system may show a warning. Preview versions
-use tags such as `v0.1.0-preview.1`.
+Extract the archive, then run `node /path/to/extracted/install.mjs` from your
+workspace: the dependency-free Node 20+ installer smoke-tests and registers both
+servers without overwriting unrelated MCP entries. Before extracting, verify the
+archive against the release's `SHA256SUMS` and its signed GitHub artifact
+attestation. Each platform also publishes a targeted VSIX with both native
+servers included. The binaries are not OS publisher-signed, so the operating
+system may show a warning. Preview versions use tags such as `v0.1.0-preview.1`.
 
-Measured outcomes, supported language/platform matrices, and limitations:
+See **[docs/QUICKSTART.md](docs/QUICKSTART.md)** for the full
+install-to-first-prompt walkthrough. Measured outcomes, supported
+language/platform matrices, and limitations:
 [`docs/RELEASE-NOTES.md`](docs/RELEASE-NOTES.md).
 
 ---
@@ -174,6 +176,7 @@ It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
       "command": "${workspaceFolder}/target/release/mindleak-mcp",
       "env": {
         "MINDLEAK_DB": "${workspaceFolder}/.mindleak/graph.db",
+        "MINDLEAK_AGENT": "copilot",
         "MINDLEAK_WORKSPACE": "${workspaceFolder}"
       }
     }

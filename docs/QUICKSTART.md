@@ -13,47 +13,60 @@ local: a single SQLite file per plane, no network listener, no cloud.
 
 ---
 
-## 1. Install and register both planes
+## 1. Install
 
-### Option A — download a release (fastest)
+### Option A — install a release (recommended)
 
-Grab the archive for your platform from
-[GitHub Releases](https://github.com/monk-eee/MindLeak/releases), verify it
-against the release's `SHA256SUMS` and signed GitHub artifact attestation, then
-extract it. From the workspace you want MindLeak to remember, run:
+No Rust toolchain and no `PATH` changes — three steps and a restart:
 
-```text
-node /path/to/extracted/install.mjs
-```
+1. **Download** the archive for your OS from
+   [GitHub Releases](https://github.com/monk-eee/MindLeak/releases) and extract it
+   anywhere.
 
-Node.js 20 or newer is required for the installer. It smoke-tests both servers,
-installs them under `.mindleak/bin/<version>/`, merges both registrations into
-`.vscode/mcp.json` without removing unrelated servers/comments, and adds local
-database paths to `.gitignore`. Set a stable identity with `--agent <id>`.
+   | Archive suffix | Platform |
+   |---|---|
+   | `windows-x64` | Windows x64 |
+   | `linux-x64` | Linux x64 (glibc) |
+   | `macos-x64` | macOS Intel |
+   | `macos-arm64` | macOS Apple Silicon |
 
-| Archive suffix | Platform |
-|---|---|
-| `windows-x64` | Windows x64 |
-| `linux-x64` | Linux x64 (glibc) |
-| `macos-x64` | macOS Intel |
-| `macos-arm64` | macOS Apple Silicon |
+2. **Register both servers** into the project you want MindLeak to remember. From
+   that project's root, run:
 
-Each release also includes a platform-targeted VSIX containing the same two
-servers. Install it with VS Code's **Extensions: Install from VSIX** command for
-the graph, intent board, passive sensors, health status, backup, export, and
-memory reset controls. Preview assets are checksummed and have signed GitHub
-provenance; native binaries are not OS publisher-signed, so the OS may warn.
+   ```text
+   node /path/to/extracted/install.mjs --agent your-name
+   ```
+
+   Node.js 20+ is required. The installer smoke-tests both servers, copies them
+   to `.mindleak/bin/<version>/`, merges the two registrations into
+   `.vscode/mcp.json` (keeping your other servers and comments), and adds the
+   local databases to `.gitignore`. `--agent` sets a stable identity for
+   attribution and task ownership; it defaults to `copilot`.
+
+3. **Restart your MCP client** (VS Code / Copilot, Claude Desktop, or Cursor) so
+   it picks up the new registration.
+
+Prefer the editor experience? Each release also ships a platform-targeted VSIX
+with both servers bundled. Install it via VS Code's **Extensions: Install from
+VSIX** command for the live graph, intent board, passive sensors, and health,
+backup, export, and reset controls.
+
+> **Verify first (recommended).** Before extracting, check the archive against the
+> release's `SHA256SUMS` and its signed GitHub artifact attestation. The native
+> binaries are not yet OS publisher-signed, so Windows/macOS may show a trust
+> prompt.
 
 ### Option B — build from source
 
-Requires a recent stable Rust (1.75+).
+Requires stable Rust 1.75+:
 
 ```bash
 cargo build --release --locked -p mindleak-mcp -p lodestar-mcp
 ```
 
 The binaries land at `target/release/mindleak-mcp` and
-`target/release/lodestar-mcp` (`.exe` on Windows).
+`target/release/lodestar-mcp` (`.exe` on Windows). Then register them manually —
+the next step.
 
 ---
 
@@ -112,12 +125,40 @@ use the `mcpServers` key:
 }
 ```
 
-Restart the client; it launches the servers and lists their tools. If a tool
-list appears, you're connected.
+Then restart the client and confirm the connection — the next step.
 
 ---
 
-## 3. Smoke-test it (optional)
+## 3. Confirm it's connected
+
+Restart your MCP client and open its tool list. You should see MindLeak's memory
+tools (`get_impact_radius`, `graph_multi_hop_query`, `recall`, the `ingest_*`
+family, …) and — if you registered it — Lodestar's intent tools (`define_goal`,
+`next_task`, `claim_task`, …). If the tools appear, you're live.
+
+Not seeing them? Diagnostics go to **stderr** (stdout carries only the MCP
+protocol), so launch the client from a terminal or set `MINDLEAK_LOG=debug` and
+read the startup line. The most common cause is a non-absolute `command` path in
+the config.
+
+---
+
+## 4. Your first prompt
+
+The whole point is that your agent *looks before it leaps* and *records what it
+learns*. Paste this to your agent to exercise the memory loop in a single turn:
+
+> Before you change `src/auth.ts`, call `get_impact_radius` on it and tell me what
+> could break. After we make the change, `ingest_file` the new version and
+> `record_architectural_decision` explaining why.
+
+That one request runs the core loop end to end: **query the graph → act → write
+back**. From here, [USAGE.md](USAGE.md) walks the full loop, the intent plane, and
+every tool.
+
+---
+
+## 5. Smoke-test the protocol (optional)
 
 You can drive a server directly by piping one JSON object per line to its stdin.
 This ingests a file, then asks what a change to it would impact:
@@ -136,7 +177,7 @@ piping stays clean). Set `MINDLEAK_LOG=debug` for more detail, or
 
 ---
 
-## 4. Optional local models
+## 6. Optional local models
 
 MindLeak is fully useful with **no model**. Two optional, local, off-hot-path
 augmentations light up if you point them at an OpenAI-compatible server (Ollama,
@@ -169,7 +210,7 @@ through `telemetry_snapshot`.
 
 ---
 
-## 5. Next steps
+## 7. Next steps
 
 - **[USAGE.md](USAGE.md)** — how an agent actually uses the tools (the memory
   loop, the intent plane, the full config reference).
