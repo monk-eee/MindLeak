@@ -38,6 +38,18 @@ to [Semantic Versioning](https://semver.org/).
   honest-merge-conflict properties in a throwaway sandbox repo.
 
 ### Added
+- **The learned-knowledge loop is wired end to end (ADR-0022).** Two seams that
+  were dormant are now connected. A `promote_signals` bridge (facade + MCP verb)
+  batch-feeds proven-signal candidates — opaque MindLeak node ids plus their
+  provenance span — into the existing count+span consolidation gate; it invents no
+  new threshold and builds a deterministic templated statement when no local model
+  is available, so promotion never depends on an LLM. Conformance now consults
+  `active_knowledge` on every check: when a task's changed nodes intersect a proven
+  regularity's referenced nodes it attaches an **advisory** finding and may nudge
+  an otherwise-`Aligned` verdict to `NeedsHuman` — but is structurally incapable of
+  emitting `Violation` (only the Constitution hard-fails), keeping a stale or wrong
+  regularity from blocking valid work. Knowledge stays durable-but-revalidated:
+  unreconfirmed statements decay out of `active_knowledge` and are pruned.
 - **`abandon_task` retires a task to terminal `abandoned`.** `TaskStatus::Abandoned`
   was defined but unreachable — a mis-filed or superseded task could not be retired
   short of `reset_database`. The new store/facade method and MCP tool move a

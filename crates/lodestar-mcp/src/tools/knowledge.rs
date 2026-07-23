@@ -1,7 +1,7 @@
 //! Knowledge tool definitions and dispatch.
 
 use super::{i64_arg, ok, opt_str, req_str, str_array, text};
-use lodestar_core::Lodestar;
+use lodestar_core::{Lodestar, SignalPromotion};
 use serde_json::{json, Value};
 
 pub(super) fn definitions() -> Vec<Value> {
@@ -34,9 +34,42 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "active_knowledge",
-            "description": "Return learned knowledge still above the active threshold, strongest first.",
-            "inputSchema": { "type": "object", "properties": {} }
+            "name": "consolidate",
+            "description": "Gated promotion of a discovered regularity into durable knowledge. Stores nothing unless the evidence clears count + span thresholds (signal, not coincidence).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "statement": { "type": "string" },
+                    "evidence_node_ids": { "type": "array", "items": { "type": "string" } },
+                    "first_seen": { "type": "integer" },
+                    "last_seen": { "type": "integer" }
+                },
+                "required": ["statement", "evidence_node_ids", "first_seen", "last_seen"]
+            }
+        }),
+        json!({
+            "name": "promote_signals",
+            "description": "Promotion bridge (ADR-0022): feed MindLeak proven-signal candidates (opaque node ids + provenance span) into the gated consolidator in one call. Reuses the count + span gate; builds a deterministic templated statement when a candidate has none. Returns the knowledge that cleared the gate.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "candidates": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "subject": { "type": "string", "description": "Short label for the templated statement." },
+                                "evidence_node_ids": { "type": "array", "items": { "type": "string" } },
+                                "first_seen": { "type": "integer" },
+                                "last_seen": { "type": "integer" },
+                                "statement": { "type": "string", "description": "Optional pre-distilled summary; omit for a deterministic template." }
+                            },
+                            "required": ["subject", "evidence_node_ids", "first_seen", "last_seen"]
+                        }
+                    }
+                },
+                "required": ["candidates"]
+            }
         }),
         json!({
             "name": "reconfirm_knowledge",
@@ -86,6 +119,29 @@ pub(super) fn dispatch(
                 Some(k) => ok(&k),
                 None => text("not promoted: evidence below count/span threshold".to_string()),
             }
+        })()),
+        "promote_signals" => Some((|| {
+            let candidates = args
+                .get("candidates")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "missing required array arg: candidates".to_string())?
+                .iter()
+                .map(|candidate| SignalPromotion {
+                    subject: candidate
+                        .get("subject")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    evidence_node_ids: str_array(candidate, "evidence_node_ids"),
+                    first_seen: i64_arg(candidate, "first_seen", 0),
+                    last_seen: i64_arg(candidate, "last_seen", 0),
+                    statement: opt_str(candidate, "statement"),
+                })
+                .collect::<Vec<_>>();
+            let promoted = engine
+                .promote_signals(&candidates)
+                .map_err(|e| e.to_string())?;
+            ok(&promoted)
         })()),
         "active_knowledge" => Some((|| {
             ok(&engine.active_knowledge().map_err(|e| e.to_string())?)

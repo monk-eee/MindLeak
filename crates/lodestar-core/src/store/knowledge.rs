@@ -117,4 +117,32 @@ mod tests {
         assert_eq!(second.id, first.id);
         assert_eq!(second.half_life_hours, 24.0);
     }
+
+    // ADR-0022: knowledge is durable-but-revalidated, not immortal. Unreconfirmed
+    // knowledge decays below the active threshold and prune_knowledge removes it,
+    // while a reconfirmed statement survives the same prune.
+    #[test]
+    fn unreconfirmed_knowledge_decays_and_is_pruned_but_reconfirmed_survives() {
+        let s = store();
+        let stale = s
+            .record_knowledge("stale lesson", "{}", 720.0, NOW)
+            .unwrap();
+        let fresh = s
+            .record_knowledge("fresh lesson", "{}", 720.0, NOW)
+            .unwrap();
+        let far = NOW + 200 * 24 * HOUR;
+
+        // The fresh one is reconfirmed at the far time; the stale one is not.
+        assert!(s.reconfirm_knowledge(&fresh.id, far).unwrap());
+
+        // Only the un-reconfirmed statement has faded from the active set...
+        let active = s.active_knowledge(far).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, fresh.id);
+
+        // ...and prune removes exactly that decayed one, keeping the reconfirmed.
+        assert_eq!(s.prune_knowledge(far).unwrap(), 1);
+        assert!(s.get_knowledge(&stale.id).unwrap().is_none());
+        assert!(s.get_knowledge(&fresh.id).unwrap().is_some());
+    }
 }

@@ -236,6 +236,7 @@ coordinate through one plane.
 | `check_conformance` | aligned · drift · violation against governing intent. |
 | `conformance_history` | Resolve a task's durable evidence chain — the recorded bundle, verdict, and stable id per check. |
 | `consolidate` / `record_knowledge` | Gated promotion of learned regularities. |
+| `promote_signals` | Promotion bridge (ADR-0022): batch-feed proven-signal candidates into the gated consolidator; deterministic, model-optional. |
 | `active_knowledge` / `reconfirm_knowledge` / `prune_knowledge` | Durable-but-revalidated knowledge. |
 | `lodestar_stats` | Goal / task / knowledge counts. |
 | `backup_database` | Create an integrity-checked online SQLite backup of the intent plane. |

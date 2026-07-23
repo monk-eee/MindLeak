@@ -58,6 +58,14 @@ learned `knowledge`, and `lifecycle` operations), `llm` (optional local model),
 and `lib` (the `Lodestar` facade wiring). Facade behavior is grouped under
 `facade/`: `constitution`, `executive`, `conformance`, and `knowledge`.
 
+The learned-knowledge loop is wired end to end (ADR-0022): `knowledge`'s
+`promote_signals` bridge feeds MindLeak proven-signal candidates through the
+existing count+span consolidation gate (deterministic, model-optional), and
+`conformance` consults `active_knowledge` on every check — a changed node that
+intersects a proven regularity attaches an **advisory** finding and may nudge an
+otherwise-`Aligned` verdict to `NeedsHuman`, but can never emit `Violation` (only
+the Constitution hard-fails). The read path stays deterministic — no LLM.
+
 ### `lodestar-mcp` (binary)
 
 A second MCP stdio server exposing the Intent Plane tools for constitution,

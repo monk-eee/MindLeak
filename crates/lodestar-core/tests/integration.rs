@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use lodestar_core::{
     now_unix, CodeBindingMode, ConformanceEvidence, EvidenceProvenance, GoalKind, Lodestar,
-    TaskStatus, Verdict,
+    SignalPromotion, TaskStatus, Verdict,
 };
 
 /// A unique temp DB path per test (file-backed so multiple connections share it).
@@ -312,4 +312,72 @@ fn shared_db_is_visible_across_worktree_connections() {
         assert_eq!(next.goal_id, g.id);
     }
     cleanup(&path);
+}
+
+#[test]
+fn learned_knowledge_loop_promotes_then_advises_conformance_without_violation() {
+    let engine = Lodestar::open_in_memory().unwrap();
+
+    // Promotion (ADR-0022): a proven-signal candidate (>= 3 nodes over >= 3 days)
+    // clears the existing gate and becomes durable knowledge; a too-thin one does
+    // not — the bridge invents no new threshold.
+    let promoted = engine
+        .promote_signals(&[
+            SignalPromotion {
+                subject: "artifact:src/lexer.rs".into(),
+                evidence_node_ids: vec![
+                    "artifact:src/lexer.rs".into(),
+                    "execution:a".into(),
+                    "execution:b".into(),
+                ],
+                first_seen: 0,
+                last_seen: 10 * 24 * 3600,
+                statement: None,
+            },
+            SignalPromotion {
+                subject: "artifact:src/rare.rs".into(),
+                evidence_node_ids: vec!["execution:one".into()],
+                first_seen: 0,
+                last_seen: 5,
+                statement: None,
+            },
+        ])
+        .unwrap();
+    assert_eq!(promoted.len(), 1);
+    assert_eq!(engine.active_knowledge().unwrap().len(), 1);
+
+    // Conformance consumption: an ungoverned change touching the knowledge's node
+    // surfaces an advisory finding and is nudged to NeedsHuman — never Violation.
+    let evidence = ConformanceEvidence {
+        schema_version: 1,
+        task_id: None,
+        agent_id: "agent-a".into(),
+        started_at: 1,
+        ended_at: 2,
+        changed_node_ids: vec!["artifact:src/lexer.rs".into()],
+        failed_node_ids: Vec::new(),
+        execution_ids: vec!["execution:proof".into()],
+        successful_execution_ids: vec!["execution:proof".into()],
+        commit_ids: Vec::new(),
+        summary: "touch lexer".into(),
+        provenance: vec![
+            EvidenceProvenance {
+                source_id: "agent:agent-a".into(),
+                target_id: "execution:proof".into(),
+                relation: "observed".into(),
+            },
+            EvidenceProvenance {
+                source_id: "execution:proof".into(),
+                target_id: "artifact:src/lexer.rs".into(),
+                relation: "modified".into(),
+            },
+        ],
+    };
+    let res = engine.check_conformance(&evidence, None).unwrap();
+    assert_eq!(res.verdict, Verdict::NeedsHuman);
+    assert_ne!(res.verdict, Verdict::Violation);
+    assert!(res
+        .findings
+        .iter()
+        .any(|f| f.contains("advisory: learned knowledge")));
 }
