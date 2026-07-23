@@ -15,6 +15,16 @@ impl GraphStore {
     /// Reconstruct attributed episodic evidence in a bounded work window.
     /// Observation establishes attribution; only mutation relations establish
     /// changed nodes.
+    ///
+    /// Load-bearing seam invariant (Lodestar conformance depends on it): the
+    /// provenance emitted here is self-consistent only because executions emit
+    /// `modified`/`failed_on` and commit (`intent`) nodes emit `refactored`
+    /// (see `ingest::execution` and `ingest::git`). That convention is what makes
+    /// every changed node's mutation source land in `execution_ids` or
+    /// `commit_ids`, and every failed node's source in `execution_ids`. If an
+    /// ingester ever breaks it, the `evidence/tests.rs` property test fails here
+    /// rather than silently emitting bundles Lodestar's `validate_evidence_shape`
+    /// rejects.
     pub fn evidence_for(
         &self,
         task_id: Option<&str>,
@@ -152,3 +162,6 @@ impl GraphStore {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;
