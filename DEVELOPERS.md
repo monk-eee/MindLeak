@@ -279,13 +279,11 @@ and footguns, with impact and status:
   the retire-a-mis-filed-task gap. — Resolved Jul 2026. Note: the verbs are wired
   in source, but a stale running MCP binary may not expose them until
   rebuilt/restarted (see the stale-binary gap above).
-- **`renew_lease` and re-claim disagree on the evidence window.** — Re-claiming
-  an expired lease resets `claim_started_at` (a fresh evidence window), but
-  `renew_lease` extends the lease without checking expiry and preserves the
-  original `claim_started_at`. Two "recover an expired lease" paths therefore
-  yield different evidence-window starts. — Low impact on conformance-window
-  precision. — Left open; the correct unification (does renewal after lapse open
-  a new window?) is a small semantic decision, not yet made.
+- **`renew_lease` and re-claim now share one evidence-window rule.** — Renewal is
+  a heartbeat for a still-live lease and preserves `claim_started_at`; it refuses
+  after expiry. A lapsed owner must win `claim_task` again, which resets
+  `claim_started_at` and opens a fresh conformance evidence window. The guarded
+  single-statement CAS and both paths are regression-tested. — Resolved Jul 2026.
 - **Duplicate `define_goal` title+statement surfaces a raw SQLite error.** — A
   third goal sharing a title and statement collides on the derived
   `goal:{slug}-{hash(statement)}` id and fails with an opaque `UNIQUE

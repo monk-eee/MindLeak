@@ -7,6 +7,10 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **Expired leases can no longer be renewed with a stale evidence window.**
+  `renew_lease` now succeeds only while the caller's lease is still live. After
+  expiry, the owner must win `claim_task` again, which resets `claim_started_at`
+  just like any other re-claim and gives conformance one unambiguous work window.
 - **`decompose_goal` refuses normative goals, so `next_task` stops handing out
   zombie tasks.** Decomposing a `constraint`/`invariant` goal produced tasks that
   merely restate the rule and can never accrue completion evidence; `next_task`

@@ -253,6 +253,7 @@ task:
 UPDATE tasks
    SET status = 'claimed',
        owner = :agent,
+       claim_started_at = :now,
        lease_expires_at = :now + :ttl,
        updated_at = :now
  WHERE id = :task
@@ -265,8 +266,11 @@ UPDATE tasks
   compare-and-swap. Two agents racing for the same task → one `changes()==1`, the
   rest `0`. No collisions, no double work.
 - **Leases with TTL.** A crashed agent's claim expires and the task becomes
-  reclaimable — no work is stranded. Live agents call `renew_lease` as a
-  heartbeat.
+  reclaimable — no work is stranded. `renew_lease` is a heartbeat for a
+  still-live lease only and preserves `claim_started_at`. Once the lease lapses,
+  renewal fails; the owner uses `claim_task` like any other contender, and a
+  successful re-claim sets `claim_started_at` to the re-claim time so stale work
+  cannot silently remain inside the conformance evidence window.
 - **Completion is guarded too:** `… SET status='in_review' WHERE id=:task AND
   owner=:agent AND status='claimed'` — you can only complete what you still hold.
 

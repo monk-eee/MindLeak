@@ -227,7 +227,7 @@ coordinate through one plane.
 | `export_constitution` | Render the constitution to committed-friendly markdown. |
 | `create_task` / `decompose_goal` | Add claimable work; `create_task(blocked_by=...)` creates a progressive handoff. |
 | `next_task` | Suggest the next unblocked, claimable task. |
-| `claim_task` / `renew_lease` | **Atomic claim + lease** — collision-free parallel coordination. |
+| `claim_task` / `renew_lease` | **Atomic claim + lease** — renewal is a live heartbeat; after expiry, re-claim opens a fresh evidence window. |
 | `complete_task` | Consume the exact authoritative `check_conformance` result (owner-guarded); aligned completes, uncertainty reviews, violation blocks. |
 | `release_task` / `block_task` | Return or block work. |
 | `reopen_task` | Return a stranded task (in review, or a manual hold) to claimable `open`. |

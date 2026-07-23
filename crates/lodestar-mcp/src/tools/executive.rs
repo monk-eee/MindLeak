@@ -51,7 +51,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "renew_lease",
-            "description": "Heartbeat: extend the lease on a task this agent still owns.",
+            "description": "Heartbeat: extend a still-live lease owned by this agent. After expiry, call claim_task to open a fresh evidence window.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
