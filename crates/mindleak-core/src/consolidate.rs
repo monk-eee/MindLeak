@@ -136,7 +136,7 @@ impl Consolidator {
 
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let value = crate::net::post_json_with_cancel(
-            &crate::net::HttpConfig::default(),
+            &crate::net::HttpConfig::for_model(),
             &url,
             &self.api_key,
             &body,

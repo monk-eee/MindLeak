@@ -35,14 +35,31 @@ impl Default for Embedder {
 
 impl Embedder {
     /// Embed `text` into a dense vector. Errors cleanly when no model is
-    /// reachable — the feature is optional and never on the hot path. The error
-    /// is *actionable*: it names the model, the URL, and the exact remediation so
-    /// a missing embedding model can never be a silent 404 again (ADR-0008).
+    /// reachable — the feature is optional and never on the hot path. Delegates
+    /// to [`embed_batch`](Self::embed_batch) so single and batched paths share
+    /// one implementation.
     pub fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        self.embed_batch(std::slice::from_ref(&text.to_string()))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| MindLeakError::Http("empty embedding response".into()))
+    }
+
+    /// Embed many texts in a **single** request. The OpenAI-compatible
+    /// `/v1/embeddings` endpoint accepts an array `input` and returns `data[]`
+    /// (each carrying its `index`), so the offline `index` pass costs one round
+    /// trip per batch instead of one per node. Vectors are returned in input
+    /// order. Errors cleanly when no model is reachable — the error is
+    /// *actionable*: it names the model, the URL, and the exact remediation so a
+    /// missing embedding model can never be a silent 404 (ADR-0008).
+    pub fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
         let url = format!("{}/embeddings", self.base_url.trim_end_matches('/'));
-        let body = json!({ "model": self.model, "input": text });
+        let body = json!({ "model": self.model, "input": texts });
         let value = crate::net::post_json(
-            &crate::net::HttpConfig::default(),
+            &crate::net::HttpConfig::for_model(),
             &url,
             &self.api_key,
             &body,
@@ -57,22 +74,49 @@ impl Embedder {
                 model = self.model,
             ))
         })?;
-        let embedding = value
+        let data = value
             .get("data")
-            .and_then(|d| d.get(0))
-            .and_then(|d| d.get("embedding"))
-            .and_then(|e| e.as_array())
-            .ok_or_else(|| {
-                MindLeakError::Http("embeddings response missing data[0].embedding".into())
-            })?;
-        let vector: Vec<f32> = embedding
-            .iter()
-            .filter_map(|v| v.as_f64().map(|f| f as f32))
-            .collect();
-        if vector.is_empty() {
-            return Err(MindLeakError::Http("empty embedding vector".into()));
+            .and_then(|d| d.as_array())
+            .ok_or_else(|| MindLeakError::Http("embeddings response missing data[]".into()))?;
+        if data.len() != texts.len() {
+            return Err(MindLeakError::Http(format!(
+                "embeddings returned {} vectors for {} inputs",
+                data.len(),
+                texts.len()
+            )));
         }
-        Ok(vector)
+        let mut out: Vec<Vec<f32>> = vec![Vec::new(); texts.len()];
+        for (position, item) in data.iter().enumerate() {
+            let index = item
+                .get("index")
+                .and_then(|i| i.as_u64())
+                .map(|i| i as usize)
+                .unwrap_or(position);
+            if index >= out.len() {
+                return Err(MindLeakError::Http(
+                    "embeddings response index out of range".into(),
+                ));
+            }
+            let vector: Vec<f32> = item
+                .get("embedding")
+                .and_then(|e| e.as_array())
+                .ok_or_else(|| {
+                    MindLeakError::Http("embeddings response item missing embedding".into())
+                })?
+                .iter()
+                .filter_map(|v| v.as_f64().map(|f| f as f32))
+                .collect();
+            if vector.is_empty() {
+                return Err(MindLeakError::Http("empty embedding vector".into()));
+            }
+            out[index] = vector;
+        }
+        if out.iter().any(Vec::is_empty) {
+            return Err(MindLeakError::Http(
+                "embeddings response was missing a vector".into(),
+            ));
+        }
+        Ok(out)
     }
 }
 
@@ -90,6 +134,12 @@ pub trait TextEmbedder: Send + Sync {
     fn model(&self) -> &str;
     /// Embed `text` into a dense vector, erroring cleanly when unavailable.
     fn embed(&self, text: &str) -> Result<Vec<f32>>;
+    /// Embed many texts, returning vectors in input order. The default fans out
+    /// to [`embed`](Self::embed) so simple/test embedders work unchanged; the
+    /// network [`Embedder`] overrides it to embed a whole batch in one request.
+    fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        texts.iter().map(|text| self.embed(text)).collect()
+    }
 }
 
 impl TextEmbedder for Embedder {
@@ -98,6 +148,9 @@ impl TextEmbedder for Embedder {
     }
     fn embed(&self, text: &str) -> Result<Vec<f32>> {
         Embedder::embed(self, text)
+    }
+    fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        Embedder::embed_batch(self, texts)
     }
 }
 
@@ -232,6 +285,36 @@ mod tests {
         assert!((cosine(&[1.0, 0.0], &[1.0, 0.0]) - 1.0).abs() < 1e-6);
         assert!(cosine(&[1.0, 0.0], &[0.0, 1.0]).abs() < 1e-6);
         assert_eq!(cosine(&[1.0, 0.0], &[1.0]), 0.0); // length mismatch
+    }
+
+    // A `TextEmbedder` that only implements the single-text `embed` still gets a
+    // working `embed_batch` via the default fan-out, preserving input order — so
+    // the batched `index` pass works with any embedder, live or stubbed.
+    #[test]
+    fn default_embed_batch_fans_out_in_input_order() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Counting {
+            calls: AtomicUsize,
+        }
+        impl TextEmbedder for Counting {
+            fn model(&self) -> &str {
+                "stub"
+            }
+            fn embed(&self, text: &str) -> Result<Vec<f32>> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![text.len() as f32])
+            }
+        }
+
+        let embedder = Counting {
+            calls: AtomicUsize::new(0),
+        };
+        let out = embedder
+            .embed_batch(&["a".to_string(), "bb".to_string(), "ccc".to_string()])
+            .unwrap();
+        assert_eq!(out, vec![vec![1.0], vec![2.0], vec![3.0]]);
+        assert_eq!(embedder.calls.load(Ordering::SeqCst), 3);
     }
 
     #[test]

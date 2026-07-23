@@ -55,6 +55,26 @@ impl Default for HttpConfig {
 }
 
 impl HttpConfig {
+    /// Network policy for the optional local *model* calls (LLM consolidation and
+    /// embeddings). Generation is legitimately slow, so it gets a far more
+    /// generous timeout than a normal request, and it does **not** retry: a model
+    /// call that merely ran long is not a transient blip — re-sending the same
+    /// prompt just repeats expensive work within a fresh budget, tripling latency
+    /// before failing. Re-running `index` / `consolidate` is the retry. Tunable
+    /// via `MINDLEAK_MODEL_TIMEOUT_MS`.
+    pub fn for_model() -> Self {
+        HttpConfig {
+            timeout: Duration::from_millis(env_bounded_u64(
+                "MINDLEAK_MODEL_TIMEOUT_MS",
+                120_000,
+                MIN_TIMEOUT_MS,
+                MAX_TIMEOUT_MS,
+            )),
+            retries: 0,
+            ..HttpConfig::default()
+        }
+    }
+
     /// Upper bound for all interruptible work in one retry sequence. DNS may
     /// exceed ureq's deadline on platforms where resolver calls cannot cancel.
     pub fn maximum_elapsed(&self) -> Duration {
@@ -355,6 +375,18 @@ fn backoff(attempt: u32) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression: a slow-but-working local model call was retried like a network
+    // blip. Because a read timeout is a Transport error (classified transient),
+    // a generation that outran the 30s default timed out and was re-sent twice —
+    // ~3x the wait, then failure, with nothing produced. The model policy makes a
+    // single, generously-timed attempt.
+    #[test]
+    fn model_policy_is_generous_and_never_retries() {
+        let model = HttpConfig::for_model();
+        assert_eq!(model.retries, 0);
+        assert!(model.timeout >= HttpConfig::default().timeout);
+    }
 
     #[test]
     fn breaker_opens_after_threshold_then_recovers_on_probe() {

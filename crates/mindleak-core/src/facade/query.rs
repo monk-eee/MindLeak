@@ -4,6 +4,9 @@ use crate::{
     RelationType, Result, ScoredNode, Subgraph, WriteOutcome,
 };
 
+/// Nodes embedded per `/v1/embeddings` request during the offline index pass.
+const EMBED_BATCH: usize = 64;
+
 impl MindLeak {
     /// Semantic recall: return nodes whose content is closest in meaning to
     /// `query`, via the optional local embedding index (ADR-0008). Complements
@@ -26,16 +29,21 @@ impl MindLeak {
     }
 
     /// Populate the semantic embedding index for nodes missing a current vector
-    /// (off the zero-token hot path). Returns how many nodes were indexed.
+    /// (off the zero-token hot path). Embeds in batches so the pass costs one
+    /// round trip per `EMBED_BATCH` nodes instead of one per node. Returns how
+    /// many nodes were indexed.
     pub fn index_nodes(&self, limit: usize) -> Result<usize> {
         let now = now_unix();
         let pending =
             embed::nodes_missing_embeddings(&self.store.conn, self.embedder.model(), limit)?;
         let mut indexed = 0;
-        for (id, text) in pending {
-            let vector = self.embedder.embed(&text)?;
-            embed::upsert(&self.store.conn, &id, self.embedder.model(), &vector, now)?;
-            indexed += 1;
+        for chunk in pending.chunks(EMBED_BATCH) {
+            let texts: Vec<String> = chunk.iter().map(|(_, text)| text.clone()).collect();
+            let vectors = self.embedder.embed_batch(&texts)?;
+            for ((id, _), vector) in chunk.iter().zip(vectors) {
+                embed::upsert(&self.store.conn, id, self.embedder.model(), &vector, now)?;
+                indexed += 1;
+            }
         }
         Ok(indexed)
     }

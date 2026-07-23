@@ -6,6 +6,18 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`index` and `consolidate_session` no longer stall on the model network path.**
+  The optional embedding `index` pass embedded one node per HTTP request; it now
+  batches up to 64 nodes per `/v1/embeddings` call (OpenAI-compatible array
+  `input`), turning a full index from hundreds of sequential round trips into a
+  handful. And the optional local-model calls (LLM consolidation + embeddings) now
+  use a dedicated network policy — a generous timeout (`MINDLEAK_MODEL_TIMEOUT_MS`,
+  default 120s) and **no retry**: a slow-but-working generation was classified as a
+  transient failure and re-sent up to three times, tripling the wait before failing
+  with nothing produced. Re-running `index` / `consolidate` is the retry. The
+  deterministic zero-token write/query path is untouched.
+
 ### Changed
 - **MCP initialize metadata now identifies the exact source build.** MindLeak and
   Lodestar report `serverInfo.version` as
