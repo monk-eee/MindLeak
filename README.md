@@ -4,24 +4,45 @@
 
 # MindLeak
 
+<p align="center">
+  <a href="https://github.com/monk-eee/MindLeak/actions/workflows/ci.yml"><img src="https://github.com/monk-eee/MindLeak/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/monk-eee/MindLeak/actions/workflows/release.yml"><img src="https://github.com/monk-eee/MindLeak/actions/workflows/release.yml/badge.svg" alt="Release"></a>
+  <a href="https://github.com/monk-eee/MindLeak/releases"><img src="https://img.shields.io/github/v/release/monk-eee/MindLeak?include_prereleases&sort=semver&label=release" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/rust-1.75%2B-orange.svg" alt="Rust 1.75+">
+  <img src="https://img.shields.io/badge/protocol-MCP-8A2BE2.svg" alt="Model Context Protocol">
+</p>
+
 **A local, decay-weighted context graph brain for coding agents.**
 
 MindLeak is a **Temporal Context Graph Engine (TCGE)** that turns raw developer
 telemetry (terminal runs, git commits, file symbols) into a directional knowledge
 graph whose edges **decay on an exponential half-life**, so stale context fades
-instead of drowning every query in historical noise. It ships as:
+instead of drowning every query in historical noise.
 
-- a **Rust core engine** ([`mindleak-core`](crates/mindleak-core)) — SQLite graph +
-  FTS5, decay engine, zero-token deterministic ingestion, optional local-LLM
-  consolidation;
-- a **Rust MCP server** ([`mindleak-mcp`](crates/mindleak-mcp)) — exposes the graph
-  to Copilot / Claude / Cursor / CLI agents over stdio;
-- a **VS Code extension** ([`editors/vscode`](editors/vscode)) — passive editor,
-  shell-execution, and Git sensors plus a live Cytoscape graph visualizer.
+MindLeak has **two planes**:
 
-It is a complete, from-scratch replacement for flat log / vector-only agent
-memory. See [`docs/SPEC.md`](docs/SPEC.md) for the full design and
-[`docs/`](docs/) for architecture and development guides.
+- a **Memory plane** — *what happened* and *how the code connects*, that
+  **forgets on purpose**. It does structural, multi-hop reasoning
+  (*"what breaks if I change this?"*) that similarity search can't, plus semantic
+  recall and passive capture of runs / commits / edits. Core:
+  [`mindleak-core`](crates/mindleak-core) (SQLite graph + FTS5, decay engine,
+  zero-token deterministic ingestion, optional embedding recall + LLM
+  consolidation); served by [`mindleak-mcp`](crates/mindleak-mcp) over MCP/stdio.
+- an **Intent plane — Lodestar** — the **durable** "spec brain": a versioned
+  constitution (goals · constraints · invariants) and a task ledger with
+  **atomic claim/lease** coordination, so multiple agents work in parallel
+  without clobbering each other, plus evidence-backed conformance checks. Core:
+  [`lodestar-core`](crates/lodestar-core); served by
+  [`lodestar-mcp`](crates/lodestar-mcp).
+
+A **VS Code extension** ([`editors/vscode`](editors/vscode)) adds passive editor,
+shell-execution, and Git sensors, a live Cytoscape graph visualizer, and an
+intent board.
+
+It is a from-scratch replacement for flat-log / vector-only agent memory. See
+[`docs/SPEC.md`](docs/SPEC.md) for the design and [`docs/`](docs/) for the
+architecture and development guides.
 
 > **Zero-token write path.** Ingestion uses pure pattern matching (regex + path +
 > exit code) — no LLM tokens. An optional local Ollama model only runs
@@ -54,25 +75,31 @@ memory. See [`docs/SPEC.md`](docs/SPEC.md) for the full design and
 
 ```mermaid
 flowchart TD
-  subgraph editor["VS Code extension (TypeScript)"]
+  A["Agents · Copilot / Claude / Cursor"]
+  subgraph editor["VS Code extension"]
     S["passive sensors<br/>focus · save · terminal · git"]
-    V["Cytoscape webview"]
+    V["Cytoscape graph + intent board"]
   end
-  subgraph core["mindleak-core (Rust)"]
-    I["deterministic ingest<br/>execution · git · ast"]
+  subgraph memory["Memory plane · mindleak — decays"]
+    I["zero-token ingest<br/>execution · git · ast · imports"]
     G[("SQLite graph + FTS5<br/>decay-weighted edges")]
-    D["decay + prune"]
+    D["decay · prune · recall"]
   end
-  M["mindleak-mcp<br/>MCP stdio server"]
-  O["Ollama (optional)<br/>glm4 / codegeex4"]
-  A["Agents<br/>Copilot · Claude · Cursor"]
+  subgraph intent["Intent plane · lodestar — durable"]
+    C["constitution<br/>goals · constraints · invariants"]
+    T[("task ledger<br/>atomic claim / lease")]
+  end
+  O["local model (optional)<br/>consolidation · embeddings"]
 
-  S -->|MCP| M
-  V -->|MCP| M
-  M --> I --> G
+  A <-->|MCP| G
+  A <-->|MCP| T
+  S -->|MCP| I
+  I --> G
   D --> G
-  G -.async.-> O -.intent nodes.-> G
-  A <-->|MCP tools| M
+  G -.async.-> O
+  O -.gist · vectors.-> G
+  C --- T
+  T -. evidence-backed conformance .-> G
 ```
 
 ---
