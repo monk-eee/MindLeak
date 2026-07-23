@@ -264,6 +264,90 @@ export function conformanceDiagnostic(result: ConformanceResult): ConformanceDia
   return { severity, message: `MindLeak conformance: ${result.verdict}${detail}` };
 }
 
+/** One persisted conformance audit record from Lodestar `conformance_history`. */
+export interface ConformanceRecord {
+  id: number;
+  task_id?: string | null;
+  evidence_schema_version?: number;
+  evidence: string;
+  verdict: string;
+  findings: string;
+  checked_at: number;
+}
+
+/** The evidence bundle serialized (as JSON) inside a {@link ConformanceRecord}. */
+export interface EvidenceBundle {
+  summary?: string;
+  changed_node_ids?: string[];
+  failed_node_ids?: string[];
+  execution_ids?: string[];
+  commit_ids?: string[];
+}
+
+/**
+ * Render a task's conformance audit chain (from `conformance_history`, oldest
+ * first) as readable markdown: the most recent record in full — verdict,
+ * findings, summary, and the changed/failed/execution/commit ids parsed from its
+ * stored evidence bundle — plus any prior checks in time order. Pure (no vscode
+ * API) so it is unit-tested directly. Returns null when no evidence is recorded.
+ */
+export function formatTaskEvidence(
+  records: ConformanceRecord[],
+  taskTitle?: string
+): string | null {
+  if (!Array.isArray(records) || records.length === 0) {
+    return null;
+  }
+  const latest = records[records.length - 1];
+  const bundle = parseEvidenceBundle(latest.evidence);
+  const lines: string[] = [`# Conformance evidence${taskTitle ? `: ${taskTitle}` : ""}`, ""];
+  lines.push(`- **Verdict:** ${latest.verdict}`);
+  lines.push(`- **Checked:** ${formatUnixSeconds(latest.checked_at)}`);
+  if (latest.findings) {
+    lines.push(`- **Findings:** ${latest.findings}`);
+  }
+  if (bundle?.summary) {
+    lines.push(`- **Summary:** ${bundle.summary}`);
+  }
+  appendIdList(lines, "Changed nodes", bundle?.changed_node_ids);
+  appendIdList(lines, "Failed nodes", bundle?.failed_node_ids);
+  appendIdList(lines, "Executions", bundle?.execution_ids);
+  appendIdList(lines, "Commits", bundle?.commit_ids);
+  if (records.length > 1) {
+    lines.push("", "## Prior checks");
+    for (const record of records.slice(0, -1)) {
+      const detail = record.findings ? ` — ${record.findings}` : "";
+      lines.push(`- ${formatUnixSeconds(record.checked_at)} — **${record.verdict}**${detail}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function parseEvidenceBundle(raw: string): EvidenceBundle | null {
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as EvidenceBundle;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function appendIdList(lines: string[], label: string, ids?: string[]): void {
+  if (ids && ids.length) {
+    lines.push(`- **${label}:** ${ids.join(", ")}`);
+  }
+}
+
+function formatUnixSeconds(seconds: number): string {
+  if (!Number.isFinite(seconds)) {
+    return "unknown";
+  }
+  return `${new Date(seconds * 1000).toISOString().slice(0, 19).replace("T", " ")}Z`;
+}
+
 // ---- Telemetry & effectiveness (real-time observability pane) ---------------
 
 /** Aggregate metrics for one tool, as returned by `telemetry_snapshot`. */

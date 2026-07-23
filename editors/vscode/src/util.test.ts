@@ -9,6 +9,7 @@ import {
   evidenceRequestForTask,
   filterChangedPaths,
   formatLogLine,
+  formatTaskEvidence,
   healthSummary,
   logLines,
   parseToolResult,
@@ -160,6 +161,55 @@ describe("conformanceDiagnostic", () => {
       "error"
     );
     expect(conformanceDiagnostic({ verdict: "drift", findings: [] })?.severity).toBe("warning");
+  });
+});
+
+describe("formatTaskEvidence", () => {
+  const record = (over = {}) => ({
+    id: 1,
+    task_id: "task:x",
+    evidence: JSON.stringify({
+      summary: "changed auth",
+      changed_node_ids: ["artifact:src/auth.rs"],
+      failed_node_ids: [],
+      execution_ids: ["execution:1"],
+      commit_ids: [],
+    }),
+    verdict: "aligned",
+    findings: "evidence covers task goal",
+    checked_at: 1_700_000_000,
+    ...over,
+  });
+
+  it("returns null when there is no recorded evidence", () => {
+    expect(formatTaskEvidence([])).toBeNull();
+    expect(formatTaskEvidence(undefined as never)).toBeNull();
+  });
+
+  it("renders the most recent record with parsed evidence fields", () => {
+    const markdown = formatTaskEvidence([record()], "Harden auth") ?? "";
+    expect(markdown).toContain("# Conformance evidence: Harden auth");
+    expect(markdown).toContain("**Verdict:** aligned");
+    expect(markdown).toContain("**Summary:** changed auth");
+    expect(markdown).toContain("**Changed nodes:** artifact:src/auth.rs");
+    expect(markdown).toContain("**Findings:** evidence covers task goal");
+  });
+
+  it("uses the latest record and lists prior checks in order", () => {
+    const markdown =
+      formatTaskEvidence([
+        record({ id: 1, verdict: "drift", findings: "wrong goal", checked_at: 1_700_000_000 }),
+        record({ id: 2, verdict: "aligned", checked_at: 1_700_000_500 }),
+      ]) ?? "";
+    expect(markdown).toContain("**Verdict:** aligned");
+    expect(markdown).toContain("## Prior checks");
+    expect(markdown).toContain("**drift** — wrong goal");
+  });
+
+  it("survives malformed evidence json without throwing", () => {
+    const markdown = formatTaskEvidence([record({ evidence: "{not json" })]) ?? "";
+    expect(markdown).toContain("**Verdict:** aligned");
+    expect(markdown).not.toContain("**Changed nodes:**");
   });
 });
 

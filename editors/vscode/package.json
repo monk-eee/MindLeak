@@ -96,6 +96,11 @@
         "command": "mindleak.task.completeWithEvidence",
         "title": "MindLeak: Complete Task With Evidence",
         "icon": "$(verified-filled)"
+      },
+      {
+        "command": "mindleak.task.inspectEvidence",
+        "title": "MindLeak: Inspect Task Evidence",
+        "icon": "$(book)"
       }
     ],
     "menus": {
@@ -125,6 +130,16 @@
         {
           "command": "mindleak.task.completeWithEvidence",
           "when": "view == mindleak.boardView && viewItem == claimed",
+          "group": "inline"
+        },
+        {
+          "command": "mindleak.task.inspectEvidence",
+          "when": "view == mindleak.boardView && viewItem == done",
+          "group": "inline"
+        },
+        {
+          "command": "mindleak.task.inspectEvidence",
+          "when": "view == mindleak.boardView && viewItem == in_review",
           "group": "inline"
         }
       ]

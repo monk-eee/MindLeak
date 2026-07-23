@@ -11,7 +11,9 @@ import { TelemetryViewProvider } from "./telemetryViewProvider";
 import { TerminalCaptureConfig, TerminalSensor } from "./terminalSensor";
 import {
   conformanceDiagnostic,
+  ConformanceRecord,
   evidenceRequestForTask,
+  formatTaskEvidence,
   GraphCounts,
   healthSummary,
   logLines,
@@ -207,6 +209,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     vscode.commands.registerCommand("mindleak.telemetry.refresh", () => refreshTelemetry()),
     vscode.commands.registerCommand("mindleak.task.completeWithEvidence", (item?: BoardItem) => {
       void completeWithEvidence(item);
+    }),
+    vscode.commands.registerCommand("mindleak.task.inspectEvidence", (item?: BoardItem) => {
+      void inspectTaskEvidence(item);
     })
   );
 
@@ -460,6 +465,38 @@ async function completeWithEvidence(item?: BoardItem): Promise<void> {
   } catch (err) {
     vscode.window.showErrorMessage(
       `MindLeak evidence completion failed: ${(err as Error).message}`
+    );
+  }
+}
+
+async function inspectTaskEvidence(item?: BoardItem): Promise<void> {
+  if (!lodestar?.isReady()) {
+    vscode.window.showWarningMessage("Lodestar must be connected to inspect task evidence.");
+    return;
+  }
+  if (!item) {
+    vscode.window.showWarningMessage("Run this command from a task in the Intent Board.");
+    return;
+  }
+  try {
+    const records = (await lodestar.callTool("conformance_history", {
+      task_id: item.task.id,
+    })) as ConformanceRecord[];
+    const markdown = formatTaskEvidence(records, item.task.title);
+    if (!markdown) {
+      vscode.window.showInformationMessage(
+        `No conformance evidence recorded for ${item.task.title}.`
+      );
+      return;
+    }
+    const doc = await vscode.workspace.openTextDocument({
+      content: markdown,
+      language: "markdown",
+    });
+    await vscode.window.showTextDocument(doc, { preview: true });
+  } catch (err) {
+    vscode.window.showErrorMessage(
+      `MindLeak evidence inspection failed: ${(err as Error).message}`
     );
   }
 }
