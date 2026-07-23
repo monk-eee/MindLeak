@@ -378,13 +378,15 @@ Newline-delimited JSON-RPC 2.0 over stdio, exactly like `mindleak-mcp`.
   `in_review` / `done`; consumes the exact authoritative check and rejects it
   if evidence or relevant intent state changed.
 12. `release_task(task_id, agent_id)` / `block_task(task_id, reason, blocked_by?)` /
-    `reopen_task(task_id)` → return a stranded task (`in_review`, or a manual
-    hold with no live predecessor gate) to claimable `open`; refuses to bypass a
-    handoff dependency, disturb an active claim, or revive terminal work.
+  `reopen_task(task_id)` → return a stranded task (`in_review`, or a manual
+  hold with no live predecessor gate) to claimable `open`; `abandon_task`
+  durably retires open/review/blocked or expired-claim work without deleting
+  its audit history. Both refuse to disturb live or parked ownership.
 13. `board(include_terminal=true)` → coordination snapshot: every task, owner,
     status, lease — so humans and agents see the parallel state at a glance.
     `include_terminal=false` returns only the live/actionable set (open, claimed,
-    in_review, blocked); done/abandoned stay durable but out of the default view.
+    needs_input, paused, in_review, blocked); done/abandoned stay durable but out
+    of the operational view used by the VS Code Intent Board.
 
 **Conformance**
 

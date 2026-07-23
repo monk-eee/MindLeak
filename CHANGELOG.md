@@ -39,6 +39,12 @@ to [Semantic Versioning](https://semver.org/).
   `reconcile_designs` ADR discovery (editors/vscode) are the remaining slice.
 
 ### Fixed
+- **Intent Board cleanup now handles stale live work, not only completed rows
+  (ADR-0019).** Eligible open, in-review, blocked, and expired-claim rows expose
+  a confirmed **Retire Task** action that calls `abandon_task`; the task and its
+  conformance history remain durable but leave the operational board. Live
+  claims and parked ownership remain protected. ADR-0019 now records the shipped
+  hide-never-delete model instead of proposing a second archive lifecycle.
 - **The VS Code Intent Board no longer grows forever with completed history.**
   It now requests Lodestar's live/actionable view and defensively filters
   terminal `done` / `abandoned` rows before rendering. The durable task and

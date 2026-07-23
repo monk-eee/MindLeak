@@ -106,6 +106,11 @@
         "command": "mindleak.task.answer",
         "title": "MindLeak: Answer Task Question",
         "icon": "$(comment)"
+            },
+            {
+        "command": "mindleak.task.retire",
+        "title": "MindLeak: Retire Task",
+        "icon": "$(archive)"
       }
     ],
     "menus": {
@@ -144,7 +149,12 @@
         },
         {
           "command": "mindleak.task.inspectEvidence",
-          "when": "view == mindleak.boardView && viewItem == in_review",
+          "when": "view == mindleak.boardView && (viewItem == in_review || viewItem == in_review.retireable)",
+          "group": "inline"
+        },
+        {
+          "command": "mindleak.task.retire",
+          "when": "view == mindleak.boardView && viewItem =~ /\\.retireable$/",
           "group": "inline"
         },
         {

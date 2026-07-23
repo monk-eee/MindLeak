@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   boardRows,
+  canRetireTask,
   conformanceDiagnostic,
   evidenceRequestForTask,
   filterChangedPaths,
@@ -216,6 +217,32 @@ describe("needs_input board + Q&A thread", () => {
     expect(md).toContain("which db?");
     expect(md).toContain("answer (human)");
     expect(md).toContain("sqlite");
+  });
+});
+
+describe("canRetireTask", () => {
+  const task = (status: string, lease?: number) => ({
+    id: status,
+    goal_id: "g",
+    title: status,
+    status,
+    lease_expires_at: lease,
+  });
+
+  it("allows explicit retirement of unowned live work and expired claims", () => {
+    expect(canRetireTask(task("open"), 100)).toBe(true);
+    expect(canRetireTask(task("in_review"), 100)).toBe(true);
+    expect(canRetireTask(task("blocked"), 100)).toBe(true);
+    expect(canRetireTask(task("claimed", 99), 100)).toBe(true);
+  });
+
+  it("protects live claims, parked ownership, and terminal history", () => {
+    expect(canRetireTask(task("claimed", 100), 100)).toBe(false);
+    expect(canRetireTask(task("claimed", 101), 100)).toBe(false);
+    expect(canRetireTask(task("needs_input"), 100)).toBe(false);
+    expect(canRetireTask(task("paused"), 100)).toBe(false);
+    expect(canRetireTask(task("done"), 100)).toBe(false);
+    expect(canRetireTask(task("abandoned"), 100)).toBe(false);
   });
 });
 

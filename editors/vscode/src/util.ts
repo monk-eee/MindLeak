@@ -170,6 +170,25 @@ export interface LodestarTask {
   lease_expires_at?: number | null;
 }
 
+/** Whether a task can be deliberately retired without disturbing live ownership. */
+export function canRetireTask(task: LodestarTask, nowUnix: number): boolean {
+  switch (task.status) {
+    case "open":
+    case "in_review":
+    case "blocked":
+      return true;
+    case "claimed":
+      return typeof task.lease_expires_at === "number" && task.lease_expires_at < nowUnix;
+    case "needs_input":
+    case "paused":
+    case "done":
+    case "abandoned":
+      return false;
+    default:
+      return false;
+  }
+}
+
 export interface EvidenceRequest {
   task_id: string;
   agent_id: string;

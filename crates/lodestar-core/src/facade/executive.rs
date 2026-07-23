@@ -97,8 +97,8 @@ impl Lodestar {
 
     /// Permanently retire a nonterminal task to `abandoned` (terminal). The
     /// deliberate "do not do this work" verb, distinct from `reopen_task`
-    /// (recover) and `reset` (wipe). Refuses to disturb an active claim or
-    /// re-retire terminal work.
+    /// (recover) and `reset` (wipe). Refuses to disturb live or parked ownership,
+    /// but permits an expired claim to be retired.
     pub fn abandon_task(&self, id: &str) -> Result<bool> {
         self.store.abandon_task(id, now_unix())
     }

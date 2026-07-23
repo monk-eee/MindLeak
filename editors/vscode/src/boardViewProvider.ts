@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 
-import { BoardRow, boardRows, LodestarTask } from "./util";
+import { BoardRow, boardRows, canRetireTask, LodestarTask } from "./util";
 
 /** A single task row in the board tree. */
 export class BoardItem extends vscode.TreeItem {
@@ -11,7 +11,9 @@ export class BoardItem extends vscode.TreeItem {
     super(row.label, vscode.TreeItemCollapsibleState.None);
     this.description = row.description;
     this.tooltip = row.tooltip;
-    this.contextValue = row.status;
+    this.contextValue = canRetireTask(task, Math.floor(Date.now() / 1000))
+      ? `${row.status}.retireable`
+      : row.status;
     this.iconPath = iconFor(row.status);
   }
 }

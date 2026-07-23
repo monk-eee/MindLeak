@@ -241,21 +241,27 @@ impl LodestarStore {
     /// Permanently retire a nonterminal task to `abandoned` (terminal) — the
     /// deliberate "this work should not be done" verb, distinct from
     /// `reopen_task` (recover to claimable) and `reset` (wipe everything). It
-    /// makes `TaskStatus::Abandoned` reachable. Refuses to disturb an owned task
-    /// (`claimed`/`needs_input`/`paused` — release or resolve it first) or
-    /// re-retire terminal work. Abandoning a predecessor transactionally opens its
-    /// blocked successor (ADR-0020): the reason it waited no longer exists, so the
-    /// chain is never stranded by a dead predecessor.
+    /// makes `TaskStatus::Abandoned` reachable. Refuses to disturb a live claim
+    /// or parked owner (`needs_input`/`paused` — release or resolve it first), but
+    /// permits an expired claim to be retired. Abandoning a predecessor
+    /// transactionally opens its blocked successor (ADR-0020): the reason it
+    /// waited no longer exists, so the chain is never stranded by a dead
+    /// predecessor.
     pub fn abandon_task(&self, id: &str, now: i64) -> Result<bool> {
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let task = get_task_on(&transaction, id)?
             .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
         match task.status {
-            TaskStatus::Claimed => {
+            TaskStatus::Claimed
+                if task
+                    .lease_expires_at
+                    .is_none_or(|lease_expires_at| lease_expires_at >= now) =>
+            {
                 return Err(LodestarError::Invalid(format!(
                     "task {id} is claimed; release it before abandoning"
                 )));
             }
+            TaskStatus::Claimed => {}
             TaskStatus::NeedsInput | TaskStatus::Paused => {
                 return Err(LodestarError::Invalid(format!(
                     "task {id} is {} (owned); resume or release it before abandoning",
@@ -1203,11 +1209,11 @@ mod tests {
             .contains("cannot be reopened"));
     }
 
-    // Regression: `TaskStatus::Abandoned` was defined but unreachable — no verb
-    // produced it, so a task that should never be done (e.g. a mis-filed policy
-    // task) could not be retired short of wiping the database.
+    // Regression: `TaskStatus::Abandoned` was unreachable, then the first verb
+    // refused even expired claims. A crashed agent therefore left stale work on
+    // the active board forever. Retire expired claims, but never live ones.
     #[test]
-    fn abandon_retires_nonterminal_tasks_and_refuses_claimed_and_terminal() {
+    fn abandon_retires_nonterminal_and_expired_claims_but_refuses_live_and_terminal() {
         let store = store();
         let goal = goal(&store);
 
@@ -1248,6 +1254,11 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("release it before abandoning"));
+        assert!(store.abandon_task(&claimed.id, NOW + 61).unwrap());
+        assert_eq!(
+            store.get_task(&claimed.id).unwrap().unwrap().status,
+            TaskStatus::Abandoned
+        );
 
         // Terminal (done) work stays terminal.
         let done = store

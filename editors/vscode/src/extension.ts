@@ -10,6 +10,7 @@ import { McpClient } from "./mcpClient";
 import { TelemetryViewProvider } from "./telemetryViewProvider";
 import { TerminalCaptureConfig, TerminalSensor } from "./terminalSensor";
 import {
+  canRetireTask,
   conformanceDiagnostic,
   ConformanceRecord,
   evidenceRequestForTask,
@@ -217,6 +218,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     }),
     vscode.commands.registerCommand("mindleak.task.answer", (item?: BoardItem) => {
       void answerTaskQuestion(item);
+    }),
+    vscode.commands.registerCommand("mindleak.task.retire", (item?: BoardItem) => {
+      void retireTask(item);
     })
   );
 
@@ -546,5 +550,39 @@ async function answerTaskQuestion(item?: BoardItem): Promise<void> {
     await refreshBoard();
   } catch (err) {
     vscode.window.showErrorMessage(`MindLeak answer failed: ${(err as Error).message}`);
+  }
+}
+
+async function retireTask(item?: BoardItem): Promise<void> {
+  if (!lodestar?.isReady()) {
+    vscode.window.showWarningMessage("Lodestar must be connected to retire a task.");
+    return;
+  }
+  if (!item || !canRetireTask(item.task, Math.floor(Date.now() / 1000))) {
+    vscode.window.showWarningMessage(
+      "Only open, review, blocked, or expired-claim tasks can be retired."
+    );
+    return;
+  }
+  const confirmed = await vscode.window.showWarningMessage(
+    `Retire "${item.task.title}" from the active board?`,
+    {
+      modal: true,
+      detail: "The task and its conformance history remain durable as abandoned work.",
+    },
+    "Retire Task"
+  );
+  if (confirmed !== "Retire Task") {
+    return;
+  }
+  try {
+    const result = await lodestar.callTool("abandon_task", { task_id: item.task.id });
+    if (!result?.abandoned) {
+      throw new Error("task state changed before it could be retired");
+    }
+    vscode.window.showInformationMessage(`Retired ${item.task.title}.`);
+    await refreshBoard();
+  } catch (err) {
+    vscode.window.showErrorMessage(`MindLeak task retirement failed: ${(err as Error).message}`);
   }
 }

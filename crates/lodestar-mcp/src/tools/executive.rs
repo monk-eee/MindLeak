@@ -113,7 +113,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "abandon_task",
-            "description": "Permanently retire a nonterminal task to abandoned (terminal) — the deliberate 'this work should not be done' verb, distinct from reopen_task (recover to claimable) and reset_database (wipe everything). Refuses to disturb an active claim (release_task first) or re-retire terminal work.",
+            "description": "Permanently retire nonterminal work to abandoned while preserving its durable history. Open, in-review, blocked, and expired-claim tasks are eligible. Live claims and parked ownership remain protected; release or resolve them first.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

@@ -232,7 +232,7 @@ coordinate through one plane.
 | `complete_task` | Consume the exact authoritative `check_conformance` result (owner-guarded); aligned completes, uncertainty reviews, violation blocks. |
 | `release_task` / `block_task` | Return or block work. |
 | `reopen_task` | Return a stranded task (in review, or a manual hold) to claimable `open`. |
-| `abandon_task` | Permanently retire a nonterminal task to terminal `abandoned` (distinct from reopen/reset). |
+| `abandon_task` | Retire open/review/blocked or expired-claim work to durable `abandoned`; live and parked ownership stays protected. |
 | `ask_question` / `answer` | Park a claimed task in `needs_input` with a durable question; a human `answer` resumes it under the same owner with a fresh lease. |
 | `pause_task` / `resume_task` | Owner deliberately parks (`paused`) and resumes work, keeping the claim and evidence window. |
 | `task_qa` | The durable, append-only question/answer thread for a task. |
