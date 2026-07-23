@@ -1,6 +1,6 @@
-# ADR-0015: Advisory symbol-scoped leases for intra-file parallelism
+# ADR-0015: Progressive task handoffs before advisory symbol leases
 
-- Status: Proposed (deliberately scoped — read the non-guarantee before building)
+- Status: Accepted (no symbol-lease primitive)
 - Date: 2026-07-23
 - Deciders: MindLeak maintainers
 - Related: [ADR-0004](0004-intent-plane-spec-brain.md) (intent plane),
@@ -35,26 +35,35 @@ one assumes more."
 
 ## Decision
 
-Model symbol leases as **advisory intent partitioning, explicitly not a mutex.**
+Do **not** add symbol/resource leases. Ship and document **progressive task
+handoffs** using the existing task CAS plus an explicit dependency:
 
-- **Resource leases.** Generalize the existing task-lease machinery to a
-  `resource_leases` table keyed by a node id (`symbol:` or `artifact:`), with
-  `owner`, `lease_expires_at`, a caller-supplied short TTL, and `renew` — reusing
-  the same atomic CAS and expiry that tasks already use.
-- **Overlap + ancestry rule.** A claim is rejected if the resource is currently
-  leased by another agent, **or** if its id is an ancestor/descendant of an
-  active lease: a `symbol:src/lib.rs:Foo` lease conflicts with an
-  `artifact:src/lib.rs` lease (the file contains the symbol), and vice versa.
-  Two non-overlapping symbol leases in the same file coexist.
-- **Explicit non-guarantee (must appear in the tool description verbatim in
-  spirit).** A symbol lease answers *"is another agent currently intending to
-  touch this symbol?"* so agents self-partition. It does **not** serialize file
-  writes and does **not** prevent a text-level conflict. It is advisory.
-- **The safe pairing is progressive handoffs.** For same-file multi-pass edits,
-  the recommended pattern is `decompose_goal` into atomic per-symbol subtasks
-  where `complete_task` releases before the next agent claims — which makes the
-  file edits **serialize by task** rather than truly concurrent multi-writer.
-  Advisory symbol leases *assist* this; they do not replace it.
+- `create_task(..., blocked_by=<predecessor>)` creates a successor in `blocked`.
+- A predecessor and successor must serve the same goal; each predecessor may
+  have only one direct successor, and cycles/self-dependencies are rejected.
+- The successor cannot be claimed and is excluded from `next_task`.
+- Only an evidence-backed `complete_task` transition to `done` clears the
+  dependency and opens direct successors, in the same SQLite transaction as the
+  conformance audit.
+- `in_review`, `blocked`, violation, lease expiry, and manual release do not open
+  successors.
+
+This serializes same-file ownership at the task layer. It does not claim that
+symbols are independent text regions, and it adds no primitive that users might
+mistake for a filesystem mutex.
+
+The deterministic two-connection benchmark records the controlled contrast:
+
+| Arm | Concurrent owners | Early successor claim | Maximum same-file owners | Collision risk |
+|---|---:|---:|---:|---|
+| Independent tasks | 2 | n/a | 2 | Present |
+| `blocked_by` handoff | 1 | Rejected | 1 | Absent |
+
+Result: [2026-07-23-progressive-handoff.json](../../benchmarks/results/2026-07-23-progressive-handoff.json).
+This uses synthetic but schema-valid conformance evidence and proves the
+coordination mechanism, not that autonomous agents always choose the pattern.
+Add advisory leases only if a later real-agent scenario shows agents
+still selecting colliding same-file work despite dependency instructions.
 
 ### Alternative considered and rejected (for now)
 
@@ -68,25 +77,12 @@ practice.
 
 ## Consequences
 
-- **Positive.** Agents can partition intra-file work and avoid both grabbing the
-  same symbol; reuses the proven lease/TTL/renew CAS; is honest about its limits.
-- **Cost.** A `resource_leases` table plus the ancestry/overlap check, and a new
-  claim/renew/release surface at resource granularity. More tools on an already
-  broad Lodestar surface.
-- **Risk (the important one).** If shipped or marketed as a "lock," users assume
-  conflict-free concurrent same-file writes and get burned. Mitigated **only** by
-  naming (advisory *lease*, never *lock*) and stating the non-guarantee in the
-  tool text and docs. If we cannot commit to that naming discipline, do not ship
-  this.
-- **Invariants preserved.** The plane stays a coordinator of *intent*, not an
-  owner of file contents; the node-id seam (ADR-0004) stays loose.
-
-## Open question (decide before building)
-
-Do we ship the primitive at all, or just **document the progressive-handoff
-pattern** — which already delivers safe same-file serialization with **zero new
-primitives** using today's `decompose_goal` / `claim_task` / `complete_task` /
-`next_task`? Advisory symbol leases add convenience (self-partitioning hints) but
-also add surface and a false-safety risk. Recommendation: **document the pattern
-first; build resource leases only if measured multi-agent runs show agents
-genuinely colliding on symbol selection** despite the pattern.
+- **Positive.** The safe pattern is enforceable and transactional, reuses proven
+  task claims/conformance, and cannot be confused with a text lock.
+- **Cost.** Planning same-file work requires an explicit dependency chain; truly
+  independent files may still use parallel open tasks.
+- **Risk.** Agents may ignore the pattern and create independent same-file tasks.
+  The board makes that visible, but no filesystem mutex exists. A real-agent
+  adherence scenario remains required before closing that behavioral risk.
+- **Invariants preserved.** Lodestar coordinates intent rather than owning file
+  writes or merging text; the loose MindLeak node-id seam remains unchanged.

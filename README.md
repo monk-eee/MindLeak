@@ -198,7 +198,7 @@ coordinate through one plane.
 | `get_constitution` | The authoritative intent to read **before acting**. |
 | `link_goal_to_code` | Bind a goal to MindLeak `artifact:`/`symbol:` nodes. |
 | `export_constitution` | Render the constitution to committed-friendly markdown. |
-| `create_task` / `decompose_goal` | Add claimable work (SLM-assisted, deterministic fallback). |
+| `create_task` / `decompose_goal` | Add claimable work; `create_task(blocked_by=...)` creates a progressive handoff. |
 | `next_task` | Suggest the next unblocked, claimable task. |
 | `claim_task` / `renew_lease` | **Atomic claim + lease** — collision-free parallel coordination. |
 | `complete_task` | Finish (owner-guarded), then run conformance; a violation blocks. |

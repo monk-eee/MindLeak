@@ -38,6 +38,17 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_goal   ON tasks(goal_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_blocked_by ON tasks(blocked_by);
+
+-- Durable progressive-handoff lineage. `tasks.blocked_by` is cleared when the
+-- successor opens; this table retains the one-to-one chain invariant.
+CREATE TABLE IF NOT EXISTS task_handoffs (
+    predecessor_id TEXT PRIMARY KEY,
+    successor_id   TEXT NOT NULL UNIQUE,
+    created_at     INTEGER NOT NULL,
+    FOREIGN KEY (predecessor_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    FOREIGN KEY (successor_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
 
 -- Seam to MindLeak: which code nodes realise a goal. node_id is an opaque
 -- MindLeak id string (e.g. "artifact:src/auth.rs"); no cross-DB FK.

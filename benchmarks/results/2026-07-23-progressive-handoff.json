@@ -1,0 +1,40 @@
+{
+  "artifact": "artifact:src/lib.rs",
+  "decision": {
+    "advisory_symbol_leases_required": false,
+    "reason": "Explicit task dependencies serialize same-file ownership; measure agent adherence before adding advisory resource leases."
+  },
+  "independent_tasks": {
+    "concurrent_claims": 2,
+    "concurrent_same_file_ownership_risk": true,
+    "first_claimed": true,
+    "same_artifact": true,
+    "second_claimed": true
+  },
+  "progressive_handoff": {
+    "completion_verdict": "aligned",
+    "concurrent_claims_after_handoff": 1,
+    "concurrent_claims_before_handoff": 1,
+    "concurrent_same_file_ownership_risk": false,
+    "early_second_claim": false,
+    "first_claimed": true,
+    "first_completed": true,
+    "max_concurrent_claims": 1,
+    "second_claimed_after_handoff": true,
+    "successor_dependency_cleared": true,
+    "successor_status_after_completion": "open",
+    "synthetic_conformance_evidence": true
+  },
+  "scenario": "same_file_progressive_handoff",
+  "schema_version": 1,
+  "source_revision": "84d0c84-dirty",
+  "source_sha256": "2c34d4509f74ba9789eaff660be893ba8950945960e937933f8c83e8a6c0e27b",
+  "executable_sha256": "c618dc4efa8c6cf363cee7664b264793154e443898f4b85b1cdbf94586493760",
+  "build": {
+    "profile": "release",
+    "locked": true,
+    "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+    "cargo": "cargo 1.93.1 (083ac5135 2025-12-15)"
+  },
+  "passed": true
+}

@@ -148,6 +148,27 @@ board()                                      # live who-owns-what
 conformance check (aligned / drift / violation) and a violation blocks the
 transition.
 
+### Progressive same-file handoff
+
+Do not assign different symbols in one file to concurrent writers: symbol
+boundaries are not text locks. Serialize them with task dependencies instead:
+
+```text
+first  = create_task(goal_id, "Edit Router", acceptance = "...")
+second = create_task(goal_id, "Edit helper", acceptance = "...", blocked_by = first.id)
+
+claim_task(first.id, "agent-a")
+complete_task(first.id, "agent-a", evidence)  # aligned completion opens second
+claim_task(second.id, "agent-b")
+```
+
+Only an aligned `done` transition opens the successor; review/violation leaves it
+blocked. Chains are same-goal, acyclic, and one-to-one (`A -> B -> C`, not
+fan-out). The deterministic two-connection benchmark holds maximum same-file
+ownership at one with this pattern, versus two for independent tasks. It uses
+synthetic schema-valid evidence to test mechanics. This is task serialization,
+not a filesystem mutex (ADR-0015).
+
 Full tool list: see the **Intent Plane tools** table in
 [../README.md](../README.md); design in
 [SPEC-INTENT.md](SPEC-INTENT.md) and [ADR-0004](adr/0004-intent-plane-spec-brain.md).

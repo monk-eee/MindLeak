@@ -147,6 +147,17 @@ impl Lodestar {
             .create_task(goal_id, title, acceptance, None, now_unix())
     }
 
+    pub fn create_task_after(
+        &self,
+        goal_id: &str,
+        title: &str,
+        acceptance: &str,
+        blocked_by: Option<String>,
+    ) -> Result<Task> {
+        self.store
+            .create_task_after(goal_id, title, acceptance, None, blocked_by, now_unix())
+    }
+
     /// Break a goal into tasks. Uses the local model when reachable, else a
     /// deterministic single-task fallback so the plane works with no LLM.
     pub fn decompose_goal(&self, goal_id: &str) -> Result<Vec<Task>> {
@@ -192,8 +203,7 @@ impl Lodestar {
     }
 
     pub fn block_task(&self, id: &str, blocked_by: Option<String>) -> Result<bool> {
-        self.store
-            .force_status(id, TaskStatus::Blocked, blocked_by, now_unix())
+        self.store.block_task(id, blocked_by, now_unix())
     }
 
     pub fn board(&self) -> Result<Vec<Task>> {
@@ -656,6 +666,21 @@ mod tests {
         let active = e.get_constitution().unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].version, 2);
+    }
+
+    #[test]
+    fn facade_creates_progressive_handoff_chain() {
+        let engine = engine();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Safe handoff", "serialize edits", None)
+            .unwrap();
+        let first = engine.create_task(&goal.id, "Edit first", "done").unwrap();
+        let second = engine
+            .create_task_after(&goal.id, "Edit second", "done", Some(first.id.clone()))
+            .unwrap();
+
+        assert_eq!(second.status, TaskStatus::Blocked);
+        assert_eq!(second.blocked_by.as_deref(), Some(first.id.as_str()));
     }
 
     #[test]

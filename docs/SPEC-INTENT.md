@@ -149,6 +149,17 @@ Live coordination state. Not versioned; churny.
 | `blocked_by` | optional task id |
 | `created_at` / `updated_at` | unix seconds |
 
+`create_task(..., blocked_by=<task>)` creates a blocked successor unless the
+predecessor is already done. Only an evidence-backed aligned completion to
+`done` clears direct dependencies, transactionally with the conformance record.
+Dependencies are same-goal, acyclic, and one-to-one, forming linear handoff
+chains. Claims/releases cannot bypass an unresolved dependency. This is the
+supported progressive-handoff pattern for same-file edits: it serializes task
+ownership without claiming symbol or filesystem locking (ADR-0015).
+Durable `task_handoffs` lineage preserves the one-successor invariant after the
+transient `blocked_by` field clears. Startup backfills legacy blocked tasks in one
+transaction and fails closed if an old database contains ambiguous fan-out.
+
 ### Goal ↔ code (the seam)
 
 `goal_code(goal_id, node_id, mode)` — links a goal to the MindLeak `artifact:` /
@@ -303,7 +314,8 @@ Newline-delimited JSON-RPC 2.0 over stdio, exactly like `mindleak-mcp`.
 
 **Executive**
 
-6. `create_task(goal_id, title, acceptance)` → `task_id`.
+6. `create_task(goal_id, title, acceptance, blocked_by?)` → `task_id`; a
+  dependency opens automatically only after aligned predecessor completion.
 7. `decompose_goal(goal_id)` → candidate tasks (SLM-assisted; deterministic stub
    otherwise).
 8. `next_task(agent_id, capabilities?)` → a suggested unclaimed, unblocked task.

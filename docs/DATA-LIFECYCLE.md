@@ -42,6 +42,11 @@ matching older binaries, and restart. Live restore and schema downgrade are not
 supported. Do not copy only the main database file while a server is running;
 WAL sidecars may contain committed data.
 
+Lodestar upgrades backfill legacy `blocked_by` task relationships into durable
+linear handoff lineage. If a legacy predecessor has multiple blocked successors,
+startup fails rather than choosing one; preserve the backup, resolve the fan-out
+on the old version, and retry the upgrade.
+
 ## Export
 
 `export_graph()` returns all MindLeak nodes and all currently active edges with

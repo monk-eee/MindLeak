@@ -447,6 +447,13 @@ Implementation completed on 2026-07-22 after Phase 6 passed:
 - release notes containing measured benchmark scope, limitations, and supported
   language/platform matrices.
 
+Post-productization coordination proof (2026-07-23): explicit Lodestar task
+dependencies now support progressive same-file handoffs. The deterministic
+two-connection benchmark rejects early successor claims, transactionally opens
+the successor after aligned completion, and holds maximum concurrent same-file
+ownership at one. This proves mechanism, not autonomous-agent adherence; ADR-0015
+therefore rejects advisory symbol leases pending a real-agent collision result.
+
 The first public tag remains an operational publication step; the repository is
 release-ready but this plan does not claim an unpushed/unpublished asset exists.
 

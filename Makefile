@@ -40,6 +40,7 @@ bench: ## Run graph, sensor, and four-arm context experiments
 	npm --prefix editors/vscode run compile
 	node scripts/evaluate-sensors.mjs
 	node scripts/evaluate-signal.mjs
+	node scripts/evaluate-handoffs.mjs
 	node scripts/experiments/impact-vs-similarity.mjs
 	node scripts/experiments/agent-outcome-benchmark.mjs
 

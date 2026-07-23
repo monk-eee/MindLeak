@@ -65,13 +65,14 @@ pub fn list() -> Vec<Value> {
         // ---- executive ----
         json!({
             "name": "create_task",
-            "description": "Create a claimable task serving a goal.",
+            "description": "Create work serving a goal. With blocked_by, the task remains unclaimable until the predecessor completes aligned, enabling progressive same-file handoffs without pretending to lock symbols or text.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "goal_id": { "type": "string" },
                     "title": { "type": "string" },
-                    "acceptance": { "type": "string", "description": "What 'done' means." }
+                    "acceptance": { "type": "string", "description": "What 'done' means." },
+                    "blocked_by": { "type": "string", "description": "Optional predecessor task. The new task opens automatically only after that task completes aligned." }
                 },
                 "required": ["goal_id", "title"]
             }
@@ -143,7 +144,7 @@ pub fn list() -> Vec<Value> {
         }),
         json!({
             "name": "block_task",
-            "description": "Mark a task blocked, optionally on another task.",
+            "description": "Mark a nonterminal task blocked and clear any live claim. An optional blocked_by predecessor must be same-goal, acyclic, and part of a one-to-one handoff chain; release/claim cannot bypass it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -300,10 +301,11 @@ pub fn call(engine: &Lodestar, params: &Value) -> Result<Value, String> {
         }
         "create_task" => {
             let task = engine
-                .create_task(
+                .create_task_after(
                     req_str(&args, "goal_id")?,
                     req_str(&args, "title")?,
                     opt_str(&args, "acceptance").unwrap_or_default().as_str(),
+                    optional_string_arg(&args, "blocked_by")?,
                 )
                 .map_err(|e| e.to_string())?;
             ok(&task)
@@ -357,7 +359,10 @@ pub fn call(engine: &Lodestar, params: &Value) -> Result<Value, String> {
         }
         "block_task" => {
             let blocked = engine
-                .block_task(req_str(&args, "task_id")?, opt_str(&args, "blocked_by"))
+                .block_task(
+                    req_str(&args, "task_id")?,
+                    optional_string_arg(&args, "blocked_by")?,
+                )
                 .map_err(|e| e.to_string())?;
             ok(&json!({ "blocked": blocked }))
         }
@@ -453,6 +458,15 @@ fn opt_str(args: &Value, key: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+fn optional_string_arg(args: &Value, key: &str) -> Result<Option<String>, String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.trim().is_empty() => Ok(Some(value.clone())),
+        Some(Value::String(_)) => Err(format!("argument {key} must not be empty")),
+        Some(_) => Err(format!("argument {key} must be a string")),
+    }
+}
+
 fn i64_arg(args: &Value, key: &str, default: i64) -> i64 {
     args.get(key).and_then(Value::as_i64).unwrap_or(default)
 }
@@ -501,6 +515,11 @@ mod tests {
             link["inputSchema"]["properties"]["mode"]["default"],
             "governed"
         );
+        let create = tools
+            .iter()
+            .find(|tool| tool["name"] == "create_task")
+            .unwrap();
+        assert!(create["inputSchema"]["properties"]["blocked_by"].is_object());
     }
 
     #[test]
@@ -561,5 +580,65 @@ mod tests {
         )
         .unwrap();
         assert!(engine.get_constitution().unwrap().is_empty());
+    }
+
+    #[test]
+    fn create_task_dispatch_accepts_a_predecessor() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Handoff", "serialize edits", None)
+            .unwrap();
+        let first = engine.create_task(&goal.id, "First", "done").unwrap();
+
+        let result = call(
+            &engine,
+            &json!({
+                "name": "create_task",
+                "arguments": {
+                    "goal_id": goal.id,
+                    "title": "Second",
+                    "acceptance": "done",
+                    "blocked_by": first.id
+                }
+            }),
+        )
+        .unwrap();
+        let task: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+
+        assert_eq!(task["status"], "blocked");
+        assert!(task["blocked_by"].as_str().unwrap().starts_with("task:"));
+    }
+
+    #[test]
+    fn create_task_rejects_malformed_predecessor_and_preserves_legacy_calls() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Handoff", "serialize edits", None)
+            .unwrap();
+        let malformed = json!({
+            "name": "create_task",
+            "arguments": {
+                "goal_id": goal.id,
+                "title": "Unsafe",
+                "blocked_by": 42
+            }
+        });
+        assert!(call(&engine, &malformed)
+            .unwrap_err()
+            .contains("must be a string"));
+
+        let legacy = call(
+            &engine,
+            &json!({
+                "name": "create_task",
+                "arguments": { "goal_id": goal.id, "title": "Legacy" }
+            }),
+        )
+        .unwrap();
+        let task: Value =
+            serde_json::from_str(legacy["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(task["status"], "open");
+        assert!(task["blocked_by"].is_null());
     }
 }

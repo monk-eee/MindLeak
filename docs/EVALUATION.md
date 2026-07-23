@@ -194,6 +194,27 @@ is tracked in [DEVELOPERS.md](../DEVELOPERS.md#known-gaps). Until result
 accounting is repaired, this black-box harness plus compile/lint gates provide
 additional executable evidence, while CI remains the unit-test authority.
 
+## Progressive same-file handoff
+
+ADR-0015 compares two real Lodestar stores over separate SQLite connections.
+Both arms model two subtasks touching `artifact:src/lib.rs`:
+
+| Arm | Concurrent claims | Early successor claim | Successor after aligned completion | Collision risk |
+|---|---:|---:|---|---|
+| Independent tasks | 2 | n/a | n/a | Present |
+| `blocked_by` handoff | 1 | Rejected | Open, then claimable | Absent |
+
+The handoff arm transactionally clears the successor dependency with the
+predecessor's conformance audit and never exceeds one same-file owner. This
+proves the coordination mechanism and justifies not adding an advisory symbol
+lease that could be mistaken for a text lock. It does **not** prove autonomous
+agents always create dependency chains; the completion evidence is synthetic but
+schema-valid. Real-agent adherence remains a future scenario.
+
+Machine-readable result:
+[2026-07-23-progressive-handoff.json](../benchmarks/results/2026-07-23-progressive-handoff.json).
+Reproduce with `node scripts/evaluate-handoffs.mjs`.
+
 ## Real agent-loop outcome
 
 The product decision gate uses GitHub Copilot CLI 1.0.63 with pinned

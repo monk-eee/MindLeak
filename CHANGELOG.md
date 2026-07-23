@@ -6,7 +6,14 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0-preview.1] - 2026-07-23
+
 ### Added
+- **Progressive task handoffs** (ADR-0015): `create_task(blocked_by=...)`
+  creates an unclaimable successor that opens transactionally only after aligned
+  predecessor completion. A deterministic two-connection benchmark demonstrates
+  maximum same-file ownership of one versus two concurrent owners for
+  independent tasks; advisory symbol leases remain intentionally unshipped.
 - **Bounded working-memory tier** (ADR-0017 phase 1): `working_set` returns the
   configured agent's highest active observations, hard-capped at a startup
   `MINDLEAK_WORKING_SET_SIZE` (default 7, bounded 1-32). Sustained observations
@@ -164,4 +171,5 @@ to [Semantic Versioning](https://semver.org/).
   pruned after historical evidence expires, structural ownership conflicts fail
   atomically, and legacy migrations serialize concurrent openers.
 
-[Unreleased]: https://github.com/monk-eee/MindLeak/commits/main
+[Unreleased]: https://github.com/monk-eee/MindLeak/compare/v0.1.0-preview.1...HEAD
+[0.1.0-preview.1]: https://github.com/monk-eee/MindLeak/releases/tag/v0.1.0-preview.1
