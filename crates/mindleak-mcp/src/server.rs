@@ -82,7 +82,14 @@ fn initialize_result() -> Value {
     json!({
         "protocolVersion": PROTOCOL_VERSION,
         "capabilities": { "tools": { "listChanged": false } },
-        "serverInfo": { "name": "mindleak-mcp", "version": env!("CARGO_PKG_VERSION") }
+        "serverInfo": {
+            "name": "mindleak-mcp",
+            "version": format!(
+                "{}+{}",
+                env!("CARGO_PKG_VERSION"),
+                env!("MINDLEAK_BUILD_SHA")
+            )
+        }
     })
 }
 
@@ -123,6 +130,14 @@ mod tests {
         let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} });
         let resp = handle(&engine(), &req).unwrap();
         assert_eq!(resp["result"]["serverInfo"]["name"], "mindleak-mcp");
+        assert_eq!(
+            resp["result"]["serverInfo"]["version"],
+            format!(
+                "{}+{}",
+                env!("CARGO_PKG_VERSION"),
+                env!("MINDLEAK_BUILD_SHA")
+            )
+        );
         assert_eq!(resp["result"]["protocolVersion"], PROTOCOL_VERSION);
     }
 

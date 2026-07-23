@@ -280,16 +280,13 @@ and footguns, with impact and status:
   most one and the branch can never fire. — No functional impact; kept as
   documented defense-in-depth rather than removed, since the PK is the real
   guard. — Noted during the Jul 2026 audit.
-- **A stale running MCP binary can masquerade as a bug.** — Live `prune_graph`
-  reported `nodes_removed: 0` for a decayed-edge orphan even though
-  `graph/signal.rs::prune_with_signal` reaps orphan executions after edge deletion
-  in source (its test passes); the running `mindleak-mcp` predated the fix.
-  Separately, `reopen_task` — wired in facade + MCP per the abandon-verb gap above
-  — is **not exposed by the running `lodestar-mcp`**, so stranded tasks could not
-  be recovered live. — Medium impact: dogfood debugging chases phantom bugs and
-  coordination recovery silently unavailable. — Rebuild and restart both MCP
-  servers after changes; a build/version check on startup would prevent it
-  (observed Jul 2026).
+- **MCP build identity exposes stale running binaries.** Both servers now report
+  `serverInfo.version` as `<package-version>+<12-character-git-sha>` during MCP
+  initialize. Compare the suffix with `git rev-parse --short=12 HEAD`; a mismatch
+  means the server must be rebuilt and restarted before debugging source
+  behaviour or relying on newly added tools. The shared Cargo build helper watches
+  Git HEAD/ref changes and supports `MINDLEAK_BUILD_SHA` outside a checkout. —
+  Resolved Jul 2026.
 - **Docs-only (design/ADR) tasks cannot complete via conformance, stranding
   successors.** — A design task produces a docs commit; `complete_task` runs
   ADR-0009 code conformance, which returns `needs_human` ("evidence does not touch

@@ -7,6 +7,12 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- **MCP initialize metadata now identifies the exact source build.** MindLeak and
+  Lodestar report `serverInfo.version` as
+  `<package-version>+<12-character-git-sha>`, so clients can compare it with
+  `git rev-parse --short=12 HEAD` and immediately spot a stale running server.
+  A shared, dependency-free Cargo build helper resolves the SHA portably and
+  supports `MINDLEAK_BUILD_SHA` for builds outside a Git checkout.
 - **Lodestar tests are structurally isolated from any ambient local model.** A
   reusable `LlmClient::unreachable()` seam points the optional planning/judging
   model at an unroutable endpoint, so `decompose` and `judge` take their
