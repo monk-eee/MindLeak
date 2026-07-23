@@ -9,7 +9,13 @@ const DEFAULT_MAX_NODES: usize = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MaintenanceConfig {
+    /// Model-dependent maintenance (signal consolidation + embedding index).
+    /// Off by default: it spends local-model tokens.
     pub enabled: bool,
+    /// Deterministic, zero-token graph hygiene (prune decayed edges + reap
+    /// orphaned nodes, ADR-0021). On by default: it costs nothing and keeps the
+    /// graph from growing unbounded between manual `prune_graph` calls.
+    pub prune_enabled: bool,
     pub idle: Duration,
     pub min_interval: Duration,
     pub max_nodes: usize,
@@ -27,8 +33,14 @@ impl MaintenanceConfig {
         let enabled = environment("MINDLEAK_AUTONOMOUS_CONSOLIDATION")
             .map(|value| value.trim().eq_ignore_ascii_case("true"))
             .unwrap_or(false);
+        // Deterministic prune is safe (zero-token) so it defaults ON; set
+        // MINDLEAK_AUTONOMOUS_PRUNE=false to opt out.
+        let prune_enabled = environment("MINDLEAK_AUTONOMOUS_PRUNE")
+            .map(|value| !value.trim().eq_ignore_ascii_case("false"))
+            .unwrap_or(true);
         Self {
             enabled,
+            prune_enabled,
             idle: Duration::from_secs(bounded_u64(
                 &environment,
                 "MINDLEAK_CONSOLIDATE_IDLE_SECS",
@@ -96,6 +108,8 @@ mod tests {
     fn configuration_is_off_by_default_and_bounded_when_enabled() {
         let disabled = MaintenanceConfig::resolve(|_| None);
         assert!(!disabled.enabled);
+        // Zero-token prune defaults ON so the graph self-cleans.
+        assert!(disabled.prune_enabled);
         assert_eq!(disabled.idle, Duration::from_secs(DEFAULT_IDLE_SECS));
 
         let values = HashMap::from([
@@ -110,9 +124,19 @@ mod tests {
         let enabled = MaintenanceConfig::resolve(|name| values.get(name).cloned());
 
         assert!(enabled.enabled);
+        assert!(enabled.prune_enabled);
         assert_eq!(enabled.idle, Duration::from_secs(30));
         assert_eq!(enabled.min_interval, Duration::from_secs(86_400));
         assert_eq!(enabled.max_nodes, 200);
+    }
+
+    #[test]
+    fn prune_can_be_opted_out_and_consolidation_stays_independent() {
+        let no_prune = MaintenanceConfig::resolve(|name| {
+            (name == "MINDLEAK_AUTONOMOUS_PRUNE").then(|| "false".to_string())
+        });
+        assert!(!no_prune.prune_enabled);
+        assert!(!no_prune.enabled);
     }
 
     #[test]

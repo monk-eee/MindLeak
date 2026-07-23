@@ -85,7 +85,12 @@ The database files, schemas, and running connections remain valid after reset.
   Effective weight is derived at query time; changing policy does not rewrite
   database rows.
 - `prune_graph` removes evidence below the active threshold after surfacing
-  proven near-expiry signal for optional consolidation. `prune_knowledge`
+  proven near-expiry signal for optional consolidation. This same reap also runs
+  **automatically on idle**: the `mindleak-mcp` maintenance worker prunes every
+  idle pass (zero-token and deterministic, so it needs no model), keeping the
+  graph self-cleaning between manual calls. It is on by default — opt out with
+  `MINDLEAK_AUTONOMOUS_PRUNE=false`; the model-dependent consolidation/index tier
+  stays separately opt-in via `MINDLEAK_AUTONOMOUS_CONSOLIDATION`. `prune_knowledge`
   removes unconfirmed Lodestar knowledge below its longer-lived threshold.
 - Node reaping is prune-time only and edge-deletion-first: within one prune
   transaction sub-threshold edges are deleted first, then orphans are detected

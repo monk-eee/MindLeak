@@ -7,6 +7,16 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **The graph now self-cleans: the maintenance worker prunes on idle.** Decay hid
+  low-weight edges at query time, but the physical rows only left via a manual
+  `prune_graph`, so the graph grew unbounded between calls. The idle maintenance
+  worker now runs a deterministic, zero-token prune every pass — reaping decayed
+  edges and the execution/symbol/stub nodes they orphan ([ADR-0021](docs/adr/0021-node-lifecycle-and-reaping.md))
+  — so no manual pruning is needed. On by default (opt out with
+  `MINDLEAK_AUTONOMOUS_PRUNE=false`) and independent of the model-dependent
+  consolidation/index tier (`MINDLEAK_AUTONOMOUS_CONSOLIDATION`, still opt-in); the
+  worker now starts when either is enabled and emits `autonomous_prune` telemetry
+  with reap counts.
 - **Design items — an accept→promote→decompose bridge for ADRs (ADR-0023).** An ADR
   can be registered as a first-class *design item* that carries the ADR's review
   lifecycle: while `proposed` it is tainted — it lives on a new **Design Board**

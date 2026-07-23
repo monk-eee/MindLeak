@@ -102,12 +102,12 @@ impl MaintenanceRuntime {
         decay_policy: DecayPolicy,
         working_set_size: usize,
     ) -> anyhow::Result<Self> {
-        if !config.enabled {
+        if !config.enabled && !config.prune_enabled {
             return Ok(Self::disabled());
         }
         if is_unsupported_maintenance_database(&database_path) {
             return Err(anyhow::anyhow!(
-                "autonomous consolidation requires a file-backed MINDLEAK_DB"
+                "autonomous maintenance requires a file-backed MINDLEAK_DB"
             ));
         }
         // Open before spawning so an invalid path fails startup synchronously.
@@ -198,16 +198,65 @@ fn run_worker(engine: MindLeak, activity: ActivitySignal, config: MaintenanceCon
         }
         state.last_attempt = Some(Instant::now());
         drop(state);
-        run_pass(
-            &engine,
+        run_pass(&engine, config, &activity);
+    }
+}
+
+fn run_pass(engine: &MindLeak, config: MaintenanceConfig, activity: &ActivitySignal) {
+    // Deterministic graph hygiene first (zero-token, always safe); then the
+    // optional model-dependent consolidation/index tier.
+    if config.prune_enabled {
+        run_prune(engine);
+    }
+    if config.enabled && !activity.is_shutdown() {
+        run_consolidation(
+            engine,
             config.max_nodes,
             config.min_interval.as_secs(),
-            &activity,
+            activity,
         );
     }
 }
 
-fn run_pass(
+/// Reap decayed edges and the nodes they orphaned (ADR-0021). Deterministic and
+/// zero-token, so it runs every idle pass regardless of model availability — the
+/// self-cleaning that keeps the graph from growing unbounded between manual
+/// `prune_graph` calls.
+fn run_prune(engine: &MindLeak) {
+    let started = Instant::now();
+    match engine.prune() {
+        Ok(outcome) => {
+            engine.record_maintenance(
+                "autonomous_prune",
+                "ok",
+                started.elapsed().as_millis() as i64,
+                Some(json!({
+                    "edges_removed": outcome.edges_removed,
+                    "nodes_removed": outcome.nodes_removed,
+                    "signal_candidates": outcome.signal_candidates.len(),
+                })),
+            );
+            if outcome.edges_removed > 0 || outcome.nodes_removed > 0 {
+                tracing::info!(
+                    edges = outcome.edges_removed,
+                    nodes = outcome.nodes_removed,
+                    "autonomous prune reaped decayed graph"
+                );
+            }
+        }
+        Err(error) => {
+            engine.record_maintenance(
+                "autonomous_prune",
+                "error",
+                started.elapsed().as_millis() as i64,
+                Some(json!({ "category": error_category(&error) })),
+            );
+            tracing::warn!(%error, "autonomous prune failed");
+        }
+    }
+}
+
+fn run_consolidation(
     engine: &MindLeak,
     max_nodes: usize,
     min_interval_secs: u64,
@@ -340,8 +389,16 @@ mod tests {
     }
 
     #[test]
-    fn disabled_start_does_not_open_the_database() {
-        let config = MaintenanceConfig::resolve(|_| None);
+    fn fully_disabled_start_does_not_open_the_database() {
+        // With both maintenance tiers off, start short-circuits before opening
+        // the DB, so even an unopenable path is accepted.
+        let config = MaintenanceConfig {
+            enabled: false,
+            prune_enabled: false,
+            idle: Duration::from_secs(30),
+            min_interval: Duration::from_secs(60),
+            max_nodes: 20,
+        };
         let runtime = MaintenanceRuntime::start(
             config,
             "invalid\0database".to_string(),
@@ -357,6 +414,7 @@ mod tests {
     fn enabled_start_rejects_isolated_in_memory_database() {
         let config = MaintenanceConfig {
             enabled: true,
+            prune_enabled: false,
             idle: Duration::from_secs(30),
             min_interval: Duration::from_secs(60),
             max_nodes: 20,
@@ -400,7 +458,17 @@ mod tests {
         let engine = MindLeak::open_in_memory().unwrap();
 
         let activity = ActivitySignal::new();
-        run_pass(&engine, 20, 0, &activity);
+        run_pass(
+            &engine,
+            MaintenanceConfig {
+                enabled: true,
+                prune_enabled: false,
+                idle: Duration::from_secs(30),
+                min_interval: Duration::from_secs(60),
+                max_nodes: 20,
+            },
+            &activity,
+        );
 
         let snapshot = engine.telemetry_snapshot(1).unwrap();
         assert_eq!(snapshot.recent[0].kind, "maintenance");
@@ -409,11 +477,41 @@ mod tests {
     }
 
     #[test]
+    fn prune_pass_reaps_and_records_telemetry_without_a_model() {
+        // Deterministic prune runs with no model configured and records its own
+        // telemetry — the self-cleaning that keeps the graph bounded.
+        let engine = MindLeak::open_in_memory().unwrap();
+        let activity = ActivitySignal::new();
+        run_pass(
+            &engine,
+            MaintenanceConfig {
+                enabled: false,
+                prune_enabled: true,
+                idle: Duration::from_secs(30),
+                min_interval: Duration::from_secs(60),
+                max_nodes: 20,
+            },
+            &activity,
+        );
+        let snapshot = engine.telemetry_snapshot(5).unwrap();
+        assert!(snapshot
+            .recent
+            .iter()
+            .any(|event| event.kind == "maintenance" && event.name == "autonomous_prune"));
+        // Prune-only mode must not emit consolidation telemetry.
+        assert!(!snapshot
+            .recent
+            .iter()
+            .any(|event| event.name == "autonomous_consolidation"));
+    }
+
+    #[test]
     fn enabled_worker_runs_after_idle_and_joins_cleanly() {
         let path = temporary_database("idle");
         let runtime = MaintenanceRuntime::start(
             MaintenanceConfig {
                 enabled: true,
+                prune_enabled: false,
                 idle: Duration::from_millis(10),
                 min_interval: Duration::from_secs(60),
                 max_nodes: 20,
@@ -457,6 +555,7 @@ mod tests {
                 worker_activity,
                 MaintenanceConfig {
                     enabled: true,
+                    prune_enabled: false,
                     idle: Duration::from_millis(10),
                     min_interval: Duration::from_secs(60),
                     max_nodes: 20,
