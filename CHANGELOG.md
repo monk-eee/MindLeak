@@ -6,6 +6,15 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **Git hooks are scoped and isolation-aware to stop concurrent-agent poisoning.**
+  The cargo fmt/clippy/test pre-commit and pre-push hooks now run only for the
+  crate packages a change touches, and — on push, or when a foreign untracked
+  file sits in an affected crate — validate against a throwaway worktree snapshot
+  rather than the shared dirty tree. An unrelated agent's broken crate or
+  uncommitted WIP can no longer fail your commit or push (portable runner
+  `scripts/cargo-precommit.mjs`; ADR-0018).
+
 ### Added
 - **Inspect a task's conformance evidence from the Intent Board.** Done and
   in-review tasks gain an "Inspect Task Evidence" action that opens the recorded

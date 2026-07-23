@@ -31,6 +31,13 @@ npm --prefix editors/vscode install
 
 On systems with `make`, `make setup` does the hook + extension steps.
 
+The cargo hooks are **scoped and isolation-aware** (`scripts/cargo-precommit.mjs`):
+they run `cargo fmt/clippy/test` only for the crate packages your change touches,
+and — on push, or when a foreign untracked file sits in an affected crate —
+validate a throwaway worktree snapshot instead of the shared working tree. This
+keeps a concurrent agent's broken crate or uncommitted WIP from failing your
+commit or push in a shared checkout (ADR-0018).
+
 **Success looks like:** `cargo test --all` reports `test result: ok` for every
 crate, and `target/debug/mindleak-mcp` starts and prints
 `[mindleak-mcp] ready — graph at …` on stderr.
