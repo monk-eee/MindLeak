@@ -10,6 +10,7 @@ mindleak-storage = { path = "../mindleak-storage" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
+url = { workspace = true }
 pep508_rs = { workspace = true }
 rusqlite = { workspace = true }
 regex = { workspace = true }

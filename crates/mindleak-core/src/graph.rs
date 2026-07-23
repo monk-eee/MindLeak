@@ -60,6 +60,7 @@ pub struct SignalCandidate {
     pub effective: f64,
     pub signal_multiplier: f64,
     pub evidence: SignalEvidence,
+    pub updated_at: i64,
 }
 
 /// Maintenance result including signal routed to optional consolidation.
@@ -121,6 +122,7 @@ pub struct ResetOutcome {
     pub edges_removed: usize,
     pub embeddings_removed: usize,
     pub telemetry_events_removed: usize,
+    pub maintenance_leases_removed: usize,
 }
 
 /// An unresolved artifact plus every deterministic path it may reconcile to.
@@ -211,6 +213,40 @@ impl GraphStore {
 
     pub fn working_set_size(&self) -> usize {
         self.working_set_size
+    }
+
+    /// Acquire the workspace-wide signal-consolidation lease. The guarded UPSERT
+    /// is one SQLite statement, so concurrent MCP processes cannot both win.
+    pub(crate) fn try_acquire_consolidation_lease(
+        &self,
+        owner: &str,
+        now: i64,
+        lease_secs: i64,
+        min_interval_secs: i64,
+    ) -> Result<bool> {
+        let changed = self.conn.execute(
+            "INSERT INTO maintenance_leases
+                 (name, owner, lease_expires_at, last_attempt_at)
+             VALUES ('signal_consolidation', ?1, ?2 + ?3, ?2)
+             ON CONFLICT(name) DO UPDATE SET
+                 owner = excluded.owner,
+                 lease_expires_at = excluded.lease_expires_at,
+                 last_attempt_at = excluded.last_attempt_at
+             WHERE maintenance_leases.lease_expires_at <= ?2
+               AND maintenance_leases.last_attempt_at <= ?2 - ?4",
+            params![owner, now, lease_secs.max(1), min_interval_secs.max(0)],
+        )?;
+        Ok(changed == 1)
+    }
+
+    pub(crate) fn release_consolidation_lease(&self, owner: &str, now: i64) -> Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE maintenance_leases
+             SET lease_expires_at = ?2
+             WHERE name = 'signal_consolidation' AND owner = ?1",
+            params![owner, now],
+        )?;
+        Ok(changed == 1)
     }
 
     // ---- writes -------------------------------------------------------------
@@ -576,6 +612,7 @@ impl GraphStore {
                     effective: edge.effective,
                     signal_multiplier: edge.signal_multiplier,
                     evidence: edge.signal_evidence,
+                    updated_at: edge.updated_at,
                 });
             }
         }
@@ -587,47 +624,50 @@ impl GraphStore {
         Ok(candidates)
     }
 
-    /// Delete signal edges only after optional consolidation has succeeded.
-    pub(crate) fn acknowledge_signal_candidates(
+    /// Atomically persist distilled facts and acknowledge their raw signal.
+    pub(crate) fn commit_signal_consolidation(
         &self,
+        lease_owner: &str,
+        now: i64,
         candidates: &[SignalCandidate],
-    ) -> Result<(usize, usize)> {
+        nodes: &[Node],
+        edges: &[Edge],
+    ) -> Result<(WriteOutcome, usize, usize)> {
         let transaction = self.conn.unchecked_transaction()?;
-        let mut edges_removed = 0;
-        for candidate in candidates {
-            edges_removed += transaction.execute(
-                "DELETE FROM edges
-                 WHERE source_id = ?1 AND target_id = ?2 AND relation = ?3",
-                params![
-                    candidate.source_id,
-                    candidate.target_id,
-                    candidate.relation.as_str()
-                ],
-            )?;
-        }
-        let mut nodes_removed = 0;
-        for candidate in candidates {
-            nodes_removed += transaction.execute(
-                "DELETE FROM nodes
-                 WHERE id = ?1 AND type IN ('execution', 'intent')
-                   AND NOT EXISTS (
-                       SELECT 1 FROM edges
-                       WHERE source_id = ?1 OR target_id = ?1
-                   )",
-                params![candidate.source_id],
-            )?;
-        }
-        nodes_removed += transaction.execute(
-            "DELETE FROM nodes
-             WHERE type IN ('execution', 'symbol', 'package')
-               AND NOT EXISTS (
-                   SELECT 1 FROM edges
-                   WHERE source_id = nodes.id OR target_id = nodes.id
-               )",
-            [],
+        let lease_valid: bool = transaction.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM maintenance_leases
+                 WHERE name = 'signal_consolidation' AND owner = ?1
+                   AND lease_expires_at > ?2
+             )",
+            params![lease_owner, now],
+            |row| row.get(0),
         )?;
+        if !lease_valid {
+            return Err(MindLeakError::Busy(
+                "signal consolidation lease expired".to_string(),
+            ));
+        }
+        let edges_removed = delete_signal_edges_on(&transaction, candidates)?;
+        if edges_removed != candidates.len() {
+            return Err(MindLeakError::Other(
+                "signal candidates changed during consolidation".to_string(),
+            ));
+        }
+        let mut outcome = WriteOutcome::default();
+        for node in nodes {
+            if upsert_node_on(&transaction, node)? {
+                outcome.nodes_created += 1;
+            }
+        }
+        for edge in edges {
+            if upsert_edge_on(&transaction, edge, None)? {
+                outcome.edges_created += 1;
+            }
+        }
+        let nodes_removed = delete_orphan_signal_nodes_on(&transaction, candidates)?;
         transaction.commit()?;
-        Ok((edges_removed, nodes_removed))
+        Ok((outcome, edges_removed, nodes_removed))
     }
 
     fn weighted_edge(&self, raw: &RawEdge, now: i64) -> Result<WeightedEdge> {
@@ -1286,6 +1326,8 @@ impl GraphStore {
         let edges_removed = transaction.execute("DELETE FROM edges", [])?;
         let embeddings_removed = transaction.execute("DELETE FROM embeddings", [])?;
         let telemetry_events_removed = transaction.execute("DELETE FROM telemetry_events", [])?;
+        let maintenance_leases_removed =
+            transaction.execute("DELETE FROM maintenance_leases", [])?;
         let nodes_removed = transaction.execute("DELETE FROM nodes", [])?;
         transaction.commit()?;
 
@@ -1294,8 +1336,59 @@ impl GraphStore {
             edges_removed,
             embeddings_removed,
             telemetry_events_removed,
+            maintenance_leases_removed,
         })
     }
+}
+
+fn delete_signal_edges_on(
+    connection: &Connection,
+    candidates: &[SignalCandidate],
+) -> Result<usize> {
+    let mut edges_removed = 0;
+    for candidate in candidates {
+        edges_removed += connection.execute(
+            "DELETE FROM edges
+             WHERE source_id = ?1 AND target_id = ?2 AND relation = ?3
+               AND updated_at = ?4 AND reinforcement_count = ?5",
+            params![
+                candidate.source_id,
+                candidate.target_id,
+                candidate.relation.as_str(),
+                candidate.updated_at,
+                candidate.evidence.reinforcement_count
+            ],
+        )?;
+    }
+    Ok(edges_removed)
+}
+
+fn delete_orphan_signal_nodes_on(
+    connection: &Connection,
+    candidates: &[SignalCandidate],
+) -> Result<usize> {
+    let mut nodes_removed = 0;
+    for candidate in candidates {
+        nodes_removed += connection.execute(
+            "DELETE FROM nodes
+             WHERE id = ?1 AND type IN ('execution', 'intent')
+               AND NOT EXISTS (
+                   SELECT 1 FROM edges
+                   WHERE source_id = ?1 OR target_id = ?1
+               )",
+            params![candidate.source_id],
+        )?;
+    }
+    nodes_removed += connection.execute(
+        "DELETE FROM nodes
+         WHERE type IN ('execution', 'symbol', 'package')
+           AND NOT EXISTS (
+               SELECT 1 FROM edges
+               WHERE source_id = nodes.id OR target_id = nodes.id
+           )",
+        [],
+    )?;
+    Ok(nodes_removed)
 }
 
 fn impact_neighbor(id: &str, edge: &WeightedEdge) -> Option<String> {
@@ -1570,6 +1663,14 @@ mod tests {
         s.upsert_node(&Node::new(id, ty, label, now)).unwrap();
     }
 
+    fn acquire_lease(s: &GraphStore, now: i64) -> String {
+        let owner = format!("test-owner-{now}");
+        assert!(s
+            .try_acquire_consolidation_lease(&owner, now, 300, 0)
+            .unwrap());
+        owner
+    }
+
     fn raw_edge(
         src: &str,
         tgt: &str,
@@ -1595,6 +1696,42 @@ mod tests {
         assert!(s.upsert_node(&node).unwrap()); // created
         assert!(!s.upsert_node(&node).unwrap()); // reinforced, not created
         assert!(s.get_node("artifact:a").unwrap().is_some());
+    }
+
+    #[test]
+    fn consolidation_lease_coordinates_processes_and_persists_attempt_interval() {
+        let path = std::env::temp_dir().join(format!(
+            "mindleak-consolidation-lease-{}-{}.db",
+            std::process::id(),
+            NOW
+        ));
+        let _ = std::fs::remove_file(&path);
+        let first = GraphStore::new(db::open(path.to_str().unwrap()).unwrap());
+        let second = GraphStore::new(db::open(path.to_str().unwrap()).unwrap());
+
+        assert!(first
+            .try_acquire_consolidation_lease("first", NOW, 300, 60)
+            .unwrap());
+        assert!(!second
+            .try_acquire_consolidation_lease("second", NOW, 300, 60)
+            .unwrap());
+        assert!(first.release_consolidation_lease("first", NOW + 1).unwrap());
+        assert!(!second
+            .try_acquire_consolidation_lease("second", NOW + 30, 300, 60)
+            .unwrap());
+        assert!(second
+            .try_acquire_consolidation_lease("second", NOW + 61, 300, 60)
+            .unwrap());
+        assert!(second
+            .release_consolidation_lease("second", NOW + 62)
+            .unwrap());
+        assert!(first
+            .try_acquire_consolidation_lease("manual", NOW + 62, 300, 0)
+            .unwrap());
+
+        drop(first);
+        drop(second);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -2027,9 +2164,234 @@ mod tests {
             .any(|candidate| candidate.relation == RelationType::FailedOn));
         assert!(s.get_node("execution:failure").unwrap().is_some());
 
-        s.acknowledge_signal_candidates(&outcome.signal_candidates)
-            .unwrap();
+        let owner = acquire_lease(&s, NOW + 60 * 24 * HOUR);
+        s.commit_signal_consolidation(
+            &owner,
+            NOW + 60 * 24 * HOUR,
+            &outcome.signal_candidates,
+            &[],
+            &[],
+        )
+        .unwrap();
         assert!(s.get_node("execution:failure").unwrap().is_none());
+    }
+
+    #[test]
+    fn signal_consolidation_commits_facts_and_acknowledgement_atomically() {
+        let s = store();
+        add_node(&s, "execution:failure", NodeType::Execution, "failure", NOW);
+        add_node(&s, "artifact:target", NodeType::Artifact, "target", NOW);
+        s.upsert_edge(&raw_edge(
+            "execution:failure",
+            "artifact:target",
+            RelationType::FailedOn,
+            1.0,
+            24.0,
+            NOW,
+        ))
+        .unwrap();
+        let candidate = SignalCandidate {
+            source_id: "execution:failure".to_string(),
+            target_id: "artifact:target".to_string(),
+            relation: RelationType::FailedOn,
+            effective: 0.01,
+            signal_multiplier: 2.0,
+            evidence: SignalEvidence {
+                reinforcement_count: 1,
+                ..SignalEvidence::default()
+            },
+            updated_at: NOW,
+        };
+        let intent = Node::new("intent:gist", NodeType::Intent, "gist", NOW);
+        let link = Edge::new(
+            "intent:gist",
+            "artifact:target",
+            RelationType::RelatesTo,
+            NOW,
+        );
+
+        let owner = acquire_lease(&s, NOW);
+        let (outcome, edges_removed, nodes_removed) = s
+            .commit_signal_consolidation(&owner, NOW, &[candidate], &[intent], &[link])
+            .unwrap();
+
+        assert_eq!(outcome.nodes_created, 1);
+        assert_eq!(outcome.edges_created, 1);
+        assert_eq!(edges_removed, 1);
+        assert_eq!(nodes_removed, 1);
+        assert!(s.get_node("intent:gist").unwrap().is_some());
+        assert!(s.get_node("execution:failure").unwrap().is_none());
+    }
+
+    #[test]
+    fn signal_consolidation_rolls_back_facts_when_persistence_fails() {
+        let s = store();
+        add_node(&s, "execution:failure", NodeType::Execution, "failure", NOW);
+        add_node(&s, "artifact:target", NodeType::Artifact, "target", NOW);
+        s.upsert_edge(&raw_edge(
+            "execution:failure",
+            "artifact:target",
+            RelationType::FailedOn,
+            1.0,
+            24.0,
+            NOW,
+        ))
+        .unwrap();
+        let candidate = SignalCandidate {
+            source_id: "execution:failure".to_string(),
+            target_id: "artifact:target".to_string(),
+            relation: RelationType::FailedOn,
+            effective: 0.01,
+            signal_multiplier: 2.0,
+            evidence: SignalEvidence {
+                reinforcement_count: 1,
+                ..SignalEvidence::default()
+            },
+            updated_at: NOW,
+        };
+        let intent = Node::new("intent:gist", NodeType::Intent, "gist", NOW);
+        let invalid_link = Edge::new(
+            "intent:gist",
+            "artifact:missing",
+            RelationType::RelatesTo,
+            NOW,
+        );
+
+        let owner = acquire_lease(&s, NOW);
+        assert!(s
+            .commit_signal_consolidation(&owner, NOW, &[candidate], &[intent], &[invalid_link])
+            .is_err());
+
+        assert!(s.get_node("intent:gist").unwrap().is_none());
+        assert!(s.get_node("execution:failure").unwrap().is_some());
+        assert_eq!(
+            s.traverse(
+                &["execution:failure".to_string()],
+                Direction::Outgoing,
+                1,
+                0.0,
+                NOW,
+            )
+            .unwrap()
+            .edges
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn signal_consolidation_rolls_back_when_candidate_was_reinforced() {
+        let s = store();
+        add_node(&s, "execution:failure", NodeType::Execution, "failure", NOW);
+        add_node(&s, "artifact:target", NodeType::Artifact, "target", NOW);
+        s.upsert_edge(&raw_edge(
+            "execution:failure",
+            "artifact:target",
+            RelationType::FailedOn,
+            1.0,
+            24.0,
+            NOW,
+        ))
+        .unwrap();
+        let candidate = SignalCandidate {
+            source_id: "execution:failure".to_string(),
+            target_id: "artifact:target".to_string(),
+            relation: RelationType::FailedOn,
+            effective: 0.01,
+            signal_multiplier: 2.0,
+            evidence: SignalEvidence {
+                reinforcement_count: 1,
+                ..SignalEvidence::default()
+            },
+            updated_at: NOW,
+        };
+        s.upsert_edge(&raw_edge(
+            "execution:failure",
+            "artifact:target",
+            RelationType::FailedOn,
+            1.0,
+            24.0,
+            NOW,
+        ))
+        .unwrap();
+        let intent = Node::new("intent:gist", NodeType::Intent, "gist", NOW + HOUR);
+        let link = Edge::new(
+            "intent:gist",
+            "artifact:target",
+            RelationType::RelatesTo,
+            NOW + HOUR,
+        );
+
+        let owner = acquire_lease(&s, NOW);
+        let error = s
+            .commit_signal_consolidation(&owner, NOW, &[candidate], &[intent], &[link])
+            .unwrap_err();
+
+        assert!(error.to_string().contains("changed during consolidation"));
+        assert!(s.get_node("intent:gist").unwrap().is_none());
+        let remaining = s
+            .traverse(
+                &["execution:failure".to_string()],
+                Direction::Outgoing,
+                1,
+                0.0,
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(remaining.edges[0].updated_at, NOW);
+        assert_eq!(remaining.edges[0].signal_evidence.reinforcement_count, 2);
+    }
+
+    #[test]
+    fn signal_consolidation_allows_output_to_replace_the_candidate_edge_key() {
+        let s = store();
+        add_node(&s, "intent:gist", NodeType::Intent, "gist", NOW);
+        add_node(&s, "artifact:target", NodeType::Artifact, "target", NOW);
+        s.upsert_edge(&raw_edge(
+            "intent:gist",
+            "artifact:target",
+            RelationType::Refactored,
+            1.0,
+            168.0,
+            NOW,
+        ))
+        .unwrap();
+        let candidate = SignalCandidate {
+            source_id: "intent:gist".to_string(),
+            target_id: "artifact:target".to_string(),
+            relation: RelationType::Refactored,
+            effective: 0.01,
+            signal_multiplier: 2.0,
+            evidence: SignalEvidence {
+                reinforcement_count: 1,
+                ..SignalEvidence::default()
+            },
+            updated_at: NOW,
+        };
+        let output = Edge::new(
+            "intent:gist",
+            "artifact:target",
+            RelationType::Refactored,
+            NOW + HOUR,
+        );
+        let owner = acquire_lease(&s, NOW);
+
+        let (_, removed, _) = s
+            .commit_signal_consolidation(&owner, NOW, &[candidate], &[], &[output])
+            .unwrap();
+
+        assert_eq!(removed, 1);
+        let remaining = s
+            .traverse(
+                &["intent:gist".to_string()],
+                Direction::Outgoing,
+                1,
+                0.0,
+                NOW + HOUR,
+            )
+            .unwrap();
+        assert_eq!(remaining.edges.len(), 1);
+        assert_eq!(remaining.edges[0].updated_at, NOW + HOUR);
     }
 
     #[test]
@@ -2476,6 +2838,9 @@ mod tests {
             None,
         )
         .unwrap();
+        assert!(graph
+            .try_acquire_consolidation_lease("reset-test", NOW, 300, 60)
+            .unwrap());
 
         assert!(graph.reset_database("yes").is_err());
         assert!(graph.get_node("artifact:a").unwrap().is_some());
@@ -2484,6 +2849,7 @@ mod tests {
         assert_eq!(outcome.nodes_removed, 1);
         assert_eq!(outcome.embeddings_removed, 1);
         assert_eq!(outcome.telemetry_events_removed, 1);
+        assert_eq!(outcome.maintenance_leases_removed, 1);
         assert_eq!(graph.counts(NOW).unwrap(), (0, 0));
     }
 

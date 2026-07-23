@@ -6,7 +6,7 @@ export default defineConfig({
     include: ["src/**/*.test.ts", "scripts/**/*.test.mjs"],
     coverage: {
       provider: "v8",
-      include: ["src/util.ts", "scripts/install.mjs"],
+      include: ["src/util.ts", "src/mcpClient.ts", "scripts/install.mjs"],
       reportsDirectory: "coverage/vitest",
       reporter: ["text", "json-summary", "lcov"],
     },

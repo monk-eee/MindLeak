@@ -59,7 +59,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   client = new McpClient(
     serverPath,
     workspace,
-    { MINDLEAK_DB: dbPath, MINDLEAK_AGENT: agentId, MINDLEAK_WORKSPACE: workspace },
+    {
+      MINDLEAK_DB: dbPath,
+      MINDLEAK_AGENT: agentId,
+      MINDLEAK_WORKSPACE: workspace,
+      MINDLEAK_AUTONOMOUS_CONSOLIDATION: String(
+        config.get<boolean>("autonomousConsolidation", false)
+      ),
+      MINDLEAK_CONSOLIDATE_IDLE_SECS: String(config.get<number>("consolidateIdleSecs", 300)),
+      MINDLEAK_CONSOLIDATE_MIN_INTERVAL_SECS: String(
+        config.get<number>("consolidateMinIntervalSecs", 3600)
+      ),
+      MINDLEAK_CONSOLIDATE_MAX_NODES: String(config.get<number>("consolidateMaxNodes", 20)),
+    },
     (m) => output.appendLine(m)
   );
 
@@ -190,9 +202,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   };
 }
 
-export function deactivate(): void {
-  client?.dispose();
-  lodestar?.dispose();
+export async function deactivate(): Promise<void> {
+  await Promise.all([client?.dispose(), lodestar?.dispose()]);
 }
 
 function terminalCaptureConfig(): TerminalCaptureConfig {

@@ -59,7 +59,7 @@ process and is a no-op if `MINDLEAK_LOG=off`.
 ### 2. Durable audit trail (the record)
 
 A dedicated, append-only table in the existing workspace database records every
-tool invocation. It is created idempotently (`CREATE TABLE IF NOT EXISTS`) by the
+tool invocation and autonomous maintenance attempt. It is created idempotently (`CREATE TABLE IF NOT EXISTS`) by the
 telemetry module and is **owned by telemetry, not the graph** — it never
 participates in decay, traversal, or pruning.
 
@@ -67,9 +67,9 @@ participates in decay, traversal, or pruning.
 CREATE TABLE IF NOT EXISTS telemetry_events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     ts          INTEGER NOT NULL,   -- unix seconds
-    kind        TEXT    NOT NULL,   -- 'tool_call' | 'llm_call' | 'embed_call' | 'circuit'
+    kind        TEXT    NOT NULL,   -- 'tool_call' | 'maintenance' | 'llm_call' | 'embed_call' | 'circuit'
     name        TEXT    NOT NULL,   -- tool name / endpoint / breaker key
-    outcome     TEXT    NOT NULL,   -- 'ok' | 'error'
+    outcome     TEXT    NOT NULL,   -- 'ok' | 'error' | 'skipped'
     duration_ms INTEGER,            -- elapsed, when meaningful
     detail      TEXT                -- JSON: counts, error message, breaker state
 );
@@ -78,6 +78,12 @@ CREATE TABLE IF NOT EXISTS telemetry_events (
 Recording is **best-effort and non-fatal**: a telemetry write that fails is
 logged at `warn` and swallowed. Instrumentation must never change the result of
 the operation it observes.
+
+ADR-0017 autonomous consolidation uses `kind='maintenance'`; no-candidate,
+rate-limited, lease-busy, and shutdown passes use `outcome='skipped'`. Details
+contain bounded counts/coarse categories, never candidate text, prompts, model
+responses, or credentials. Maintenance telemetry is append-only like tool
+telemetry and is erased only by explicit memory reset.
 
 ### 3. In-process metrics + a query surface
 
@@ -105,8 +111,8 @@ All outbound HTTP is routed through one module that provides, in order:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MINDLEAK_HTTP_TIMEOUT_MS` | `30000` | connect + read timeout per attempt |
-| `MINDLEAK_HTTP_RETRIES` | `2` | extra attempts after the first on transient failure |
+| `MINDLEAK_HTTP_TIMEOUT_MS` | `30000` | overall timeout per attempt, bounded 100-300000 ms |
+| `MINDLEAK_HTTP_RETRIES` | `2` | extra attempts after the first, bounded 0-5 |
 | `MINDLEAK_BREAKER_THRESHOLD` | `5` | consecutive failures before the circuit opens |
 | `MINDLEAK_BREAKER_COOLDOWN_MS` | `30000` | how long the circuit stays open before a probe |
 

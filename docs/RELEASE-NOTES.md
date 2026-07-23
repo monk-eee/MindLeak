@@ -111,6 +111,11 @@ backup, export, and reset procedures.
   report a visible degraded status instead of inferring commands from text.
 - The optional consolidation and embedding features require an external
   OpenAI-compatible endpoint and fail cleanly when it is unavailable.
+- Autonomous consolidation is off by default. When explicitly enabled it may
+  call the configured model during idle, uses a file-backed database, and emits
+  maintenance telemetry for completed attempts. Manual and idle calls share a
+  persisted rate limit; bounded shutdown may terminate an in-flight HTTP attempt
+  before its final telemetry event.
 - Unit Test MCP currently reports successful Rust/custom runs with zero test
   counts; compile failures still surface, while CI remains the authoritative
   count/coverage gate.

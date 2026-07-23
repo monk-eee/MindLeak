@@ -110,8 +110,19 @@ acknowledges them, leaving model access off deterministic maintenance.
 per-agent, capacity-bounded focus view from active `observed` edges. No buffer or
 LRU is persisted. Repeated observations spanning the existing signal window
 become rehearsal evidence only while the target remains inside that agent's
-top-K; the write path remains zero-token. The autonomous idle consolidation
-worker is a separate phase and is not shipped by the working-set query.
+top-K; the write path remains zero-token.
+
+**Autonomous consolidation (ADR-0017 phase 2).** An off-by-default scheduler in
+`mindleak-mcp` tracks stdio request activity with a condition variable. After a
+bounded idle period it calls the same `MindLeak::consolidate_signal` path through
+a second file-backed SQLite connection. Model output becomes deterministic graph
+facts; one optimistic transaction stores the gist/provenance and deletes only
+candidate edge versions that have not changed meanwhile. Every attempt emits
+maintenance telemetry. A persisted workspace lease gates both manual and idle
+model calls immediately before inference, preventing duplicate spend across MCP
+processes. EOF wakes waiting workers; a bounded grace joins normal exits while a
+currently blocked HTTP attempt may be abandoned for process termination without
+post-cancellation persistence.
 
 ## Ingestion (zero-token)
 

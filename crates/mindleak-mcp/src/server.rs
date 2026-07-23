@@ -5,12 +5,13 @@ use std::io::{self, BufRead, Write};
 use mindleak_core::MindLeak;
 use serde_json::{json, Value};
 
+use crate::maintenance::ActivitySignal;
 use crate::tools;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
 /// Run the blocking request/response loop until stdin closes.
-pub fn run(engine: MindLeak) -> anyhow::Result<()> {
+pub fn run(engine: MindLeak, activity: ActivitySignal) -> anyhow::Result<()> {
     let stdin = io::stdin();
     let mut reader = stdin.lock();
     let stdout = io::stdout();
@@ -27,6 +28,7 @@ pub fn run(engine: MindLeak) -> anyhow::Result<()> {
         if trimmed.is_empty() {
             continue;
         }
+        let _request_activity = activity.begin_request();
 
         let request: Value = match serde_json::from_str(trimmed) {
             Ok(v) => v,

@@ -2,6 +2,7 @@
 //! MindLeak MCP — an MCP (Model Context Protocol) server over stdio that exposes
 //! the temporal context graph engine to coding agents.
 
+mod maintenance;
 mod server;
 mod tools;
 
@@ -24,18 +25,29 @@ fn main() -> anyhow::Result<()> {
         working_set_size,
         "resolved decay policy"
     );
+    let maintenance_config = maintenance::MaintenanceConfig::from_environment();
     let agent = std::env::var("MINDLEAK_AGENT")
         .ok()
         .filter(|a| !a.trim().is_empty());
+    let maintenance = maintenance::MaintenanceRuntime::start(
+        maintenance_config,
+        db_path.clone(),
+        agent.clone(),
+        decay_policy.clone(),
+        working_set_size,
+    )?;
     let engine = MindLeak::open(&db_path)?
         .with_decay_policy(decay_policy)
         .with_working_set_size(working_set_size)
+        .with_consolidation_min_interval(maintenance_config.min_interval.as_secs())
         .with_agent(agent.clone());
     match &agent {
         Some(a) => tracing::info!(%db_path, agent = %a, "mindleak-mcp ready"),
         None => tracing::info!(%db_path, "mindleak-mcp ready"),
     }
-    server::run(engine)
+    let result = server::run(engine, maintenance.activity());
+    maintenance.shutdown();
+    result
 }
 
 /// Resolve the project root independently from the process launch directory.

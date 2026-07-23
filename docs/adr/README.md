@@ -24,7 +24,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0014](0014-per-project-decay-configuration.md) | Per-project decay configuration | Accepted |
 | [0015](0015-advisory-symbol-leases.md) | Advisory symbol-scoped leases for intra-file parallelism | Proposed |
 | [0016](0016-platform-packaging-and-registration.md) | Platform packaging and workspace registration | Accepted |
-| [0017](0017-working-memory-and-autonomous-consolidation.md) | Working-memory tier and autonomous consolidation cycle | Accepted (phased) |
+| [0017](0017-working-memory-and-autonomous-consolidation.md) | Working-memory tier and autonomous consolidation cycle | Accepted (implemented) |
 
 ## Writing a new ADR
 

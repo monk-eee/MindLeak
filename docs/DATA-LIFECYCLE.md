@@ -80,8 +80,10 @@ The database files, schemas, and running connections remain valid after reset.
 - `prune_graph` removes evidence below the active threshold after surfacing
   proven near-expiry signal for optional consolidation. `prune_knowledge`
   removes unconfirmed Lodestar knowledge below its longer-lived threshold.
-- MCP tool telemetry is an append-only local audit and does not decay. Reset the
-  memory plane to erase it.
+- MCP tool and autonomous maintenance telemetry form an append-only local audit
+  and do not decay. Maintenance events contain counts/coarse outcomes, not model
+  inputs or responses. Reset the memory plane to erase telemetry and persisted
+  maintenance lease/rate-limit state.
 - Passive terminal output retention is off by default. When enabled in the VS
   Code extension, output is redacted and capped before it reaches the server.
 - Databases and backups are local and unauthenticated by design. Any process with

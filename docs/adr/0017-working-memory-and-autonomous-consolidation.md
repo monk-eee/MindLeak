@@ -1,6 +1,6 @@
 # ADR-0017: Working-memory tier and autonomous consolidation cycle
 
-- Status: Accepted (phased)
+- Status: Accepted (implemented)
 - Date: 2026-07-23
 - Deciders: MindLeak maintainers
 - Related: [ADR-0002](0002-sqlite-decay-over-vector-llm.md) (decay),
@@ -85,8 +85,18 @@ consequential* material into durable gist before it is pruned.
   (`MINDLEAK_CONSOLIDATE_MIN_INTERVAL_SECS`, default 3600, bounded 60..86400),
   capped work per pass (`MINDLEAK_CONSOLIDATE_MAX_NODES`, default 20, bounded
   1..200), transactional after the model response (a failed persistence pass
-  rolls back and raw evidence remains), and every pass emits telemetry (ADR-0010)
-  so the operator can see what "sleep" did.
+  rolls back and raw evidence remains), and every completed pass emits telemetry
+  (ADR-0010) so the operator can see what "sleep" did. A process forced down
+  during a blocked HTTP attempt may exit before its terminal event.
+- **Workspace lease before spend.** Candidate discovery stays deterministic and
+  may run in parallel, but manual and autonomous paths must acquire one
+  SQLite-backed workspace lease immediately before model inference. The persisted
+  attempt interval and a lease envelope derived from bounded HTTP retries prevent
+  duplicate model spend across MCP processes; exact candidate versions are
+  revalidated transactionally before acknowledgement.
+- **Bounded output.** Model-supplied impacted files are capped at 200 and paths
+  over 1024 bytes are ignored. Durable gist content stores only bounded summary
+  status and source-event count, never raw model inputs.
 - **Gated on a configured model.** No reachable model → no autonomous pass; the
   system degrades to today's on-demand behavior with zero background token spend.
 
@@ -126,18 +136,22 @@ ingest (zero-token) -> bounded working set (Part A, ~7 items)
   it can be *scheduled* rather than *summoned*. Working set is derived; decay
   stays the point; stdout stays pure JSON-RPC (the worker logs to stderr).
 
-## Delivery phases
+## Delivery status
 
-1. Ship the derived `working_set` tool and rehearsal-aware attention evidence.
-2. Refactor `consolidate_signal` persistence into one transaction, then add the
-   opt-in idle worker with a second connection, clean shutdown, and telemetry.
+1. **Shipped:** derived `working_set` tool and bounded rehearsal-aware attention
+  evidence.
+2. **Shipped:** transactional `consolidate_signal` persistence and the opt-in
+  idle worker with a second connection, bounded shutdown, workspace lease/rate
+  limits, and telemetry. Idle workers join promptly when waiting; shutdown can
+  abandon a currently blocked bounded HTTP attempt after a grace period, in
+  which case process exit terminates it and the lease expires without commit.
 
 Part B must call the same model client used by `consolidate_session`, the same
 `consolidate_signal` persistence path used manually, and the same
 `expiring_signal_candidates` query as Phase 5. This ADR adds scheduling, not a
 second consolidation implementation.
 
-Each phase is independently right-shaped; phase 1 adds no model or thread and
-does not pretend autonomous consolidation exists before phase 2 lands. A stored
-focus buffer, pressure trigger, and direct Lodestar write are excluded until
-measured use demonstrates a need.
+The phases remain independently right-shaped: phase 1 adds no model or thread,
+and phase 2 is absent unless explicitly enabled. A stored focus buffer, pressure
+trigger, and direct Lodestar write are excluded until measured use demonstrates
+a need.

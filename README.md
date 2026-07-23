@@ -238,6 +238,15 @@ uses a strict JSON `response_format` to compress raw logs into a single `intent`
 node via the `consolidate_session` tool. It is optional and never on the hot
 path — it errors cleanly when no model is reachable.
 
+Set `MINDLEAK_AUTONOMOUS_CONSOLIDATION=true` to opt in to ADR-0017's idle
+worker. It uses a separate SQLite connection, waits 300 idle seconds by default,
+attempts at most once per hour, and processes at most 20 expiring candidates.
+Manual and idle signal consolidation share one SQLite-backed workspace lease and
+attempt interval. Model inference happens before one optimistic transaction that
+persists a bounded gist (without raw inputs) and acknowledges only unchanged raw
+evidence. Pass outcomes appear in `telemetry_snapshot`; merely configuring a
+model never enables autonomous spend.
+
 ---
 
 ## Layout

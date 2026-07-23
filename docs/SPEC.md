@@ -211,8 +211,8 @@ compatible host — not just Ollama) with a strict JSON `response_format` to:
 
 - **Sleep-phase consolidation** — compress N raw execution nodes into one
   high-level `intent` node, then prune the noise.
-- **Semantic edge synthesis** — extract rationale ("why") from commit messages
-  and `// DECISION:` / `// HACK:` comments.
+- **Signal consolidation** — distil near-expiry proven failure/refactor evidence
+  and preserve deterministic provenance links before acknowledging raw details.
 
 Configuration (all optional; sensible local defaults):
 
@@ -221,10 +221,23 @@ Configuration (all optional; sensible local defaults):
 | `MINDLEAK_LLM_URL` | `http://localhost:11434/v1` | OpenAI-compatible base URL (Ollama's `/v1`) |
 | `MINDLEAK_MODEL` | `glm4:9b` | model name |
 | `MINDLEAK_LLM_API_KEY` | *(empty)* | bearer token for hosted servers; Ollama ignores it |
+| `MINDLEAK_AUTONOMOUS_CONSOLIDATION` | `false` | explicit opt-in for idle consolidation |
+| `MINDLEAK_CONSOLIDATE_IDLE_SECS` | `300` | idle trigger (30-86400) |
+| `MINDLEAK_CONSOLIDATE_MIN_INTERVAL_SECS` | `3600` | minimum attempt interval (60-86400) |
+| `MINDLEAK_CONSOLIDATE_MAX_NODES` | `20` | bounded candidates per pass (1-200) |
 
 Nothing leaves the machine when pointed at a local server; the model is optional
 and never on the hot path. Exposed as the `consolidate_session` MCP tool, which
-errors cleanly when no model is reachable.
+errors cleanly when no model is reachable. ADR-0017 phase 2 optionally schedules
+the existing `consolidate_signal` path after idle. The worker is absent unless
+explicitly enabled, uses a second file-backed SQLite connection, emits
+maintenance telemetry, and joins on server exit. Model inference occurs outside
+SQLite; resulting facts and optimistic acknowledgement of unchanged candidates
+commit in one transaction. A persisted workspace lease gates manual and idle
+inference with the same minimum interval. Gist output is bounded to 200 impacted
+files (1024 bytes per path) and stores no raw model input. Waiting workers join
+on exit; a blocked bounded HTTP attempt may be abandoned after shutdown grace,
+with cancellation preventing later persistence if it returns before process exit.
 
 ### 6.1 Semantic-recall embedding index (ADR-0008)
 
@@ -264,8 +277,8 @@ confirms an agent did what was asked. Three parts, all local and all stdout-safe
 |---|---|---|
 | `MINDLEAK_LOG` | `info` | tracing/`RUST_LOG`-style filter; `off` silences |
 | `MINDLEAK_LOG_FORMAT` | `pretty` | `pretty` or `json` (both to stderr) |
-| `MINDLEAK_HTTP_TIMEOUT_MS` | `30000` | connect + read timeout per attempt |
-| `MINDLEAK_HTTP_RETRIES` | `2` | extra attempts on transient failure |
+| `MINDLEAK_HTTP_TIMEOUT_MS` | `30000` | overall timeout per attempt, bounded 100-300000 ms |
+| `MINDLEAK_HTTP_RETRIES` | `2` | extra attempts on transient failure, bounded 0-5 |
 | `MINDLEAK_BREAKER_THRESHOLD` | `5` | consecutive failures before the circuit opens |
 | `MINDLEAK_BREAKER_COOLDOWN_MS` | `30000` | how long the circuit stays open before a probe |
 

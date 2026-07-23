@@ -9,12 +9,22 @@
 //! stdout (which carries the JSON-RPC protocol).
 
 use std::collections::HashMap;
+use std::io::Read;
+use std::io::{self};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Mutex, OnceLock};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 use crate::error::{MindLeakError, Result};
+
+const MIN_TIMEOUT_MS: u64 = 100;
+const MAX_TIMEOUT_MS: u64 = 300_000;
+const MAX_RETRIES: u64 = 5;
+const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Tunable network policy, read once from the environment (ADR-0010 defaults).
 #[derive(Debug, Clone)]
@@ -28,8 +38,13 @@ pub struct HttpConfig {
 impl Default for HttpConfig {
     fn default() -> Self {
         HttpConfig {
-            timeout: Duration::from_millis(env_u64("MINDLEAK_HTTP_TIMEOUT_MS", 30_000)),
-            retries: env_u64("MINDLEAK_HTTP_RETRIES", 2) as u32,
+            timeout: Duration::from_millis(env_bounded_u64(
+                "MINDLEAK_HTTP_TIMEOUT_MS",
+                30_000,
+                MIN_TIMEOUT_MS,
+                MAX_TIMEOUT_MS,
+            )),
+            retries: env_bounded_u64("MINDLEAK_HTTP_RETRIES", 2, 0, MAX_RETRIES) as u32,
             breaker_threshold: env_u64("MINDLEAK_BREAKER_THRESHOLD", 5) as u32,
             breaker_cooldown: Duration::from_millis(env_u64(
                 "MINDLEAK_BREAKER_COOLDOWN_MS",
@@ -39,11 +54,31 @@ impl Default for HttpConfig {
     }
 }
 
+impl HttpConfig {
+    /// Upper bound for all interruptible work in one retry sequence. DNS may
+    /// exceed ureq's deadline on platforms where resolver calls cannot cancel.
+    pub fn maximum_elapsed(&self) -> Duration {
+        let attempts = u32::saturating_add(self.retries, 1);
+        let dns_budget = self.timeout;
+        let request_budget = self.timeout.saturating_mul(attempts);
+        let retry_budget = (1..=self.retries)
+            .map(backoff)
+            .fold(Duration::ZERO, Duration::saturating_add);
+        dns_budget
+            .saturating_add(request_budget)
+            .saturating_add(retry_budget)
+    }
+}
+
 fn env_u64(key: &str, default: u64) -> u64 {
     std::env::var(key)
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
+}
+
+fn env_bounded_u64(key: &str, default: u64, minimum: u64, maximum: u64) -> u64 {
+    env_u64(key, default).clamp(minimum, maximum)
 }
 
 /// Circuit-breaker state for one endpoint.
@@ -141,18 +176,53 @@ fn breakers() -> &'static Mutex<HashMap<String, CircuitBreaker>> {
 /// breaker. Returns a typed `Http` error (never a panic, never a hang) on
 /// failure or when the circuit is open.
 pub fn post_json(cfg: &HttpConfig, url: &str, api_key: &str, body: &Value) -> Result<Value> {
+    post_json_with_cancel(cfg, url, api_key, body, || false)
+}
+
+pub fn post_json_with_cancel<F>(
+    cfg: &HttpConfig,
+    url: &str,
+    api_key: &str,
+    body: &Value,
+    should_cancel: F,
+) -> Result<Value>
+where
+    F: Fn() -> bool,
+{
+    if should_cancel() {
+        return Err(MindLeakError::Cancelled(
+            "optional HTTP request cancelled".to_string(),
+        ));
+    }
     if !breaker_allows(cfg, url) {
         tracing::warn!(target: "mindleak::net", %url, "circuit open; fast-failing without a request");
         return Err(MindLeakError::Http(format!("circuit open for {url}")));
     }
 
+    let (expected_netloc, resolved_addresses) = resolve_endpoint(url, cfg.timeout)?;
     let agent = ureq::builder()
+        .timeout(cfg.timeout)
         .timeout_connect(cfg.timeout)
         .timeout_read(cfg.timeout)
+        .resolver(move |requested: &str| {
+            if requested == expected_netloc {
+                Ok(resolved_addresses.clone())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "redirect host is not pre-resolved",
+                ))
+            }
+        })
         .build();
 
     let mut attempt = 0u32;
     loop {
+        if should_cancel() {
+            return Err(MindLeakError::Cancelled(
+                "optional HTTP request cancelled".to_string(),
+            ));
+        }
         attempt += 1;
         let mut req = agent.post(url);
         if !api_key.is_empty() {
@@ -160,9 +230,7 @@ pub fn post_json(cfg: &HttpConfig, url: &str, api_key: &str, body: &Value) -> Re
         }
         match req.send_json(body) {
             Ok(resp) => {
-                let value = resp
-                    .into_json::<Value>()
-                    .map_err(|e| MindLeakError::Http(e.to_string()))?;
+                let value = read_bounded_json(resp.into_reader())?;
                 record_success(url);
                 return Ok(value);
             }
@@ -170,6 +238,11 @@ pub fn post_json(cfg: &HttpConfig, url: &str, api_key: &str, body: &Value) -> Re
                 let transient = is_transient(&err);
                 tracing::warn!(target: "mindleak::net", %url, attempt, transient, error = %err, "http attempt failed");
                 if transient && attempt <= cfg.retries {
+                    if should_cancel() {
+                        return Err(MindLeakError::Cancelled(
+                            "optional HTTP request cancelled".to_string(),
+                        ));
+                    }
                     std::thread::sleep(backoff(attempt));
                     continue;
                 }
@@ -177,6 +250,60 @@ pub fn post_json(cfg: &HttpConfig, url: &str, api_key: &str, body: &Value) -> Re
                 return Err(MindLeakError::Http(err.to_string()));
             }
         }
+    }
+}
+
+fn read_bounded_json(reader: impl Read) -> Result<Value> {
+    let mut bytes = Vec::new();
+    reader
+        .take((MAX_RESPONSE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_RESPONSE_BYTES {
+        return Err(MindLeakError::Http(format!(
+            "optional HTTP response exceeded {MAX_RESPONSE_BYTES} bytes"
+        )));
+    }
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+fn resolve_endpoint(url: &str, timeout: Duration) -> Result<(String, Vec<SocketAddr>)> {
+    let parsed = url::Url::parse(url)
+        .map_err(|error| MindLeakError::Http(format!("invalid URL {url}: {error}")))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| MindLeakError::Http(format!("URL has no host: {url}")))?
+        .to_string();
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| MindLeakError::Http(format!("URL has no known port: {url}")))?;
+    let netloc = format!("{host}:{port}");
+    if let Ok(address) = host.parse::<IpAddr>() {
+        return Ok((netloc, vec![SocketAddr::new(address, port)]));
+    }
+
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name("mindleak-dns".to_string())
+        .spawn(move || {
+            let result = (host.as_str(), port)
+                .to_socket_addrs()
+                .map(|addresses| addresses.collect::<Vec<_>>());
+            let _ = sender.send(result);
+        })?;
+    match receiver.recv_timeout(timeout) {
+        Ok(Ok(addresses)) if !addresses.is_empty() => Ok((netloc, addresses)),
+        Ok(Ok(_)) => Err(MindLeakError::Http(format!(
+            "DNS returned no addresses for {netloc}"
+        ))),
+        Ok(Err(error)) => Err(MindLeakError::Http(format!(
+            "DNS resolution failed for {netloc}: {error}"
+        ))),
+        Err(RecvTimeoutError::Timeout) => Err(MindLeakError::Http(format!(
+            "DNS resolution timed out for {netloc}"
+        ))),
+        Err(RecvTimeoutError::Disconnected) => Err(MindLeakError::Http(format!(
+            "DNS resolver stopped for {netloc}"
+        ))),
     }
 }
 
@@ -254,6 +381,50 @@ mod tests {
         cb.on_success();
         assert_eq!(cb.state(), CircuitState::Closed);
         assert!(cb.allow(t0 + Duration::from_secs(31)));
+    }
+
+    #[test]
+    fn cancelled_request_short_circuits_before_network_access() {
+        let error = post_json_with_cancel(
+            &HttpConfig::default(),
+            "http://127.0.0.1:1/v1/test",
+            "",
+            &serde_json::json!({}),
+            || true,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, MindLeakError::Cancelled(_)));
+    }
+
+    #[test]
+    fn maximum_elapsed_includes_all_attempts_and_backoff() {
+        let config = HttpConfig {
+            timeout: Duration::from_secs(10),
+            retries: 2,
+            breaker_threshold: 5,
+            breaker_cooldown: Duration::from_secs(30),
+        };
+
+        assert_eq!(config.maximum_elapsed(), Duration::from_millis(40_300));
+    }
+
+    #[test]
+    fn response_json_is_size_bounded() {
+        let parsed = read_bounded_json(std::io::Cursor::new(br#"{"ok":true}"#)).unwrap();
+        assert_eq!(parsed["ok"], true);
+
+        let oversized = vec![b' '; MAX_RESPONSE_BYTES + 1];
+        let error = read_bounded_json(std::io::Cursor::new(oversized)).unwrap_err();
+        assert!(error.to_string().contains("exceeded"));
+    }
+
+    #[test]
+    fn numeric_endpoint_resolution_is_immediate_and_exact() {
+        let (netloc, addresses) =
+            resolve_endpoint("http://127.0.0.1:11434/v1", Duration::from_millis(1)).unwrap();
+        assert_eq!(netloc, "127.0.0.1:11434");
+        assert_eq!(addresses, vec!["127.0.0.1:11434".parse().unwrap()]);
     }
 
     #[test]

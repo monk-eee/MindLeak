@@ -56,6 +56,15 @@ Override with `mindleak.serverPath` / `mindleak.lodestarServerPath`.
 | `mindleak.maxChangedFilesPerExecution` | `200` | Maximum changed paths attached to one execution. |
 | `mindleak.captureCommits` | `true` | Capture built-in Git extension commit events. |
 | `mindleak.snapshotLimit` | `60` | Max nodes rendered. |
+| `mindleak.autonomousConsolidation` | `false` | Opt in to idle model-backed consolidation. |
+| `mindleak.consolidateIdleSecs` | `300` | Idle seconds before a pass. |
+| `mindleak.consolidateMinIntervalSecs` | `3600` | Minimum seconds between attempts. |
+| `mindleak.consolidateMaxNodes` | `20` | Maximum candidates per pass. |
+
+The extension settings above are the authority for its child process and
+override inherited `MINDLEAK_AUTONOMOUS_CONSOLIDATION` / scheduler environment
+values. Reload the extension host after changing them; the worker configuration
+is intentionally resolved once at server startup.
 
 ## Develop
 

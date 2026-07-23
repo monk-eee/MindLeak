@@ -25,6 +25,7 @@ pub mod telemetry;
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use error::{MindLeakError, Result};
@@ -35,10 +36,13 @@ pub use graph::{
 };
 pub use model::{Edge, Node, NodeType, RelationType};
 
-use consolidate::Consolidator;
+use consolidate::{facts_from_summary, Consolidator};
 use ingest::execution::ExecutionRecord;
 use ingest::git::CommitRecord;
 use ingest::structure::{HierarchyRelation, ImportTarget};
+
+static CONSOLIDATION_CALL_ID: AtomicU64 = AtomicU64::new(1);
+const DEFAULT_CONSOLIDATION_MIN_INTERVAL_SECS: u64 = 3_600;
 
 /// Current unix time in whole seconds.
 pub fn now_unix() -> i64 {
@@ -52,6 +56,7 @@ pub fn now_unix() -> i64 {
 pub struct MindLeak {
     store: GraphStore,
     agent: Option<String>,
+    consolidation_min_interval_secs: u64,
 }
 
 impl MindLeak {
@@ -60,6 +65,7 @@ impl MindLeak {
         Ok(MindLeak {
             store: GraphStore::new(db::open(path)?),
             agent: None,
+            consolidation_min_interval_secs: DEFAULT_CONSOLIDATION_MIN_INTERVAL_SECS,
         })
     }
 
@@ -68,6 +74,7 @@ impl MindLeak {
         Ok(MindLeak {
             store: GraphStore::new(db::open_in_memory()?),
             agent: None,
+            consolidation_min_interval_secs: DEFAULT_CONSOLIDATION_MIN_INTERVAL_SECS,
         })
     }
 
@@ -89,6 +96,11 @@ impl MindLeak {
 
     pub fn with_working_set_size(mut self, size: usize) -> Self {
         self.store = self.store.with_working_set_size(size);
+        self
+    }
+
+    pub fn with_consolidation_min_interval(mut self, seconds: u64) -> Self {
+        self.consolidation_min_interval_secs = seconds.clamp(60, 86_400);
         self
     }
 
@@ -153,6 +165,28 @@ impl MindLeak {
             detail.as_ref(),
         ) {
             tracing::warn!(target: "mindleak::telemetry", tool, error = %e, "failed to record telemetry");
+        }
+    }
+
+    /// Record one autonomous maintenance pass without exposing it as a tool
+    /// invocation. Best-effort for the same reason as tool telemetry.
+    pub fn record_maintenance(
+        &self,
+        name: &str,
+        outcome: &str,
+        duration_ms: i64,
+        detail: Option<serde_json::Value>,
+    ) {
+        if let Err(error) = telemetry::record(
+            &self.store.conn,
+            now_unix(),
+            "maintenance",
+            name,
+            outcome,
+            Some(duration_ms),
+            detail.as_ref(),
+        ) {
+            tracing::warn!(target: "mindleak::telemetry", name, %error, "failed to record maintenance telemetry");
         }
     }
 
@@ -505,10 +539,37 @@ impl MindLeak {
     /// Consolidate queued high-signal episodics, then acknowledge their raw
     /// edges only after the durable intent and provenance links are stored.
     pub fn consolidate_signal(&self, limit: usize) -> Result<SignalConsolidationOutcome> {
-        let now = now_unix();
+        self.consolidate_signal_with_interval(limit, self.consolidation_min_interval_secs)
+    }
+
+    /// Shared manual/autonomous path. `min_interval_secs` is persisted in the
+    /// workspace lease so multiple MCP processes cannot duplicate model spend.
+    pub fn consolidate_signal_with_interval(
+        &self,
+        limit: usize,
+        min_interval_secs: u64,
+    ) -> Result<SignalConsolidationOutcome> {
+        self.consolidate_signal_with_control(limit, min_interval_secs, || false)
+    }
+
+    pub fn consolidate_signal_with_control<F>(
+        &self,
+        limit: usize,
+        min_interval_secs: u64,
+        should_cancel: F,
+    ) -> Result<SignalConsolidationOutcome>
+    where
+        F: Fn() -> bool,
+    {
+        if should_cancel() {
+            return Err(MindLeakError::Cancelled(
+                "signal consolidation cancelled".to_string(),
+            ));
+        }
+        let candidate_time = now_unix();
         let candidates: Vec<SignalCandidate> = self
             .store
-            .expiring_signal_candidates(now)?
+            .expiring_signal_candidates(candidate_time)?
             .into_iter()
             .take(limit.max(1))
             .collect();
@@ -517,9 +578,108 @@ impl MindLeak {
                 "no signal candidates are ready for consolidation".to_string(),
             ));
         }
+        if should_cancel() {
+            return Err(MindLeakError::Cancelled(
+                "signal consolidation cancelled".to_string(),
+            ));
+        }
+        let logs = self.signal_candidate_logs(&candidates)?;
+        if should_cancel() {
+            return Err(MindLeakError::Cancelled(
+                "signal consolidation cancelled".to_string(),
+            ));
+        }
+        let lease_time = now_unix();
+        let owner = format!(
+            "{}:{}:{}",
+            std::process::id(),
+            lease_time,
+            CONSOLIDATION_CALL_ID.fetch_add(1, Ordering::Relaxed)
+        );
+        let lease_secs = consolidation_lease_secs();
+        if !self.store.try_acquire_consolidation_lease(
+            &owner,
+            lease_time,
+            lease_secs,
+            min_interval_secs.min(i64::MAX as u64) as i64,
+        )? {
+            return Err(MindLeakError::Busy(
+                "signal consolidation is running or rate-limited".to_string(),
+            ));
+        }
+        let result = self.consolidate_signal_under_lease(candidates, logs, &owner, &should_cancel);
+        let release = self.store.release_consolidation_lease(&owner, now_unix());
+        match (result, release) {
+            (Ok(outcome), Ok(true)) => Ok(outcome),
+            (Ok(_), Ok(false)) => Err(MindLeakError::Busy(
+                "signal consolidation lease expired before release".to_string(),
+            )),
+            (Ok(_), Err(error)) => Err(error),
+            (Err(error), Ok(true)) => Err(error),
+            (Err(error), Ok(false)) => Err(MindLeakError::Other(format!(
+                "{error}; signal consolidation lease ownership was lost during release"
+            ))),
+            (Err(error), Err(release_error)) => Err(MindLeakError::Other(format!(
+                "{error}; additionally failed to release signal consolidation lease: {release_error}"
+            ))),
+        }
+    }
 
-        let mut logs = Vec::new();
+    fn consolidate_signal_under_lease<F>(
+        &self,
+        candidates: Vec<SignalCandidate>,
+        logs: Vec<String>,
+        lease_owner: &str,
+        should_cancel: &F,
+    ) -> Result<SignalConsolidationOutcome>
+    where
+        F: Fn() -> bool,
+    {
+        if should_cancel() {
+            return Err(MindLeakError::Cancelled(
+                "signal consolidation cancelled".to_string(),
+            ));
+        }
+        let summary = Consolidator::default().consolidate_with_cancel(&logs, should_cancel)?;
+        if should_cancel() {
+            return Err(MindLeakError::Cancelled(
+                "signal consolidation cancelled".to_string(),
+            ));
+        }
+        let persistence_time = now_unix();
+        let mut facts = facts_from_summary(&summary, logs.len(), persistence_time)?;
+        let mut targets: HashSet<String> = HashSet::new();
         for candidate in &candidates {
+            if targets.insert(candidate.target_id.clone()) {
+                facts.edges.push(Edge::new(
+                    &facts.intent_id,
+                    &candidate.target_id,
+                    RelationType::RelatesTo,
+                    persistence_time,
+                ));
+            }
+        }
+        let (mut write_outcome, edges_removed, nodes_removed) =
+            self.store.commit_signal_consolidation(
+                lease_owner,
+                now_unix(),
+                &candidates,
+                &facts.nodes,
+                &facts.edges,
+            )?;
+        write_outcome.node_ids.push(facts.intent_id.clone());
+        Ok(SignalConsolidationOutcome {
+            intent_id: facts.intent_id,
+            candidates_consolidated: candidates.len(),
+            edges_removed,
+            nodes_removed,
+            write_outcome,
+        })
+    }
+
+    fn signal_candidate_logs(&self, candidates: &[SignalCandidate]) -> Result<Vec<String>> {
+        let mut logs = Vec::with_capacity(candidates.len());
+        for candidate in candidates {
             let source = self.store.get_node(&candidate.source_id)?;
             let content = source
                 .as_ref()
@@ -538,34 +698,19 @@ impl MindLeak {
                 4_000,
             ));
         }
-
-        let (intent_id, mut write_outcome) =
-            Consolidator::default().consolidate_and_store(&self.store, &logs, now)?;
-        let mut targets: HashSet<String> = HashSet::new();
-        let mut links = Vec::new();
-        for candidate in &candidates {
-            if targets.insert(candidate.target_id.clone()) {
-                links.push(Edge::new(
-                    &intent_id,
-                    &candidate.target_id,
-                    RelationType::RelatesTo,
-                    now,
-                ));
-            }
-        }
-        let linked = self.store.upsert_facts(&[], &links)?;
-        write_outcome.nodes_created += linked.nodes_created;
-        write_outcome.edges_created += linked.edges_created;
-        let (edges_removed, nodes_removed) =
-            self.store.acknowledge_signal_candidates(&candidates)?;
-        Ok(SignalConsolidationOutcome {
-            intent_id,
-            candidates_consolidated: candidates.len(),
-            edges_removed,
-            nodes_removed,
-            write_outcome,
-        })
+        Ok(logs)
     }
+}
+
+fn consolidation_lease_secs() -> i64 {
+    let config = net::HttpConfig::default();
+    config
+        .maximum_elapsed()
+        .as_secs()
+        .saturating_add(1)
+        .saturating_mul(2)
+        .saturating_add(300)
+        .min(i64::MAX as u64) as i64
 }
 
 #[cfg(test)]
@@ -624,5 +769,108 @@ mod tests {
         let working = engine.working_set(Some(32)).unwrap();
         assert_eq!(working.len(), 1);
         assert!(working[0].node.id.starts_with("artifact:"));
+    }
+
+    #[test]
+    fn maintenance_telemetry_is_distinct_from_tool_calls() {
+        let engine = MindLeak::open_in_memory().unwrap();
+
+        engine.record_maintenance(
+            "autonomous_consolidation",
+            "skipped",
+            3,
+            Some(serde_json::json!({ "reason": "no_candidates" })),
+        );
+
+        let snapshot = engine.telemetry_snapshot(1).unwrap();
+        assert_eq!(snapshot.recent[0].kind, "maintenance");
+        assert_eq!(snapshot.recent[0].outcome, "skipped");
+    }
+
+    #[test]
+    fn signal_consolidation_interval_is_shared_across_facades() {
+        let path =
+            std::env::temp_dir().join(format!("mindleak-facade-lease-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let policy = config::DecayPolicy {
+            half_life_overrides: BTreeMap::new(),
+            prune_threshold: 0.6,
+        };
+        let first = MindLeak::open(path.to_str().unwrap())
+            .unwrap()
+            .with_decay_policy(policy.clone())
+            .with_consolidation_min_interval(60);
+        let second = MindLeak::open(path.to_str().unwrap())
+            .unwrap()
+            .with_decay_policy(policy)
+            .with_consolidation_min_interval(60);
+        let now = now_unix();
+        for node in [
+            Node::new("intent:commit", NodeType::Intent, "commit", now),
+            Node::new("artifact:consumer", NodeType::Artifact, "consumer", now),
+            Node::new("artifact:target", NodeType::Artifact, "target", now),
+        ] {
+            first.store().upsert_node(&node).unwrap();
+        }
+        first
+            .store()
+            .upsert_edge(&Edge::new(
+                "intent:commit",
+                "artifact:target",
+                RelationType::Refactored,
+                now,
+            ))
+            .unwrap();
+        first
+            .store()
+            .upsert_edge(&Edge::new(
+                "artifact:consumer",
+                "artifact:target",
+                RelationType::Imports,
+                now,
+            ))
+            .unwrap();
+        assert!(!first
+            .store()
+            .expiring_signal_candidates(now)
+            .unwrap()
+            .is_empty());
+        assert!(first
+            .store()
+            .try_acquire_consolidation_lease("prior", now, 300, 60)
+            .unwrap());
+        assert!(first
+            .store()
+            .release_consolidation_lease("prior", now)
+            .unwrap());
+
+        assert!(matches!(
+            second.consolidate_signal(20),
+            Err(MindLeakError::Busy(_))
+        ));
+
+        drop(first);
+        drop(second);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn cancelled_signal_consolidation_releases_its_lease() {
+        let engine = MindLeak::open_in_memory().unwrap();
+
+        assert!(matches!(
+            engine.consolidate_signal_with_control(20, 60, || true),
+            Err(MindLeakError::Cancelled(_))
+        ));
+        assert!(matches!(
+            engine.consolidate_signal(20),
+            Err(MindLeakError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn consolidation_lease_outlives_the_bounded_http_budget() {
+        let budget = net::HttpConfig::default().maximum_elapsed().as_secs();
+        assert!(consolidation_lease_secs() as u64 > budget.saturating_mul(2));
     }
 }

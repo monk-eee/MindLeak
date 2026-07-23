@@ -194,13 +194,17 @@ selecting a default.
 | `MINDLEAK_LLM_URL` | `http://localhost:11434/v1` | OpenAI-compatible consolidation server |
 | `MINDLEAK_MODEL` | `glm4:9b` | consolidation model |
 | `MINDLEAK_LLM_API_KEY` | *(empty)* | bearer token for hosted servers |
+| `MINDLEAK_AUTONOMOUS_CONSOLIDATION` | `false` | explicit opt-in for idle model-backed consolidation; requires a file-backed database |
+| `MINDLEAK_CONSOLIDATE_IDLE_SECS` | `300` | idle trigger, bounded 30-86400 seconds |
+| `MINDLEAK_CONSOLIDATE_MIN_INTERVAL_SECS` | `3600` | minimum time between attempts, bounded 60-86400 seconds |
+| `MINDLEAK_CONSOLIDATE_MAX_NODES` | `20` | candidates per pass, bounded 1-200 |
 | `MINDLEAK_EMBED_URL` | `http://localhost:11434/v1` | embeddings server (for `recall`/`index`) |
 | `MINDLEAK_EMBED_MODEL` | `nomic-embed-text` | embedding model |
 | `MINDLEAK_EMBED_API_KEY` | *(empty)* | bearer token for hosted servers |
 | `MINDLEAK_LOG` | `info` | tracing filter (`off`, `warn`, `debug`, `mindleak_core=debug`, …) — **stderr only** |
 | `MINDLEAK_LOG_FORMAT` | `pretty` | `pretty` or `json` |
-| `MINDLEAK_HTTP_TIMEOUT_MS` | `30000` | connect + read timeout for optional HTTP calls |
-| `MINDLEAK_HTTP_RETRIES` | `2` | extra retry attempts on transient failure |
+| `MINDLEAK_HTTP_TIMEOUT_MS` | `30000` | overall timeout per optional HTTP attempt, bounded 100-300000 ms |
+| `MINDLEAK_HTTP_RETRIES` | `2` | extra transient-failure retries, bounded 0-5 |
 | `MINDLEAK_BREAKER_THRESHOLD` | `5` | consecutive failures before the circuit opens |
 | `MINDLEAK_BREAKER_COOLDOWN_MS` | `30000` | how long the circuit stays open before a probe |
 
@@ -225,6 +229,10 @@ selecting a default.
   Never expect diagnostics on stdout.
 - **Derived, not stored.** Effective edge weight is computed at query time from
   decay — it is never written back to the row.
+- **Autonomous model spend is opt-in.** A configured model does not start the
+  idle worker. When explicitly enabled, every pass is visible as `maintenance`
+  telemetry; no-candidate passes use no model. Manual and idle signal
+  consolidation share the configured minimum interval and workspace lease.
 - **Local & unauthenticated by design.** The servers have no network listener;
   any process with stdio access can write. Do not expose them over a network
   without adding an auth layer.

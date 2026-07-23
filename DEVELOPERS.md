@@ -132,6 +132,10 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 | `MINDLEAK_AGENT` | *(empty)* | agent id for attribution (`observed` edges); empty = off |
 | `MINDLEAK_CONFIG` | `<workspace>/.mindleak.toml` | per-project decay policy |
 | `MINDLEAK_WORKING_SET_SIZE` | `7` | hard cap for the current agent's derived working set (1-32) |
+| `MINDLEAK_AUTONOMOUS_CONSOLIDATION` | `false` | explicit opt-in to idle model-backed consolidation |
+| `MINDLEAK_CONSOLIDATE_IDLE_SECS` | `300` | idle trigger (30-86400) |
+| `MINDLEAK_CONSOLIDATE_MIN_INTERVAL_SECS` | `3600` | minimum attempt interval (60-86400) |
+| `MINDLEAK_CONSOLIDATE_MAX_NODES` | `20` | candidates per pass (1-200) |
 | `MINDLEAK_LLM_URL` | `http://localhost:11434/v1` | consolidation server (OpenAI-compatible) |
 | `MINDLEAK_MODEL` | `glm4:9b` | consolidation model |
 | `MINDLEAK_LLM_API_KEY` | *(empty)* | bearer token for hosted LLM servers (optional) |

@@ -18,6 +18,12 @@ pub enum MindLeakError {
     #[error("not found: {0}")]
     NotFound(String),
 
+    #[error("busy: {0}")]
+    Busy(String),
+
+    #[error("cancelled: {0}")]
+    Cancelled(String),
+
     #[error("{0}")]
     Other(String),
 }

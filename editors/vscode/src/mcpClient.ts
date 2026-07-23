@@ -34,6 +34,7 @@ export class McpClient {
     this.proc.on("error", (err) => this.log(`spawn error: ${err.message}`));
     this.proc.on("exit", (code) => {
       this.ready = false;
+      this.rejectPending(new Error(`MCP server exited (code ${code ?? "null"})`));
       this.log(`mindleak-mcp exited (code ${code ?? "null"})`);
     });
 
@@ -110,10 +111,52 @@ export class McpClient {
     return parseToolResult(result);
   }
 
-  dispose(): void {
-    this.pending.clear();
-    this.proc?.kill();
+  async dispose(graceMilliseconds = 2000, forceMilliseconds = 1000): Promise<void> {
+    const proc = this.proc;
     this.proc = undefined;
     this.ready = false;
+    this.rejectPending(new Error("MCP client disposed"));
+    if (!proc || proc.exitCode !== null) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      let completed = false;
+      let forceTimer: NodeJS.Timeout | undefined;
+      const finish = () => {
+        if (!completed) {
+          completed = true;
+          clearTimeout(timer);
+          if (forceTimer) {
+            clearTimeout(forceTimer);
+          }
+          resolve();
+        }
+      };
+      proc.once("exit", finish);
+      const timer = setTimeout(
+        () => {
+          if (!proc.kill()) {
+            finish();
+            return;
+          }
+          forceTimer = setTimeout(
+            () => {
+              proc.kill("SIGKILL");
+              finish();
+            },
+            Math.max(0, forceMilliseconds)
+          );
+        },
+        Math.max(0, graceMilliseconds)
+      );
+      proc.stdin.end();
+    });
+  }
+
+  private rejectPending(error: Error): void {
+    for (const pending of this.pending.values()) {
+      pending.reject(error);
+    }
+    this.pending.clear();
   }
 }

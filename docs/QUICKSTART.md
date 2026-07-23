@@ -155,6 +155,12 @@ export MINDLEAK_EMBED_MODEL="nomic-embed-text"    # ollama pull nomic-embed-text
 Both error cleanly when no server is reachable — they never block the
 deterministic path.
 
+Autonomous consolidation is disabled by default. To opt in, set
+`MINDLEAK_AUTONOMOUS_CONSOLIDATION=true`; the server then uses the same optional
+model to distil expiring proven signal after idle. Defaults are 300 idle seconds,
+3600 seconds between attempts, and 20 candidates per pass. Attempts are visible
+through `telemetry_snapshot`.
+
 ---
 
 ## 5. Next steps

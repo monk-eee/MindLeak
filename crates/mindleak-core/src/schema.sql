@@ -48,6 +48,15 @@ CREATE TABLE IF NOT EXISTS artifact_stub_candidates (
 CREATE INDEX IF NOT EXISTS idx_stub_candidates_candidate
     ON artifact_stub_candidates(candidate_id);
 
+-- Cross-process optional maintenance coordination. One guarded row prevents
+-- duplicate model spend when multiple MCP processes share a graph.
+CREATE TABLE IF NOT EXISTS maintenance_leases (
+    name             TEXT PRIMARY KEY,
+    owner            TEXT NOT NULL,
+    lease_expires_at INTEGER NOT NULL,
+    last_attempt_at  INTEGER NOT NULL
+);
+
 -- Full-text index over node label + content for semantic-ish seed lookup.
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
     id UNINDEXED,

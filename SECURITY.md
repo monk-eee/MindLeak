@@ -33,6 +33,12 @@ your machine (`.mindleak/graph.db`) and the MCP server speaks JSON-RPC over
   sequences, redacted for common credential forms, and capped before MCP
   submission. Secret-bearing command shapes are suppressed entirely; this is
   defense in depth, not a guarantee that arbitrary output contains no secrets.
+- **Autonomous model calls are separately opt-in.** Setting
+  `MINDLEAK_AUTONOMOUS_CONSOLIDATION=true` permits selected expiring graph
+  evidence to be sent to the configured model during idle, without a foreground
+  tool call. Keep it disabled for hosted endpoints unless that data flow is
+  approved. Completed attempts are recorded as local maintenance telemetry; a
+  forced shutdown during blocked HTTP may end before a terminal event is written.
 
 ## Supported versions
 
