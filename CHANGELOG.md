@@ -112,6 +112,11 @@ to [Semantic Versioning](https://semver.org/).
   longer mislabelled as `refactored`.
 
 ### Fixed
+- **`lodestar-mcp` no longer advertises a duplicated `consolidate` tool.** The
+  ADR-0022 knowledge-loop change copy-pasted the `consolidate` definition, so
+  `tools/list` returned two identical entries and MCP clients saw an ambiguous
+  duplicated verb. The duplicate is removed and a `tools_list` regression test
+  now asserts every advertised tool name is unique.
 - **Injected embedding backends remain safe for maintenance worker threads.**
   `TextEmbedder` now requires `Send + Sync`, restoring the workspace build after
   the injectable semantic-recall seam made `MindLeak` non-`Send`. Compile-time

@@ -34,20 +34,6 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "consolidate",
-            "description": "Gated promotion of a discovered regularity into durable knowledge. Stores nothing unless the evidence clears count + span thresholds (signal, not coincidence).",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "statement": { "type": "string" },
-                    "evidence_node_ids": { "type": "array", "items": { "type": "string" } },
-                    "first_seen": { "type": "integer" },
-                    "last_seen": { "type": "integer" }
-                },
-                "required": ["statement", "evidence_node_ids", "first_seen", "last_seen"]
-            }
-        }),
-        json!({
             "name": "promote_signals",
             "description": "Promotion bridge (ADR-0022): feed MindLeak proven-signal candidates (opaque node ids + provenance span) into the gated consolidator in one call. Reuses the count + span gate; builds a deterministic templated statement when a candidate has none. Returns the knowledge that cleared the gate.",
             "inputSchema": {

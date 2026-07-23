@@ -127,4 +127,20 @@ mod tests {
             .unwrap();
         assert!(create["inputSchema"]["properties"]["blocked_by"].is_object());
     }
+
+    #[test]
+    fn tools_list_exposes_no_duplicate_names() {
+        // Regression: ADR-0022 copy-pasted the `consolidate` definition, so
+        // tools/list advertised two identical entries and MCP clients saw an
+        // ambiguous, duplicated verb. Every advertised tool name must be unique.
+        let tools = list();
+        let mut names: Vec<&str> = tools
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        let total = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), total, "duplicate tool name in tools/list");
+    }
 }
