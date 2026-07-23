@@ -157,6 +157,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unreachable_client_is_pinned_away_from_ambient_configuration() {
+        let client = LlmClient::unreachable();
+
+        assert_eq!(client.base_url, "http://127.0.0.1:1/v1");
+        assert_eq!(client.model, "unreachable");
+        assert!(client.api_key.is_empty());
+    }
+
+    #[test]
     fn extract_json_pulls_object_from_fence_or_prose() {
         assert_eq!(extract_json("```json\n{\"a\":1}\n```"), "{\"a\":1}");
         assert_eq!(extract_json("Sure:\n{\"a\":1} done"), "{\"a\":1}");
