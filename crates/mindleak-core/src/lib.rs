@@ -26,6 +26,7 @@ pub mod telemetry;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub use embed::{Embedder, TextEmbedder};
 pub use error::{MindLeakError, Result};
 pub use graph::{
     AgentActivity, ArtifactStub, ConformanceEvidence, Direction, EvidenceProvenance, GraphExport,
@@ -49,6 +50,7 @@ pub struct MindLeak {
     store: GraphStore,
     agent: Option<String>,
     consolidation_min_interval_secs: u64,
+    embedder: Box<dyn embed::TextEmbedder>,
 }
 
 impl MindLeak {
@@ -58,6 +60,7 @@ impl MindLeak {
             store: GraphStore::new(db::open(path)?),
             agent: None,
             consolidation_min_interval_secs: DEFAULT_CONSOLIDATION_MIN_INTERVAL_SECS,
+            embedder: Box::new(embed::Embedder::default()),
         })
     }
 
@@ -67,6 +70,7 @@ impl MindLeak {
             store: GraphStore::new(db::open_in_memory()?),
             agent: None,
             consolidation_min_interval_secs: DEFAULT_CONSOLIDATION_MIN_INTERVAL_SECS,
+            embedder: Box::new(embed::Embedder::default()),
         })
     }
 
@@ -93,6 +97,14 @@ impl MindLeak {
 
     pub fn with_consolidation_min_interval(mut self, seconds: u64) -> Self {
         self.consolidation_min_interval_secs = seconds.clamp(60, 86_400);
+        self
+    }
+
+    /// Override the semantic-recall embedding backend (ADR-0008). Defaults to a
+    /// local `/v1/embeddings` client; tests inject a deterministic or unreachable
+    /// embedder so the index→recall→seed path is exercised without a live model.
+    pub fn with_embedder(mut self, embedder: Box<dyn embed::TextEmbedder>) -> Self {
+        self.embedder = embedder;
         self
     }
 

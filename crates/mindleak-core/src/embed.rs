@@ -64,6 +64,27 @@ impl Embedder {
     }
 }
 
+/// The embedding backend behind semantic recall (ADR-0008). A trait so the
+/// index→recall→seed path can be exercised with a deterministic or unreachable
+/// embedder in tests, never depending on a live model. The concrete
+/// [`Embedder`] talks to a local `/v1/embeddings` server; callers inject an
+/// alternative via `MindLeak::with_embedder`.
+pub trait TextEmbedder {
+    /// The model tag under which vectors are stored and queried.
+    fn model(&self) -> &str;
+    /// Embed `text` into a dense vector, erroring cleanly when unavailable.
+    fn embed(&self, text: &str) -> Result<Vec<f32>>;
+}
+
+impl TextEmbedder for Embedder {
+    fn model(&self) -> &str {
+        &self.model
+    }
+    fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        Embedder::embed(self, text)
+    }
+}
+
 /// Cosine similarity of two equal-length vectors; 0.0 for degenerate input.
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.is_empty() || a.len() != b.len() {

@@ -10,9 +10,8 @@ impl MindLeak {
     /// FTS/graph search — seed the results into `multi_hop_query`. Errors
     /// cleanly when no embedding model is reachable.
     pub fn recall(&self, query: &str, limit: usize) -> Result<Vec<ScoredNode>> {
-        let embedder = embed::Embedder::default();
-        let query_vec = embedder.embed(query)?;
-        let hits = embed::recall(&self.store.conn, &query_vec, &embedder.model, limit)?;
+        let query_vec = self.embedder.embed(query)?;
+        let hits = embed::recall(&self.store.conn, &query_vec, self.embedder.model(), limit)?;
         let mut out = Vec::new();
         for (id, score) in hits {
             if let Some(node) = self.store.get_node(&id)? {
@@ -29,13 +28,13 @@ impl MindLeak {
     /// Populate the semantic embedding index for nodes missing a current vector
     /// (off the zero-token hot path). Returns how many nodes were indexed.
     pub fn index_nodes(&self, limit: usize) -> Result<usize> {
-        let embedder = embed::Embedder::default();
         let now = now_unix();
-        let pending = embed::nodes_missing_embeddings(&self.store.conn, &embedder.model, limit)?;
+        let pending =
+            embed::nodes_missing_embeddings(&self.store.conn, self.embedder.model(), limit)?;
         let mut indexed = 0;
         for (id, text) in pending {
-            let vector = embedder.embed(&text)?;
-            embed::upsert(&self.store.conn, &id, &embedder.model, &vector, now)?;
+            let vector = self.embedder.embed(&text)?;
+            embed::upsert(&self.store.conn, &id, self.embedder.model(), &vector, now)?;
             indexed += 1;
         }
         Ok(indexed)

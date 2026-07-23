@@ -891,3 +891,102 @@ fn evidence_bundle_uses_attributed_mutations_within_the_work_window() {
         .iter()
         .any(|fact| { fact.relation == "refactored" && fact.target_id == "artifact:src/auth.rs" }));
 }
+
+// ---- ADR-0008 semantic recall (embedder DI seam, no live model) ------------
+
+/// Deterministic keyword embedder: texts sharing a keyword share a vector
+/// component, so recall is predictable without any embeddings server.
+struct StubEmbedder;
+
+impl mindleak_core::TextEmbedder for StubEmbedder {
+    fn model(&self) -> &str {
+        "stub"
+    }
+    fn embed(&self, text: &str) -> mindleak_core::Result<Vec<f32>> {
+        let lower = text.to_lowercase();
+        let components: Vec<f32> = ["auth", "billing", "search"]
+            .iter()
+            .map(|keyword| if lower.contains(keyword) { 1.0 } else { 0.0 })
+            .collect();
+        // Never emit an all-zero vector (cosine would be 0 against everything).
+        if components.iter().all(|component| *component == 0.0) {
+            Ok(vec![0.1, 0.1, 0.1])
+        } else {
+            Ok(components)
+        }
+    }
+}
+
+/// Always fails, standing in for an unreachable local `/v1/embeddings` server.
+struct UnreachableEmbedder;
+
+impl mindleak_core::TextEmbedder for UnreachableEmbedder {
+    fn model(&self) -> &str {
+        "unreachable"
+    }
+    fn embed(&self, _text: &str) -> mindleak_core::Result<Vec<f32>> {
+        Err(mindleak_core::MindLeakError::Http(
+            "embeddings server unreachable".into(),
+        ))
+    }
+}
+
+#[test]
+fn index_then_recall_seeds_graph_traversal_with_a_stub_embedder() {
+    // ADR-0008 end to end without a live model: index populates vectors, recall
+    // returns the nearest node, and that node id seeds decay-weighted traversal
+    // (recall is a lens, the graph does the reasoning).
+    let engine = MindLeak::open_in_memory()
+        .unwrap()
+        .with_embedder(Box::new(StubEmbedder));
+    engine
+        .ingest_file(
+            "src/auth.rs",
+            "fn validate_session() { /* auth login */ }\n",
+        )
+        .unwrap();
+    engine
+        .ingest_file("src/billing.rs", "fn charge() { /* billing invoice */ }\n")
+        .unwrap();
+
+    let indexed = engine.index_nodes(50).unwrap();
+    assert!(indexed >= 2, "expected nodes to be embedded, got {indexed}");
+    // Re-indexing embeds only nodes still missing a vector.
+    assert_eq!(engine.index_nodes(50).unwrap(), 0);
+
+    let hits = engine.recall("auth session handling", 3).unwrap();
+    assert!(!hits.is_empty());
+    assert_eq!(hits[0].node.id, "artifact:src/auth.rs");
+
+    let seed = hits[0].node.id.clone();
+    let sub = engine.multi_hop_query(&seed, 1, 0.0).unwrap();
+    assert!(sub.nodes.iter().any(|node| node.node.id == seed));
+}
+
+#[test]
+fn recall_and_index_degrade_cleanly_when_the_embedder_is_unreachable() {
+    // A dead embeddings server yields a typed error and never poisons the
+    // deterministic ingest/query hot path.
+    let engine = MindLeak::open_in_memory()
+        .unwrap()
+        .with_embedder(Box::new(UnreachableEmbedder));
+    engine.ingest_file("src/auth.rs", "fn a() {}\n").unwrap();
+
+    assert!(matches!(
+        engine.recall("anything", 3).unwrap_err(),
+        mindleak_core::MindLeakError::Http(_)
+    ));
+    assert!(engine.index_nodes(50).is_err());
+
+    // The zero-token deterministic path still works after recall failed.
+    engine
+        .ingest_file("src/more.rs", "fn caller() { helper(); }\nfn helper() {}\n")
+        .unwrap();
+    let sub = engine
+        .multi_hop_query("symbol:src/more.rs:caller", 1, 0.0)
+        .unwrap();
+    assert!(sub
+        .edges
+        .iter()
+        .any(|edge| edge.relation.as_str() == "calls"));
+}
