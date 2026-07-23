@@ -267,6 +267,35 @@ fn run_pass(
             tracing::warn!(%error, "autonomous consolidation failed");
         }
     }
+
+    // Best-effort embedding index refresh so semantic recall (ADR-0008)
+    // self-populates as new nodes accrue, instead of requiring a manual `index`.
+    // Off the deterministic hot path; a failure (e.g. the embed model is not
+    // reachable) is recorded and never crashes the worker or blocks consolidation.
+    if activity.is_shutdown() {
+        return;
+    }
+    let index_started = Instant::now();
+    match engine.index_nodes(max_nodes) {
+        Ok(0) => {}
+        Ok(indexed) => {
+            engine.record_maintenance(
+                "autonomous_index",
+                "ok",
+                index_started.elapsed().as_millis() as i64,
+                Some(json!({ "indexed": indexed })),
+            );
+            tracing::info!(indexed, "autonomous embedding index refreshed");
+        }
+        Err(error) => {
+            engine.record_maintenance(
+                "autonomous_index",
+                "error",
+                index_started.elapsed().as_millis() as i64,
+                Some(json!({ "category": error_category(&error) })),
+            );
+        }
+    }
 }
 
 fn error_category(error: &MindLeakError) -> &'static str {
