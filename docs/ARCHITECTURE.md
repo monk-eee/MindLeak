@@ -58,8 +58,10 @@ and `lib` (the `Lodestar` facade wiring). Facade behavior is grouped under
 
 ### `lodestar-mcp` (binary)
 
-A second MCP stdio server exposing the Intent Plane (23 tools: constitution,
-tasks, conformance, knowledge). Same newline-delimited JSON-RPC as `mindleak-mcp`.
+A second MCP stdio server exposing the Intent Plane tools for constitution,
+tasks, conformance, and knowledge. It uses the same newline-delimited JSON-RPC
+as `mindleak-mcp`; schemas and handlers are grouped under `tools/` by
+constitution, executive, conformance, knowledge, and lifecycle responsibility.
 
 ### `editors/vscode` (extension)
 
