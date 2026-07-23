@@ -333,6 +333,10 @@ Newline-delimited JSON-RPC 2.0 over stdio, exactly like `mindleak-mcp`.
 **Conformance**
 
 14. `check_conformance(evidence, task_id?)` → `{ verdict, findings[] }`.
+15. `conformance_history(task_id)` → the append-only evidence chain for a task:
+    each record's stable `id`, the recorded evidence bundle, `verdict`,
+    `findings`, and `checked_at` — the durable, resolvable link proving how (and
+    whether) a task reached completion.
 
 ---
 

@@ -314,6 +314,14 @@ impl Lodestar {
         }
         Ok(())
     }
+
+    /// The durable, append-only conformance evidence chain for a task: each
+    /// record carries its stable id, the recorded evidence bundle, the verdict,
+    /// findings, and when it was checked — the resolvable link proving how (and
+    /// whether) the task reached completion.
+    pub fn conformance_history(&self, task_id: &str) -> Result<Vec<crate::ConformanceRecord>> {
+        self.store.conformance_history(task_id)
+    }
 }
 
 #[cfg(test)]

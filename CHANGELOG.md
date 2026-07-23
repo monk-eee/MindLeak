@@ -7,6 +7,12 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`conformance_history` resolves a task's durable evidence link.** Completing a
+  task records its evidence bundle, verdict, and findings in the append-only
+  conformance audit; the new facade method and MCP tool return that chain (each
+  record carries a stable `id`, the recorded evidence, `verdict`, `findings`, and
+  `checked_at`) so the proof a task is complete is resolvable after the fact
+  without duplicating the evidence blob.
 - **Telemetry pane in the VS Code extension.** A new sidebar view surfaces a
   real-time effectiveness readout — graph size, tool-call success/error rates,
   average latency, and per-tool metrics — refreshed on an interval

@@ -233,6 +233,7 @@ coordinate through one plane.
 | `reopen_task` | Return a stranded task (in review, or a manual hold) to claimable `open`. |
 | `board` | Live who-owns-what snapshot. |
 | `check_conformance` | aligned · drift · violation against governing intent. |
+| `conformance_history` | Resolve a task's durable evidence chain — the recorded bundle, verdict, and stable id per check. |
 | `consolidate` / `record_knowledge` | Gated promotion of learned regularities. |
 | `active_knowledge` / `reconfirm_knowledge` / `prune_knowledge` | Durable-but-revalidated knowledge. |
 | `lodestar_stats` | Goal / task / knowledge counts. |

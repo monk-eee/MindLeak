@@ -20,8 +20,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use error::{LodestarError, Result};
 pub use model::{
-    CodeBindingMode, ConformanceEvidence, ConformanceResult, EvidenceProvenance, Goal, GoalKind,
-    GoalStatus, Knowledge, Task, TaskStatus, Verdict,
+    CodeBindingMode, ConformanceEvidence, ConformanceRecord, ConformanceResult, EvidenceProvenance,
+    Goal, GoalKind, GoalStatus, Knowledge, Task, TaskStatus, Verdict,
 };
 pub use store::{LodestarStore, ResetOutcome, Stats};
 

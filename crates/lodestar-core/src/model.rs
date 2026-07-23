@@ -184,6 +184,30 @@ impl Verdict {
             Verdict::NeedsHuman => "needs_human",
         }
     }
+
+    pub fn from_tag(value: &str) -> Option<Self> {
+        match value {
+            "aligned" => Some(Verdict::Aligned),
+            "drift" => Some(Verdict::Drift),
+            "violation" => Some(Verdict::Violation),
+            "needs_human" => Some(Verdict::NeedsHuman),
+            _ => None,
+        }
+    }
+}
+
+/// One persisted conformance audit record: the durable, resolvable evidence
+/// link for a task. Its `id` is stable and addressable after the fact, and the
+/// stored `evidence` is exactly the bundle that produced `verdict`/`findings`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConformanceRecord {
+    pub id: i64,
+    pub task_id: Option<String>,
+    pub evidence_schema_version: u32,
+    pub evidence: String,
+    pub verdict: Verdict,
+    pub findings: String,
+    pub checked_at: i64,
 }
 
 /// A goal row: a unit of the constitution.

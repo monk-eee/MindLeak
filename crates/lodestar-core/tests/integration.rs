@@ -58,6 +58,17 @@ fn goal_task_claim_complete_flow() {
         engine.store().get_task(&t.id).unwrap().unwrap().status,
         TaskStatus::Done
     );
+
+    // The completion leaves a durable, resolvable evidence link: the task's
+    // conformance history returns the exact bundle that proved it done.
+    let history = engine.conformance_history(&t.id).unwrap();
+    assert_eq!(history.len(), 1);
+    let record = &history[0];
+    assert!(record.id > 0);
+    assert_eq!(record.verdict, Verdict::Aligned);
+    let recorded: ConformanceEvidence = serde_json::from_str(&record.evidence).unwrap();
+    assert_eq!(recorded.task_id.as_deref(), Some(t.id.as_str()));
+    assert_eq!(recorded.changed_node_ids, vec!["artifact:src/search.rs"]);
 }
 
 fn evidence(

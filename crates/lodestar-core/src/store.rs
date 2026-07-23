@@ -12,7 +12,8 @@ use std::path::Path;
 use crate::decay::ACTIVE_THRESHOLD;
 use crate::error::{LodestarError, Result};
 use crate::model::{
-    CodeBinding, CodeBindingMode, Goal, GoalKind, GoalStatus, Knowledge, Task, TaskStatus, Verdict,
+    CodeBinding, CodeBindingMode, ConformanceRecord, Goal, GoalKind, GoalStatus, Knowledge, Task,
+    TaskStatus, Verdict,
 };
 use crate::util::{short_hash, slugify};
 
@@ -22,6 +23,8 @@ const TASK_COLS: &str = "id, goal_id, parent_task_id, title, acceptance, status,
     claim_started_at, lease_expires_at, blocked_by, created_at, updated_at";
 const KNOWLEDGE_COLS: &str =
     "id, statement, evidence, weight, half_life_hours, confirmed_at, created_at";
+const CONFORMANCE_COLS: &str =
+    "id, task_id, evidence_schema_version, evidence, verdict, findings, checked_at";
 
 pub(crate) struct ConformanceAudit<'a> {
     pub evidence_schema_version: u32,
@@ -493,6 +496,18 @@ impl LodestarStore {
         Ok(())
     }
 
+    /// The append-only conformance audit chain for a task, oldest first. Each
+    /// row is a durable, resolvable evidence link: its stable `id` addresses the
+    /// exact evidence bundle, verdict, and findings recorded at that check.
+    pub fn conformance_history(&self, task_id: &str) -> Result<Vec<ConformanceRecord>> {
+        let sql = format!(
+            "SELECT {CONFORMANCE_COLS} FROM conformance WHERE task_id = ?1 ORDER BY id ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![task_id], row_to_conformance)?;
+        collect(rows)
+    }
+
     /// Atomically leave `claimed` and persist the evidence-backed verdict.
     pub(crate) fn record_conformance_and_transition(
         &self,
@@ -860,6 +875,19 @@ fn row_to_knowledge(row: &Row) -> rusqlite::Result<Knowledge> {
         half_life_hours: row.get(4)?,
         confirmed_at: row.get(5)?,
         created_at: row.get(6)?,
+    })
+}
+
+fn row_to_conformance(row: &Row) -> rusqlite::Result<ConformanceRecord> {
+    let verdict: String = row.get(4)?;
+    Ok(ConformanceRecord {
+        id: row.get(0)?,
+        task_id: row.get(1)?,
+        evidence_schema_version: row.get::<_, Option<u32>>(2)?.unwrap_or(0),
+        evidence: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+        verdict: Verdict::from_tag(&verdict).unwrap_or(Verdict::NeedsHuman),
+        findings: row.get(5)?,
+        checked_at: row.get(6)?,
     })
 }
 
@@ -1676,5 +1704,27 @@ mod tests {
         let second = s.record_knowledge("X breaks Y", "{}", 24.0, NOW).unwrap();
         assert_eq!(second.id, first.id);
         assert_eq!(second.half_life_hours, 24.0);
+    }
+
+    // The completion evidence must stay resolvable after the fact: a task's
+    // conformance history returns the exact recorded bundle, verdict, and a
+    // stable id for each check.
+    #[test]
+    fn conformance_history_resolves_recorded_evidence() {
+        let store = store();
+        let goal = goal(&store);
+        let task = store.create_task(&goal.id, "task", "", None, NOW).unwrap();
+        assert!(store.conformance_history(&task.id).unwrap().is_empty());
+
+        complete_aligned(&store, &task.id, "agent-a", NOW);
+
+        let history = store.conformance_history(&task.id).unwrap();
+        assert_eq!(history.len(), 1);
+        let record = &history[0];
+        assert!(record.id > 0);
+        assert_eq!(record.task_id.as_deref(), Some(task.id.as_str()));
+        assert_eq!(record.verdict, Verdict::Aligned);
+        assert_eq!(record.evidence, "{}");
+        assert_eq!(record.checked_at, NOW);
     }
 }

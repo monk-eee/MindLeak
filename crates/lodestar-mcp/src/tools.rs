@@ -183,6 +183,17 @@ pub fn list() -> Vec<Value> {
                 "required": ["evidence"]
             }
         }),
+        json!({
+            "name": "conformance_history",
+            "description": "Retrieve the durable, append-only conformance evidence chain for a task: each record's stable id, the recorded evidence bundle, verdict, findings, and checked_at — the resolvable link proving how (and whether) a task reached completion.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string" }
+                },
+                "required": ["task_id"]
+            }
+        }),
         // ---- knowledge / consolidation ----
         json!({
             "name": "record_knowledge",
@@ -391,6 +402,9 @@ pub fn call(engine: &Lodestar, params: &Value) -> Result<Value, String> {
                 .map_err(|e| e.to_string())?;
             ok(&result)
         }
+        "conformance_history" => ok(&engine
+            .conformance_history(req_str(&args, "task_id")?)
+            .map_err(|e| e.to_string())?),
         "record_knowledge" => {
             let k = engine
                 .record_knowledge(
@@ -650,6 +664,25 @@ mod tests {
         let board = engine.board().unwrap();
         let reopened = board.iter().find(|t| t.id == task.id).unwrap();
         assert_eq!(reopened.status.as_str(), "open");
+    }
+
+    #[test]
+    fn conformance_history_dispatch_returns_the_audit_chain() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "History", "prove it", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "work", "done").unwrap();
+
+        // No checks yet -> empty chain.
+        let empty = call(
+            &engine,
+            &json!({ "name": "conformance_history", "arguments": { "task_id": task.id } }),
+        )
+        .unwrap();
+        let records: Value =
+            serde_json::from_str(empty["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(records.as_array().unwrap().is_empty());
     }
 
     #[test]
