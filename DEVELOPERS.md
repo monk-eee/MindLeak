@@ -182,8 +182,8 @@ and footguns, with impact and status:
   model → error) and `recall_returns_empty_not_error_when_the_index_is_unpopulated`
   (reachable model, empty index → empty, not error); observed on
   `task:2c86cc1f51ea`.
-- **Cross-goal bindings on shared *source* files still cause false drift — TAGGED
-  FOR LATER.** — Repeated per-task `link_goal_to_code` calls left 10 lodestar /
+- **Cross-goal bindings on shared *source* files caused false drift — RESOLVED.** —
+  Repeated per-task `link_goal_to_code` calls left 10 lodestar /
   mindleak source files each bound to two active goals (e.g. `model.rs`, `lib.rs`,
   `store/coordination.rs`, `facade/conformance.rs`,
   `crates/mindleak-core/src/graph/evidence.rs`), so a commit serving goal A reports
@@ -195,13 +195,15 @@ and footguns, with impact and status:
   The one-time clobber had already dropped the 10 documentation bindings (89 → 79)
   before removal; those were benign pollution and are re-linkable. `unlink_goal_from_code`
   + `governing_goals` (commit `6b22bca`) provide an explicit, audited prune path. —
-  LEFT FOR LATER (tagged): the *source-file* over-bindings are **not** auto-pruned —
-  unlike a doc, a source file legitimately realises a goal, so guessing which of two
-  bindings to drop would itself clobber. Resolve with either human-in-the-loop
-  `unlink_goal_from_code` triage or a conformance-semantics decision (should a
-  `governed` cross-goal binding be advisory rather than a hard drift? — ADR
-  territory, overlaps ADR-0026). — Medium impact on completion verdicts; worked
-  around by scoping evidence to the task goal's artifacts.
+  **RESOLVED Jul 2026 (task:c4bae4cc6ec2)** via human-in-the-loop
+  `unlink_goal_from_code` triage: each file's true owner is its plane's objective,
+  so the mistaken bindings were the *MindLeak-graph* objective
+  (`local-temporal-context-graph`) on the 8 Lodestar source files, and the
+  `principled-verified-delivery` **constraint** (a cross-cutting rule, not a
+  per-file owner) on `model.rs` and `graph/evidence.rs`. Those 10 bindings were
+  dropped (explicit/audited, no auto-delete); each of the 10 files now has exactly
+  one governing goal, so honest commits no longer drift. Data-plane only — no code
+  change.
 
 - **The `evidence_for` → Lodestar conformance seam is sound, but convention-
   sensitive.** — The producer and consumer agree on schema version 1, normalized
