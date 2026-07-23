@@ -4,7 +4,15 @@
       "command": "${workspaceFolder}/target/release/mindleak-mcp",
       "env": {
         "MINDLEAK_DB": "${workspaceFolder}/.mindleak/graph.db",
+        "MINDLEAK_AGENT": "copilot",
         "MINDLEAK_WORKSPACE": "${workspaceFolder}"
+      }
+    },
+    "lodestar": {
+      "command": "${workspaceFolder}/target/release/lodestar-mcp",
+      "env": {
+        "LODESTAR_DB": "${workspaceFolder}/.lodestar/spec.db",
+        "LODESTAR_AGENT": "copilot"
       }
     }
   }
