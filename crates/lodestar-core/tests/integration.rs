@@ -190,6 +190,85 @@ fn evidence(
     }
 }
 
+// ADR-0009 binding hygiene (built on request): unlink_goal_from_code is the
+// inverse of link_goal_to_code, so a stale cross-goal binding can be pruned.
+// Proves the round trip end to end: a node bound to a second goal with no
+// covering task drifts; governing_goals audits the bindings; unlinking the stale
+// one (idempotent; NotFound for an unknown goal) realigns the same evidence to
+// the task goal.
+#[test]
+fn unlink_goal_from_code_prunes_stale_binding_and_clears_drift() {
+    let engine = Lodestar::open_in_memory().unwrap();
+    let owner = engine
+        .define_goal(GoalKind::Objective, "Owner", "owns the change", None)
+        .unwrap();
+    let stale = engine
+        .define_goal(GoalKind::Objective, "Stale", "no longer governs", None)
+        .unwrap();
+    let node = "artifact:src/shared.rs".to_string();
+    engine
+        .link_goal_to_code(
+            &owner.id,
+            std::slice::from_ref(&node),
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
+    engine
+        .link_goal_to_code(
+            &stale.id,
+            std::slice::from_ref(&node),
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
+    assert_eq!(engine.governing_goals(&node).unwrap().len(), 2);
+
+    let task = engine
+        .create_task(&owner.id, "change shared", "done")
+        .unwrap();
+    assert!(engine.claim_task(&task.id, "agent-a", 300).unwrap());
+    let claim = engine.store().get_task(&task.id).unwrap().unwrap();
+    let ev = evidence(&task.id, "agent-a", &node, claim.claim_started_at.unwrap());
+
+    // Bound to a second goal with no covering task -> drift.
+    assert_eq!(
+        engine
+            .check_conformance(&ev, Some(&task.id))
+            .unwrap()
+            .verdict,
+        Verdict::Drift
+    );
+
+    // Prune the stale binding: audited, idempotent, and typed on a missing goal.
+    assert_eq!(
+        engine
+            .unlink_goal_from_code(&stale.id, std::slice::from_ref(&node))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        engine
+            .unlink_goal_from_code(&stale.id, std::slice::from_ref(&node))
+            .unwrap(),
+        0
+    );
+    assert!(engine
+        .unlink_goal_from_code("goal:missing", std::slice::from_ref(&node))
+        .is_err());
+
+    let remaining = engine.governing_goals(&node).unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].goal.id, owner.id);
+
+    // The same evidence now aligns to the task goal.
+    assert_eq!(
+        engine
+            .check_conformance(&ev, Some(&task.id))
+            .unwrap()
+            .verdict,
+        Verdict::Aligned
+    );
+}
+
 #[test]
 fn missing_evidence_stays_in_review() {
     let engine = Lodestar::open_in_memory().unwrap();

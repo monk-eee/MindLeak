@@ -154,7 +154,7 @@ impl CodeBindingMode {
 }
 
 /// An active goal plus the policy governing one linked code node.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CodeBinding {
     pub goal: Goal,
     pub mode: CodeBindingMode,

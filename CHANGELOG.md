@@ -82,6 +82,18 @@ to [Semantic Versioning](https://semver.org/).
   honest-merge-conflict properties in a throwaway sandbox repo.
 
 ### Added
+- **`unlink_goal_from_code` + `governing_goals` keep the ADR-0009 seam honest.**
+  `link_goal_to_code` had no inverse, so a goal↔code binding — including one
+  mistakenly attached to a shared doc — was permanent. Over a long multi-agent
+  session that accumulated cross-goal bindings, and because `evaluate_conformance`
+  flags any changed node governed by a *non-task* goal as drift, honest commits
+  serving one goal started drifting against goals they do not realise. The new
+  `unlink_goal_from_code(goal_id, node_ids)` prunes a stale binding (idempotent; a
+  node not bound to the goal is a no-op; unknown goal is a typed `NotFound`), and
+  `governing_goals(node_id)` audits which active goals govern a node and how,
+  before pruning. Facade + MCP verbs + integration test that reproduces the
+  cross-goal drift and shows the same evidence realign to `aligned` after the
+  stale binding is removed.
 - **Task lifecycle gains `needs_input` and `paused` states (ADR-0020).** Two live
   states reachable only from `claimed` by the owner, both clearing the live lease
   while keeping the owner and `claim_started_at` evidence window — deliberate

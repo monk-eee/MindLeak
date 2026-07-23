@@ -52,6 +52,27 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "unlink_goal_from_code",
+            "description": "Remove goal↔code bindings — the inverse of link_goal_to_code. Prune a stale or mistaken binding (e.g. a shared doc, or a source file a goal no longer realises) so conformance stops flagging honest changes to it as drift against that goal. A node not bound to the goal is a no-op. Returns how many bindings were removed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "goal_id": { "type": "string" },
+                    "node_ids": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["goal_id", "node_ids"]
+            }
+        }),
+        json!({
+            "name": "governing_goals",
+            "description": "Audit which active goals govern a code node, and how (governed / forbid_change) — inspect binding hygiene before pruning with unlink_goal_from_code.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "node_id": { "type": "string" } },
+                "required": ["node_id"]
+            }
+        }),
+        json!({
             "name": "export_constitution",
             "description": "Render the active constitution as committed-friendly markdown; optionally write it to a path for review in a PR.",
             "inputSchema": {
@@ -107,6 +128,17 @@ pub(super) fn dispatch(
                 )
                 .map_err(|e| e.to_string())?;
             ok(&json!({ "linked": linked }))
+        })()),
+        "unlink_goal_from_code" => Some((|| {
+            let removed = engine
+                .unlink_goal_from_code(req_str(args, "goal_id")?, &str_array(args, "node_ids"))
+                .map_err(|e| e.to_string())?;
+            ok(&json!({ "removed": removed }))
+        })()),
+        "governing_goals" => Some((|| {
+            ok(&engine
+                .governing_goals(req_str(args, "node_id")?)
+                .map_err(|e| e.to_string())?)
         })()),
         "export_constitution" => Some((|| {
             let md = engine

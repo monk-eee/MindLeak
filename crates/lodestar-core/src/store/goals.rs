@@ -159,6 +159,20 @@ impl LodestarStore {
         collect(rows)
     }
 
+    /// Remove goal↔code bindings for the given node ids. Returns how many rows
+    /// were deleted (a node not bound to the goal is a no-op, not an error), so a
+    /// stale binding can be pruned without wiping and re-linking the goal.
+    pub fn unlink_goal_from_code(&self, goal_id: &str, node_ids: &[String]) -> Result<usize> {
+        let mut removed = 0;
+        for node in node_ids {
+            removed += self.conn.execute(
+                "DELETE FROM goal_code WHERE goal_id = ?1 AND node_id = ?2",
+                params![goal_id, node],
+            )?;
+        }
+        Ok(removed)
+    }
+
     /// Active goal policies governing a given code node.
     pub fn active_bindings_for_node(&self, node_id: &str) -> Result<Vec<CodeBinding>> {
         let sql = format!(

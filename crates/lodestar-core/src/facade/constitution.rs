@@ -46,6 +46,26 @@ impl Lodestar {
         self.store.link_goal_to_code(goal_id, node_ids, mode)
     }
 
+    /// Remove goal↔code bindings (ADR-0009 seam upkeep). The inverse of
+    /// `link_goal_to_code`: prune a stale or mistaken binding — e.g. a shared doc
+    /// or a source file that a goal no longer governs — so conformance stops
+    /// flagging honest changes to it as drift against a goal it does not realise.
+    /// A node not bound to the goal is a no-op. Returns how many bindings were
+    /// removed.
+    pub fn unlink_goal_from_code(&self, goal_id: &str, node_ids: &[String]) -> Result<usize> {
+        if !self.store.goal_exists(goal_id)? {
+            return Err(LodestarError::NotFound(goal_id.to_string()));
+        }
+        self.store.unlink_goal_from_code(goal_id, node_ids)
+    }
+
+    /// Audit which active goals govern a code node, and how (governed /
+    /// forbid_change) — the read that makes binding hygiene inspectable before
+    /// pruning with `unlink_goal_from_code`.
+    pub fn governing_goals(&self, node_id: &str) -> Result<Vec<crate::CodeBinding>> {
+        self.store.active_bindings_for_node(node_id)
+    }
+
     /// Render the active constitution as committed-friendly markdown; optionally
     /// write it to `path`.
     pub fn export_constitution(&self, path: Option<&str>) -> Result<String> {

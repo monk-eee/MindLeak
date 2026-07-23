@@ -224,6 +224,7 @@ coordinate through one plane.
 | `define_goal` / `supersede_goal` | Write/version the constitution (objective · constraint · invariant). |
 | `get_constitution` | The authoritative intent to read **before acting**. |
 | `link_goal_to_code` | Bind a goal to MindLeak `artifact:`/`symbol:` nodes. |
+| `unlink_goal_from_code` / `governing_goals` | Prune a stale goal↔code binding, and audit which goals govern a node — keeps conformance honest. |
 | `export_constitution` | Render the constitution to committed-friendly markdown. |
 | `create_task` / `decompose_goal` | Add claimable work; `create_task(blocked_by=...)` creates a progressive handoff. |
 | `next_task` | Suggest the next unblocked, claimable task. |
