@@ -6,6 +6,15 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Telemetry pane in the VS Code extension.** A new sidebar view surfaces a
+  real-time effectiveness readout — graph size, tool-call success/error rates,
+  average latency, and per-tool metrics — refreshed on an interval
+  (`mindleak.telemetryRefreshSecs`, default 3s) while visible. Full live event
+  logging is opt-in via a **Live log** toggle (off by default). Numbers are
+  derived from the existing `graph_stats` and `telemetry_snapshot` tools; no new
+  server surface or hot-path cost.
+
 ## [0.1.0-preview.1] - 2026-07-23
 
 ### Added

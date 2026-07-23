@@ -47,6 +47,11 @@
           "id": "mindleak.boardView",
           "name": "Intent Board",
           "type": "tree"
+        },
+        {
+          "id": "mindleak.telemetryView",
+          "name": "Telemetry",
+          "type": "webview"
         }
       ]
     },
@@ -83,6 +88,11 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "mindleak.telemetry.refresh",
+        "title": "MindLeak: Refresh Telemetry",
+        "icon": "$(refresh)"
+      },
+      {
         "command": "mindleak.task.completeWithEvidence",
         "title": "MindLeak: Complete Task With Evidence",
         "icon": "$(verified-filled)"
@@ -98,6 +108,11 @@
         {
           "command": "mindleak.board.refresh",
           "when": "view == mindleak.boardView",
+          "group": "navigation"
+        },
+        {
+          "command": "mindleak.telemetry.refresh",
+          "when": "view == mindleak.telemetryView",
           "group": "navigation"
         },
         {
@@ -180,6 +195,13 @@
           "type": "integer",
           "default": 60,
           "description": "Maximum number of nodes to render in the visualizer."
+        },
+        "mindleak.telemetryRefreshSecs": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 300,
+          "description": "Seconds between real-time refreshes of the Telemetry pane while it is visible."
         },
         "mindleak.agentId": {
           "type": "string",

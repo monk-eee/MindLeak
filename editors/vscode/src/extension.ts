@@ -7,19 +7,25 @@ import { WorkspaceChangeDetector } from "./changeDetector";
 import { GitSensor } from "./gitSensor";
 import { GraphViewProvider } from "./graphViewProvider";
 import { McpClient } from "./mcpClient";
+import { TelemetryViewProvider } from "./telemetryViewProvider";
 import { TerminalCaptureConfig, TerminalSensor } from "./terminalSensor";
 import {
   conformanceDiagnostic,
   evidenceRequestForTask,
+  GraphCounts,
   healthSummary,
+  logLines,
   resolveBinaryPath,
   resolveServerPath,
+  telemetryDashboard,
+  TelemetrySnapshot,
   toArtifactId,
 } from "./util";
 
 let client: McpClient | undefined;
 let lodestar: McpClient | undefined;
 let provider: GraphViewProvider | undefined;
+let telemetry: TelemetryViewProvider | undefined;
 let board: BoardViewProvider | undefined;
 let output: vscode.OutputChannel;
 let configuredAgentId = "vscode";
@@ -84,6 +90,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(GraphViewProvider.viewType, provider)
   );
+
+  telemetry = new TelemetryViewProvider(context.extensionUri, {
+    onReady: () => void refreshTelemetry(),
+    onRefresh: () => void refreshTelemetry(),
+    onToggleLive: () => void refreshTelemetry(),
+  });
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(TelemetryViewProvider.viewType, telemetry)
+  );
+  const telemetryRefreshMs = Math.max(1, config.get<number>("telemetryRefreshSecs", 3)) * 1000;
+  const telemetryTimer = setInterval(() => {
+    if (telemetry?.isVisible()) {
+      void refreshTelemetry();
+    }
+  }, telemetryRefreshMs);
+  context.subscriptions.push({ dispose: () => clearInterval(telemetryTimer) });
 
   board = new BoardViewProvider();
   context.subscriptions.push(
@@ -182,6 +204,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
       }
     }),
     vscode.commands.registerCommand("mindleak.board.refresh", () => refreshBoard()),
+    vscode.commands.registerCommand("mindleak.telemetry.refresh", () => refreshTelemetry()),
     vscode.commands.registerCommand("mindleak.task.completeWithEvidence", (item?: BoardItem) => {
       void completeWithEvidence(item);
     })
@@ -384,6 +407,22 @@ async function refreshBoard(): Promise<void> {
     board.update(Array.isArray(tasks) ? tasks : []);
   } catch (err) {
     output.appendLine(`board error: ${(err as Error).message}`);
+  }
+}
+
+async function refreshTelemetry(): Promise<void> {
+  if (!client?.isReady() || !telemetry) {
+    return;
+  }
+  const live = telemetry.isLive();
+  try {
+    const counts = (await client.callTool("graph_stats", {})) as GraphCounts;
+    const snapshot = (await client.callTool("telemetry_snapshot", {
+      limit: live ? 200 : 20,
+    })) as TelemetrySnapshot;
+    telemetry.update(telemetryDashboard(snapshot, counts), logLines(snapshot, live), live);
+  } catch (err) {
+    output.appendLine(`telemetry error: ${(err as Error).message}`);
   }
 }
 

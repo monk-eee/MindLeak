@@ -20,6 +20,10 @@ graph engine.
 - **Live graph** — a Cytoscape sidebar renders the current context subgraph:
   - 🔵 file · 🟠 symbol · 🟢 intent · 🔴 execution
   - edge width ∝ time-decayed effective weight
+- **Telemetry pane** — a real-time effectiveness readout: graph size (nodes,
+  active edges), tool-call success and error rates, average latency, and
+  per-tool metrics, refreshed live while the pane is visible. A **Live log**
+  toggle (off by default) streams recent tool/maintenance events on demand.
 - **Controls** — Refresh, Prune decayed edges, Export complete graph JSON, back
   up both planes, and modal reset of regenerable memory only.
 
@@ -56,6 +60,7 @@ Override with `mindleak.serverPath` / `mindleak.lodestarServerPath`.
 | `mindleak.maxChangedFilesPerExecution` | `200` | Maximum changed paths attached to one execution. |
 | `mindleak.captureCommits` | `true` | Capture built-in Git extension commit events. |
 | `mindleak.snapshotLimit` | `60` | Max nodes rendered. |
+| `mindleak.telemetryRefreshSecs` | `3` | Seconds between live Telemetry pane refreshes while visible. |
 | `mindleak.autonomousConsolidation` | `false` | Opt in to idle model-backed consolidation. |
 | `mindleak.consolidateIdleSecs` | `300` | Idle seconds before a pass. |
 | `mindleak.consolidateMinIntervalSecs` | `3600` | Minimum seconds between attempts. |

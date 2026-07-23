@@ -263,3 +263,130 @@ export function conformanceDiagnostic(result: ConformanceResult): ConformanceDia
         : "information";
   return { severity, message: `MindLeak conformance: ${result.verdict}${detail}` };
 }
+
+// ---- Telemetry & effectiveness (real-time observability pane) ---------------
+
+/** Aggregate metrics for one tool, as returned by `telemetry_snapshot`. */
+export interface TelemetryToolMetric {
+  name: string;
+  calls: number;
+  errors: number;
+  total_ms: number;
+  min_ms: number;
+  max_ms: number;
+  avg_ms: number;
+}
+
+/** One recorded event from `telemetry_snapshot.recent`. */
+export interface TelemetryEvent {
+  ts: number;
+  kind: string;
+  name: string;
+  outcome: string;
+  duration_ms?: number | null;
+  detail?: unknown;
+}
+
+/** The `telemetry_snapshot` tool result (subset used by the pane). */
+export interface TelemetrySnapshot {
+  total_events: number;
+  total_errors: number;
+  by_name: TelemetryToolMetric[];
+  recent: TelemetryEvent[];
+}
+
+/** The `graph_stats` tool result. */
+export interface GraphCounts {
+  nodes: number;
+  active_edges: number;
+}
+
+/** A per-tool effectiveness row rendered in the telemetry pane. */
+export interface TelemetryToolRow {
+  name: string;
+  calls: number;
+  errors: number;
+  errorRatePct: number;
+  avgMs: number;
+}
+
+/** The derived, real-time effectiveness readout for the telemetry pane. */
+export interface TelemetryDashboard {
+  nodes: number;
+  activeEdges: number;
+  totalEvents: number;
+  totalErrors: number;
+  successRatePct: number;
+  errorRatePct: number;
+  avgLatencyMs: number;
+  tools: TelemetryToolRow[];
+}
+
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+/**
+ * Compute the real-time effectiveness readout from a telemetry snapshot and the
+ * current graph counts. Pure so the pane's numbers are unit-tested without the
+ * webview. Effectiveness = how reliably and quickly the engine has served tool
+ * calls, alongside how much live context it currently holds.
+ */
+export function telemetryDashboard(
+  snapshot: TelemetrySnapshot | undefined,
+  counts: GraphCounts | undefined
+): TelemetryDashboard {
+  const totalEvents = snapshot?.total_events ?? 0;
+  const totalErrors = snapshot?.total_errors ?? 0;
+  const byName = snapshot?.by_name ?? [];
+  const successRatePct =
+    totalEvents === 0 ? 100 : ((totalEvents - totalErrors) / totalEvents) * 100;
+  const totalMs = byName.reduce((sum, tool) => sum + tool.total_ms, 0);
+  const totalCalls = byName.reduce((sum, tool) => sum + tool.calls, 0);
+  const avgLatencyMs = totalCalls === 0 ? 0 : totalMs / totalCalls;
+  const tools = [...byName]
+    .sort((a, b) => b.calls - a.calls || a.name.localeCompare(b.name))
+    .map((tool) => ({
+      name: tool.name,
+      calls: tool.calls,
+      errors: tool.errors,
+      errorRatePct: tool.calls === 0 ? 0 : round1((tool.errors / tool.calls) * 100),
+      avgMs: round1(tool.avg_ms),
+    }));
+  return {
+    nodes: counts?.nodes ?? 0,
+    activeEdges: counts?.active_edges ?? 0,
+    totalEvents,
+    totalErrors,
+    successRatePct: round1(successRatePct),
+    errorRatePct: round1(100 - successRatePct),
+    avgLatencyMs: round1(avgLatencyMs),
+    tools,
+  };
+}
+
+/**
+ * Format one telemetry event as a single live-log line. UTC time keeps the
+ * output deterministic and stable across machines.
+ */
+export function formatLogLine(event: TelemetryEvent): string {
+  const time = new Date(event.ts * 1000).toISOString().slice(11, 19);
+  const duration = typeof event.duration_ms === "number" ? ` ${event.duration_ms}ms` : "";
+  return `${time} ${event.outcome} ${event.kind}:${event.name}${duration}`;
+}
+
+/**
+ * Build the live-log lines (newest first) from a snapshot, capped. Returns an
+ * empty list when live logging is off so the pane never renders a stream the
+ * user has disabled.
+ */
+export function logLines(
+  snapshot: TelemetrySnapshot | undefined,
+  live: boolean,
+  max = 200
+): string[] {
+  if (!live || !snapshot?.recent?.length) {
+    return [];
+  }
+  return snapshot.recent.slice(0, Math.max(0, max)).map(formatLogLine);
+}

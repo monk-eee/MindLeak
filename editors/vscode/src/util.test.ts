@@ -8,14 +8,31 @@ import {
   conformanceDiagnostic,
   evidenceRequestForTask,
   filterChangedPaths,
+  formatLogLine,
   healthSummary,
+  logLines,
   parseToolResult,
   redactTerminalOutput,
   resolveBinaryPath,
   resolveServerPath,
   shouldCaptureCommand,
+  telemetryDashboard,
+  TelemetrySnapshot,
   toArtifactId,
 } from "./util";
+
+const SNAPSHOT: TelemetrySnapshot = {
+  total_events: 10,
+  total_errors: 2,
+  by_name: [
+    { name: "recall", calls: 6, errors: 2, total_ms: 300, min_ms: 20, max_ms: 90, avg_ms: 50 },
+    { name: "graph_stats", calls: 4, errors: 0, total_ms: 40, min_ms: 5, max_ms: 20, avg_ms: 10 },
+  ],
+  recent: [
+    { ts: 1_700_000_005, kind: "tool_call", name: "recall", outcome: "error", duration_ms: 90 },
+    { ts: 1_700_000_000, kind: "tool_call", name: "graph_stats", outcome: "ok", duration_ms: 5 },
+  ],
+};
 
 describe("healthSummary", () => {
   it("reports both planes and both passive sensors in a stable order", () => {
@@ -212,5 +229,77 @@ describe("workspace change filtering", () => {
     expect(
       filterChangedPaths(["src/z.ts", "src/a.ts", "generated/out.ts"], ["generated"], 1)
     ).toEqual(["src/a.ts"]);
+  });
+});
+
+describe("telemetryDashboard", () => {
+  it("derives success/error rates, weighted latency, and sorted tool rows", () => {
+    const dashboard = telemetryDashboard(SNAPSHOT, { nodes: 42, active_edges: 17 });
+    expect(dashboard.nodes).toBe(42);
+    expect(dashboard.activeEdges).toBe(17);
+    expect(dashboard.totalEvents).toBe(10);
+    expect(dashboard.totalErrors).toBe(2);
+    expect(dashboard.successRatePct).toBe(80);
+    expect(dashboard.errorRatePct).toBe(20);
+    // weighted: (300 + 40) / (6 + 4) = 34
+    expect(dashboard.avgLatencyMs).toBe(34);
+    expect(dashboard.tools.map((t) => t.name)).toEqual(["recall", "graph_stats"]);
+    expect(dashboard.tools[0]).toMatchObject({
+      calls: 6,
+      errors: 2,
+      errorRatePct: 33.3,
+      avgMs: 50,
+    });
+  });
+
+  it("reports a clean 100% success readout when nothing has run yet", () => {
+    const dashboard = telemetryDashboard(undefined, undefined);
+    expect(dashboard).toMatchObject({
+      nodes: 0,
+      activeEdges: 0,
+      totalEvents: 0,
+      totalErrors: 0,
+      successRatePct: 100,
+      errorRatePct: 0,
+      avgLatencyMs: 0,
+      tools: [],
+    });
+  });
+});
+
+describe("formatLogLine", () => {
+  it("renders a deterministic UTC line with outcome, kind:name, and duration", () => {
+    expect(
+      formatLogLine({
+        ts: 1_700_000_000,
+        kind: "tool_call",
+        name: "recall",
+        outcome: "ok",
+        duration_ms: 12,
+      })
+    ).toBe("22:13:20 ok tool_call:recall 12ms");
+  });
+
+  it("omits duration when it is absent", () => {
+    expect(
+      formatLogLine({ ts: 1_700_000_000, kind: "maintenance", name: "prune", outcome: "ok" })
+    ).toBe("22:13:20 ok maintenance:prune");
+  });
+});
+
+describe("logLines", () => {
+  it("returns newest-first formatted lines when live", () => {
+    expect(logLines(SNAPSHOT, true)).toEqual([
+      "22:13:25 error tool_call:recall 90ms",
+      "22:13:20 ok tool_call:graph_stats 5ms",
+    ]);
+  });
+
+  it("returns nothing when live logging is off", () => {
+    expect(logLines(SNAPSHOT, false)).toEqual([]);
+  });
+
+  it("caps the number of lines", () => {
+    expect(logLines(SNAPSHOT, true, 1)).toEqual(["22:13:25 error tool_call:recall 90ms"]);
   });
 });
