@@ -2,15 +2,22 @@
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 
 use crate::error::{LodestarError, Result};
-use crate::model::{ConformanceRecord, Task, TaskStatus, Verdict};
+use crate::model::{ConformanceRecord, Task, TaskQa, TaskStatus, Verdict};
 use crate::util::short_hash;
 
 use super::{collect, goals, LodestarStore};
 
 const TASK_COLS: &str = "id, goal_id, parent_task_id, title, acceptance, status, owner, \
-    claim_started_at, lease_expires_at, blocked_by, created_at, updated_at";
+    claim_started_at, lease_expires_at, blocked_by, parked_at, created_at, updated_at";
 const CONFORMANCE_COLS: &str =
     "id, task_id, evidence_schema_version, evidence, verdict, findings, checked_at";
+const QA_COLS: &str = "id, task_id, kind, body, author, created_at";
+
+/// How long a parked (needs_input/paused) task stays owned before the pool may
+/// reclaim it (ADR-0020 anti-stranding). Deliberately far longer than an active
+/// lease so a human has time to answer, while guaranteeing a vanished owner can
+/// never deadlock the task forever.
+pub const PARKING_GRACE_SECS: i64 = 7 * 24 * 3600;
 
 pub(crate) struct ConformanceAudit<'a> {
     pub evidence_schema_version: u32,
@@ -67,6 +74,7 @@ impl LodestarStore {
             claim_started_at: None,
             lease_expires_at: None,
             blocked_by,
+            parked_at: None,
             created_at: now,
             updated_at: now,
         };
@@ -101,22 +109,27 @@ impl LodestarStore {
     }
 
     /// Claim a task: the coordination primitive. A guarded compare-and-swap —
-    /// succeeds only if the task is open, its lease has expired, or the caller
-    /// already owns it. Returns true iff this caller won the claim.
+    /// succeeds only if the task is open, its lease has expired, the caller
+    /// already owns it, or it is a parked task whose parking grace has elapsed
+    /// (ADR-0020: a vanished owner cannot strand it forever). Returns true iff
+    /// this caller won the claim.
     pub fn claim_task(&self, id: &str, agent: &str, lease_secs: i64, now: i64) -> Result<bool> {
+        let parked_cutoff = now - PARKING_GRACE_SECS;
         let changed = self.conn.execute(
             "UPDATE tasks
                 SET status = 'claimed', owner = ?2,
                     claim_started_at = CASE
                         WHEN status = 'claimed' AND owner = ?2 AND lease_expires_at >= ?4
                         THEN claim_started_at ELSE ?4 END,
-                    lease_expires_at = ?3, updated_at = ?4
+                    lease_expires_at = ?3, parked_at = NULL, updated_at = ?4
               WHERE id = ?1
                                 AND blocked_by IS NULL
                 AND (status = 'open'
                      OR (status = 'claimed' AND lease_expires_at < ?4)
-                     OR (status = 'claimed' AND owner = ?2))",
-            params![id, agent, now + lease_secs, now],
+                     OR (status = 'claimed' AND owner = ?2)
+                     OR (status IN ('needs_input', 'paused')
+                         AND parked_at IS NOT NULL AND parked_at < ?5))",
+            params![id, agent, now + lease_secs, now, parked_cutoff],
         )?;
         Ok(changed == 1)
     }
@@ -227,8 +240,11 @@ impl LodestarStore {
     /// Permanently retire a nonterminal task to `abandoned` (terminal) — the
     /// deliberate "this work should not be done" verb, distinct from
     /// `reopen_task` (recover to claimable) and `reset` (wipe everything). It
-    /// makes `TaskStatus::Abandoned` reachable. Refuses to disturb an active
-    /// claim (`claimed` — `release_task` first) or re-retire terminal work.
+    /// makes `TaskStatus::Abandoned` reachable. Refuses to disturb an owned task
+    /// (`claimed`/`needs_input`/`paused` — release or resolve it first) or
+    /// re-retire terminal work. Abandoning a predecessor transactionally opens its
+    /// blocked successor (ADR-0020): the reason it waited no longer exists, so the
+    /// chain is never stranded by a dead predecessor.
     pub fn abandon_task(&self, id: &str, now: i64) -> Result<bool> {
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let task = get_task_on(&transaction, id)?
@@ -239,23 +255,117 @@ impl LodestarStore {
                     "task {id} is claimed; release it before abandoning"
                 )));
             }
+            TaskStatus::NeedsInput | TaskStatus::Paused => {
+                return Err(LodestarError::Invalid(format!(
+                    "task {id} is {} (owned); resume or release it before abandoning",
+                    task.status.as_str()
+                )));
+            }
             TaskStatus::Done | TaskStatus::Abandoned => {
                 return Err(LodestarError::Invalid(format!(
                     "task {id} is {} and cannot be abandoned",
                     task.status.as_str()
                 )));
             }
-            _ => {}
+            TaskStatus::Open | TaskStatus::InReview | TaskStatus::Blocked => {}
         }
         let changed = transaction.execute(
             "UPDATE tasks
              SET status = 'abandoned', owner = NULL, claim_started_at = NULL,
-                 lease_expires_at = NULL, blocked_by = NULL, updated_at = ?2
+                 lease_expires_at = NULL, parked_at = NULL, blocked_by = NULL, updated_at = ?2
              WHERE id = ?1",
             params![id, now],
         )?;
+        open_blocked_successor_on(&transaction, id, now)?;
         transaction.commit()?;
         Ok(changed == 1)
+    }
+
+    /// Park a claimed task with a durable question for a human (ADR-0020):
+    /// owner-guarded transition to `needs_input` that clears the live lease but
+    /// keeps the owner and `claim_started_at` evidence window, records `parked_at`,
+    /// and appends the question to the task's append-only Q&A thread.
+    pub fn ask_question(&self, id: &str, agent: &str, question: &str, now: i64) -> Result<bool> {
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
+            "UPDATE tasks
+             SET status = 'needs_input', lease_expires_at = NULL, parked_at = ?3, updated_at = ?3
+             WHERE id = ?1 AND owner = ?2 AND status = 'claimed'",
+            params![id, agent, now],
+        )?;
+        if changed != 1 {
+            return Ok(false);
+        }
+        transaction.execute(
+            "INSERT INTO task_qa (task_id, kind, body, author, created_at)
+             VALUES (?1, 'question', ?2, ?3, ?4)",
+            params![id, question, agent, now],
+        )?;
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    /// Answer a `needs_input` task's question (ADR-0020): records the durable
+    /// answer and returns the task to `claimed` under the same owner with a fresh
+    /// lease, preserving the `claim_started_at` evidence window.
+    pub fn answer_question(
+        &self,
+        id: &str,
+        answer: &str,
+        author: &str,
+        lease_secs: i64,
+        now: i64,
+    ) -> Result<bool> {
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
+            "UPDATE tasks
+             SET status = 'claimed', lease_expires_at = ?2, parked_at = NULL, updated_at = ?3
+             WHERE id = ?1 AND status = 'needs_input'",
+            params![id, now + lease_secs, now],
+        )?;
+        if changed != 1 {
+            return Ok(false);
+        }
+        transaction.execute(
+            "INSERT INTO task_qa (task_id, kind, body, author, created_at)
+             VALUES (?1, 'answer', ?2, ?3, ?4)",
+            params![id, answer, author, now],
+        )?;
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    /// Deliberately suspend a claimed task (ADR-0020): owner-guarded transition to
+    /// `paused` that clears the live lease but keeps the owner and evidence window
+    /// and records `parked_at`. Resume with `resume_task`.
+    pub fn pause_task(&self, id: &str, agent: &str, now: i64) -> Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE tasks
+             SET status = 'paused', lease_expires_at = NULL, parked_at = ?3, updated_at = ?3
+             WHERE id = ?1 AND owner = ?2 AND status = 'claimed'",
+            params![id, agent, now],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Resume a paused task under the same owner (ADR-0020) with a fresh lease,
+    /// preserving the `claim_started_at` evidence window.
+    pub fn resume_task(&self, id: &str, agent: &str, lease_secs: i64, now: i64) -> Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE tasks
+             SET status = 'claimed', lease_expires_at = ?3, parked_at = NULL, updated_at = ?4
+             WHERE id = ?1 AND owner = ?2 AND status = 'paused'",
+            params![id, agent, now + lease_secs, now],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// The durable, append-only question/answer thread for a task, oldest first.
+    pub fn task_qa(&self, task_id: &str) -> Result<Vec<TaskQa>> {
+        let sql = format!("SELECT {QA_COLS} FROM task_qa WHERE task_id = ?1 ORDER BY id ASC");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![task_id], row_to_qa)?;
+        collect(rows)
     }
 
     /// Release a claim back to `open` (owner-guarded).
@@ -270,16 +380,22 @@ impl LodestarStore {
         Ok(changed == 1)
     }
 
-    /// The next unblocked, claimable task (open or lease-expired), oldest first.
+    /// The next unblocked, claimable task, oldest first: open, lease-expired, or
+    /// a parked task past its parking grace (ADR-0020). Parked tasks still within
+    /// grace are owned and deliberately not surfaced here.
     pub fn next_task(&self, now: i64) -> Result<Option<Task>> {
+        let parked_cutoff = now - PARKING_GRACE_SECS;
         let sql = format!(
             "SELECT {TASK_COLS} FROM tasks
               WHERE blocked_by IS NULL
-                AND (status = 'open' OR (status = 'claimed' AND lease_expires_at < ?1))
+                AND (status = 'open'
+                     OR (status = 'claimed' AND lease_expires_at < ?1)
+                     OR (status IN ('needs_input', 'paused')
+                         AND parked_at IS NOT NULL AND parked_at < ?2))
               ORDER BY created_at ASC LIMIT 1"
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let mut rows = stmt.query(params![now])?;
+        let mut rows = stmt.query(params![now, parked_cutoff])?;
         match rows.next()? {
             Some(row) => Ok(Some(row_to_task(row)?)),
             None => Ok(None),
@@ -394,16 +510,7 @@ impl LodestarStore {
             ],
         )?;
         if target_status == TaskStatus::Done {
-            transaction.execute(
-                "UPDATE tasks
-                 SET status = 'open', owner = NULL, claim_started_at = NULL,
-                     lease_expires_at = NULL, blocked_by = NULL, updated_at = ?2
-                 WHERE id = (
-                     SELECT successor_id FROM task_handoffs WHERE predecessor_id = ?1
-                 )
-                   AND blocked_by = ?1 AND status = 'blocked'",
-                params![task_id, now],
-            )?;
+            open_blocked_successor_on(&transaction, task_id, now)?;
         }
         transaction.commit()?;
         Ok(true)
@@ -415,6 +522,28 @@ fn get_task_on(connection: &Connection, id: &str) -> Result<Option<Task>> {
     Ok(connection
         .query_row(&sql, params![id], row_to_task)
         .optional()?)
+}
+
+/// Transactionally return a blocked successor to `open` once its predecessor's
+/// gate is lifted — by aligned completion or by predecessor abandonment
+/// (ADR-0020). A no-op when there is no gated successor. The `task_handoffs`
+/// lineage row is retained for audit.
+fn open_blocked_successor_on(
+    connection: &Connection,
+    predecessor_id: &str,
+    now: i64,
+) -> Result<()> {
+    connection.execute(
+        "UPDATE tasks
+         SET status = 'open', owner = NULL, claim_started_at = NULL,
+             lease_expires_at = NULL, parked_at = NULL, blocked_by = NULL, updated_at = ?2
+         WHERE id = (
+             SELECT successor_id FROM task_handoffs WHERE predecessor_id = ?1
+         )
+           AND blocked_by = ?1 AND status = 'blocked'",
+        params![predecessor_id, now],
+    )?;
+    Ok(())
 }
 
 /// Validate one linear same-goal predecessor. Returns true only when the
@@ -518,8 +647,9 @@ fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
         claim_started_at: row.get(7)?,
         lease_expires_at: row.get(8)?,
         blocked_by: row.get(9)?,
-        created_at: row.get(10)?,
-        updated_at: row.get(11)?,
+        parked_at: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
     })
 }
 
@@ -533,6 +663,17 @@ fn row_to_conformance(row: &Row) -> rusqlite::Result<ConformanceRecord> {
         verdict: Verdict::from_tag(&verdict).unwrap_or(Verdict::NeedsHuman),
         findings: row.get(5)?,
         checked_at: row.get(6)?,
+    })
+}
+
+fn row_to_qa(row: &Row) -> rusqlite::Result<TaskQa> {
+    Ok(TaskQa {
+        id: row.get(0)?,
+        task_id: row.get(1)?,
+        kind: row.get(2)?,
+        body: row.get(3)?,
+        author: row.get(4)?,
+        created_at: row.get(5)?,
     })
 }
 
@@ -1263,5 +1404,167 @@ mod tests {
         assert_eq!(record.verdict, Verdict::Aligned);
         assert_eq!(record.evidence, "{}");
         assert_eq!(record.checked_at, NOW);
+    }
+
+    // ADR-0020: ask_question parks a claimed task in needs_input — owner-guarded,
+    // lease cleared but owner + evidence window retained — records a durable
+    // question, and a human answer returns it to claimed under the same owner
+    // with a fresh lease.
+    #[test]
+    fn ask_question_parks_needs_input_and_answer_resumes_same_owner() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "task", "", None, NOW).unwrap();
+        assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
+        let window = s
+            .get_task(&t.id)
+            .unwrap()
+            .unwrap()
+            .claim_started_at
+            .unwrap();
+
+        // Non-owner cannot park it.
+        assert!(!s.ask_question(&t.id, "bob", "which db?", NOW + 1).unwrap());
+        // Owner parks with a durable question.
+        assert!(s
+            .ask_question(&t.id, "alice", "which db?", NOW + 1)
+            .unwrap());
+        let parked = s.get_task(&t.id).unwrap().unwrap();
+        assert_eq!(parked.status, TaskStatus::NeedsInput);
+        assert_eq!(parked.owner.as_deref(), Some("alice"));
+        assert_eq!(parked.claim_started_at, Some(window));
+        assert_eq!(parked.lease_expires_at, None);
+        assert_eq!(parked.parked_at, Some(NOW + 1));
+
+        let thread = s.task_qa(&t.id).unwrap();
+        assert_eq!(thread.len(), 1);
+        assert_eq!(thread[0].kind, "question");
+        assert_eq!(thread[0].body, "which db?");
+
+        // A human answer returns it to claimed under the same owner, fresh lease,
+        // preserved evidence window, and appends to the durable thread.
+        assert!(s
+            .answer_question(&t.id, "use sqlite", "human", 60, NOW + 2)
+            .unwrap());
+        let answered = s.get_task(&t.id).unwrap().unwrap();
+        assert_eq!(answered.status, TaskStatus::Claimed);
+        assert_eq!(answered.owner.as_deref(), Some("alice"));
+        assert_eq!(answered.claim_started_at, Some(window));
+        assert_eq!(answered.lease_expires_at, Some(NOW + 2 + 60));
+        assert_eq!(answered.parked_at, None);
+        let thread = s.task_qa(&t.id).unwrap();
+        assert_eq!(thread.len(), 2);
+        assert_eq!(thread[1].kind, "answer");
+        assert_eq!(thread[1].body, "use sqlite");
+    }
+
+    // ADR-0020: pause/resume are owner-guarded, clear the live lease but keep the
+    // owner and the claim_started_at evidence window across the whole park.
+    #[test]
+    fn pause_and_resume_are_owner_guarded_and_preserve_the_window() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "task", "", None, NOW).unwrap();
+        assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
+        let window = s
+            .get_task(&t.id)
+            .unwrap()
+            .unwrap()
+            .claim_started_at
+            .unwrap();
+
+        assert!(!s.pause_task(&t.id, "bob", NOW + 1).unwrap());
+        assert!(s.pause_task(&t.id, "alice", NOW + 1).unwrap());
+        let paused = s.get_task(&t.id).unwrap().unwrap();
+        assert_eq!(paused.status, TaskStatus::Paused);
+        assert_eq!(paused.owner.as_deref(), Some("alice"));
+        assert_eq!(paused.lease_expires_at, None);
+        assert_eq!(paused.claim_started_at, Some(window));
+        assert_eq!(paused.parked_at, Some(NOW + 1));
+
+        assert!(!s.resume_task(&t.id, "bob", 60, NOW + 2).unwrap());
+        assert!(s.resume_task(&t.id, "alice", 60, NOW + 2).unwrap());
+        let resumed = s.get_task(&t.id).unwrap().unwrap();
+        assert_eq!(resumed.status, TaskStatus::Claimed);
+        assert_eq!(resumed.owner.as_deref(), Some("alice"));
+        assert_eq!(resumed.claim_started_at, Some(window));
+        assert_eq!(resumed.lease_expires_at, Some(NOW + 2 + 60));
+        assert_eq!(resumed.parked_at, None);
+    }
+
+    // ADR-0020 anti-stranding: a parked task is owned (not reclaimable by the
+    // pool) within the parking grace, but returns to the pool once it elapses so
+    // a vanished owner cannot deadlock it forever.
+    #[test]
+    fn parked_task_is_reclaimable_only_after_the_parking_grace() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "task", "", None, NOW).unwrap();
+        assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
+        assert!(s.pause_task(&t.id, "alice", NOW).unwrap());
+
+        // Within grace: owned, not reclaimable, not surfaced by next_task.
+        let within = NOW + PARKING_GRACE_SECS - 1;
+        assert!(!s.claim_task(&t.id, "bob", 60, within).unwrap());
+        assert!(s.next_task(within).unwrap().is_none());
+
+        // After grace: back in the pool for anyone, with a fresh window.
+        let after = NOW + PARKING_GRACE_SECS + 1;
+        assert_eq!(s.next_task(after).unwrap().unwrap().id, t.id);
+        assert!(s.claim_task(&t.id, "bob", 60, after).unwrap());
+        let reclaimed = s.get_task(&t.id).unwrap().unwrap();
+        assert_eq!(reclaimed.status, TaskStatus::Claimed);
+        assert_eq!(reclaimed.owner.as_deref(), Some("bob"));
+        assert_eq!(reclaimed.parked_at, None);
+        assert_eq!(reclaimed.claim_started_at, Some(after));
+    }
+
+    // ADR-0020: abandoning a predecessor lifts the gate — its blocked successor
+    // transactionally returns to open (the reason it waited no longer exists) —
+    // while the handoff lineage is retained. A merely in_review predecessor is
+    // non-terminal and keeps the successor blocked (see
+    // non_done_predecessor_transition_keeps_successor_blocked).
+    #[test]
+    fn abandoning_a_predecessor_opens_its_blocked_successor() {
+        let s = store();
+        let g = goal(&s);
+        let first = s.create_task(&g.id, "first", "", None, NOW).unwrap();
+        let second = s
+            .create_task_after(&g.id, "second", "", None, Some(first.id.clone()), NOW + 1)
+            .unwrap();
+        assert_eq!(second.status, TaskStatus::Blocked);
+
+        assert!(s.abandon_task(&first.id, NOW + 2).unwrap());
+        let successor = s.get_task(&second.id).unwrap().unwrap();
+        assert_eq!(successor.status, TaskStatus::Open);
+        assert!(successor.blocked_by.is_none());
+        assert!(s.claim_task(&second.id, "alice", 60, NOW + 3).unwrap());
+
+        // The lineage row survives for audit.
+        let lineage: i64 = s
+            .conn
+            .query_row(
+                "SELECT COUNT(1) FROM task_handoffs WHERE predecessor_id = ?1",
+                params![first.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(lineage, 1);
+    }
+
+    // ADR-0020: an owned parked task cannot be silently abandoned — it must be
+    // resumed or released first, mirroring the claimed-task guard.
+    #[test]
+    fn abandon_refuses_owned_parked_tasks() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "task", "", None, NOW).unwrap();
+        assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
+        assert!(s.pause_task(&t.id, "alice", NOW).unwrap());
+        assert!(s
+            .abandon_task(&t.id, NOW + 1)
+            .unwrap_err()
+            .to_string()
+            .contains("resume or release it before abandoning"));
     }
 }

@@ -122,6 +122,67 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "ask_question",
+            "description": "Park a claimed task with a durable question for a human (ADR-0020). Owner-guarded: moves the task to needs_input, clearing the live lease but keeping the owner and evidence window. Answer it with 'answer'.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string" },
+                    "question": { "type": "string" },
+                    "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." }
+                },
+                "required": ["task_id", "question"]
+            }
+        }),
+        json!({
+            "name": "answer",
+            "description": "Answer a needs_input task's question (ADR-0020). Records the durable answer and returns the task to claimed under the same owner with a fresh lease.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string" },
+                    "answer": { "type": "string" },
+                    "author": { "type": "string", "default": "human", "description": "Who answered." },
+                    "lease_secs": { "type": "integer", "default": 300 }
+                },
+                "required": ["task_id", "answer"]
+            }
+        }),
+        json!({
+            "name": "pause_task",
+            "description": "Deliberately suspend a claimed task (ADR-0020). Owner-guarded: moves it to paused, clearing the live lease but keeping the owner and evidence window. Resume with 'resume_task'.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string" },
+                    "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." }
+                },
+                "required": ["task_id"]
+            }
+        }),
+        json!({
+            "name": "resume_task",
+            "description": "Resume a paused task under the same owner with a fresh lease (ADR-0020).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string" },
+                    "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." },
+                    "lease_secs": { "type": "integer", "default": 300 }
+                },
+                "required": ["task_id"]
+            }
+        }),
+        json!({
+            "name": "task_qa",
+            "description": "The durable, append-only question/answer thread for a task (ADR-0020), oldest first.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "task_id": { "type": "string" } },
+                "required": ["task_id"]
+            }
+        }),
+        json!({
             "name": "board",
             "description": "The coordination snapshot of tasks with owner, status, and lease. Returns every task by default; pass include_terminal=false for only the live/actionable set (open, claimed, in_review, blocked), leaving done/abandoned tasks durable but out of view.",
             "inputSchema": {
@@ -220,6 +281,53 @@ pub(super) fn dispatch(
                 .abandon_task(req_str(args, "task_id")?)
                 .map_err(|e| e.to_string())?;
             ok(&json!({ "abandoned": abandoned }))
+        })()),
+        "ask_question" => Some((|| {
+            let parked = engine
+                .ask_question(
+                    req_str(args, "task_id")?,
+                    opt_str(args, "agent").unwrap_or_default().as_str(),
+                    req_str(args, "question")?,
+                )
+                .map_err(|e| e.to_string())?;
+            ok(&json!({ "needs_input": parked }))
+        })()),
+        "answer" => Some((|| {
+            let answered = engine
+                .answer_question(
+                    req_str(args, "task_id")?,
+                    req_str(args, "answer")?,
+                    opt_str(args, "author")
+                        .unwrap_or_else(|| "human".to_string())
+                        .as_str(),
+                    i64_arg(args, "lease_secs", 300),
+                )
+                .map_err(|e| e.to_string())?;
+            ok(&json!({ "answered": answered }))
+        })()),
+        "pause_task" => Some((|| {
+            let paused = engine
+                .pause_task(
+                    req_str(args, "task_id")?,
+                    opt_str(args, "agent").unwrap_or_default().as_str(),
+                )
+                .map_err(|e| e.to_string())?;
+            ok(&json!({ "paused": paused }))
+        })()),
+        "resume_task" => Some((|| {
+            let resumed = engine
+                .resume_task(
+                    req_str(args, "task_id")?,
+                    opt_str(args, "agent").unwrap_or_default().as_str(),
+                    i64_arg(args, "lease_secs", 300),
+                )
+                .map_err(|e| e.to_string())?;
+            ok(&json!({ "resumed": resumed }))
+        })()),
+        "task_qa" => Some((|| {
+            ok(&engine
+                .task_qa(req_str(args, "task_id")?)
+                .map_err(|e| e.to_string())?)
         })()),
         "board" => Some((|| {
             ok(&engine

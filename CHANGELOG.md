@@ -44,6 +44,20 @@ to [Semantic Versioning](https://semver.org/).
   honest-merge-conflict properties in a throwaway sandbox repo.
 
 ### Added
+- **Task lifecycle gains `needs_input` and `paused` states (ADR-0020).** Two live
+  states reachable only from `claimed` by the owner, both clearing the live lease
+  while keeping the owner and `claim_started_at` evidence window — deliberate
+  parking, not release or abandonment. `ask_question` parks a task with a durable,
+  append-only question for a human; `answer` records the reply and resumes the task
+  under the same owner with a fresh lease. `pause_task` / `resume_task` suspend and
+  resume owner-held work. A bounded **parking grace** records `parked_at` so a
+  vanished owner cannot strand a parked task — after the grace it returns to the
+  pool (`claim_task` / `next_task` reclaim it). Abandoning (terminal, non-`done`) a
+  predecessor now **cascades**: its blocked successor transactionally reopens, so a
+  dead predecessor never deadlocks a handoff chain, while a merely `in_review`
+  predecessor keeps the successor correctly gated. New `task_qa` reads the thread.
+  Exhaustive `match` on the extended enum; owner-guarded transitions; regression
+  tested.
 - **The learned-knowledge loop is wired end to end (ADR-0022).** Two seams that
   were dormant are now connected. A `promote_signals` bridge (facade + MCP verb)
   batch-feeds proven-signal candidates — opaque MindLeak node ids plus their

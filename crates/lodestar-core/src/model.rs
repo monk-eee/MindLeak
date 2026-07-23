@@ -73,6 +73,12 @@ impl GoalStatus {
 pub enum TaskStatus {
     Open,
     Claimed,
+    /// Owner parked the task with a durable question awaiting a human answer
+    /// (ADR-0020): live lease cleared, owner + evidence window retained.
+    NeedsInput,
+    /// Owner deliberately suspended the task (ADR-0020): live lease cleared,
+    /// owner + evidence window retained, resumable by the same owner.
+    Paused,
     InReview,
     Done,
     Blocked,
@@ -84,6 +90,8 @@ impl TaskStatus {
         match self {
             TaskStatus::Open => "open",
             TaskStatus::Claimed => "claimed",
+            TaskStatus::NeedsInput => "needs_input",
+            TaskStatus::Paused => "paused",
             TaskStatus::InReview => "in_review",
             TaskStatus::Done => "done",
             TaskStatus::Blocked => "blocked",
@@ -95,6 +103,8 @@ impl TaskStatus {
         match s {
             "open" => Some(TaskStatus::Open),
             "claimed" => Some(TaskStatus::Claimed),
+            "needs_input" => Some(TaskStatus::NeedsInput),
+            "paused" => Some(TaskStatus::Paused),
             "in_review" => Some(TaskStatus::InReview),
             "done" => Some(TaskStatus::Done),
             "blocked" => Some(TaskStatus::Blocked),
@@ -239,8 +249,23 @@ pub struct Task {
     pub claim_started_at: Option<i64>,
     pub lease_expires_at: Option<i64>,
     pub blocked_by: Option<String>,
+    /// When the task was parked (needs_input/paused); after a bounded grace it
+    /// becomes reclaimable by the pool so a vanished owner cannot strand it.
+    pub parked_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// One durable, append-only entry in a task's question/answer thread (ADR-0020):
+/// a `needs_input` question from the owning agent or the human `answer`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskQa {
+    pub id: i64,
+    pub task_id: String,
+    pub kind: String,
+    pub body: String,
+    pub author: String,
+    pub created_at: i64,
 }
 
 /// A learned-knowledge row: a consolidated regularity with provenance.

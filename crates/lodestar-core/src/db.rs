@@ -50,6 +50,7 @@ fn migrate(conn: &Connection) -> Result<()> {
 fn migrate_locked(conn: &Connection) -> Result<()> {
     for (table, column, definition) in [
         ("tasks", "claim_started_at", "INTEGER"),
+        ("tasks", "parked_at", "INTEGER"),
         ("goal_code", "mode", "TEXT NOT NULL DEFAULT 'governed'"),
         ("conformance", "evidence_schema_version", "INTEGER"),
         ("conformance", "evidence", "TEXT"),

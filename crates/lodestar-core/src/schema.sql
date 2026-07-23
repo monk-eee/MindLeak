@@ -28,17 +28,31 @@ CREATE TABLE IF NOT EXISTS tasks (
     parent_task_id   TEXT,                 -- decomposition tree
     title            TEXT NOT NULL,
     acceptance       TEXT NOT NULL DEFAULT '',
-    status           TEXT NOT NULL,        -- open|claimed|in_review|done|blocked|abandoned
+    status           TEXT NOT NULL,        -- open|claimed|needs_input|paused|in_review|done|blocked|abandoned
     owner            TEXT,                 -- agent id holding the claim
     claim_started_at INTEGER,              -- start of the current owner's evidence window
     lease_expires_at INTEGER,              -- unix seconds; past this is reclaimable
     blocked_by       TEXT,                 -- optional task id
+    parked_at        INTEGER,              -- when parked (needs_input/paused); reclaimable after a grace
     created_at       INTEGER NOT NULL,
     updated_at       INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_goal   ON tasks(goal_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_blocked_by ON tasks(blocked_by);
+
+-- Durable, append-only question/answer thread for needs_input tasks (ADR-0020):
+-- an agent's question awaiting a human answer. Never edited or deleted.
+CREATE TABLE IF NOT EXISTS task_qa (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    TEXT NOT NULL,
+    kind       TEXT NOT NULL,             -- question | answer
+    body       TEXT NOT NULL,
+    author     TEXT NOT NULL,             -- agent id (question) or answerer (answer)
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_task_qa_task ON task_qa(task_id);
 
 -- Durable progressive-handoff lineage. `tasks.blocked_by` is cleared when the
 -- successor opens; this table retains the one-to-one chain invariant.
