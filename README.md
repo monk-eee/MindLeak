@@ -176,6 +176,7 @@ It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
 | `consolidate_session` | Optional: compress raw logs into one intent node via a local Ollama model. |
 | `consolidate_signal` | Optional: consolidate queued proven signal, persist provenance links, then acknowledge raw evidence. |
 | `list_agents` | Roster of agents + their active observation counts (attribution). |
+| `working_set` | Current agent's bounded, ranked attentional focus (derived from active observations; default cap 7). |
 | `evidence_for` | Bounded, provenance-bearing evidence bundle from an agent's attributed executions/commits in a work window (ADR-0009). |
 | `index` | Optional: embed nodes lacking a current vector via a local `/v1/embeddings` server (ADR-0008). |
 | `recall` | Optional: nearest node ids by cosine similarity — entry points to *seed* `graph_multi_hop_query`. |

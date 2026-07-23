@@ -171,6 +171,16 @@ pub fn list() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
+            "name": "working_set",
+            "description": "Return the current MINDLEAK_AGENT's small, derived attentional working set, ranked by active observed-edge weight and hard-capped by MINDLEAK_WORKING_SET_SIZE (default 7). This is a bounded focus view, not a graph neighborhood or stored buffer.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 32, "description": "Optional lower limit; cannot exceed the configured hard cap." }
+                }
+            }
+        }),
+        json!({
             "name": "evidence_for",
             "description": "Build a bounded, provenance-bearing ADR-0009 evidence bundle from an agent's attributed executions and commits inside a work window.",
             "inputSchema": {
@@ -360,6 +370,14 @@ fn dispatch(engine: &MindLeak, params: &Value) -> Result<Value, String> {
             let agents = engine.list_agents().map_err(|e| e.to_string())?;
             Ok(text_result(&json!({ "agents": agents })))
         }
+        "working_set" => {
+            let limit = args
+                .get("limit")
+                .and_then(Value::as_i64)
+                .map(|value| value.clamp(1, 32) as usize);
+            let items = engine.working_set(limit).map_err(|e| e.to_string())?;
+            Ok(text_result(&json!({ "items": items })))
+        }
         "evidence_for" => {
             let agent = req_str(&args, "agent_id")?;
             let started_at = required_i64(&args, "started_at")?;
@@ -467,6 +485,7 @@ mod tests {
             "index",
             "telemetry_snapshot",
             "consolidate_signal",
+            "working_set",
             "export_graph",
             "backup_database",
             "reset_database",
@@ -509,6 +528,50 @@ mod tests {
         let text = content_text(&call_ok(&engine, "graph_stats", json!({})));
         assert!(text.contains("\"nodes\""));
         assert!(text.contains("\"active_edges\""));
+    }
+
+    #[test]
+    fn working_set_uses_configured_agent_and_hard_cap() {
+        let engine = MindLeak::open_in_memory()
+            .unwrap()
+            .with_working_set_size(1)
+            .with_agent(Some("agent-a".to_string()));
+        call_ok(
+            &engine,
+            "ingest_file",
+            json!({ "path": "src/a.rs", "content": "fn a() {}" }),
+        );
+        call_ok(
+            &engine,
+            "ingest_file",
+            json!({ "path": "src/b.rs", "content": "fn b() {}" }),
+        );
+
+        let result = call_ok(&engine, "working_set", json!({ "limit": 32 }));
+        let payload: Value = serde_json::from_str(&content_text(&result)).unwrap();
+
+        assert_eq!(payload["items"].as_array().unwrap().len(), 1);
+        assert!(payload["items"][0]["attention"].is_number());
+        assert!(payload["items"][0]["observation_count"].is_number());
+        assert!(engine
+            .telemetry_snapshot(20)
+            .unwrap()
+            .by_name
+            .iter()
+            .any(|metric| metric.name == "working_set" && metric.calls == 1));
+
+        let schema = list()
+            .into_iter()
+            .find(|tool| tool["name"] == "working_set")
+            .unwrap();
+        assert_eq!(schema["inputSchema"]["properties"]["limit"]["maximum"], 32);
+    }
+
+    #[test]
+    fn working_set_errors_without_configured_agent() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        let error = call(&engine, &json!({ "name": "working_set", "arguments": {} })).unwrap_err();
+        assert!(error.contains("MINDLEAK_AGENT"));
     }
 
     #[test]

@@ -31,7 +31,7 @@ pub use error::{MindLeakError, Result};
 pub use graph::{
     AgentActivity, ArtifactStub, ConformanceEvidence, Direction, EvidenceProvenance, GraphExport,
     GraphStore, PruneOutcome, ResetOutcome, ScoredNode, SignalCandidate,
-    SignalConsolidationOutcome, Subgraph, WeightedEdge, WriteOutcome,
+    SignalConsolidationOutcome, Subgraph, WeightedEdge, WorkingSetItem, WriteOutcome,
 };
 pub use model::{Edge, Node, NodeType, RelationType};
 
@@ -74,13 +74,21 @@ impl MindLeak {
     /// Attach an agent id so ingest/focus operations also record decay-weighted
     /// `observed` edges (attribution). `None` or empty disables attribution.
     pub fn with_agent(mut self, agent: Option<String>) -> Self {
-        self.agent = agent.filter(|a| !a.trim().is_empty());
+        self.agent = agent.and_then(|value| {
+            let normalized = value.trim().strip_prefix("agent:").unwrap_or(value.trim());
+            (!normalized.is_empty()).then(|| normalized.to_string())
+        });
         self
     }
 
     /// Override the immutable decay policy resolved by the hosting process.
     pub fn with_decay_policy(mut self, decay_policy: config::DecayPolicy) -> Self {
         self.store = self.store.with_decay_policy(decay_policy);
+        self
+    }
+
+    pub fn with_working_set_size(mut self, size: usize) -> Self {
+        self.store = self.store.with_working_set_size(size);
         self
     }
 
@@ -438,6 +446,17 @@ impl MindLeak {
         self.store.list_agents(now_unix())
     }
 
+    /// Return this server agent's bounded, derived attentional working set.
+    pub fn working_set(&self, requested_limit: Option<usize>) -> Result<Vec<WorkingSetItem>> {
+        let agent = self.agent.as_deref().ok_or_else(|| {
+            MindLeakError::Other("working_set requires MINDLEAK_AGENT".to_string())
+        })?;
+        let limit = requested_limit
+            .unwrap_or(self.store.working_set_size())
+            .clamp(1, self.store.working_set_size());
+        self.store.working_set(agent, limit, now_unix())
+    }
+
     /// Return the bounded episodic evidence attributed to `agent` in a task
     /// work window (ADR-0009).
     pub fn evidence_for(
@@ -588,5 +607,22 @@ mod tests {
         let snapshot = engine.snapshot(Some("artifact:a"), 10).unwrap();
 
         assert!(snapshot.edges.is_empty());
+    }
+
+    #[test]
+    fn working_set_requires_identity_and_enforces_the_configured_cap() {
+        let without_agent = MindLeak::open_in_memory().unwrap();
+        assert!(without_agent.working_set(None).is_err());
+
+        let engine = MindLeak::open_in_memory()
+            .unwrap()
+            .with_working_set_size(1)
+            .with_agent(Some("agent:agent-a".to_string()));
+        engine.ingest_file("src/a.rs", "fn a() {}\n").unwrap();
+        engine.ingest_file("src/b.rs", "fn b() {}\n").unwrap();
+
+        let working = engine.working_set(Some(32)).unwrap();
+        assert_eq!(working.len(), 1);
+        assert!(working[0].node.id.starts_with("artifact:"));
     }
 }

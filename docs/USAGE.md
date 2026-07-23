@@ -104,12 +104,19 @@ graph_stats()      # node / active-edge counts
 prune_graph()      # purge decayed edges + unreferenced stubs
 boost_entity(id)   # mark a node as recently focused, without rewriting evidence
 list_agents()      # roster + per-agent attention (needs MINDLEAK_AGENT set)
+working_set()      # current agent's small ranked focus (default hard cap 7)
 export_graph()     # complete active graph JSON for review (not a backup)
 backup_database(path) # verified online backup; destination must not exist
 ```
 
 Decay is the point — don't fight it. If context fades too fast or too slow, tune
 half-lives rather than disabling decay.
+
+`working_set(limit?)` is deliberately small. It requires `MINDLEAK_AGENT`, never
+returns another agent's attention, and a requested limit can reduce but cannot
+exceed `MINDLEAK_WORKING_SET_SIZE`. Each item includes effective attention,
+observation count/span, and last-observed time. It is a derived focus view, not a
+stored queue or a replacement for impact/graph traversal.
 
 Destructive reset requires exact, plane-specific confirmation tokens. See
 **[DATA-LIFECYCLE.md](DATA-LIFECYCLE.md)** for backup, upgrade/rollback, export,
@@ -180,6 +187,7 @@ selecting a default.
 | `MINDLEAK_WORKSPACE` | process working directory | project root used for default database/config paths |
 | `MINDLEAK_DB` | `<workspace>/.mindleak/graph.db` | graph database path |
 | `MINDLEAK_AGENT` | *(empty = off)* | agent id for attribution (`observed` edges) |
+| `MINDLEAK_WORKING_SET_SIZE` | `7` | hard cap for `working_set` results, bounded 1-32 |
 | `MINDLEAK_CONFIG` | `<workspace>/.mindleak.toml` | explicit config path; relative paths resolve from the workspace |
 | `MINDLEAK_PRUNE_THRESHOLD` | file or `0.05` | active-edge/prune threshold override |
 | `MINDLEAK_HALFLIFE_<RELATION>_HOURS` | file or relation default | base half-life override, e.g. `MINDLEAK_HALFLIFE_FAILED_ON_HOURS` |

@@ -7,6 +7,11 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Bounded working-memory tier** (ADR-0017 phase 1): `working_set` returns the
+  configured agent's highest active observations, hard-capped at a startup
+  `MINDLEAK_WORKING_SET_SIZE` (default 7, bounded 1-32). Sustained observations
+  contribute deterministic rehearsal evidence without storing a separate buffer
+  or invoking a model. Autonomous idle consolidation remains phase 2.
 - **Per-project decay policy** (ADR-0014): strict committable
   `.mindleak.toml`, optional `MINDLEAK_CONFIG`, per-relation environment
   overrides, and bounded prune-threshold tuning. `GraphStore` applies the
@@ -48,7 +53,7 @@ to [Semantic Versioning](https://semver.org/).
   PEP 508 parsers preserve renamed/canonical identities; malformed manifests
   fail before reconciliation, preserving the last valid snapshot.
 - **MCP server** (`mindleak-mcp`): newline-delimited JSON-RPC 2.0 over stdio
-  exposing 20 tools (`graph_multi_hop_query`, `get_impact_radius`,
+  exposing 21 tools (`graph_multi_hop_query`, `get_impact_radius`,
   `record_architectural_decision`, plus ingestion/snapshot/prune/stats, an
   optional `consolidate_session` helper, `list_agents`, and the optional
   semantic-recall pair `recall`/`index`).

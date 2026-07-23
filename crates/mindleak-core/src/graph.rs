@@ -7,8 +7,12 @@ use std::path::Path;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
 
-use crate::config::DecayPolicy;
-use crate::decay::{effective_weight, signal_multiplier, SignalEvidence};
+use crate::config::{
+    DecayPolicy, DEFAULT_WORKING_SET_SIZE, MAX_WORKING_SET_SIZE, MIN_WORKING_SET_SIZE,
+};
+use crate::decay::{
+    effective_weight, signal_multiplier, SignalEvidence, SIGNAL_MIN_COUNT, SIGNAL_MIN_SPAN_HOURS,
+};
 use crate::error::{MindLeakError, Result};
 use crate::model::{Edge, Node, NodeType, RelationType};
 
@@ -135,6 +139,17 @@ pub struct AgentActivity {
     pub last_active: i64,
 }
 
+/// One node in an agent's bounded, derived attentional working set.
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkingSetItem {
+    #[serde(flatten)]
+    pub node: Node,
+    pub attention: f64,
+    pub observation_count: i64,
+    pub observation_span_hours: f64,
+    pub last_observed_at: i64,
+}
+
 /// One graph fact supporting a conformance evidence claim (ADR-0009).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EvidenceProvenance {
@@ -168,6 +183,7 @@ const EVIDENCE_MAX_PROVENANCE: usize = 1_000;
 pub struct GraphStore {
     pub(crate) conn: Connection,
     decay_policy: DecayPolicy,
+    working_set_size: usize,
 }
 
 impl GraphStore {
@@ -175,6 +191,7 @@ impl GraphStore {
         GraphStore {
             conn,
             decay_policy: DecayPolicy::default(),
+            working_set_size: DEFAULT_WORKING_SET_SIZE,
         }
     }
 
@@ -185,6 +202,15 @@ impl GraphStore {
 
     pub fn decay_policy(&self) -> &DecayPolicy {
         &self.decay_policy
+    }
+
+    pub fn with_working_set_size(mut self, size: usize) -> Self {
+        self.working_set_size = size.clamp(MIN_WORKING_SET_SIZE, MAX_WORKING_SET_SIZE);
+        self
+    }
+
+    pub fn working_set_size(&self) -> usize {
+        self.working_set_size
     }
 
     // ---- writes -------------------------------------------------------------
@@ -687,7 +713,8 @@ impl GraphStore {
                  )",
                 params![raw.target_id, now],
                 |row| row.get(0),
-            )?;
+            )?
+            || self.has_rehearsed_attention(&raw.target_id, now)?;
 
         if raw.relation == RelationType::FailedOn {
             evidence.consequence = self.conn.query_row(
@@ -749,6 +776,32 @@ impl GraphStore {
             )?;
         }
         Ok(evidence)
+    }
+
+    fn has_rehearsed_attention(&self, target_id: &str, now: i64) -> Result<bool> {
+        let mut statement = self.conn.prepare(
+            "SELECT source_id, target_id, relation, weight, half_life_hours, updated_at,
+                    first_seen, reinforcement_count
+             FROM edges
+             WHERE target_id = ?1 AND relation = 'observed'
+                             AND reinforcement_count >= ?2 AND updated_at <= ?3",
+        )?;
+        let rows =
+            statement.query_map(params![target_id, SIGNAL_MIN_COUNT, now], row_to_raw_edge)?;
+        for row in rows {
+            let raw = row?;
+            let span_hours = ((raw.updated_at - raw.first_seen) as f64 / 3600.0).max(0.0);
+            if span_hours >= SIGNAL_MIN_SPAN_HOURS
+                && self.weighted_edge(&raw, now)?.effective >= self.decay_policy.prune_threshold()
+                && self
+                    .working_set(&raw.source_id, self.working_set_size, now)?
+                    .iter()
+                    .any(|item| item.node.id == target_id)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Breadth-first, decay-filtered traversal from one or more seed nodes.
@@ -952,6 +1005,50 @@ impl GraphStore {
             });
         }
         Ok(out)
+    }
+
+    /// Highest active attention edges for one agent, strictly bounded by limit.
+    pub fn working_set(&self, agent: &str, limit: usize, now: i64) -> Result<Vec<WorkingSetItem>> {
+        let agent_id = if agent.starts_with("agent:") {
+            agent.to_string()
+        } else {
+            format!("agent:{agent}")
+        };
+        let mut statement = self.conn.prepare(
+            "SELECT source_id, target_id, relation, weight, half_life_hours, updated_at,
+                    first_seen, reinforcement_count
+             FROM edges
+               WHERE source_id = ?1 AND relation = 'observed' AND updated_at <= ?2",
+        )?;
+        let rows = statement.query_map(params![agent_id, now], row_to_raw_edge)?;
+        let mut items = Vec::new();
+        for row in rows {
+            let raw = row?;
+            let edge = self.weighted_edge(&raw, now)?;
+            if edge.effective < self.decay_policy.prune_threshold() {
+                continue;
+            }
+            if let Some(node) = self.get_node(&edge.target_id)? {
+                items.push(WorkingSetItem {
+                    node,
+                    attention: edge.effective,
+                    observation_count: raw.reinforcement_count,
+                    observation_span_hours: ((raw.updated_at - raw.first_seen) as f64 / 3600.0)
+                        .max(0.0),
+                    last_observed_at: raw.updated_at,
+                });
+            }
+        }
+        items.sort_by(|left, right| {
+            right
+                .attention
+                .partial_cmp(&left.attention)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| right.last_observed_at.cmp(&left.last_observed_at))
+                .then_with(|| left.node.id.cmp(&right.node.id))
+        });
+        items.truncate(limit.clamp(1, self.working_set_size));
+        Ok(items)
     }
 
     /// Reconstruct attributed episodic evidence in a bounded work window.
@@ -2580,6 +2677,124 @@ mod tests {
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].id, "agent:a");
         assert_eq!(agents[0].observations, 1);
+    }
+
+    #[test]
+    fn working_set_is_agent_scoped_ranked_active_and_hard_capped() {
+        let s = store().with_working_set_size(2);
+        for (id, node_type) in [
+            ("agent:a", NodeType::Agent),
+            ("agent:b", NodeType::Agent),
+            ("artifact:old", NodeType::Artifact),
+            ("artifact:middle", NodeType::Artifact),
+            ("artifact:recent", NodeType::Artifact),
+            ("artifact:other", NodeType::Artifact),
+            ("artifact:future", NodeType::Artifact),
+        ] {
+            add_node(&s, id, node_type, id, NOW);
+        }
+        for (source, target, weight, updated_at) in [
+            ("agent:a", "artifact:old", 1.0, NOW - 10 * 24 * HOUR),
+            ("agent:a", "artifact:middle", 0.8, NOW),
+            ("agent:a", "artifact:recent", 1.0, NOW),
+            ("agent:b", "artifact:other", 1.0, NOW),
+            ("agent:a", "artifact:future", 1.0, NOW + HOUR),
+        ] {
+            s.upsert_edge(&raw_edge(
+                source,
+                target,
+                RelationType::Observed,
+                weight,
+                48.0,
+                updated_at,
+            ))
+            .unwrap();
+        }
+
+        let items = s.working_set("a", 32, NOW).unwrap();
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].node.id, "artifact:recent");
+        assert_eq!(items[1].node.id, "artifact:middle");
+        assert!(items[0].attention > 0.9);
+        assert_eq!(items[0].observation_count, 1);
+        assert_eq!(items[0].observation_span_hours, 0.0);
+        assert!(s.working_set("agent:b", 7, NOW).unwrap()[0].node.id == "artifact:other");
+    }
+
+    #[test]
+    fn sustained_active_observation_becomes_rehearsal_signal() {
+        let s = store();
+        add_node(&s, "agent:a", NodeType::Agent, "a", NOW);
+        add_node(&s, "artifact:x", NodeType::Artifact, "x", NOW);
+        add_node(&s, "execution:failure", NodeType::Execution, "failure", NOW);
+        let failure = raw_edge(
+            "execution:failure",
+            "artifact:x",
+            RelationType::FailedOn,
+            1.0,
+            24.0,
+            NOW,
+        );
+        s.upsert_edge(&failure).unwrap();
+        for timestamp in [NOW, NOW + 24 * HOUR, NOW + 48 * HOUR] {
+            s.upsert_edge(&raw_edge(
+                "agent:a",
+                "artifact:x",
+                RelationType::Observed,
+                1.0,
+                48.0,
+                timestamp,
+            ))
+            .unwrap();
+        }
+
+        let evidence = s.signal_evidence(&failure, NOW + 48 * HOUR).unwrap();
+        let working = s.working_set("a", 7, NOW + 48 * HOUR).unwrap();
+
+        assert!(evidence.deliberate_attention);
+        assert_eq!(working[0].observation_count, 3);
+        assert_eq!(working[0].observation_span_hours, 48.0);
+
+        add_node(&s, "artifact:a", NodeType::Artifact, "a", NOW);
+        s.upsert_edge(&raw_edge(
+            "agent:a",
+            "artifact:a",
+            RelationType::Observed,
+            1.0,
+            48.0,
+            NOW + 48 * HOUR,
+        ))
+        .unwrap();
+        let s = s.with_working_set_size(1);
+
+        assert_eq!(
+            s.working_set("a", 7, NOW + 48 * HOUR).unwrap()[0].node.id,
+            "artifact:a"
+        );
+        assert!(
+            !s.signal_evidence(&failure, NOW + 48 * HOUR)
+                .unwrap()
+                .deliberate_attention
+        );
+
+        add_node(&s, "agent:b", NodeType::Agent, "b", NOW);
+        for timestamp in [NOW, NOW + 24 * HOUR, NOW + 48 * HOUR] {
+            s.upsert_edge(&raw_edge(
+                "agent:b",
+                "artifact:x",
+                RelationType::Observed,
+                1.0,
+                48.0,
+                timestamp,
+            ))
+            .unwrap();
+        }
+        assert!(
+            s.signal_evidence(&failure, NOW + 48 * HOUR)
+                .unwrap()
+                .deliberate_attention
+        );
     }
 
     #[test]

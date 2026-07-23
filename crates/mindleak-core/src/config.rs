@@ -16,6 +16,9 @@ pub const MIN_HALF_LIFE_HOURS: f64 = 1.0;
 pub const MAX_HALF_LIFE_HOURS: f64 = 8_760.0;
 pub const MIN_PRUNE_THRESHOLD: f64 = 0.001;
 pub const MAX_PRUNE_THRESHOLD: f64 = 0.999;
+pub const DEFAULT_WORKING_SET_SIZE: usize = 7;
+pub const MIN_WORKING_SET_SIZE: usize = 1;
+pub const MAX_WORKING_SET_SIZE: usize = 32;
 
 const HALF_LIFE_ENV_VARS: [(RelationType, &str); 11] = [
     (RelationType::Modified, "MINDLEAK_HALFLIFE_MODIFIED_HOURS"),
@@ -128,6 +131,36 @@ impl DecayPolicy {
 /// Load the workspace policy. Resolution is intentionally a startup operation.
 pub fn load_decay_policy(workspace: &Path) -> Result<DecayPolicy> {
     load_decay_policy_with(workspace, |name| std::env::var(name).ok())
+}
+
+pub fn load_working_set_size() -> usize {
+    resolve_working_set_size(|name| std::env::var(name).ok())
+}
+
+fn resolve_working_set_size<F>(environment: F) -> usize
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let Some(raw) = environment("MINDLEAK_WORKING_SET_SIZE") else {
+        return DEFAULT_WORKING_SET_SIZE;
+    };
+    match raw.trim().parse::<usize>() {
+        Ok(0) => {
+            tracing::warn!(value = raw, "ignoring zero working-set size");
+            DEFAULT_WORKING_SET_SIZE
+        }
+        Ok(value) => {
+            let clamped = value.clamp(MIN_WORKING_SET_SIZE, MAX_WORKING_SET_SIZE);
+            if clamped != value {
+                tracing::warn!(%value, %clamped, "clamping working-set size");
+            }
+            clamped
+        }
+        Err(error) => {
+            tracing::warn!(value = raw, %error, "ignoring invalid working-set size");
+            DEFAULT_WORKING_SET_SIZE
+        }
+    }
 }
 
 fn resolve_policy<F>(file_text: Option<&str>, environment: F) -> Result<DecayPolicy>
@@ -456,5 +489,23 @@ mod tests {
     #[test]
     fn malformed_toml_is_still_fatal() {
         assert!(resolve_policy(Some("[decay"), |_| None).is_err());
+    }
+
+    #[test]
+    fn working_set_size_defaults_clamps_and_rejects_zero_or_invalid_values() {
+        assert_eq!(resolve_working_set_size(|_| None), DEFAULT_WORKING_SET_SIZE);
+        assert_eq!(resolve_working_set_size(|_| Some("3".to_string())), 3);
+        assert_eq!(
+            resolve_working_set_size(|_| Some("100".to_string())),
+            MAX_WORKING_SET_SIZE
+        );
+        assert_eq!(
+            resolve_working_set_size(|_| Some("0".to_string())),
+            DEFAULT_WORKING_SET_SIZE
+        );
+        assert_eq!(
+            resolve_working_set_size(|_| Some("many".to_string())),
+            DEFAULT_WORKING_SET_SIZE
+        );
     }
 }

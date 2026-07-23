@@ -127,8 +127,11 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 
 | Variable | Default | Used by |
 |---|---|---|
-| `MINDLEAK_DB` | `<cwd>/.mindleak/graph.db` | server graph location |
+| `MINDLEAK_WORKSPACE` | process working directory | project root for default graph/config paths |
+| `MINDLEAK_DB` | `<workspace>/.mindleak/graph.db` | server graph location |
 | `MINDLEAK_AGENT` | *(empty)* | agent id for attribution (`observed` edges); empty = off |
+| `MINDLEAK_CONFIG` | `<workspace>/.mindleak.toml` | per-project decay policy |
+| `MINDLEAK_WORKING_SET_SIZE` | `7` | hard cap for the current agent's derived working set (1-32) |
 | `MINDLEAK_LLM_URL` | `http://localhost:11434/v1` | consolidation server (OpenAI-compatible) |
 | `MINDLEAK_MODEL` | `glm4:9b` | consolidation model |
 | `MINDLEAK_LLM_API_KEY` | *(empty)* | bearer token for hosted LLM servers (optional) |

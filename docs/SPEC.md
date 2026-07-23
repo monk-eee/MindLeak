@@ -174,7 +174,15 @@ Schema: [`crates/mindleak-core/src/schema.sql`](../crates/mindleak-core/src/sche
 
 **Ingestion & maintenance (also over MCP):** `ingest_execution`, `ingest_commit`,
 `ingest_file`, `boost_entity`, `graph_snapshot`, `prune_graph`, `graph_stats`,
-`consolidate_session`, `list_agents`.
+`consolidate_session`, `list_agents`, `working_set`.
+
+**Working memory (ADR-0017 phase 1):** `working_set(limit?)` requires the
+server's `MINDLEAK_AGENT` and returns that agent's highest active `observed`
+targets, ranked by effective attention and hard-capped at the startup-resolved
+`MINDLEAK_WORKING_SET_SIZE` (default 7, bounded 1-32). The view is derived, never
+stored. Observation count/span are exposed, and sustained active observation
+contributes rehearsal signal only while the target remains inside that agent's
+top-K. Autonomous idle consolidation is phase 2 and is not implied by this tool.
 
 `prune_graph` returns deletion counts plus `signal_candidates`; deterministic
 maintenance never invokes an LLM. `consolidate_signal` uses the optional local

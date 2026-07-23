@@ -60,6 +60,8 @@ consequential* material into durable gist before it is pruned.
   observation span, and last observation time.
 - It also provides the signal for Part B: nodes that stay in the working set
   across a span are "rehearsed" and are prime consolidation candidates.
+  Sustained observation alone is insufficient: the node must still rank inside
+  that agent's configured top-K at query time, preserving the bounded bottleneck.
 
 ### Part B — Autonomous consolidation cycle (optional, gated, idle-driven)
 

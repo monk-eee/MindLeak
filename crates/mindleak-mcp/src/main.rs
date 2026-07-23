@@ -17,9 +17,11 @@ fn main() -> anyhow::Result<()> {
         let _ = std::fs::create_dir_all(parent);
     }
     let decay_policy = mindleak_core::config::load_decay_policy(&workspace)?;
+    let working_set_size = mindleak_core::config::load_working_set_size();
     tracing::info!(
         prune_threshold = decay_policy.prune_threshold(),
         half_life_overrides = ?decay_policy.half_life_overrides(),
+        working_set_size,
         "resolved decay policy"
     );
     let agent = std::env::var("MINDLEAK_AGENT")
@@ -27,6 +29,7 @@ fn main() -> anyhow::Result<()> {
         .filter(|a| !a.trim().is_empty());
     let engine = MindLeak::open(&db_path)?
         .with_decay_policy(decay_policy)
+        .with_working_set_size(working_set_size)
         .with_agent(agent.clone());
     match &agent {
         Some(a) => tracing::info!(%db_path, agent = %a, "mindleak-mcp ready"),

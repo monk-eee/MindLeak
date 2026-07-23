@@ -106,6 +106,13 @@ high-signal episodics are returned by `prune_graph`; expired candidates remain
 inactive but retained until optional `consolidate_signal` persists an intent and
 acknowledges them, leaving model access off deterministic maintenance.
 
+**Working memory (ADR-0017 phase 1).** `GraphStore::working_set` derives a
+per-agent, capacity-bounded focus view from active `observed` edges. No buffer or
+LRU is persisted. Repeated observations spanning the existing signal window
+become rehearsal evidence only while the target remains inside that agent's
+top-K; the write path remains zero-token. The autonomous idle consolidation
+worker is a separate phase and is not shipped by the working-set query.
+
 ## Ingestion (zero-token)
 
 All write-path extraction is pure pattern matching:
