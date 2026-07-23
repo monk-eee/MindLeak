@@ -345,8 +345,10 @@ Newline-delimited JSON-RPC 2.0 over stdio, exactly like `mindleak-mcp`.
     `reopen_task(task_id)` → return a stranded task (`in_review`, or a manual
     hold with no live predecessor gate) to claimable `open`; refuses to bypass a
     handoff dependency, disturb an active claim, or revive terminal work.
-13. `board()` → live coordination snapshot: every task, owner, status, lease — so
-    humans and agents can see the parallel state at a glance.
+13. `board(include_terminal=true)` → coordination snapshot: every task, owner,
+    status, lease — so humans and agents see the parallel state at a glance.
+    `include_terminal=false` returns only the live/actionable set (open, claimed,
+    in_review, blocked); done/abandoned stay durable but out of the default view.
 
 **Conformance**
 

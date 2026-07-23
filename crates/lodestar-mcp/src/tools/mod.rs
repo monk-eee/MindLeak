@@ -73,6 +73,10 @@ pub(super) fn i64_arg(args: &Value, key: &str, default: i64) -> i64 {
     args.get(key).and_then(Value::as_i64).unwrap_or(default)
 }
 
+pub(super) fn bool_arg(args: &Value, key: &str, default: bool) -> bool {
+    args.get(key).and_then(Value::as_bool).unwrap_or(default)
+}
+
 pub(super) fn str_array(args: &Value, key: &str) -> Vec<String> {
     args.get(key)
         .and_then(Value::as_array)

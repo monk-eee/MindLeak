@@ -232,7 +232,7 @@ coordinate through one plane.
 | `release_task` / `block_task` | Return or block work. |
 | `reopen_task` | Return a stranded task (in review, or a manual hold) to claimable `open`. |
 | `abandon_task` | Permanently retire a nonterminal task to terminal `abandoned` (distinct from reopen/reset). |
-| `board` | Live who-owns-what snapshot. |
+| `board` | Who-owns-what snapshot; `include_terminal=false` for only live/actionable work. |
 | `check_conformance` | aligned · drift · violation against governing intent. |
 | `conformance_history` | Resolve a task's durable evidence chain — the recorded bundle, verdict, and stable id per check. |
 | `consolidate` / `record_knowledge` | Gated promotion of learned regularities. |

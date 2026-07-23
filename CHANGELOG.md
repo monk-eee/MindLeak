@@ -7,6 +7,12 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- **`board` can hide terminal tasks.** The tool and facade gain
+  `include_terminal` (default `true`, unchanged behaviour); `false` returns only
+  the live/actionable set (open, claimed, in_review, blocked), so completed and
+  abandoned work stays durable but drops out of a lean coordination view. Pairs
+  with `abandon_task` to keep the board uncluttered without decaying intent
+  (ADR-0004: the Intent Plane never expires tasks).
 - **Git hooks are scoped and isolation-aware to stop concurrent-agent poisoning.**
   The cargo fmt/clippy/test pre-commit and pre-push hooks now run only for the
   crate packages a change touches, and — on push, or when a foreign untracked

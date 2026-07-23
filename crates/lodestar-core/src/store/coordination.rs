@@ -286,8 +286,15 @@ impl LodestarStore {
         }
     }
 
-    pub fn board(&self) -> Result<Vec<Task>> {
-        let sql = format!("SELECT {TASK_COLS} FROM tasks ORDER BY created_at ASC");
+    pub fn board(&self, include_terminal: bool) -> Result<Vec<Task>> {
+        let sql = if include_terminal {
+            format!("SELECT {TASK_COLS} FROM tasks ORDER BY created_at ASC")
+        } else {
+            format!(
+                "SELECT {TASK_COLS} FROM tasks \
+                 WHERE status NOT IN ('done', 'abandoned') ORDER BY created_at ASC"
+            )
+        };
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], row_to_task)?;
         collect(rows)

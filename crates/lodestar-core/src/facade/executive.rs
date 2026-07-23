@@ -82,8 +82,8 @@ impl Lodestar {
         self.store.abandon_task(id, now_unix())
     }
 
-    pub fn board(&self) -> Result<Vec<Task>> {
-        self.store.board()
+    pub fn board(&self, include_terminal: bool) -> Result<Vec<Task>> {
+        self.store.board(include_terminal)
     }
 }
 

@@ -2,7 +2,7 @@
 //! Executive tool definitions and dispatch.
 
 use super::conformance::parse_evidence;
-use super::{i64_arg, ok, opt_str, optional_string_arg, req_str, text};
+use super::{bool_arg, i64_arg, ok, opt_str, optional_string_arg, req_str, text};
 use lodestar_core::Lodestar;
 use serde_json::{json, Value};
 
@@ -123,8 +123,13 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "board",
-            "description": "The live coordination snapshot: every task with owner, status, and lease.",
-            "inputSchema": { "type": "object", "properties": {} }
+            "description": "The coordination snapshot of tasks with owner, status, and lease. Returns every task by default; pass include_terminal=false for only the live/actionable set (open, claimed, in_review, blocked), leaving done/abandoned tasks durable but out of view.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "include_terminal": { "type": "boolean", "default": true, "description": "Include terminal done/abandoned tasks (default true)." }
+                }
+            }
         }),
     ]
 }
@@ -216,7 +221,11 @@ pub(super) fn dispatch(
                 .map_err(|e| e.to_string())?;
             ok(&json!({ "abandoned": abandoned }))
         })()),
-        "board" => Some((|| ok(&engine.board().map_err(|e| e.to_string())?))()),
+        "board" => Some((|| {
+            ok(&engine
+                .board(bool_arg(args, "include_terminal", true))
+                .map_err(|e| e.to_string())?)
+        })()),
         _ => None,
     }
 }
@@ -275,9 +284,54 @@ mod tests {
             serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(payload["reopened"], true);
 
-        let board = engine.board().unwrap();
+        let board = engine.board(true).unwrap();
         let reopened = board.iter().find(|t| t.id == task.id).unwrap();
         assert_eq!(reopened.status.as_str(), "open");
+    }
+
+    #[test]
+    fn board_tool_filters_terminal_tasks_when_requested() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "do it", None)
+            .unwrap();
+        let live = engine.create_task(&goal.id, "Live", "").unwrap();
+        let retired = engine.create_task(&goal.id, "Retired", "").unwrap();
+        engine.abandon_task(&retired.id).unwrap();
+
+        // Default: every task, including the abandoned one.
+        let all: Value = serde_json::from_str(
+            call(&engine, &json!({ "name": "board", "arguments": {} })).unwrap()["content"][0]
+                ["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(all
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|task| task["id"] == retired.id));
+
+        // Opt into the lean view: terminal tasks drop out, live work remains.
+        let active: Value = serde_json::from_str(
+            call(
+                &engine,
+                &json!({ "name": "board", "arguments": { "include_terminal": false } }),
+            )
+            .unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let ids: Vec<&str> = active
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|task| task["id"].as_str().unwrap())
+            .collect();
+        assert!(ids.contains(&live.id.as_str()));
+        assert!(!ids.contains(&retired.id.as_str()));
     }
 
     #[test]

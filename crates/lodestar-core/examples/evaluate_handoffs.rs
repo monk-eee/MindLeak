@@ -69,7 +69,7 @@ fn independent_arm(path: &Path) -> Result<serde_json::Value> {
     let first_claimed = agent_a.claim_task(&first.id, "agent-a", LEASE_SECS)?;
     let second_claimed = agent_b.claim_task(&second.id, "agent-b", LEASE_SECS)?;
     let concurrent_claims = agent_a
-        .board()?
+        .board(true)?
         .iter()
         .filter(|task| task.status == TaskStatus::Claimed)
         .count();
@@ -162,7 +162,7 @@ fn aligned_evidence(task: &Task, agent: &str) -> ConformanceEvidence {
 
 fn claimed_count(engine: &Lodestar) -> Result<usize> {
     Ok(engine
-        .board()?
+        .board(true)?
         .iter()
         .filter(|task| task.status == TaskStatus::Claimed)
         .count())
