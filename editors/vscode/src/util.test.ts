@@ -9,10 +9,12 @@ import {
   evidenceRequestForTask,
   filterChangedPaths,
   formatLogLine,
+  formatQaThread,
   formatTaskEvidence,
   healthSummary,
   logLines,
   parseToolResult,
+  pendingQuestion,
   redactTerminalOutput,
   resolveBinaryPath,
   resolveServerPath,
@@ -162,6 +164,58 @@ describe("boardRows", () => {
 
     expect(boardRows(tasks).map((row) => row.id)).toEqual(["open"]);
     expect(boardRows(tasks, true).map((row) => row.id)).toEqual(["open", "done", "abandoned"]);
+  });
+});
+
+describe("needs_input board + Q&A thread", () => {
+  it("surfaces needs_input and paused ahead of open (a human is being asked)", () => {
+    const tasks = [
+      { id: "open", goal_id: "g", title: "open", status: "open" },
+      { id: "ask", goal_id: "g", title: "ask", status: "needs_input", owner: "alice" },
+      { id: "pause", goal_id: "g", title: "pause", status: "paused", owner: "bob" },
+    ];
+    expect(boardRows(tasks).map((row) => row.id)).toEqual(["ask", "pause", "open"]);
+  });
+
+  it("pendingQuestion returns the most recent question, ignoring answers", () => {
+    expect(pendingQuestion([])).toBeUndefined();
+    expect(
+      pendingQuestion([
+        {
+          id: 1,
+          task_id: "t",
+          kind: "question",
+          body: "which db?",
+          author: "agent",
+          created_at: 1,
+        },
+        { id: 2, task_id: "t", kind: "answer", body: "sqlite", author: "human", created_at: 2 },
+        { id: 3, task_id: "t", kind: "question", body: "and now?", author: "agent", created_at: 3 },
+      ])
+    ).toBe("and now?");
+  });
+
+  it("formatQaThread renders oldest-first, and null when empty", () => {
+    expect(formatQaThread([])).toBeNull();
+    const md = formatQaThread(
+      [
+        {
+          id: 1,
+          task_id: "t",
+          kind: "question",
+          body: "which db?",
+          author: "agent",
+          created_at: 1,
+        },
+        { id: 2, task_id: "t", kind: "answer", body: "sqlite", author: "human", created_at: 2 },
+      ],
+      "Wire storage"
+    );
+    expect(md).toContain("# Q&A: Wire storage");
+    expect(md).toContain("question (agent)");
+    expect(md).toContain("which db?");
+    expect(md).toContain("answer (human)");
+    expect(md).toContain("sqlite");
   });
 });
 

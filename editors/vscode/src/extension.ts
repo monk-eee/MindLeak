@@ -17,8 +17,10 @@ import {
   GraphCounts,
   healthSummary,
   logLines,
+  pendingQuestion,
   resolveBinaryPath,
   resolveServerPath,
+  TaskQaEntry,
   telemetryDashboard,
   TelemetrySnapshot,
   toArtifactId,
@@ -212,6 +214,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     }),
     vscode.commands.registerCommand("mindleak.task.inspectEvidence", (item?: BoardItem) => {
       void inspectTaskEvidence(item);
+    }),
+    vscode.commands.registerCommand("mindleak.task.answer", (item?: BoardItem) => {
+      void answerTaskQuestion(item);
     })
   );
 
@@ -498,5 +503,48 @@ async function inspectTaskEvidence(item?: BoardItem): Promise<void> {
     vscode.window.showErrorMessage(
       `MindLeak evidence inspection failed: ${(err as Error).message}`
     );
+  }
+}
+
+async function answerTaskQuestion(item?: BoardItem): Promise<void> {
+  if (!lodestar?.isReady()) {
+    vscode.window.showWarningMessage("Lodestar must be connected to answer a task question.");
+    return;
+  }
+  if (!item) {
+    vscode.window.showWarningMessage(
+      "Run this command from a task awaiting input in the Intent Board."
+    );
+    return;
+  }
+  if (item.task.status !== "needs_input") {
+    vscode.window.showWarningMessage(`Task ${item.task.title} is not awaiting input.`);
+    return;
+  }
+  try {
+    const thread = (await lodestar.callTool("task_qa", {
+      task_id: item.task.id,
+    })) as TaskQaEntry[];
+    const question = pendingQuestion(Array.isArray(thread) ? thread : []);
+    const answer = await vscode.window.showInputBox({
+      title: `Answer: ${item.task.title}`,
+      prompt: question ?? "Provide the answer for this task.",
+      ignoreFocusOut: true,
+      validateInput: (value) => (value.trim() ? undefined : "An answer is required."),
+    });
+    if (answer === undefined) {
+      return; // cancelled
+    }
+    await lodestar.callTool("answer", {
+      task_id: item.task.id,
+      answer,
+      author: "human",
+    });
+    vscode.window.showInformationMessage(
+      `MindLeak: answered — ${item.task.title} resumed for its owner.`
+    );
+    await refreshBoard();
+  } catch (err) {
+    vscode.window.showErrorMessage(`MindLeak answer failed: ${(err as Error).message}`);
   }
 }

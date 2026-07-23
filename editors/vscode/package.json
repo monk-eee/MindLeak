@@ -101,6 +101,11 @@
         "command": "mindleak.task.inspectEvidence",
         "title": "MindLeak: Inspect Task Evidence",
         "icon": "$(book)"
+      },
+      {
+        "command": "mindleak.task.answer",
+        "title": "MindLeak: Answer Task Question",
+        "icon": "$(comment)"
       }
     ],
     "menus": {
@@ -140,6 +145,11 @@
         {
           "command": "mindleak.task.inspectEvidence",
           "when": "view == mindleak.boardView && viewItem == in_review",
+          "group": "inline"
+        },
+        {
+          "command": "mindleak.task.answer",
+          "when": "view == mindleak.boardView && viewItem == needs_input",
           "group": "inline"
         }
       ]

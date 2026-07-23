@@ -20,6 +20,10 @@ function iconFor(status: string): vscode.ThemeIcon {
   switch (status) {
     case "claimed":
       return new vscode.ThemeIcon("account");
+    case "needs_input":
+      return new vscode.ThemeIcon("comment-unresolved");
+    case "paused":
+      return new vscode.ThemeIcon("debug-pause");
     case "open":
       return new vscode.ThemeIcon("circle-outline");
     case "in_review":

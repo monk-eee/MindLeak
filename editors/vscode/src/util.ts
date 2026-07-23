@@ -213,7 +213,16 @@ export interface BoardRow {
   status: string;
 }
 
-const BOARD_STATUS_ORDER = ["claimed", "open", "in_review", "blocked", "done", "abandoned"];
+const BOARD_STATUS_ORDER = [
+  "needs_input",
+  "claimed",
+  "paused",
+  "open",
+  "in_review",
+  "blocked",
+  "done",
+  "abandoned",
+];
 const TERMINAL_TASK_STATUSES = new Set(["done", "abandoned"]);
 
 /** Render the active board by default; terminal history remains explicitly available. */
@@ -232,6 +241,50 @@ export function boardRows(tasks: LodestarTask[], includeTerminal = false): Board
       tooltip: `${t.title}\ngoal: ${t.goal_id}${t.acceptance ? `\n${t.acceptance}` : ""}`,
       status: t.status,
     }));
+}
+
+/** One entry in a task's durable question/answer thread (Lodestar `task_qa`). */
+export interface TaskQaEntry {
+  id: number;
+  task_id: string;
+  kind: string; // "question" | "answer"
+  body: string;
+  author: string;
+  created_at: number;
+}
+
+/**
+ * The pending question on a `needs_input` task: the body of the most recent
+ * `question` entry in its Q&A thread, or undefined when there is none. Pure, so
+ * it is unit-tested without the vscode API.
+ */
+export function pendingQuestion(thread: TaskQaEntry[]): string | undefined {
+  if (!Array.isArray(thread)) {
+    return undefined;
+  }
+  for (let i = thread.length - 1; i >= 0; i--) {
+    if (thread[i]?.kind === "question") {
+      return thread[i].body;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Render a task's durable Q&A thread (oldest first) as readable markdown. Pure
+ * (no vscode API). Returns null when the thread is empty.
+ */
+export function formatQaThread(thread: TaskQaEntry[], taskTitle?: string): string | null {
+  if (!Array.isArray(thread) || thread.length === 0) {
+    return null;
+  }
+  const lines: string[] = [`# Q&A${taskTitle ? `: ${taskTitle}` : ""}`, ""];
+  for (const entry of thread) {
+    const who = entry.kind === "answer" ? `answer (${entry.author})` : `question (${entry.author})`;
+    lines.push(`- **${who}** · ${formatUnixSeconds(entry.created_at)}`);
+    lines.push(`  ${entry.body}`);
+  }
+  return lines.join("\n");
 }
 
 /** The result of the Lodestar `check_conformance` tool. */
