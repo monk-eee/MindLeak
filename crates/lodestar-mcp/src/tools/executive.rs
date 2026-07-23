@@ -2,7 +2,7 @@
 //! Executive tool definitions and dispatch.
 
 use super::conformance::parse_evidence;
-use super::{bool_arg, i64_arg, ok, opt_str, optional_string_arg, req_str, text};
+use super::{bool_arg, i64_arg, ok, opt_str, optional_string_arg, rendered, req_str, text};
 use lodestar_core::Lodestar;
 use serde_json::{json, Value};
 
@@ -219,7 +219,19 @@ pub(super) fn dispatch(
                 .map_err(|e| e.to_string())?)
         })()),
         "next_task" => Some((|| match engine.next_task().map_err(|e| e.to_string())? {
-            Some(t) => ok(&t),
+            Some(t) => {
+                let owner = t.owner.as_deref().unwrap_or("unclaimed");
+                let markdown = format!(
+                    "**Next task**: `{}`\n\n**{}**\n\n- Goal: `{}`\n- Status: **{}** / Owner: {}\n\n{}",
+                    t.id,
+                    t.title,
+                    t.goal_id,
+                    t.status.as_str(),
+                    owner,
+                    t.acceptance
+                );
+                rendered(markdown, &t)
+            }
             None => text("no claimable task".to_string()),
         })()),
         "claim_task" => Some((|| {

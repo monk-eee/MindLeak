@@ -7,14 +7,21 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Two productization decisions make the viability gaps explicit.** ADR-0027
+  proposes an extension-led, five-minute first-value workflow over the existing
+  portable MCP primitives, without duplicating authoritative state or requiring
+  a model. ADR-0028 separates engineering, controlled-efficacy, and external-
+  adoption evidence; it defines the privacy-preserving post-v0.1.1 developer
+  pilot required before broad product claims or roadmap expansion.
 - **Read tools render as rich Markdown in chat while staying machine-parseable.**
   MCP tool results can now carry a chat-facing Markdown rendering in `content`
   *and* the structured JSON in `structuredContent`, so Copilot Chat shows a
   formatted table instead of raw JSON without breaking the programmatic consumers
   (the VS Code extension's panes, agents). The extension's `parseToolResult` now
-  prefers `structuredContent`, falling back to today's JSON parse. First tool wired:
-  `graph_stats` (node/edge counts as a table); more read/query tools follow the
-  same `rendered_result` pattern.
+  prefers `structuredContent`, falling back to today's JSON parse. Wired so far:
+  `graph_stats`, `lodestar_stats` (count tables), and `next_task` (a task summary
+  card); other inline read tools follow the same `rendered_result` / `rendered`
+  pattern.
 - **Pause and resume a claimed task from the Intent Board (ADR-0020).** The board
   now shows an inline pause action on a `claimed` task and a resume action on a
   `paused` one, calling the owner-guarded `pause_task` / `resume_task` tools for the

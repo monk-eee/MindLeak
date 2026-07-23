@@ -98,6 +98,21 @@ pub(super) fn ok<T: Serialize>(value: &T) -> Result<Value, String> {
     text(body)
 }
 
+/// A tool result that renders as Markdown in chat while keeping the structured
+/// JSON in `structuredContent` for programmatic consumers (the extension client
+/// and agents). VS Code renders `content`; machine consumers read
+/// `structuredContent`, so display can be rich without breaking parsers.
+pub(super) fn rendered<T: Serialize>(
+    markdown: impl Into<String>,
+    value: &T,
+) -> Result<Value, String> {
+    let structured = serde_json::to_value(value).map_err(|e| e.to_string())?;
+    Ok(json!({
+        "content": [{ "type": "text", "text": markdown.into() }],
+        "structuredContent": structured,
+    }))
+}
+
 pub(super) fn text(body: String) -> Result<Value, String> {
     Ok(json!({ "content": [{ "type": "text", "text": body }] }))
 }
