@@ -136,8 +136,12 @@ W_effective = W_base · 2^(−Δt_hours / half_life_hours)
   per-relation overrides from `.mindleak.toml` and environment variables.
 * **Prune rule:** edges below the resolved threshold (`0.05` by default, with a
   bounded ADR-0014 project override) are ignored at query time and purged during
-  maintenance; unreferenced `execution`, `symbol`, `package`, and unresolved
-  artifact-stub nodes are dropped.
+  maintenance; then, in the same transaction, unreferenced `execution`, `symbol`,
+  `package`, and unresolved artifact-stub nodes are dropped. Real (ingested)
+  `artifact`, `intent`, and `agent` nodes are **retained** by design — durable
+  structure, not noise. Orphan detection runs *after* edge deletion so a node
+  orphaned by the pass is reaped in that pass; effective weight is never stored.
+  Full per-type contract: [ADR-0021](adr/0021-node-lifecycle-and-reaping.md).
 
 Schema: [`crates/mindleak-core/src/schema.sql`](../crates/mindleak-core/src/schema.sql).
 
