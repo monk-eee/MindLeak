@@ -21,15 +21,15 @@ repos:
   - repo: local
     hooks:
       - id: cargo-fmt
-        name: cargo fmt
-        entry: cargo fmt --all --
+        name: cargo fmt (scoped)
+        entry: node scripts/cargo-precommit.mjs fmt commit
         language: system
         types: [rust]
         pass_filenames: false
 
       - id: cargo-clippy
-        name: cargo clippy
-        entry: cargo clippy --all-targets --all-features -- -D warnings
+        name: cargo clippy (scoped, isolated)
+        entry: node scripts/cargo-precommit.mjs clippy commit
         language: system
         types: [rust]
         pass_filenames: false
@@ -48,10 +48,11 @@ repos:
         files: ^(editors/vscode/(src|media)/.*\.(ts|js)|scripts/.*\.mjs)$
         pass_filenames: false
 
-      # Slower gate — runs on push, not every commit.
+      # Slower gate — runs on push, not every commit. Validates the pushed
+      # commit in isolation so another agent's uncommitted WIP cannot poison it.
       - id: cargo-test
-        name: cargo test
-        entry: cargo test --all
+        name: cargo test (scoped, isolated)
+        entry: node scripts/cargo-precommit.mjs test push
         language: system
         types: [rust]
         pass_filenames: false
