@@ -46,7 +46,7 @@ try {
     ],
   });
 } catch (error) {
-  console.error(`Extension Host smoke failed: ${error.message}`);
+  console.error(`Extension Host smoke failed: ${error.stack ?? error.message}`);
   process.exitCode = 1;
 } finally {
   fs.rmSync(root, { recursive: true, force: true });

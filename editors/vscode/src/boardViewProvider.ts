@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 
-import { BoardRow, boardRows, canRetireTask, LodestarTask } from "./util";
+import { BoardRow, boardRows, LodestarTask, taskContextValue } from "./util";
 
 /** A single task row in the board tree. */
 export class BoardItem extends vscode.TreeItem {
@@ -11,9 +11,7 @@ export class BoardItem extends vscode.TreeItem {
     super(row.label, vscode.TreeItemCollapsibleState.None);
     this.description = row.description;
     this.tooltip = row.tooltip;
-    this.contextValue = canRetireTask(task, Math.floor(Date.now() / 1000))
-      ? `${row.status}.retireable`
-      : row.status;
+    this.contextValue = taskContextValue(task, Math.floor(Date.now() / 1000));
     this.iconPath = iconFor(row.status);
   }
 }
@@ -47,12 +45,21 @@ export class BoardViewProvider implements vscode.TreeDataProvider<BoardItem> {
   static readonly viewType = "mindleak.boardView";
 
   private tasks: LodestarTask[] = [];
+  private items: BoardItem[] = [];
   private readonly emitter = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.emitter.event;
 
   update(tasks: LodestarTask[]): void {
     this.tasks = Array.isArray(tasks) ? tasks : [];
+    this.items = boardRows(this.tasks).map((row) => {
+      const task = this.tasks.find((candidate) => candidate.id === row.id);
+      return new BoardItem(task!, row);
+    });
     this.emitter.fire();
+  }
+
+  find(taskId: string): BoardItem | undefined {
+    return this.items.find((item) => item.task.id === taskId);
   }
 
   getTreeItem(element: BoardItem): vscode.TreeItem {
@@ -60,9 +67,6 @@ export class BoardViewProvider implements vscode.TreeDataProvider<BoardItem> {
   }
 
   getChildren(): BoardItem[] {
-    return boardRows(this.tasks).map((row) => {
-      const task = this.tasks.find((candidate) => candidate.id === row.id);
-      return new BoardItem(task!, row);
-    });
+    return this.items;
   }
 }

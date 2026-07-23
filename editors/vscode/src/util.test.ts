@@ -5,7 +5,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   boardRows,
+  canClaimTask,
   canRetireTask,
+  claimTaskRequest,
   conformanceDiagnostic,
   evidenceRequestForTask,
   filterChangedPaths,
@@ -18,9 +20,13 @@ import {
   parseToolResult,
   pendingQuestion,
   redactTerminalOutput,
+  releaseTaskRequest,
+  renewTaskRequest,
   resolveBinaryPath,
   resolveServerPath,
   shouldCaptureCommand,
+  taskContextValue,
+  taskLeaseState,
   telemetryDashboard,
   TelemetrySnapshot,
   toArtifactId,
@@ -157,12 +163,20 @@ describe("boardRows", () => {
     const rows = boardRows(
       [
         { id: "t1", goal_id: "g", title: "done thing", status: "done" },
-        { id: "t2", goal_id: "g", title: "mine", status: "claimed", owner: "alice" },
+        {
+          id: "t2",
+          goal_id: "g",
+          title: "mine",
+          status: "claimed",
+          owner: "alice",
+          lease_expires_at: 200,
+        },
       ],
-      true
+      true,
+      100
     );
     expect(rows[0].label).toBe("mine");
-    expect(rows[0].description).toBe("claimed \u00b7 alice");
+    expect(rows[0].description).toContain("claimed \u00b7 alice");
     expect(rows[1].status).toBe("done");
   });
 
@@ -258,14 +272,92 @@ describe("canRetireTask", () => {
 
 describe("leaseActionFor", () => {
   it("offers pause on a claimed task and resume on a paused one", () => {
-    expect(leaseActionFor({ id: "a", goal_id: "g", title: "a", status: "claimed" })).toBe("pause");
+    expect(
+      leaseActionFor(
+        { id: "a", goal_id: "g", title: "a", status: "claimed", lease_expires_at: 101 },
+        100
+      )
+    ).toBe("pause");
     expect(leaseActionFor({ id: "b", goal_id: "g", title: "b", status: "paused" })).toBe("resume");
+    expect(
+      leaseActionFor(
+        { id: "expired", goal_id: "g", title: "expired", status: "claimed", lease_expires_at: 99 },
+        100
+      )
+    ).toBeUndefined();
   });
 
   it("offers nothing for any other lifecycle state", () => {
     for (const status of ["open", "needs_input", "in_review", "blocked", "done", "abandoned"]) {
       expect(leaseActionFor({ id: status, goal_id: "g", title: status, status })).toBeUndefined();
     }
+  });
+});
+
+describe("task allocation", () => {
+  const task = (status: string, lease?: number, owner?: string) => ({
+    id: `task:${status}`,
+    goal_id: "goal:g",
+    title: status,
+    status,
+    lease_expires_at: lease,
+    owner,
+  });
+
+  it("distinguishes open, live, expired, parked, and unavailable work", () => {
+    expect(taskLeaseState(task("open"), 100)).toBe("claimable");
+    expect(taskLeaseState(task("claimed", 100, "alice"), 100)).toBe("live");
+    expect(taskLeaseState(task("claimed", 99, "alice"), 100)).toBe("expired");
+    expect(taskLeaseState(task("paused", undefined, "alice"), 100)).toBe("parked");
+    expect(taskLeaseState(task("blocked"), 100)).toBe("unavailable");
+    expect(canClaimTask(task("open"), 100)).toBe(true);
+    expect(canClaimTask(task("claimed", 99, "alice"), 100)).toBe(true);
+    expect(canClaimTask(task("claimed", 101, "alice"), 100)).toBe(false);
+  });
+
+  it("builds bounded owner-explicit claim, renew, and release requests", () => {
+    expect(claimTaskRequest(task("open"), " agent-a ", 1800, 100)).toEqual({
+      task_id: "task:open",
+      agent: "agent-a",
+      lease_secs: 1800,
+    });
+    const live = task("claimed", 200, "alice");
+    expect(renewTaskRequest(live, 3600, 100)).toEqual({
+      task_id: "task:claimed",
+      agent: "alice",
+      lease_secs: 3600,
+    });
+    expect(releaseTaskRequest(live, 100)).toEqual({
+      task_id: "task:claimed",
+      agent: "alice",
+    });
+    expect(() => claimTaskRequest(task("blocked"), "agent", 300, 100)).toThrow("not claimable");
+    expect(() => claimTaskRequest(task("open"), "", 300, 100)).toThrow("identity");
+    expect(() => claimTaskRequest(task("open"), "agent", 30, 100)).toThrow("60 to 28800");
+    expect(() => renewTaskRequest(task("claimed", 99, "alice"), 300, 100)).toThrow("renewable");
+    expect(() => releaseTaskRequest(task("claimed", 101), 100)).toThrow("releasable");
+  });
+
+  it("renders claimable and expired contexts plus explicit lease windows", () => {
+    expect(taskContextValue(task("open"), 100)).toBe("open.claimable.retireable");
+    expect(taskContextValue(task("claimed", 99, "alice"), 100)).toBe(
+      "claimed.expired.claimable.retireable"
+    );
+    expect(taskContextValue(task("claimed", 200, "alice"), 100)).toBe("claimed");
+
+    const rows = boardRows(
+      [
+        { ...task("claimed", 99, "alice"), claim_started_at: 10 },
+        task("open"),
+        task("claimed", 220, "bob"),
+      ],
+      false,
+      100
+    );
+    expect(rows.find((row) => row.id === "task:claimed")?.tooltip).toContain("lease expires:");
+    expect(rows.some((row) => row.description.includes("expired claim"))).toBe(true);
+    expect(rows.some((row) => row.description === "open · claimable")).toBe(true);
+    expect(rows.some((row) => row.description.includes("2m left"))).toBe(true);
   });
 });
 

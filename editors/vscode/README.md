@@ -32,7 +32,10 @@ graph engine.
   retryable.
 - **Intent Board** — active task ownership and evidence actions remain separate
   from design review, so proposed ADRs never appear as claimable implementation
-  work.
+  work. Open and expired-claim rows can be allocated to a stable agent or claimed
+  for the configured extension identity; live claims expose explicit renew and
+  release actions. **Next Claimable Task** reveals the scheduler's suggestion but
+  never auto-claims it.
 - **Controls** — Refresh, Prune decayed edges, Export complete graph JSON, back
   up both planes, and modal reset of regenerable memory only.
 
@@ -97,6 +100,21 @@ From the Design Board:
 
 Human acceptance and rejection require an identity different from the proposing
 agent. ADR discovery never auto-accepts or auto-promotes a design.
+
+## Task allocation
+
+The Intent Board displays the owner, claim start, lease expiry, and whether a
+claim is live or reclaimable. Allocation remains advisory until Lodestar's atomic
+claim compare-and-swap succeeds.
+
+- **Claim Task for Me** uses `mindleak.agentId`.
+- **Allocate Task…** prompts for another stable agent identity.
+- Lease choices are bounded from five minutes through eight hours.
+- **Renew Task Lease** and **Release Task** always send the displayed owner, so
+  owner-guard failures remain visible rather than silently changing work.
+- Expired claims are reclaimable and open a fresh evidence window; parked tasks
+  (`needs_input` / `paused`) remain owned and cannot be allocated.
+- **Next Claimable Task** highlights the next row without claiming it.
 
 ## Develop
 

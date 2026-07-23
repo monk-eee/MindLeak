@@ -20,6 +20,11 @@ async function run() {
   for (const command of [
     "mindleak.refresh",
     "mindleak.board.refresh",
+    "mindleak.task.next",
+    "mindleak.task.allocate",
+    "mindleak.task.claimForMe",
+    "mindleak.task.renew",
+    "mindleak.task.release",
     "mindleak.design.refresh",
     "mindleak.design.sync",
     "mindleak.design.accept",
@@ -40,6 +45,7 @@ async function run() {
   await vscode.commands.executeCommand("mindleak.ingestActiveFile");
   await vscode.commands.executeCommand("mindleak.refresh");
   await vscode.commands.executeCommand("mindleak.board.refresh");
+  await vscode.commands.executeCommand("mindleak.task.next");
 
   const adrDirectory = path.join(workspace, "docs", "adr");
   fs.mkdirSync(adrDirectory, { recursive: true });

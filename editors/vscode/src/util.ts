@@ -174,6 +174,97 @@ export interface LodestarTask {
   owner?: string | null;
   claim_started_at?: number | null;
   lease_expires_at?: number | null;
+  blocked_by?: string | null;
+  parked_at?: number | null;
+}
+
+export type TaskLeaseState = "claimable" | "live" | "expired" | "parked" | "unavailable";
+
+export interface TaskLeaseRequest {
+  task_id: string;
+  agent: string;
+  lease_secs: number;
+}
+
+export function taskLeaseState(task: LodestarTask, nowUnix: number): TaskLeaseState {
+  if (task.status === "open") {
+    return "claimable";
+  }
+  if (task.status === "claimed") {
+    return typeof task.lease_expires_at === "number" && task.lease_expires_at >= nowUnix
+      ? "live"
+      : "expired";
+  }
+  if (task.status === "needs_input" || task.status === "paused") {
+    return "parked";
+  }
+  return "unavailable";
+}
+
+export function canClaimTask(task: LodestarTask, nowUnix: number): boolean {
+  const state = taskLeaseState(task, nowUnix);
+  return state === "claimable" || state === "expired";
+}
+
+export function taskContextValue(task: LodestarTask, nowUnix: number): string {
+  const state = taskLeaseState(task, nowUnix);
+  if (task.status === "claimed" && state === "live") {
+    return "claimed";
+  }
+  const tags = [task.status];
+  if (state === "claimable") {
+    tags.push("claimable");
+  } else if (state === "expired") {
+    tags.push("expired", "claimable");
+  }
+  if (canRetireTask(task, nowUnix)) {
+    tags.push("retireable");
+  }
+  return tags.join(".");
+}
+
+export function claimTaskRequest(
+  task: LodestarTask,
+  agent: string,
+  leaseSeconds: number,
+  nowUnix: number
+): TaskLeaseRequest {
+  if (!canClaimTask(task, nowUnix)) {
+    throw new Error(`task ${task.id} is not claimable`);
+  }
+  return leaseRequest(task.id, agent, leaseSeconds);
+}
+
+export function renewTaskRequest(
+  task: LodestarTask,
+  leaseSeconds: number,
+  nowUnix: number
+): TaskLeaseRequest {
+  if (taskLeaseState(task, nowUnix) !== "live" || !task.owner?.trim()) {
+    throw new Error(`task ${task.id} does not have a renewable live claim`);
+  }
+  return leaseRequest(task.id, task.owner, leaseSeconds);
+}
+
+export function releaseTaskRequest(
+  task: LodestarTask,
+  nowUnix: number
+): Pick<TaskLeaseRequest, "task_id" | "agent"> {
+  if (taskLeaseState(task, nowUnix) !== "live" || !task.owner?.trim()) {
+    throw new Error(`task ${task.id} does not have a releasable live claim`);
+  }
+  return { task_id: task.id, agent: task.owner.trim() };
+}
+
+function leaseRequest(taskId: string, agent: string, leaseSeconds: number): TaskLeaseRequest {
+  const identity = agent.trim();
+  if (!identity) {
+    throw new Error("an agent identity is required");
+  }
+  if (!Number.isInteger(leaseSeconds) || leaseSeconds < 60 || leaseSeconds > 8 * 3600) {
+    throw new Error("lease duration must be a whole number from 60 to 28800 seconds");
+  }
+  return { task_id: taskId, agent: identity, lease_secs: leaseSeconds };
 }
 
 /** Whether a task can be deliberately retired without disturbing live ownership. */
@@ -235,10 +326,13 @@ export function evidenceRequestForTask(
  * Pure so the portal can validate a possibly-stale board row before invoking
  * the owner-guarded lifecycle tool.
  */
-export function leaseActionFor(task: LodestarTask): "pause" | "resume" | undefined {
+export function leaseActionFor(
+  task: LodestarTask,
+  nowUnix = Math.floor(Date.now() / 1000)
+): "pause" | "resume" | undefined {
   switch (task.status) {
     case "claimed":
-      return "pause";
+      return taskLeaseState(task, nowUnix) === "live" ? "pause" : undefined;
     case "paused":
       return "resume";
     default:
@@ -268,7 +362,11 @@ const BOARD_STATUS_ORDER = [
 const TERMINAL_TASK_STATUSES = new Set(["done", "abandoned"]);
 
 /** Render the active board by default; terminal history remains explicitly available. */
-export function boardRows(tasks: LodestarTask[], includeTerminal = false): BoardRow[] {
+export function boardRows(
+  tasks: LodestarTask[],
+  includeTerminal = false,
+  nowUnix = Math.floor(Date.now() / 1000)
+): BoardRow[] {
   const rank = (s: string): number => {
     const i = BOARD_STATUS_ORDER.indexOf(s);
     return i === -1 ? BOARD_STATUS_ORDER.length : i;
@@ -279,10 +377,53 @@ export function boardRows(tasks: LodestarTask[], includeTerminal = false): Board
     .map((t) => ({
       id: t.id,
       label: t.title,
-      description: t.owner ? `${t.status} · ${t.owner}` : t.status,
-      tooltip: `${t.title}\ngoal: ${t.goal_id}${t.acceptance ? `\n${t.acceptance}` : ""}`,
+      description: taskDescription(t, nowUnix),
+      tooltip: taskTooltip(t, nowUnix),
       status: t.status,
     }));
+}
+
+function taskDescription(task: LodestarTask, nowUnix: number): string {
+  const state = taskLeaseState(task, nowUnix);
+  if (state === "expired") {
+    return `expired claim · ${task.owner ?? "unknown"} · reclaimable`;
+  }
+  if (state === "live") {
+    return `claimed · ${task.owner ?? "unknown"} · ${remainingLease(task, nowUnix)}`;
+  }
+  if (state === "claimable") {
+    return "open · claimable";
+  }
+  return task.owner ? `${task.status} · ${task.owner}` : task.status;
+}
+
+function taskTooltip(task: LodestarTask, nowUnix: number): string {
+  const lines = [task.title, `goal: ${task.goal_id}`, `status: ${task.status}`];
+  if (task.owner) {
+    lines.push(`owner: ${task.owner}`);
+  }
+  if (typeof task.claim_started_at === "number") {
+    lines.push(`claim started: ${formatUnixSeconds(task.claim_started_at)}`);
+  }
+  if (typeof task.lease_expires_at === "number") {
+    const state = taskLeaseState(task, nowUnix);
+    lines.push(`lease expires: ${formatUnixSeconds(task.lease_expires_at)} (${state})`);
+  }
+  if (task.blocked_by) {
+    lines.push(`blocked by: ${task.blocked_by}`);
+  }
+  if (task.acceptance) {
+    lines.push(task.acceptance);
+  }
+  return lines.join("\n");
+}
+
+function remainingLease(task: LodestarTask, nowUnix: number): string {
+  const seconds = Math.max(0, (task.lease_expires_at ?? nowUnix) - nowUnix);
+  if (seconds < 60) {
+    return `${seconds}s left`;
+  }
+  return `${Math.ceil(seconds / 60)}m left`;
 }
 
 /** One entry in a task's durable question/answer thread (Lodestar `task_qa`). */

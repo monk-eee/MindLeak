@@ -92,6 +92,13 @@ to [Semantic Versioning](https://semver.org/).
   timeout (default 30s) so a live-but-silent server surfaces an error rather than a
   stuck command; and `stdin` write failures are guarded and logged instead of
   raising an unhandled stream error.
+- **The VS Code Intent Board now allocates work instead of merely displaying
+  ownership.** Open and expired-claim rows expose claim-for-me and explicit-agent
+  allocation with bounded leases; live claims expose owner-explicit renew and
+  release actions. Rows show claim windows and live/reclaimable state, and **Next
+  Claimable Task** reveals Lodestar's scheduler choice without auto-claiming it.
+  CAS loss, stale owner, expiry, and parked ownership remain visible failures —
+  the portal does not invent a parallel assignment store or false lock.
 - **Intent Board cleanup now handles stale live work, not only completed rows
   (ADR-0019).** Eligible open, in-review, blocked, and expired-claim rows expose
   a confirmed **Retire Task** action that calls `abandon_task`; the task and its

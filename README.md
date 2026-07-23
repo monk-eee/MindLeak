@@ -266,6 +266,11 @@ structured ADR metadata, keeps human review separate from executable task
 coordination, supports attributed accept/reject decisions, and exposes
 idempotent promotion plus persisted implementation provenance.
 
+The **Intent Board** is the task-allocation surface: allocate open/expired work,
+claim for the configured agent, renew or release live leases, and reveal the next
+claimable task without auto-claiming it. Lodestar's compare-and-swap remains the
+authority when multiple local agents race.
+
 ---
 
 ## Optional local-LLM consolidation
