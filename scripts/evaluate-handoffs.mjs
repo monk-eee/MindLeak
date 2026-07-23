@@ -64,7 +64,7 @@ for (const file of [...new Set(sourceInputs)].sort()) {
   sourceHash.update(bytes);
 }
 result.source_sha256 = sourceHash.digest("hex");
-result.executable_sha256 = crypto
+result.build_instance_sha256 = crypto
   .createHash("sha256")
   .update(fs.readFileSync(executable))
   .digest("hex");
@@ -73,6 +73,18 @@ result.build = {
   locked: true,
   rustc: commandVersion("rustc"),
   cargo: commandVersion("cargo"),
+};
+result.provenance = {
+  authoritative: [
+    "source_sha256",
+    "build.profile",
+    "build.locked",
+    "build.rustc",
+    "build.cargo",
+    "passed",
+  ],
+  build_instance_sha256:
+    "Informational digest of this PE/ELF/Mach-O build instance; not required to reproduce across linker invocations.",
 };
 result.passed =
   result.independent_tasks.concurrent_claims === 2 &&

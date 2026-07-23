@@ -66,6 +66,21 @@ fn migrate_locked(conn: &Connection) -> Result<()> {
          WHERE status = 'claimed' AND claim_started_at IS NULL",
         [],
     )?;
+    conn.execute(
+        "UPDATE tasks
+         SET status = CASE
+                 WHEN status IN ('open', 'claimed') THEN 'blocked'
+                 ELSE status
+             END,
+             owner = NULL, claim_started_at = NULL, lease_expires_at = NULL,
+             blocked_by = NULL
+         WHERE blocked_by IS NOT NULL
+           AND NOT EXISTS (
+               SELECT 1 FROM tasks predecessor
+               WHERE predecessor.id = tasks.blocked_by
+           )",
+        [],
+    )?;
     let ambiguous: Option<String> = conn
         .query_row(
             "SELECT blocked_by
@@ -371,6 +386,77 @@ mod tests {
             drop(store);
             std::fs::remove_file(path).unwrap();
         }
+    }
+
+    #[test]
+    fn migration_normalizes_dangling_legacy_predecessors_without_reactivating_work() {
+        for (iteration, (legacy, expected)) in [
+            ("open", TaskStatus::Blocked),
+            ("claimed", TaskStatus::Blocked),
+            ("blocked", TaskStatus::Blocked),
+            ("in_review", TaskStatus::InReview),
+            ("done", TaskStatus::Done),
+            ("abandoned", TaskStatus::Abandoned),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let path = temporary_database(&format!("legacy-dangling-{iteration}"));
+            create_legacy_database(&path, false);
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute(
+                    "UPDATE tasks
+                     SET status = ?1, blocked_by = 'task:missing',
+                         owner = 'legacy-agent', claim_started_at = 1,
+                         lease_expires_at = 999
+                     WHERE id = 'task:second'",
+                    [legacy],
+                )
+                .unwrap();
+            drop(connection);
+
+            let store = LodestarStore::new(open(path.to_str().unwrap()).unwrap());
+            let successor = store.get_task("task:second").unwrap().unwrap();
+            assert_eq!(successor.status, expected, "legacy status {legacy}");
+            assert!(successor.blocked_by.is_none());
+            assert!(successor.owner.is_none());
+            assert!(successor.claim_started_at.is_none());
+            assert!(successor.lease_expires_at.is_none());
+            drop(store);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn migration_clears_repeated_dangling_predecessors_before_fan_out_validation() {
+        let path = temporary_database("legacy-repeated-dangling");
+        create_legacy_database(&path, true);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "UPDATE tasks
+                 SET status = 'open', blocked_by = 'task:missing'
+                 WHERE id IN ('task:second', 'task:third')",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let store = LodestarStore::new(open(path.to_str().unwrap()).unwrap());
+        for id in ["task:second", "task:third"] {
+            let task = store.get_task(id).unwrap().unwrap();
+            assert_eq!(task.status, TaskStatus::Blocked);
+            assert!(task.blocked_by.is_none());
+        }
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        let lineage: i64 = connection
+            .query_row("SELECT COUNT(1) FROM task_handoffs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(lineage, 0);
+        drop(connection);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

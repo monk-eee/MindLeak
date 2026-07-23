@@ -45,7 +45,9 @@ WAL sidecars may contain committed data.
 Lodestar upgrades backfill legacy `blocked_by` task relationships into durable
 linear handoff lineage. If a legacy predecessor has multiple blocked successors,
 startup fails rather than choosing one; preserve the backup, resolve the fan-out
-on the old version, and retry the upgrade.
+on the old version, and retry the upgrade. Dangling predecessor IDs are cleared;
+claimable rows become ownerless manual blocks, while review/terminal states are
+preserved so upgrade cannot reactivate work.
 
 ## Export
 

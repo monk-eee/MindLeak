@@ -213,7 +213,10 @@ schema-valid. Real-agent adherence remains a future scenario.
 
 Machine-readable result:
 [2026-07-23-progressive-handoff.json](../benchmarks/results/2026-07-23-progressive-handoff.json).
-Reproduce with `node scripts/evaluate-handoffs.mjs`.
+Reproduce with `node scripts/evaluate-handoffs.mjs`. Reproducibility is anchored
+to the declared-source SHA-256 plus locked release profile and recorded
+Rust/Cargo versions. The raw executable digest is labeled build-instance-only
+because Windows linker output is not guaranteed byte-identical across builds.
 
 ## Real agent-loop outcome
 
