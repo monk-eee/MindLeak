@@ -173,6 +173,28 @@ impl LodestarStore {
         Ok(removed)
     }
 
+    /// Every distinct code node that currently has at least one goal binding —
+    /// the input to a binding-hygiene sweep.
+    pub fn distinct_bound_nodes(&self) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT node_id FROM goal_code")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        collect(rows)
+    }
+
+    /// Delete every binding for the given nodes, across all goals. Returns how
+    /// many rows were removed.
+    pub fn delete_bindings_for_nodes(&self, node_ids: &[String]) -> Result<usize> {
+        let mut removed = 0;
+        for node in node_ids {
+            removed += self
+                .conn
+                .execute("DELETE FROM goal_code WHERE node_id = ?1", params![node])?;
+        }
+        Ok(removed)
+    }
+
     /// Active goal policies governing a given code node.
     pub fn active_bindings_for_node(&self, node_id: &str) -> Result<Vec<CodeBinding>> {
         let sql = format!(

@@ -18,6 +18,16 @@ fn main() -> anyhow::Result<()> {
         .ok()
         .filter(|value| !value.trim().is_empty());
     let engine = Lodestar::open(&db_path)?.with_agent(agent);
+    // Binding hygiene on every restart (restarts are frequent — VS Code updates,
+    // reloads): goals govern code, so drop any stale documentation binding that
+    // would otherwise make unrelated commits drift. Safe and idempotent.
+    match engine.prune_ungovernable_bindings() {
+        Ok(0) => {}
+        Ok(pruned) => {
+            eprintln!("[lodestar-mcp] binding hygiene: pruned {pruned} ungovernable documentation binding(s)");
+        }
+        Err(error) => eprintln!("[lodestar-mcp] binding hygiene skipped: {error}"),
+    }
     eprintln!("[lodestar-mcp] ready — intent plane at {db_path}");
     server::run(engine)
 }
