@@ -72,6 +72,10 @@ to [Semantic Versioning](https://semver.org/).
   longer mislabelled as `refactored`.
 
 ### Fixed
+- **Injected embedding backends remain safe for maintenance worker threads.**
+  `TextEmbedder` now requires `Send + Sync`, restoring the workspace build after
+  the injectable semantic-recall seam made `MindLeak` non-`Send`. Compile-time
+  and unit regression assertions preserve the worker-thread contract.
 - **`record_knowledge` now honours a revised half-life.** Re-recording an
   existing statement previously updated weight, evidence, and the revalidation
   clock but silently kept the original `half_life_hours`, so a caller's changed
