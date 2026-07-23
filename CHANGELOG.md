@@ -78,6 +78,20 @@ to [Semantic Versioning](https://semver.org/).
   so agent attribution works out of the box.
 
 ### Fixed
+- **Extension coverage no longer false-fails the 80% gate on Windows.** The V8
+  provider's default `all` baseline walk resolved each included file under the
+  OS's uppercase drive letter while recording executed coverage under the
+  lowercase drive (`file:///c:/...`), so every file was counted twice — a real
+  entry plus a phantom 0% one — halving the reported line total (38.6%) and
+  failing `test:coverage` on Windows even though real coverage is ~89%. The
+  vitest config now reports only executed in-scope files, which every listed file
+  is, restoring an accurate cross-platform number.
+- **The VS Code MCP client no longer hangs on an unresponsive or missing server.**
+  A spawn failure (for example a misconfigured server path) now rejects
+  `start()` instead of leaving activation waiting forever; every request carries a
+  timeout (default 30s) so a live-but-silent server surfaces an error rather than a
+  stuck command; and `stdin` write failures are guarded and logged instead of
+  raising an unhandled stream error.
 - **Intent Board cleanup now handles stale live work, not only completed rows
   (ADR-0019).** Eligible open, in-review, blocked, and expired-claim rows expose
   a confirmed **Retire Task** action that calls `abandon_task`; the task and its

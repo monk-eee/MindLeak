@@ -6,6 +6,7 @@ import { parseToolResult } from "./util";
 interface Pending {
   resolve: (value: any) => void;
   reject: (err: any) => void;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 /**
@@ -22,7 +23,8 @@ export class McpClient {
     private readonly command: string,
     private readonly cwd: string,
     private readonly env: NodeJS.ProcessEnv,
-    private readonly log: (message: string) => void
+    private readonly log: (message: string) => void,
+    private readonly requestTimeoutMs = 30_000
   ) {}
 
   async start(): Promise<void> {
@@ -31,7 +33,10 @@ export class McpClient {
       env: { ...process.env, ...this.env },
     });
 
-    this.proc.on("error", (err) => this.log(`spawn error: ${err.message}`));
+    this.proc.on("error", (err) => {
+      this.log(`spawn error: ${err.message}`);
+      this.rejectPending(new Error(`MCP server spawn error: ${err.message}`));
+    });
     this.proc.on("exit", (code) => {
       this.ready = false;
       this.rejectPending(new Error(`MCP server exited (code ${code ?? "null"})`));
@@ -41,6 +46,7 @@ export class McpClient {
     const rl = readline.createInterface({ input: this.proc.stdout });
     rl.on("line", (line) => this.onLine(line));
     this.proc.stderr.on("data", (chunk) => this.log(`[mindleak-mcp] ${chunk.toString().trim()}`));
+    this.proc.stdin.on("error", (err) => this.log(`stdin error: ${err.message}`));
 
     await this.request("initialize", {
       protocolVersion: "2024-11-05",
@@ -75,6 +81,9 @@ export class McpClient {
       return;
     }
     this.pending.delete(msg.id);
+    if (pending.timer) {
+      clearTimeout(pending.timer);
+    }
     if (msg.error) {
       pending.reject(new Error(msg.error.message ?? "MCP error"));
     } else {
@@ -89,8 +98,19 @@ export class McpClient {
     const id = this.nextId++;
     const payload = { jsonrpc: "2.0", id, method, params };
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.proc!.stdin.write(JSON.stringify(payload) + "\n");
+      const timer = setTimeout(() => {
+        if (this.pending.delete(id)) {
+          reject(new Error(`MCP request "${method}" timed out after ${this.requestTimeoutMs}ms`));
+        }
+      }, this.requestTimeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      try {
+        this.proc!.stdin.write(JSON.stringify(payload) + "\n");
+      } catch (err) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
     });
   }
 
@@ -155,6 +175,9 @@ export class McpClient {
 
   private rejectPending(error: Error): void {
     for (const pending of this.pending.values()) {
+      if (pending.timer) {
+        clearTimeout(pending.timer);
+      }
       pending.reject(error);
     }
     this.pending.clear();

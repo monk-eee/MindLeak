@@ -167,12 +167,48 @@ describe("McpClient disposal", () => {
 
     await expect(pending).rejects.toThrow("code null");
   });
+
+  it("rejects start() when the process errors before initialize responds", async () => {
+    const fake = fakeProcess({ exitOnEnd: false, answerInitialize: false });
+    mockedSpawn.mockReturnValue(fake.process);
+    const client = new McpClient("missing-binary", "/workspace", {}, () => undefined);
+    const started = client.start();
+    fake.process.emit("error", new Error("spawn ENOENT"));
+
+    await expect(started).rejects.toThrow("spawn error");
+    expect(client.isReady()).toBe(false);
+  });
+
+  it("times out a request when the server never responds", async () => {
+    const fake = fakeProcess({ exitOnEnd: true });
+    mockedSpawn.mockReturnValue(fake.process);
+    const client = new McpClient("mindleak-mcp", "/workspace", {}, () => undefined, 20);
+    await client.start();
+
+    await expect(client.callTool("graph_stats", {})).rejects.toThrow("timed out");
+    await client.dispose(100);
+  });
+
+  it("logs stdin write-stream errors without throwing", async () => {
+    const logs: string[] = [];
+    const fake = fakeProcess({ exitOnEnd: true });
+    mockedSpawn.mockReturnValue(fake.process);
+    const client = new McpClient("mindleak-mcp", "/workspace", {}, (message) => logs.push(message));
+    await client.start();
+
+    fake.process.stdin.emit("error", new Error("EPIPE"));
+    await vi.waitFor(() =>
+      expect(logs.some((message) => message.includes("stdin error"))).toBe(true)
+    );
+    await client.dispose(100);
+  });
 });
 
 function fakeProcess(options: {
   exitOnEnd: boolean;
   emitExitOnKill?: boolean;
   killResult?: boolean;
+  answerInitialize?: boolean;
   toolResults?: unknown[];
   toolMessages?: Array<{ result?: unknown; error?: unknown }>;
 }) {
@@ -196,7 +232,7 @@ function fakeProcess(options: {
       const line = buffered.slice(0, newline);
       buffered = buffered.slice(newline + 1);
       const request = JSON.parse(line);
-      if (request.method === "initialize") {
+      if (request.method === "initialize" && options.answerInitialize !== false) {
         queueMicrotask(() => {
           process.stdout.write(
             `${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} })}\n`
