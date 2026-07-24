@@ -179,6 +179,18 @@ pub enum AdviceDisposition {
     NeedsHuman,
 }
 
+impl AdviceDisposition {
+    /// The stable snake_case tag, matching the serialized form.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AdviceDisposition::Advise => "advise",
+            AdviceDisposition::Review => "review",
+            AdviceDisposition::Block => "block",
+            AdviceDisposition::NeedsHuman => "needs_human",
+        }
+    }
+}
+
 /// One active clause governing a node in an intended change scope (ADR-0029).
 #[derive(Debug, Clone, Serialize)]
 pub struct GoverningClause {
