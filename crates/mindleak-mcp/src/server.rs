@@ -188,4 +188,62 @@ mod tests {
         let resp = handle(&engine(), &sessions(), &req).unwrap();
         assert_eq!(resp["error"]["code"], -32601);
     }
+
+    #[test]
+    fn multiplexed_sessions_produce_distinct_evidence() {
+        let engine = engine();
+        let sessions = sessions();
+        for (id, token, sha, path) in [
+            (
+                10,
+                "00112233445566778899aabbccddeeff",
+                "session-a",
+                "src/a.rs",
+            ),
+            (
+                11,
+                "ffeeddccbbaa99887766554433221100",
+                "session-b",
+                "src/b.rs",
+            ),
+        ] {
+            let open = json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": { "name": "open_session", "arguments": { "session_id": token } }
+            });
+            handle(&engine, &sessions, &open).unwrap();
+            let ingest = json!({
+                "jsonrpc": "2.0", "id": id + 10, "method": "tools/call",
+                "params": { "name": "ingest_commit", "arguments": {
+                    "session_id": token,
+                    "message": sha,
+                    "sha": sha,
+                    "changed_files": [path],
+                    "timestamp": 100
+                }}
+            });
+            handle(&engine, &sessions, &ingest).unwrap();
+        }
+
+        let evidence = |id, token: &str| {
+            let request = json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": { "name": "evidence_for", "arguments": {
+                    "session_id": token, "started_at": 90, "ended_at": 110
+                }}
+            });
+            let response = handle(&engine, &sessions, &request).unwrap();
+            serde_json::from_str::<Value>(
+                response["result"]["content"][0]["text"].as_str().unwrap(),
+            )
+            .unwrap()
+        };
+        let first = evidence(30, "00112233445566778899aabbccddeeff");
+        let second = evidence(31, "ffeeddccbbaa99887766554433221100");
+        assert_ne!(first["agent_id"], second["agent_id"]);
+        assert_eq!(first["commit_ids"], json!(["intent:session-a"]));
+        assert_eq!(second["commit_ids"], json!(["intent:session-b"]));
+        assert_eq!(first["changed_node_ids"], json!(["artifact:src/a.rs"]));
+        assert_eq!(second["changed_node_ids"], json!(["artifact:src/b.rs"]));
+    }
 }

@@ -10,14 +10,15 @@ use crate::{
 };
 
 impl MindLeak {
-    /// Record that the active agent (if any) observed these nodes.
-    pub(super) fn observe(&self, ids: &[String], now: i64) -> Result<()> {
-        let Some(agent) = &self.agent else {
+    /// Record that one explicit session agent observed these nodes.
+    pub(super) fn observe(&self, agent: &str, ids: &[String], now: i64) -> Result<()> {
+        let agent = agent.trim().strip_prefix("agent:").unwrap_or(agent.trim());
+        if agent.is_empty() {
             return Ok(());
-        };
+        }
         let agent_id = format!("agent:{agent}");
         self.store
-            .upsert_node(&Node::new(&agent_id, NodeType::Agent, agent.clone(), now))?;
+            .upsert_node(&Node::new(&agent_id, NodeType::Agent, agent, now))?;
         for id in ids {
             if id == &agent_id {
                 continue;
@@ -42,15 +43,29 @@ impl MindLeak {
 
     pub fn ingest_execution(&self, rec: &ExecutionRecord) -> Result<WriteOutcome> {
         let now = now_unix();
+        ingest::execution::ingest_execution(&self.store, rec, now)
+    }
+
+    pub fn ingest_execution_for_agent(
+        &self,
+        agent: &str,
+        rec: &ExecutionRecord,
+    ) -> Result<WriteOutcome> {
+        let now = now_unix();
         let outcome = ingest::execution::ingest_execution(&self.store, rec, now)?;
-        self.observe(&outcome.node_ids, now)?;
+        self.observe(agent, &outcome.node_ids, now)?;
         Ok(outcome)
     }
 
     pub fn ingest_commit(&self, rec: &CommitRecord) -> Result<WriteOutcome> {
         let now = now_unix();
+        ingest::git::ingest_commit(&self.store, rec, now)
+    }
+
+    pub fn ingest_commit_for_agent(&self, agent: &str, rec: &CommitRecord) -> Result<WriteOutcome> {
+        let now = now_unix();
         let outcome = ingest::git::ingest_commit(&self.store, rec, now)?;
-        self.observe(&outcome.node_ids, now)?;
+        self.observe(agent, &outcome.node_ids, now)?;
         Ok(outcome)
     }
 
@@ -95,6 +110,24 @@ impl MindLeak {
 
     /// Replace a source file's authoritative structural snapshot.
     pub fn ingest_file(&self, path: &str, content: &str) -> Result<WriteOutcome> {
+        self.ingest_file_inner(path, content, None)
+    }
+
+    pub fn ingest_file_for_agent(
+        &self,
+        agent: &str,
+        path: &str,
+        content: &str,
+    ) -> Result<WriteOutcome> {
+        self.ingest_file_inner(path, content, Some(agent))
+    }
+
+    fn ingest_file_inner(
+        &self,
+        path: &str,
+        content: &str,
+        agent: Option<&str>,
+    ) -> Result<WriteOutcome> {
         let now = now_unix();
         let norm = ingest::normalize_path(path);
         // VCS internals, dependency caches, and build/test output are not source
@@ -239,16 +272,22 @@ impl MindLeak {
             .store
             .replace_structure(&art_id, &nodes, &edges, &artifact_stubs)?;
         outcome.node_ids.push(art_id.clone());
-        self.observe(&outcome.node_ids, now)?;
+        if let Some(agent) = agent {
+            self.observe(agent, &outcome.node_ids, now)?;
+        }
         Ok(outcome)
     }
 
     /// Record node attention for recency displays without rewriting evidence.
     pub fn boost(&self, id: &str) -> Result<bool> {
+        self.store.boost(id, now_unix())
+    }
+
+    pub fn boost_for_agent(&self, agent: &str, id: &str) -> Result<bool> {
         let now = now_unix();
         let boosted = self.store.boost(id, now)?;
         if boosted {
-            self.observe(&[id.to_string()], now)?;
+            self.observe(agent, &[id.to_string()], now)?;
         }
         Ok(boosted)
     }

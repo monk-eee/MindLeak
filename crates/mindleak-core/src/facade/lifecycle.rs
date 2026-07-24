@@ -45,11 +45,17 @@ impl MindLeak {
         self.store.list_agents(now_unix())
     }
 
-    /// Return this server agent's bounded, derived attentional working set.
-    pub fn working_set(&self, requested_limit: Option<usize>) -> Result<Vec<WorkingSetItem>> {
-        let agent = self.agent.as_deref().ok_or_else(|| {
-            MindLeakError::Other("working_set requires MINDLEAK_AGENT".to_string())
-        })?;
+    /// Return one explicit session agent's bounded, derived attentional working set.
+    pub fn working_set(
+        &self,
+        agent: &str,
+        requested_limit: Option<usize>,
+    ) -> Result<Vec<WorkingSetItem>> {
+        if agent.trim().is_empty() {
+            return Err(MindLeakError::Other(
+                "working_set requires a session agent".to_string(),
+            ));
+        }
         let limit = requested_limit
             .unwrap_or(self.store.working_set_size())
             .clamp(1, self.store.working_set_size());
@@ -134,16 +140,17 @@ mod tests {
     #[test]
     fn working_set_requires_identity_and_enforces_the_configured_cap() {
         let without_agent = MindLeak::open_in_memory().unwrap();
-        assert!(without_agent.working_set(None).is_err());
+        assert!(without_agent.working_set("", None).is_err());
 
-        let engine = MindLeak::open_in_memory()
-            .unwrap()
-            .with_working_set_size(1)
-            .with_agent(Some("agent:agent-a".to_string()));
-        engine.ingest_file("src/a.rs", "fn a() {}\n").unwrap();
-        engine.ingest_file("src/b.rs", "fn b() {}\n").unwrap();
+        let engine = MindLeak::open_in_memory().unwrap().with_working_set_size(1);
+        engine
+            .ingest_file_for_agent("agent-a", "src/a.rs", "fn a() {}\n")
+            .unwrap();
+        engine
+            .ingest_file_for_agent("agent-a", "src/b.rs", "fn b() {}\n")
+            .unwrap();
 
-        let working = engine.working_set(Some(32)).unwrap();
+        let working = engine.working_set("agent-a", Some(32)).unwrap();
         assert_eq!(working.len(), 1);
         assert!(working[0].node.id.starts_with("artifact:"));
     }

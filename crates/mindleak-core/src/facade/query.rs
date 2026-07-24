@@ -128,7 +128,17 @@ impl MindLeak {
                 }
             }
         }
-        self.observe(&outcome.node_ids, now)?;
         Ok((intent_id, outcome))
+    }
+
+    pub fn record_decision_for_agent(
+        &self,
+        agent: &str,
+        decision_text: &str,
+        related_nodes: &[String],
+    ) -> Result<(String, WriteOutcome)> {
+        let result = self.record_decision(decision_text, related_nodes)?;
+        self.observe(agent, &result.1.node_ids, now_unix())?;
+        Ok(result)
     }
 }

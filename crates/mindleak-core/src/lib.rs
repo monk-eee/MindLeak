@@ -49,7 +49,6 @@ pub fn now_unix() -> i64 {
 /// High-level facade over the graph store and the ingestion pipeline.
 pub struct MindLeak {
     store: GraphStore,
-    agent: Option<String>,
     consolidation_min_interval_secs: u64,
     embedder: Box<dyn embed::TextEmbedder>,
 }
@@ -68,7 +67,6 @@ impl MindLeak {
     pub fn open(path: &str) -> Result<Self> {
         Ok(MindLeak {
             store: GraphStore::new(db::open(path)?),
-            agent: None,
             consolidation_min_interval_secs: DEFAULT_CONSOLIDATION_MIN_INTERVAL_SECS,
             embedder: Box::new(embed::Embedder::default()),
         })
@@ -78,20 +76,9 @@ impl MindLeak {
     pub fn open_in_memory() -> Result<Self> {
         Ok(MindLeak {
             store: GraphStore::new(db::open_in_memory()?),
-            agent: None,
             consolidation_min_interval_secs: DEFAULT_CONSOLIDATION_MIN_INTERVAL_SECS,
             embedder: Box::new(embed::Embedder::default()),
         })
-    }
-
-    /// Attach an agent id so ingest/focus operations also record decay-weighted
-    /// `observed` edges (attribution). `None` or empty disables attribution.
-    pub fn with_agent(mut self, agent: Option<String>) -> Self {
-        self.agent = agent.and_then(|value| {
-            let normalized = value.trim().strip_prefix("agent:").unwrap_or(value.trim());
-            (!normalized.is_empty()).then(|| normalized.to_string())
-        });
-        self
     }
 
     /// Override the immutable decay policy resolved by the hosting process.

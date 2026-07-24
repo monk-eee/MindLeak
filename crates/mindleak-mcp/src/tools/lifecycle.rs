@@ -65,7 +65,7 @@ pub(super) fn context_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "working_set",
-            "description": "Return the current MINDLEAK_AGENT's small, derived attentional working set, ranked by active observed-edge weight and hard-capped by MINDLEAK_WORKING_SET_SIZE (default 7). This is a bounded focus view, not a graph neighborhood or stored buffer.",
+            "description": "Return the registered session's small, derived attentional working set, ranked by active observed-edge weight and hard-capped by MINDLEAK_WORKING_SET_SIZE (default 7). This is a bounded focus view, not a graph neighborhood or stored buffer.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -80,11 +80,10 @@ pub(super) fn context_definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "task_id": { "type": "string", "description": "Optional Lodestar task id this evidence supports." },
-                    "agent_id": { "type": "string" },
                     "started_at": { "type": "integer", "description": "Inclusive Unix-second work-window start." },
                     "ended_at": { "type": "integer", "description": "Inclusive Unix-second work-window end." }
                 },
-                "required": ["agent_id", "started_at", "ended_at"]
+                "required": ["started_at", "ended_at"]
             }
         }),
     ]
@@ -137,11 +136,14 @@ pub(super) fn dispatch(
             Ok(text_result(&json!({ "agents": agents })))
         })()),
         "working_set" => Some((|| {
+            let agent = req_str(args, "agent")?;
             let limit = args
                 .get("limit")
                 .and_then(Value::as_i64)
                 .map(|value| value.clamp(1, 32) as usize);
-            let items = engine.working_set(limit).map_err(|e| e.to_string())?;
+            let items = engine
+                .working_set(&agent, limit)
+                .map_err(|e| e.to_string())?;
             Ok(text_result(&json!({ "items": items })))
         })()),
         "evidence_for" => Some((|| {
@@ -188,23 +190,24 @@ mod tests {
     }
 
     #[test]
-    fn working_set_uses_configured_agent_and_hard_cap() {
-        let engine = MindLeak::open_in_memory()
-            .unwrap()
-            .with_working_set_size(1)
-            .with_agent(Some("agent-a".to_string()));
+    fn working_set_uses_bound_session_agent_and_hard_cap() {
+        let engine = MindLeak::open_in_memory().unwrap().with_working_set_size(1);
         call_ok(
             &engine,
             "ingest_file",
-            json!({ "path": "src/a.rs", "content": "fn a() {}" }),
+            json!({ "path": "src/a.rs", "content": "fn a() {}", "agent": "agent-a" }),
         );
         call_ok(
             &engine,
             "ingest_file",
-            json!({ "path": "src/b.rs", "content": "fn b() {}" }),
+            json!({ "path": "src/b.rs", "content": "fn b() {}", "agent": "agent-a" }),
         );
 
-        let result = call_ok(&engine, "working_set", json!({ "limit": 32 }));
+        let result = call_ok(
+            &engine,
+            "working_set",
+            json!({ "limit": 32, "agent": "agent-a" }),
+        );
         let payload: Value = serde_json::from_str(&content_text(&result)).unwrap();
 
         assert_eq!(payload["items"].as_array().unwrap().len(), 1);
@@ -225,10 +228,10 @@ mod tests {
     }
 
     #[test]
-    fn working_set_errors_without_configured_agent() {
+    fn working_set_errors_without_bound_session_agent() {
         let engine = MindLeak::open_in_memory().unwrap();
         let error = call(&engine, &json!({ "name": "working_set", "arguments": {} })).unwrap_err();
-        assert!(error.contains("MINDLEAK_AGENT"));
+        assert!(error.contains("agent"));
     }
 
     #[test]
@@ -277,9 +280,7 @@ mod tests {
 
     #[test]
     fn evidence_for_returns_attributed_mutation_provenance() {
-        let engine = MindLeak::open_in_memory()
-            .unwrap()
-            .with_agent(Some("agent-a".into()));
+        let engine = MindLeak::open_in_memory().unwrap();
         call_ok(
             &engine,
             "ingest_execution",
@@ -287,7 +288,8 @@ mod tests {
                 "command": "cargo check",
                 "exit_code": 0,
                 "changed_files": ["src/lib.rs"],
-                "timestamp": 100
+                "timestamp": 100,
+                "agent": "agent-a"
             }),
         );
 
