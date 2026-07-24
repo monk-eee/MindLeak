@@ -7,7 +7,7 @@ use super::constitution::is_documentation_node;
 use crate::store::ConformanceAudit;
 use crate::{
     now_unix, CodeBindingMode, ConformanceCheck, ConformanceEvidence, ConformanceResult, Goal,
-    Lodestar, LodestarError, Result, Task, TaskStatus, Verdict,
+    GoverningClause, Lodestar, LodestarError, Result, Task, TaskStatus, Verdict,
 };
 
 const MAX_EVIDENCE_EVENTS: usize = 200;
@@ -26,6 +26,30 @@ pub(crate) struct GoverningClauses {
     pub in_scope: Vec<(String, Goal)>,
     /// `governed` bindings to a different goal — a change here would drift.
     pub other: Vec<(String, Goal)>,
+}
+
+impl GoverningClauses {
+    /// Flatten the buckets into governing-clause rows (forbids first) — the shape
+    /// surfaced by `advise` and by task pickup. Preserves which node each clause
+    /// governs and its binding mode, so both callers read one representation.
+    pub(crate) fn clauses(&self) -> Vec<GoverningClause> {
+        let mut out = Vec::new();
+        for (node, goal) in &self.forbid {
+            out.push(GoverningClause {
+                node_id: node.clone(),
+                goal: goal.clone(),
+                mode: CodeBindingMode::ForbidChange,
+            });
+        }
+        for (node, goal) in self.in_scope.iter().chain(self.other.iter()) {
+            out.push(GoverningClause {
+                node_id: node.clone(),
+                goal: goal.clone(),
+                mode: CodeBindingMode::Governed,
+            });
+        }
+        out
+    }
 }
 
 impl Lodestar {
