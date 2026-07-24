@@ -214,14 +214,17 @@ and footguns, with impact and status:
   one governing goal, so honest commits no longer drift. Data-plane only — no code
   change.
 
-- **A promoted cross-plane design can become one task that no single goal can
-  conform.** — ADR-0024 was correctly implemented across Lodestar, MindLeak, the
-  extension, evaluation, and docs under promoted `task:46dd49254e4c`, but that
-  task belongs only to `goal:local-temporal-context-graph`. Its exact published
-  commit evidence therefore produced conformance audit `65` with `drift` for the
-  independently governed Intent Plane and principled-delivery surfaces, leaving
-  the completed implementation in review. — Medium impact: promotion can create
-  honest but uncompletable coarse work for designs that necessarily cross goal
+- **Promoted implementation tasks can omit governing goals — OPEN.** — ADR-0024
+  was correctly implemented across Lodestar, MindLeak, the extension, evaluation,
+  and docs under promoted `task:46dd49254e4c`, but that task belongs only to
+  `goal:local-temporal-context-graph`; exact commit evidence produced conformance
+  audit `65` with `drift` for the independently governed Intent Plane and
+  principled-delivery surfaces. The ADR-0018 audit confirmed the same shape:
+  promoted `task:d2900fdfa41b` belongs to the graph goal while its required git
+  safety scripts are governed by `goal:principled-verified-delivery`, so exact
+  evidence for green commit `321cf17` produced audit `68` with `drift`. Both
+  completed implementations remain in review. — Medium impact: promotion can
+  create honest but uncompletable coarse work whenever an ADR crosses goal
   ownership. — Left open: promotion should partition implementation by governing
   goal (with explicit dependencies/provenance), or the task/conformance model
   needs reviewed multi-goal coverage. Do not hide it by post-hoc relinking or
