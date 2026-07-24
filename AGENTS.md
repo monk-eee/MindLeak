@@ -153,6 +153,15 @@ style nit.
   markers — MindLeak ingests those into intent nodes.
 - **Stage explicitly with named paths** and review every diff before committing —
   do not blindly accept generated code. Never `git add -A` a mixed working tree.
+- **One checkout, one fleet branch, one publisher (ADR-0032).** Agents share the
+  primary checkout and one `fleet/<goal>` branch. Do not create Git worktrees and
+  do not cherry-pick routine work. Only the designated integrator may fetch,
+  reconcile, push with `node scripts/canonical-push.mjs`, or update the pull
+  request; every other agent edits and makes scoped commits only.
+- **Divergence stops the fleet.** If the remote branch is not an ancestor of
+  `HEAD`, stop taking work, finish or release current claims, reach a scoped clean
+  checkpoint, and reconcile once in the primary checkout. Never move `main`
+  underneath dirty files and never publish from a side lineage.
 
 ### Doc discipline (NON-NEGOTIABLE)
 Doc drift is treated like a failing test. A shipped change updates the relevant

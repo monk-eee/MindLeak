@@ -6,18 +6,16 @@
 //      unrelated agent's broken crate cannot fail your commit/push. This alone
 //      removes the common cross-crate poisoning (a `mindleak-core` commit no
 //      longer compiles `lodestar-mcp` at all).
-//   2. ISOLATE — when the live working tree could leak another agent's files into
-//      the build, run cargo against a throwaway worktree checked out at the
-//      staged snapshot (commit stage) or HEAD (push stage) rather than the dirty
-//      tree. Isolation is used only when needed — on push (the tree carries every
-//      agent's WIP) or when a foreign untracked file sits inside an affected
-//      crate — so the common commit path stays fast and incremental.
+//   2. SNAPSHOT — when the live working tree could leak another agent's files
+//      into the build, materialize the staged tree (commit stage) or HEAD tree
+//      (push stage) through a temporary Git index. This validates exact bytes
+//      without creating a worktree, branch, commit, or shared ref.
 //
 // Platform-agnostic: git + cargo + node only. Usage:
 //   node scripts/cargo-precommit.mjs <fmt|clippy|test> <commit|push>
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -70,9 +68,17 @@ function changedFiles() {
 }
 
 function packageName(crateDir) {
-  const cargo = join(repoRoot, "crates", crateDir, "Cargo.toml");
-  if (!existsSync(cargo)) return null;
-  const match = readFileSync(cargo, "utf8").match(/^\s*name\s*=\s*"([^"]+)"/m);
+  const cargo = `crates/${crateDir}/Cargo.toml`;
+  let source;
+  try {
+    source =
+      stage === "commit"
+        ? git(["show", `:${cargo}`])
+        : git(["show", `HEAD:${cargo}`]);
+  } catch {
+    return null;
+  }
+  const match = source.match(/^\s*name\s*=\s*"([^"]+)"/m);
   return match ? match[1] : null;
 }
 
@@ -122,7 +128,7 @@ const scope = allCrates
 let args;
 if (mode === "fmt") {
   // Auto-format in place on the fast path; check-only when isolated (a throwaway
-  // worktree cannot fix the developer's files).
+  // snapshot cannot fix the developer's files).
   args = isolate ? ["fmt", ...scope, "--", "--check"] : ["fmt", ...scope, "--"];
 } else if (mode === "clippy") {
   args = [
@@ -149,35 +155,38 @@ if (!isolate) {
 }
 
 const snapshot =
-  stage === "commit"
-    ? git([
-        "commit-tree",
-        git(["write-tree"]),
-        "-p",
-        "HEAD",
-        "-m",
-        "hook snapshot",
-      ])
-    : git(["rev-parse", "HEAD"]);
-const worktree = join(tmpdir(), `mindleak-hook-${mode}-${process.pid}`);
+  stage === "commit" ? git(["write-tree"]) : git(["rev-parse", "HEAD^{tree}"]);
+const snapshotRoot = mkdtempSync(
+  join(tmpdir(), `mindleak-hook-${mode}-${process.pid}-`),
+);
+const snapshotDir = join(snapshotRoot, "files");
+const snapshotIndex = join(snapshotRoot, "index");
 const targetDir = join(repoRoot, "target", "hooks");
+mkdirSync(snapshotDir, { recursive: true });
 mkdirSync(targetDir, { recursive: true });
 
 let code = 0;
 try {
-  git(["worktree", "add", "--detach", "--quiet", worktree, snapshot]);
+  const snapshotEnv = { ...process.env, GIT_INDEX_FILE: snapshotIndex };
+  execFileSync("git", ["read-tree", snapshot], {
+    cwd: repoRoot,
+    stdio: "inherit",
+    env: snapshotEnv,
+  });
+  const prefix = `${snapshotDir.replace(/\\/g, "/")}/`;
+  execFileSync(
+    "git",
+    ["checkout-index", "--all", "--force", `--prefix=${prefix}`],
+    { cwd: repoRoot, stdio: "inherit", env: snapshotEnv },
+  );
   execFileSync("cargo", args, {
-    cwd: worktree,
+    cwd: snapshotDir,
     stdio: "inherit",
     env: { ...process.env, CARGO_TARGET_DIR: targetDir },
   });
 } catch (err) {
   code = exitOf(err);
 } finally {
-  try {
-    git(["worktree", "remove", "--force", worktree]);
-  } catch {
-    /* best-effort cleanup; `git worktree prune` reclaims a stale entry */
-  }
+  rmSync(snapshotRoot, { recursive: true, force: true });
 }
 process.exit(code);

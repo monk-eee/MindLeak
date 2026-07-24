@@ -1,6 +1,6 @@
 # ADR-0018: Conflict-safe concurrent editing in a shared working tree (worktrees optional)
 
-- Status: Accepted
+- Status: Superseded by [ADR-0032](0032-single-checkout-fleet-integration.md)
 - Date: 2026-07-23
 - Deciders: MindLeak maintainers
 - Related: [ADR-0004](0004-intent-plane-spec-brain.md) (intent plane),
