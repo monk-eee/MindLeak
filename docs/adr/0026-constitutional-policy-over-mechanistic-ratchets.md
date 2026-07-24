@@ -1,7 +1,9 @@
 # ADR-0026 - Constitutional policy over mechanistic ratchets
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-23
+- **Accepted:** 2026-07-24 by the repository owner — attributed human adoption,
+  satisfying the acceptance gate defined in this ADR.
 
 ## Context
 

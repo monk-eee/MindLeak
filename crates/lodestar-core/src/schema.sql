@@ -3,12 +3,31 @@
 
 PRAGMA foreign_keys = ON;
 
--- Goals: the constitution. Durable and versioned. Superseding creates a new row
--- and marks the old one 'superseded' (never edited in place).
+-- Constitution versions: the immutable, attributed policy snapshot that
+-- authorises verdicts (SPEC-CONSTITUTION §10). An amendment writes a new
+-- version; prior conformance records keep the version they were judged under.
+CREATE TABLE IF NOT EXISTS constitution_versions (
+    id               TEXT PRIMARY KEY,     -- e.g. "constitution:v1"
+    version          INTEGER NOT NULL,
+    project_identity TEXT,
+    purpose          TEXT,
+    preamble         TEXT,
+    status           TEXT NOT NULL,        -- draft | active | superseded
+    created_by       TEXT,
+    created_at       INTEGER NOT NULL,
+    activated_by     TEXT,
+    activated_at     INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_constitution_status ON constitution_versions(status);
+
+-- Goals: the clauses of the constitution. Durable and versioned. Superseding
+-- creates a new row and marks the old one 'superseded' (never edited in place).
+-- The enforcement fields (scope, evidence_contract, consequence) stay NULL until
+-- completed; an incomplete clause is review-only and can never hard-block.
 CREATE TABLE IF NOT EXISTS goals (
     id            TEXT PRIMARY KEY,        -- e.g. "goal:zero-token-write-path"
     slug          TEXT NOT NULL,           -- stable identity across versions
-    kind          TEXT NOT NULL,           -- objective | constraint | invariant
+    kind          TEXT NOT NULL,           -- objective | constraint | invariant | principle
     title         TEXT NOT NULL,
     statement     TEXT NOT NULL,           -- the normative text
     status        TEXT NOT NULL,           -- draft | active | superseded
@@ -16,7 +35,15 @@ CREATE TABLE IF NOT EXISTS goals (
     parent_id     TEXT,                    -- goal hierarchy
     superseded_by TEXT,                    -- id of the version that replaced this
     reason        TEXT,                    -- why this version was written
-    created_at    INTEGER NOT NULL
+    created_at    INTEGER NOT NULL,
+    constitution_version TEXT,             -- id of the owning constitution version
+    rationale            TEXT,             -- why the clause exists
+    scope                TEXT,             -- where the clause applies
+    evidence_contract    TEXT,             -- what evidence satisfies it
+    consequence          TEXT,             -- advise | review | block
+    waivable             INTEGER NOT NULL DEFAULT 0,
+    waiver_authority     TEXT,             -- authority required to waive
+    origin               TEXT NOT NULL DEFAULT 'local'  -- local | pack | discovered
 );
 CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
 CREATE INDEX IF NOT EXISTS idx_goals_slug   ON goals(slug);

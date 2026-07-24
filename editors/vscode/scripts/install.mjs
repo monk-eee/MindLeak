@@ -104,18 +104,53 @@ export function registrations(version, platform, agent) {
   };
 }
 
-export function updateMcpConfig(source, serverRegistrations) {
-  let document = source.trim() ? source : '{\n  "servers": {}\n}\n';
+/**
+ * Copilot CLI, Claude Desktop, and Cursor key servers under `mcpServers` and do
+ * not expand VS Code's `${workspaceFolder}` variable (ADR-0033), so this renders
+ * the same two servers with absolute, install-time paths. The database and
+ * workspace targets are identical to the `.vscode/mcp.json` registration, so the
+ * editor and the CLI read and write the same local stores.
+ */
+export function copilotRegistrations(installDirectory, workspace, platform, agent) {
+  const executableExtension = platform === "win32" ? ".exe" : "";
+  return {
+    mindleak: {
+      command: path.join(installDirectory, `mindleak-mcp${executableExtension}`),
+      args: [],
+      env: {
+        MINDLEAK_DB: path.join(workspace, ".mindleak", "graph.db"),
+        MINDLEAK_AGENT: agent,
+        MINDLEAK_WORKSPACE: workspace,
+      },
+    },
+    lodestar: {
+      command: path.join(installDirectory, `lodestar-mcp${executableExtension}`),
+      args: [],
+      env: {
+        LODESTAR_DB: path.join(workspace, ".lodestar", "spec.db"),
+        LODESTAR_AGENT: agent,
+      },
+    },
+  };
+}
+
+/**
+ * Merge both server registrations into a JSONC MCP config under `rootKey`,
+ * preserving comments and unrelated servers. Shared by the VS Code (`servers`)
+ * and Copilot CLI (`mcpServers`) writers so the two clients never drift.
+ */
+function mergeServerRegistrations(source, serverRegistrations, rootKey, label) {
+  let document = source.trim() ? source : `{\n  "${rootKey}": {}\n}\n`;
   const errors = [];
   const parsed = parse(document, errors, { allowTrailingComma: true, disallowComments: false });
   if (errors.length > 0) {
     const details = errors
       .map((error) => `${printParseErrorCode(error.error)} at offset ${error.offset}`)
       .join(", ");
-    throw new Error(`cannot update .vscode/mcp.json: ${details}`);
+    throw new Error(`cannot update ${label}: ${details}`);
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("cannot update .vscode/mcp.json: root must be an object");
+    throw new Error(`cannot update ${label}: root must be an object`);
   }
 
   const formattingOptions = {
@@ -126,12 +161,31 @@ export function updateMcpConfig(source, serverRegistrations) {
   for (const [name, registration] of Object.entries(serverRegistrations)) {
     document = applyEdits(
       document,
-      modify(document, ["servers", name], registration, { formattingOptions })
+      modify(document, [rootKey, name], registration, { formattingOptions })
     );
   }
   return document.endsWith(formattingOptions.eol)
     ? document
     : `${document}${formattingOptions.eol}`;
+}
+
+/** Merge both servers into a VS Code `.vscode/mcp.json` (keyed under `servers`). */
+export function updateMcpConfig(source, serverRegistrations) {
+  return mergeServerRegistrations(source, serverRegistrations, "servers", ".vscode/mcp.json");
+}
+
+/**
+ * Merge both servers into a Copilot CLI / Claude / Cursor config (keyed under
+ * `mcpServers`), with the same comment- and server-preserving guarantees as the
+ * VS Code writer (ADR-0033).
+ */
+export function updateCopilotConfig(source, serverRegistrations) {
+  return mergeServerRegistrations(
+    source,
+    serverRegistrations,
+    "mcpServers",
+    "Copilot CLI MCP config"
+  );
 }
 
 export function updateGitignore(source) {
@@ -185,6 +239,19 @@ export async function install(
   fs.mkdirSync(vscodeDirectory, { recursive: true });
   atomicWrite(configPath, nextConfig);
 
+  // Copilot CLI cannot read .vscode/mcp.json and does not expand
+  // ${workspaceFolder} (ADR-0033), so write a sibling config it can consume via
+  // `--additional-mcp-config`, with absolute paths and the same local stores.
+  const copilotConfigPath = path.join(options.workspace, ".mindleak", "copilot-mcp.json");
+  const currentCopilotConfig = fs.existsSync(copilotConfigPath)
+    ? fs.readFileSync(copilotConfigPath, "utf8")
+    : "";
+  const nextCopilotConfig = updateCopilotConfig(
+    currentCopilotConfig,
+    copilotRegistrations(installDirectory, options.workspace, platform, options.agent)
+  );
+  atomicWrite(copilotConfigPath, nextCopilotConfig);
+
   const gitignorePath = path.join(options.workspace, ".gitignore");
   const currentGitignore = fs.existsSync(gitignorePath)
     ? fs.readFileSync(gitignorePath, "utf8")
@@ -196,6 +263,13 @@ export async function install(
 
   console.log(`Installed MindLeak ${version} in ${installDirectory}`);
   console.log(`Registered mindleak and lodestar in ${configPath}`);
+  console.log(`Registered mindleak and lodestar for Copilot CLI in ${copilotConfigPath}`);
+  console.log(
+    `  Use it with: copilot --additional-mcp-config @${path.relative(
+      options.workspace,
+      copilotConfigPath
+    )}`
+  );
 
   const probeEmbedding = runtime.probeEmbedding ?? probeEmbeddingCapability;
   const recall = await probeEmbedding(runtime);

@@ -7,6 +7,32 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **First-class GitHub Copilot CLI registration (ADR-0033).** Both stdio planes
+  already run under any MCP client, but the installer registered them only into
+  `.vscode/mcp.json` — which the `copilot` CLI cannot read (it keys servers under
+  `mcpServers`, not `servers`) and whose `${workspaceFolder}` variable the CLI
+  does not expand. The canonical installer now also writes a CLI-ready
+  `.mindleak/copilot-mcp.json` with absolute, install-time paths and the same
+  local stores, merged with the same comment- and server-preserving guarantees as
+  the VS Code path (shared `mergeServerRegistrations` — one source, rendered for
+  both clients). Point the CLI at it with
+  `copilot --additional-mcp-config @.mindleak/copilot-mcp.json`, or merge the
+  block into the user-level `~/.copilot/mcp-config.json`. Identity (ADR-0030) and
+  the stdio-only, unauthenticated transport are unchanged.
+- **Constitutional representation and goal migration (ADR-0026, SPEC-CONSTITUTION
+  §10, task 1 of 6).** Goals are now clauses of an explicit, versioned
+  constitution. A new `constitution_versions` record freezes the attributed
+  policy snapshot (purpose, preamble, project identity, lifecycle state), a
+  `principle` goal kind captures broad decision rules that route to review, and
+  each clause carries provenance (`origin`), `rationale`, `scope`, an
+  `evidence_contract`, a proportional `consequence` (advise / review / block),
+  and a waiver policy (`waivable`, `waiver_authority`). A clause is enforceable —
+  and can hard-block — only once it declares scope, evidence, and consequence;
+  until then it is review-only. Existing active goals migrate into a first
+  **local** version (`constitution:v1`) with honest self-attribution and no
+  invented purpose, preamble, authority, or enforcement contract; the migration
+  is idempotent. `active_constitution_version()` reports the absent / draft /
+  active state.
 - **`resolve_task` closes the `in_review` gap — the task-level mirror of
   `accept_design`.** A docs-only task inside an objective's chain (not a
   registered design item) still lands `in_review` on a `drift`/`needs_human`

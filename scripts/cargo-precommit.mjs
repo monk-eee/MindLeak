@@ -1,6 +1,6 @@
-// Scoped, isolation-aware cargo runner for MindLeak's git hooks
+// Scoped, committed-snapshot-aware cargo runner for MindLeak's git hooks
 // (see .pre-commit-config.yaml). Stops concurrent-agent "validation poisoning"
-// when several agents share one working tree (ADR-0018), two ways:
+// when several agents share one working tree (ADR-0032), two ways:
 //
 //   1. SCOPE — run cargo only for the crate packages this change touches, so an
 //      unrelated agent's broken crate cannot fail your commit/push. This alone
@@ -15,7 +15,7 @@
 //   node scripts/cargo-precommit.mjs <fmt|clippy|test> <commit|push>
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -101,7 +101,7 @@ if (files === null) {
   }
 }
 
-// ---- 2. decide whether to isolate -------------------------------------------
+// ---- 2. decide whether to snapshot ------------------------------------------
 // Commit stage: pre-commit already stashes unstaged TRACKED changes, so the only
 // residual leak is UNTRACKED files inside an affected crate (e.g. a concurrent
 // file -> dir split). Isolate only then. Push stage: the working tree carries
@@ -119,7 +119,7 @@ function foreignUntrackedInAffected() {
   return out.trim().length > 0;
 }
 
-const isolate = stage === "push" || foreignUntrackedInAffected();
+const snapshotRequired = stage === "push" || foreignUntrackedInAffected();
 
 const scope = allCrates
   ? [mode === "fmt" ? "--all" : "--workspace"]
@@ -127,9 +127,11 @@ const scope = allCrates
 
 let args;
 if (mode === "fmt") {
-  // Auto-format in place on the fast path; check-only when isolated (a throwaway
-  // snapshot cannot fix the developer's files).
-  args = isolate ? ["fmt", ...scope, "--", "--check"] : ["fmt", ...scope, "--"];
+  // Auto-format in place on the fast path; check-only when validating a
+  // committed snapshot, which cannot fix the developer's files.
+  args = snapshotRequired
+    ? ["fmt", ...scope, "--", "--check"]
+    : ["fmt", ...scope, "--"];
 } else if (mode === "clippy") {
   args = [
     "clippy",
@@ -145,7 +147,7 @@ if (mode === "fmt") {
 }
 
 // ---- run ---------------------------------------------------------------------
-if (!isolate) {
+if (!snapshotRequired) {
   try {
     execFileSync("cargo", args, { cwd: repoRoot, stdio: "inherit" });
     process.exit(0);

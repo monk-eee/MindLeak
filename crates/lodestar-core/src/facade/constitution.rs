@@ -102,6 +102,7 @@ fn render_constitution(goals: &[Goal]) -> String {
         (GoalKind::Invariant, "## Invariants"),
         (GoalKind::Constraint, "## Constraints"),
         (GoalKind::Objective, "## Objectives"),
+        (GoalKind::Principle, "## Principles"),
     ] {
         let group: Vec<&Goal> = goals.iter().filter(|g| g.kind == kind).collect();
         if group.is_empty() {

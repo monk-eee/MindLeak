@@ -13,6 +13,9 @@ pub enum GoalKind {
     Constraint,
     /// A load-bearing rule that must never be violated.
     Invariant,
+    /// A broad decision rule. Normative but ambiguous cases route to review,
+    /// never an automatic hard block (SPEC-CONSTITUTION §4).
+    Principle,
 }
 
 impl GoalKind {
@@ -21,6 +24,7 @@ impl GoalKind {
             GoalKind::Objective => "objective",
             GoalKind::Constraint => "constraint",
             GoalKind::Invariant => "invariant",
+            GoalKind::Principle => "principle",
         }
     }
 
@@ -29,6 +33,7 @@ impl GoalKind {
             "objective" => Some(GoalKind::Objective),
             "constraint" => Some(GoalKind::Constraint),
             "invariant" => Some(GoalKind::Invariant),
+            "principle" => Some(GoalKind::Principle),
             _ => None,
         }
     }
@@ -36,6 +41,70 @@ impl GoalKind {
     /// Constraints and invariants are what conformance checks against.
     pub fn is_normative(&self) -> bool {
         matches!(self, GoalKind::Constraint | GoalKind::Invariant)
+    }
+}
+
+/// The proportional outcome when a clause is not met (SPEC-CONSTITUTION §4/§8):
+/// uncertainty asks for review, only a specific active clause with adequate
+/// evidence can hard-block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Consequence {
+    /// Surface guidance; never blocks.
+    Advise,
+    /// Route to human review.
+    Review,
+    /// Hard policy; may block with adequate evidence.
+    Block,
+}
+
+impl Consequence {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Consequence::Advise => "advise",
+            Consequence::Review => "review",
+            Consequence::Block => "block",
+        }
+    }
+
+    pub fn from_tag(s: &str) -> Option<Self> {
+        match s {
+            "advise" => Some(Consequence::Advise),
+            "review" => Some(Consequence::Review),
+            "block" => Some(Consequence::Block),
+            _ => None,
+        }
+    }
+}
+
+/// Where a clause came from (SPEC-CONSTITUTION §10 `ClauseSource.origin`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClauseOrigin {
+    /// Authored directly in this project.
+    Local,
+    /// Adopted from an immutable policy pack.
+    Pack,
+    /// Derived from a cited repository fact.
+    Discovered,
+}
+
+impl ClauseOrigin {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ClauseOrigin::Local => "local",
+            ClauseOrigin::Pack => "pack",
+            ClauseOrigin::Discovered => "discovered",
+        }
+    }
+
+    pub fn from_tag(s: &str) -> Option<Self> {
+        match s {
+            "local" => Some(ClauseOrigin::Local),
+            "pack" => Some(ClauseOrigin::Pack),
+            "discovered" => Some(ClauseOrigin::Discovered),
+            _ => None,
+        }
     }
 }
 
@@ -281,7 +350,28 @@ pub struct ConformanceCheck {
     pub findings: Vec<String>,
 }
 
-/// A goal row: a unit of the constitution.
+/// One immutable constitutional version: the frozen preamble and clause set
+/// that authorises verdicts (SPEC-CONSTITUTION §10). An amendment writes a new
+/// version; prior conformance records retain the version they were judged
+/// under. Migration does not invent a purpose, preamble, or authority.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstitutionVersion {
+    pub id: String,
+    pub version: i64,
+    pub project_identity: Option<String>,
+    pub purpose: Option<String>,
+    pub preamble: Option<String>,
+    pub status: GoalStatus,
+    pub created_by: Option<String>,
+    pub created_at: i64,
+    pub activated_by: Option<String>,
+    pub activated_at: Option<i64>,
+}
+
+/// A goal row: a clause of the constitution (SPEC-CONSTITUTION §10). The
+/// enforcement fields (`scope`, `evidence_contract`, `consequence`) stay absent
+/// until explicitly completed; an incomplete clause is review-only and can
+/// never drive a hard verdict.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Goal {
     pub id: String,
@@ -295,6 +385,31 @@ pub struct Goal {
     pub superseded_by: Option<String>,
     pub reason: Option<String>,
     pub created_at: i64,
+    /// The constitutional version this clause belongs to, if any.
+    pub constitution_version: Option<String>,
+    /// Why the clause exists (distinct from `reason`, the amendment note).
+    pub rationale: Option<String>,
+    /// The declared scope in which the clause applies.
+    pub scope: Option<String>,
+    /// The evidence contract that satisfies the clause.
+    pub evidence_contract: Option<String>,
+    /// The proportional consequence of non-conformance.
+    pub consequence: Option<Consequence>,
+    /// Whether a bounded waiver may suspend the clause.
+    pub waivable: bool,
+    /// The authority required to waive the clause.
+    pub waiver_authority: Option<String>,
+    /// The provenance of the clause.
+    pub origin: ClauseOrigin,
+}
+
+impl Goal {
+    /// A clause can drive a hard verdict only once it declares a scope, an
+    /// evidence contract, and a consequence. Until then it is review-only
+    /// (SPEC-CONSTITUTION §10: incomplete clauses guide review, never block).
+    pub fn is_enforceable(&self) -> bool {
+        self.scope.is_some() && self.evidence_contract.is_some() && self.consequence.is_some()
+    }
 }
 
 /// A task row: a unit of claimable work serving a goal.

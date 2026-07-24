@@ -168,6 +168,19 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **One shared stdio MCP server gives concurrent chat sessions the same agent id.** —
+  ADR-0030 qualifies identity with a *per-process* nonce
+  (`process_nonce()` in [`crates/lodestar-mcp/src/main.rs`](crates/lodestar-mcp/src/main.rs)),
+  but VS Code multiplexes multiple concurrent chat sessions through a **single**
+  long-lived MCP server process. All of those sessions therefore share one nonce
+  and one identity (observed: `copilot-4e151e90` held three simultaneous live
+  claims across independent sessions), so per-agent claim ownership, leases, and
+  evidence attribution cannot distinguish the sessions. — Medium impact: owner
+  guards and evidence loops treat distinct concurrent agents as one; there is no
+  data loss, but coordination invariants degrade under real fleet use. — Left
+  explicit: the per-process nonce needs a per-session/per-connection discriminator
+  (e.g. a nonce minted per JSON-RPC connection or an explicit `LODESTAR_AGENT_ID`
+  set on each session) before ADR-0030 identity is safe for multiplexed stdio.
 - **A server restart can strand a legacy base-id claim until lease expiry.** —
   This run claimed work while the configured identity was the legacy `copilot`;
   after the ADR-0030 server restart the process identity became nonce-qualified,
@@ -370,7 +383,7 @@ and footguns, with impact and status:
   Git HEAD/ref changes and supports `MINDLEAK_BUILD_SHA` outside a checkout. —
   Resolved Jul 2026.
 - **Docs-only design tasks could not complete via conformance, stranding
-  successors — PARTIALLY FIXED.** — A design task produces a docs commit; `complete_task` runs
+  successors — FIXED.** — A design task produces a docs commit; `complete_task` runs
   ADR-0009 code conformance, which returns `needs_human` ("evidence does not touch
   code bound to the task goal") and parks the task in `in_review` forever. Any
   implementation task chained `blocked_by` a docs-ADR predecessor then never opens
@@ -384,12 +397,13 @@ and footguns, with impact and status:
   exposed a duplicate-task failure. A docs-only task inside an *objective's*
   task chain (not a registered design item) —
   e.g. the AGENTS.md/README/USAGE/SPEC-INTENT task closing the ADR-0029 advise
-  chain — still lands `in_review` via the same `needs_human` verdict. — **Fixed
+  chain — still lands `in_review` via the same honest `needs_human` verdict. — **Fixed
   Jul 2026:** `resolve_task(task_id, human)` (facade + MCP) is the task-level
   mirror of `accept_design` — it human-accepts an `in_review` task to `done` with
-  no code-conformance re-run, opens any blocked successor, and refuses
-  self-resolution by the reviewed agent (the worker read from the task's
-  conformance evidence). Tests:
+  no code-conformance re-run while preserving the original audit, opens any
+  blocked successor, and refuses self-resolution by the reviewed agent (the
+  worker read from the task's conformance evidence). `reopen_task` and
+  `abandon_task` retain their distinct recovery and retirement meanings. Tests:
   `resolve_task_accepts_an_in_review_task_to_done`,
   `resolve_task_refuses_self_resolution_by_the_reviewed_agent`,
   `resolve_in_review_opens_a_blocked_successor`.
