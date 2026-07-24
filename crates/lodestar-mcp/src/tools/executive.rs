@@ -517,6 +517,7 @@ mod tests {
     use super::*;
     use lodestar_core::llm::LlmClient;
     use lodestar_core::{now_unix, CodeBindingMode, ConformanceEvidence, GoalKind};
+    use mindleak_session::SessionRegistry;
 
     #[test]
     fn scoped_claim_and_overlap_round_trip_through_tools() {
@@ -737,6 +738,53 @@ mod tests {
         let board = engine.board(true).unwrap();
         let reopened = board.iter().find(|t| t.id == task.id).unwrap();
         assert_eq!(reopened.status.as_str(), "open");
+    }
+
+    #[test]
+    fn recover_claim_dispatch_exposes_the_append_only_transfer() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Recover", "transfer legacy work", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Legacy", "done").unwrap();
+        assert!(engine.claim_task(&task.id, "copilot-abcd1234", -1).unwrap());
+        let agent = SessionRegistry::new("copilot")
+            .unwrap()
+            .open_session("00112233445566778899aabbccddeeff")
+            .unwrap()
+            .agent_id;
+
+        let recovered = call(
+            &engine,
+            &json!({
+                "name": "recover_claim",
+                "arguments": {
+                    "task_id": task.id,
+                    "expected_owner": "copilot-abcd1234",
+                    "agent": agent,
+                    "reason": "legacy process exited",
+                    "lease_secs": 300
+                }
+            }),
+        )
+        .unwrap();
+        let payload: Value =
+            serde_json::from_str(recovered["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["recovered"], true);
+
+        let history = call(
+            &engine,
+            &json!({
+                "name": "claim_transfer_history",
+                "arguments": { "task_id": task.id }
+            }),
+        )
+        .unwrap();
+        let transfers: Value =
+            serde_json::from_str(history["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(transfers.as_array().unwrap().len(), 1);
+        assert_eq!(transfers[0]["from_owner"], "copilot-abcd1234");
+        assert_eq!(transfers[0]["to_owner"], agent);
     }
 
     #[test]
