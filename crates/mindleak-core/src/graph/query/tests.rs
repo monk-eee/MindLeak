@@ -29,6 +29,58 @@ fn impact_has_no_threshold_beyond_the_active_policy() {
 }
 
 #[test]
+fn bounded_neighborhood_caps_a_hub_and_returns_only_internal_edges() {
+    let s = store();
+    // A hub: an agent observing 200 nodes. A naive depth-2 traversal from a file
+    // the agent also touched would drag all 200 in and choke the visualizer.
+    add_node(&s, "agent:a", NodeType::Agent, "a", NOW);
+    add_node(&s, "artifact:seed.rs", NodeType::Artifact, "seed.rs", NOW);
+    s.upsert_edge(&raw_edge(
+        "agent:a",
+        "artifact:seed.rs",
+        RelationType::Observed,
+        1.0,
+        48.0,
+        NOW,
+    ))
+    .unwrap();
+    for i in 0..200 {
+        let id = format!("symbol:x:s{i}");
+        add_node(&s, &id, NodeType::Symbol, &id, NOW);
+        s.upsert_edge(&raw_edge(
+            "agent:a",
+            &id,
+            RelationType::Observed,
+            1.0,
+            48.0,
+            NOW,
+        ))
+        .unwrap();
+    }
+
+    let sub = s
+        .bounded_neighborhood(&["artifact:seed.rs".to_string()], 2, 25, 8, NOW)
+        .unwrap();
+
+    // Bounded: the hub contributes at most `max_fanout`, never all 200.
+    assert!(
+        sub.nodes.len() <= 25,
+        "nodes not capped: {}",
+        sub.nodes.len()
+    );
+    assert!(sub.nodes.len() < 50);
+    // The seed is always kept.
+    assert!(sub.nodes.iter().any(|n| n.node.id == "artifact:seed.rs"));
+    // No dangling edges: every edge connects two returned nodes.
+    let ids: std::collections::HashSet<&str> =
+        sub.nodes.iter().map(|n| n.node.id.as_str()).collect();
+    assert!(sub
+        .edges
+        .iter()
+        .all(|e| ids.contains(e.source_id.as_str()) && ids.contains(e.target_id.as_str())));
+}
+
+#[test]
 fn search_nodes_finds_by_label() {
     let s = store();
     add_node(

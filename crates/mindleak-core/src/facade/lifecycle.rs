@@ -2,12 +2,16 @@
 use std::path::Path;
 
 use crate::{
-    now_unix, AgentActivity, ConformanceEvidence, Direction, GraphExport, MindLeak, MindLeakError,
+    now_unix, AgentActivity, ConformanceEvidence, GraphExport, MindLeak, MindLeakError,
     PruneOutcome, ResetOutcome, Result, Subgraph, WorkingSetItem,
 };
 
 #[cfg(test)]
 use crate::{config, Edge, Node, NodeType, RelationType};
+
+/// Per-node edge budget for the visualization neighbourhood: a node contributes
+/// at most its strongest few edges so a hub cannot flood the rendered graph.
+const VISUALIZATION_FANOUT: usize = 12;
 
 impl MindLeak {
     // ---- maintenance --------------------------------------------------------
@@ -65,8 +69,10 @@ impl MindLeak {
             .evidence_for(task_id, agent, started_at, ended_at)
     }
 
-    /// A visualization snapshot: either the neighbourhood of `seed` (both
-    /// directions, depth 2) or the most recently accessed nodes when no seed.
+    /// A visualization snapshot: a bounded, relevance-first neighbourhood of
+    /// `seed` (never the full depth-2 reach, so a hub node cannot explode the
+    /// render), or the most recently accessed nodes when no seed is given. Both
+    /// paths are capped at `limit` nodes.
     pub fn snapshot(&self, seed: Option<&str>, limit: usize) -> Result<Subgraph> {
         let now = now_unix();
         match seed {
@@ -75,13 +81,8 @@ impl MindLeak {
                 if seeds.is_empty() {
                     self.store.snapshot(limit, now)
                 } else {
-                    self.store.traverse(
-                        &seeds,
-                        Direction::Both,
-                        2,
-                        self.store.decay_policy().prune_threshold(),
-                        now,
-                    )
+                    self.store
+                        .bounded_neighborhood(&seeds, 2, limit, VISUALIZATION_FANOUT, now)
                 }
             }
             _ => self.store.snapshot(limit, now),

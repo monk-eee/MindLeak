@@ -7,6 +7,18 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Ask-before-act constitutional advice (ADR-0029).** Agents can now ask what
+  governs an intended change *before* doing it, not only discover drift at
+  `complete_task`. The new `advise` tool takes the `artifact:`/`symbol:` ids you
+  are about to change (and an optional covering task) and returns the governing
+  clauses plus a proportional disposition — advise / review / block / needs_human
+  — with no evidence, no recorded verdict, no task-state change, and no model
+  dependency; it never gates the compare-and-swap claim. `claim_task` and
+  `next_task` now surface the clauses governing a task on pickup,
+  `governing_for_task` exposes them for any task, and the VS Code Intent Board
+  shows them on a claimed task. AGENTS.md makes consulting the advisory a
+  claim-time ritual, with retrospective conformance (ADR-0009/0025) as the
+  backstop.
 - **`forget_file` reaps a deleted file's structure instead of leaving it to
   decay for a month.** When a file is deleted or renamed in the editor, its
   symbols and artifact node — and every edge touching them — used to linger in
@@ -108,6 +120,15 @@ to [Semantic Versioning](https://semver.org/).
   action the board reflects rather than a button. The README index links both.
 
 ### Fixed
+- **The Context Graph visualizer stays responsive on large graphs.** A seeded
+  snapshot (the neighbourhood of the active file) expanded the full depth-2 reach
+  with no cap, so expanding into a hub node — an agent that has observed
+  thousands of nodes — dragged the whole neighbourhood into Cytoscape and
+  exhausted memory. The snapshot now returns a bounded, relevance-first
+  neighbourhood: best-first expansion by decay-weighted score, following only
+  each node's strongest few edges, so the rendered graph is always small (~150
+  nodes at most) and shows the most active context regardless of how large the
+  graph grows.
 - **Build and VCS output is no longer ingested into the graph.** A passive save
   sensor or a build/git command's changed-files could pull `.git/`, `target/`,
   `node_modules/`, `dist/`, `coverage/`, and other regenerated or throwaway paths
