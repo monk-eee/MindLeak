@@ -58,6 +58,11 @@ impl MindLeak {
     pub fn ingest_file(&self, path: &str, content: &str) -> Result<WriteOutcome> {
         let now = now_unix();
         let norm = ingest::normalize_path(path);
+        // VCS internals, dependency caches, and build/test output are not source
+        // and only pollute the graph with structure for paths that vanish.
+        if ingest::is_ignored_path(&norm) {
+            return Ok(WriteOutcome::default());
+        }
         let art_id = format!("artifact:{norm}");
         let art = Node::new(&art_id, NodeType::Artifact, norm.clone(), now);
         let mut nodes = vec![art];

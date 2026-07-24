@@ -9,7 +9,7 @@ use regex::Regex;
 
 use crate::error::Result;
 use crate::graph::GraphStore;
-use crate::ingest::{clamp, normalize_path, short_hash};
+use crate::ingest::{clamp, is_ignored_path, normalize_path, short_hash};
 use crate::model::{Edge, Node, NodeType, RelationType};
 
 /// A captured command run from the terminal/telemetry stream.
@@ -86,6 +86,9 @@ pub fn ingest_execution(
     changed_files.sort();
     changed_files.dedup();
     for path in changed_files {
+        if is_ignored_path(&path) {
+            continue;
+        }
         let art_id = format!("artifact:{path}");
         let art = Node::new(&art_id, NodeType::Artifact, path.clone(), now);
         nodes.push(art);
@@ -100,6 +103,9 @@ pub fn ingest_execution(
     // failed_on edges when the command errored
     if rec.exit_code != 0 {
         for (path, _line) in parse_error_locations(&rec.output) {
+            if is_ignored_path(&path) {
+                continue;
+            }
             let art_id = format!("artifact:{path}");
             let art = Node::new(&art_id, NodeType::Artifact, path.clone(), now);
             nodes.push(art);

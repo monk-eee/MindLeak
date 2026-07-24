@@ -64,6 +64,44 @@ fn execution_attribution_decays_with_the_execution_not_slower() {
 }
 
 #[test]
+fn ingestion_rejects_vcs_and_build_output_paths() {
+    let engine = MindLeak::open_in_memory().unwrap();
+
+    // Saving a build/VCS artifact is a no-op: it never becomes a graph node,
+    // so the structural tier is not polluted with paths that constantly vanish.
+    let outcome = engine
+        .ingest_file("target/debug/build/x.rs", "fn main() {}")
+        .unwrap();
+    assert_eq!(outcome.nodes_created, 0);
+    assert!(engine
+        .store()
+        .get_node("artifact:target/debug/build/x.rs")
+        .unwrap()
+        .is_none());
+
+    // An execution touching a mix of junk and real files records only the real
+    // artifact; the coverage output is dropped on the write path.
+    engine
+        .ingest_execution(&exec(
+            "cargo test",
+            0,
+            "ok",
+            &["coverage/run/coverage-0.json", "src/real.rs"],
+        ))
+        .unwrap();
+    assert!(engine
+        .store()
+        .get_node("artifact:src/real.rs")
+        .unwrap()
+        .is_some());
+    assert!(engine
+        .store()
+        .get_node("artifact:coverage/run/coverage-0.json")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
 fn facade_injects_the_startup_decay_policy_into_the_store() {
     let engine = MindLeak::open_in_memory()
         .unwrap()

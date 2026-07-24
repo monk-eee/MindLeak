@@ -98,6 +98,12 @@ to [Semantic Versioning](https://semver.org/).
   action the board reflects rather than a button. The README index links both.
 
 ### Fixed
+- **Build and VCS output is no longer ingested into the graph.** A passive save
+  sensor or a build/git command's changed-files could pull `.git/`, `target/`,
+  `node_modules/`, `dist/`, `coverage/`, and other regenerated or throwaway paths
+  into the structural tier, leaving stale nodes for files that constantly vanish
+  (a live graph had hundreds of such stale symbols/artifacts). These paths are now
+  rejected on the deterministic write path, so only real source enters the graph.
 - **Autonomous prune now actually runs, so the graph self-cleans during use.**
   The idle maintenance worker gated the deterministic prune behind the same
   request-idle window as token-heavy consolidation, but the extension polls the
