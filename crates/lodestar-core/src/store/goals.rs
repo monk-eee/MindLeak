@@ -2,13 +2,20 @@
 use rusqlite::{params, Connection, Row};
 
 use crate::error::{LodestarError, Result};
-use crate::model::{CodeBinding, CodeBindingMode, Goal, GoalKind, GoalStatus};
+use crate::model::{
+    ClauseOrigin, CodeBinding, CodeBindingMode, Consequence, ConstitutionVersion, Goal, GoalKind,
+    GoalStatus,
+};
 use crate::util::{short_hash, slugify};
 
 use super::{collect, LodestarStore};
 
 const GOAL_COLS: &str =
-    "id, slug, kind, title, statement, status, version, parent_id, superseded_by, reason, created_at";
+    "id, slug, kind, title, statement, status, version, parent_id, superseded_by, reason, created_at, \
+     constitution_version, rationale, scope, evidence_contract, consequence, waivable, waiver_authority, origin";
+
+const CONSTITUTION_COLS: &str = "id, version, project_identity, purpose, preamble, status, \
+     created_by, created_at, activated_by, activated_at";
 
 impl LodestarStore {
     pub fn goal_exists(&self, id: &str) -> Result<bool> {
@@ -72,6 +79,14 @@ impl LodestarStore {
             superseded_by: None,
             reason: Some(reason.to_string()),
             created_at: now,
+            constitution_version: old.constitution_version.clone(),
+            rationale: old.rationale.clone(),
+            scope: old.scope.clone(),
+            evidence_contract: old.evidence_contract.clone(),
+            consequence: old.consequence,
+            waivable: old.waivable,
+            waiver_authority: old.waiver_authority.clone(),
+            origin: old.origin,
         };
         self.insert_goal(&new_goal)?;
         self.conn.execute(
@@ -87,6 +102,23 @@ impl LodestarStore {
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![status.as_str()], row_to_goal)?;
         collect(rows)
+    }
+
+    /// The active constitutional version, if the project has adopted one. Absent
+    /// (`None`) on a project that has not been through migration or activation; a
+    /// draft-only project also reports `None` because a draft cannot authorise
+    /// verdicts (SPEC-CONSTITUTION §7.5).
+    pub fn active_constitution_version(&self) -> Result<Option<ConstitutionVersion>> {
+        let sql = format!(
+            "SELECT {CONSTITUTION_COLS} FROM constitution_versions
+             WHERE status = 'active' ORDER BY version DESC LIMIT 1"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query([])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row_to_constitution_version(row)?)),
+            None => Ok(None),
+        }
     }
 
     pub fn link_goal_to_code(
@@ -141,7 +173,7 @@ impl LodestarStore {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![node_id], |row| {
-            let mode: String = row.get(11)?;
+            let mode: String = row.get(19)?;
             Ok(CodeBinding {
                 goal: row_to_goal(row)?,
                 mode: CodeBindingMode::from_tag(&mode).unwrap_or(CodeBindingMode::Governed),
@@ -184,6 +216,14 @@ pub(super) fn define_goal_on(
         superseded_by: None,
         reason: None,
         created_at: now,
+        constitution_version: None,
+        rationale: None,
+        scope: None,
+        evidence_contract: None,
+        consequence: None,
+        waivable: false,
+        waiver_authority: None,
+        origin: ClauseOrigin::Local,
     };
     insert_goal_on(connection, &goal)?;
     Ok(goal)
@@ -192,8 +232,9 @@ pub(super) fn define_goal_on(
 fn insert_goal_on(connection: &Connection, g: &Goal) -> Result<()> {
     connection.execute(
         "INSERT INTO goals
-            (id, slug, kind, title, statement, status, version, parent_id, superseded_by, reason, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            (id, slug, kind, title, statement, status, version, parent_id, superseded_by, reason, created_at,
+             constitution_version, rationale, scope, evidence_contract, consequence, waivable, waiver_authority, origin)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         params![
             g.id,
             g.slug,
@@ -206,6 +247,14 @@ fn insert_goal_on(connection: &Connection, g: &Goal) -> Result<()> {
             g.superseded_by,
             g.reason,
             g.created_at,
+            g.constitution_version,
+            g.rationale,
+            g.scope,
+            g.evidence_contract,
+            g.consequence.map(|c| c.as_str()),
+            g.waivable as i64,
+            g.waiver_authority,
+            g.origin.as_str(),
         ],
     )?;
     Ok(())
@@ -223,6 +272,8 @@ pub(super) fn goal_exists_on(connection: &Connection, id: &str) -> Result<bool> 
 fn row_to_goal(row: &Row) -> rusqlite::Result<Goal> {
     let kind: String = row.get(2)?;
     let status: String = row.get(5)?;
+    let consequence: Option<String> = row.get(15)?;
+    let origin: String = row.get(18)?;
     Ok(Goal {
         id: row.get(0)?,
         slug: row.get(1)?,
@@ -235,6 +286,30 @@ fn row_to_goal(row: &Row) -> rusqlite::Result<Goal> {
         superseded_by: row.get(8)?,
         reason: row.get(9)?,
         created_at: row.get(10)?,
+        constitution_version: row.get(11)?,
+        rationale: row.get(12)?,
+        scope: row.get(13)?,
+        evidence_contract: row.get(14)?,
+        consequence: consequence.as_deref().and_then(Consequence::from_tag),
+        waivable: row.get::<_, i64>(16)? != 0,
+        waiver_authority: row.get(17)?,
+        origin: ClauseOrigin::from_tag(&origin).unwrap_or(ClauseOrigin::Local),
+    })
+}
+
+fn row_to_constitution_version(row: &Row) -> rusqlite::Result<ConstitutionVersion> {
+    let status: String = row.get(5)?;
+    Ok(ConstitutionVersion {
+        id: row.get(0)?,
+        version: row.get(1)?,
+        project_identity: row.get(2)?,
+        purpose: row.get(3)?,
+        preamble: row.get(4)?,
+        status: GoalStatus::from_tag(&status).unwrap_or(GoalStatus::Draft),
+        created_by: row.get(6)?,
+        created_at: row.get(7)?,
+        activated_by: row.get(8)?,
+        activated_at: row.get(9)?,
     })
 }
 
@@ -242,6 +317,85 @@ fn row_to_goal(row: &Row) -> rusqlite::Result<Goal> {
 mod tests {
     use super::*;
     use crate::store::test_support::{goal, store, NOW};
+
+    #[test]
+    fn fresh_database_reports_no_active_constitution_version() {
+        // Absent state: a project that has not migrated or activated has no
+        // version to authorise verdicts.
+        let s = store();
+        assert!(s.active_constitution_version().unwrap().is_none());
+    }
+
+    #[test]
+    fn draft_constitution_version_is_not_active() {
+        // Draft state: a draft cannot authorise verdicts, so it never resolves
+        // as the active version (SPEC-CONSTITUTION §7.5).
+        let s = store();
+        s.conn
+            .execute(
+                "INSERT INTO constitution_versions (id, version, status, created_at)
+                 VALUES ('constitution:draft', 1, 'draft', 1)",
+                [],
+            )
+            .unwrap();
+        assert!(s.active_constitution_version().unwrap().is_none());
+
+        s.conn
+            .execute(
+                "UPDATE constitution_versions SET status = 'active'
+                 WHERE id = 'constitution:draft'",
+                [],
+            )
+            .unwrap();
+        let active = s.active_constitution_version().unwrap().unwrap();
+        assert_eq!(active.status, GoalStatus::Active);
+        assert_eq!(active.id, "constitution:draft");
+    }
+
+    #[test]
+    fn incomplete_clause_is_review_only_until_the_contract_is_complete() {
+        // A defined clause carries no invented enforcement contract, so it is
+        // review-only; completing scope + evidence + consequence makes it
+        // enforceable (SPEC-CONSTITUTION §10).
+        let s = store();
+        let g = goal(&s);
+        assert_eq!(g.origin, ClauseOrigin::Local);
+        assert!(!g.is_enforceable());
+
+        let complete = Goal {
+            scope: Some("crates/mindleak-core/**".to_string()),
+            evidence_contract: Some("tests pass".to_string()),
+            consequence: Some(Consequence::Block),
+            ..g
+        };
+        assert!(complete.is_enforceable());
+    }
+
+    #[test]
+    fn supersede_carries_the_clause_contract_to_the_new_version() {
+        // Superseding a clause must not silently drop its enforcement contract.
+        let s = store();
+        let g = goal(&s);
+        s.conn
+            .execute(
+                "UPDATE goals SET scope = 'crates/**', evidence_contract = 'tests pass',
+                     consequence = 'block', waivable = 1, waiver_authority = 'maintainer',
+                     rationale = 'load-bearing'
+                 WHERE id = ?1",
+                params![g.id],
+            )
+            .unwrap();
+
+        let v2 = s
+            .supersede_goal(&g.id, "Do it even better", "learned more", NOW)
+            .unwrap();
+        assert_eq!(v2.scope.as_deref(), Some("crates/**"));
+        assert_eq!(v2.evidence_contract.as_deref(), Some("tests pass"));
+        assert_eq!(v2.consequence, Some(Consequence::Block));
+        assert!(v2.waivable);
+        assert_eq!(v2.waiver_authority.as_deref(), Some("maintainer"));
+        assert!(v2.is_enforceable());
+    }
 
     #[test]
     fn supersede_bumps_version_and_retires_old() {

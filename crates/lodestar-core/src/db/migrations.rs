@@ -35,6 +35,14 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
             "materialization_revision",
             "INTEGER NOT NULL DEFAULT 0",
         ),
+        ("goals", "constitution_version", "TEXT"),
+        ("goals", "rationale", "TEXT"),
+        ("goals", "scope", "TEXT"),
+        ("goals", "evidence_contract", "TEXT"),
+        ("goals", "consequence", "TEXT"),
+        ("goals", "waivable", "INTEGER NOT NULL DEFAULT 0"),
+        ("goals", "waiver_authority", "TEXT"),
+        ("goals", "origin", "TEXT NOT NULL DEFAULT 'local'"),
     ] {
         if !column_exists(connection, table, column)? {
             connection.execute_batch(&format!(
@@ -42,6 +50,7 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
             ))?;
         }
     }
+    migrate_constitution_versions(connection)?;
     connection.execute(
         "UPDATE tasks
          SET claim_started_at = updated_at
@@ -191,6 +200,47 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
                WHERE conformance.task_id = tasks.blocked_by
                  AND conformance.verdict = 'aligned'
            )",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Freeze the existing local goals as the first constitutional version.
+///
+/// The goals ARE today's active constitution, so they become version 1 with
+/// honest provenance: `origin=local` (column default) and `created_by=migration`.
+/// Migration does NOT invent a purpose, preamble, project identity, consequence,
+/// or waiver policy (SPEC-CONSTITUTION §10, ADR-0026); those fields stay NULL so
+/// incomplete clauses remain review-only until a maintainer completes them. The
+/// guards make this idempotent: a second open adds no new version and rebinds no
+/// clause.
+fn migrate_constitution_versions(connection: &Connection) -> Result<()> {
+    let has_goals: bool =
+        connection.query_row("SELECT EXISTS(SELECT 1 FROM goals)", [], |row| row.get(0))?;
+    let has_version: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM constitution_versions)",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_goals && !has_version {
+        let created_at: i64 = connection.query_row(
+            "SELECT COALESCE(MIN(created_at), 0) FROM goals",
+            [],
+            |row| row.get(0),
+        )?;
+        connection.execute(
+            "INSERT INTO constitution_versions
+                 (id, version, project_identity, purpose, preamble, status,
+                  created_by, created_at, activated_by, activated_at)
+             VALUES ('constitution:v1', 1, NULL, NULL, NULL, 'active',
+                     'migration', ?1, 'migration', ?1)",
+            [created_at],
+        )?;
+    }
+    connection.execute(
+        "UPDATE goals SET constitution_version = 'constitution:v1'
+         WHERE constitution_version IS NULL
+           AND EXISTS (SELECT 1 FROM constitution_versions WHERE id = 'constitution:v1')",
         [],
     )?;
     Ok(())

@@ -42,7 +42,7 @@ mod tests {
 
     use super::*;
     use crate::design::{DesignMaterializationMode, DesignMaterializationPlan};
-    use crate::model::{TaskStatus, Verdict};
+    use crate::model::{ClauseOrigin, TaskStatus, Verdict};
     use crate::store::{ConformanceAudit, LodestarStore};
 
     #[test]
@@ -423,6 +423,53 @@ mod tests {
             2
         );
         drop(reopened);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn migration_freezes_existing_goals_as_first_local_constitution_version() {
+        let path = temporary_database("legacy-constitution");
+        create_legacy_database(&path, false);
+
+        let store = LodestarStore::new(open(path.to_str().unwrap()).unwrap());
+        let active = store
+            .active_constitution_version()
+            .unwrap()
+            .expect("existing goals freeze into a first active version");
+        assert_eq!(active.id, "constitution:v1");
+        assert_eq!(active.version, 1);
+        // Honest provenance only: migration attributes itself and invents no
+        // purpose, preamble, or project identity (SPEC-CONSTITUTION §10).
+        assert_eq!(active.created_by.as_deref(), Some("migration"));
+        assert!(active.purpose.is_none());
+        assert!(active.preamble.is_none());
+        assert!(active.project_identity.is_none());
+
+        // The existing clause binds to v1, is locally-authored, and stays
+        // review-only because migration invents no enforcement contract.
+        let clause = store.get_goal("goal:test").unwrap().unwrap();
+        assert_eq!(
+            clause.constitution_version.as_deref(),
+            Some("constitution:v1")
+        );
+        assert_eq!(clause.origin, ClauseOrigin::Local);
+        assert!(clause.scope.is_none());
+        assert!(clause.evidence_contract.is_none());
+        assert!(clause.consequence.is_none());
+        assert!(!clause.is_enforceable());
+        drop(store);
+
+        // Idempotent: a second open adds no version and rebinds no clause.
+        let store = LodestarStore::new(open(path.to_str().unwrap()).unwrap());
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        let versions: i64 = connection
+            .query_row("SELECT COUNT(1) FROM constitution_versions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(versions, 1);
+        drop(connection);
         std::fs::remove_file(path).unwrap();
     }
 

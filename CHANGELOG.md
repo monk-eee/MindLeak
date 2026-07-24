@@ -7,6 +7,20 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Constitutional representation and goal migration (ADR-0026, SPEC-CONSTITUTION
+  §10, task 1 of 6).** Goals are now clauses of an explicit, versioned
+  constitution. A new `constitution_versions` record freezes the attributed
+  policy snapshot (purpose, preamble, project identity, lifecycle state), a
+  `principle` goal kind captures broad decision rules that route to review, and
+  each clause carries provenance (`origin`), `rationale`, `scope`, an
+  `evidence_contract`, a proportional `consequence` (advise / review / block),
+  and a waiver policy (`waivable`, `waiver_authority`). A clause is enforceable —
+  and can hard-block — only once it declares scope, evidence, and consequence;
+  until then it is review-only. Existing active goals migrate into a first
+  **local** version (`constitution:v1`) with honest self-attribution and no
+  invented purpose, preamble, authority, or enforcement contract; the migration
+  is idempotent. `active_constitution_version()` reports the absent / draft /
+  active state.
 - **Ask-before-act constitutional advice (ADR-0029).** Agents can now ask what
   governs an intended change *before* doing it, not only discover drift at
   `complete_task`. The new `advise` tool takes the `artifact:`/`symbol:` ids you
