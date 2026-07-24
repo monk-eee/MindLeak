@@ -39,9 +39,10 @@ No Rust toolchain and no `PATH` changes — three steps and a restart:
 
    Node.js 20+ is required. The installer smoke-tests both servers, copies them
    to `.mindleak/bin/<version>/`, merges the two registrations into
-   `.vscode/mcp.json` (keeping your other servers and comments), and adds the
-   local databases to `.gitignore`. `--agent` sets a stable identity for
-   attribution and task ownership; it defaults to `copilot`.
+   `.vscode/mcp.json` (keeping your other servers and comments), writes a Copilot
+   CLI config to `.mindleak/copilot-mcp.json`, and adds the local databases to
+   `.gitignore`. `--agent` sets a stable identity for attribution and task
+   ownership; it defaults to `copilot`.
 
 3. **Restart your MCP client** (VS Code / Copilot, Claude Desktop, or Cursor) so
    it picks up the new registration.
@@ -120,6 +121,39 @@ use the `mcpServers` key:
     "lodestar": {
       "command": "/abs/path/to/lodestar-mcp",
       "env": { "LODESTAR_DB": "/abs/path/to/project/.lodestar/spec.db", "LODESTAR_AGENT": "claude" }
+    }
+  }
+}
+```
+
+### GitHub Copilot CLI — `mcpServers` config
+
+The `copilot` CLI also uses the `mcpServers` key, but it does **not** expand VS
+Code's `${workspaceFolder}`, so its paths must be absolute (ADR-0033). The
+release installer writes a ready-to-use config to `.mindleak/copilot-mcp.json`;
+point the CLI at it per run:
+
+```bash
+copilot --additional-mcp-config @.mindleak/copilot-mcp.json
+```
+
+To make it the machine-wide default instead, merge the same `mcpServers` block
+into `~/.copilot/mcp-config.json` (honours `COPILOT_HOME`):
+
+```json
+{
+  "mcpServers": {
+    "mindleak": {
+      "command": "/abs/path/to/mindleak-mcp",
+      "env": {
+        "MINDLEAK_DB": "/abs/path/to/project/.mindleak/graph.db",
+        "MINDLEAK_AGENT": "copilot",
+        "MINDLEAK_WORKSPACE": "/abs/path/to/project"
+      }
+    },
+    "lodestar": {
+      "command": "/abs/path/to/lodestar-mcp",
+      "env": { "LODESTAR_DB": "/abs/path/to/project/.lodestar/spec.db", "LODESTAR_AGENT": "copilot" }
     }
   }
 }

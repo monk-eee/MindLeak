@@ -186,6 +186,10 @@ It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
 }
 ```
 
+For the **GitHub Copilot CLI**, the installer also writes
+`.mindleak/copilot-mcp.json` (absolute paths, `mcpServers` schema); pass it with
+`copilot --additional-mcp-config @.mindleak/copilot-mcp.json` (ADR-0033).
+
 ---
 
 ## MCP tools

@@ -9,11 +9,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { parse } from "jsonc-parser";
 
 import {
+  copilotRegistrations,
   install,
   parseArguments,
   probeEmbeddingCapability,
   registrations,
   smokeServer,
+  updateCopilotConfig,
   updateGitignore,
   updateMcpConfig,
 } from "./install.mjs";
@@ -74,6 +76,62 @@ describe("updateMcpConfig", () => {
     ).toHaveProperty("mindleak");
     expect(() => updateMcpConfig("{ nope", {})).toThrow("cannot update .vscode/mcp.json");
     expect(() => updateMcpConfig("[]", {})).toThrow("root must be an object");
+  });
+});
+
+describe("copilotRegistrations", () => {
+  it("renders mcpServers-ready entries with absolute install-time paths", () => {
+    const windows = copilotRegistrations("C:/ws/.mindleak/bin/v1.2.3", "C:/ws", "win32", "agent-a");
+    const linux = copilotRegistrations("/ws/.mindleak/bin/v1", "/ws", "linux", "copilot");
+
+    // Copilot CLI does not expand ${workspaceFolder}: paths must be absolute.
+    expect(windows.mindleak.command).toBe(
+      path.join("C:/ws/.mindleak/bin/v1.2.3", "mindleak-mcp.exe")
+    );
+    expect(windows.mindleak.command).not.toContain("${workspaceFolder}");
+    expect(Array.isArray(windows.mindleak.args)).toBe(true);
+    expect(windows.mindleak.env.MINDLEAK_DB).toBe(path.join("C:/ws", ".mindleak", "graph.db"));
+    expect(windows.mindleak.env.MINDLEAK_AGENT).toBe("agent-a");
+    expect(windows.mindleak.env.MINDLEAK_WORKSPACE).toBe("C:/ws");
+    expect(linux.lodestar.command).toBe(path.join("/ws/.mindleak/bin/v1", "lodestar-mcp"));
+    expect(linux.lodestar.env.LODESTAR_DB).toBe(path.join("/ws", ".lodestar", "spec.db"));
+    expect(linux.lodestar.env.LODESTAR_AGENT).toBe("copilot");
+  });
+});
+
+describe("updateCopilotConfig", () => {
+  it("merges under mcpServers, preserving comments and unrelated servers", () => {
+    const source = `{
+  // keep me
+  "mcpServers": {
+    "github": { "command": "gh-mcp" },
+    "mindleak": { "command": "old" },
+  },
+}
+`;
+
+    const result = updateCopilotConfig(
+      source,
+      copilotRegistrations("/ws/bin", "/ws", "linux", "copilot")
+    );
+    const parsed = parse(result);
+
+    expect(result).toContain("// keep me");
+    expect(parsed.mcpServers.github.command).toBe("gh-mcp");
+    expect(parsed.mcpServers.mindleak.command).toBe(path.join("/ws/bin", "mindleak-mcp"));
+    expect(parsed.mcpServers.lodestar.command).toBe(path.join("/ws/bin", "lodestar-mcp"));
+    expect(parsed.mcpServers.mindleak.env.MINDLEAK_DB).toBe(
+      path.join("/ws", ".mindleak", "graph.db")
+    );
+  });
+
+  it("creates a valid document from an empty source and rejects malformed JSONC", () => {
+    expect(
+      parse(updateCopilotConfig("", copilotRegistrations("/ws/bin", "/ws", "linux", "a")))
+        .mcpServers
+    ).toHaveProperty("mindleak");
+    expect(() => updateCopilotConfig("{ nope", {})).toThrow("cannot update Copilot CLI MCP config");
+    expect(() => updateCopilotConfig("[]", {})).toThrow("root must be an object");
   });
 });
 
@@ -143,6 +201,20 @@ describe("install", () => {
     expect(parse(config).servers.other.command).toBe("other");
     expect(parse(config).servers.mindleak.env.MINDLEAK_AGENT).toBe("agent-a");
     expect(fs.readFileSync(path.join(workspace, ".gitignore"), "utf8")).toContain(".lodestar/*");
+
+    // The Copilot CLI config is written alongside, with absolute paths and the
+    // same local stores, so both clients drive the same servers (ADR-0033).
+    const copilotConfig = parse(
+      fs.readFileSync(path.join(workspace, ".mindleak", "copilot-mcp.json"), "utf8")
+    );
+    expect(copilotConfig.mcpServers.mindleak.command).toBe(
+      path.join(installed, "mindleak-mcp.exe")
+    );
+    expect(copilotConfig.mcpServers.mindleak.command).not.toContain("${workspaceFolder}");
+    expect(copilotConfig.mcpServers.mindleak.env.MINDLEAK_AGENT).toBe("agent-a");
+    expect(copilotConfig.mcpServers.lodestar.env.LODESTAR_DB).toBe(
+      path.join(workspace, ".lodestar", "spec.db")
+    );
   });
 
   it("replaces an existing version only when forced", async () => {
