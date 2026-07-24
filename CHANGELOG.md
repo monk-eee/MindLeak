@@ -127,6 +127,15 @@ to [Semantic Versioning](https://semver.org/).
   collision harness exercises the helper against a throwaway local bare remote
   from both primary and linked worktrees, proving new-branch creation while
   excluding foreign staged or broken working-tree files.
+- **The Context Graph visualizer stays responsive on large graphs.** A seeded
+  snapshot (the neighbourhood of the active file) expanded the full depth-2 reach
+  with no cap, so expanding into a hub node — an agent that has observed
+  thousands of nodes — dragged the whole neighbourhood into Cytoscape and
+  exhausted memory. The snapshot now returns a bounded, relevance-first
+  neighbourhood: best-first expansion by decay-weighted score, following only
+  each node's strongest few edges, so the rendered graph is always small (~150
+  nodes at most) and shows the most active context regardless of how large the
+  graph grows.
 - **Build and VCS output is no longer ingested into the graph.** A passive save
   sensor or a build/git command's changed-files could pull `.git/`, `target/`,
   `node_modules/`, `dist/`, `coverage/`, and other regenerated or throwaway paths
