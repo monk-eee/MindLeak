@@ -9,6 +9,7 @@
 // Cross-platform, zero build-time dependencies (Node stdlib + global fetch).
 
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -43,15 +44,17 @@ export function driveServer(exe, root = process.cwd(), extraEnv = {}) {
   const env = {
     ...process.env,
     MINDLEAK_DB: path.join(dir, "graph.db"),
+    MINDLEAK_AGENT: "benchmark",
     ...extraEnv,
   };
-  delete env.MINDLEAK_AGENT; // no attribution noise in the graph
   const server = spawn(exe, [], {
     cwd: root,
     env,
     stdio: ["pipe", "pipe", "inherit"],
   });
   let nextId = 1;
+  const sessionId = randomBytes(16).toString("hex");
+  let sessionReady;
   const pending = new Map();
   readline.createInterface({ input: server.stdout }).on("line", (line) => {
     let message;
@@ -74,8 +77,21 @@ export function driveServer(exe, root = process.cwd(), extraEnv = {}) {
         `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`,
       );
     });
+  const openSession = async () => {
+    const response = await request("tools/call", {
+      name: "open_session",
+      arguments: { session_id: sessionId },
+    });
+    if (response.error || response.result?.isError)
+      throw new Error(JSON.stringify(response));
+  };
   const tool = async (name, args) => {
-    const response = await request("tools/call", { name, arguments: args });
+    sessionReady ??= openSession();
+    await sessionReady;
+    const response = await request("tools/call", {
+      name,
+      arguments: { ...args, session_id: sessionId },
+    });
     if (response.error || response.result?.isError)
       throw new Error(JSON.stringify(response));
     return JSON.parse(response.result.content[0].text);

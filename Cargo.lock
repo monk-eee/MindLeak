@@ -281,6 +281,7 @@ version = "0.1.1"
 dependencies = [
  "globset",
  "mindleak-core",
+ "mindleak-session",
  "mindleak-storage",
  "rusqlite",
  "serde",
@@ -296,6 +297,7 @@ version = "0.1.1"
 dependencies = [
  "anyhow",
  "lodestar-core",
+ "mindleak-session",
  "serde",
  "serde_json",
 ]
@@ -346,9 +348,17 @@ version = "0.1.1"
 dependencies = [
  "anyhow",
  "mindleak-core",
+ "mindleak-session",
  "serde",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "mindleak-session"
+version = "0.1.1"
+dependencies = [
+ "sha2",
 ]
 
 [[package]]

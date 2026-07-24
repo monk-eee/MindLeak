@@ -102,6 +102,7 @@ pub(super) fn dispatch(
                     req_str(args, "adr_path")?,
                     req_str(args, "title")?,
                     opt_str(args, "summary").unwrap_or_default().as_str(),
+                    Some(req_str(args, "agent")?),
                 )
                 .map_err(|e| e.to_string())?;
             ok(&item)
@@ -167,7 +168,6 @@ mod tests {
         // single-task fallback — independent of any ambient local model.
         Lodestar::open_in_memory()
             .unwrap()
-            .with_agent(Some("planner".to_string()))
             .with_llm(LlmClient::unreachable())
     }
 
@@ -186,7 +186,8 @@ mod tests {
                     "arguments": {
                         "adr_path": "docs/adr/0023-design-board-accept-bridge.md",
                         "title": "Accept bridge",
-                        "summary": "human accept completes design work"
+                        "summary": "human accept completes design work",
+                        "agent": "planner"
                     }
                 }),
             )
@@ -286,7 +287,7 @@ mod tests {
                 &engine,
                 &json!({
                     "name": "register_design",
-                    "arguments": { "adr_path": "docs/adr/0099-self.md", "title": "Self" }
+                    "arguments": { "adr_path": "docs/adr/0099-self.md", "title": "Self", "agent": "planner" }
                 }),
             )
             .unwrap(),
@@ -308,7 +309,7 @@ mod tests {
                 &engine,
                 &json!({
                     "name": "register_design",
-                    "arguments": { "adr_path": "docs/adr/0030-typed.md", "title": "Typed errors" }
+                    "arguments": { "adr_path": "docs/adr/0030-typed.md", "title": "Typed errors", "agent": "planner" }
                 }),
             )
             .unwrap(),
@@ -364,7 +365,7 @@ mod tests {
                 &engine,
                 &json!({
                     "name": "register_design",
-                    "arguments": { "adr_path": "docs/adr/0105-repair.md", "title": "Repair" }
+                    "arguments": { "adr_path": "docs/adr/0105-repair.md", "title": "Repair", "agent": "planner" }
                 }),
             )
             .unwrap(),

@@ -15,17 +15,12 @@ impl Lodestar {
         adr_path: &str,
         title: &str,
         summary: &str,
+        proposed_by: Option<&str>,
     ) -> Result<DesignItem> {
         let adr_path = adr_path.replace('\\', "/");
         let id = design_id_from_path(&adr_path);
-        self.store.register_design_item(
-            &id,
-            &adr_path,
-            title,
-            summary,
-            self.agent.as_deref(),
-            now_unix(),
-        )
+        self.store
+            .register_design_item(&id, &adr_path, title, summary, proposed_by, now_unix())
     }
 
     /// Reconcile structured repository ADR metadata without inferring or
@@ -154,7 +149,8 @@ mod tests {
     use crate::{DesignPromotionStatus, DesignStatus, GoalKind, Lodestar, LodestarError};
 
     fn agent_engine(agent: &str) -> Lodestar {
-        engine().with_agent(Some(agent.to_string()))
+        let _ = agent;
+        engine()
     }
 
     fn create_plan(goal_id: &str, title: &str) -> DesignMaterializationPlan {
@@ -179,6 +175,7 @@ mod tests {
                 "docs/adr/0023-design-board-accept-bridge.md",
                 "Accept bridge",
                 "human accept completes design work",
+                Some("planner"),
             )
             .unwrap();
         assert_eq!(item.id, "design:0023-design-board-accept-bridge");
@@ -236,7 +233,9 @@ mod tests {
     #[test]
     fn promote_requires_an_accepted_design_and_an_objective_target() {
         let e = agent_engine("planner");
-        let item = e.register_design("docs/adr/0031-x.md", "X", "x").unwrap();
+        let item = e
+            .register_design("docs/adr/0031-x.md", "X", "x", Some("planner"))
+            .unwrap();
         let objective = e
             .define_goal(GoalKind::Objective, "Obj", "o", None)
             .unwrap();
@@ -257,7 +256,12 @@ mod tests {
     fn an_agent_cannot_decide_its_own_design() {
         let e = agent_engine("planner");
         let item = e
-            .register_design("docs/adr/0099-self.md", "Self", "no self-accept")
+            .register_design(
+                "docs/adr/0099-self.md",
+                "Self",
+                "no self-accept",
+                Some("planner"),
+            )
             .unwrap();
         let err = e.accept_design(&item.id, "planner").unwrap_err();
         assert!(matches!(err, LodestarError::Invalid(_)));
@@ -269,7 +273,7 @@ mod tests {
     fn a_decided_item_cannot_be_decided_again() {
         let e = agent_engine("planner");
         let item = e
-            .register_design("docs/adr/0100-twice.md", "Twice", "")
+            .register_design("docs/adr/0100-twice.md", "Twice", "", Some("planner"))
             .unwrap();
         e.accept_design(&item.id, "human").unwrap();
         let err = e
@@ -286,6 +290,7 @@ mod tests {
                 "docs/adr/0030-typed-errors.md",
                 "Typed errors everywhere",
                 "all fallible IO returns a typed error",
+                Some("planner"),
             )
             .unwrap();
         e.accept_design(&item.id, "reviewer").unwrap();
@@ -328,7 +333,12 @@ mod tests {
             .create_task(&second_goal.id, "Existing intent task", "done")
             .unwrap();
         let item = e
-            .register_design("docs/adr/0103-link.md", "Link", "reuse existing work")
+            .register_design(
+                "docs/adr/0103-link.md",
+                "Link",
+                "reuse existing work",
+                Some("planner"),
+            )
             .unwrap();
         e.accept_design(&item.id, "reviewer").unwrap();
         let linked = e
@@ -348,7 +358,12 @@ mod tests {
         assert_eq!(e.board(false).unwrap().len(), 2);
 
         let no_work = e
-            .register_design("docs/adr/0104-no-work.md", "No work", "policy only")
+            .register_design(
+                "docs/adr/0104-no-work.md",
+                "No work",
+                "policy only",
+                Some("planner"),
+            )
             .unwrap();
         e.accept_design(&no_work.id, "reviewer").unwrap();
         let resolved = e
@@ -378,7 +393,12 @@ mod tests {
             .create_task(&goal.id, "Authoritative existing task", "done")
             .unwrap();
         let item = e
-            .register_design("docs/adr/0105-repair.md", "Repair", "review repair")
+            .register_design(
+                "docs/adr/0105-repair.md",
+                "Repair",
+                "review repair",
+                Some("planner"),
+            )
             .unwrap();
         e.accept_design(&item.id, "reviewer").unwrap();
         let first = e
@@ -415,7 +435,7 @@ mod tests {
     fn reject_requires_a_reason_and_stays_durable() {
         let e = agent_engine("planner");
         let item = e
-            .register_design("docs/adr/0101-reject.md", "Reject", "")
+            .register_design("docs/adr/0101-reject.md", "Reject", "", Some("planner"))
             .unwrap();
         assert!(e.reject_design(&item.id, "human", "  ").is_err());
         let rejected = e
@@ -431,10 +451,10 @@ mod tests {
     #[test]
     fn registering_the_same_adr_twice_is_rejected() {
         let e = agent_engine("planner");
-        e.register_design("docs/adr/0102-dup.md", "Dup", "")
+        e.register_design("docs/adr/0102-dup.md", "Dup", "", Some("planner"))
             .unwrap();
         let err = e
-            .register_design("docs/adr/0102-dup.md", "Dup again", "")
+            .register_design("docs/adr/0102-dup.md", "Dup again", "", Some("planner"))
             .unwrap_err();
         assert!(matches!(err, LodestarError::Invalid(_)));
     }

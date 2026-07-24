@@ -9,11 +9,13 @@ mod lifecycle;
 mod telemetry;
 
 use mindleak_core::MindLeak;
+use mindleak_session::SessionRegistry;
 use serde_json::{json, Value};
 
 /// The advertised tool list (`tools/list`).
 pub fn list() -> Vec<Value> {
-    let mut definitions = graph::definitions();
+    let mut definitions = vec![session_definition()];
+    definitions.extend(graph::definitions());
     definitions.extend(ingestion::definitions());
     definitions.extend(lifecycle::graph_definitions());
     definitions.extend(consolidation::definitions());
@@ -21,6 +23,38 @@ pub fn list() -> Vec<Value> {
     definitions.extend(embeddings::definitions());
     definitions.extend(telemetry::definitions());
     definitions
+        .into_iter()
+        .map(apply_session_contract)
+        .collect()
+}
+
+pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value, String> {
+    let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+    let mut bound = params.clone();
+    let args = bound
+        .get_mut("arguments")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "tool arguments must be an object".to_string())?;
+    if name == "open_session" {
+        let token = args
+            .get("session_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "missing required argument: session_id".to_string())?;
+        let identity = sessions.open_session(token)?;
+        args.insert("resolved_agent".to_string(), json!(identity.agent_id));
+        return Ok(bound);
+    }
+    if requires_session(name) {
+        let token = args
+            .get("session_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "missing required argument: session_id".to_string())?;
+        let identity = sessions.resolve(token)?;
+        args.insert("agent".to_string(), json!(identity.agent_id));
+        args.insert("agent_id".to_string(), json!(identity.agent_id));
+        args.insert("exclude_agent".to_string(), json!(identity.agent_id));
+    }
+    Ok(bound)
 }
 
 /// Dispatch a `tools/call` request with observability: every call is timed,
@@ -54,6 +88,12 @@ fn dispatch(engine: &MindLeak, params: &Value) -> Result<Value, String> {
         .ok_or("missing tool name")?;
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
 
+    if name == "open_session" {
+        return Ok(text_result(&json!({
+            "agent_id": req_str(&args, "resolved_agent")?,
+        })));
+    }
+
     if let Some(result) = graph::dispatch(engine, name, &args) {
         return result;
     }
@@ -74,6 +114,71 @@ fn dispatch(engine: &MindLeak, params: &Value) -> Result<Value, String> {
     }
 
     Err(format!("unknown tool: {name}"))
+}
+
+fn session_definition() -> Value {
+    json!({
+        "name": "open_session",
+        "description": "Register one client-minted 128-bit session id and return its stable cross-plane agent identity. Reuse the same session_id on every identity-bearing tool call and after server restarts.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": { "type": "string", "pattern": "^[0-9a-f]{32}$" }
+            },
+            "required": ["session_id"]
+        }
+    })
+}
+
+fn requires_session(name: &str) -> bool {
+    matches!(
+        name,
+        "record_architectural_decision"
+            | "ingest_execution"
+            | "ingest_commit"
+            | "ingest_file"
+            | "boost_entity"
+            | "working_set"
+            | "evidence_for"
+            | "check_overlap"
+    )
+}
+
+fn apply_session_contract(mut tool: Value) -> Value {
+    let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
+    if !requires_session(name) {
+        return tool;
+    }
+    if let Some(properties) = tool
+        .get_mut("inputSchema")
+        .and_then(|schema| schema.get_mut("properties"))
+        .and_then(Value::as_object_mut)
+    {
+        for legacy in ["agent", "agent_id", "exclude_agent"] {
+            properties.remove(legacy);
+        }
+        properties.insert(
+            "session_id".to_string(),
+            json!({
+                "type": "string",
+                "pattern": "^[0-9a-f]{32}$",
+                "description": "Session id previously registered with open_session."
+            }),
+        );
+    }
+    if let Some(required) = tool
+        .get_mut("inputSchema")
+        .and_then(|schema| schema.get_mut("required"))
+        .and_then(Value::as_array_mut)
+    {
+        required.retain(|value| value != "agent" && value != "agent_id");
+        if !required.iter().any(|value| value == "session_id") {
+            required.push(json!("session_id"));
+        }
+    } else if let Some(schema) = tool.get_mut("inputSchema").and_then(Value::as_object_mut) {
+        schema.insert("required".to_string(), json!(["session_id"]));
+    }
+    tool
 }
 
 fn text_result(value: &Value) -> Value {
@@ -135,6 +240,21 @@ mod tests {
     use mindleak_core::MindLeak;
 
     pub(super) fn call_ok(engine: &MindLeak, name: &str, args: Value) -> Value {
+        let mut args = args;
+        if requires_session(name) {
+            let object = args
+                .as_object_mut()
+                .expect("test arguments must be an object");
+            object
+                .entry("agent")
+                .or_insert_with(|| json!("session:v1:test:fixed"));
+            object
+                .entry("agent_id")
+                .or_insert_with(|| json!("session:v1:test:fixed"));
+            object
+                .entry("exclude_agent")
+                .or_insert_with(|| json!("session:v1:test:fixed"));
+        }
         let params = json!({ "name": name, "arguments": args });
         call(engine, &params).expect("tool call should succeed")
     }
@@ -172,6 +292,12 @@ mod tests {
         // colliding on a hand-maintained count.
         let unique: std::collections::HashSet<&String> = names.iter().collect();
         assert_eq!(unique.len(), names.len(), "duplicate tool name");
+        let evidence = list()
+            .into_iter()
+            .find(|tool| tool["name"] == "evidence_for")
+            .unwrap();
+        assert!(evidence["inputSchema"]["properties"]["session_id"].is_object());
+        assert!(evidence["inputSchema"]["properties"]["agent_id"].is_null());
     }
 
     #[test]

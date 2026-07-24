@@ -7,6 +7,7 @@ description = "Lodestar: the Intent Plane for MindLeak — durable constitution,
 
 [dependencies]
 mindleak-storage = { path = "../mindleak-storage" }
+mindleak-session = { path = "../mindleak-session" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rusqlite = { workspace = true }

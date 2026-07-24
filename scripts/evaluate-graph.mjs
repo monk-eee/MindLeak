@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -41,6 +41,7 @@ const server = spawn(executable, [], {
 
 let nextId = 1;
 const pending = new Map();
+const sessionId = randomBytes(16).toString("hex");
 let result;
 const lines = readline.createInterface({ input: server.stdout });
 lines.on("line", (line) => {
@@ -61,7 +62,10 @@ function request(method, params) {
 }
 
 async function callTool(name, arguments_) {
-  const response = await request("tools/call", { name, arguments: arguments_ });
+  const response = await request("tools/call", {
+    name,
+    arguments: { ...arguments_, session_id: sessionId },
+  });
   if (response.error || response.result?.isError) {
     throw new Error(JSON.stringify(response.error ?? response.result));
   }
@@ -89,6 +93,7 @@ function hierarchyEdgeKey(edge) {
 
 try {
   const initialization = await request("initialize", {});
+  await callTool("open_session", {});
 
   await callTool("ingest_file", {
     path: "src/stale.ts",
