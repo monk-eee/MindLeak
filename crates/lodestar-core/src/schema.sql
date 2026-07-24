@@ -48,6 +48,64 @@ CREATE TABLE IF NOT EXISTS goals (
 CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
 CREATE INDEX IF NOT EXISTS idx_goals_slug   ON goals(slug);
 
+-- Policy packs are immutable, versioned inputs to constitutional drafting
+-- (SPEC-CONSTITUTION section 6). Adoption copies a clause into goals and records
+-- immutable provenance; packs are never live dependencies of local policy.
+CREATE TABLE IF NOT EXISTS policy_packs (
+    pack_id      TEXT NOT NULL,
+    version      TEXT NOT NULL,
+    digest       TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    description  TEXT NOT NULL,
+    content_json TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    PRIMARY KEY (pack_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS policy_pack_conflicts (
+    pack_id             TEXT NOT NULL,
+    pack_version        TEXT NOT NULL,
+    conflicting_pack_id TEXT NOT NULL,
+    reason              TEXT NOT NULL,
+    PRIMARY KEY (pack_id, pack_version, conflicting_pack_id),
+    FOREIGN KEY (pack_id, pack_version)
+        REFERENCES policy_packs(pack_id, version) ON DELETE CASCADE
+);
+
+-- One durable review record per pack clause and constitution context. A
+-- rejection remains here so bootstrap cannot silently re-propose it.
+CREATE TABLE IF NOT EXISTS pack_clause_proposals (
+    id                   TEXT PRIMARY KEY,
+    pack_id              TEXT NOT NULL,
+    pack_version         TEXT NOT NULL,
+    pack_digest          TEXT NOT NULL,
+    constitution_version TEXT NOT NULL DEFAULT '',
+    clause_key           TEXT NOT NULL,
+    clause_json          TEXT NOT NULL,
+    disposition          TEXT,
+    reviewed_by          TEXT,
+    review_reason        TEXT,
+    reviewed_at          INTEGER,
+    adopted_goal_id      TEXT,
+    created_at           INTEGER NOT NULL,
+    UNIQUE (pack_id, pack_version, constitution_version, clause_key),
+    FOREIGN KEY (pack_id, pack_version)
+        REFERENCES policy_packs(pack_id, version) ON DELETE CASCADE,
+    FOREIGN KEY (adopted_goal_id) REFERENCES goals(id) ON DELETE SET NULL
+);
+
+-- Original source survives independently after adoption. An upstream pack
+-- version can therefore never rewrite active local policy.
+CREATE TABLE IF NOT EXISTS pack_clause_provenance (
+    goal_id       TEXT PRIMARY KEY,
+    pack_id       TEXT NOT NULL,
+    pack_version  TEXT NOT NULL,
+    pack_digest   TEXT NOT NULL,
+    clause_key    TEXT NOT NULL,
+    clause_json   TEXT NOT NULL,
+    FOREIGN KEY (goal_id) REFERENCES goals(id) ON DELETE CASCADE
+);
+
 -- Design items: an ADR under human review (ADR-0023). The taint is the ADR's
 -- own 'proposed' status; a human accept/reject is the completion path for design
 -- work (no code conformance -- there is no code to conform to). A proposed item

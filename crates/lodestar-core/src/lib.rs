@@ -13,6 +13,7 @@ pub mod error;
 mod facade;
 pub mod llm;
 pub mod model;
+pub mod policy;
 pub mod store;
 mod util;
 
@@ -30,6 +31,10 @@ pub use model::{
     ConformanceEvidence, ConformanceRecord, ConformanceResult, EvidenceProvenance, Goal, GoalKind,
     GoalStatus, GoverningClause, Knowledge, SignalPromotion, Task, TaskQa, TaskScope, TaskStatus,
     Verdict,
+};
+pub use policy::{
+    common_core_pack, ConstitutionPack, PackClause, PackClauseDisposition, PackClauseProposal,
+    PackClauseProvenance, PackConflict, PackProposalBatch, PackReviewOutcome,
 };
 pub use store::{ClaimTransfer, LodestarStore, ResetOutcome, Stats};
 

@@ -298,6 +298,9 @@ coordinate through one plane.
 |---|---|
 | `define_goal` / `supersede_goal` | Write/version the constitution (objective · constraint · invariant). |
 | `get_constitution` | The authoritative intent to read **before acting**. |
+| `register_policy_pack` / `propose_policy_pack` | Validate and register one immutable pack version, then create durable clause-review proposals for a draft or active constitution. |
+| `propose_common_core` / `list_pack_proposals` | Propose the five review-first Common Core principles through the same pack path, and inspect undecided or historical dispositions. |
+| `review_pack_clause` / `pack_clause_provenance` | Session-attributed adopt/tailor/reject; adoption copies a self-contained local clause and preserves immutable source pack provenance. |
 | `advise` | **Ask before acting** (ADR-0029): given the `artifact:`/`symbol:` ids you intend to change, returns the governing clauses + a proportional disposition (advise / review / block / needs_human). Evidence-free, records nothing, needs no model, never gates a claim. |
 | `link_goal_to_code` | Bind a goal to MindLeak `artifact:`/`symbol:` nodes. |
 | `unlink_goal_from_code` / `governing_goals` | Prune a stale goal↔code binding, and audit which goals govern a node — keeps conformance honest. |

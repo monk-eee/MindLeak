@@ -64,6 +64,7 @@ impl LodestarStore {
         let design_items_removed = transaction.execute("DELETE FROM design_items", [])?;
         let tasks_removed = transaction.execute("DELETE FROM tasks", [])?;
         let knowledge_removed = transaction.execute("DELETE FROM knowledge", [])?;
+        transaction.execute("DELETE FROM policy_packs", [])?;
         let goals_removed = transaction.execute("DELETE FROM goals", [])?;
         transaction.commit()?;
 
