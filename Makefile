@@ -35,12 +35,13 @@ lint: fmt-check clippy ext-lint ## Run all linters
 run: ## Build and run the MCP server
 	cargo run -p mindleak-mcp
 
-bench: ## Run graph, sensor, and four-arm context experiments
+bench: ## Run graph, sensor, overlap, and four-arm context experiments
 	cargo build -p mindleak-mcp
 	npm --prefix editors/vscode run compile
 	node scripts/evaluate-sensors.mjs
 	node scripts/evaluate-signal.mjs
 	node scripts/evaluate-handoffs.mjs
+	node scripts/evaluate-overlap.mjs
 	node scripts/experiments/impact-vs-similarity.mjs
 	node scripts/experiments/agent-outcome-benchmark.mjs
 

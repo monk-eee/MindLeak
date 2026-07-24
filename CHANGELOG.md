@@ -19,6 +19,18 @@ to [Semantic Versioning](https://semver.org/).
   shows them on a claimed task. AGENTS.md makes consulting the advisory a
   claim-time ritual, with retrospective conformance (ADR-0009/0025) as the
   backstop.
+- **Pre-flight duplicate-work awareness across both planes (ADR-0024).** A
+  Lodestar claim can atomically declare advisory path globs and opaque MindLeak
+  symbol ids; `task_scope`, scope-enriched `board`, and Lodestar `check_overlap`
+  expose intersections with live claims. MindLeak's same-named read derives
+  other agents' direct or mutation-linked artifact/symbol footprint after decay
+  filtering, with effective weight still computed at query time. The VS Code
+  allocator collects concrete paths/symbols, combines both reads before the
+  claim CAS, shows an explicitly overridable warning, and renders scoped work on
+  the Intent Board. A locked, source-hashed two-agent benchmark proves the blind
+  two-owner control, live claim + footprint detection, 336-hour decay control,
+  read-only checks, and a successful `blocked_by` steer; it does not claim agents
+  always obey advisory output.
 - **`forget_file` reaps a deleted file's structure instead of leaving it to
   decay for a month.** When a file is deleted or renamed in the editor, its
   symbols and artifact node — and every edge touching them — used to linger in
@@ -50,7 +62,7 @@ to [Semantic Versioning](https://semver.org/).
   current health. Lifetime totals stay cumulative history; current health is a
   separate append-order signal, including when calls share a timestamp.
 - **Two productization decisions make the viability gaps explicit.** ADR-0027
-  proposes an extension-led, five-minute first-value workflow over the existing
+  establishes an extension-led, five-minute first-value workflow over the existing
   portable MCP primitives, without duplicating authoritative state or requiring
   a model. ADR-0028 separates engineering, controlled-efficacy, and external-
   adoption evidence; it defines the privacy-preserving post-v0.1.1 developer
@@ -79,34 +91,37 @@ to [Semantic Versioning](https://semver.org/).
   consolidation/index tier (`MINDLEAK_AUTONOMOUS_CONSOLIDATION`, still opt-in); the
   worker now starts when either is enabled and emits `autonomous_prune` telemetry
   with reap counts.
-- **Design items — an accept→promote→decompose bridge for ADRs (ADR-0023).** An ADR
+- **Design items use reviewed materialization instead of blind decomposition
+  (ADR-0023).** An ADR
   can be registered as a first-class *design item* that carries the ADR's review
   lifecycle: while `proposed` it is tainted — it lives on a new **Design Board**
   and never appears in `next_task` or the executive board. `accept_design` is the
   attributed human decision *only* — it does **not** run ADR-0009 code conformance
   (a design decision has no code to conform to) and does **not** create tasks,
   resolving the `in_review` dead-end where design/ADR tasks stranded forever; the
-  design becomes `accepted` with promotion state `pending`. The separate,
-  **idempotent** `promote_design(id, objective_goal_id)` then materialises the work
-  in one step: it decomposes the reviewed design into claimable tasks under the
-  chosen objective (model-assisted, deterministic single-task fallback), registers
-  any mandated constraints/invariants into the constitution, and records durable
-  design→goal / design→task provenance links — so a retry returns the same plan
-  instead of duplicating it, and a failed decomposition leaves promotion `pending`
-  without undoing the acceptance. Keeping the optional model call out of the
-  acceptance write means it never serializes unrelated writers. `reject_design` is
+  design becomes `accepted` with promotion state `pending` and the extension
+  writes the same status into the ADR. `plan_design_promotion` is read-only; the
+  human then confirms an explicit `create`, `link`, or `no_work` plan. Create can
+  span multiple objectives, link reuses existing blocked/done work, and no-work
+  records why nothing should be scheduled. `promote_design(id, plan)` writes the
+  reviewed plan and its current provenance projection atomically and
+  idempotently. `revise_design_promotion` appends an attributed, rationale-bearing
+  repair revision; `design_materialization_history` preserves every prior plan.
+  This prevents the ADR-0028 regression where deterministic fallback created an
+  unblocked duplicate of the existing release-gated pilot under the wrong goal.
+  Keeping optional planning out of the acceptance/materialization writes means it
+  never serializes unrelated writers or creates work before review. `reject_design` is
   durable and auditable (archive-not-delete). No agent may decide its own design
   (human-in-the-loop). `reconcile_designs` idempotently imports structured
   Proposed/Accepted/Rejected ADR metadata without a model and without creating
   goals or tasks; existing human decisions and promotion state always win.
   `design_board` now returns proposed decisions plus accepted designs awaiting
-  promotion or retry. New tools: `register_design`, `reconcile_designs`,
-  `design_board`, `accept_design`, `promote_design`, `reject_design`. The VS Code
+  promotion or retry. New tools include `plan_design_promotion`,
+  `revise_design_promotion`, and `design_materialization_history`. The VS Code
   sidebar now ships the separate Design Board and workspace ADR sensor: it syncs
   structured ADR metadata on activation/change or manual command, exposes
-  attributed accept/reject and objective selection for promotion, keeps failed
-  promotion pending/retryable, and renders persisted objective/task/constraint
-  provenance for materialized designs.
+  attributed accept/reject, concrete plan review, existing-task selection,
+  multi-objective creation, and repair/history for materialized designs.
 
 ### Changed
 - **Fleet integration now preserves one canonical history (ADR-0032).** Repository

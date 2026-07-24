@@ -122,6 +122,11 @@
         "icon": "$(rocket)"
       },
       {
+        "command": "mindleak.design.revisePromotion",
+        "title": "MindLeak: Repair Design Materialization",
+        "icon": "$(tools)"
+      },
+      {
         "command": "mindleak.design.openAdr",
         "title": "MindLeak: Open ADR",
         "icon": "$(go-to-file)"
@@ -220,6 +225,11 @@
           "command": "mindleak.design.inspectPromotion",
           "when": "view == mindleak.designView && viewItem == design.materialized",
           "group": "inline@1"
+        },
+        {
+          "command": "mindleak.design.revisePromotion",
+          "when": "view == mindleak.designView && viewItem == design.materialized",
+          "group": "inline@2"
         },
         {
           "command": "mindleak.design.openAdr",

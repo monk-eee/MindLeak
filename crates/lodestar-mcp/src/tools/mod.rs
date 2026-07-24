@@ -4,6 +4,7 @@
 mod conformance;
 mod constitution;
 mod design;
+mod design_materialization;
 mod evidence;
 mod executive;
 mod knowledge;
@@ -21,6 +22,7 @@ pub fn list() -> Vec<Value> {
     tools.extend(knowledge::definitions());
     tools.extend(lifecycle::definitions());
     tools.extend(design::definitions());
+    tools.extend(design_materialization::definitions());
     tools.extend(evidence::definitions());
     tools
 }
@@ -46,6 +48,9 @@ pub fn call(engine: &Lodestar, params: &Value) -> Result<Value, String> {
         return result;
     }
     if let Some(result) = design::dispatch(engine, name, &args) {
+        return result;
+    }
+    if let Some(result) = design_materialization::dispatch(engine, name, &args) {
         return result;
     }
 

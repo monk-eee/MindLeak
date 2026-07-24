@@ -178,6 +178,7 @@ export interface LodestarTask {
   parked_at?: number | null;
   /** Clauses governing this task's scope, when the client has fetched them (ADR-0029). */
   governing?: GoverningClause[];
+  scope?: TaskScope;
 }
 
 /** One active clause governing a task's scope, from `advise` / `governing_for_task` (ADR-0029). */
@@ -203,12 +204,19 @@ export function formatGoverningClauses(governing: GoverningClause[] | undefined)
   return `\n\nGoverned by:${lines.join("")}`;
 }
 
+export interface TaskScope {
+  paths: string[];
+  symbols: string[];
+}
+
 export type TaskLeaseState = "claimable" | "live" | "expired" | "parked" | "unavailable";
 
 export interface TaskLeaseRequest {
   task_id: string;
   agent: string;
   lease_secs: number;
+  paths?: string[];
+  symbols?: string[];
 }
 
 export function taskLeaseState(task: LodestarTask, nowUnix: number): TaskLeaseState {
@@ -252,12 +260,65 @@ export function claimTaskRequest(
   task: LodestarTask,
   agent: string,
   leaseSeconds: number,
-  nowUnix: number
+  nowUnix: number,
+  scope: TaskScope = { paths: [], symbols: [] }
 ): TaskLeaseRequest {
   if (!canClaimTask(task, nowUnix)) {
     throw new Error(`task ${task.id} is not claimable`);
   }
-  return leaseRequest(task.id, agent, leaseSeconds);
+  return {
+    ...leaseRequest(task.id, agent, leaseSeconds),
+    ...(scope.paths.length > 0 ? { paths: [...scope.paths] } : {}),
+    ...(scope.symbols.length > 0 ? { symbols: [...scope.symbols] } : {}),
+  };
+}
+
+export function parseTaskScope(paths: string, symbols: string): TaskScope {
+  return {
+    paths: scopeValues(paths, (value) => value.replace(/\\/g, "/")),
+    symbols: scopeValues(symbols),
+  };
+}
+
+export interface OverlapPreflight {
+  claims: Array<{
+    task_id: string;
+    owner: string;
+    matching_paths?: string[];
+    matching_symbols?: string[];
+  }>;
+  footprints: Array<{
+    agent_id: string;
+    node_id: string;
+    via_node_id?: string;
+  }>;
+}
+
+export function overlapWarningDetail(preflight: OverlapPreflight): string | undefined {
+  const lines = preflight.claims.slice(0, 5).map((claim) => {
+    const matches = [...(claim.matching_paths ?? []), ...(claim.matching_symbols ?? [])];
+    return `Claim ${claim.task_id} (${claim.owner}): ${matches.join(", ") || "matching scope"}`;
+  });
+  lines.push(
+    ...preflight.footprints
+      .slice(0, Math.max(0, 5 - lines.length))
+      .map(
+        (footprint) =>
+          `Footprint ${footprint.agent_id}: ${footprint.node_id}` +
+          (footprint.via_node_id ? ` via ${footprint.via_node_id}` : "")
+      )
+  );
+  const hidden = preflight.claims.length + preflight.footprints.length - lines.length;
+  if (hidden > 0) {
+    lines.push(`...and ${hidden} more overlap${hidden === 1 ? "" : "s"}`);
+  }
+  return lines.length > 0 ? lines.join("\n") : undefined;
+}
+
+function scopeValues(input: string, normalize: (value: string) => string = (value) => value) {
+  return [...new Set(input.split(/[,\r\n]+/).map((value) => normalize(value.trim())))].filter(
+    Boolean
+  );
 }
 
 export function renewTaskRequest(
@@ -410,16 +471,18 @@ export function boardRows(
 
 function taskDescription(task: LodestarTask, nowUnix: number): string {
   const state = taskLeaseState(task, nowUnix);
+  let description: string;
   if (state === "expired") {
-    return `expired claim · ${task.owner ?? "unknown"} · reclaimable`;
+    description = `expired claim · ${task.owner ?? "unknown"} · reclaimable`;
+  } else if (state === "live") {
+    description = `claimed · ${task.owner ?? "unknown"} · ${remainingLease(task, nowUnix)}`;
+  } else if (state === "claimable") {
+    description = "open · claimable";
+  } else {
+    description = task.owner ? `${task.status} · ${task.owner}` : task.status;
   }
-  if (state === "live") {
-    return `claimed · ${task.owner ?? "unknown"} · ${remainingLease(task, nowUnix)}`;
-  }
-  if (state === "claimable") {
-    return "open · claimable";
-  }
-  return task.owner ? `${task.status} · ${task.owner}` : task.status;
+  const scopedItems = (task.scope?.paths.length ?? 0) + (task.scope?.symbols.length ?? 0);
+  return scopedItems > 0 ? `${description} · ${scopedItems} scoped` : description;
 }
 
 function taskTooltip(task: LodestarTask, nowUnix: number): string {
@@ -436,6 +499,12 @@ function taskTooltip(task: LodestarTask, nowUnix: number): string {
   }
   if (task.blocked_by) {
     lines.push(`blocked by: ${task.blocked_by}`);
+  }
+  if (task.scope?.paths.length) {
+    lines.push(`scope paths: ${task.scope.paths.join(", ")}`);
+  }
+  if (task.scope?.symbols.length) {
+    lines.push(`scope symbols: ${task.scope.symbols.join(", ")}`);
   }
   if (task.acceptance) {
     lines.push(task.acceptance);

@@ -166,6 +166,15 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **`isolated-push` could not create a new remote branch — FIXED.** — During the
+  ADR-0018 implementation audit, a throwaway bare-remote scenario failed because
+  `scripts/isolated-push.mjs` used `HEAD:<branch>`; Git cannot infer the full
+  destination ref when that branch does not exist. — Medium workflow impact: the
+  documented `--branch` path worked for updates but failed on a branch's first
+  push, before validation hooks ran. — Fixed this run with the explicit
+  `HEAD:refs/heads/<branch>` refspec. `scripts/collision-harness.mjs` now creates
+  a local bare remote and proves both primary- and linked-worktree invocations
+  create new branches without including foreign staged or broken WIP.
 - **`recall`'s one-off "100% failure" was a missing embedding model, not a bug.** —
   Telemetry showed `recall` as the only tool with an error (1 call / 1 error, 3ms
   fast-fail); the recorded detail was `/v1/embeddings status 404`. Root cause: the
@@ -205,6 +214,26 @@ and footguns, with impact and status:
   one governing goal, so honest commits no longer drift. Data-plane only — no code
   change.
 
+- **Blind design promotion could omit governing goals or duplicate existing work
+  — FIXED.** — ADR-0024
+  was correctly implemented across Lodestar, MindLeak, the extension, evaluation,
+  and docs under promoted `task:46dd49254e4c`, but that task belongs only to
+  `goal:local-temporal-context-graph`; exact commit evidence produced conformance
+  audit `65` with `drift` for the independently governed Intent Plane and
+  principled-delivery surfaces. The ADR-0018 audit confirmed the same shape:
+  promoted `task:d2900fdfa41b` belongs to the graph goal while its required git
+  safety scripts are governed by `goal:principled-verified-delivery`, so exact
+  evidence for green commit `321cf17` produced audit `68` with `drift`. ADR-0028
+  exposed the second failure mode: deterministic fallback created unblocked
+  `task:735e36892ffa` even though release-gated pilot `task:7f5ae1198134` already
+  represented the exact work under the Intent Plane objective. — High
+  coordination impact: a design could look materialized while bypassing its real
+  delivery chain. — Fixed Jul 2026 (`task:53a02c15fa67`): planning is read-only;
+  humans review explicit create/link/no-work plans; create may span objectives;
+  link reuses authoritative tasks; materialization is atomic/idempotent; repairs
+  append attributed revisions and replace only the current projection. The bad
+  ADR-0028 task was durably abandoned rather than deleted or relinked by hand.
+
 - **The `evidence_for` → Lodestar conformance seam is sound, but convention-
   sensitive.** — The producer and consumer agree on schema version 1, normalized
   `agent:<id>` observation provenance, successful-execution subset rules, and
@@ -222,9 +251,11 @@ and footguns, with impact and status:
   composite typed-session fixture with Copilot CLI 1.0.63 / Haiku 4.5 cross the
   exploration and success thresholds, but do not establish general performance
   across repositories, models, or long-running teams. The two-agent duplicate-
-  work scenario is covered by the claim CAS proof, not this agent-loop result. —
-  Medium impact on claim breadth. — Productization may proceed; broader external
-  replications remain required for universal efficacy claims.
+  work mechanism is now covered by ADR-0024's deterministic two-plane overlap
+  benchmark, but independent agents' scope accuracy and willingness to heed an
+  advisory are not. — Medium impact on claim breadth. — Productization may
+  proceed; broader external replications remain required for universal efficacy
+  claims.
 
 - **Signal consequence remains a bounded temporal proxy.** — A failure earns
   consequence only when the same command later succeeds after a related change,
@@ -338,20 +369,20 @@ and footguns, with impact and status:
   behaviour or relying on newly added tools. The shared Cargo build helper watches
   Git HEAD/ref changes and supports `MINDLEAK_BUILD_SHA` outside a checkout. —
   Resolved Jul 2026.
-- **Docs-only (design/ADR) tasks cannot complete via conformance, stranding
-  successors.** — A design task produces a docs commit; `complete_task` runs
+- **Docs-only design tasks could not complete via conformance, stranding
+  successors — PARTIALLY FIXED.** — A design task produces a docs commit; `complete_task` runs
   ADR-0009 code conformance, which returns `needs_human` ("evidence does not touch
   code bound to the task goal") and parks the task in `in_review` forever. Any
   implementation task chained `blocked_by` a docs-ADR predecessor then never opens
   (`blocked_by` clears only on predecessor `done`), and with no live `reopen_task`
   it cannot be un-gated — clearing the gate via `block_task(id, None)` leaves it
   `blocked` with no predecessor and no path back to `open`. — High impact on the
-  design-first workflow. — The intended fix is the accept→decompose bridge
-  ([ADR-0023](docs/adr/0023-design-board-accept-bridge.md)): a human `accept_design`
-  completes design work without code conformance and decomposes it. Until then, do
-  not chain implementation tasks behind docs-ADR design tasks (observed Jul 2026).
-  — **Update Jul 2026:** the ADR-0023 bridge only covers registered *design
-  items*. A docs-only task inside an *objective's* task chain (not a design) —
+  design-first workflow. — Fixed for registered *design items* by the accepted
+  ADR-0023 Design Board path: a human `accept_design` completes design review
+  without code conformance, then a separately reviewed create/link/no-work plan
+  maps it to executive work. Blind fallback creation was removed after ADR-0028
+  exposed a duplicate-task failure. A docs-only task inside an *objective's*
+  task chain (not a registered design item) —
   e.g. the AGENTS.md/README/USAGE/SPEC-INTENT task closing the ADR-0029 advise
   chain — still lands `in_review` via the same `needs_human` verdict, and there is
   **no task-level accept-to-`done` verb** (only `reopen_task` / `abandon_task`

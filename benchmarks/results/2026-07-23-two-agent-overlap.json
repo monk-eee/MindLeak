@@ -1,0 +1,106 @@
+{
+  "control": {
+    "concurrent_claims": 2,
+    "first_claimed": true,
+    "preflight_check_run": false,
+    "same_path_concurrent_ownership_risk": true,
+    "second_claimed": true
+  },
+  "evaluated_at": 1784859449,
+  "fixture": {
+    "agents": [
+      "alice",
+      "bob"
+    ],
+    "declared_path_globs": [
+      "src/**/*.rs"
+    ],
+    "requested_paths": [
+      "src/lib.rs"
+    ],
+    "requested_symbols": [
+      "symbol:src/lib.rs:run"
+    ],
+    "stale_age_hours": 336
+  },
+  "overlap_aware": {
+    "checks_read_only": true,
+    "claim_overlaps": [
+      {
+        "lease_expires_at": 1784859749,
+        "matching_paths": [
+          "src/lib.rs"
+        ],
+        "matching_symbols": [
+          "symbol:src/lib.rs:run"
+        ],
+        "owner": "alice",
+        "scope": {
+          "paths": [
+            "src/**/*.rs"
+          ],
+          "symbols": [
+            "symbol:src/lib.rs:run"
+          ]
+        },
+        "task_id": "task:d7ae3469b81d"
+      }
+    ],
+    "decay_control": {
+      "footprint_overlaps": [],
+      "seeded_age_hours": 336
+    },
+    "first_claimed": true,
+    "footprint_overlaps": [
+      {
+        "agent_id": "agent:alice",
+        "effective": 1,
+        "last_observed_at": 1784859449,
+        "node_id": "artifact:src/lib.rs",
+        "relation": "modified",
+        "via_node_id": "execution:alice"
+      }
+    ],
+    "graph_counts_after": [
+      3,
+      2
+    ],
+    "graph_counts_before": [
+      3,
+      2
+    ],
+    "steer": {
+      "action": "blocked_by_handoff",
+      "applied": true,
+      "concurrent_claims_after_steer": 1,
+      "same_path_concurrent_ownership_risk": false,
+      "second_blocked_by": "task:d7ae3469b81d",
+      "second_claimed_after_steer": false,
+      "second_status": "blocked"
+    },
+    "task_state_unchanged_by_check": true
+  },
+  "scenario": "two_agent_preflight_overlap",
+  "schema_version": 1,
+  "source_revision": "676d214-dirty",
+  "source_sha256": "22e8b9a827af4d274a6da05e36e150ae032bcd01295c625644e62753b0c41222",
+  "build_instance_sha256": "c68b23a92d3b84f217e6cc023b56cd585a4bc463dd5a46bab8b606b7f1a61ad0",
+  "build": {
+    "profile": "release",
+    "locked": true,
+    "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+    "cargo": "cargo 1.93.1 (083ac5135 2025-12-15)"
+  },
+  "provenance": {
+    "authoritative": [
+      "source_sha256",
+      "build.profile",
+      "build.locked",
+      "build.rustc",
+      "build.cargo",
+      "passed"
+    ],
+    "build_instance_sha256": "Informational digest of this PE/ELF/Mach-O build instance; not required to reproduce across linker invocations."
+  },
+  "passed": true
+}

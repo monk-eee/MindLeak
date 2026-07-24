@@ -317,6 +317,27 @@ pub struct Task {
     pub updated_at: i64,
 }
 
+/// Optional paths and symbol ids an agent declares when claiming work
+/// (ADR-0024). Paths are normalized workspace-relative glob patterns; symbols
+/// are opaque MindLeak `symbol:` ids.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskScope {
+    pub paths: Vec<String>,
+    pub symbols: Vec<String>,
+}
+
+/// One active claim whose declared scope intersects a pre-flight request.
+/// Advisory only: this reports ownership intent and never grants a lock.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaimOverlap {
+    pub task_id: String,
+    pub owner: String,
+    pub lease_expires_at: i64,
+    pub scope: TaskScope,
+    pub matching_paths: Vec<String>,
+    pub matching_symbols: Vec<String>,
+}
+
 /// One durable, append-only entry in a task's question/answer thread (ADR-0020):
 /// a `needs_input` question from the owning agent or the human `answer`.
 #[derive(Debug, Clone, Serialize, Deserialize)]

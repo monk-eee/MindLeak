@@ -122,6 +122,97 @@ fn resolve_seed_exact_convenience_and_fts() {
 }
 
 #[test]
+fn overlap_follows_decay_active_agent_observation_into_mutation() {
+    let graph = store().with_decay_policy(policy(&[], 0.05));
+    for (id, kind) in [
+        ("agent:alice", NodeType::Agent),
+        ("agent:bob", NodeType::Agent),
+        ("agent:stale", NodeType::Agent),
+        ("agent:weak", NodeType::Agent),
+        ("execution:run", NodeType::Execution),
+        ("execution:weak", NodeType::Execution),
+        ("artifact:src/lib.rs", NodeType::Artifact),
+    ] {
+        add_node(&graph, id, kind, id, NOW);
+    }
+    graph
+        .upsert_edge(&raw_edge(
+            "agent:alice",
+            "execution:run",
+            RelationType::Observed,
+            1.0,
+            48.0,
+            NOW,
+        ))
+        .unwrap();
+    graph
+        .upsert_edge(&raw_edge(
+            "execution:run",
+            "artifact:src/lib.rs",
+            RelationType::Modified,
+            1.0,
+            24.0,
+            NOW,
+        ))
+        .unwrap();
+    graph
+        .upsert_edge(&raw_edge(
+            "agent:bob",
+            "artifact:src/lib.rs",
+            RelationType::Observed,
+            1.0,
+            48.0,
+            NOW,
+        ))
+        .unwrap();
+    graph
+        .upsert_edge(&raw_edge(
+            "agent:stale",
+            "artifact:src/lib.rs",
+            RelationType::Observed,
+            1.0,
+            1.0,
+            NOW - 10 * HOUR,
+        ))
+        .unwrap();
+    graph
+        .upsert_edge(&raw_edge(
+            "agent:weak",
+            "execution:weak",
+            RelationType::Observed,
+            1.0,
+            48.0,
+            NOW - 150 * HOUR,
+        ))
+        .unwrap();
+    graph
+        .upsert_edge(&raw_edge(
+            "execution:weak",
+            "artifact:src/lib.rs",
+            RelationType::Modified,
+            1.0,
+            24.0,
+            NOW - 75 * HOUR,
+        ))
+        .unwrap();
+
+    let overlaps = graph
+        .agent_footprint_overlap(&["artifact:src/lib.rs".into()], Some("bob"), NOW)
+        .unwrap();
+    assert_eq!(overlaps.len(), 1);
+    assert_eq!(overlaps[0].agent_id, "agent:alice");
+    assert_eq!(overlaps[0].via_node_id, "execution:run");
+    assert_eq!(overlaps[0].relation, RelationType::Modified);
+    assert!(overlaps[0].effective >= 0.99);
+
+    assert!(graph
+        .agent_footprint_overlap(&[], None, NOW)
+        .unwrap()
+        .is_empty());
+    assert!(graph.get_node("execution:run").unwrap().is_some());
+}
+
+#[test]
 fn traverse_respects_depth_and_min_weight() {
     let s = store();
     for id in ["a", "b", "c", "d"] {

@@ -253,16 +253,20 @@ variance without storing prompts or model reasoning.
 This passes the go/no-go threshold for productization, not universal efficacy.
 It is one engineered composite scenario with three repetitions per arm and a
 single model/runner. Cross-file repair, impact, resume, failed-approach, and
-invariant behaviors are represented; broader repositories, models, and the
-two-agent duplicate-work scenario remain required before general claims.
+invariant behaviors are represented; broader repositories, models, and real-agent
+adherence to concurrent-work advice remain required before general claims.
 
-## Two-agent duplicate-work overlap (planned benchmark)
+ADR-0028 formalizes that boundary: engineering, controlled-efficacy, and
+external-adoption evidence are separate tiers, and results never inherit a
+broader claim from a narrower tier. The release-gated independent developer
+pilot is the first external-adoption test; its failures and limitations are
+published as evidence rather than filtered out.
+
+## Two-agent duplicate-work overlap
 
 The agent-loop outcome above is single-agent; the **two-agent duplicate-work
-scenario remains the required gap** before any concurrent-safety claim. This
-section defines that benchmark so it is falsifiable, not aspirational. It proves
-the pre-flight overlap check designed in
-[ADR-0024](adr/0024-preflight-overlap-detection.md).
+scenario was the required deterministic gap before any concurrent-safety claim.
+ADR-0024 now closes that mechanism-level gate without claiming a filesystem lock.
 
 **Scenario.** Two agents, A and B, share one repository. Agent A claims a task
 and begins work on a set of files/symbols — declaring that scope on its claim
@@ -270,34 +274,29 @@ and/or producing MindLeak `observed`/`modified` attribution on those nodes.
 Agent B, about to start a *different* task that happens to touch an overlapping
 file or symbol, runs `check_overlap(paths, symbols)` **before** claiming.
 
-**Arms.**
+| Gate | Blind control | Overlap-aware | Result |
+|---|---:|---:|---|
+| Concurrent claims on `src/lib.rs` | 2 | 1 after steer | Pass |
+| Alice live claim scope returned | Not checked | 1 | Pass |
+| Alice live mutation footprint returned | Not checked | 1 | Pass |
+| Alice footprint after 336 hours | Not checked | 0 | Pass |
+| Check changed task state or graph counts | n/a | No | Pass |
+| Bob claim after `blocked_by` steer | n/a | Rejected | Pass |
 
-- _Control (no check):_ B proceeds blind, as today's compare-and-swap allows, and
-  the run records the collision (both agents edit the same node) or the duplicated
-  effort.
-- _Overlap-aware:_ B's pre-flight `check_overlap` surfaces A's intersecting claim
-  scope and/or A's recent above-threshold footprint, and B is steered away
-  (coordinate, pick different work, or a `blocked_by` handoff).
+The locked release-profile harness creates two different tasks over the same
+path. The blind arm proves task-row CAS alone allows both owners. In the aware
+arm the caller combines Lodestar's live claim result and MindLeak's derived
+footprint, then chooses the supported `blocked_by` handoff. The checks themselves
+leave task state and graph counts unchanged; no effective weight or lock is
+stored.
 
-**Method.** Deterministic where possible: seed A's claim scope and A's attribution
-edges at a known recency; run B's check at a fixed `now`; assert the returned
-overlap set. A decay control confirms that _stale_ A-attribution (aged past the
-active threshold) does **not** raise a flag — the check is decay-aware, so it must
-not false-alarm on last week's edits.
-
-**Pass criteria.**
-
-1. In the overlap-aware arm, B's `check_overlap` returns A's intersecting claim
-   and/or hot footprint; in the decayed control it returns empty.
-2. B takes the steer (different work or a `blocked_by` handoff) and the two agents
-   do not both land conflicting edits to the same node.
-3. The check is read-only and adds no stored lock: no effective weight is
-   persisted and the deterministic hot path is unchanged.
-
-**Artifact.** A machine-readable result under `benchmarks/results/` (source,
-fixture, seeded recency, `now`, returned overlap set, decay-control emptiness),
-consistent with the other benchmarks here. Not yet run — it lands with the
-[ADR-0024](adr/0024-preflight-overlap-detection.md) implementation task.
+Machine-readable result:
+[2026-07-23-two-agent-overlap.json](../benchmarks/results/2026-07-23-two-agent-overlap.json).
+Reproduce with `node scripts/evaluate-overlap.mjs` (also included in
+`make bench`). The artifact records source hash, locked toolchain, evaluation
+time, fixture, returned overlaps, and decay control. This proves deterministic
+mechanics, not that independent agents always declare accurate scope or heed an
+advisory; that behavioral question remains for external multi-agent pilots.
 
 ## Memory-arm context precision
 

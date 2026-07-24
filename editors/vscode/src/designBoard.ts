@@ -15,12 +15,14 @@ export interface DesignItem {
   created_at: number;
   updated_at: number;
   promotion_status: DesignPromotionStatus;
-  spawned_goal_id?: string | null;
+  materialization_revision: number;
 }
 
 export interface DesignTask {
   id: string;
+  goal_id: string;
   title: string;
+  acceptance: string;
   status: string;
 }
 
@@ -32,9 +34,42 @@ export interface DesignGoal {
 
 export interface DesignPromotion {
   item: DesignItem;
-  goal: DesignGoal;
+  mode: DesignMaterializationMode;
+  revision: number;
+  rationale?: string | null;
+  goals: DesignGoal[];
   tasks: DesignTask[];
   constraints: DesignGoal[];
+}
+
+export type DesignMaterializationMode = "create" | "link" | "no_work";
+
+export interface DesignTaskDraft {
+  goal_id: string;
+  title: string;
+  acceptance: string;
+}
+
+export interface DesignConstraintDraft {
+  kind: "constraint" | "invariant";
+  title: string;
+  statement: string;
+}
+
+export interface DesignMaterializationPlan {
+  mode: DesignMaterializationMode;
+  tasks?: DesignTaskDraft[];
+  task_ids?: string[];
+  constraints?: DesignConstraintDraft[];
+  rationale?: string | null;
+}
+
+export interface DesignMaterializationRecord {
+  design_id: string;
+  revision: number;
+  plan: DesignMaterializationPlan;
+  actor: string;
+  created_at: number;
 }
 
 export interface DesignMetadata {
@@ -121,15 +156,54 @@ export function designContext(item: DesignItem): string {
   return "historical";
 }
 
-export function formatDesignPromotion(promotion: DesignPromotion): string {
+export function replaceAdrStatus(content: string, status: DesignStatus): string | null {
+  const pattern = /^(\s*-?\s*(?:\*\*)?Status:(?:\*\*)?\s*)([^\r\n]+)/im;
+  if (!pattern.test(content)) {
+    return null;
+  }
+  const label = status[0].toUpperCase() + status.slice(1);
+  return content.replace(pattern, (_match, prefix: string) => `${prefix}${label}`);
+}
+
+export function formatMaterializationPlan(
+  plan: DesignMaterializationPlan,
+  linkedTasks: DesignTask[] = []
+): string {
+  const lines = [`Mode: ${plan.mode.replace("_", " ")}`];
+  for (const task of plan.tasks ?? []) {
+    lines.push(`Create: ${task.title} (${task.goal_id})`, `Done when: ${task.acceptance}`);
+  }
+  for (const taskId of plan.task_ids ?? []) {
+    const task = linkedTasks.find((candidate) => candidate.id === taskId);
+    lines.push(`Link: ${task ? `${task.title} (${task.id})` : taskId}`);
+  }
+  if (plan.rationale) {
+    lines.push(`Rationale: ${plan.rationale}`);
+  }
+  return lines.join("\n");
+}
+
+export function formatDesignPromotion(
+  promotion: DesignPromotion,
+  history: DesignMaterializationRecord[] = []
+): string {
+  const objective =
+    promotion.goals.length === 0
+      ? "none"
+      : promotion.goals.map((goal) => `${goal.title} (${goal.id})`).join(", ");
   const lines = [
     `# Design materialization: ${promotion.item.title}`,
     "",
     `- **ADR:** ${promotion.item.adr_path}`,
-    `- **Objective:** ${promotion.goal.title} (${promotion.goal.id})`,
+    `- **Mode:** ${promotion.mode}`,
+    `- **Revision:** ${promotion.revision}`,
+    `- **Objectives:** ${objective}`,
     `- **Tasks:** ${promotion.tasks.length}`,
     `- **Constraints:** ${promotion.constraints.length}`,
   ];
+  if (promotion.rationale) {
+    lines.push(`- **Rationale:** ${promotion.rationale}`);
+  }
   if (promotion.tasks.length) {
     lines.push("", "## Tasks");
     for (const task of promotion.tasks) {
@@ -140,6 +214,14 @@ export function formatDesignPromotion(promotion: DesignPromotion): string {
     lines.push("", "## Constraints");
     for (const goal of promotion.constraints) {
       lines.push(`- ${goal.title} — ${goal.kind} (${goal.id})`);
+    }
+  }
+  if (history.length) {
+    lines.push("", "## Revision history");
+    for (const record of history) {
+      lines.push(
+        `- r${record.revision} — ${record.plan.mode} by ${record.actor}: ${record.plan.rationale ?? "initial materialization"}`
+      );
     }
   }
   return lines.join("\n");
@@ -161,7 +243,10 @@ function toRow(item: DesignItem, promotion?: DesignPromotion): DesignBoardRow {
     details.push(`reason: ${item.reason}`);
   }
   if (promotion) {
-    details.push(`objective: ${promotion.goal.title} (${promotion.goal.id})`);
+    for (const goal of promotion.goals) {
+      details.push(`objective: ${goal.title} (${goal.id})`);
+    }
+    details.push(`mode: ${promotion.mode}; revision: ${promotion.revision}`);
     details.push(`tasks: ${promotion.tasks.length}; constraints: ${promotion.constraints.length}`);
   }
   return {
@@ -182,7 +267,9 @@ function describe(item: DesignItem, promotion?: DesignPromotion): string {
     case "pending":
       return "accepted · promotion pending";
     case "materialized":
-      return `materialized · ${promotion?.tasks.length ?? 0} tasks`;
+      return promotion?.mode === "no_work"
+        ? `materialized · no new work · r${promotion.revision}`
+        : `materialized · ${promotion?.tasks.length ?? 0} tasks · r${promotion?.revision ?? 0}`;
     case "rejected":
       return "rejected";
     default:

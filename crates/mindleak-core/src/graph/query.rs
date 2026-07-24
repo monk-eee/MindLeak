@@ -7,7 +7,8 @@ use rusqlite::{params, Row};
 use super::signal::row_to_raw_edge;
 use super::writes::node_exists_on;
 use super::{
-    AgentActivity, Direction, GraphStore, ScoredNode, Subgraph, WeightedEdge, WorkingSetItem,
+    AgentActivity, AgentFootprintOverlap, Direction, GraphStore, ScoredNode, Subgraph,
+    WeightedEdge, WorkingSetItem,
 };
 use crate::error::Result;
 use crate::model::{Node, NodeType, RelationType};
@@ -435,6 +436,105 @@ impl GraphStore {
         });
         items.truncate(limit.clamp(1, self.working_set_size));
         Ok(items)
+    }
+
+    /// Other agents' decay-active footprint on requested artifact/symbol ids
+    /// (ADR-0024). Follows direct observation or one observed execution/intent
+    /// hop into mutation evidence. Read-only and advisory.
+    pub fn agent_footprint_overlap(
+        &self,
+        node_ids: &[String],
+        exclude_agent: Option<&str>,
+        now: i64,
+    ) -> Result<Vec<AgentFootprintOverlap>> {
+        let targets = node_ids.iter().cloned().collect::<HashSet<_>>();
+        if targets.is_empty() {
+            return Ok(Vec::new());
+        }
+        let excluded = exclude_agent.map(|agent| {
+            if agent.starts_with("agent:") {
+                agent.to_string()
+            } else {
+                format!("agent:{agent}")
+            }
+        });
+        let threshold = self.decay_policy.prune_threshold();
+        let mut agents = self
+            .conn
+            .prepare("SELECT id FROM nodes WHERE type = 'agent'")?;
+        let rows = agents.query_map([], |row| row.get::<_, String>(0))?;
+        let mut best: HashMap<(String, String), AgentFootprintOverlap> = HashMap::new();
+        for row in rows {
+            let agent_id = row?;
+            if excluded.as_deref() == Some(agent_id.as_str()) {
+                continue;
+            }
+            for observed in self.directed_edges(&agent_id, true, threshold, now)? {
+                if observed.relation != RelationType::Observed {
+                    continue;
+                }
+                if targets.contains(&observed.target_id) {
+                    retain_best_overlap(
+                        &mut best,
+                        AgentFootprintOverlap {
+                            agent_id: agent_id.clone(),
+                            node_id: observed.target_id.clone(),
+                            via_node_id: observed.target_id.clone(),
+                            relation: RelationType::Observed,
+                            effective: observed.effective,
+                            last_observed_at: observed.updated_at,
+                        },
+                    );
+                }
+                for mutation in self.directed_edges(&observed.target_id, true, threshold, now)? {
+                    if !matches!(
+                        mutation.relation,
+                        RelationType::Modified | RelationType::Refactored | RelationType::Fixed
+                    ) || !targets.contains(&mutation.target_id)
+                    {
+                        continue;
+                    }
+                    let effective = observed.effective * mutation.effective;
+                    if effective < threshold {
+                        continue;
+                    }
+                    retain_best_overlap(
+                        &mut best,
+                        AgentFootprintOverlap {
+                            agent_id: agent_id.clone(),
+                            node_id: mutation.target_id.clone(),
+                            via_node_id: observed.target_id.clone(),
+                            relation: mutation.relation,
+                            effective,
+                            last_observed_at: observed.updated_at,
+                        },
+                    );
+                }
+            }
+        }
+        let mut overlaps = best.into_values().collect::<Vec<_>>();
+        overlaps.sort_by(|left, right| {
+            right
+                .effective
+                .partial_cmp(&left.effective)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.agent_id.cmp(&right.agent_id))
+                .then_with(|| left.node_id.cmp(&right.node_id))
+        });
+        Ok(overlaps)
+    }
+}
+
+fn retain_best_overlap(
+    overlaps: &mut HashMap<(String, String), AgentFootprintOverlap>,
+    candidate: AgentFootprintOverlap,
+) {
+    let key = (candidate.agent_id.clone(), candidate.node_id.clone());
+    if overlaps
+        .get(&key)
+        .is_none_or(|current| candidate.effective > current.effective)
+    {
+        overlaps.insert(key, candidate);
     }
 }
 

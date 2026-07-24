@@ -143,7 +143,7 @@ define_goal(kind, title, statement)          # write the constitution
 get_constitution()                           # read this BEFORE acting
 decompose_goal(goal_id)  /  create_task(...) # produce claimable work
 next_task()                                  # what should I pick up?
-claim_task(task_id, agent)                   # atomic — no two agents win the same task
+claim_task(task_id, agent, paths?, symbols?) # atomic claim + optional advisory scope
 advise(task_id, node_ids)                    # ADR-0029: what governs this change? (advise/review/block) — before acting
 renew_lease(task_id, agent)                  # keep your claim alive while working
 complete_task(task_id, agent, evidence)      # owner-guarded; runs conformance
@@ -154,6 +154,26 @@ board()                                      # live who-owns-what
 `.lodestar/spec.db` with **no duplicate winners**. `complete_task` runs a
 conformance check (aligned / drift / violation) and a violation blocks the
 transition.
+
+### Pre-flight overlap awareness
+
+Before claiming work with known files or symbols, query both planes and combine
+their results:
+
+```text
+lodestar.check_overlap(paths=["src/auth.ts"], symbols=[...]) # live declared claims
+mindleak.check_overlap(paths=["src/auth.ts"], symbols=[...], exclude_agent="agent-b")
+claim_task(task_id, "agent-b", paths=["src/auth.ts"], symbols=[...])
+```
+
+Lodestar compares concrete requested paths with path globs declared by active
+claims and compares symbol ids exactly. MindLeak normalizes paths to `artifact:`
+ids and returns other agents' direct or mutation-linked footprint only while its
+derived effective weight remains active. Neither tool locks anything. On a
+warning, coordinate, choose different work, or create a `blocked_by` handoff;
+claiming anyway remains possible. The VS Code allocator runs this pre-flight,
+asks before proceeding on overlap or a failed check, and shows persisted scope on
+the Intent Board.
 
 ### The learned-knowledge loop (cross-plane, ADR-0022)
 

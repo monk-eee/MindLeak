@@ -23,6 +23,7 @@ url = "=2.5.0"
 pep508_rs = "=0.6.1"
 rusqlite = { version = "0.31", features = ["backup", "bundled", "functions"] }
 regex = "1"
+globset = "0.4"
 sha2 = "0.10"
 thiserror = "1"
 ureq = { version = "2", features = ["json"] }

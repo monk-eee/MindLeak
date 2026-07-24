@@ -1,6 +1,6 @@
-# ADR-0023: Design items, the Design Board, and the accept→decompose bridge
+# ADR-0023: Design items, the Design Board, and reviewed materialization
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-23
 - Deciders: MindLeak maintainers
 - Related: [ADR-0004](0004-intent-plane-spec-brain.md) (intent plane),
@@ -29,15 +29,22 @@ pattern is not just tedious but **broken**:
 
 The missing concept is a first-class **design item** with a **human acceptance**
 step that completes design work the way code-evidence completes implementation
-work — and, on acceptance, **decomposes** the design into claimable tasks. The
+work — and, after acceptance, maps the design to reviewed executive work. The
 building block already exists: `decompose_goal` breaks a goal into tasks (local
 model with a deterministic single-task fallback); it must be generalized to an
 accepted design item.
 
+The first implementation proved that decomposition alone is unsafe. ADR-0028
+already had an authoritative pilot task (`task:7f5ae1198134`) blocked on the
+v0.1.1 release. Blind deterministic fallback nevertheless created an unblocked
+duplicate (`task:735e36892ffa`) under the wrong objective and marked the design
+fully materialized. Promotion must therefore review whether to create, link, or
+create no work; task creation is not the default meaning of acceptance.
+
 ## Decision
 
 Introduce **design items** as first-class Intent-Plane objects, a **Design Board**
-distinct from the executive board, and an **accept→decompose bridge**.
+distinct from the executive board, and an **accept→review→materialize bridge**.
 
 ### Design item = an ADR under review
 
@@ -57,7 +64,7 @@ code conformance (there is no code to conform to), resolving the `in_review`
 dead-end above. Rejection is durable and auditable, never a silent delete
 (archive-not-delete, [ADR-0019](0019-task-retention-and-board-hygiene.md)).
 
-### The accept→promote→decompose bridge
+### The accept→review→materialize bridge
 
 Acceptance and task materialisation are two durable phases. An optional model
 call cannot be part of the SQLite transaction that records human acceptance:
@@ -68,42 +75,50 @@ create duplicate tasks.
 1. `accept_design(id, human)` performs only the attributed, guarded human
   decision. The design becomes `accepted` with promotion state `pending`. It
   does not invoke a model or create tasks.
-2. `promote_design(id, objective_goal_id)` requires an accepted design and is
-  **idempotent**. It calls the same internal decomposition primitive as
-  `decompose_goal`, passing the accepted design's reviewed summary/body and the
-  selected objective. Planning happens outside a write transaction.
-3. One transaction then inserts the complete task/goal plan, records explicit
-  design→task and design→goal provenance, and changes promotion state from
-  `pending` to `materialised`. A retry returns the already-linked result rather
-  than creating duplicates.
+2. `plan_design_promotion(id, objective_goal_id)` is read-only. It may use the
+  same model-assisted planner as `decompose_goal`, with the deterministic
+  single-task fallback, but its output is only a suggested `create` plan.
+3. A human reviews one explicit mode: `create` reviewed drafts under one or more
+  objectives, `link` existing task ids, or `no_work` with a rationale.
+4. `promote_design(id, plan)` atomically writes the reviewed plan, current
+  design→task/design→goal projection, any newly created tasks/constraints, and
+  promotion state. An identical retry returns the same revision.
+5. `revise_design_promotion(id, human, plan)` requires a rationale and appends a
+  new immutable revision before replacing the current projection. Earlier plans
+  and tasks remain durable; registered constitutional clauses are not silently
+  removed. `design_materialization_history(id)` exposes the full audit chain.
 
-The plan may contain:
+The reviewed plan may contain:
 
-- one or more implementation tasks under the selected objective goal, claimable
-  immediately or arranged as a linear `blocked_by` chain only for genuine
-  code-to-code handoffs;
+- one or more new task drafts, each naming its objective;
+- one or more existing task ids, including blocked/done work already in the
+  authoritative delivery chain;
+- no tasks when the decision is already implemented or intentionally requires
+  no new work, with a required rationale;
 - durable constraints/invariants to register through the existing Constitution
   path; and
-- the explicit links from every spawned task/goal back to the design item.
+- explicit links from every current task/objective and every durable normative
+  clause back to the design item.
 
-Decomposition is model-assisted with a **deterministic single-task fallback** when
-no local model is reachable — never a hot-path or hard LLM dependency, exactly
-like `decompose_goal` today. A failed decomposition leaves promotion `pending`
-and safely retryable; it never rolls back the human's acceptance.
+Planning remains model-assisted with a **deterministic single-task fallback** when
+no local model is reachable — never a hot-path or hard LLM dependency. It is
+read-only, so a poor fallback cannot manufacture work before review. A failed
+plan/materialization leaves human acceptance intact and safely retryable.
 
-The public method is `promote_design`, rather than teaching callers to invoke
-`decompose_goal` with synthetic goal text. Both methods reuse one internal
-decomposition primitive, so there is one planner and two legitimate sources of
-reviewed intent.
+`decompose_goal` and `plan_design_promotion` reuse one internal planner. The
+write API accepts only the explicit plan, not an objective plus hidden planner
+side effect.
 
 ### The Design Board
 
 A portal view (editors/vscode) distinct from the executive Intent Board: lists
 tainted/proposed design items with the ADR text/link and **accept/reject**
-actions. Accept asks for the objective goal, calls `accept_design`, then
-`promote_design`; if promotion fails, the accepted item remains visible as
-**pending promotion** with a retry action. The view also shows the downstream
-tasks once materialised. The Intent Board is improved to (a) exclude tainted
+actions and writes the matching `Accepted`/`Rejected` status into the ADR file.
+Pending promotion offers **Create new tasks**, **Link existing tasks**, and **No
+new work**. Create accepts multiple objectives and previews every draft; all
+modes show a modal concrete plan before writing. Materialized rows expose
+provenance/history and an attributed **Repair** action. The Intent Board is
+improved to (a) exclude tainted
 design items, and (b) show which executive tasks descend from which accepted ADR
 (provenance rollup). Keep vscode-coupled code thin; pure board/threading logic in
 `editors/vscode/src/util.ts` with vitest.
@@ -120,15 +135,15 @@ workspace sensor and applies these rules:
 | Repository ADR | Design state | Scheduling behaviour |
 |---|---|---|
 | New `Proposed` ADR | `proposed` | Appears on the Design Board; no task exists. |
-| Accepted through the Design Board | `accepted` / `pending` | `promote_design` materialises tasks exactly once. |
+| Accepted through the Design Board | `accepted` / `pending` | A reviewed create/link/no-work plan materializes exactly once. |
 | Accepted before Design Board adoption | `accepted` / `not_required` | Imported for history; creates no tasks unless a human explicitly reopens promotion. |
 | Rejected ADR | `rejected` | Retained for audit; never creates tasks. |
 
 The extension runs reconciliation on activation and when an ADR file changes,
 and exposes a manual **Sync ADRs** command. Discovery may parse the ADR identity,
 title, and declared status; it must not infer implementation tasks from arbitrary
-Markdown. Task derivation still happens only from a reviewed design through
-`promote_design`.
+Markdown. Task derivation is read-only until a human confirms an explicit
+materialization plan.
 
 ### Rejected alternatives
 
@@ -144,6 +159,11 @@ Markdown. Task derivation still happens only from a reviewed design through
   not prove implementation is outstanding; this would duplicate completed work.
 - **Run decomposition inside `accept_design`.** Optional model I/O cannot be made
   atomic with SQLite, and an ambiguous retry could create duplicate tasks.
+- **Always create the deterministic fallback task.** ADR-0028 proved that a
+  syntactically valid fallback can duplicate authoritative blocked work and put
+  it under the wrong objective.
+- **Repair provenance by rewriting SQLite links.** Hides who changed the mapping
+  and destroys the prior reviewed state; repairs are append-only revisions.
 - **Completing design tasks via a fake code-evidence bundle.** Would launder a
   docs commit through code conformance; acceptance is the honest completion path.
 
@@ -152,14 +172,10 @@ Markdown. Task derivation still happens only from a reviewed design through
 - Design work finally has a completion path (`accept_design`) that does not fight
   [ADR-0009](0009-evidence-backed-conformance.md); the `in_review` design backlog
   (`a99ebf`, `056c39`, `4b479a72`) becomes the **accept queue** this bridge drains.
-- `decompose_goal` and `promote_design` share one planner; new surface in
-  `lodestar-core` (design-item store, promotion state/provenance, reconciliation,
-  and `accept_design`/`reject_design`/`promote_design`) and `lodestar-mcp` (tool
-  defs), plus the Design Board portal view. New behaviour gets tests: a tainted
-  item is invisible to `next_task`/executive board; accept alone spawns nothing;
-  promotion creates ≥1 claimable task and registers stated constraints exactly
-  once; retry is idempotent; historical sync spawns nothing; reject leaves an
-  audit record; and the whole path works with no local model.
+- `decompose_goal` and `plan_design_promotion` share one planner. New behaviour
+  is pinned for create, cross-objective link, no-work, invalid normative task
+  goals, idempotent retries, and append-only repairs; historical reconciliation
+  still creates nothing and the whole path works with no local model.
 - **Self-referential** (the good kind): once implemented, *this ADR* is the first
   design item the bridge accepts — accepting it decomposes it into its own
   implementation tasks.

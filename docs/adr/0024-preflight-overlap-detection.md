@@ -1,12 +1,12 @@
 # ADR-0024: Pre-flight work-overlap detection across both planes
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-23
 - Deciders: MindLeak maintainers
 - Related: [ADR-0003](0003-agent-attribution-as-observed-edges.md) (agent
   attribution), [ADR-0004](0004-intent-plane-spec-brain.md) (loose seam),
   [ADR-0015](0015-advisory-symbol-leases.md) (no symbol locks),
-  [ADR-0018](0018-conflict-safe-concurrent-editing.md) (worktree isolation),
+  [ADR-0018](0018-conflict-safe-concurrent-editing.md) (shared-tree conflict safety),
   [SPEC-INTENT.md](../SPEC-INTENT.md), [EVALUATION.md](../EVALUATION.md)
 
 ## Context
@@ -30,9 +30,9 @@ This session produced live evidence that the gap is real, not theoretical:
   awareness.
 
 [ADR-0018](0018-conflict-safe-concurrent-editing.md) addresses the **physical**
-stomp with per-agent worktrees (real filesystem isolation). But worktrees do not
-stop two agents from *choosing* overlapping work and then colliding at
-merge/integration time, nor from duplicating effort. The missing piece is
+stomp with scoped commit discipline and optional isolated validation/worktrees.
+Those safeguards do not stop two agents from *choosing* overlapping work and
+then colliding at merge/integration time, nor from duplicating effort. The missing piece is
 **awareness before work starts**: *"given the paths/symbols I intend to touch, is
 anyone else already here or already solving this?"*
 
@@ -50,9 +50,10 @@ Reuse/align with [ADR-0018](0018-conflict-safe-concurrent-editing.md)'s
 path-ownership advisory rather than inventing a parallel mechanism — one
 scope-declaration model, surfaced on the board as a planning hint.
 
-### The check: `check_overlap(paths[], symbols[])`
+### The checks: `check_overlap(paths[], symbols[])`
 
-A read-only query (Lodestar tool, and/or a MindLeak-side query) returns:
+Two read-only tools preserve the loose plane boundary and are combined by the
+caller:
 
 1. **Active claims** whose declared scope intersects the requested paths/symbols.
 2. **Recent agent footprint** from MindLeak — other agents' above-threshold
@@ -76,6 +77,19 @@ Lodestar references MindLeak node ids as opaque strings; the check crosses the
 seam by node id only, with no shared tables or transactions
 ([ADR-0004](0004-intent-plane-spec-brain.md)).
 
+### Shipped surfaces
+
+- Lodestar `claim_task` accepts optional path globs and opaque symbol ids and
+  stores them only when the guarded claim succeeds. `task_scope` reads that
+  declaration; `board` includes it as a planning hint.
+- Lodestar `check_overlap` compares concrete requested paths and exact symbol ids
+  with live, unexpired claim scopes. MindLeak `check_overlap` derives other
+  agents' active direct or mutation-linked footprint using effective weight at
+  query time.
+- The VS Code allocator collects optional concrete paths/symbols, calls both
+  tools before claiming, and displays a modal advisory. A user may coordinate,
+  cancel, or explicitly claim anyway; no lock is acquired.
+
 ### Rejected alternatives
 
 - **Hard filesystem locks / a write-coordinator.** Already rejected by
@@ -91,19 +105,19 @@ seam by node id only, with no shared tables or transactions
 
 ## Consequences
 
-- A new read-only `check_overlap` surface (Lodestar tool + MindLeak query) and an
+- A read-only `check_overlap` surface in each plane and an
   optional claim scope-declaration, coordinated with
   [ADR-0018](0018-conflict-safe-concurrent-editing.md) so scope declaration is
   shared, not forked.
 - The check is decay-aware and read-only — no stored locks, effective weight never
   stored, deterministic hot path untouched, no network listener.
-- Defines the **two-agent duplicate-work benchmark** [EVALUATION.md](../EVALUATION.md)
-  calls for: agent B's pre-flight check detects agent A's overlapping in-progress
-  work (claim scope and/or MindLeak footprint) and steers B away.
-- SPEC-INTENT (§6.1) documents the designed check and ARCHITECTURE.md notes the
-  cross-plane seam as of this design task; the README tool table gains the
-  `check_overlap` row at implementation, when the tool actually ships.
-- This ADR carries no behavioural code; it is the design-first predecessor for the
-  implementation task, and coordinates with
-  [ADR-0018](0018-conflict-safe-concurrent-editing.md) (physical isolation) and the
-  progressive-handoff pattern ([ADR-0015](0015-advisory-symbol-leases.md)).
+- The **two-agent duplicate-work benchmark** now passes: without pre-flight both
+  tasks claim the same path; with it, both the live claim and MindLeak footprint
+  surface, a 336-hour-old footprint stays absent, and B converts to a
+  `blocked_by` handoff. The read leaves task state and graph counts unchanged.
+- The benchmark proves the deterministic mechanism, not that independent agents
+  always obey an advisory. Real-agent adherence remains an external evaluation.
+- This accepted ADR coordinates with
+  [ADR-0018](0018-conflict-safe-concurrent-editing.md) (physical integration
+  discipline) and the progressive-handoff pattern
+  ([ADR-0015](0015-advisory-symbol-leases.md)).

@@ -9,6 +9,7 @@ import { DesignBoardItem, DesignBoardViewProvider } from "./designBoardViewProvi
 import { GitSensor } from "./gitSensor";
 import { GraphViewProvider } from "./graphViewProvider";
 import { McpClient } from "./mcpClient";
+import { TaskAllocationController } from "./taskAllocationController";
 import { TelemetryViewProvider } from "./telemetryViewProvider";
 import { TerminalCaptureConfig, TerminalSensor } from "./terminalSensor";
 import {
@@ -37,6 +38,8 @@ let lodestar: McpClient | undefined;
 let provider: GraphViewProvider | undefined;
 let telemetry: TelemetryViewProvider | undefined;
 let board: BoardViewProvider | undefined;
+let boardTree: vscode.TreeView<BoardItem> | undefined;
+let allocationController: TaskAllocationController | undefined;
 let designBoard: DesignBoardViewProvider | undefined;
 let designController: DesignBoardController | undefined;
 let output: vscode.OutputChannel;
@@ -120,9 +123,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   context.subscriptions.push({ dispose: () => clearInterval(telemetryTimer) });
 
   board = new BoardViewProvider();
-  context.subscriptions.push(
-    vscode.window.registerTreeDataProvider(BoardViewProvider.viewType, board)
-  );
+  boardTree = vscode.window.createTreeView(BoardViewProvider.viewType, {
+    treeDataProvider: board,
+  });
+  context.subscriptions.push(boardTree);
   designBoard = new DesignBoardViewProvider();
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider(DesignBoardViewProvider.viewType, designBoard)
@@ -140,6 +144,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     workspace,
     { LODESTAR_DB: lodestarDb, LODESTAR_AGENT: agentId },
     (m) => output.appendLine(m)
+  );
+  allocationController = new TaskAllocationController(
+    lodestar,
+    client,
+    board,
+    boardTree,
+    configuredAgentId,
+    refreshBoard,
+    (message) => output.appendLine(message)
   );
   designController = new DesignBoardController(
     lodestar,
@@ -262,6 +275,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
       }
     }),
     vscode.commands.registerCommand("mindleak.board.refresh", () => refreshBoard()),
+    vscode.commands.registerCommand("mindleak.task.next", () => allocationController?.revealNext()),
+    vscode.commands.registerCommand("mindleak.task.allocate", (item?: BoardItem) => {
+      void allocationController?.allocate(item);
+    }),
+    vscode.commands.registerCommand("mindleak.task.claimForMe", (item?: BoardItem) => {
+      void allocationController?.claimForMe(item);
+    }),
+    vscode.commands.registerCommand("mindleak.task.renew", (item?: BoardItem) => {
+      void allocationController?.renew(item);
+    }),
+    vscode.commands.registerCommand("mindleak.task.release", (item?: BoardItem) => {
+      void allocationController?.release(item);
+    }),
     vscode.commands.registerCommand("mindleak.design.refresh", () => designController?.refresh()),
     vscode.commands.registerCommand("mindleak.design.sync", () => designController?.sync()),
     vscode.commands.registerCommand("mindleak.design.accept", (item?: DesignBoardItem) => {
@@ -272,6 +298,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     }),
     vscode.commands.registerCommand("mindleak.design.promote", (item?: DesignBoardItem) => {
       void designController?.promote(item);
+    }),
+    vscode.commands.registerCommand("mindleak.design.revisePromotion", (item?: DesignBoardItem) => {
+      void designController?.revisePromotion(item);
     }),
     vscode.commands.registerCommand("mindleak.design.openAdr", (item?: DesignBoardItem) => {
       void designController?.openAdr(item);

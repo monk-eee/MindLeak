@@ -3,6 +3,7 @@ mod advice;
 mod conformance;
 mod constitution;
 mod design;
+mod design_materialization;
 mod evidence;
 mod executive;
 mod knowledge;

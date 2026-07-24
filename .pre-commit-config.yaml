@@ -51,7 +51,6 @@ repos:
         language: system
         files: ^(editors/vscode/(src|media)/.*\.(ts|js)|scripts/.*\.mjs)$
         pass_filenames: true
-
       - id: canonical-push
         name: canonical fleet publisher
         entry: node scripts/canonical-push.mjs --verify-pre-push

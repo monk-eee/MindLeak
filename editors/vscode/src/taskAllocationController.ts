@@ -2,7 +2,15 @@ import * as vscode from "vscode";
 
 import { BoardItem, BoardViewProvider } from "./boardViewProvider";
 import { McpClient } from "./mcpClient";
-import { canClaimTask, claimTaskRequest, releaseTaskRequest, renewTaskRequest } from "./util";
+import {
+  canClaimTask,
+  claimTaskRequest,
+  overlapWarningDetail,
+  parseTaskScope,
+  releaseTaskRequest,
+  renewTaskRequest,
+  TaskScope,
+} from "./util";
 
 const LEASE_OPTIONS = [
   { label: "5 minutes", seconds: 300 },
@@ -16,6 +24,7 @@ const LEASE_OPTIONS = [
 export class TaskAllocationController {
   constructor(
     private readonly client: McpClient,
+    private readonly memoryClient: McpClient,
     private readonly provider: BoardViewProvider,
     private readonly tree: vscode.TreeView<BoardItem>,
     private readonly configuredAgentId: string,
@@ -126,12 +135,19 @@ export class TaskAllocationController {
   }
 
   private async claim(item: BoardItem, agent: string): Promise<void> {
+    const scope = await this.promptScope(item.task.title);
+    if (!scope) {
+      return;
+    }
     const leaseSeconds = await this.promptLease(`Lease: ${item.task.title}`);
     if (!leaseSeconds) {
       return;
     }
     try {
-      const request = claimTaskRequest(item.task, agent, leaseSeconds, nowUnix());
+      if (!(await this.confirmPreflight(item, agent, scope))) {
+        return;
+      }
+      const request = claimTaskRequest(item.task, agent, leaseSeconds, nowUnix(), scope);
       const result = await this.client.callTool("claim_task", { ...request });
       if (!result?.won) {
         vscode.window.showWarningMessage(
@@ -145,6 +161,76 @@ export class TaskAllocationController {
     } catch (error) {
       this.reportError("Task allocation", error);
     }
+  }
+
+  private async confirmPreflight(
+    item: BoardItem,
+    agent: string,
+    scope: TaskScope
+  ): Promise<boolean> {
+    if (scope.paths.length === 0 && scope.symbols.length === 0) {
+      return true;
+    }
+    try {
+      if (!this.memoryClient.isReady()) {
+        throw new Error("MindLeak memory plane is unavailable");
+      }
+      const [claimResult, footprintResult] = await Promise.all([
+        this.client.callTool("check_overlap", {
+          ...scope,
+          exclude_task_id: item.task.id,
+        }),
+        this.memoryClient.callTool("check_overlap", {
+          ...scope,
+          exclude_agent: agent,
+        }),
+      ]);
+      const detail = overlapWarningDetail({
+        claims: Array.isArray(claimResult?.claims) ? claimResult.claims : [],
+        footprints: Array.isArray(footprintResult?.footprints) ? footprintResult.footprints : [],
+      });
+      if (!detail) {
+        return true;
+      }
+      const choice = await vscode.window.showWarningMessage(
+        `Overlap detected before claiming "${item.task.title}".`,
+        {
+          modal: true,
+          detail: `${detail}\n\nCoordinate, choose different work, or claim anyway.`,
+        },
+        "Claim Anyway"
+      );
+      return choice === "Claim Anyway";
+    } catch (error) {
+      const choice = await vscode.window.showWarningMessage(
+        `Overlap pre-flight failed for "${item.task.title}".`,
+        {
+          modal: true,
+          detail: `${(error as Error).message}\n\nNo lock was acquired; continue only if you accept the missing overlap evidence.`,
+        },
+        "Claim Without Check"
+      );
+      return choice === "Claim Without Check";
+    }
+  }
+
+  private async promptScope(title: string): Promise<TaskScope | undefined> {
+    const paths = await vscode.window.showInputBox({
+      title: `Scope: ${title}`,
+      prompt: "Concrete workspace-relative paths (comma- or newline-separated, optional)",
+      placeHolder: "src/auth.ts, src/session.ts",
+      ignoreFocusOut: true,
+    });
+    if (paths === undefined) {
+      return undefined;
+    }
+    const symbols = await vscode.window.showInputBox({
+      title: `Scope: ${title}`,
+      prompt: "MindLeak symbol ids (comma- or newline-separated, optional)",
+      placeHolder: "symbol:src/auth.ts:validateSession",
+      ignoreFocusOut: true,
+    });
+    return symbols === undefined ? undefined : parseTaskScope(paths, symbols);
   }
 
   private async promptLease(title: string): Promise<number | undefined> {
