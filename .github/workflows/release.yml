@@ -159,7 +159,12 @@ jobs:
               const binary = path.resolve(directory, `${server}${extension}`);
               await new Promise((resolve, reject) => {
                 const child = spawn(binary, [], {
-                  env: { ...process.env, [databaseVariable]: ":memory:" },
+                  env: {
+                    ...process.env,
+                    [databaseVariable]: ":memory:",
+                    MINDLEAK_AUTONOMOUS_PRUNE: "false",
+                    MINDLEAK_AUTONOMOUS_CONSOLIDATION: "false",
+                  },
                   stdio: ["pipe", "pipe", "pipe"],
                 });
                 let stderr = "";
