@@ -25,7 +25,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "reset_database",
-            "description": "Destructively clear the Lodestar constitution, tasks, bindings, conformance audit, and learned knowledge. Requires the exact confirmation token RESET LODESTAR and never touches MindLeak memory.",
+            "description": "Destructively clear Lodestar designs/materialization history, constitution, tasks, bindings, conformance audit, and learned knowledge. Requires the exact confirmation token RESET LODESTAR and never touches MindLeak memory.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

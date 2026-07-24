@@ -4,9 +4,12 @@ import { describe, expect, it } from "vitest";
 import {
   designBoardRows,
   DesignItem,
+  DesignMaterializationPlan,
   DesignPromotion,
   formatDesignPromotion,
+  formatMaterializationPlan,
   parseAdrMetadata,
+  replaceAdrStatus,
 } from "./designBoard";
 
 const item = (overrides: Partial<DesignItem> = {}): DesignItem => ({
@@ -21,15 +24,38 @@ const item = (overrides: Partial<DesignItem> = {}): DesignItem => ({
   created_at: 10,
   updated_at: 10,
   promotion_status: "not_required",
-  spawned_goal_id: null,
+  materialization_revision: 0,
   ...overrides,
 });
 
 const promotion = (): DesignPromotion => ({
   item: item({ status: "accepted", promotion_status: "materialized" }),
-  goal: { id: "goal:ship", title: "Ship", kind: "objective" },
-  tasks: [{ id: "task:one", title: "Implement", status: "open" }],
+  mode: "create",
+  revision: 1,
+  rationale: null,
+  goals: [{ id: "goal:ship", title: "Ship", kind: "objective" }],
+  tasks: [
+    {
+      id: "task:one",
+      goal_id: "goal:ship",
+      title: "Implement",
+      acceptance: "done",
+      status: "open",
+    },
+  ],
   constraints: [{ id: "goal:rule", title: "No shortcuts", kind: "constraint" }],
+});
+
+describe("replaceAdrStatus", () => {
+  it("aligns plain and bold ADR status metadata without changing other text", () => {
+    expect(replaceAdrStatus("# Decision\n- Status: Proposed\n\nBody\n", "accepted")).toBe(
+      "# Decision\n- Status: Accepted\n\nBody\n"
+    );
+    expect(replaceAdrStatus("# Decision\n- **Status:** Proposed\n", "rejected")).toBe(
+      "# Decision\n- **Status:** Rejected\n"
+    );
+    expect(replaceAdrStatus("# No status\n", "accepted")).toBeNull();
+  });
 });
 
 describe("parseAdrMetadata", () => {
@@ -95,7 +121,7 @@ describe("designBoardRows", () => {
       new Map([[materialized.item.id, materialized]])
     );
 
-    expect(rows[0].description).toBe("materialized · 1 tasks");
+    expect(rows[0].description).toBe("materialized · 1 tasks · r1");
     expect(rows[0].tooltip).toContain("objective: Ship (goal:ship)");
     expect(rows[0].tooltip).toContain("tasks: 1; constraints: 1");
   });
@@ -115,8 +141,55 @@ describe("formatDesignPromotion", () => {
   it("renders objective, tasks, and constraints", () => {
     const markdown = formatDesignPromotion(promotion());
     expect(markdown).toContain("# Design materialization: Constitution");
-    expect(markdown).toContain("**Objective:** Ship (goal:ship)");
+    expect(markdown).toContain("**Objectives:** Ship (goal:ship)");
     expect(markdown).toContain("Implement — open (task:one)");
     expect(markdown).toContain("No shortcuts — constraint (goal:rule)");
+  });
+
+  it("renders no-work decisions and append-only repair history", () => {
+    const current = promotion();
+    current.mode = "no_work";
+    current.revision = 2;
+    current.goals = [];
+    current.tasks = [];
+    current.rationale = "Already implemented";
+    const markdown = formatDesignPromotion(current, [
+      {
+        design_id: current.item.id,
+        revision: 1,
+        plan: { mode: "create" },
+        actor: "reviewer",
+        created_at: 10,
+      },
+      {
+        design_id: current.item.id,
+        revision: 2,
+        plan: { mode: "no_work", rationale: "Already implemented" },
+        actor: "second-reviewer",
+        created_at: 11,
+      },
+    ]);
+    expect(markdown).toContain("**Mode:** no_work");
+    expect(markdown).toContain("**Objectives:** none");
+    expect(markdown).toContain("r2 — no_work by second-reviewer: Already implemented");
+  });
+});
+
+describe("formatMaterializationPlan", () => {
+  it("shows created and linked work before confirmation", () => {
+    const create: DesignMaterializationPlan = {
+      mode: "create",
+      tasks: [{ goal_id: "goal:ship", title: "Implement", acceptance: "It works" }],
+    };
+    expect(formatMaterializationPlan(create)).toContain("Create: Implement (goal:ship)");
+
+    const link: DesignMaterializationPlan = {
+      mode: "link",
+      task_ids: ["task:one"],
+      rationale: "Already scheduled",
+    };
+    expect(formatMaterializationPlan(link, promotion().tasks)).toContain(
+      "Link: Implement (task:one)"
+    );
   });
 });

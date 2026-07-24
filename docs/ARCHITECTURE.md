@@ -54,9 +54,12 @@ store so the zero-token decay engine stays uncontaminated. Modules: `model`
 (goals/tasks/knowledge), `schema.sql`, `db` (+ a knowledge `effective_weight`
 scalar), `decay` (long-horizon revalidation), `store` (`LodestarStore`: the
 `goals` and goal↔code seam, `coordination` task/handoff/conformance ledger,
-learned `knowledge`, and `lifecycle` operations), `llm` (optional local model),
-and `lib` (the `Lodestar` facade wiring). Facade behavior is grouped under
-`facade/`: `constitution`, `executive`, `conformance`, and `knowledge`.
+reviewed `design` materialization plus validation, learned `knowledge`, and
+`lifecycle` operations), `llm` (optional local model), and `lib` (the `Lodestar`
+facade wiring). Facade behavior is grouped under `facade/`: `constitution`,
+`executive`, `design`, `design_materialization`, `conformance`, and `knowledge`.
+Each design materialization writes an immutable plan revision; task/goal link
+tables are the current projection and can be repaired without deleting history.
 
 The learned-knowledge loop is wired end to end (ADR-0022): `knowledge`'s
 `promote_signals` bridge feeds MindLeak proven-signal candidates through the

@@ -1,10 +1,12 @@
 //! SQLite connection setup, schema application, and the `effective_weight`
 //! scalar function used for knowledge revalidation queries.
 
-use rusqlite::functions::FunctionFlags;
-use rusqlite::{Connection, OptionalExtension};
+mod functions;
+mod migrations;
 
-use crate::error::{LodestarError, Result};
+use rusqlite::Connection;
+
+use crate::error::Result;
 
 const SCHEMA: &str = include_str!("schema.sql");
 
@@ -29,205 +31,8 @@ fn configure(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "busy_timeout", 5000)?;
     conn.execute_batch(SCHEMA)?;
-    migrate(conn)?;
-    register_functions(conn)?;
-    Ok(())
-}
-
-fn migrate(conn: &Connection) -> Result<()> {
-    conn.execute_batch("BEGIN IMMEDIATE")?;
-    let result = migrate_locked(conn);
-    match result {
-        Ok(()) => conn.execute_batch("COMMIT")?,
-        Err(error) => {
-            let _ = conn.execute_batch("ROLLBACK");
-            return Err(error);
-        }
-    }
-    Ok(())
-}
-
-fn migrate_locked(conn: &Connection) -> Result<()> {
-    for (table, column, definition) in [
-        ("tasks", "claim_started_at", "INTEGER"),
-        ("tasks", "parked_at", "INTEGER"),
-        ("goal_code", "mode", "TEXT NOT NULL DEFAULT 'governed'"),
-        ("conformance", "evidence_schema_version", "INTEGER"),
-        ("conformance", "evidence", "TEXT"),
-        ("design_items", "spawned_goal_id", "TEXT"),
-        (
-            "design_items",
-            "promotion_status",
-            "TEXT NOT NULL DEFAULT 'not_required'",
-        ),
-    ] {
-        if !column_exists(conn, table, column)? {
-            conn.execute_batch(&format!(
-                "ALTER TABLE {table} ADD COLUMN {column} {definition}"
-            ))?;
-        }
-    }
-    conn.execute(
-        "UPDATE tasks
-         SET claim_started_at = updated_at
-         WHERE status = 'claimed' AND claim_started_at IS NULL",
-        [],
-    )?;
-    conn.execute(
-        "UPDATE design_items
-         SET promotion_status = CASE
-             WHEN status = 'accepted' AND spawned_goal_id IS NOT NULL THEN 'materialized'
-             WHEN status = 'accepted' THEN 'pending'
-             ELSE 'not_required'
-         END",
-        [],
-    )?;
-    conn.execute(
-        "UPDATE tasks
-         SET status = CASE
-                 WHEN status IN ('open', 'claimed') THEN 'blocked'
-                 ELSE status
-             END,
-             owner = NULL, claim_started_at = NULL, lease_expires_at = NULL,
-             blocked_by = NULL
-         WHERE blocked_by IS NOT NULL
-           AND NOT EXISTS (
-               SELECT 1 FROM tasks predecessor
-               WHERE predecessor.id = tasks.blocked_by
-           )",
-        [],
-    )?;
-    let ambiguous: Option<String> = conn
-        .query_row(
-            "SELECT blocked_by
-             FROM tasks
-             WHERE blocked_by IS NOT NULL
-             GROUP BY blocked_by
-             HAVING COUNT(1) > 1
-             LIMIT 1",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if let Some(predecessor) = ambiguous {
-        return Err(LodestarError::Invalid(format!(
-            "legacy task {predecessor} has multiple successors; progressive handoff requires a linear chain"
-        )));
-    }
-    let cross_goal: Option<(String, String)> = conn
-        .query_row(
-            "SELECT successor.id, predecessor.id
-             FROM tasks successor
-             JOIN tasks predecessor ON predecessor.id = successor.blocked_by
-             WHERE successor.blocked_by IS NOT NULL
-               AND successor.goal_id <> predecessor.goal_id
-             LIMIT 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    if let Some((successor, predecessor)) = cross_goal {
-        return Err(LodestarError::Invalid(format!(
-            "legacy handoff {predecessor} -> {successor} crosses goals"
-        )));
-    }
-    let cycle: Option<String> = conn
-        .query_row(
-            "WITH RECURSIVE chain(start_id, id, path, cyclic) AS (
-                 SELECT id, blocked_by, ',' || id || ',', 0
-                 FROM tasks WHERE blocked_by IS NOT NULL
-                 UNION ALL
-                 SELECT chain.start_id, tasks.blocked_by,
-                        chain.path || tasks.id || ',',
-                        instr(chain.path, ',' || tasks.id || ',') > 0
-                 FROM chain JOIN tasks ON tasks.id = chain.id
-                 WHERE chain.id IS NOT NULL AND chain.cyclic = 0
-             )
-             SELECT start_id FROM chain WHERE cyclic = 1 LIMIT 1",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if let Some(task) = cycle {
-        return Err(LodestarError::Invalid(format!(
-            "legacy task handoff containing {task} is cyclic"
-        )));
-    }
-    conn.execute(
-        "UPDATE tasks
-         SET status = CASE
-                 WHEN status IN ('open', 'claimed') THEN 'blocked'
-                 ELSE status
-             END,
-             owner = NULL, claim_started_at = NULL,
-             lease_expires_at = NULL
-         WHERE blocked_by IS NOT NULL",
-        [],
-    )?;
-    conn.execute(
-        "INSERT OR IGNORE INTO task_handoffs
-             (predecessor_id, successor_id, created_at)
-         SELECT blocked_by, id, created_at
-         FROM tasks
-         WHERE blocked_by IS NOT NULL",
-        [],
-    )?;
-    conn.execute(
-        "UPDATE tasks
-         SET status = 'open', owner = NULL, claim_started_at = NULL,
-             lease_expires_at = NULL, blocked_by = NULL, updated_at = MAX(
-                 updated_at,
-                 COALESCE((
-                     SELECT MAX(checked_at) FROM conformance
-                     WHERE conformance.task_id = tasks.blocked_by
-                       AND conformance.verdict = 'aligned'
-                 ), updated_at)
-             )
-         WHERE status = 'blocked'
-           AND EXISTS (
-               SELECT 1 FROM tasks predecessor
-               WHERE predecessor.id = tasks.blocked_by
-                 AND predecessor.status = 'done'
-           )
-           AND EXISTS (
-               SELECT 1 FROM conformance
-               WHERE conformance.task_id = tasks.blocked_by
-                 AND conformance.verdict = 'aligned'
-           )",
-        [],
-    )?;
-    Ok(())
-}
-
-fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
-    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
-    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
-    for row in rows {
-        if row? == column {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-fn register_functions(conn: &Connection) -> Result<()> {
-    conn.create_scalar_function(
-        "effective_weight",
-        4,
-        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-        |ctx| {
-            let base: f64 = ctx.get(0)?;
-            let half_life: f64 = ctx.get(1)?;
-            let confirmed_at: i64 = ctx.get(2)?;
-            let now: i64 = ctx.get(3)?;
-            Ok(crate::decay::effective_weight(
-                base,
-                half_life,
-                confirmed_at,
-                now,
-            ))
-        },
-    )?;
+    migrations::migrate(conn)?;
+    functions::register(conn)?;
     Ok(())
 }
 
@@ -236,6 +41,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::design::{DesignMaterializationMode, DesignMaterializationPlan};
     use crate::model::{TaskStatus, Verdict};
     use crate::store::{ConformanceAudit, LodestarStore};
 
@@ -549,6 +355,74 @@ mod tests {
         assert_eq!(successor.status, TaskStatus::Open);
         assert!(successor.blocked_by.is_none());
         drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn migration_records_legacy_materialization_once_and_preserves_repairs() {
+        let path = temporary_database("legacy-materialization");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(SCHEMA).unwrap();
+        connection
+            .execute_batch(
+                "ALTER TABLE design_items ADD COLUMN spawned_goal_id TEXT;
+                 INSERT INTO goals
+                     (id, slug, kind, title, statement, status, version, created_at)
+                 VALUES ('goal:design', 'design', 'objective', 'Design', 'Design', 'active', 1, 1);
+                 INSERT INTO design_items
+                     (id, adr_path, title, summary, status, proposed_by, decided_by,
+                      created_at, updated_at, promotion_status, materialization_revision,
+                      spawned_goal_id)
+                 VALUES ('design:legacy', 'docs/adr/legacy.md', 'Legacy', '', 'accepted',
+                         'planner', 'reviewer', 1, 2, 'materialized', 0, 'goal:design');",
+            )
+            .unwrap();
+        drop(connection);
+
+        let store = LodestarStore::new(open(path.to_str().unwrap()).unwrap());
+        let migrated = store.get_design_item("design:legacy").unwrap().unwrap();
+        assert_eq!(migrated.materialization_revision, 1);
+        assert_eq!(
+            store
+                .design_materialization_history("design:legacy")
+                .unwrap()
+                .len(),
+            1
+        );
+        store
+            .materialize_design_item(
+                "design:legacy",
+                &DesignMaterializationPlan {
+                    mode: DesignMaterializationMode::NoWork,
+                    tasks: Vec::new(),
+                    task_ids: Vec::new(),
+                    constraints: Vec::new(),
+                    rationale: Some("legacy work was already complete".into()),
+                },
+                "second-reviewer",
+                true,
+                3,
+            )
+            .unwrap();
+        drop(store);
+
+        let reopened = LodestarStore::new(open(path.to_str().unwrap()).unwrap());
+        assert_eq!(
+            reopened
+                .get_design_item("design:legacy")
+                .unwrap()
+                .unwrap()
+                .materialization_revision,
+            2
+        );
+        assert_eq!(
+            reopened
+                .design_materialization_history("design:legacy")
+                .unwrap()
+                .len(),
+            2
+        );
+        drop(reopened);
         std::fs::remove_file(path).unwrap();
     }
 

@@ -3,7 +3,7 @@
 //! read the Design Board, and the human accept/reject decision.
 
 use lodestar_core::design::DesignMetadata;
-use lodestar_core::{DesignStatus, GoalKind, Lodestar};
+use lodestar_core::{DesignStatus, Lodestar};
 use serde_json::{json, Value};
 
 use super::{ok, opt_str, req_str};
@@ -63,15 +63,6 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "design_promotion",
-            "description": "Read the persisted objective, tasks, and constraints materialized for a design. Returns null while proposed or pending; never invokes planning.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "id": { "type": "string" } },
-                "required": ["id"]
-            }
-        }),
-        json!({
             "name": "accept_design",
             "description": "Human acceptance of a design item (ADR-0023): the attributed, guarded human decision only. The design becomes accepted with promotion state 'pending' — it does NOT run code conformance and does NOT create tasks. Materialise the work with promote_design. No agent may accept its own design.",
             "inputSchema": {
@@ -81,31 +72,6 @@ pub(super) fn definitions() -> Vec<Value> {
                     "human": { "type": "string", "description": "The human reviewer's identity (must differ from the proposing agent)." }
                 },
                 "required": ["id", "human"]
-            }
-        }),
-        json!({
-            "name": "promote_design",
-            "description": "Promote an accepted design into implementation work under an objective goal (ADR-0023): decompose the reviewed design into claimable tasks (model-assisted, deterministic single-task fallback) and register any mandated constraints into the constitution, with durable provenance links. Idempotent — a retry returns the already-materialised { item, goal, tasks, constraints } without creating duplicates.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string", "description": "Accepted design item id." },
-                    "objective_goal_id": { "type": "string", "description": "The objective goal the spawned tasks serve." },
-                    "constraints": {
-                        "type": "array",
-                        "description": "Durable constraints/invariants the ADR mandates, registered into the constitution.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "kind": { "type": "string", "enum": ["constraint", "invariant"] },
-                                "title": { "type": "string" },
-                                "statement": { "type": "string" }
-                            },
-                            "required": ["kind", "title", "statement"]
-                        }
-                    }
-                },
-                "required": ["id", "objective_goal_id"]
             }
         }),
         json!({
@@ -161,27 +127,11 @@ pub(super) fn dispatch(
                 .list_design_items(status)
                 .map_err(|e| e.to_string())?)
         })()),
-        "design_promotion" => Some((|| {
-            ok(&engine
-                .design_promotion(req_str(args, "id")?)
-                .map_err(|e| e.to_string())?)
-        })()),
         "accept_design" => Some((|| {
             let item = engine
                 .accept_design(req_str(args, "id")?, req_str(args, "human")?)
                 .map_err(|e| e.to_string())?;
             ok(&item)
-        })()),
-        "promote_design" => Some((|| {
-            let constraints = parse_constraints(args)?;
-            let promotion = engine
-                .promote_design(
-                    req_str(args, "id")?,
-                    req_str(args, "objective_goal_id")?,
-                    &constraints,
-                )
-                .map_err(|e| e.to_string())?;
-            ok(&promotion)
         })()),
         "reject_design" => Some((|| {
             let item = engine
@@ -205,40 +155,6 @@ fn parse_design_metadata(args: &Value) -> Result<Vec<DesignMetadata>, String> {
     serde_json::from_value(designs).map_err(|error| format!("invalid design metadata: {error}"))
 }
 
-/// Parse the optional `constraints` array on `promote_design` into
-/// `(kind, title, statement)` triples. Each must be a `constraint`/`invariant`
-/// (an objective is not a constraint), so conformance can enforce it.
-fn parse_constraints(args: &Value) -> Result<Vec<(GoalKind, String, String)>, String> {
-    let Some(entries) = args.get("constraints").and_then(Value::as_array) else {
-        return Ok(Vec::new());
-    };
-    let mut out = Vec::with_capacity(entries.len());
-    for entry in entries {
-        let kind = entry
-            .get("kind")
-            .and_then(Value::as_str)
-            .ok_or("each constraint needs a string 'kind'")?;
-        let kind =
-            GoalKind::from_tag(kind).ok_or_else(|| format!("unknown constraint kind: {kind}"))?;
-        if !kind.is_normative() {
-            return Err(
-                "a registered constraint must be a constraint or invariant, not an objective"
-                    .to_string(),
-            );
-        }
-        let title = entry
-            .get("title")
-            .and_then(Value::as_str)
-            .ok_or("each constraint needs a string 'title'")?;
-        let statement = entry
-            .get("statement")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        out.push((kind, title.to_string(), statement.to_string()));
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::call;
@@ -247,7 +163,7 @@ mod tests {
     use serde_json::{json, Value};
 
     fn engine() -> Lodestar {
-        // Unreachable model so promote_design's decompose takes its deterministic
+        // Unreachable model so plan_design_promotion takes its deterministic
         // single-task fallback — independent of any ambient local model.
         Lodestar::open_in_memory()
             .unwrap()
@@ -308,22 +224,33 @@ mod tests {
         assert_eq!(pending.as_array().unwrap().len(), 1);
         assert_eq!(pending[0]["promotion_status"], "pending");
 
-        // Promote materialises tasks under a chosen objective goal.
+        // Planning is read-only; only the reviewed plan materialises work.
         let objective = engine
             .define_goal(GoalKind::Objective, "Ship the bridge", "wire it", None)
             .unwrap();
-        let promo = payload(
+        let plan = payload(
             call(
                 &engine,
                 &json!({
-                    "name": "promote_design",
+                    "name": "plan_design_promotion",
                     "arguments": { "id": id, "objective_goal_id": objective.id }
                 }),
             )
             .unwrap(),
         );
+        assert!(engine.next_task().unwrap().is_none());
+        let promo = payload(
+            call(
+                &engine,
+                &json!({
+                    "name": "promote_design",
+                    "arguments": { "id": id, "plan": plan }
+                }),
+            )
+            .unwrap(),
+        );
         assert_eq!(promo["item"]["promotion_status"], "materialized");
-        assert_eq!(promo["goal"]["id"], objective.id);
+        assert_eq!(promo["goals"][0]["id"], objective.id);
         assert!(!promo["tasks"].as_array().unwrap().is_empty());
         let persisted = payload(
             call(
@@ -332,7 +259,7 @@ mod tests {
             )
             .unwrap(),
         );
-        assert_eq!(persisted["goal"]["id"], objective.id);
+        assert_eq!(persisted["goals"][0]["id"], objective.id);
         assert_eq!(persisted["tasks"], promo["tasks"]);
         assert_eq!(persisted["constraints"], promo["constraints"]);
         assert!(payload(
@@ -341,6 +268,14 @@ mod tests {
         .as_array()
         .unwrap()
         .is_empty());
+        let history = payload(
+            call(
+                &engine,
+                &json!({ "name": "design_materialization_history", "arguments": { "id": id } }),
+            )
+            .unwrap(),
+        );
+        assert_eq!(history.as_array().unwrap().len(), 1);
     }
 
     #[test]
@@ -387,18 +322,25 @@ mod tests {
         let objective = engine
             .define_goal(GoalKind::Objective, "Type the errors", "do it", None)
             .unwrap();
+        let mut plan = payload(
+            call(
+                &engine,
+                &json!({
+                    "name": "plan_design_promotion",
+                    "arguments": { "id": id, "objective_goal_id": objective.id }
+                }),
+            )
+            .unwrap(),
+        );
+        plan["constraints"] = json!([
+            { "kind": "constraint", "title": "No unwrap", "statement": "no unwrap in prod" }
+        ]);
         let promo = payload(
             call(
                 &engine,
                 &json!({
                     "name": "promote_design",
-                    "arguments": {
-                        "id": id,
-                        "objective_goal_id": objective.id,
-                        "constraints": [
-                            { "kind": "constraint", "title": "No unwrap", "statement": "no unwrap in prod" }
-                        ]
-                    }
+                    "arguments": { "id": id, "plan": plan }
                 }),
             )
             .unwrap(),
@@ -406,6 +348,78 @@ mod tests {
         let constraints = promo["constraints"].as_array().unwrap();
         assert_eq!(constraints.len(), 1);
         assert_eq!(constraints[0]["kind"], "constraint");
+    }
+
+    #[test]
+    fn revise_design_promotion_links_existing_work_and_preserves_history() {
+        let engine = engine();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Existing work", "reuse it", None)
+            .unwrap();
+        let existing = engine
+            .create_task(&goal.id, "Authoritative task", "done")
+            .unwrap();
+        let registered = payload(
+            call(
+                &engine,
+                &json!({
+                    "name": "register_design",
+                    "arguments": { "adr_path": "docs/adr/0105-repair.md", "title": "Repair" }
+                }),
+            )
+            .unwrap(),
+        );
+        let id = registered["id"].as_str().unwrap();
+        call(
+            &engine,
+            &json!({ "name": "accept_design", "arguments": { "id": id, "human": "reviewer" } }),
+        )
+        .unwrap();
+        let create_plan = payload(
+            call(
+                &engine,
+                &json!({
+                    "name": "plan_design_promotion",
+                    "arguments": { "id": id, "objective_goal_id": goal.id }
+                }),
+            )
+            .unwrap(),
+        );
+        call(
+            &engine,
+            &json!({ "name": "promote_design", "arguments": { "id": id, "plan": create_plan } }),
+        )
+        .unwrap();
+
+        let revised = payload(
+            call(
+                &engine,
+                &json!({
+                    "name": "revise_design_promotion",
+                    "arguments": {
+                        "id": id,
+                        "human": "second-reviewer",
+                        "plan": {
+                            "mode": "link",
+                            "task_ids": [existing.id],
+                            "rationale": "The implementation task already existed"
+                        }
+                    }
+                }),
+            )
+            .unwrap(),
+        );
+        assert_eq!(revised["revision"], 2);
+        assert_eq!(revised["tasks"][0]["id"], existing.id);
+        let history = payload(
+            call(
+                &engine,
+                &json!({ "name": "design_materialization_history", "arguments": { "id": id } }),
+            )
+            .unwrap(),
+        );
+        assert_eq!(history.as_array().unwrap().len(), 2);
+        assert_eq!(history[1]["plan"]["mode"], "link");
     }
 
     #[test]

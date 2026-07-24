@@ -2,6 +2,7 @@
 mod conformance;
 mod constitution;
 mod design;
+mod design_materialization;
 mod executive;
 mod knowledge;
 

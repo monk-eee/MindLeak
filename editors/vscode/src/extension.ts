@@ -293,6 +293,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     vscode.commands.registerCommand("mindleak.design.promote", (item?: DesignBoardItem) => {
       void designController?.promote(item);
     }),
+    vscode.commands.registerCommand("mindleak.design.revisePromotion", (item?: DesignBoardItem) => {
+      void designController?.revisePromotion(item);
+    }),
     vscode.commands.registerCommand("mindleak.design.openAdr", (item?: DesignBoardItem) => {
       void designController?.openAdr(item);
     }),

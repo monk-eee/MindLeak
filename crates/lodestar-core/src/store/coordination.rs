@@ -49,58 +49,15 @@ impl LodestarStore {
         now: i64,
     ) -> Result<Task> {
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
-        if !goals::goal_exists_on(&transaction, goal_id)? {
-            return Err(LodestarError::NotFound(goal_id.to_string()));
-        }
-        let id = format!("task:{}", short_hash(&format!("{goal_id}|{title}|{now}")));
-        let predecessor_id = blocked_by;
-        let blocked_by = match predecessor_id.as_deref() {
-            Some(blocker_id) => (!validate_dependency_on(&transaction, &id, goal_id, blocker_id)?)
-                .then(|| blocker_id.to_string()),
-            None => None,
-        };
-        let status = if blocked_by.is_some() {
-            TaskStatus::Blocked
-        } else {
-            TaskStatus::Open
-        };
-        let task = Task {
-            id,
-            goal_id: goal_id.to_string(),
-            parent_task_id: parent,
-            title: title.to_string(),
-            acceptance: acceptance.to_string(),
-            status,
-            owner: None,
-            claim_started_at: None,
-            lease_expires_at: None,
+        let task = create_task_after_on(
+            &transaction,
+            goal_id,
+            title,
+            acceptance,
+            parent,
             blocked_by,
-            parked_at: None,
-            created_at: now,
-            updated_at: now,
-        };
-        transaction.execute(
-            "INSERT INTO tasks
-                     (id, goal_id, parent_task_id, title, acceptance, status, owner, claim_started_at, lease_expires_at, blocked_by, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, ?7, ?8, ?8)",
-            params![
-                task.id,
-                task.goal_id,
-                task.parent_task_id,
-                task.title,
-                task.acceptance,
-                task.status.as_str(),
-                task.blocked_by,
-                now,
-            ],
+            now,
         )?;
-        if let Some(predecessor_id) = predecessor_id {
-            transaction.execute(
-                "INSERT INTO task_handoffs (predecessor_id, successor_id, created_at)
-                 VALUES (?1, ?2, ?3)",
-                params![predecessor_id, task.id, now],
-            )?;
-        }
         transaction.commit()?;
         Ok(task)
     }
@@ -694,7 +651,81 @@ impl LodestarStore {
     }
 }
 
-fn get_task_on(connection: &Connection, id: &str) -> Result<Option<Task>> {
+pub(super) fn create_task_on(
+    connection: &Connection,
+    goal_id: &str,
+    title: &str,
+    acceptance: &str,
+    now: i64,
+) -> Result<Task> {
+    create_task_after_on(connection, goal_id, title, acceptance, None, None, now)
+}
+
+fn create_task_after_on(
+    connection: &Connection,
+    goal_id: &str,
+    title: &str,
+    acceptance: &str,
+    parent: Option<String>,
+    blocked_by: Option<String>,
+    now: i64,
+) -> Result<Task> {
+    if !goals::goal_exists_on(connection, goal_id)? {
+        return Err(LodestarError::NotFound(goal_id.to_string()));
+    }
+    let id = format!("task:{}", short_hash(&format!("{goal_id}|{title}|{now}")));
+    let predecessor_id = blocked_by;
+    let blocked_by = match predecessor_id.as_deref() {
+        Some(blocker_id) => (!validate_dependency_on(connection, &id, goal_id, blocker_id)?)
+            .then(|| blocker_id.to_string()),
+        None => None,
+    };
+    let status = if blocked_by.is_some() {
+        TaskStatus::Blocked
+    } else {
+        TaskStatus::Open
+    };
+    let task = Task {
+        id,
+        goal_id: goal_id.to_string(),
+        parent_task_id: parent,
+        title: title.to_string(),
+        acceptance: acceptance.to_string(),
+        status,
+        owner: None,
+        claim_started_at: None,
+        lease_expires_at: None,
+        blocked_by,
+        parked_at: None,
+        created_at: now,
+        updated_at: now,
+    };
+    connection.execute(
+        "INSERT INTO tasks
+             (id, goal_id, parent_task_id, title, acceptance, status, owner, claim_started_at, lease_expires_at, blocked_by, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, ?7, ?8, ?8)",
+        params![
+            task.id,
+            task.goal_id,
+            task.parent_task_id,
+            task.title,
+            task.acceptance,
+            task.status.as_str(),
+            task.blocked_by,
+            now,
+        ],
+    )?;
+    if let Some(predecessor_id) = predecessor_id {
+        connection.execute(
+            "INSERT INTO task_handoffs (predecessor_id, successor_id, created_at)
+             VALUES (?1, ?2, ?3)",
+            params![predecessor_id, task.id, now],
+        )?;
+    }
+    Ok(task)
+}
+
+pub(super) fn get_task_on(connection: &Connection, id: &str) -> Result<Option<Task>> {
     let sql = format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?1");
     Ok(connection
         .query_row(&sql, params![id], row_to_task)

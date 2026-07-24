@@ -3,10 +3,8 @@
 //! read the Design Board, and the human accept/reject decision that completes
 //! design work without code conformance.
 
-use crate::design::{
-    design_id_from_path, DesignItem, DesignMetadata, DesignPromotion, DesignStatus,
-};
-use crate::{now_unix, GoalKind, Lodestar, LodestarError, Result};
+use crate::design::{design_id_from_path, DesignItem, DesignMetadata, DesignStatus};
+use crate::{now_unix, Lodestar, LodestarError, Result};
 
 impl Lodestar {
     /// Register an ADR as a design item under review. It is *proposed* (tainted)
@@ -67,13 +65,6 @@ impl Lodestar {
         self.store.list_design_items(status)
     }
 
-    /// Read the persisted objective/task/constraint provenance for a
-    /// materialized design. Proposed and pending designs return `None`; this
-    /// operation never invokes planning or mutates the design.
-    pub fn design_promotion(&self, id: &str) -> Result<Option<DesignPromotion>> {
-        self.store.design_promotion(id)
-    }
-
     /// Human acceptance — the attributed, guarded human decision *only*
     /// (ADR-0023). The design becomes `accepted` with promotion `pending`; it
     /// does **not** run ADR-0009 code conformance and does **not** invoke a
@@ -94,35 +85,6 @@ impl Lodestar {
         self.store
             .get_design_item(id)?
             .ok_or_else(|| LodestarError::NotFound(id.to_string()))
-    }
-
-    /// Promote an accepted design into implementation work under
-    /// `objective_goal_id` (ADR-0023): decompose the reviewed design into
-    /// claimable tasks (model-assisted, deterministic single-task fallback) and
-    /// register any mandated `constraints` into the constitution, all with
-    /// durable provenance links. **Idempotent** — a retry returns the already
-    /// materialised plan rather than creating duplicates; a failed decomposition
-    /// leaves promotion `pending` and never undoes the acceptance.
-    pub fn promote_design(
-        &self,
-        id: &str,
-        objective_goal_id: &str,
-        constraints: &[(GoalKind, String, String)],
-    ) -> Result<DesignPromotion> {
-        let item = self
-            .store
-            .get_design_item(id)?
-            .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
-        // The reviewed design text is the planner's input; an empty summary
-        // still yields actionable work by pointing at the ADR.
-        let statement = if item.summary.trim().is_empty() {
-            format!("Implement the design recorded in {}", item.adr_path)
-        } else {
-            item.summary.clone()
-        };
-        let drafts = self.decompose_drafts(&item.title, &statement);
-        self.store
-            .promote_design_item(id, objective_goal_id, &drafts, constraints, now_unix())
     }
 
     /// Human rejection — durable and auditable (archive-not-delete); spawns no
@@ -184,12 +146,29 @@ impl Lodestar {
 
 #[cfg(test)]
 mod tests {
-    use crate::design::DesignMetadata;
+    use crate::design::{
+        DesignConstraintDraft, DesignMaterializationMode, DesignMaterializationPlan,
+        DesignMetadata, DesignTaskDraft,
+    };
     use crate::facade::test_support::engine;
     use crate::{DesignPromotionStatus, DesignStatus, GoalKind, Lodestar, LodestarError};
 
     fn agent_engine(agent: &str) -> Lodestar {
         engine().with_agent(Some(agent.to_string()))
+    }
+
+    fn create_plan(goal_id: &str, title: &str) -> DesignMaterializationPlan {
+        DesignMaterializationPlan {
+            mode: DesignMaterializationMode::Create,
+            tasks: vec![DesignTaskDraft {
+                goal_id: goal_id.to_string(),
+                title: title.to_string(),
+                acceptance: "reviewed acceptance".to_string(),
+            }],
+            task_ids: Vec::new(),
+            constraints: Vec::new(),
+            rationale: None,
+        }
     }
 
     #[test]
@@ -218,22 +197,24 @@ mod tests {
         assert_eq!(e.design_board().unwrap(), vec![accepted.clone()]);
         assert!(e.design_promotion(&item.id).unwrap().is_none());
 
-        // The human selects an objective; promote materialises the work.
+        // The human selects an objective, reviews the plan, then materialises it.
         let objective = e
             .define_goal(GoalKind::Objective, "Ship the bridge", "wire it", None)
             .unwrap();
-        let promo = e.promote_design(&item.id, &objective.id, &[]).unwrap();
+        let plan = e.plan_design_promotion(&item.id, &objective.id).unwrap();
+        assert!(e.next_task().unwrap().is_none());
+        let promo = e.promote_design(&item.id, &plan).unwrap();
         assert_eq!(
             promo.item.promotion_status,
             DesignPromotionStatus::Materialized
         );
-        assert_eq!(promo.goal.id, objective.id);
+        assert_eq!(promo.goals[0].id, objective.id);
         assert!(!promo.tasks.is_empty());
         assert!(promo.tasks.iter().all(|t| t.goal_id == objective.id));
         assert_eq!(e.next_task().unwrap().unwrap().goal_id, objective.id);
         assert!(e.design_board().unwrap().is_empty());
         let persisted = e.design_promotion(&item.id).unwrap().unwrap();
-        assert_eq!(persisted.goal.id, promo.goal.id);
+        assert_eq!(persisted.goals[0].id, promo.goals[0].id);
         assert_eq!(
             persisted
                 .tasks
@@ -244,11 +225,12 @@ mod tests {
         );
 
         // Idempotent: a retry returns the same tasks, creating no duplicates.
-        let again = e.promote_design(&item.id, &objective.id, &[]).unwrap();
+        let again = e.promote_design(&item.id, &plan).unwrap();
         assert_eq!(
             again.tasks.iter().map(|t| t.id.clone()).collect::<Vec<_>>(),
             promo.tasks.iter().map(|t| t.id.clone()).collect::<Vec<_>>()
         );
+        assert_eq!(e.design_materialization_history(&item.id).unwrap().len(), 1);
     }
 
     #[test]
@@ -258,12 +240,17 @@ mod tests {
         let objective = e
             .define_goal(GoalKind::Objective, "Obj", "o", None)
             .unwrap();
-        // A proposed (not yet accepted) design cannot be promoted.
-        assert!(e.promote_design(&item.id, &objective.id, &[]).is_err());
+        // A proposed (not yet accepted) design cannot be planned or promoted.
+        assert!(e.plan_design_promotion(&item.id, &objective.id).is_err());
+        assert!(e
+            .promote_design(&item.id, &create_plan(&objective.id, "Implement X"))
+            .is_err());
         e.accept_design(&item.id, "reviewer").unwrap();
         // A constraint goal is not a valid promotion target.
         let constraint = e.define_goal(GoalKind::Constraint, "C", "c", None).unwrap();
-        assert!(e.promote_design(&item.id, &constraint.id, &[]).is_err());
+        assert!(e
+            .promote_design(&item.id, &create_plan(&constraint.id, "Invalid task"))
+            .is_err());
     }
 
     #[test]
@@ -305,14 +292,13 @@ mod tests {
         let objective = e
             .define_goal(GoalKind::Objective, "Type the errors", "do it", None)
             .unwrap();
-        let constraints = vec![(
-            GoalKind::Constraint,
-            "No unwrap in prod".to_string(),
-            "no unwrap()/expect() on fallible IO outside tests".to_string(),
-        )];
-        let promo = e
-            .promote_design(&item.id, &objective.id, &constraints)
-            .unwrap();
+        let mut plan = create_plan(&objective.id, "Type the errors");
+        plan.constraints.push(DesignConstraintDraft {
+            kind: GoalKind::Constraint,
+            title: "No unwrap in prod".to_string(),
+            statement: "no unwrap()/expect() on fallible IO outside tests".to_string(),
+        });
+        let promo = e.promote_design(&item.id, &plan).unwrap();
         // The mandated constraint was registered as a normative goal...
         assert_eq!(promo.constraints.len(), 1);
         assert_eq!(promo.constraints[0].kind, GoalKind::Constraint);
@@ -324,6 +310,105 @@ mod tests {
             .any(|g| g.title == "No unwrap in prod"));
         // The objective work was materialised alongside it.
         assert!(!promo.tasks.is_empty());
+    }
+
+    #[test]
+    fn link_and_no_work_materializations_create_no_duplicate_tasks() {
+        let e = agent_engine("planner");
+        let first_goal = e
+            .define_goal(GoalKind::Objective, "Existing graph work", "graph", None)
+            .unwrap();
+        let second_goal = e
+            .define_goal(GoalKind::Objective, "Existing intent work", "intent", None)
+            .unwrap();
+        let graph_task = e
+            .create_task(&first_goal.id, "Existing graph task", "done")
+            .unwrap();
+        let intent_task = e
+            .create_task(&second_goal.id, "Existing intent task", "done")
+            .unwrap();
+        let item = e
+            .register_design("docs/adr/0103-link.md", "Link", "reuse existing work")
+            .unwrap();
+        e.accept_design(&item.id, "reviewer").unwrap();
+        let linked = e
+            .promote_design(
+                &item.id,
+                &DesignMaterializationPlan {
+                    mode: DesignMaterializationMode::Link,
+                    tasks: Vec::new(),
+                    task_ids: vec![graph_task.id.clone(), intent_task.id.clone()],
+                    constraints: Vec::new(),
+                    rationale: Some("These tasks already implement the decision".into()),
+                },
+            )
+            .unwrap();
+        assert_eq!(linked.tasks.len(), 2);
+        assert_eq!(linked.goals.len(), 2);
+        assert_eq!(e.board(false).unwrap().len(), 2);
+
+        let no_work = e
+            .register_design("docs/adr/0104-no-work.md", "No work", "policy only")
+            .unwrap();
+        e.accept_design(&no_work.id, "reviewer").unwrap();
+        let resolved = e
+            .promote_design(
+                &no_work.id,
+                &DesignMaterializationPlan {
+                    mode: DesignMaterializationMode::NoWork,
+                    tasks: Vec::new(),
+                    task_ids: Vec::new(),
+                    constraints: Vec::new(),
+                    rationale: Some("Existing behavior already conforms".into()),
+                },
+            )
+            .unwrap();
+        assert!(resolved.tasks.is_empty());
+        assert!(resolved.goals.is_empty());
+        assert_eq!(e.board(false).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn repair_relinks_current_work_and_keeps_append_only_history() {
+        let e = agent_engine("planner");
+        let goal = e
+            .define_goal(GoalKind::Objective, "Repair promotion", "repair", None)
+            .unwrap();
+        let existing = e
+            .create_task(&goal.id, "Authoritative existing task", "done")
+            .unwrap();
+        let item = e
+            .register_design("docs/adr/0105-repair.md", "Repair", "review repair")
+            .unwrap();
+        e.accept_design(&item.id, "reviewer").unwrap();
+        let first = e
+            .promote_design(&item.id, &create_plan(&goal.id, "Generated duplicate"))
+            .unwrap();
+        let duplicate_id = first.tasks[0].id.clone();
+        let repair = DesignMaterializationPlan {
+            mode: DesignMaterializationMode::Link,
+            tasks: Vec::new(),
+            task_ids: vec![existing.id.clone()],
+            constraints: Vec::new(),
+            rationale: Some("The reviewed work already existed".into()),
+        };
+        let revised = e
+            .revise_design_promotion(&item.id, "second-reviewer", &repair)
+            .unwrap();
+        assert_eq!(revised.revision, 2);
+        assert_eq!(revised.tasks[0].id, existing.id);
+        assert!(e
+            .board(true)
+            .unwrap()
+            .iter()
+            .any(|task| task.id == duplicate_id));
+        assert_eq!(e.design_materialization_history(&item.id).unwrap().len(), 2);
+
+        let retry = e
+            .revise_design_promotion(&item.id, "second-reviewer", &repair)
+            .unwrap();
+        assert_eq!(retry.revision, 2);
+        assert_eq!(e.design_materialization_history(&item.id).unwrap().len(), 2);
     }
 
     #[test]

@@ -38,12 +38,27 @@ CREATE TABLE IF NOT EXISTS design_items (
     created_at   INTEGER NOT NULL,
     updated_at   INTEGER NOT NULL,
     promotion_status TEXT NOT NULL DEFAULT 'not_required',
-    spawned_goal_id TEXT               -- objective selected during promotion
+    materialization_revision INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_design_items_status ON design_items(status);
 
+-- Append-only record of every reviewed materialization. The current link tables
+-- below are a projection of the latest revision; earlier reviewed plans remain
+-- durable here even when a human repairs a bad materialization.
+CREATE TABLE IF NOT EXISTS design_materializations (
+    design_id  TEXT NOT NULL,
+    revision   INTEGER NOT NULL,
+    mode       TEXT NOT NULL,            -- create | link | no_work
+    plan_json  TEXT NOT NULL,
+    rationale  TEXT,
+    actor      TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (design_id, revision),
+    FOREIGN KEY (design_id) REFERENCES design_items(id) ON DELETE CASCADE
+);
+
 -- Durable provenance from an accepted design to the goals/tasks materialized by
--- promotion. These links make retries resolvable without re-running planning.
+-- promotion. These links are the latest materialization's current projection.
 CREATE TABLE IF NOT EXISTS design_goal_links (
     design_id TEXT NOT NULL,
     goal_id   TEXT NOT NULL,

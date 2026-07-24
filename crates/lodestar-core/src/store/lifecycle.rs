@@ -61,6 +61,7 @@ impl LodestarStore {
         let transaction = self.conn.unchecked_transaction()?;
         let conformance_records_removed = transaction.execute("DELETE FROM conformance", [])?;
         let code_bindings_removed = transaction.execute("DELETE FROM goal_code", [])?;
+        let design_items_removed = transaction.execute("DELETE FROM design_items", [])?;
         let tasks_removed = transaction.execute("DELETE FROM tasks", [])?;
         let knowledge_removed = transaction.execute("DELETE FROM knowledge", [])?;
         let goals_removed = transaction.execute("DELETE FROM goals", [])?;
@@ -69,6 +70,7 @@ impl LodestarStore {
         Ok(ResetOutcome {
             goals_removed,
             tasks_removed,
+            design_items_removed,
             code_bindings_removed,
             conformance_records_removed,
             knowledge_removed,
@@ -80,6 +82,7 @@ impl LodestarStore {
 mod tests {
     use super::*;
     use crate::db;
+    use crate::design::{DesignMaterializationMode, DesignMaterializationPlan, DesignStatus};
     use crate::model::{CodeBindingMode, GoalKind, TaskStatus, Verdict};
     use crate::store::test_support::{goal, store, NOW};
     use crate::store::ConformanceAudit;
@@ -135,6 +138,34 @@ mod tests {
         store
             .record_knowledge("keep tests focused", "{}", 720.0, NOW)
             .unwrap();
+        let design = store
+            .register_design_item(
+                "design:reset",
+                "docs/adr/reset.md",
+                "Reset",
+                "no work",
+                Some("planner"),
+                NOW,
+            )
+            .unwrap();
+        assert!(store
+            .decide_design_item(&design.id, DesignStatus::Accepted, "reviewer", None, NOW,)
+            .unwrap());
+        store
+            .materialize_design_item(
+                &design.id,
+                &DesignMaterializationPlan {
+                    mode: DesignMaterializationMode::NoWork,
+                    tasks: Vec::new(),
+                    task_ids: Vec::new(),
+                    constraints: Vec::new(),
+                    rationale: Some("nothing to schedule".into()),
+                },
+                "reviewer",
+                false,
+                NOW,
+            )
+            .unwrap();
 
         assert!(store.reset_database("RESET MINDLEAK").is_err());
         assert!(store.get_goal(&goal.id).unwrap().is_some());
@@ -142,10 +173,12 @@ mod tests {
         let outcome = store.reset_database("RESET LODESTAR").unwrap();
         assert_eq!(outcome.goals_removed, 1);
         assert_eq!(outcome.tasks_removed, 1);
+        assert_eq!(outcome.design_items_removed, 1);
         assert_eq!(outcome.code_bindings_removed, 1);
         assert_eq!(outcome.conformance_records_removed, 1);
         assert_eq!(outcome.knowledge_removed, 1);
         assert_eq!(store.stats(NOW).unwrap().active_goals, 0);
+        assert!(store.list_design_items(None).unwrap().is_empty());
         assert!(store
             .define_goal(GoalKind::Objective, "New goal", "usable", None, NOW)
             .is_ok());

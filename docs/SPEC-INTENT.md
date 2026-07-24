@@ -439,15 +439,26 @@ Newline-delimited JSON-RPC 2.0 over stdio, exactly like `mindleak-mcp`.
 17. `design_board()` → actionable design work: proposed items awaiting a human
   decision plus accepted items whose promotion is pending or retryable.
 18. `accept_design(id, human)` / `reject_design(id, human, reason)` → attributed
-  human decision; no code conformance and no self-acceptance.
-19. `promote_design(id, objective_goal_id, constraints?)` → idempotently
-  materialize tasks and mandated normative goals with durable provenance.
+  human decision; no code conformance and no self-acceptance. The VS Code
+  workflow writes the matching ADR `Status` in the same operation.
+19. `plan_design_promotion(id, objective_goal_id)` → a read-only suggested
+  `create` plan; optional model output and the deterministic fallback cannot
+  create work before human review.
+20. `promote_design(id, plan)` → atomically materialize one explicit `create`,
+  `link`, or `no_work` plan. Each new task names an objective; linked tasks may
+  span objectives; link/no-work require rationale. Identical retries return the
+  same revision.
+21. `revise_design_promotion(id, human, plan)` → append an attributed repair
+  revision and replace the current task/objective projection without deleting
+  prior plans or tasks. Existing normative clauses remain durable.
+22. `design_promotion(id)` / `design_materialization_history(id)` → current
+  provenance projection and the immutable reviewed revision chain.
 
 **Conformance**
 
-20. `check_conformance(evidence, task_id?)` →
+23. `check_conformance(evidence, task_id?)` →
   `{ id, token, verdict, findings[] }`; persists one authoritative audit row.
-21. `conformance_history(task_id)` → the append-only evidence chain for a task:
+24. `conformance_history(task_id)` → the append-only evidence chain for a task:
     each record's stable `id`, the recorded evidence bundle, `verdict`,
     `findings`, and `checked_at` — the durable, resolvable link proving how (and
     whether) a task reached completion.

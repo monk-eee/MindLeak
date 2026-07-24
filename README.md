@@ -247,7 +247,10 @@ coordinate through one plane.
 | `task_qa` | The durable, append-only question/answer thread for a task. |
 | `board` | Who-owns-what-and-where snapshot including advisory scope; the VS Code Intent Board defaults to live/actionable work, while `include_terminal=true` returns durable history. |
 | `register_design` / `reconcile_designs` / `design_board` | Register one ADR or idempotently import structured repository ADR metadata; list proposed decisions and accepted designs awaiting promotion, without creating tasks during reconciliation. |
-| `accept_design` / `promote_design` / `reject_design` | Human completion path for design work — accept (no code conformance), idempotently materialize reviewed work under an objective, or durably reject; no agent may decide its own design. |
+| `accept_design` / `reject_design` | Attributed human decision with no code conformance or self-acceptance; the Design Board aligns the ADR file's declared status. |
+| `plan_design_promotion` / `promote_design` | Preview task drafts without writes, then atomically materialize one reviewed create/link/no-work plan across the named objectives. |
+| `revise_design_promotion` | Append an attributed, rationale-bearing repair revision; prior plans and tasks remain durable. |
+| `design_promotion` / `design_materialization_history` | Read the current task/objective projection or its complete immutable review history. |
 | `check_conformance` | Persist and return `{ id, token, verdict, findings }` for exact checked completion. |
 | `conformance_history` | Resolve a task's durable evidence chain — the recorded bundle, verdict, and stable id per check. |
 | `consolidate` / `record_knowledge` | Gated promotion of learned regularities. |
@@ -269,8 +272,9 @@ Backup, upgrade, rollback, export, reset, and retention guidance:
 
 The VS Code sidebar includes a separate **Design Board**. It synchronizes
 structured ADR metadata, keeps human review separate from executable task
-coordination, supports attributed accept/reject decisions, and exposes
-idempotent promotion plus persisted implementation provenance.
+coordination, supports attributed accept/reject decisions, and reviews explicit
+create/link/no-work plans before materialization. Materialized rows expose
+persisted provenance/history and an attributed repair action.
 
 ---
 

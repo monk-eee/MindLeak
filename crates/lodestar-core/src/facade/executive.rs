@@ -52,7 +52,7 @@ impl Lodestar {
 
     /// Model-assisted task drafts `(title, acceptance)` for a title/statement,
     /// with a deterministic single-task fallback when no model is reachable.
-    /// Shared by `decompose_goal` and the design accept→decompose bridge
+    /// Shared by `decompose_goal` and read-only design materialization planning
     /// (ADR-0023) so both breakdowns behave identically.
     pub(crate) fn decompose_drafts(&self, title: &str, statement: &str) -> Vec<(String, String)> {
         match self.llm.decompose(title, statement) {

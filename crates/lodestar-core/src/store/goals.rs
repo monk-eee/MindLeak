@@ -39,56 +39,11 @@ impl LodestarStore {
         parent: Option<String>,
         now: i64,
     ) -> Result<Goal> {
-        let slug = slugify(title);
-        let base = format!("goal:{slug}");
-        let id = if self.goal_exists(&base)? {
-            format!("goal:{slug}-{}", short_hash(statement))
-        } else {
-            base
-        };
-        if self.goal_exists(&id)? {
-            return Err(LodestarError::Invalid(format!(
-                "a goal with this title and statement already exists ({id}); \
-                 revise intent through supersede_goal instead of redefining it"
-            )));
-        }
-        let goal = Goal {
-            id,
-            slug,
-            kind,
-            title: title.to_string(),
-            statement: statement.to_string(),
-            status: GoalStatus::Active,
-            version: 1,
-            parent_id: parent,
-            superseded_by: None,
-            reason: None,
-            created_at: now,
-        };
-        self.insert_goal(&goal)?;
-        Ok(goal)
+        define_goal_on(&self.conn, kind, title, statement, parent, now)
     }
 
-    fn insert_goal(&self, g: &Goal) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO goals
-                (id, slug, kind, title, statement, status, version, parent_id, superseded_by, reason, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                g.id,
-                g.slug,
-                g.kind.as_str(),
-                g.title,
-                g.statement,
-                g.status.as_str(),
-                g.version,
-                g.parent_id,
-                g.superseded_by,
-                g.reason,
-                g.created_at,
-            ],
-        )?;
-        Ok(())
+    fn insert_goal(&self, goal: &Goal) -> Result<()> {
+        insert_goal_on(&self.conn, goal)
     }
 
     /// Supersede a goal: write a new active version and mark the old one
@@ -194,6 +149,66 @@ impl LodestarStore {
         })?;
         collect(rows)
     }
+}
+
+pub(super) fn define_goal_on(
+    connection: &Connection,
+    kind: GoalKind,
+    title: &str,
+    statement: &str,
+    parent: Option<String>,
+    now: i64,
+) -> Result<Goal> {
+    let slug = slugify(title);
+    let base = format!("goal:{slug}");
+    let id = if goal_exists_on(connection, &base)? {
+        format!("goal:{slug}-{}", short_hash(statement))
+    } else {
+        base
+    };
+    if goal_exists_on(connection, &id)? {
+        return Err(LodestarError::Invalid(format!(
+            "a goal with this title and statement already exists ({id}); \
+             revise intent through supersede_goal instead of redefining it"
+        )));
+    }
+    let goal = Goal {
+        id,
+        slug,
+        kind,
+        title: title.to_string(),
+        statement: statement.to_string(),
+        status: GoalStatus::Active,
+        version: 1,
+        parent_id: parent,
+        superseded_by: None,
+        reason: None,
+        created_at: now,
+    };
+    insert_goal_on(connection, &goal)?;
+    Ok(goal)
+}
+
+fn insert_goal_on(connection: &Connection, g: &Goal) -> Result<()> {
+    connection.execute(
+        "INSERT INTO goals
+            (id, slug, kind, title, statement, status, version, parent_id, superseded_by, reason, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            g.id,
+            g.slug,
+            g.kind.as_str(),
+            g.title,
+            g.statement,
+            g.status.as_str(),
+            g.version,
+            g.parent_id,
+            g.superseded_by,
+            g.reason,
+            g.created_at,
+        ],
+    )?;
+    Ok(())
 }
 
 pub(super) fn goal_exists_on(connection: &Connection, id: &str) -> Result<bool> {

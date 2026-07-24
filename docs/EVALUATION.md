@@ -256,6 +256,12 @@ single model/runner. Cross-file repair, impact, resume, failed-approach, and
 invariant behaviors are represented; broader repositories, models, and real-agent
 adherence to concurrent-work advice remain required before general claims.
 
+ADR-0028 formalizes that boundary: engineering, controlled-efficacy, and
+external-adoption evidence are separate tiers, and results never inherit a
+broader claim from a narrower tier. The release-gated independent developer
+pilot is the first external-adoption test; its failures and limitations are
+published as evidence rather than filtered out.
+
 ## Two-agent duplicate-work overlap
 
 The agent-loop outcome above is single-agent; the **two-agent duplicate-work

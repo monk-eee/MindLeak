@@ -19,7 +19,11 @@ mod util;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub use design::{DesignItem, DesignPromotion, DesignPromotionStatus, DesignStatus};
+pub use design::{
+    DesignConstraintDraft, DesignItem, DesignMaterializationMode, DesignMaterializationPlan,
+    DesignMaterializationRecord, DesignPromotion, DesignPromotionStatus, DesignStatus,
+    DesignTaskDraft,
+};
 pub use error::{LodestarError, Result};
 pub use model::{
     ClaimOverlap, CodeBinding, CodeBindingMode, ConformanceCheck, ConformanceEvidence,

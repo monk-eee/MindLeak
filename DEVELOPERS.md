@@ -214,7 +214,8 @@ and footguns, with impact and status:
   one governing goal, so honest commits no longer drift. Data-plane only — no code
   change.
 
-- **Promoted implementation tasks can omit governing goals — OPEN.** — ADR-0024
+- **Blind design promotion could omit governing goals or duplicate existing work
+  — FIXED.** — ADR-0024
   was correctly implemented across Lodestar, MindLeak, the extension, evaluation,
   and docs under promoted `task:46dd49254e4c`, but that task belongs only to
   `goal:local-temporal-context-graph`; exact commit evidence produced conformance
@@ -222,13 +223,16 @@ and footguns, with impact and status:
   principled-delivery surfaces. The ADR-0018 audit confirmed the same shape:
   promoted `task:d2900fdfa41b` belongs to the graph goal while its required git
   safety scripts are governed by `goal:principled-verified-delivery`, so exact
-  evidence for green commit `321cf17` produced audit `68` with `drift`. Both
-  completed implementations remain in review. — Medium impact: promotion can
-  create honest but uncompletable coarse work whenever an ADR crosses goal
-  ownership. — Left open: promotion should partition implementation by governing
-  goal (with explicit dependencies/provenance), or the task/conformance model
-  needs reviewed multi-goal coverage. Do not hide it by post-hoc relinking or
-  narrowing authoritative commit evidence.
+  evidence for green commit `321cf17` produced audit `68` with `drift`. ADR-0028
+  exposed the second failure mode: deterministic fallback created unblocked
+  `task:735e36892ffa` even though release-gated pilot `task:7f5ae1198134` already
+  represented the exact work under the Intent Plane objective. — High
+  coordination impact: a design could look materialized while bypassing its real
+  delivery chain. — Fixed Jul 2026 (`task:53a02c15fa67`): planning is read-only;
+  humans review explicit create/link/no-work plans; create may span objectives;
+  link reuses authoritative tasks; materialization is atomic/idempotent; repairs
+  append attributed revisions and replace only the current projection. The bad
+  ADR-0028 task was durably abandoned rather than deleted or relinked by hand.
 
 - **The `evidence_for` → Lodestar conformance seam is sound, but convention-
   sensitive.** — The producer and consumer agree on schema version 1, normalized
@@ -365,18 +369,18 @@ and footguns, with impact and status:
   behaviour or relying on newly added tools. The shared Cargo build helper watches
   Git HEAD/ref changes and supports `MINDLEAK_BUILD_SHA` outside a checkout. —
   Resolved Jul 2026.
-- **Docs-only (design/ADR) tasks cannot complete via conformance, stranding
-  successors.** — A design task produces a docs commit; `complete_task` runs
+- **Docs-only design tasks could not complete via conformance, stranding
+  successors — FIXED.** — A design task produces a docs commit; `complete_task` runs
   ADR-0009 code conformance, which returns `needs_human` ("evidence does not touch
   code bound to the task goal") and parks the task in `in_review` forever. Any
   implementation task chained `blocked_by` a docs-ADR predecessor then never opens
   (`blocked_by` clears only on predecessor `done`), and with no live `reopen_task`
   it cannot be un-gated — clearing the gate via `block_task(id, None)` leaves it
   `blocked` with no predecessor and no path back to `open`. — High impact on the
-  design-first workflow. — The intended fix is the accept→decompose bridge
-  ([ADR-0023](docs/adr/0023-design-board-accept-bridge.md)): a human `accept_design`
-  completes design work without code conformance and decomposes it. Until then, do
-  not chain implementation tasks behind docs-ADR design tasks (observed Jul 2026).
+  design-first workflow. — Fixed by the accepted ADR-0023 Design Board path: a
+  human `accept_design` completes design review without code conformance, then a
+  separately reviewed create/link/no-work plan maps it to executive work. Blind
+  fallback creation was removed after ADR-0028 exposed a duplicate-task failure.
 - **`next_task` surfaces non-actionable policy tasks.** — A `constraint` goal was
   decomposed into four tasks that merely restate the constraint and can never
   accrue completion evidence; `next_task` (oldest-first) hands one out on every

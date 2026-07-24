@@ -80,9 +80,10 @@ default) streams recent tool and maintenance events on demand.
 
 Turn ADRs into work without inferring tasks from Markdown. **Sync ADRs** imports
 `docs/adr/*.md` by path, title, and status. A **Proposed** row exposes **Accept**
-/ **Reject** (a human reviewer, not the proposing agent); an accepted row exposes
-**Promote**, which materialises the reviewed work under an objective goal exactly
-once and stays retryable if a promotion fails.
+/ **Reject** (a human reviewer, not the proposing agent) and updates the ADR's
+declared status. An accepted row exposes **Promote**: choose Create, Link
+Existing, or No New Work, inspect the concrete plan, then confirm one atomic
+materialization. Existing work and no-work decisions require a rationale.
 
 ![The Design Board with a proposed row and an accepted, pending row](media/screenshots/design-board.png)
 
@@ -146,9 +147,12 @@ From the Design Board:
 - Proposed rows expose **Accept** and **Reject** actions.
 - Accepted/pending rows expose **Promote** and remain visible after a failed
   attempt so promotion can be retried safely.
-- Promotion requires selecting an active objective goal; Lodestar then
-  materializes the reviewed work exactly once.
-- Materialized rows expose a readable objective/task/constraint provenance view.
+- Create mode selects one or more active objectives and previews separate task
+  drafts; Link Existing selects authoritative tasks already on the Intent Board;
+  No New Work records why nothing should be scheduled.
+- Every mode shows a modal review before Lodestar materializes it exactly once.
+- Materialized rows expose objective/task/constraint provenance plus immutable
+  revision history and an attributed **Repair** action.
 
 Human acceptance and rejection require an identity different from the proposing
 agent. ADR discovery never auto-accepts or auto-promotes a design.

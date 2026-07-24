@@ -11,7 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Goal, Task};
+use crate::model::{Goal, GoalKind, Task};
 
 /// Where a design item sits in its human-review lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,8 +102,8 @@ pub struct DesignItem {
     /// Promotion is separate from the human decision so optional planning never
     /// runs while the acceptance transaction is open.
     pub promotion_status: DesignPromotionStatus,
-    /// Objective selected when implementation work was materialized.
-    pub spawned_goal_id: Option<String>,
+    /// Latest append-only materialization audit revision, or zero before one exists.
+    pub materialization_revision: i64,
 }
 
 /// Structured repository ADR metadata accepted by deterministic reconciliation.
@@ -120,11 +120,86 @@ pub struct DesignMetadata {
     pub proposed_by: Option<String>,
 }
 
-/// The durable result of promoting an accepted design into implementation work.
+/// How an accepted design resolves into executive work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesignMaterializationMode {
+    /// Create the reviewed task drafts in this plan.
+    Create,
+    /// Link work that already exists instead of creating duplicates.
+    Link,
+    /// Record that the accepted design requires no new implementation work.
+    NoWork,
+}
+
+impl DesignMaterializationMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DesignMaterializationMode::Create => "create",
+            DesignMaterializationMode::Link => "link",
+            DesignMaterializationMode::NoWork => "no_work",
+        }
+    }
+
+    pub fn from_tag(value: &str) -> Option<Self> {
+        match value {
+            "create" => Some(DesignMaterializationMode::Create),
+            "link" => Some(DesignMaterializationMode::Link),
+            "no_work" => Some(DesignMaterializationMode::NoWork),
+            _ => None,
+        }
+    }
+}
+
+/// A reviewed task to create for an accepted design.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignTaskDraft {
+    pub goal_id: String,
+    pub title: String,
+    pub acceptance: String,
+}
+
+/// A reviewed normative clause to register while materializing a design.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignConstraintDraft {
+    pub kind: GoalKind,
+    pub title: String,
+    pub statement: String,
+}
+
+/// The explicit, human-reviewed input to design materialization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignMaterializationPlan {
+    pub mode: DesignMaterializationMode,
+    #[serde(default)]
+    pub tasks: Vec<DesignTaskDraft>,
+    #[serde(default)]
+    pub task_ids: Vec<String>,
+    #[serde(default)]
+    pub constraints: Vec<DesignConstraintDraft>,
+    /// Required for `no_work` and for any repair of an existing materialization.
+    #[serde(default)]
+    pub rationale: Option<String>,
+}
+
+/// One immutable reviewed materialization or repair decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignMaterializationRecord {
+    pub design_id: String,
+    pub revision: i64,
+    pub plan: DesignMaterializationPlan,
+    pub actor: String,
+    pub created_at: i64,
+}
+
+/// The durable result of materializing an accepted design into implementation work.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DesignPromotion {
     pub item: DesignItem,
-    pub goal: Goal,
+    pub mode: DesignMaterializationMode,
+    pub revision: i64,
+    pub rationale: Option<String>,
+    pub goals: Vec<Goal>,
     pub tasks: Vec<Task>,
     pub constraints: Vec<Goal>,
 }
