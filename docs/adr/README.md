@@ -25,7 +25,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0015](0015-advisory-symbol-leases.md) | Progressive task handoffs before advisory symbol leases | Accepted (no symbol lease) |
 | [0016](0016-platform-packaging-and-registration.md) | Platform packaging and workspace registration | Accepted |
 | [0017](0017-working-memory-and-autonomous-consolidation.md) | Working-memory tier and autonomous consolidation cycle | Accepted (implemented) |
-| [0018](0018-conflict-safe-concurrent-editing.md) | Conflict-safe concurrent editing in a shared working tree (worktrees optional) | Accepted |
+| [0018](0018-conflict-safe-concurrent-editing.md) | Conflict-safe concurrent editing in a shared working tree (worktrees optional) | Superseded by ADR-0032 |
 | [0019](0019-task-retention-and-board-hygiene.md) | Task retention and board hygiene - hide, never delete | Accepted |
 | [0020](0020-task-lifecycle-states.md) | Task lifecycle states — `needs_input` and `paused` | Proposed |
 | [0021](0021-node-lifecycle-and-reaping.md) | Node lifecycle and maintenance reaping semantics | Proposed |
@@ -36,6 +36,10 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0026](0026-constitutional-policy-over-mechanistic-ratchets.md) | Constitutional policy over mechanistic ratchets | Proposed |
 | [0027](0027-extension-led-progressive-disclosure.md) | Extension-led progressive disclosure over MCP primitives | Accepted |
 | [0028](0028-external-adoption-evidence-gate.md) | External adoption evidence before broad product claims | Accepted |
+| [0029](0029-proactive-constitutional-advice.md) | Proactive constitutional advice (ask-before-act) | Proposed |
+| [0030](0030-discrete-per-agent-identity.md) | Discrete per-agent identity for concurrent coordination | Proposed |
+| [0031](0031-exportable-conformance-evidence.md) | Exportable conformance evidence, Evidence Board, and CI gate | Proposed |
+| [0032](0032-single-checkout-fleet-integration.md) | Single-checkout, single-publisher fleet integration | Accepted |
 
 ## Writing a new ADR
 
