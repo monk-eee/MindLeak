@@ -350,6 +350,14 @@ and footguns, with impact and status:
   ([ADR-0023](docs/adr/0023-design-board-accept-bridge.md)): a human `accept_design`
   completes design work without code conformance and decomposes it. Until then, do
   not chain implementation tasks behind docs-ADR design tasks (observed Jul 2026).
+  — **Update Jul 2026:** the ADR-0023 bridge only covers registered *design
+  items*. A docs-only task inside an *objective's* task chain (not a design) —
+  e.g. the AGENTS.md/README/USAGE/SPEC-INTENT task closing the ADR-0029 advise
+  chain — still lands `in_review` via the same `needs_human` verdict, and there is
+  **no task-level accept-to-`done` verb** (only `reopen_task` / `abandon_task`
+  exist). The docs are committed and correct; `in_review` is its accurate resting
+  state. The missing piece is a human-accept transition for `needs_human` tasks,
+  or excluding pure-documentation changes from code conformance.
 - **`next_task` surfaces non-actionable policy tasks.** — A `constraint` goal was
   decomposed into four tasks that merely restate the constraint and can never
   accrue completion evidence; `next_task` (oldest-first) hands one out on every
