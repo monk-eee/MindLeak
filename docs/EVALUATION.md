@@ -262,6 +262,22 @@ broader claim from a narrower tier. The release-gated independent developer
 pilot is the first external-adoption test; its failures and limitations are
 published as evidence rather than filtered out.
 
+## v0.1.2 external-adoption pilot
+
+**Status: recruiting (2026-07-24).** The public v0.1.2 assets and checksums are
+available, and the independent-developer pilot is open. No participant or
+retention result is recorded yet. The gate requires 3-5 independent developers
+who already use multiple coding agents, with at least two completing seven days
+of real-work use. Until that happens, MindLeak makes no external-adoption claim.
+
+The consent/privacy rules, unsupported-assistance boundary, observation fields,
+and day-0/day-1/day-7 participant template are in
+[v0.1.2-external-pilot.md](pilots/v0.1.2-external-pilot.md). Recruitment and
+aggregate status are tracked without source, prompts, tokens, raw databases, or
+participant names in
+[2026-07-24-v0.1.2-pilot-status.json](../benchmarks/results/2026-07-24-v0.1.2-pilot-status.json).
+Enrollment is open in [GitHub issue #8](https://github.com/monk-eee/MindLeak/issues/8).
+
 ## Two-agent duplicate-work overlap
 
 The agent-loop outcome above is single-agent; the **two-agent duplicate-work
