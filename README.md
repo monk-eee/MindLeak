@@ -40,6 +40,12 @@ A **VS Code extension** ([`editors/vscode`](editors/vscode)) adds passive editor
 shell-execution, and Git sensors, a live Cytoscape graph visualizer, and an
 intent board.
 
+> **No editor required.** The two planes are plain stdio MCP servers, so they
+> work with **any** MCP client on their own. You can run MindLeak entirely from
+> the **GitHub Copilot CLI** (or Claude Desktop / Cursor) with no VS Code at all —
+> the extension is an optional richer surface, not a requirement. See
+> [Use it from the Copilot CLI](docs/QUICKSTART.md#github-copilot-cli--no-editor-required).
+
 It is a from-scratch replacement for flat-log / vector-only agent memory. See
 [`docs/SPEC.md`](docs/SPEC.md) for the design and [`docs/`](docs/) for the
 architecture and development guides.
@@ -61,6 +67,7 @@ architecture and development guides.
 | **See a normal workflow (scenarios)** | **[docs/WALKTHROUGH.md](docs/WALKTHROUGH.md)** |
 | **Learn how to use the tools** | **[docs/USAGE.md](docs/USAGE.md)** |
 | Use the VS Code extension | [editors/vscode/README.md](editors/vscode/README.md) |
+| **Use it from the Copilot CLI (no editor)** | **[docs/QUICKSTART.md](docs/QUICKSTART.md#github-copilot-cli--no-editor-required)** |
 | Understand the design | [docs/SPEC.md](docs/SPEC.md) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Understand the *intent plane* (spec brain) | [docs/SPEC-INTENT.md](docs/SPEC-INTENT.md) · [docs/SPEC-CONSTITUTION.md](docs/SPEC-CONSTITUTION.md) · [ADR-0004](docs/adr/0004-intent-plane-spec-brain.md) |
 | Set up & run locally | [DEVELOPERS.md](DEVELOPERS.md) |
@@ -208,7 +215,28 @@ It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
 
 For the **GitHub Copilot CLI**, the installer also writes
 `.mindleak/copilot-mcp.json` (absolute paths, `mcpServers` schema); pass it with
-`copilot --additional-mcp-config @.mindleak/copilot-mcp.json` (ADR-0033).
+`copilot --additional-mcp-config @.mindleak/copilot-mcp.json` (ADR-0033). See the
+no-editor walkthrough below.
+
+### Use it from the GitHub Copilot CLI — no editor required
+
+MindLeak is just two stdio MCP servers, so it works from the **`copilot` CLI on
+its own** — no VS Code, no extension. The release installer registers both planes
+for the CLI: it writes `.mindleak/copilot-mcp.json` with absolute paths and the
+`mcpServers` schema the CLI expects (the CLI does not expand VS Code's
+`${workspaceFolder}`). From your project root:
+
+```bash
+# 1. Register both planes (writes .vscode/mcp.json AND .mindleak/copilot-mcp.json)
+node /path/to/extracted/install.mjs --agent your-name
+
+# 2. Start the CLI pointed at the MindLeak config
+copilot --additional-mcp-config @.mindleak/copilot-mcp.json
+```
+
+To make it the machine-wide default instead, merge the same `mcpServers` block
+into `~/.copilot/mcp-config.json` (honours `COPILOT_HOME`). Full walkthrough:
+[docs/QUICKSTART.md](docs/QUICKSTART.md#github-copilot-cli--no-editor-required).
 
 ---
 

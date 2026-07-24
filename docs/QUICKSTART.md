@@ -53,6 +53,11 @@ with both servers bundled. Install it via VS Code's **Extensions: Install from
 VSIX** command for the live graph, intent board, passive sensors, and health,
 backup, export, and reset controls.
 
+> **No editor? No problem.** VS Code is entirely optional. The installer also
+> registers both planes for the **GitHub Copilot CLI** (`.mindleak/copilot-mcp.json`),
+> so you can run MindLeak headless — see
+> [GitHub Copilot CLI — no editor required](#github-copilot-cli--no-editor-required).
+
 > **Verify first (recommended).** Before extracting, check the archive against the
 > release's `SHA256SUMS` and its signed GitHub artifact attestation. The native
 > binaries are not yet OS publisher-signed, so Windows/macOS may show a trust
@@ -127,12 +132,14 @@ use the `mcpServers` key:
 }
 ```
 
-### GitHub Copilot CLI — `mcpServers` config
+### GitHub Copilot CLI — no editor required
 
-The `copilot` CLI also uses the `mcpServers` key, but it does **not** expand VS
-Code's `${workspaceFolder}`, so its paths must be absolute (ADR-0033). The
-release installer writes a ready-to-use config to `.mindleak/copilot-mcp.json`;
-point the CLI at it per run:
+You can run MindLeak entirely from the `copilot` CLI with **no VS Code and no
+extension**. If you used the installer (Option A) it already wrote
+`.mindleak/copilot-mcp.json` for you; for a source build, create it by hand. The
+CLI uses the `mcpServers` key but does **not** expand VS Code's
+`${workspaceFolder}`, so its paths must be absolute (ADR-0033). Point the CLI at
+the config per run:
 
 ```bash
 copilot --additional-mcp-config @.mindleak/copilot-mcp.json

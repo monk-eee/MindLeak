@@ -27,8 +27,11 @@ tokens). Optional local models only run asynchronously, off the hot path.
 ## First value without VS Code
 
 The extension's Workspace view is a projection over these same MCP primitives;
-headless clients remain first-class. A new workspace can reach useful context
-without a model:
+headless clients remain first-class. The **GitHub Copilot CLI** is the concrete
+no-editor client: register both planes with the installer and launch
+`copilot --additional-mcp-config @.mindleak/copilot-mcp.json` (see
+[GitHub Copilot CLI — no editor required](QUICKSTART.md#github-copilot-cli--no-editor-required)).
+A new workspace can reach useful context without a model:
 
 ```text
 # 1. Initialize both stdio servers and retain each initialize.serverInfo build.
