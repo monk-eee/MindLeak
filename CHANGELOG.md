@@ -7,6 +7,17 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`resolve_task` closes the `in_review` gap — the task-level mirror of
+  `accept_design`.** A docs-only task inside an objective's chain (not a
+  registered design item) still lands `in_review` on a `drift`/`needs_human`
+  conformance verdict, and until now had no accept-to-`done` verb — only
+  `reopen_task`/`abandon_task` existed. `resolve_task(task_id, human)` (facade +
+  MCP) records the attributed human judgement and moves the task to terminal
+  `done` with no code-conformance re-run, opening any blocked successor so a
+  docs/needs-human predecessor never strands its chain. Human-in-the-loop: a
+  reviewer identity is required and may not be the agent whose work is under
+  review (read from the task's conformance evidence), mirroring the
+  no-self-decision guard on `accept_design`.
 - **The VS Code Workspace view guides first value without becoming a source of
   truth (ADR-0027).** A pure readiness projection combines the two MCP
   initialize build identities, `graph_stats`, actionable `board`/`design_board`
