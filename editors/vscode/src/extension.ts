@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { randomBytes } from "crypto";
 import * as vscode from "vscode";
 
 import { BoardItem, BoardViewProvider } from "./boardViewProvider";
@@ -10,6 +11,9 @@ import { EvidenceBoardViewProvider, EvidenceNode } from "./evidenceBoardViewProv
 import { GitSensor } from "./gitSensor";
 import { GraphViewProvider } from "./graphViewProvider";
 import { McpClient } from "./mcpClient";
+import { ReadinessSnapshot, sessionAgentIdentity } from "./readiness";
+import { ReadinessController, RuntimeHealth } from "./readinessController";
+import { ReadinessViewProvider } from "./readinessViewProvider";
 import { TaskAllocationController } from "./taskAllocationController";
 import { TelemetryViewProvider } from "./telemetryViewProvider";
 import { TerminalCaptureConfig, TerminalSensor } from "./terminalSensor";
@@ -45,6 +49,8 @@ let allocationController: TaskAllocationController | undefined;
 let designBoard: DesignBoardViewProvider | undefined;
 let designController: DesignBoardController | undefined;
 let evidenceBoard: EvidenceBoardViewProvider | undefined;
+let readinessView: ReadinessViewProvider | undefined;
+let readinessController: ReadinessController | undefined;
 let output: vscode.OutputChannel;
 let configuredAgentId = "vscode";
 let serverHealth = "memory starting";
@@ -59,6 +65,7 @@ export interface MindLeakExtensionApi {
     terminal: string;
     git: string;
   };
+  readiness(): ReadinessSnapshot;
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<MindLeakExtensionApi> {
@@ -78,7 +85,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   const dbPath =
     config.get<string>("databasePath", "") || path.join(workspace, ".mindleak", "graph.db");
   const agentId = config.get<string>("agentId", "vscode");
-  configuredAgentId = agentId;
+  configuredAgentId = sessionAgentIdentity(agentId, randomBytes(4).toString("hex"));
 
   client = new McpClient(
     serverPath,
@@ -86,6 +93,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     {
       MINDLEAK_DB: dbPath,
       MINDLEAK_AGENT: agentId,
+      MINDLEAK_AGENT_ID: configuredAgentId,
       MINDLEAK_WORKSPACE: workspace,
       MINDLEAK_AUTONOMOUS_CONSOLIDATION: String(
         config.get<boolean>("autonomousConsolidation", false)
@@ -97,6 +105,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
       MINDLEAK_CONSOLIDATE_MAX_NODES: String(config.get<number>("consolidateMaxNodes", 20)),
     },
     (m) => output.appendLine(m)
+  );
+
+  readinessView = new ReadinessViewProvider();
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider(ReadinessViewProvider.viewType, readinessView)
   );
 
   provider = new GraphViewProvider(context.extensionUri, {
@@ -149,8 +162,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   lodestar = new McpClient(
     lodestarPath,
     workspace,
-    { LODESTAR_DB: lodestarDb, LODESTAR_AGENT: agentId },
+    {
+      LODESTAR_DB: lodestarDb,
+      LODESTAR_AGENT: agentId,
+      LODESTAR_AGENT_ID: configuredAgentId,
+    },
     (m) => output.appendLine(m)
+  );
+  readinessController = new ReadinessController(
+    client,
+    lodestar,
+    readinessView,
+    configuredAgentId,
+    () => Boolean(vscode.window.activeTextEditor),
+    currentHealth(),
+    (message) => output.appendLine(message)
   );
   allocationController = new TaskAllocationController(
     lodestar,
@@ -185,7 +211,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
       void reconcileWorkspace();
     }
   } catch (err) {
-    serverHealth = "memory unavailable";
+    serverHealth = `memory unavailable: ${(err as Error).message}`;
     updateHealth();
     vscode.window.showWarningMessage(
       `MindLeak: could not start '${serverPath}'. Set 'mindleak.serverPath'. (${(err as Error).message})`
@@ -201,7 +227,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     void refreshEvidence();
     void designController.sync();
   } catch (err) {
-    intentHealth = "intent unavailable";
+    intentHealth = `intent unavailable: ${(err as Error).message}`;
     updateHealth();
     output.appendLine(
       `Lodestar intent plane unavailable ('${lodestarPath}'): ${(err as Error).message}`
@@ -270,17 +296,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand("mindleak.readiness.refresh", () =>
+      readinessController?.refresh()
+    ),
     vscode.commands.registerCommand("mindleak.refresh", () => refresh()),
     vscode.commands.registerCommand("mindleak.prune", () => prune()),
     vscode.commands.registerCommand("mindleak.reconcile", () => reconcileWorkspace()),
     vscode.commands.registerCommand("mindleak.export", () => exportSnapshot()),
     vscode.commands.registerCommand("mindleak.backup", () => backupBoth()),
     vscode.commands.registerCommand("mindleak.resetMemory", () => resetMemory()),
-    vscode.commands.registerCommand("mindleak.ingestActiveFile", () => {
+    vscode.commands.registerCommand("mindleak.ingestActiveFile", async () => {
       const doc = vscode.window.activeTextEditor?.document;
-      if (doc) {
-        void onSave(doc);
+      if (!doc) {
+        vscode.window.showWarningMessage("Open a source file before ingesting workspace context.");
+        return;
       }
+      await onSave(doc);
     }),
     vscode.commands.registerCommand("mindleak.board.refresh", () => refreshBoard()),
     vscode.commands.registerCommand("mindleak.evidence.refresh", () => refreshEvidence()),
@@ -352,13 +383,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     void onFocus(vscode.window.activeTextEditor.document);
   }
 
+  const readiness = await readinessController.refresh();
+  const readinessSeenKey = "mindleak.readiness.seen.v1";
+  if (
+    !context.workspaceState.get<boolean>(readinessSeenKey) &&
+    ["disconnected", "ready_empty"].includes(readiness.state)
+  ) {
+    await context.workspaceState.update(readinessSeenKey, true);
+    void vscode.commands.executeCommand("mindleak.readinessView.focus");
+  }
+
   return {
-    health: () => ({
-      memory: serverHealth,
-      intent: intentHealth,
-      terminal: terminalHealth,
-      git: gitHealth,
-    }),
+    health: currentHealth,
+    readiness: () => readinessController!.snapshot(),
   };
 }
 
@@ -395,6 +432,16 @@ function setGitHealth(status: string): void {
 
 function updateHealth(): void {
   provider?.status(healthSummary(serverHealth, intentHealth, terminalHealth, gitHealth));
+  readinessController?.setHealth(currentHealth());
+}
+
+function currentHealth(): RuntimeHealth {
+  return {
+    memory: serverHealth,
+    intent: intentHealth,
+    terminal: terminalHealth,
+    git: gitHealth,
+  };
 }
 
 function artifactId(doc: vscode.TextDocument): string {
@@ -486,6 +533,7 @@ async function refresh(seed?: string): Promise<void> {
     const subgraph = await client.callTool("graph_snapshot", args);
     const stats = await client.callTool("graph_stats", {});
     provider.update(subgraph, stats);
+    readinessController?.setGraph(stats);
   } catch (err) {
     output.appendLine(`refresh error: ${(err as Error).message}`);
   }
@@ -601,6 +649,7 @@ async function refreshBoard(): Promise<void> {
         })
     );
     board.update(list);
+    readinessController?.setActionableTasks(list.length);
   } catch (err) {
     output.appendLine(`board error: ${(err as Error).message}`);
   }
