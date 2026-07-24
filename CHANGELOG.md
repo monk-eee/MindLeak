@@ -78,6 +78,15 @@ to [Semantic Versioning](https://semver.org/).
   value. The README download section leads with the install command and links to
   the walkthrough, and its `.vscode/mcp.json` example now sets `MINDLEAK_AGENT`
   so agent attribution works out of the box.
+- **New scenario-driven walkthrough and a visual guide to the VS Code extension.**
+  `docs/WALKTHROUGH.md` shows a normal day in four end-to-end scenarios
+  (look-before-you-leap, ADR-to-tasks, two agents splitting a goal without
+  clobbering, and passive edit/test/commit capture), giving both the agent tool
+  calls and the equivalent extension buttons. The extension README now has a
+  Guided tour that walks the Context Graph, Intent Board, Telemetry, and Design
+  Board panels with screenshot slots (capture checklist in
+  `editors/vscode/media/screenshots/`), and clarifies that claiming is an agent
+  action the board reflects rather than a button. The README index links both.
 
 ### Fixed
 - **Extension coverage no longer false-fails the 80% gate on Windows.** The V8

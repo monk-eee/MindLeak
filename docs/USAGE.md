@@ -5,7 +5,9 @@ run, what changed, what failed, what was decided — and lets it query that memo
 before it acts. This guide covers how the tools are used in practice and how to
 configure the servers.
 
-New here? Start with **[QUICKSTART.md](QUICKSTART.md)**.
+New here? Start with **[QUICKSTART.md](QUICKSTART.md)**. Want worked examples
+instead of a reference? See **[WALKTHROUGH.md](WALKTHROUGH.md)** for four
+end-to-end scenarios with the VS Code panels shown.
 
 ---
 

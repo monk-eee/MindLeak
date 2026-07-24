@@ -58,7 +58,9 @@ architecture and development guides.
 | I want to… | Go to |
 |---|---|
 | **Get running fast** | **[docs/QUICKSTART.md](docs/QUICKSTART.md)** |
+| **See a normal workflow (scenarios)** | **[docs/WALKTHROUGH.md](docs/WALKTHROUGH.md)** |
 | **Learn how to use the tools** | **[docs/USAGE.md](docs/USAGE.md)** |
+| Use the VS Code extension | [editors/vscode/README.md](editors/vscode/README.md) |
 | Understand the design | [docs/SPEC.md](docs/SPEC.md) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Understand the *intent plane* (spec brain) | [docs/SPEC-INTENT.md](docs/SPEC-INTENT.md) · [docs/SPEC-CONSTITUTION.md](docs/SPEC-CONSTITUTION.md) · [ADR-0004](docs/adr/0004-intent-plane-spec-brain.md) |
 | Set up & run locally | [DEVELOPERS.md](DEVELOPERS.md) |

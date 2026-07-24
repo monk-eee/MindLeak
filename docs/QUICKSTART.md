@@ -212,6 +212,9 @@ through `telemetry_snapshot`.
 
 ## 7. Next steps
 
+- **[WALKTHROUGH.md](WALKTHROUGH.md)** — a normal day in four end-to-end
+  scenarios (look-before-you-leap, ADR-to-tasks, two agents splitting a goal,
+  passive capture), with the VS Code panels shown.
 - **[USAGE.md](USAGE.md)** — how an agent actually uses the tools (the memory
   loop, the intent plane, the full config reference).
 - **[DATA-LIFECYCLE.md](DATA-LIFECYCLE.md)** — backup, upgrade/rollback, export,

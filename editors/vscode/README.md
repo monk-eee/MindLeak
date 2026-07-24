@@ -39,6 +39,58 @@ graph engine.
 - **Controls** — Refresh, Prune decayed edges, Export complete graph JSON, back
   up both planes, and modal reset of regenerable memory only.
 
+## Guided tour
+
+Click the **MindLeak icon in the activity bar** to open four views in the
+sidebar. You mostly *watch* them while your agent works; a few actions are yours
+to click.
+
+![MindLeak's four views open in the VS Code sidebar next to an editor](media/screenshots/overview.png)
+
+### Context Graph
+
+The live, decay-weighted subgraph of what connects to what right now. Node colour
+marks the kind (file · symbol · intent · execution) and edge width grows with a
+relation's time-decayed effective weight, so fresh, load-bearing links stand out
+and stale ones thin away. Use the title-bar **Refresh** and **Back Up Memory and
+Intent** actions here.
+
+![The Context Graph webview with nodes, edges, and the colour legend](media/screenshots/context-graph.png)
+
+### Intent Board
+
+Who owns which task, live. Claiming and completing are **agent** actions over
+MCP; the board shows the resulting ownership and lets you intervene. Hover a task
+for inline actions: **Complete With Evidence** and **Pause** on a claimed task,
+**Resume** on a paused one, **Answer** on one that needs input, **Inspect
+Evidence** on a finished one, and **Retire** on a stale row.
+
+![The Intent Board tree showing a claimed task with inline actions](media/screenshots/intent-board.png)
+
+### Telemetry
+
+A real-time effectiveness readout — graph size, tool-call success and error
+rates, average latency, and per-tool metrics — so you can verify what actually
+ran independent of any agent's narration. The **Live log** toggle (off by
+default) streams recent tool and maintenance events on demand.
+
+![The Telemetry pane with graph size and per-tool metrics](media/screenshots/telemetry.png)
+
+### Design Board
+
+Turn ADRs into work without inferring tasks from Markdown. **Sync ADRs** imports
+`docs/adr/*.md` by path, title, and status. A **Proposed** row exposes **Accept**
+/ **Reject** (a human reviewer, not the proposing agent); an accepted row exposes
+**Promote**, which materialises the reviewed work under an objective goal exactly
+once and stays retryable if a promotion fails.
+
+![The Design Board with a proposed row and an accepted, pending row](media/screenshots/design-board.png)
+
+> **Want the full workflow?** [docs/WALKTHROUGH.md](../../docs/WALKTHROUGH.md)
+> walks four end-to-end scenarios — look-before-you-leap, ADR-to-tasks, two
+> agents splitting a goal, and passive capture during a normal edit/test/commit
+> loop.
+
 ## Requirements
 
 - VS Code 1.93 or newer.
