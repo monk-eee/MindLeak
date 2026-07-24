@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "release": "v0.1.2",
+  "published_at": "2026-07-24T07:53:56Z",
+  "release_url": "https://github.com/monk-eee/MindLeak/releases/tag/v0.1.2",
+  "tag_sha": "677cf0d094c51bbbeac8e31ceca6cdc1533cbfe3",
+  "pull_request": {
+    "number": 5,
+    "url": "https://github.com/monk-eee/MindLeak/pull/5"
+  },
+  "workflows": {
+    "release": {
+      "run_id": 30076647869,
+      "url": "https://github.com/monk-eee/MindLeak/actions/runs/30076647869",
+      "conclusion": "success"
+    },
+    "pull_request_ci": {
+      "run_id": 30076550661,
+      "url": "https://github.com/monk-eee/MindLeak/actions/runs/30076550661",
+      "conclusion": "success"
+    },
+    "main_ci": {
+      "run_id": 30076588667,
+      "url": "https://github.com/monk-eee/MindLeak/actions/runs/30076588667",
+      "conclusion": "success"
+    }
+  },
+  "validation": {
+    "rust_tests": {
+      "passed": 390,
+      "failed": 0,
+      "ignored": 3
+    },
+    "rust_line_coverage_percent": 89.05,
+    "extension_line_coverage_percent": 92.01,
+    "extension_branch_coverage_percent": 86.99,
+    "extension_host_smoke": "passed"
+  },
+  "checksums": {
+    "mindleak-v0.1.2-linux-x64.vsix": "5baa7f3c37858501a465c2e53933ed61fae2e2eb099b10eb5556df7b266202a9",
+    "mindleak-v0.1.2-linux-x64.zip": "31d3eabf5fbad6d3e31b086ebb9cc0a0d095627572e975b9fdecbab550eedcf5",
+    "mindleak-v0.1.2-macos-arm64.vsix": "f0b5d577f36bcd0cefcfa292d732ee545b8dd3fd81bbc8aa74db695c3fc98269",
+    "mindleak-v0.1.2-macos-arm64.zip": "2926d77b6a6a2da6fa6c76e783e6b049cf9fc0b8ed8e7105705465efd5bd2739",
+    "mindleak-v0.1.2-macos-x64.vsix": "aca1bbd03d766448628429fe7d60e4ec754e2bca102f735757d3776fd721053f",
+    "mindleak-v0.1.2-macos-x64.zip": "56ea56e91be6b25a953ee04537bfa4cb77b69e6ba96e67029377d702f4625635",
+    "mindleak-v0.1.2-windows-x64.vsix": "bb3ebe869665589e7e11f88b8c7364cda46beddb60e6f290b18be7406fc57d73",
+    "mindleak-v0.1.2-windows-x64.zip": "f278928db2923eb9c4faeddfb172896c98ee9b1aebae914f15cb8de3f362c2e5"
+  },
+  "public_windows_runtime": {
+    "downloaded_checksums_match": true,
+    "mindleak_server_info": "0.1.2+677cf0d094c5",
+    "lodestar_server_info": "0.1.2+677cf0d094c5",
+    "cross_plane_session_identity_matches": true,
+    "installer_registered_vscode_and_copilot_cli": true,
+    "installed_extension": "monk-eee.mindleak@0.1.2",
+    "installed_hosts_restarted": true
+  },
+  "external_adoption": {
+    "status": "gated_by_release_task_completion",
+    "task_id": "task:8b15c8deb992"
+  }
+}
