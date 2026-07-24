@@ -18,7 +18,9 @@ async function run() {
   assert.equal(api.readiness().state, "ready_empty");
   assert.match(api.readiness().memory, /mindleak-mcp .+\+/);
   assert.match(api.readiness().intent, /lodestar-mcp .+\+/);
-  assert.match(api.readiness().agent, /^vscode-[a-f0-9]{8}$/);
+  // Regression: the live smoke still asserted the removed per-process nonce,
+  // so correct session-scoped builds failed only at the release gate.
+  assert.match(api.readiness().agent, /^session:v1:vscode:[a-f0-9]{32}$/);
   assert.equal(api.readiness().graph.nodes, 0);
 
   const commands = await vscode.commands.getCommands(true);
@@ -27,10 +29,10 @@ async function run() {
     "mindleak.refresh",
     "mindleak.board.refresh",
     "mindleak.task.next",
-    "mindleak.task.allocate",
     "mindleak.task.claimForMe",
     "mindleak.task.renew",
     "mindleak.task.release",
+    "mindleak.task.recover",
     "mindleak.design.refresh",
     "mindleak.design.sync",
     "mindleak.design.accept",

@@ -180,7 +180,9 @@ and footguns, with impact and status:
   data loss, but coordination invariants degrade under real fleet use. — Fixed by
   ADR-0030 session registration: clients mint one token, both planes derive one
   stable identity, and every identity-bearing call is bound to that registered
-  token rather than process state.
+  token rather than process state. The pinned Extension Host release smoke now
+  asserts the session-qualified identity and current session-only task actions,
+  rather than the removed process nonce/arbitrary allocation contract.
 - **A server restart could strand a legacy base-id claim until lease expiry — FIXED.** —
   This run claimed work while the configured identity was the legacy `copilot`;
   after the ADR-0030 server restart the process identity became nonce-qualified,
