@@ -17,8 +17,8 @@ mod types;
 mod writes;
 
 pub use types::{
-    AgentActivity, ArtifactStub, ConformanceEvidence, Direction, EvidenceProvenance, GraphExport,
-    PromotionCandidate, PruneOutcome, ResetOutcome, ScoredNode, SignalCandidate,
+    AgentActivity, ArtifactStub, ConformanceEvidence, Direction, EvidenceProvenance, ForgetOutcome,
+    GraphExport, PromotionCandidate, PruneOutcome, ResetOutcome, ScoredNode, SignalCandidate,
     SignalConsolidationOutcome, Subgraph, WeightedEdge, WorkingSetItem, WriteOutcome,
 };
 

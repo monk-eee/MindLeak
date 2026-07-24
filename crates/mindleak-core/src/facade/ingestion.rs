@@ -5,8 +5,8 @@ use crate::ingest::execution::ExecutionRecord;
 use crate::ingest::git::CommitRecord;
 use crate::ingest::structure::{HierarchyRelation, ImportTarget};
 use crate::{
-    ingest, now_unix, ArtifactStub, Edge, MindLeak, Node, NodeType, RelationType, Result,
-    WriteOutcome,
+    ingest, now_unix, ArtifactStub, Edge, ForgetOutcome, MindLeak, Node, NodeType, RelationType,
+    Result, WriteOutcome,
 };
 
 impl MindLeak {
@@ -52,6 +52,17 @@ impl MindLeak {
         let outcome = ingest::git::ingest_commit(&self.store, rec, now)?;
         self.observe(&outcome.node_ids, now)?;
         Ok(outcome)
+    }
+
+    /// Forget a deleted file: reap its structure (the symbols it defined and the
+    /// artifact node) and every edge touching them. Called when the workspace
+    /// reports a file removed or renamed, so the graph stops carrying structure
+    /// for a path that no longer exists instead of waiting ~a month for it to
+    /// decay. A no-op when the path was never ingested.
+    pub fn forget_file(&self, path: &str) -> Result<ForgetOutcome> {
+        let norm = ingest::normalize_path(path);
+        let artifact_id = format!("artifact:{norm}");
+        self.store.forget_artifact(&artifact_id)
     }
 
     /// Replace a source file's authoritative structural snapshot.

@@ -11,7 +11,6 @@ import { GraphViewProvider } from "./graphViewProvider";
 import { McpClient } from "./mcpClient";
 import { TelemetryViewProvider } from "./telemetryViewProvider";
 import { TerminalCaptureConfig, TerminalSensor } from "./terminalSensor";
-import { TaskAllocationController } from "./taskAllocationController";
 import {
   canRetireTask,
   conformanceDiagnostic,
@@ -36,8 +35,6 @@ let lodestar: McpClient | undefined;
 let provider: GraphViewProvider | undefined;
 let telemetry: TelemetryViewProvider | undefined;
 let board: BoardViewProvider | undefined;
-let boardTree: vscode.TreeView<BoardItem> | undefined;
-let allocationController: TaskAllocationController | undefined;
 let designBoard: DesignBoardViewProvider | undefined;
 let designController: DesignBoardController | undefined;
 let output: vscode.OutputChannel;
@@ -121,10 +118,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   context.subscriptions.push({ dispose: () => clearInterval(telemetryTimer) });
 
   board = new BoardViewProvider();
-  boardTree = vscode.window.createTreeView(BoardViewProvider.viewType, {
-    treeDataProvider: board,
-  });
-  context.subscriptions.push(boardTree);
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider(BoardViewProvider.viewType, board)
+  );
   designBoard = new DesignBoardViewProvider();
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider(DesignBoardViewProvider.viewType, designBoard)
@@ -142,14 +138,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     workspace,
     { LODESTAR_DB: lodestarDb, LODESTAR_AGENT: agentId },
     (m) => output.appendLine(m)
-  );
-  allocationController = new TaskAllocationController(
-    lodestar,
-    board,
-    boardTree,
-    configuredAgentId,
-    refreshBoard,
-    (message) => output.appendLine(message)
   );
   designController = new DesignBoardController(
     lodestar,
@@ -232,6 +220,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     })
   );
 
+  // Forget a file's structure when it is deleted or renamed in the editor, so the
+  // graph stops carrying symbols for a path that no longer exists instead of
+  // waiting for the edges to decay. Editor-mediated events only (not a raw file
+  // watcher) so a file briefly absent during a git operation is not reaped.
+  context.subscriptions.push(
+    vscode.workspace.onDidDeleteFiles((event) => {
+      if (!config.get<boolean>("autoIngestOnSave", true)) {
+        return;
+      }
+      for (const uri of event.files) {
+        void onDelete(uri);
+      }
+    }),
+    vscode.workspace.onDidRenameFiles((event) => {
+      if (!config.get<boolean>("autoIngestOnSave", true)) {
+        return;
+      }
+      for (const file of event.files) {
+        void onDelete(file.oldUri);
+      }
+    })
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand("mindleak.refresh", () => refresh()),
     vscode.commands.registerCommand("mindleak.prune", () => prune()),
@@ -245,19 +256,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
       }
     }),
     vscode.commands.registerCommand("mindleak.board.refresh", () => refreshBoard()),
-    vscode.commands.registerCommand("mindleak.task.next", () => allocationController?.revealNext()),
-    vscode.commands.registerCommand("mindleak.task.allocate", (item?: BoardItem) => {
-      void allocationController?.allocate(item);
-    }),
-    vscode.commands.registerCommand("mindleak.task.claimForMe", (item?: BoardItem) => {
-      void allocationController?.claimForMe(item);
-    }),
-    vscode.commands.registerCommand("mindleak.task.renew", (item?: BoardItem) => {
-      void allocationController?.renew(item);
-    }),
-    vscode.commands.registerCommand("mindleak.task.release", (item?: BoardItem) => {
-      void allocationController?.release(item);
-    }),
     vscode.commands.registerCommand("mindleak.design.refresh", () => designController?.refresh()),
     vscode.commands.registerCommand("mindleak.design.sync", () => designController?.sync()),
     vscode.commands.registerCommand("mindleak.design.accept", (item?: DesignBoardItem) => {
@@ -376,6 +374,19 @@ async function onSave(doc: vscode.TextDocument): Promise<void> {
     await refresh(`artifact:${rel}`);
   } catch (err) {
     output.appendLine(`ingest error: ${(err as Error).message}`);
+  }
+}
+
+async function onDelete(uri: vscode.Uri): Promise<void> {
+  if (!client?.isReady() || uri.scheme !== "file") {
+    return;
+  }
+  const rel = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, "/");
+  try {
+    await client.callTool("forget_file", { path: rel });
+    await refresh();
+  } catch (err) {
+    output.appendLine(`forget error: ${(err as Error).message}`);
   }
 }
 

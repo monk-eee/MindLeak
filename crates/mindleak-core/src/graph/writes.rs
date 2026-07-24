@@ -3,7 +3,7 @@ use std::collections::HashSet;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::{ArtifactStub, GraphStore, WriteOutcome};
+use super::{ArtifactStub, ForgetOutcome, GraphStore, WriteOutcome};
 use crate::error::{MindLeakError, Result};
 use crate::model::{Edge, Node};
 
@@ -178,6 +178,53 @@ impl GraphStore {
         }
         delete_orphan_artifact_stubs(&transaction)?;
 
+        transaction.commit()?;
+        Ok(outcome)
+    }
+
+    /// Forget everything the graph knows about a deleted file: the symbols it
+    /// defined (and every edge touching them) plus the artifact node and its
+    /// edges. Unlike `replace_structure`, this reaps symbols outright even when a
+    /// lingering `observed` or cross-file `calls` edge would otherwise pin them —
+    /// a vanished file's structure is definitively invalid. Historical intent and
+    /// execution nodes remain; only their edges to the gone file are cut.
+    pub fn forget_artifact(&self, artifact_id: &str) -> Result<ForgetOutcome> {
+        let transaction = self.conn.unchecked_transaction()?;
+        let artifact_path = artifact_id.strip_prefix("artifact:").unwrap_or(artifact_id);
+        let symbol_prefix = format!("symbol:{artifact_path}:");
+
+        let symbol_ids: Vec<String> = {
+            let mut statement = transaction.prepare(
+                "SELECT id FROM nodes
+                 WHERE type = 'symbol' AND substr(id, 1, length(?1)) = ?1",
+            )?;
+            let rows = statement.query_map(params![symbol_prefix], |row| row.get(0))?;
+            let mut ids = Vec::new();
+            for row in rows {
+                ids.push(row?);
+            }
+            ids
+        };
+
+        let mut outcome = ForgetOutcome::default();
+        for id in &symbol_ids {
+            outcome.edges_removed += transaction.execute(
+                "DELETE FROM edges WHERE source_id = ?1 OR target_id = ?1",
+                params![id],
+            )?;
+            outcome.nodes_removed +=
+                transaction.execute("DELETE FROM nodes WHERE id = ?1", params![id])?;
+        }
+        outcome.edges_removed += transaction.execute(
+            "DELETE FROM edges WHERE source_id = ?1 OR target_id = ?1",
+            params![artifact_id],
+        )?;
+        outcome.nodes_removed +=
+            transaction.execute("DELETE FROM nodes WHERE id = ?1", params![artifact_id])?;
+        transaction.execute(
+            "DELETE FROM artifact_stubs WHERE node_id = ?1",
+            params![artifact_id],
+        )?;
         transaction.commit()?;
         Ok(outcome)
     }

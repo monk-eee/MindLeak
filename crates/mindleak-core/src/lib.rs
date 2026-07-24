@@ -29,9 +29,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub use embed::{Embedder, TextEmbedder};
 pub use error::{MindLeakError, Result};
 pub use graph::{
-    AgentActivity, ArtifactStub, ConformanceEvidence, Direction, EvidenceProvenance, GraphExport,
-    GraphStore, PromotionCandidate, PruneOutcome, ResetOutcome, ScoredNode, SignalCandidate,
-    SignalConsolidationOutcome, Subgraph, WeightedEdge, WorkingSetItem, WriteOutcome,
+    AgentActivity, ArtifactStub, ConformanceEvidence, Direction, EvidenceProvenance, ForgetOutcome,
+    GraphExport, GraphStore, PromotionCandidate, PruneOutcome, ResetOutcome, ScoredNode,
+    SignalCandidate, SignalConsolidationOutcome, Subgraph, WeightedEdge, WorkingSetItem,
+    WriteOutcome,
 };
 pub use model::{Edge, Node, NodeType, RelationType};
 
