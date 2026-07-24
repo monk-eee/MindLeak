@@ -30,7 +30,7 @@ pub use embed::{Embedder, TextEmbedder};
 pub use error::{MindLeakError, Result};
 pub use graph::{
     AgentActivity, ArtifactStub, ConformanceEvidence, Direction, EvidenceProvenance, GraphExport,
-    GraphStore, PruneOutcome, ResetOutcome, ScoredNode, SignalCandidate,
+    GraphStore, PromotionCandidate, PruneOutcome, ResetOutcome, ScoredNode, SignalCandidate,
     SignalConsolidationOutcome, Subgraph, WeightedEdge, WorkingSetItem, WriteOutcome,
 };
 pub use model::{Edge, Node, NodeType, RelationType};

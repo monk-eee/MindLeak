@@ -26,6 +26,11 @@ pub(super) fn definitions() -> Vec<Value> {
                 }
             }
         }),
+        json!({
+            "name": "promotion_candidates",
+            "description": "Aggregate expiring proven signal into subject-level promotion candidates for the Intent plane (ADR-0022). Read-only, deterministic, no model. Hand the returned `candidates` array straight to Lodestar's `promote_signals`, whose count + span gate makes the final signal-not-coincidence call.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
     ]
 }
 
@@ -48,6 +53,10 @@ pub(super) fn dispatch(
                 .consolidate_signal(limit)
                 .map_err(|e| e.to_string())?;
             Ok(text_result(&json!(outcome)))
+        })()),
+        "promotion_candidates" => Some((|| {
+            let candidates = engine.promotion_candidates().map_err(|e| e.to_string())?;
+            Ok(text_result(&json!({ "candidates": candidates })))
         })()),
         _ => None,
     }
@@ -76,5 +85,19 @@ mod tests {
         let params = json!({ "name": "consolidate_signal", "arguments": {} });
         let error = call(&engine, &params).unwrap_err();
         assert!(error.contains("no signal candidates"));
+    }
+
+    #[test]
+    fn promotion_candidates_returns_a_candidate_array_when_empty() {
+        // Unlike consolidate_signal (which needs a model), the promotion pass is a
+        // deterministic read: an empty graph yields an empty candidate list, never
+        // an error, so an orchestrator can always pipe it into promote_signals.
+        let engine = MindLeak::open_in_memory().unwrap();
+        let params = json!({ "name": "promotion_candidates", "arguments": {} });
+        let result = call(&engine, &params).unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert!(parsed["candidates"].is_array());
+        assert_eq!(parsed["candidates"].as_array().unwrap().len(), 0);
     }
 }

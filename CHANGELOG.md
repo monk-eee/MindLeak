@@ -6,8 +6,6 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.1.1] - 2026-07-24
-
 ### Added
 - **Telemetry distinguishes a resolved historical error from a currently failing
   tool (ADR-0010).** The append-only trail means a tool's lifetime `errors` never
@@ -19,7 +17,7 @@ to [Semantic Versioning](https://semver.org/).
   `currently_failing_tools`. The pane gains a "Failing now" health card and a
   per-tool Health column; the Markdown table separates lifetime errors from
   current health. Lifetime totals stay cumulative history; current health is a
-  separate recency signal.
+  separate append-order signal, including when calls share a timestamp.
 - **Two productization decisions make the viability gaps explicit.** ADR-0027
   proposes an extension-led, five-minute first-value workflow over the existing
   portable MCP primitives, without duplicating authoritative state or requiring
@@ -114,13 +112,6 @@ to [Semantic Versioning](https://semver.org/).
   timeout (default 30s) so a live-but-silent server surfaces an error rather than a
   stuck command; and `stdin` write failures are guarded and logged instead of
   raising an unhandled stream error.
-- **The VS Code Intent Board now allocates work instead of merely displaying
-  ownership.** Open and expired-claim rows expose claim-for-me and explicit-agent
-  allocation with bounded leases; live claims expose owner-explicit renew and
-  release actions. Rows show claim windows and live/reclaimable state, and **Next
-  Claimable Task** reveals Lodestar's scheduler choice without auto-claiming it.
-  CAS loss, stale owner, expiry, and parked ownership remain visible failures —
-  the portal does not invent a parallel assignment store or false lock.
 - **Intent Board cleanup now handles stale live work, not only completed rows
   (ADR-0019).** Eligible open, in-review, blocked, and expired-claim rows expose
   a confirmed **Retire Task** action that calls `abandon_task`; the task and its

@@ -51,6 +51,20 @@ pub struct SignalCandidate {
     pub updated_at: i64,
 }
 
+/// A subject's proven regularity, aggregated and ready to hand to the Intent
+/// plane's gated promoter (ADR-0022). Groups the distinct corroborating MindLeak
+/// node ids for one subject with the provenance span. The ids are opaque strings
+/// across the loose plane seam (ADR-0004); this carries no threshold of its own,
+/// so the count + span gate on the Intent side makes the final
+/// signal-not-coincidence call and rejects thin or same-session evidence.
+#[derive(Debug, Clone, Serialize)]
+pub struct PromotionCandidate {
+    pub subject: String,
+    pub evidence_node_ids: Vec<String>,
+    pub first_seen: i64,
+    pub last_seen: i64,
+}
+
 /// Maintenance result including signal routed to optional consolidation.
 #[derive(Debug, Clone, Serialize)]
 pub struct PruneOutcome {

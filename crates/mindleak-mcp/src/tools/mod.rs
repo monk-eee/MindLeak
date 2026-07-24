@@ -157,6 +157,7 @@ mod tests {
             "index",
             "telemetry_snapshot",
             "consolidate_signal",
+            "promotion_candidates",
             "working_set",
             "export_graph",
             "backup_database",

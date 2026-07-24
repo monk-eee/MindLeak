@@ -207,6 +207,7 @@ It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
 | `reset_database` | Clear regenerable memory only with the exact `RESET MINDLEAK` token. |
 | `consolidate_session` | Optional: compress raw logs into one intent node via a local Ollama model. |
 | `consolidate_signal` | Optional: consolidate queued proven signal, persist provenance links, then acknowledge raw evidence. |
+| `promotion_candidates` | Aggregate expiring proven signal into subject-level candidates for Lodestar `promote_signals` — the deterministic, model-free promotion pass that closes the learned-knowledge loop (ADR-0022). |
 | `list_agents` | Roster of agents + their active observation counts (attribution). |
 | `working_set` | Current agent's bounded, ranked attentional focus (derived from active observations; default cap 7). |
 | `evidence_for` | Bounded, provenance-bearing evidence bundle from an agent's attributed executions/commits in a work window (ADR-0009). |
@@ -247,7 +248,7 @@ coordinate through one plane.
 | `check_conformance` | Persist and return `{ id, token, verdict, findings }` for exact checked completion. |
 | `conformance_history` | Resolve a task's durable evidence chain — the recorded bundle, verdict, and stable id per check. |
 | `consolidate` / `record_knowledge` | Gated promotion of learned regularities. |
-| `promote_signals` | Promotion bridge (ADR-0022): batch-feed proven-signal candidates into the gated consolidator; deterministic, model-optional. |
+| `promote_signals` | Promotion bridge (ADR-0022): batch-feed MindLeak `promotion_candidates` into the gated consolidator; deterministic, model-optional. |
 | `active_knowledge` / `reconfirm_knowledge` / `prune_knowledge` | Durable-but-revalidated knowledge. |
 | `lodestar_stats` | Goal / task / knowledge counts. |
 | `backup_database` | Create an integrity-checked online SQLite backup of the intent plane. |
@@ -267,11 +268,6 @@ The VS Code sidebar includes a separate **Design Board**. It synchronizes
 structured ADR metadata, keeps human review separate from executable task
 coordination, supports attributed accept/reject decisions, and exposes
 idempotent promotion plus persisted implementation provenance.
-
-The **Intent Board** is the task-allocation surface: allocate open/expired work,
-claim for the configured agent, renew or release live leases, and reveal the next
-claimable task without auto-claiming it. Lodestar's compare-and-swap remains the
-authority when multiple local agents race.
 
 ---
 

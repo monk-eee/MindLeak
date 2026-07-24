@@ -107,6 +107,7 @@ what it claimed, independent of its own narration (ADR-0010).
 ```text
 graph_stats()      # node / active-edge counts
 prune_graph()      # purge decayed edges + unreferenced stubs
+promotion_candidates() # proven signal -> subject-level candidates for Lodestar promote_signals (ADR-0022)
 boost_entity(id)   # mark a node as recently focused, without rewriting evidence
 list_agents()      # roster + per-agent attention (needs MINDLEAK_AGENT set)
 working_set()      # current agent's small ranked focus (default hard cap 7)
@@ -152,6 +153,27 @@ board()                                      # live who-owns-what
 `.lodestar/spec.db` with **no duplicate winners**. `complete_task` runs a
 conformance check (aligned / drift / violation) and a violation blocks the
 transition.
+
+### The learned-knowledge loop (cross-plane, ADR-0022)
+
+This is what makes a *fleet* of agents compound instead of running as N amnesiac
+sessions. It spans both planes and needs no model:
+
+```text
+promotion_candidates()        # MindLeak: expiring proven signal -> subject-level candidates
+promote_signals(candidates)   # Lodestar: the same candidates through the count + span gate
+```
+
+`promotion_candidates` (memory plane) aggregates proven-signal edges that are
+about to decay into subject-level candidates — the distinct corroborating node
+ids plus their provenance span — in exactly the shape `promote_signals` (intent
+plane) consumes. Pipe one straight into the other. The existing **count + span
+gate** decides what becomes durable knowledge (no new threshold, no laundering of
+same-session coincidence), and that knowledge then informs conformance as an
+**advisory** finding only — it can nudge an otherwise-`aligned` verdict to
+`needs_human`, but never emits a `violation` (only the constitution hard-fails).
+So agent A's hard-won regularity ("changes to X break Y") steers agent B before
+the raw episodes fade.
 
 ### Progressive same-file handoff
 

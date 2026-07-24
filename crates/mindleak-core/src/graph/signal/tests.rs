@@ -335,6 +335,99 @@ fn near_expiry_proven_signal_is_routed_to_consolidation() {
 }
 
 #[test]
+fn promotion_candidates_group_corroborating_signal_by_subject() {
+    // ADR-0022: expiring proven-signal edges that share a target collapse into one
+    // promotion candidate whose evidence is the distinct corroborating source nodes
+    // plus the target — the shape the Intent plane's gated promoter consumes.
+    let s = store();
+    s.upsert_node(&Node::new(
+        "artifact:stable",
+        NodeType::Artifact,
+        "stable",
+        NOW - 10 * 24 * HOUR,
+    ))
+    .unwrap();
+    // Three distinct failing executions on the same target...
+    for i in 1..=3i64 {
+        let id = format!("execution:failure{i}");
+        s.upsert_node(
+            &Node::new(&id, NodeType::Execution, "cargo test", NOW + i * HOUR)
+                .with_content("exit=1\n"),
+        )
+        .unwrap();
+        s.upsert_edge(&raw_edge(
+            &id,
+            "artifact:stable",
+            RelationType::FailedOn,
+            1.0,
+            24.0,
+            NOW + i * HOUR,
+        ))
+        .unwrap();
+    }
+    // ...later resolved (a success plus a refactor commit) so each failure edge is a
+    // consequence and earns signal_multiplier > 1.
+    s.upsert_node(
+        &Node::new(
+            "execution:success",
+            NodeType::Execution,
+            "cargo test",
+            NOW + 5 * HOUR,
+        )
+        .with_content("exit=0\n"),
+    )
+    .unwrap();
+    s.upsert_node(&Node::new(
+        "intent:commit",
+        NodeType::Intent,
+        "fix stable",
+        NOW + 5 * HOUR,
+    ))
+    .unwrap();
+    s.upsert_edge(&raw_edge(
+        "intent:commit",
+        "artifact:stable",
+        RelationType::Refactored,
+        1.0,
+        168.0,
+        NOW + 5 * HOUR,
+    ))
+    .unwrap();
+
+    let horizon = NOW + 20 * 24 * HOUR;
+    // Sanity: the three failures are near-expiry proven signal.
+    let failing_sources: std::collections::BTreeSet<_> = s
+        .expiring_signal_candidates(horizon)
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.relation == RelationType::FailedOn && c.target_id == "artifact:stable")
+        .map(|c| c.source_id)
+        .collect();
+    assert!(
+        failing_sources.len() >= 3,
+        "expected 3 corroborating failures, got {failing_sources:?}"
+    );
+
+    // The promotion pass collapses them into one subject-level candidate.
+    let candidates = s.promotion_candidates(horizon).unwrap();
+    let grouped = candidates
+        .iter()
+        .find(|c| {
+            c.subject == "artifact:stable"
+                && c.evidence_node_ids
+                    .iter()
+                    .filter(|id| id.starts_with("execution:failure"))
+                    .count()
+                    >= 3
+        })
+        .expect("a grouped failed_on promotion candidate");
+    assert!(grouped
+        .evidence_node_ids
+        .contains(&"artifact:stable".to_string()));
+    assert!(grouped.last_seen >= grouped.first_seen);
+}
+
+#[test]
 fn expired_proven_signal_waits_for_consolidation_acknowledgement() {
     let s = store();
     s.upsert_node(&Node::new(

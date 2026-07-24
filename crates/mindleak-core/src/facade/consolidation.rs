@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::consolidate::{facts_from_summary, Consolidator};
 use crate::{
-    ingest, net, now_unix, Edge, MindLeak, MindLeakError, RelationType, Result, SignalCandidate,
-    SignalConsolidationOutcome, WriteOutcome,
+    ingest, net, now_unix, Edge, MindLeak, MindLeakError, PromotionCandidate, RelationType, Result,
+    SignalCandidate, SignalConsolidationOutcome, WriteOutcome,
 };
 
 #[cfg(test)]
@@ -27,6 +27,14 @@ impl MindLeak {
     /// edges only after the durable intent and provenance links are stored.
     pub fn consolidate_signal(&self, limit: usize) -> Result<SignalConsolidationOutcome> {
         self.consolidate_signal_with_interval(limit, self.consolidation_min_interval_secs)
+    }
+
+    /// Aggregate expiring proven signal into subject-level promotion candidates
+    /// ready to hand to the Intent plane's gated `promote_signals` (ADR-0022).
+    /// Read-only and deterministic — no model, no writes; the loose plane seam
+    /// carries opaque node ids and the Intent-side gate makes the final call.
+    pub fn promotion_candidates(&self) -> Result<Vec<PromotionCandidate>> {
+        self.store.promotion_candidates(now_unix())
     }
 
     /// Shared manual/autonomous path. `min_interval_secs` is persisted in the
