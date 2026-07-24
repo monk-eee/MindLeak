@@ -36,17 +36,21 @@ repos:
 
       - id: eslint
         name: eslint (vscode extension)
-        entry: npm --prefix editors/vscode run lint
+        # Lint only the staged files, not the whole tree, so another agent's
+        # unrelated WIP can never poison this commit (ADR-0018).
+        entry: node editors/vscode/node_modules/eslint/bin/eslint.js --max-warnings=0
         language: system
         files: ^editors/vscode/src/.*\.ts$
-        pass_filenames: false
+        pass_filenames: true
 
       - id: prettier
         name: prettier (vscode extension)
-        entry: npm --prefix editors/vscode run format
+        # Check only the staged files, not the whole tree, so another agent's
+        # unformatted WIP can never poison this commit (ADR-0018).
+        entry: node editors/vscode/node_modules/prettier/bin/prettier.cjs --check
         language: system
         files: ^(editors/vscode/(src|media)/.*\.(ts|js)|scripts/.*\.mjs)$
-        pass_filenames: false
+        pass_filenames: true
 
       # Slower gate — runs on push, not every commit. Validates the pushed
       # commit in isolation so another agent's uncommitted WIP cannot poison it.
