@@ -95,9 +95,12 @@ the events that prompted it.
 telemetry_snapshot(limit = 20)
 ```
 
-Returns a durable audit trail of every tool call — per-tool counts, error
-counts, latency, and the most recent invocations. This is how you verify an
-agent did what it claimed, independent of its own narration (ADR-0010).
+Returns a durable audit trail of every tool call — per-tool lifetime counts,
+error counts, latency, and the most recent invocations. Lifetime error counts
+are cumulative history and never shrink; each tool also reports current health
+(`currently_failing`, with the last error's timestamp and detail) so a resolved
+past failure is not mistaken for a live one. This is how you verify an agent did
+what it claimed, independent of its own narration (ADR-0010).
 
 ### Housekeeping
 

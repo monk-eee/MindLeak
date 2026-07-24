@@ -588,7 +588,14 @@ function formatUnixSeconds(seconds: number): string {
 
 // ---- Telemetry & effectiveness (real-time observability pane) ---------------
 
-/** Aggregate metrics for one tool, as returned by `telemetry_snapshot`. */
+/**
+ * Aggregate metrics for one tool, as returned by `telemetry_snapshot`.
+ *
+ * `calls`/`errors` are lifetime totals over the append-only trail — they never
+ * shrink. Current health is the separate, recency-based `currently_failing`
+ * (the tool's most recent call errored); `last_error_at`/`last_error_detail`
+ * keep a resolved historical failure queryable without presenting it as live.
+ */
 export interface TelemetryToolMetric {
   name: string;
   calls: number;
@@ -597,6 +604,10 @@ export interface TelemetryToolMetric {
   min_ms: number;
   max_ms: number;
   avg_ms: number;
+  last_success_at?: number | null;
+  last_error_at?: number | null;
+  last_error_detail?: unknown;
+  currently_failing?: boolean;
 }
 
 /** One recorded event from `telemetry_snapshot.recent`. */
@@ -613,6 +624,8 @@ export interface TelemetryEvent {
 export interface TelemetrySnapshot {
   total_events: number;
   total_errors: number;
+  /** How many tools are failing right now (most recent call errored). */
+  currently_failing_tools?: number;
   by_name: TelemetryToolMetric[];
   recent: TelemetryEvent[];
 }
@@ -630,6 +643,8 @@ export interface TelemetryToolRow {
   errors: number;
   errorRatePct: number;
   avgMs: number;
+  /** The tool's most recent call errored — a live fault, not lifetime history. */
+  currentlyFailing: boolean;
 }
 
 /** The derived, real-time effectiveness readout for the telemetry pane. */
@@ -637,7 +652,10 @@ export interface TelemetryDashboard {
   nodes: number;
   activeEdges: number;
   totalEvents: number;
+  /** Lifetime error count — cumulative history, not the current fault state. */
   totalErrors: number;
+  /** Tools failing right now (most recent call errored) — the live health signal. */
+  failingTools: number;
   successRatePct: number;
   errorRatePct: number;
   avgLatencyMs: number;
@@ -674,12 +692,16 @@ export function telemetryDashboard(
       errors: tool.errors,
       errorRatePct: tool.calls === 0 ? 0 : round1((tool.errors / tool.calls) * 100),
       avgMs: round1(tool.avg_ms),
+      currentlyFailing: tool.currently_failing === true,
     }));
+  const failingTools =
+    snapshot?.currently_failing_tools ?? tools.filter((tool) => tool.currentlyFailing).length;
   return {
     nodes: counts?.nodes ?? 0,
     activeEdges: counts?.active_edges ?? 0,
     totalEvents,
     totalErrors,
+    failingTools,
     successRatePct: round1(successRatePct),
     errorRatePct: round1(100 - successRatePct),
     avgLatencyMs: round1(avgLatencyMs),

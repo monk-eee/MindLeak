@@ -94,6 +94,20 @@ human) can interrogate observability the same way they interrogate the graph:
 "what did I just do, and did it work?" This closes the verification loop the
 operator asked for.
 
+**Lifetime tally vs current health.** The append-only trail means a tool's
+`calls`/`errors` are *cumulative history* that never shrinks: one transient
+failure keeps `errors >= 1` forever, even after the tool recovers. Presenting
+that lifetime tally as the live fault state is misleading — a long-resolved error
+looks like an active outage. So each per-tool metric also carries an **ordered
+event** signal: `last_success_at`, `last_error_at`, the most recent error's `detail`
+(retained as an audit path even after the raw event scrolls out of the bounded
+`recent` window), and a derived `currently_failing` (the tool's most recent event
+was the error, resolved by append order when timestamps match). The snapshot rolls
+these up into `currently_failing_tools`. Lifetime errors answer "has this ever
+failed?"; current health answers "is it failing now?" The VS Code Telemetry pane
+and the Markdown rendering surface both, and never dress a resolved historical
+error as a live fault.
+
 ### 4. Network resilience (`net` module)
 
 All outbound HTTP is routed through one module that provides, in order:

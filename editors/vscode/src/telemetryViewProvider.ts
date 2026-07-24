@@ -170,6 +170,9 @@ export class TelemetryViewProvider implements vscode.WebviewViewProvider {
     td.err {
       color: var(--vscode-testing-iconFailed, #e5534b);
     }
+    td.ok {
+      color: var(--vscode-testing-iconPassed, #3fbf6f);
+    }
     #log {
       margin: 4px 8px 12px;
       padding: 6px;
@@ -202,7 +205,7 @@ export class TelemetryViewProvider implements vscode.WebviewViewProvider {
   <h3>Tools</h3>
   <table id="tools">
     <thead>
-      <tr><th>Tool</th><th>Calls</th><th>Err%</th><th>Avg ms</th></tr>
+      <tr><th>Tool</th><th>Calls</th><th>Lifetime err%</th><th>Health</th><th>Avg ms</th></tr>
     </thead>
     <tbody></tbody>
   </table>

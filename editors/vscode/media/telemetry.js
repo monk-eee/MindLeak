@@ -32,10 +32,10 @@
     cardsEl.replaceChildren(
       card(String(d.nodes), "Nodes"),
       card(String(d.activeEdges), "Active edges"),
-      card(d.successRatePct + "%", "Success", d.successRatePct >= 95 ? "good" : "bad"),
-      card(d.errorRatePct + "%", "Errors", d.totalErrors > 0 ? "bad" : "good"),
-      card(d.avgLatencyMs + " ms", "Avg latency"),
-      card(String(d.totalEvents), "Events")
+      card(d.successRatePct + "%", "Lifetime success", d.successRatePct >= 95 ? "good" : "bad"),
+      card(String(d.failingTools), "Failing now", d.failingTools > 0 ? "bad" : "good"),
+      card(String(d.totalErrors), "Lifetime errors"),
+      card(d.avgLatencyMs + " ms", "Avg latency")
     );
   }
 
@@ -44,7 +44,7 @@
     if (!tools.length) {
       const row = document.createElement("tr");
       const cell = document.createElement("td");
-      cell.colSpan = 4;
+      cell.colSpan = 5;
       cell.className = "muted";
       cell.textContent = "No tool calls recorded yet.";
       row.append(cell);
@@ -56,7 +56,8 @@
       const cells = [
         [tool.name, ""],
         [String(tool.calls), ""],
-        [tool.errorRatePct + "%", tool.errors > 0 ? "err" : ""],
+        [tool.errorRatePct + "%", ""],
+        [tool.currentlyFailing ? "failing" : "ok", tool.currentlyFailing ? "err" : "ok"],
         [String(tool.avgMs), ""],
       ];
       for (const [text, cls] of cells) {

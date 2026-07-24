@@ -9,6 +9,17 @@ to [Semantic Versioning](https://semver.org/).
 ## [0.1.1] - 2026-07-24
 
 ### Added
+- **Telemetry distinguishes a resolved historical error from a currently failing
+  tool (ADR-0010).** The append-only trail means a tool's lifetime `errors` never
+  shrinks, so a single past failure used to read as a permanent fault in the VS
+  Code Telemetry pane and the Markdown rendering. `telemetry_snapshot` now also
+  reports, per tool, `last_success_at`, `last_error_at`, the most recent error's
+  `detail` (retained as an audit path even after the raw event ages out of the
+  bounded recent window), and a derived `currently_failing`, plus a snapshot-level
+  `currently_failing_tools`. The pane gains a "Failing now" health card and a
+  per-tool Health column; the Markdown table separates lifetime errors from
+  current health. Lifetime totals stay cumulative history; current health is a
+  separate recency signal.
 - **Two productization decisions make the viability gaps explicit.** ADR-0027
   proposes an extension-led, five-minute first-value workflow over the existing
   portable MCP primitives, without duplicating authoritative state or requiring

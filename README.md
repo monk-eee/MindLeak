@@ -212,7 +212,7 @@ It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
 | `evidence_for` | Bounded, provenance-bearing evidence bundle from an agent's attributed executions/commits in a work window (ADR-0009). |
 | `index` | Optional: embed nodes lacking a current vector via a local `/v1/embeddings` server (ADR-0008). |
 | `recall` | Optional: nearest node ids by cosine similarity — entry points to *seed* `graph_multi_hop_query`. |
-| `telemetry_snapshot` | Observability record (ADR-0010): per-tool call counts, errors, latency, and recent invocations from the durable audit trail. |
+| `telemetry_snapshot` | Observability record (ADR-0010): per-tool lifetime call/error counts, latency, current health (whether each tool's most recent call failed), and recent invocations from the durable audit trail. |
 
 ---
 

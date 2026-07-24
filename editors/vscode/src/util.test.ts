@@ -35,9 +35,33 @@ import {
 const SNAPSHOT: TelemetrySnapshot = {
   total_events: 10,
   total_errors: 2,
+  currently_failing_tools: 1,
   by_name: [
-    { name: "recall", calls: 6, errors: 2, total_ms: 300, min_ms: 20, max_ms: 90, avg_ms: 50 },
-    { name: "graph_stats", calls: 4, errors: 0, total_ms: 40, min_ms: 5, max_ms: 20, avg_ms: 10 },
+    {
+      name: "recall",
+      calls: 6,
+      errors: 2,
+      total_ms: 300,
+      min_ms: 20,
+      max_ms: 90,
+      avg_ms: 50,
+      last_success_at: 1_700_000_000,
+      last_error_at: 1_700_000_005,
+      last_error_detail: { error: "boom" },
+      currently_failing: true,
+    },
+    {
+      name: "graph_stats",
+      calls: 4,
+      errors: 0,
+      total_ms: 40,
+      min_ms: 5,
+      max_ms: 20,
+      avg_ms: 10,
+      last_success_at: 1_700_000_000,
+      last_error_at: null,
+      currently_failing: false,
+    },
   ],
   recent: [
     { ts: 1_700_000_005, kind: "tool_call", name: "recall", outcome: "error", duration_ms: 90 },
@@ -512,7 +536,65 @@ describe("telemetryDashboard", () => {
       errors: 2,
       errorRatePct: 33.3,
       avgMs: 50,
+      currentlyFailing: true,
     });
+  });
+
+  it("reports live failing-tool health distinct from the lifetime error tally", () => {
+    // Regression: a tool with a resolved historical error (lifetime errors = 1)
+    // whose most recent call succeeded must read as healthy — not an active
+    // fault. failingTools is the live signal; totalErrors stays cumulative.
+    const snapshot: TelemetrySnapshot = {
+      total_events: 3,
+      total_errors: 1,
+      currently_failing_tools: 0,
+      by_name: [
+        {
+          name: "recall",
+          calls: 2,
+          errors: 1,
+          total_ms: 30,
+          min_ms: 10,
+          max_ms: 20,
+          avg_ms: 15,
+          last_error_at: 100,
+          last_success_at: 200,
+          last_error_detail: { error: "transient boom" },
+          currently_failing: false,
+        },
+      ],
+      recent: [],
+    };
+    const dashboard = telemetryDashboard(snapshot, { nodes: 1, active_edges: 0 });
+    expect(dashboard.totalErrors).toBe(1);
+    expect(dashboard.failingTools).toBe(0);
+    expect(dashboard.tools[0].currentlyFailing).toBe(false);
+  });
+
+  it("flags a tool as failing when its latest call errored", () => {
+    const snapshot: TelemetrySnapshot = {
+      total_events: 2,
+      total_errors: 1,
+      currently_failing_tools: 1,
+      by_name: [
+        {
+          name: "embed",
+          calls: 2,
+          errors: 1,
+          total_ms: 14,
+          min_ms: 5,
+          max_ms: 9,
+          avg_ms: 7,
+          last_error_at: 200,
+          last_success_at: 100,
+          currently_failing: true,
+        },
+      ],
+      recent: [],
+    };
+    const dashboard = telemetryDashboard(snapshot, undefined);
+    expect(dashboard.failingTools).toBe(1);
+    expect(dashboard.tools[0].currentlyFailing).toBe(true);
   });
 
   it("reports a clean 100% success readout when nothing has run yet", () => {
@@ -522,6 +604,7 @@ describe("telemetryDashboard", () => {
       activeEdges: 0,
       totalEvents: 0,
       totalErrors: 0,
+      failingTools: 0,
       successRatePct: 100,
       errorRatePct: 0,
       avgLatencyMs: 0,

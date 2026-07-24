@@ -277,9 +277,10 @@ confirms an agent did what was asked. Three parts, all local and all stdout-safe
   (`pretty` | `json`). Every tool dispatch is a timed span.
 - **Durable audit trail.** Every tool call is recorded to an append-only
   `telemetry_events` table the telemetry module owns — never graph state, never
-  decayed. The `telemetry_snapshot` tool returns per-tool counts, error counts,
-  latency, and recent events: the queryable record of what ran and whether it
-  worked.
+  decayed. The `telemetry_snapshot` tool returns per-tool lifetime counts, error
+  counts, latency, per-tool current health (whether the most recent call failed,
+  distinct from the cumulative lifetime error tally), and recent events: the
+  queryable record of what ran and whether it worked.
 - **Network resilience** (`net`). All optional HTTP (embeddings, consolidation,
   LLM) gets explicit timeouts, bounded retry with backoff, and a per-endpoint
   circuit breaker, so a degraded server fast-fails instead of hanging the agent.
