@@ -423,6 +423,13 @@ Newline-delimited JSON-RPC 2.0 over stdio, exactly like `mindleak-mcp`.
   hold with no live predecessor gate) to claimable `open`; `abandon_task`
   durably retires open/review/blocked or expired-claim work without deleting
   its audit history. Both refuse to disturb live or parked ownership.
+  `resolve_task(task_id, human)` → the task-level mirror of `accept_design`:
+  human-accepts an `in_review` task (a `drift`/`needs_human` completion) to
+  `done` with no code-conformance re-run, opening any blocked successor. It
+  requires a reviewer identity and refuses self-resolution by the agent whose
+  work is under review (read from the task's conformance evidence), so a
+  docs-only task in an objective's chain has a human-in-the-loop path to
+  terminal `done` without weakening conformance.
 14. `board(include_terminal=true)` → coordination snapshot: every task, owner,
     status, lease, and advisory scope — so humans and agents see the parallel state at a glance.
     `include_terminal=false` returns only the live/actionable set (open, claimed,

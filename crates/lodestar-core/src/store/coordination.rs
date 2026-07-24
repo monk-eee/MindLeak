@@ -334,6 +334,38 @@ impl LodestarStore {
         Ok(changed == 1)
     }
 
+    /// Human-accept an `in_review` task to `done` (terminal) — the task-level
+    /// mirror of `accept_design`. A task reaches `in_review` when conformance
+    /// returns `drift`/`needs_human` (ADR-0009): the work is plausibly complete
+    /// but wants a human's judgement. This is the verb that resolves it — no
+    /// code conformance is re-run, the human is the authority. Only an
+    /// `in_review` task is eligible; the terminal transition opens any blocked
+    /// successor so a docs/needs-human predecessor never strands its chain. The
+    /// human-in-the-loop guard (the resolver may not be the agent whose work is
+    /// under review) is enforced in the facade.
+    pub fn resolve_in_review(&self, id: &str, now: i64) -> Result<bool> {
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let task = get_task_on(&transaction, id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
+        if task.status != TaskStatus::InReview {
+            return Err(LodestarError::Invalid(format!(
+                "task {id} is {} and cannot be resolved; only an in_review task \
+                 can be human-accepted to done",
+                task.status.as_str()
+            )));
+        }
+        let changed = transaction.execute(
+            "UPDATE tasks
+             SET status = 'done', owner = NULL, claim_started_at = NULL,
+                 lease_expires_at = NULL, blocked_by = NULL, updated_at = ?2
+             WHERE id = ?1 AND status = 'in_review'",
+            params![id, now],
+        )?;
+        open_blocked_successor_on(&transaction, id, now)?;
+        transaction.commit()?;
+        Ok(changed == 1)
+    }
+
     /// Park a claimed task with a durable question for a human (ADR-0020):
     /// owner-guarded transition to `needs_input` that clears the live lease but
     /// keeps the owner and `claim_started_at` evidence window, records `parked_at`,
@@ -1452,6 +1484,85 @@ mod tests {
         assert!(store.reopen_task(&review.id, NOW + 1).unwrap());
         assert_eq!(
             store.get_task(&review.id).unwrap().unwrap().status,
+            TaskStatus::Open
+        );
+    }
+
+    #[test]
+    fn resolve_in_review_accepts_only_an_in_review_task() {
+        let store = store();
+        let goal = goal(&store);
+
+        // A drift outcome parks the task in review; resolve_in_review accepts it
+        // to done — the human-accept path with no conformance re-run.
+        let review = store
+            .create_task(&goal.id, "Review", "done", None, NOW)
+            .unwrap();
+        assert!(store.claim_task(&review.id, "agent-b", 60, NOW).unwrap());
+        assert!(store
+            .record_conformance_and_transition(
+                &review.id,
+                "agent-b",
+                ConformanceAudit {
+                    evidence_schema_version: 1,
+                    evidence: "{}",
+                    verdict: Verdict::Drift,
+                    findings: "",
+                },
+                TaskStatus::InReview,
+                NOW,
+            )
+            .unwrap());
+        assert!(store.resolve_in_review(&review.id, NOW + 1).unwrap());
+        assert_eq!(
+            store.get_task(&review.id).unwrap().unwrap().status,
+            TaskStatus::Done
+        );
+
+        // An open task is not in review, so it cannot be human-resolved.
+        let open = store
+            .create_task(&goal.id, "Open", "done", None, NOW)
+            .unwrap();
+        assert!(store
+            .resolve_in_review(&open.id, NOW + 2)
+            .unwrap_err()
+            .to_string()
+            .contains("only an in_review task"));
+    }
+
+    #[test]
+    fn resolve_in_review_opens_a_blocked_successor() {
+        // Regression: a docs/needs-human predecessor stranded in review used to
+        // leave its successor blocked forever with no completion path. Resolving
+        // it to done must open the next link in the chain.
+        let store = store();
+        let goal = goal(&store);
+        let pred = store
+            .create_task(&goal.id, "Docs", "done", None, NOW)
+            .unwrap();
+        let succ = store
+            .create_task_after(&goal.id, "Next", "done", None, Some(pred.id.clone()), NOW)
+            .unwrap();
+        assert_eq!(succ.status, TaskStatus::Blocked);
+
+        assert!(store.claim_task(&pred.id, "agent-b", 60, NOW).unwrap());
+        assert!(store
+            .record_conformance_and_transition(
+                &pred.id,
+                "agent-b",
+                ConformanceAudit {
+                    evidence_schema_version: 1,
+                    evidence: "{}",
+                    verdict: Verdict::NeedsHuman,
+                    findings: "",
+                },
+                TaskStatus::InReview,
+                NOW,
+            )
+            .unwrap());
+        assert!(store.resolve_in_review(&pred.id, NOW + 1).unwrap());
+        assert_eq!(
+            store.get_task(&succ.id).unwrap().unwrap().status,
             TaskStatus::Open
         );
     }

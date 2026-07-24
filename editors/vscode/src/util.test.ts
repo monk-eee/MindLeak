@@ -9,6 +9,7 @@ import {
   canRetireTask,
   claimTaskRequest,
   conformanceDiagnostic,
+  evidenceGroups,
   evidenceRequestForTask,
   filterChangedPaths,
   formatGoverningClauses,
@@ -34,6 +35,7 @@ import {
   telemetryDashboard,
   TelemetrySnapshot,
   toArtifactId,
+  verdictIconId,
 } from "./util";
 
 const SNAPSHOT: TelemetrySnapshot = {
@@ -542,6 +544,55 @@ describe("formatTaskEvidence", () => {
     const markdown = formatTaskEvidence([record({ evidence: "{not json" })]) ?? "";
     expect(markdown).toContain("**Verdict:** aligned");
     expect(markdown).not.toContain("**Changed nodes:**");
+  });
+});
+
+describe("evidenceGroups", () => {
+  const rec = (over = {}) => ({
+    id: 1,
+    task_id: "task:a",
+    evidence: "{}",
+    verdict: "aligned",
+    findings: "",
+    checked_at: 1_700_000_000,
+    ...over,
+  });
+  const task = (id: string, title = id) => ({ id, goal_id: "goal:x", title, status: "done" });
+
+  it("omits tasks with no conformance records and handles empty input", () => {
+    expect(evidenceGroups(undefined as never, {})).toEqual([]);
+    const groups = evidenceGroups([task("task:a"), task("task:b")], { "task:a": [rec()] });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].taskId).toBe("task:a");
+  });
+
+  it("summarises the latest verdict and check count", () => {
+    const groups = evidenceGroups([task("task:a")], {
+      "task:a": [
+        rec({ id: 1, verdict: "drift", checked_at: 1_700_000_000 }),
+        rec({ id: 2, verdict: "aligned", checked_at: 1_700_000_500 }),
+      ],
+    });
+    expect(groups[0].latestVerdict).toBe("aligned");
+    expect(groups[0].checkCount).toBe(2);
+  });
+
+  it("orders groups by most-recent check first", () => {
+    const groups = evidenceGroups([task("task:a"), task("task:b")], {
+      "task:a": [rec({ checked_at: 1_700_000_000 })],
+      "task:b": [rec({ checked_at: 1_700_009_000 })],
+    });
+    expect(groups.map((group) => group.taskId)).toEqual(["task:b", "task:a"]);
+  });
+});
+
+describe("verdictIconId", () => {
+  it("maps verdicts to theme icon ids", () => {
+    expect(verdictIconId("aligned")).toBe("verified-filled");
+    expect(verdictIconId("drift")).toBe("warning");
+    expect(verdictIconId("violation")).toBe("error");
+    expect(verdictIconId("needs_human")).toBe("person");
+    expect(verdictIconId("weird")).toBe("question");
   });
 });
 

@@ -156,6 +156,26 @@ install-to-first-prompt walkthrough. Measured outcomes, supported
 language/platform matrices, and limitations:
 [`docs/RELEASE-NOTES.md`](docs/RELEASE-NOTES.md).
 
+### First five minutes
+
+Open the MindLeak activity-bar icon after installing the VSIX. The **Workspace**
+view derives one current state from the two MCP servers; it does not keep a
+second copy of graph or task data.
+
+1. Confirm the Memory and Intent rows show the exact running server builds and
+   the effective per-activation identity shared by both planes.
+2. Open a source file and choose **Ingest active file** when the workspace is
+   `ready_empty`.
+3. Open the **Context Graph** from the next action to inspect the first useful
+   file/symbol neighbourhood.
+4. When Lodestar has actionable tasks or designs, the action switches to the
+   appropriate Intent or Design Board.
+
+No account, network service, Rust toolchain, embedding model, or chat model is
+required for this path. Optional terminal/Git capture failures are named
+separately and never present the deterministic core as offline. Headless MCP
+clients can follow the same calls in [docs/USAGE.md](docs/USAGE.md#first-value-without-vs-code).
+
 ---
 
 ## Run the MCP server
@@ -232,6 +252,14 @@ diluting it. Register it alongside `mindleak-mcp`; it uses `LODESTAR_DB` (else
 `<cwd>/.lodestar/spec.db`), a shared file so local agents and worktrees
 coordinate through one plane.
 
+> **Evidence is the proof.** Completion here isn't a claim an agent makes — it's
+> proof it must produce. `complete_task` accepts only a provenance-bearing evidence
+> bundle that a separate `check_conformance` scores against the goal's code, bounded
+> by the live claim and attributed to the acting agent. The durable
+> `conformance_history` chain is the **only** trustworthy record that a fleet did
+> the right thing — narration is not proof — and `export_evidence` makes it portable
+> for review, a CI gate, and audit.
+
 | Tool | Purpose |
 |---|---|
 | `define_goal` / `supersede_goal` | Write/version the constitution (objective · constraint · invariant). |
@@ -249,6 +277,7 @@ coordinate through one plane.
 | `release_task` / `block_task` | Return or block work. |
 | `reopen_task` | Return a stranded task (in review, or a manual hold) to claimable `open`. |
 | `abandon_task` | Retire open/review/blocked or expired-claim work to durable `abandoned`; live and parked ownership stays protected. |
+| `resolve_task` | Human-accept an `in_review` task (a `drift`/`needs_human` completion) to `done` with no code-conformance re-run — the task-level mirror of `accept_design`. Requires a reviewer identity and refuses self-resolution by the reviewed agent. |
 | `ask_question` / `answer` | Park a claimed task in `needs_input` with a durable question; a human `answer` resumes it under the same owner with a fresh lease. |
 | `pause_task` / `resume_task` | Owner deliberately parks (`paused`) and resumes work, keeping the claim and evidence window. |
 | `task_qa` | The durable, append-only question/answer thread for a task. |
@@ -260,6 +289,7 @@ coordinate through one plane.
 | `design_promotion` / `design_materialization_history` | Read the current task/objective projection or its complete immutable review history. |
 | `check_conformance` | Persist and return `{ id, token, verdict, findings }` for exact checked completion. |
 | `conformance_history` | Resolve a task's durable evidence chain — the recorded bundle, verdict, and stable id per check. |
+| `export_evidence` | Render a task's conformance chain as a committed, verifiable **proof-of-work** artifact — the proof leaves the local ledger for review, CI, and audit (ADR-0031). |
 | `consolidate` / `record_knowledge` | Gated promotion of learned regularities. |
 | `promote_signals` | Promotion bridge (ADR-0022): batch-feed MindLeak `promotion_candidates` into the gated consolidator; deterministic, model-optional. |
 | `active_knowledge` / `reconfirm_knowledge` / `prune_knowledge` | Durable-but-revalidated knowledge. |

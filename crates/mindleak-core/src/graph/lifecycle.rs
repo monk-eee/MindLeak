@@ -134,7 +134,7 @@ impl GraphStore {
 
         crate::embed::ensure_table(&self.conn)?;
         crate::telemetry::ensure_table(&self.conn)?;
-        let transaction = self.conn.unchecked_transaction()?;
+        let transaction = self.write_txn()?;
         let edges_removed = transaction.execute("DELETE FROM edges", [])?;
         let embeddings_removed = transaction.execute("DELETE FROM embeddings", [])?;
         let telemetry_events_removed = transaction.execute("DELETE FROM telemetry_events", [])?;

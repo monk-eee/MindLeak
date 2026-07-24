@@ -33,6 +33,50 @@ to [Semantic Versioning](https://semver.org/).
   invented purpose, preamble, authority, or enforcement contract; the migration
   is idempotent. `active_constitution_version()` reports the absent / draft /
   active state.
+- **`resolve_task` closes the `in_review` gap — the task-level mirror of
+  `accept_design`.** A docs-only task inside an objective's chain (not a
+  registered design item) still lands `in_review` on a `drift`/`needs_human`
+  conformance verdict, and until now had no accept-to-`done` verb — only
+  `reopen_task`/`abandon_task` existed. `resolve_task(task_id, human)` (facade +
+  MCP) records the attributed human judgement and moves the task to terminal
+  `done` with no code-conformance re-run, opening any blocked successor so a
+  docs/needs-human predecessor never strands its chain. Human-in-the-loop: a
+  reviewer identity is required and may not be the agent whose work is under
+  review (read from the task's conformance evidence), mirroring the
+  no-self-decision guard on `accept_design`.
+- **The VS Code Workspace view guides first value without becoming a source of
+  truth (ADR-0027).** A pure readiness projection combines the two MCP
+  initialize build identities, `graph_stats`, actionable `board`/`design_board`
+  rows, one per-activation identity shared exactly by both child servers, and
+  terminal/Git health into five states:
+  disconnected, ready-empty, observing, coordinating, and optional degradation.
+  Each state exposes one concrete action (settings, first ingest, Context Graph,
+  Intent/Design Board, or Telemetry); a fresh empty/disconnected workspace focuses
+  the view once and can then be ignored. The clean VS Code 1.93 Extension Host
+  smoke now proves empty workspace → active-file ingest → non-empty graph →
+  proposed design coordination with no model or manual JSON. README/USAGE show
+  the identical ordered MCP path for headless clients.
+- **Conformance evidence is exportable, verifiable proof-of-work (ADR-0031).** The
+  evidence-backed conformance loop (ADR-0009/0025) already refuses to let an agent
+  mark work "done" by asserting it — `complete_task` consumes only a bounded,
+  provenance-bearing bundle that a separate `check_conformance` scores against the
+  goal's code bindings, bounded by the live claim and attributed to the acting
+  agent. Now that proof can leave the local ledger: `export_evidence` renders a
+  task's durable `conformance_history` chain (check id, verdict, acting agent,
+  claim window, evidence summary) as a committed, verifiable artifact for human
+  review, a CI conformance gate (`scripts/conformance-gate.mjs`), and audit. The
+  gate is fed by `export_conformance_manifest`, which renders the repo-wide
+  governed-node set plus each task's verdict and covered nodes as a machine-checkable
+  JSON manifest, so CI fails a merge that changes governed code without an aligned
+  receipt. README and ARCHITECTURE now explain why this chain is the fleet's only
+  trustworthy proof-of-work — narration is not proof.
+- **The Evidence Board surfaces conformance proof in VS Code (ADR-0031).** A new
+  tree view lists tasks that carry a conformance chain, each showing its latest
+  verdict and expandable to the individual checks (the drift→aligned story a
+  reviewer needs), with inline **Inspect** (render the chain as markdown) and
+  **Export** (`export_evidence` to a committed artifact under `.lodestar/evidence/`)
+  actions. The grouping logic (`evidenceGroups`, `verdictIconId`) is pure and
+  vitest-tested; the vscode-coupled provider stays thin.
 - **Ask-before-act constitutional advice (ADR-0029).** Agents can now ask what
   governs an intended change *before* doing it, not only discover drift at
   `complete_task`. The new `advise` tool takes the `artifact:`/`symbol:` ids you
@@ -177,6 +221,15 @@ to [Semantic Versioning](https://semver.org/).
   action the board reflects rather than a button. The README index links both.
 
 ### Fixed
+- **Autonomous prune no longer fails spuriously under concurrent writes.** Every
+  graph write opened a deferred transaction (`BEGIN DEFERRED`), which takes the
+  WAL write lock lazily on its first write. When the autonomous maintenance
+  worker (which holds its own database connection) pruned while a foreground
+  write was in flight, that lazy lock upgrade returned a SQLite lock error that
+  `busy_timeout` does not retry — surfacing as recurring `autonomous_prune`
+  `sqlite` errors in telemetry. Writes now take the lock up front (`BEGIN
+  IMMEDIATE`) via a shared `write_txn` helper, so `busy_timeout` serialises
+  concurrent writers instead of one failing.
 - **The Context Graph visualizer stays responsive on large graphs.** A seeded
   snapshot (the neighbourhood of the active file) expanded the full depth-2 reach
   with no cap, so expanding into a hub node — an agent that has observed

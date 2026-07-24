@@ -9,6 +9,11 @@ interface Pending {
   timer?: ReturnType<typeof setTimeout>;
 }
 
+export interface McpServerIdentity {
+  name: string;
+  version: string;
+}
+
 /**
  * A minimal MCP client speaking newline-delimited JSON-RPC 2.0 to the
  * mindleak-mcp server over stdio.
@@ -18,6 +23,7 @@ export class McpClient {
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private ready = false;
+  private identity?: McpServerIdentity;
 
   constructor(
     private readonly command: string,
@@ -39,6 +45,7 @@ export class McpClient {
     });
     this.proc.on("exit", (code) => {
       this.ready = false;
+      this.identity = undefined;
       this.rejectPending(new Error(`MCP server exited (code ${code ?? "null"})`));
       this.log(`mindleak-mcp exited (code ${code ?? "null"})`);
     });
@@ -48,17 +55,26 @@ export class McpClient {
     this.proc.stderr.on("data", (chunk) => this.log(`[mindleak-mcp] ${chunk.toString().trim()}`));
     this.proc.stdin.on("error", (err) => this.log(`stdin error: ${err.message}`));
 
-    await this.request("initialize", {
+    const initialized = await this.request("initialize", {
       protocolVersion: "2024-11-05",
       capabilities: {},
       clientInfo: { name: "mindleak-vscode", version: "0.1.0" },
     });
+    const info = initialized?.serverInfo;
+    this.identity =
+      typeof info?.name === "string" && typeof info?.version === "string"
+        ? { name: info.name, version: info.version }
+        : undefined;
     this.notify("notifications/initialized", {});
     this.ready = true;
   }
 
   isReady(): boolean {
     return this.ready;
+  }
+
+  serverIdentity(): McpServerIdentity | undefined {
+    return this.identity ? { ...this.identity } : undefined;
   }
 
   private onLine(line: string): void {
@@ -135,6 +151,7 @@ export class McpClient {
     const proc = this.proc;
     this.proc = undefined;
     this.ready = false;
+    this.identity = undefined;
     this.rejectPending(new Error("MCP client disposed"));
     if (!proc || proc.exitCode !== null) {
       return;

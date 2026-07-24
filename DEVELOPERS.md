@@ -395,13 +395,18 @@ and footguns, with impact and status:
   without code conformance, then a separately reviewed create/link/no-work plan
   maps it to executive work. Blind fallback creation was removed after ADR-0028
   exposed a duplicate-task failure. A docs-only task inside an *objective's*
-  task chain (not a registered design item) still lands `in_review` via the same
-  honest `needs_human` verdict. `resolve_task(task_id, human)` now provides the
-  task-level mirror of `accept_design`: an attributed human reviewer can move
-  that reviewed task to `done` without rerunning code conformance, while the
-  original audit remains durable and self-resolution by the reviewed agent is
-  refused. `reopen_task` and `abandon_task` retain their distinct recovery and
-  retirement meanings.
+  task chain (not a registered design item) —
+  e.g. the AGENTS.md/README/USAGE/SPEC-INTENT task closing the ADR-0029 advise
+  chain — still lands `in_review` via the same honest `needs_human` verdict. — **Fixed
+  Jul 2026:** `resolve_task(task_id, human)` (facade + MCP) is the task-level
+  mirror of `accept_design` — it human-accepts an `in_review` task to `done` with
+  no code-conformance re-run while preserving the original audit, opens any
+  blocked successor, and refuses self-resolution by the reviewed agent (the
+  worker read from the task's conformance evidence). `reopen_task` and
+  `abandon_task` retain their distinct recovery and retirement meanings. Tests:
+  `resolve_task_accepts_an_in_review_task_to_done`,
+  `resolve_task_refuses_self_resolution_by_the_reviewed_agent`,
+  `resolve_in_review_opens_a_blocked_successor`.
 - **`next_task` surfaces non-actionable policy tasks.** — A `constraint` goal was
   decomposed into four tasks that merely restate the constraint and can never
   accrue completion evidence; `next_task` (oldest-first) hands one out on every

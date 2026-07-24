@@ -133,6 +133,51 @@ impl Lodestar {
         self.store.abandon_task(id, now_unix())
     }
 
+    /// Human-accept an `in_review` task to `done` — the task-level mirror of
+    /// `accept_design` (ADR-0009 close-out). A task lands in `in_review` when
+    /// conformance returns `drift`/`needs_human`: the work is plausibly done but
+    /// a human must judge it. `resolve_task` records that judgement and moves the
+    /// task to `done` with no code-conformance re-run; the terminal transition
+    /// opens any blocked successor. Human-in-the-loop: a resolver identity is
+    /// required and may not be the agent whose work is under review.
+    pub fn resolve_task(&self, id: &str, human: &str) -> Result<bool> {
+        let human = human.trim();
+        if human.is_empty() {
+            return Err(LodestarError::Invalid(
+                "a human resolver identity is required".to_string(),
+            ));
+        }
+        // Human-in-the-loop: the agent whose conformance evidence put the task in
+        // review may not sign off on its own work — a distinct human must accept.
+        if let Some(worker) = self.review_worker(id)? {
+            if worker == human {
+                return Err(LodestarError::Invalid(
+                    "an agent may not resolve its own in_review task; a distinct \
+                     human reviewer must accept it"
+                        .to_string(),
+                ));
+            }
+        }
+        self.store.resolve_in_review(id, now_unix())
+    }
+
+    /// The agent whose most recent conformance check put a task in review, read
+    /// from the durable evidence bundle. Backs the `resolve_task`
+    /// human-in-the-loop guard; `None` when the task has no conformance history.
+    fn review_worker(&self, id: &str) -> Result<Option<String>> {
+        let history = self.store.conformance_history(id)?;
+        Ok(history.last().and_then(|record| {
+            serde_json::from_str::<serde_json::Value>(&record.evidence)
+                .ok()
+                .and_then(|bundle| {
+                    bundle
+                        .get("agent_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
+        }))
+    }
+
     /// Park a claimed task with a durable question for a human (ADR-0020):
     /// owner-guarded move to `needs_input` that keeps the owner + evidence window
     /// but clears the live lease. Answer it with `answer_question`.
@@ -211,5 +256,87 @@ mod tests {
         let tasks = e.decompose_goal(&g.id).unwrap();
         assert_eq!(tasks.len(), 1);
         assert!(tasks[0].title.contains("Add search"));
+    }
+
+    /// Drive a fresh task all the way to `in_review` through a real
+    /// needs-human conformance completion, so the stored evidence records
+    /// `agent` as the worker under review.
+    fn drive_to_review(e: &crate::Lodestar, agent: &str) -> crate::Task {
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship auth", "change auth", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "change auth", "done").unwrap();
+        e.claim_task(&task.id, agent, 300).unwrap();
+        let claimed = e.store.get_task(&task.id).unwrap().unwrap();
+        let evidence = crate::ConformanceEvidence {
+            schema_version: 1,
+            task_id: Some(task.id.clone()),
+            agent_id: agent.into(),
+            started_at: claimed.claim_started_at.unwrap(),
+            ended_at: crate::now_unix(),
+            changed_node_ids: Vec::new(),
+            failed_node_ids: Vec::new(),
+            execution_ids: Vec::new(),
+            successful_execution_ids: Vec::new(),
+            commit_ids: Vec::new(),
+            summary: "no mutation evidence".into(),
+            provenance: Vec::new(),
+        };
+        let checked = e.check_conformance(&evidence, Some(&task.id)).unwrap();
+        assert_eq!(checked.verdict, crate::Verdict::NeedsHuman);
+        let (completed, _) = e
+            .complete_task(&task.id, agent, &evidence, &checked)
+            .unwrap();
+        assert!(!completed);
+        assert_eq!(
+            e.store.get_task(&task.id).unwrap().unwrap().status,
+            TaskStatus::InReview
+        );
+        task
+    }
+
+    #[test]
+    fn resolve_task_accepts_an_in_review_task_to_done() {
+        let e = engine();
+        let task = drive_to_review(&e, "agent-a");
+        assert!(e.resolve_task(&task.id, "reviewer").unwrap());
+        assert_eq!(
+            e.store.get_task(&task.id).unwrap().unwrap().status,
+            TaskStatus::Done
+        );
+    }
+
+    #[test]
+    fn resolve_task_refuses_self_resolution_by_the_reviewed_agent() {
+        let e = engine();
+        let task = drive_to_review(&e, "agent-a");
+        let err = e.resolve_task(&task.id, "agent-a").unwrap_err().to_string();
+        assert!(err.contains("may not resolve its own"), "{err}");
+        assert_eq!(
+            e.store.get_task(&task.id).unwrap().unwrap().status,
+            TaskStatus::InReview
+        );
+    }
+
+    #[test]
+    fn resolve_task_requires_a_human_identity() {
+        let e = engine();
+        let task = drive_to_review(&e, "agent-a");
+        let err = e.resolve_task(&task.id, "   ").unwrap_err().to_string();
+        assert!(err.contains("resolver identity is required"), "{err}");
+    }
+
+    #[test]
+    fn resolve_task_refuses_a_task_that_is_not_in_review() {
+        let e = engine();
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship", "do it", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "work", "done").unwrap();
+        let err = e
+            .resolve_task(&task.id, "reviewer")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("only an in_review task"), "{err}");
     }
 }

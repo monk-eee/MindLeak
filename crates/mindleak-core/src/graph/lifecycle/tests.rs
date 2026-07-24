@@ -143,3 +143,40 @@ fn reset_database_requires_exact_token_and_clears_memory_state() {
     assert_eq!(outcome.maintenance_leases_removed, 1);
     assert_eq!(graph.counts(NOW).unwrap(), (0, 0));
 }
+
+// Bug: every mutating path used `unchecked_transaction()` (`BEGIN DEFERRED`),
+// which acquires the WAL write lock lazily on the first write. Against the
+// autonomous maintenance worker's separate connection, that lazy upgrade
+// returned a SQLite lock error that `busy_timeout` does not retry (SQLite skips
+// the busy handler on a lock upgrade to avoid deadlock), spiking
+// `autonomous_prune` "sqlite" errors. Impact: prune (and other writes) failed
+// spuriously whenever a second writer was active. Fix: `write_txn()` uses
+// `BEGIN IMMEDIATE`, taking the write lock at BEGIN so `busy_timeout` serialises
+// writers. This test proves the lock is held eagerly: while one connection holds
+// a `write_txn`, a second connection cannot open its own immediate write
+// transaction. Under the old deferred behaviour the lock would still be free and
+// the second BEGIN IMMEDIATE would succeed, so this fails against the un-fixed code.
+#[test]
+fn write_txn_takes_the_write_lock_eagerly_so_concurrent_writers_serialise() {
+    let path = std::env::temp_dir().join(format!(
+        "mindleak-write-txn-immediate-{}-{}.db",
+        std::process::id(),
+        NOW
+    ));
+    let _ = std::fs::remove_file(&path);
+    let holder = GraphStore::new(db::open(path.to_str().unwrap()).unwrap());
+    let contender = db::open(path.to_str().unwrap()).unwrap();
+    // Fail fast instead of waiting out busy_timeout when the lock is genuinely held.
+    contender.busy_timeout(std::time::Duration::ZERO).unwrap();
+
+    let txn = holder.write_txn().unwrap();
+    assert!(
+        contender.execute_batch("BEGIN IMMEDIATE").is_err(),
+        "write_txn must take the write lock eagerly (BEGIN IMMEDIATE); a \
+         concurrent writer must not be able to acquire it"
+    );
+
+    drop(txn); // rolls back, releasing the write lock
+    contender.execute_batch("BEGIN IMMEDIATE").unwrap();
+    contender.execute_batch("ROLLBACK").unwrap();
+}

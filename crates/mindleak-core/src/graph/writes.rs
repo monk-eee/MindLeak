@@ -21,7 +21,7 @@ impl GraphStore {
 
     /// Atomically append one deterministic ingestion batch.
     pub(crate) fn upsert_facts(&self, nodes: &[Node], edges: &[Edge]) -> Result<WriteOutcome> {
-        let transaction = self.conn.unchecked_transaction()?;
+        let transaction = self.write_txn()?;
         let mut outcome = WriteOutcome::default();
         for node in nodes {
             if upsert_node_on(&transaction, node)? {
@@ -54,7 +54,7 @@ impl GraphStore {
                 edge.source_id
             )));
         }
-        let transaction = self.conn.unchecked_transaction()?;
+        let transaction = self.write_txn()?;
         let aliases = {
             let mut statement = transaction.prepare(
                 "SELECT DISTINCT stub_id
@@ -203,7 +203,7 @@ impl GraphStore {
     /// a vanished file's structure is definitively invalid. Historical intent and
     /// execution nodes remain; only their edges to the gone file are cut.
     pub fn forget_artifact(&self, artifact_id: &str) -> Result<ForgetOutcome> {
-        let transaction = self.conn.unchecked_transaction()?;
+        let transaction = self.write_txn()?;
         let artifact_path = artifact_id.strip_prefix("artifact:").unwrap_or(artifact_id);
         let symbol_prefix = format!("symbol:{artifact_path}:");
 
