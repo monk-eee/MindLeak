@@ -1,8 +1,9 @@
 // Conformance gate (ADR-0031): fail CI when changed, governed code has no aligned
-// conformance receipt covering it. Reads the committed evidence artifact produced
-// by `export_evidence` (portable proof — the intent plane's proof-of-work) rather
-// than the local, gitignored `.lodestar/spec.db`, so it runs in CI where the DB is
-// absent. Documentation nodes are exempt exactly as at conformance read time.
+// conformance receipt covering it. Reads the committed manifest artifact produced
+// by `export_conformance_manifest` ({ governed_nodes, receipts:[{verdict,
+// covered_nodes}] } — the intent plane's proof-of-work) rather than the local,
+// gitignored `.lodestar/spec.db`, so it runs in CI where the DB is absent.
+// Documentation nodes are exempt exactly as at conformance read time.
 //
 // Cross-platform, dependency-free Node (toolchain rule). Advisory by default; pass
 // --strict to make violations fail the build (a ratchet, not a cliff).

@@ -7,6 +7,18 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **The VS Code Workspace view guides first value without becoming a source of
+  truth (ADR-0027).** A pure readiness projection combines the two MCP
+  initialize build identities, `graph_stats`, actionable `board`/`design_board`
+  rows, one per-activation identity shared exactly by both child servers, and
+  terminal/Git health into five states:
+  disconnected, ready-empty, observing, coordinating, and optional degradation.
+  Each state exposes one concrete action (settings, first ingest, Context Graph,
+  Intent/Design Board, or Telemetry); a fresh empty/disconnected workspace focuses
+  the view once and can then be ignored. The clean VS Code 1.93 Extension Host
+  smoke now proves empty workspace → active-file ingest → non-empty graph →
+  proposed design coordination with no model or manual JSON. README/USAGE show
+  the identical ordered MCP path for headless clients.
 - **Conformance evidence is exportable, verifiable proof-of-work (ADR-0031).** The
   evidence-backed conformance loop (ADR-0009/0025) already refuses to let an agent
   mark work "done" by asserting it — `complete_task` consumes only a bounded,
@@ -15,10 +27,12 @@ to [Semantic Versioning](https://semver.org/).
   agent. Now that proof can leave the local ledger: `export_evidence` renders a
   task's durable `conformance_history` chain (check id, verdict, acting agent,
   claim window, evidence summary) as a committed, verifiable artifact for human
-  review, a CI conformance gate (`scripts/conformance-gate.mjs`, which fails when
-  changed governed code lacks an aligned receipt), and audit. README and
-  ARCHITECTURE now explain why this chain is the fleet's only trustworthy
-  proof-of-work — narration is not proof.
+  review, a CI conformance gate (`scripts/conformance-gate.mjs`), and audit. The
+  gate is fed by `export_conformance_manifest`, which renders the repo-wide
+  governed-node set plus each task's verdict and covered nodes as a machine-checkable
+  JSON manifest, so CI fails a merge that changes governed code without an aligned
+  receipt. README and ARCHITECTURE now explain why this chain is the fleet's only
+  trustworthy proof-of-work — narration is not proof.
 - **The Evidence Board surfaces conformance proof in VS Code (ADR-0031).** A new
   tree view lists tasks that carry a conformance chain, each showing its latest
   verdict and expandable to the individual checks (the drift→aligned story a
@@ -170,6 +184,15 @@ to [Semantic Versioning](https://semver.org/).
   action the board reflects rather than a button. The README index links both.
 
 ### Fixed
+- **Autonomous prune no longer fails spuriously under concurrent writes.** Every
+  graph write opened a deferred transaction (`BEGIN DEFERRED`), which takes the
+  WAL write lock lazily on its first write. When the autonomous maintenance
+  worker (which holds its own database connection) pruned while a foreground
+  write was in flight, that lazy lock upgrade returned a SQLite lock error that
+  `busy_timeout` does not retry — surfacing as recurring `autonomous_prune`
+  `sqlite` errors in telemetry. Writes now take the lock up front (`BEGIN
+  IMMEDIATE`) via a shared `write_txn` helper, so `busy_timeout` serialises
+  concurrent writers instead of one failing.
 - **The Context Graph visualizer stays responsive on large graphs.** A seeded
   snapshot (the neighbourhood of the active file) expanded the full depth-2 reach
   with no cap, so expanding into a hub node — an agent that has observed
