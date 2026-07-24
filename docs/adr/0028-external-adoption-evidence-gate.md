@@ -39,9 +39,9 @@ highest tier actually reached.
 Passing one tier never implies the next. Public documentation labels the tier,
 sample, model/client, repository shape, and limitations beside any result.
 
-### v0.1.1 external pilot
+### v0.1.2 external pilot
 
-After the v0.1.1 release, run the existing Lodestar pilot task with these minimum
+After the v0.1.2 release, run the reviewed Lodestar pilot task with these minimum
 conditions:
 
 - recruit 3-5 developers who already use multiple coding agents;
@@ -96,7 +96,7 @@ telemetry proposal requires a separate privacy/security decision.
 
 ## Consequences
 
-- The v0.1.1 release and independent-user pilot form one ordered productization
+- The v0.1.2 release and independent-user pilot form one ordered productization
   chain; the pilot does not block shipping the release.
 - Evaluation artifacts become the source for product claims, with explicit tier
   and scope.

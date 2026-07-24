@@ -96,7 +96,6 @@ impl MaintenanceRuntime {
     pub(crate) fn start(
         config: MaintenanceConfig,
         database_path: String,
-        agent: Option<String>,
         decay_policy: DecayPolicy,
         working_set_size: usize,
     ) -> anyhow::Result<Self> {
@@ -112,8 +111,7 @@ impl MaintenanceRuntime {
         let engine = MindLeak::open(&database_path)?
             .with_decay_policy(decay_policy)
             .with_working_set_size(working_set_size)
-            .with_consolidation_min_interval(config.min_interval.as_secs())
-            .with_agent(agent);
+            .with_consolidation_min_interval(config.min_interval.as_secs());
         let activity = ActivitySignal::new();
         let worker_activity = activity.clone();
         let (completed_tx, completed_rx) = mpsc::channel();
@@ -425,7 +423,6 @@ mod tests {
         let runtime = MaintenanceRuntime::start(
             config,
             "invalid\0database".to_string(),
-            None,
             DecayPolicy::default(),
             7,
         )
@@ -446,7 +443,6 @@ mod tests {
         let error = match MaintenanceRuntime::start(
             config,
             ":memory:".to_string(),
-            None,
             DecayPolicy::default(),
             7,
         ) {
@@ -521,7 +517,6 @@ mod tests {
                 max_nodes: 20,
             },
             path.to_string_lossy().into_owned(),
-            None,
             DecayPolicy::default(),
             7,
         )

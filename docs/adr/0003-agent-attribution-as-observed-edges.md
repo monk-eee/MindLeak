@@ -18,9 +18,10 @@ Two shapes were considered:
 
 ## Decision
 
-Attribution is an **edge**, not a column. When `MINDLEAK_AGENT` is set, ingest
-and focus operations upsert an `agent:<id>` node and a decay-weighted `observed`
-edge to the primary node they wrote.
+Attribution is an **edge**, not a column. As amended by ADR-0030, a client first
+registers a session; identity-bearing ingest and focus operations upsert an
+`agent:<session-identity>` node and a decay-weighted `observed` edge to the
+primary node they wrote. `MINDLEAK_AGENT` supplies only the readable base label.
 
 ## Consequences
 
@@ -33,8 +34,8 @@ edge to the primary node they wrote.
 - **Queryable by the general graph engine.** `graph_multi_hop_query("agent:<id>")`
   traverses `observed` edges and `list_agents` gives the roster. Impact analysis
   deliberately excludes observations because shared attention is not dependency.
-- **Zero-cost when unused.** No `MINDLEAK_AGENT` ⇒ no `agent` nodes, no
-  `observed` edges — identical to the pre-attribution graph.
+- **Registration is explicit.** Unknown or omitted session tokens fail before
+  identity-bearing dispatch, so observations cannot be silently misattributed.
 - **Isolation stays per-database.** Attribution does not add cross-repo id
   namespacing; sharing one DB across different repos remains unsupported (path
   ids collide). That is a separate, larger change if ever needed.

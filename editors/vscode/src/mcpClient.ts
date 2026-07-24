@@ -14,6 +14,10 @@ export interface McpServerIdentity {
   version: string;
 }
 
+export interface McpSessionIdentity {
+  agent_id: string;
+}
+
 /**
  * A minimal MCP client speaking newline-delimited JSON-RPC 2.0 to the
  * mindleak-mcp server over stdio.
@@ -24,11 +28,13 @@ export class McpClient {
   private pending = new Map<number, Pending>();
   private ready = false;
   private identity?: McpServerIdentity;
+  private sessionIdentity?: McpSessionIdentity;
 
   constructor(
     private readonly command: string,
     private readonly cwd: string,
     private readonly env: NodeJS.ProcessEnv,
+    private readonly sessionId: string,
     private readonly log: (message: string) => void,
     private readonly requestTimeoutMs = 30_000
   ) {}
@@ -46,6 +52,7 @@ export class McpClient {
     this.proc.on("exit", (code) => {
       this.ready = false;
       this.identity = undefined;
+      this.sessionIdentity = undefined;
       this.rejectPending(new Error(`MCP server exited (code ${code ?? "null"})`));
       this.log(`mindleak-mcp exited (code ${code ?? "null"})`);
     });
@@ -66,6 +73,15 @@ export class McpClient {
         ? { name: info.name, version: info.version }
         : undefined;
     this.notify("notifications/initialized", {});
+    const sessionResult = await this.request("tools/call", {
+      name: "open_session",
+      arguments: { session_id: this.sessionId },
+    });
+    const session = parseToolResult(sessionResult) as McpSessionIdentity;
+    if (typeof session?.agent_id !== "string" || !session.agent_id) {
+      throw new Error("MCP server did not return a session agent identity");
+    }
+    this.sessionIdentity = session;
     this.ready = true;
   }
 
@@ -75,6 +91,10 @@ export class McpClient {
 
   serverIdentity(): McpServerIdentity | undefined {
     return this.identity ? { ...this.identity } : undefined;
+  }
+
+  agentIdentity(): string | undefined {
+    return this.sessionIdentity?.agent_id;
   }
 
   private onLine(line: string): void {
@@ -139,7 +159,10 @@ export class McpClient {
 
   /** Call an MCP tool and parse its first text-content block as JSON. */
   async callTool(name: string, args: Record<string, unknown>): Promise<any> {
-    const result = await this.request("tools/call", { name, arguments: args });
+    const result = await this.request("tools/call", {
+      name,
+      arguments: { ...args, session_id: this.sessionId },
+    });
     if (result?.isError) {
       const text = result?.content?.[0]?.text ?? "tool error";
       throw new Error(text);
@@ -152,6 +175,7 @@ export class McpClient {
     this.proc = undefined;
     this.ready = false;
     this.identity = undefined;
+    this.sessionIdentity = undefined;
     this.rejectPending(new Error("MCP client disposed"));
     if (!proc || proc.exitCode !== null) {
       return;

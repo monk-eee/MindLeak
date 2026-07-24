@@ -53,6 +53,11 @@ with both servers bundled. Install it via VS Code's **Extensions: Install from
 VSIX** command for the live graph, intent board, passive sensors, and health,
 backup, export, and reset controls.
 
+> **No editor? No problem.** VS Code is entirely optional. The installer also
+> registers both planes for the **GitHub Copilot CLI** (`.mindleak/copilot-mcp.json`),
+> so you can run MindLeak headless — see
+> [GitHub Copilot CLI — no editor required](#github-copilot-cli--no-editor-required).
+
 > **Verify first (recommended).** Before extracting, check the archive against the
 > release's `SHA256SUMS` and its signed GitHub artifact attestation. The native
 > binaries are not yet OS publisher-signed, so Windows/macOS may show a trust
@@ -76,8 +81,10 @@ the next step.
 
 The release installer already performs this step. For source builds or other
 clients, point the agent's MCP config at each binary.
-Use **absolute paths**. Set `MINDLEAK_AGENT` (and `LODESTAR_AGENT`) to a stable
-id per agent/session so attribution and task ownership work.
+Use **absolute paths**. `MINDLEAK_AGENT` and `LODESTAR_AGENT` are matching,
+human-readable base labels, not identities. Each client session mints one
+128-bit token, calls `open_session` on both planes, and reuses that token on
+identity-bearing calls. The VS Code extension performs this handshake itself.
 
 ### VS Code / GitHub Copilot — `.vscode/mcp.json`
 
@@ -127,12 +134,14 @@ use the `mcpServers` key:
 }
 ```
 
-### GitHub Copilot CLI — `mcpServers` config
+### GitHub Copilot CLI — no editor required
 
-The `copilot` CLI also uses the `mcpServers` key, but it does **not** expand VS
-Code's `${workspaceFolder}`, so its paths must be absolute (ADR-0033). The
-release installer writes a ready-to-use config to `.mindleak/copilot-mcp.json`;
-point the CLI at it per run:
+You can run MindLeak entirely from the `copilot` CLI with **no VS Code and no
+extension**. If you used the installer (Option A) it already wrote
+`.mindleak/copilot-mcp.json` for you; for a source build, create it by hand. The
+CLI uses the `mcpServers` key but does **not** expand VS Code's
+`${workspaceFolder}`, so its paths must be absolute (ADR-0033). Point the CLI at
+the config per run:
 
 ```bash
 copilot --additional-mcp-config @.mindleak/copilot-mcp.json
@@ -169,7 +178,8 @@ Then restart the client and confirm the connection — the next step.
 Restart your MCP client and open its tool list. You should see MindLeak's memory
 tools (`get_impact_radius`, `graph_multi_hop_query`, `recall`, the `ingest_*`
 family, …) and — if you registered it — Lodestar's intent tools (`define_goal`,
-`next_task`, `claim_task`, …). If the tools appear, you're live.
+`next_task`, `claim_task`, …). A headless client must call `open_session` before
+using identity-bearing tools. If the tools appear, you're live.
 
 Not seeing them? Diagnostics go to **stderr** (stdout carries only the MCP
 protocol), so launch the client from a terminal or set `MINDLEAK_LOG=debug` and
@@ -201,8 +211,9 @@ This ingests a file, then asks what a change to it would impact:
 ```bash
 printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
-  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ingest_file","arguments":{"path":"src/auth.ts","content":"export function validateSession(t){return Boolean(t);}"}}}' \
-  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_impact_radius","arguments":{"target_artifact":"artifact:src/auth.ts"}}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"open_session","arguments":{"session_id":"00112233445566778899aabbccddeeff"}}}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ingest_file","arguments":{"session_id":"00112233445566778899aabbccddeeff","path":"src/auth.ts","content":"export function validateSession(t){return Boolean(t);}"}}}' \
+  '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_impact_radius","arguments":{"target_artifact":"artifact:src/auth.ts"}}}' \
   | MINDLEAK_DB="$PWD/.mindleak/graph.db" ./target/release/mindleak-mcp
 ```
 

@@ -6,7 +6,18 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-24
+
 ### Added
+- **Session-scoped cross-plane identity and audited claim recovery (ADR-0030).**
+  Clients register one opaque 128-bit `session_id` with both stdio servers and
+  reuse it on identity-bearing calls. Both planes derive the same restart-stable
+  `session:v1:<base>:<fingerprint>` identity; multiplexed chats no longer alias
+  onto one process owner, and arbitrary per-call ids are ignored/rejected.
+  `recover_claim` moves only expired compatible legacy owners into the current
+  session, starts a fresh evidence window, preserves task scope/Q&A, and records
+  the complete prior claim in append-only `task_claim_transfers`; the Intent
+  Board exposes that guarded recovery path.
 - **First-class GitHub Copilot CLI registration (ADR-0033).** Both stdio planes
   already run under any MCP client, but the installer registered them only into
   `.vscode/mcp.json` — which the `copilot` CLI cannot read (it keys servers under
@@ -137,6 +148,43 @@ to [Semantic Versioning](https://semver.org/).
   a model. ADR-0028 separates engineering, controlled-efficacy, and external-
   adoption evidence; it defines the privacy-preserving post-v0.1.1 developer
   pilot required before broad product claims or roadmap expansion.
+- **Design promotion is reviewed before it creates work (ADR-0023).** Acceptance
+  records only the human decision. `plan_design_promotion` previews a concrete
+  multi-objective create/link/no-work plan; `promote_design` writes the reviewed
+  plan atomically; and `revise_design_promotion` appends an attributed repair
+  without deleting prior plans or tasks. This fixes the ADR-0028 duplicate/orphan
+  materialization failure while keeping optional model output out of writes.
+
+### Changed
+- **Fleet integration now preserves one canonical history (ADR-0032).** Work uses
+  one primary checkout, one fleet branch, and one designated publisher.
+  `canonical-push.mjs` refuses protected branches, linked worktrees, staged index
+  state, and remote divergence; committed-snapshot hooks no longer depend on a
+  side worktree.
+- **The first-value path now has one product workflow across clients.** Workspace
+  readiness, scenario-driven docs, and first-class Copilot CLI registration lead
+  users through connection, one useful graph result, and optional coordination
+  without requiring an account, model, or manual JSON.
+
+### Fixed
+- **Autonomous graph maintenance is reliable under normal editor activity.**
+  Pruning runs on its own cadence instead of an idle window starved by UI polls;
+  graph writes take `BEGIN IMMEDIATE` so SQLite's busy timeout serializes writers;
+  transient execution attribution no longer outlives its evidence; and build/VCS
+  output is rejected before it can pollute the graph.
+- **The Context Graph remains bounded around high-degree nodes.** Seeded snapshots
+  use relevance-first expansion with hard node/fanout limits instead of pulling
+  an agent's entire observation history into Cytoscape.
+
+## [0.1.1] - 2026-07-24
+
+### Added
+- **Two productization decisions make the viability gaps explicit.** ADR-0027
+  proposes an extension-led, five-minute first-value workflow over the existing
+  portable MCP primitives, without duplicating authoritative state or requiring
+  a model. ADR-0028 separates engineering, controlled-efficacy, and external-
+  adoption evidence; it defines the privacy-preserving post-v0.1.1 developer
+  pilot required before broad product claims or roadmap expansion.
 - **Read tools render as rich Markdown in chat while staying machine-parseable.**
   MCP tool results can now carry a chat-facing Markdown rendering in `content`
   *and* the structured JSON in `structuredContent`, so Copilot Chat shows a
@@ -161,46 +209,36 @@ to [Semantic Versioning](https://semver.org/).
   consolidation/index tier (`MINDLEAK_AUTONOMOUS_CONSOLIDATION`, still opt-in); the
   worker now starts when either is enabled and emits `autonomous_prune` telemetry
   with reap counts.
-- **Design items use reviewed materialization instead of blind decomposition
-  (ADR-0023).** An ADR
+- **Design items — an accept→promote→decompose bridge for ADRs (ADR-0023).** An ADR
   can be registered as a first-class *design item* that carries the ADR's review
   lifecycle: while `proposed` it is tainted — it lives on a new **Design Board**
   and never appears in `next_task` or the executive board. `accept_design` is the
   attributed human decision *only* — it does **not** run ADR-0009 code conformance
   (a design decision has no code to conform to) and does **not** create tasks,
   resolving the `in_review` dead-end where design/ADR tasks stranded forever; the
-  design becomes `accepted` with promotion state `pending` and the extension
-  writes the same status into the ADR. `plan_design_promotion` is read-only; the
-  human then confirms an explicit `create`, `link`, or `no_work` plan. Create can
-  span multiple objectives, link reuses existing blocked/done work, and no-work
-  records why nothing should be scheduled. `promote_design(id, plan)` writes the
-  reviewed plan and its current provenance projection atomically and
-  idempotently. `revise_design_promotion` appends an attributed, rationale-bearing
-  repair revision; `design_materialization_history` preserves every prior plan.
-  This prevents the ADR-0028 regression where deterministic fallback created an
-  unblocked duplicate of the existing release-gated pilot under the wrong goal.
-  Keeping optional planning out of the acceptance/materialization writes means it
-  never serializes unrelated writers or creates work before review. `reject_design` is
+  design becomes `accepted` with promotion state `pending`. The separate,
+  **idempotent** `promote_design(id, objective_goal_id)` then materialises the work
+  in one step: it decomposes the reviewed design into claimable tasks under the
+  chosen objective (model-assisted, deterministic single-task fallback), registers
+  any mandated constraints/invariants into the constitution, and records durable
+  design→goal / design→task provenance links — so a retry returns the same plan
+  instead of duplicating it, and a failed decomposition leaves promotion `pending`
+  without undoing the acceptance. Keeping the optional model call out of the
+  acceptance write means it never serializes unrelated writers. `reject_design` is
   durable and auditable (archive-not-delete). No agent may decide its own design
   (human-in-the-loop). `reconcile_designs` idempotently imports structured
   Proposed/Accepted/Rejected ADR metadata without a model and without creating
   goals or tasks; existing human decisions and promotion state always win.
   `design_board` now returns proposed decisions plus accepted designs awaiting
-  promotion or retry. New tools include `plan_design_promotion`,
-  `revise_design_promotion`, and `design_materialization_history`. The VS Code
+  promotion or retry. New tools: `register_design`, `reconcile_designs`,
+  `design_board`, `accept_design`, `promote_design`, `reject_design`. The VS Code
   sidebar now ships the separate Design Board and workspace ADR sensor: it syncs
   structured ADR metadata on activation/change or manual command, exposes
-  attributed accept/reject, concrete plan review, existing-task selection,
-  multi-objective creation, and repair/history for materialized designs.
+  attributed accept/reject and objective selection for promotion, keeps failed
+  promotion pending/retryable, and renders persisted objective/task/constraint
+  provenance for materialized designs.
 
 ### Changed
-- **Fleet integration now preserves one canonical history (ADR-0032).** Repository
-  work uses one primary checkout, one shared `fleet/<goal>` branch, and one
-  designated publisher. `canonical-push.mjs` pushes only that branch's exact
-  `HEAD` and refuses protected branches, linked worktrees, staged index state,
-  and remote divergence; routine cherry-picking and side-lineage publication are
-  forbidden. Cargo hooks validate committed bytes through a temporary Git index
-  rather than registering a throwaway worktree.
 - **The install and usage on-ramp is action-first and easier to follow.** The
   Quickstart now leads with a three-step download-register-restart happy path,
   adds a "confirm it's connected" tool-list check with the one common failure
@@ -210,58 +248,8 @@ to [Semantic Versioning](https://semver.org/).
   value. The README download section leads with the install command and links to
   the walkthrough, and its `.vscode/mcp.json` example now sets `MINDLEAK_AGENT`
   so agent attribution works out of the box.
-- **New scenario-driven walkthrough and a visual guide to the VS Code extension.**
-  `docs/WALKTHROUGH.md` shows a normal day in four end-to-end scenarios
-  (look-before-you-leap, ADR-to-tasks, two agents splitting a goal without
-  clobbering, and passive edit/test/commit capture), giving both the agent tool
-  calls and the equivalent extension buttons. The extension README now has a
-  Guided tour that walks the Context Graph, Intent Board, Telemetry, and Design
-  Board panels with screenshot slots (capture checklist in
-  `editors/vscode/media/screenshots/`), and clarifies that claiming is an agent
-  action the board reflects rather than a button. The README index links both.
 
 ### Fixed
-- **Autonomous prune no longer fails spuriously under concurrent writes.** Every
-  graph write opened a deferred transaction (`BEGIN DEFERRED`), which takes the
-  WAL write lock lazily on its first write. When the autonomous maintenance
-  worker (which holds its own database connection) pruned while a foreground
-  write was in flight, that lazy lock upgrade returned a SQLite lock error that
-  `busy_timeout` does not retry — surfacing as recurring `autonomous_prune`
-  `sqlite` errors in telemetry. Writes now take the lock up front (`BEGIN
-  IMMEDIATE`) via a shared `write_txn` helper, so `busy_timeout` serialises
-  concurrent writers instead of one failing.
-- **The Context Graph visualizer stays responsive on large graphs.** A seeded
-  snapshot (the neighbourhood of the active file) expanded the full depth-2 reach
-  with no cap, so expanding into a hub node — an agent that has observed
-  thousands of nodes — dragged the whole neighbourhood into Cytoscape and
-  exhausted memory. The snapshot now returns a bounded, relevance-first
-  neighbourhood: best-first expansion by decay-weighted score, following only
-  each node's strongest few edges, so the rendered graph is always small (~150
-  nodes at most) and shows the most active context regardless of how large the
-  graph grows.
-- **Build and VCS output is no longer ingested into the graph.** A passive save
-  sensor or a build/git command's changed-files could pull `.git/`, `target/`,
-  `node_modules/`, `dist/`, `coverage/`, and other regenerated or throwaway paths
-  into the structural tier, leaving stale nodes for files that constantly vanish
-  (a live graph had hundreds of such stale symbols/artifacts). These paths are now
-  rejected on the deterministic write path, so only real source enters the graph.
-- **Autonomous prune now actually runs, so the graph self-cleans during use.**
-  The idle maintenance worker gated the deterministic prune behind the same
-  request-idle window as token-heavy consolidation, but the extension polls the
-  server every few seconds, so that window was never reached and the autonomous
-  prune never fired (a live graph showed thousands of edges and zero
-  `autonomous_prune` events). Prune now runs on its own wall-clock cadence
-  (`MINDLEAK_PRUNE_INTERVAL_SECS`, default 5 minutes) that is independent of
-  request activity, so UI polling can no longer starve it. Consolidation keeps its
-  idle gate.
-- **Spent executions no longer linger ~9 days before they can be pruned.** The
-  agent attribution edge to a transient execution was created at the generic
-  `observed` half-life (48h), so it outlived the execution's own 24h `modified`
-  evidence and pinned the execution in the graph long after it was spent. Agent
-  attribution to an execution now decays at the execution tier (24h) so the
-  attribution and evidence fade together and prune reaps the orphaned execution
-  promptly (roughly halving execution retention). Attribution to durable nodes
-  (artifacts, symbols, intents) is unchanged, and `evidence_for` is unaffected.
 - **Extension coverage no longer false-fails the 80% gate on Windows.** The V8
   provider's default `all` baseline walk resolved each included file under the
   OS's uppercase drive letter while recording executed coverage under the
@@ -276,6 +264,13 @@ to [Semantic Versioning](https://semver.org/).
   timeout (default 30s) so a live-but-silent server surfaces an error rather than a
   stuck command; and `stdin` write failures are guarded and logged instead of
   raising an unhandled stream error.
+- **The VS Code Intent Board now allocates work instead of merely displaying
+  ownership.** Open and expired-claim rows expose claim-for-me and explicit-agent
+  allocation with bounded leases; live claims expose owner-explicit renew and
+  release actions. Rows show claim windows and live/reclaimable state, and **Next
+  Claimable Task** reveals Lodestar's scheduler choice without auto-claiming it.
+  CAS loss, stale owner, expiry, and parked ownership remain visible failures —
+  the portal does not invent a parallel assignment store or false lock.
 - **Intent Board cleanup now handles stale live work, not only completed rows
   (ADR-0019).** Eligible open, in-review, blocked, and expired-claim rows expose
   a confirmed **Retire Task** action that calls `abandon_task`; the task and its
@@ -346,21 +341,21 @@ to [Semantic Versioning](https://semver.org/).
   abandoned work stays durable but drops out of a lean coordination view. Pairs
   with `abandon_task` to keep the board uncluttered without decaying intent
   (ADR-0004: the Intent Plane never expires tasks).
-- **Git hooks are scoped and committed-snapshot aware to stop concurrent-agent poisoning.**
+- **Git hooks are scoped and isolation-aware to stop concurrent-agent poisoning.**
   The cargo fmt/clippy/test pre-commit and pre-push hooks now run only for the
   crate packages a change touches, and — on push, or when a foreign untracked
-  file sits in an affected crate — validate a materialized tree through a
-  temporary Git index rather than the shared dirty tree. An unrelated agent's broken crate or
+  file sits in an affected crate — validate against a throwaway worktree snapshot
+  rather than the shared dirty tree. An unrelated agent's broken crate or
   uncommitted WIP can no longer fail your commit or push (portable runner
-  `scripts/cargo-precommit.mjs`; ADR-0032).
-- **Two helper scripts for safe concurrent git in one checkout (ADR-0032).**
+  `scripts/cargo-precommit.mjs`; ADR-0018).
+- **Two helper scripts for safe concurrent git in a shared tree (ADR-0018).**
   `scripts/scoped-commit.mjs` stages and commits only the paths you declare
   (pathspec; never `git add -A`), so another agent's staged work is never swept
-  into your commit; `scripts/canonical-push.mjs` publishes only the current fleet
-  branch's exact `HEAD` from the primary checkout after fetching and proving the
-  remote branch is its ancestor. Vitest integration cases cover scoped-index
-  preservation, committed-snapshot validation, divergence refusal, and exact-HEAD
-  publication in disposable repositories.
+  into your commit; `scripts/isolated-push.mjs` pushes a commit through the hooks
+  from a throwaway worktree so another agent's broken WIP cannot poison your
+  pre-push validation. A collision harness (`scripts/collision-harness.mjs`,
+  `make collision-harness`) proves the no-clobber, independent-commit, and
+  honest-merge-conflict properties in a throwaway sandbox repo.
 
 ### Added
 - **Constitutional governance now has a holistic adoption design (ADR-0026).**
@@ -641,5 +636,8 @@ to [Semantic Versioning](https://semver.org/).
   pruned after historical evidence expires, structural ownership conflicts fail
   atomically, and legacy migrations serialize concurrent openers.
 
-[Unreleased]: https://github.com/monk-eee/MindLeak/compare/v0.1.0-preview.1...HEAD
+[Unreleased]: https://github.com/monk-eee/MindLeak/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/monk-eee/MindLeak/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/monk-eee/MindLeak/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/monk-eee/MindLeak/compare/v0.1.0-preview.1...v0.1.0
 [0.1.0-preview.1]: https://github.com/monk-eee/MindLeak/releases/tag/v0.1.0-preview.1

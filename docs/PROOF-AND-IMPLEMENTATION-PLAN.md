@@ -314,7 +314,7 @@ mutation signal rather than reinterpreting focus.
 |---|---|---|---|
 | `MindLeak::evidence_for(agent, since, until)` | Build a provenance-bearing bundle from attributed episodic edges in the claim window | Existing traversal/query methods | High |
 | `check_conformance(evidence, task_id)` | Detect ungoverned drift, task/goal mismatch, missing evidence, and semantic contradiction | Existing evaluator, rewritten | High |
-| `complete_task(task_id, agent, evidence)` | Guard ownership, evaluate evidence, then transition based on verdict | Existing completion guard | High |
+| `complete_task(task_id, evidence, check, session_id)` | Resolve registered ownership, consume checked evidence, then transition based on verdict | Existing completion guard | High |
 | `record_conformance(...)` | Persist evidence/provenance with verdict | Existing audit insert | Medium |
 
 ### Verdict rules

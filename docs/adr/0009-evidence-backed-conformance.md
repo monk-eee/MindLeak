@@ -68,13 +68,14 @@ Lodestar records `claim_started_at` when a task is first won or reclaimed; lease
 renewal does not move that boundary. Completion accepts evidence only when:
 
 - `task_id` identifies the task being completed;
-- `agent_id` matches the current owner and the configured agent identity;
+- `agent_id` matches the current owner and the registered session identity;
 - the claim is still live; and
 - the evidence interval is contained within the current claim interval.
 
-`LODESTAR_AGENT` is the server-side default identity. If a caller also supplies
-an agent id, a mismatch is rejected rather than silently attributed. A new
-owner or reclaimed lease starts a new evidence window.
+Per ADR-0030, `LODESTAR_AGENT` is only a readable base label. The server derives
+and injects identity from a token previously registered with `open_session`; a
+caller cannot select the owner per call. A new owner, guarded legacy transfer,
+or reclaimed lease starts a new evidence window.
 
 ### Minimal deterministic code policy
 
@@ -105,7 +106,7 @@ accepted.
 
 `check_conformance(evidence, task_id?)` performs conformance and persists one
 authoritative audit result. Per ADR-0025,
-`complete_task(task_id, agent_id, evidence, check)` verifies and consumes that
+`complete_task(task_id, evidence, check, session_id)` verifies and consumes that
 exact result without invoking the semantic judge again, then rechecks the live
 owner/status and atomically applies the resulting state transition.
 

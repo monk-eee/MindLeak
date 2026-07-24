@@ -181,13 +181,16 @@ The Intent Board displays the owner, claim start, lease expiry, and whether a
 claim is live or reclaimable. Allocation remains advisory until Lodestar's atomic
 claim compare-and-swap succeeds.
 
-- **Claim Task for Me** uses `mindleak.agentId`.
-- **Allocate Task…** prompts for another stable agent identity.
+- **Claim Task for Me** always uses the registered activation session; callers
+  cannot select or impersonate another owner.
 - Lease choices are bounded from five minutes through eight hours.
-- **Renew Task Lease** and **Release Task** always send the displayed owner, so
-  owner-guard failures remain visible rather than silently changing work.
+- **Renew Task Lease** and **Release Task** are bound by the server to the
+  registered activation session, so owner-guard failures remain visible rather
+  than silently changing work.
 - Expired claims are reclaimable and open a fresh evidence window; parked tasks
   (`needs_input` / `paused`) remain owned and cannot be allocated.
+- **Recover Legacy Claim** is offered only for expired pre-session owners and
+  records the prior owner/window plus the attributed recovery reason.
 - **Next Claimable Task** highlights the next row without claiming it.
 
 ## Develop

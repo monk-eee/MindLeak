@@ -98,6 +98,11 @@ impl LodestarStore {
                     lease_expires_at = ?3, parked_at = NULL, updated_at = ?4
               WHERE id = ?1
                                 AND blocked_by IS NULL
+                                AND NOT (
+                                        owner IS NOT NULL
+                                        AND owner NOT LIKE 'session:v1:%'
+                                        AND ?2 LIKE 'session:v1:%'
+                                )
                 AND (status = 'open'
                      OR (status = 'claimed' AND lease_expires_at < ?4)
                      OR (status = 'claimed' AND owner = ?2)

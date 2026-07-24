@@ -9,6 +9,7 @@ mod tools;
 use std::path::{Path, PathBuf};
 
 use mindleak_core::MindLeak;
+use mindleak_session::SessionRegistry;
 
 fn main() -> anyhow::Result<()> {
     mindleak_core::telemetry::init_tracing();
@@ -26,27 +27,19 @@ fn main() -> anyhow::Result<()> {
         "resolved decay policy"
     );
     let maintenance_config = maintenance::MaintenanceConfig::from_environment();
-    let agent = resolve_agent_identity(
-        std::env::var("MINDLEAK_AGENT_ID").ok(),
-        std::env::var("MINDLEAK_AGENT").ok(),
-        &process_nonce(),
-    );
+    let base = std::env::var("MINDLEAK_AGENT").unwrap_or_else(|_| "agent".to_string());
+    let sessions = SessionRegistry::new(&base).map_err(anyhow::Error::msg)?;
     let maintenance = maintenance::MaintenanceRuntime::start(
         maintenance_config,
         db_path.clone(),
-        agent.clone(),
         decay_policy.clone(),
         working_set_size,
     )?;
     let engine = MindLeak::open(&db_path)?
         .with_decay_policy(decay_policy)
         .with_working_set_size(working_set_size)
-        .with_consolidation_min_interval(maintenance_config.min_interval.as_secs())
-        .with_agent(agent.clone());
-    match &agent {
-        Some(a) => tracing::info!(%db_path, agent = %a, "mindleak-mcp ready"),
-        None => tracing::info!(%db_path, "mindleak-mcp ready"),
-    }
+        .with_consolidation_min_interval(maintenance_config.min_interval.as_secs());
+    tracing::info!(%db_path, "mindleak-mcp ready");
     // Non-blocking startup health probe for the optional semantic-recall backend
     // (ADR-0008): a detached thread reports whether recall is reachable, so an
     // operator sees `enabled`/`disabled` every run instead of a mystery 404 later.
@@ -66,7 +59,7 @@ fn main() -> anyhow::Result<()> {
             ),
         }
     });
-    let result = server::run(engine, maintenance.activity());
+    let result = server::run(engine, sessions, maintenance.activity());
     maintenance.shutdown();
     result
 }
@@ -108,82 +101,9 @@ fn resolve_db_path(workspace: &Path) -> String {
     base.to_string_lossy().into_owned()
 }
 
-/// Resolve this process's agent identity (ADR-0030). An explicit `MINDLEAK_AGENT_ID`
-/// pin is used verbatim; otherwise a configured `MINDLEAK_AGENT` base label is made
-/// unique per process as `<base>-<nonce>`, so concurrent agents never alias onto one
-/// id; with neither set, attribution stays off. Pure over its inputs so resolution
-/// is unit-tested - `main` injects the real env values and a process-unique nonce.
-fn resolve_agent_identity(
-    pin: Option<String>,
-    base: Option<String>,
-    nonce: &str,
-) -> Option<String> {
-    let cleaned = |value: Option<String>| {
-        value
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-    };
-    if let Some(id) = cleaned(pin) {
-        return Some(id);
-    }
-    cleaned(base).map(|b| format!("{b}-{nonce}"))
-}
-
-/// A short, process-unique nonce (8 hex) from the pid and start time - enough to
-/// tell concurrent sessions apart without a crypto dependency (ADR-0030).
-fn process_nonce() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    let mixed = nanos ^ (std::process::id() as u64).rotate_left(32);
-    format!("{:08x}", mixed as u32)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn agent_pin_is_used_verbatim() {
-        assert_eq!(
-            resolve_agent_identity(Some("fixed-ci".into()), Some("copilot".into()), "abcd1234"),
-            Some("fixed-ci".into())
-        );
-    }
-
-    #[test]
-    fn agent_base_is_made_unique_per_process() {
-        assert_eq!(
-            resolve_agent_identity(None, Some("copilot".into()), "abcd1234"),
-            Some("copilot-abcd1234".into())
-        );
-    }
-
-    #[test]
-    fn distinct_nonces_yield_distinct_agent_ids() {
-        assert_ne!(
-            resolve_agent_identity(None, Some("copilot".into()), "aaaa1111"),
-            resolve_agent_identity(None, Some("copilot".into()), "bbbb2222")
-        );
-    }
-
-    #[test]
-    fn agent_off_when_neither_pin_nor_base_set() {
-        assert_eq!(resolve_agent_identity(None, None, "abcd1234"), None);
-        assert_eq!(
-            resolve_agent_identity(Some("  ".into()), Some("  ".into()), "abcd1234"),
-            None
-        );
-    }
-
-    #[test]
-    fn process_nonce_is_eight_hex_chars() {
-        let nonce = process_nonce();
-        assert_eq!(nonce.len(), 8);
-        assert!(nonce.chars().all(|c| c.is_ascii_hexdigit()));
-    }
 
     #[test]
     fn workspace_defaults_to_process_directory() {

@@ -162,7 +162,7 @@ Live coordination state. Not versioned; churny.
 | `parent_task_id` | optional — decomposition tree |
 | `title` / `acceptance` | what "done" means |
 | `status` | `open` · `claimed` · `in_review` · `done` · `blocked` · `abandoned` · `needs_input`† · `paused`† |
-| `owner` | agent id holding the claim (from `MINDLEAK_AGENT` / `LODESTAR_AGENT`) |
+| `owner` | stable opaque id derived from the registered client session (ADR-0030) |
 | `claim_started_at` | start of the current owner's evidence window; lease renewal does not move it |
 | `lease_expires_at` | unix seconds; a claim past this is reclaimable |
 | `blocked_by` | optional task id |
@@ -390,6 +390,12 @@ Both have deterministic fallbacks; the plane is fully functional with no model.
 
 Newline-delimited JSON-RPC 2.0 over stdio, exactly like `mindleak-mcp`.
 
+**Session identity (ADR-0030).** The client first calls
+`open_session(session_id)` with one 128-bit lowercase-hex token on both planes.
+Every identity-bearing call then includes that registered `session_id`; server
+dispatch resolves and injects the stable `session:v1:<base>:<fingerprint>` owner.
+Caller-selected `agent`/`agent_id` values are not part of the public schema.
+
 **Constitution**
 
 1. `define_goal(title, statement, kind, parent?)` → `goal_id`.
@@ -407,18 +413,18 @@ Newline-delimited JSON-RPC 2.0 over stdio, exactly like `mindleak-mcp`.
 7. `decompose_goal(goal_id)` → candidate tasks (SLM-assisted; deterministic stub
    otherwise). Objective goals only — constraints and invariants are enforced
    continuously by conformance, not broken into completable tasks.
-8. `next_task(agent_id, capabilities?)` → a suggested unclaimed, unblocked task.
-9. `claim_task(task_id, agent_id, lease_secs, paths?, symbols?)` → `{ won }` (§6);
+8. `next_task(capabilities?)` → a suggested unclaimed, unblocked task.
+9. `claim_task(task_id, lease_secs, paths?, symbols?, session_id)` → `{ won }` (§6);
   path globs and opaque symbol ids are stored atomically only for the winning
   claim.
 10. `task_scope(task_id)` → the advisory declaration; `check_overlap(paths[],
   symbols[], exclude_task_id?)` → live claim intersections for concrete paths
   and exact symbol ids. Combine with MindLeak's same-named footprint tool.
-11. `renew_lease(task_id, agent_id, lease_secs)` → heartbeat.
-12. `complete_task(task_id, agent_id, evidence, check)` → `blocked` /
+11. `renew_lease(task_id, lease_secs, session_id)` → heartbeat.
+12. `complete_task(task_id, evidence, check, session_id)` → `blocked` /
   `in_review` / `done`; consumes the exact authoritative check and rejects it
   if evidence or relevant intent state changed.
-13. `release_task(task_id, agent_id)` / `block_task(task_id, reason, blocked_by?)` /
+13. `release_task(task_id, session_id)` / `block_task(task_id, reason, blocked_by?)` /
   `reopen_task(task_id)` → return a stranded task (`in_review`, or a manual
   hold with no live predecessor gate) to claimable `open`; `abandon_task`
   durably retires open/review/blocked or expired-claim work without deleting
@@ -430,6 +436,9 @@ Newline-delimited JSON-RPC 2.0 over stdio, exactly like `mindleak-mcp`.
   work is under review (read from the task's conformance evidence), so a
   docs-only task in an objective's chain has a human-in-the-loop path to
   terminal `done` without weakening conformance.
+  `recover_claim(task_id, expected_owner, reason, lease_secs, session_id)` is the
+  only transition from an expired compatible legacy owner into a registered
+  session; `claim_transfer_history(task_id)` returns its append-only audit.
 14. `board(include_terminal=true)` → coordination snapshot: every task, owner,
     status, lease, and advisory scope — so humans and agents see the parallel state at a glance.
     `include_terminal=false` returns only the live/actionable set (open, claimed,

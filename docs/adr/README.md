@@ -37,7 +37,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0027](0027-extension-led-progressive-disclosure.md) | Extension-led progressive disclosure over MCP primitives | Accepted |
 | [0028](0028-external-adoption-evidence-gate.md) | External adoption evidence before broad product claims | Accepted |
 | [0029](0029-proactive-constitutional-advice.md) | Proactive constitutional advice (ask-before-act) | Proposed |
-| [0030](0030-discrete-per-agent-identity.md) | Discrete per-agent identity for concurrent coordination | Proposed |
+| [0030](0030-discrete-per-agent-identity.md) | Discrete per-agent identity for concurrent coordination | Accepted |
 | [0031](0031-exportable-conformance-evidence.md) | Exportable conformance evidence, Evidence Board, and CI gate | Proposed |
 | [0032](0032-single-checkout-fleet-integration.md) | Single-checkout, single-publisher fleet integration | Accepted |
 | [0033](0033-copilot-cli-registration.md) | First-class GitHub Copilot CLI registration for both planes | Proposed |

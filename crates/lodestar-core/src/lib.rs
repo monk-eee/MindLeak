@@ -31,7 +31,7 @@ pub use model::{
     GoalStatus, GoverningClause, Knowledge, SignalPromotion, Task, TaskQa, TaskScope, TaskStatus,
     Verdict,
 };
-pub use store::{LodestarStore, ResetOutcome, Stats};
+pub use store::{ClaimTransfer, LodestarStore, ResetOutcome, Stats};
 
 use llm::LlmClient;
 /// Current unix time in whole seconds.
@@ -46,7 +46,6 @@ pub fn now_unix() -> i64 {
 pub struct Lodestar {
     store: LodestarStore,
     llm: LlmClient,
-    agent: Option<String>,
     #[cfg(test)]
     test_judge: Option<Box<TestJudge>>,
 }
@@ -59,7 +58,6 @@ impl Lodestar {
         Ok(Lodestar {
             store: LodestarStore::new(db::open(path)?),
             llm: LlmClient::default(),
-            agent: None,
             #[cfg(test)]
             test_judge: None,
         })
@@ -69,7 +67,6 @@ impl Lodestar {
         Ok(Lodestar {
             store: LodestarStore::new(db::open_in_memory()?),
             llm: LlmClient::default(),
-            agent: None,
             #[cfg(test)]
             test_judge: None,
         })
@@ -99,11 +96,6 @@ impl Lodestar {
         self.llm.judge(constraint, summary)
     }
 
-    pub fn with_agent(mut self, agent: Option<String>) -> Self {
-        self.agent = agent.filter(|value| !value.trim().is_empty());
-        self
-    }
-
     pub fn store(&self) -> &LodestarStore {
         &self.store
     }
@@ -111,22 +103,11 @@ impl Lodestar {
     fn resolve_agent<'a>(&'a self, supplied: &'a str) -> Result<&'a str> {
         let supplied = supplied.trim();
         if supplied.is_empty() {
-            return self.agent.as_deref().ok_or_else(|| {
-                LodestarError::Invalid(
-                    "agent is required when LODESTAR_AGENT is not configured".to_string(),
-                )
-            });
+            return Err(LodestarError::Invalid(
+                "a registered session agent is required".to_string(),
+            ));
         }
-        if let Some(configured) = self.agent.as_deref() {
-            if configured != supplied {
-                return Err(LodestarError::Invalid(format!(
-                    "agent {supplied} does not match configured identity {configured}"
-                )));
-            }
-            Ok(configured)
-        } else {
-            Ok(supplied)
-        }
+        Ok(supplied)
     }
 
     pub fn stats(&self) -> Result<Stats> {

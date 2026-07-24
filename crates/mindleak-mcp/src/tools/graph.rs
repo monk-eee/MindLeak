@@ -36,8 +36,7 @@ pub(super) fn definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "paths": { "type": "array", "items": { "type": "string" }, "default": [] },
-                    "symbols": { "type": "array", "items": { "type": "string" }, "default": [] },
-                    "exclude_agent": { "type": "string", "description": "Optional current agent id to omit from results." }
+                    "symbols": { "type": "array", "items": { "type": "string" }, "default": [] }
                 }
             }
         }),

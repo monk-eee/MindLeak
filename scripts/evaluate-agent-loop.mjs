@@ -161,12 +161,13 @@ for (const item of schedule) {
 
   let context = "";
   let mcpConfig;
+  const sessionId = crypto.randomBytes(16).toString("hex");
   if (item.arm === "flat") {
     context = flatContext;
   }
   if (item.arm.includes("mindleak")) {
     const graphDb = path.join(directory, "graph.db");
-    await seedMindLeak(directory, graphDb);
+    await seedMindLeak(directory, graphDb, sessionId);
     mcpConfig = {
       mcpServers: {
         "mindleak-eval": {
@@ -185,7 +186,7 @@ for (const item of schedule) {
   }
   if (item.arm === "mindleak+lodestar") {
     const lodestarDb = path.join(directory, "lodestar.db");
-    await seedLodestar(directory, lodestarDb);
+    await seedLodestar(directory, lodestarDb, sessionId);
     mcpConfig.mcpServers["lodestar-eval"] = {
       command: lodestarExe,
       args: [],
@@ -362,12 +363,17 @@ if (!gate.passed) {
   process.exitCode = 1;
 }
 
-async function seedMindLeak(directory, database) {
-  const server = await startMcp(mindleakExe, directory, {
-    MINDLEAK_DB: database,
-    MINDLEAK_AGENT: "eval-agent",
-    MINDLEAK_LOG: "off",
-  });
+async function seedMindLeak(directory, database, sessionId) {
+  const server = await startMcp(
+    mindleakExe,
+    directory,
+    {
+      MINDLEAK_DB: database,
+      MINDLEAK_AGENT: "eval-agent",
+      MINDLEAK_LOG: "off",
+    },
+    sessionId,
+  );
   try {
     for (const file of [
       "src/auth.js",
@@ -407,12 +413,17 @@ async function seedMindLeak(directory, database) {
   }
 }
 
-async function seedLodestar(directory, database) {
-  const server = await startMcp(lodestarExe, directory, {
-    LODESTAR_DB: database,
-    LODESTAR_AGENT: "eval-agent",
-    LODESTAR_LLM_URL: "http://127.0.0.1:1/v1",
-  });
+async function seedLodestar(directory, database, sessionId) {
+  const server = await startMcp(
+    lodestarExe,
+    directory,
+    {
+      LODESTAR_DB: database,
+      LODESTAR_AGENT: "eval-agent",
+      LODESTAR_LLM_URL: "http://127.0.0.1:1/v1",
+    },
+    sessionId,
+  );
   try {
     const goalResult = await server.tool("define_goal", {
       kind: "invariant",
@@ -447,7 +458,6 @@ async function seedLodestar(directory, database) {
       );
     await server.tool("claim_task", {
       task_id: taskId,
-      agent: "eval-agent",
       lease_secs: 3600,
     });
   } finally {
@@ -455,7 +465,7 @@ async function seedLodestar(directory, database) {
   }
 }
 
-function startMcp(command, cwd, extraEnv) {
+function startMcp(command, cwd, extraEnv, sessionId) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, [], {
       cwd,
@@ -492,7 +502,10 @@ function startMcp(command, cwd, extraEnv) {
       });
     const api = {
       async tool(name, args) {
-        const response = await request("tools/call", { name, arguments: args });
+        const response = await request("tools/call", {
+          name,
+          arguments: { ...args, session_id: sessionId },
+        });
         if (response?.isError)
           throw new Error(response.content?.[0]?.text ?? `${name} failed`);
         return JSON.parse(response.content?.[0]?.text ?? "null");
@@ -510,7 +523,10 @@ function startMcp(command, cwd, extraEnv) {
       capabilities: {},
       clientInfo: { name: "mindleak-agent-eval", version: "1" },
     })
-      .then(() => resolve(api))
+      .then(async () => {
+        await api.tool("open_session", {});
+        resolve(api);
+      })
       .catch((error) =>
         reject(new Error(`${error.message}\n${stderr.join("")}`)),
       );

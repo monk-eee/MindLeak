@@ -114,10 +114,11 @@ decompose_goal(goal_id)        # produces claimable tasks
 Each agent runs its own loop against the one shared `.lodestar/spec.db`:
 
 ```text
+open_session(session_id)                 # one client-minted token, shared with MindLeak
 next_task()                          # what should I pick up?
-claim_task(task_id, agent = "agent-a")   # compare-and-swap — no two agents win the same task
-renew_lease(task_id, agent = "agent-a")  # keep the claim alive while working
-complete_task(task_id, agent = "agent-a", evidence)  # owner-guarded; runs conformance
+claim_task(task_id, session_id)       # compare-and-swap — no two sessions win the same task
+renew_lease(task_id, session_id)      # keep the claim alive while working
+complete_task(task_id, evidence, check, session_id) # owner-guarded checked completion
 ```
 
 `claim_task` is atomic: if `agent-b` races for the same task, exactly one wins.

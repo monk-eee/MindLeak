@@ -180,13 +180,14 @@ Schema: [`crates/mindleak-core/src/schema.sql`](../crates/mindleak-core/src/sche
 `ingest_file`, `boost_entity`, `graph_snapshot`, `prune_graph`, `graph_stats`,
 `consolidate_session`, `list_agents`, `working_set`.
 
-**Working memory (ADR-0017 phase 1):** `working_set(limit?)` requires the
-server's `MINDLEAK_AGENT` and returns that agent's highest active `observed`
-targets, ranked by effective attention and hard-capped at the startup-resolved
-`MINDLEAK_WORKING_SET_SIZE` (default 7, bounded 1-32). The view is derived, never
-stored. Observation count/span are exposed, and sustained active observation
-contributes rehearsal signal only while the target remains inside that agent's
-top-K. Autonomous idle consolidation is phase 2 and is not implied by this tool.
+**Working memory (ADR-0017 phase 1):** `working_set(limit?, session_id)` requires
+a token previously registered by `open_session` and returns that session's
+highest active `observed` targets, ranked by effective attention and hard-capped
+at the startup-resolved `MINDLEAK_WORKING_SET_SIZE` (default 7, bounded 1-32).
+The view is derived, never stored. Observation count/span are exposed, and
+sustained active observation contributes rehearsal signal only while the target
+remains inside that session's top-K. Autonomous idle consolidation is phase 2
+and is not implied by this tool.
 
 `prune_graph` returns deletion counts plus `signal_candidates`; deterministic
 maintenance never invokes an LLM. `consolidate_signal` uses the optional local
@@ -349,10 +350,11 @@ read/write, and deterministic ids mean concurrent ingests of the same file/run
 **reinforce** the same nodes instead of clobbering them. Attribution is layered
 on *without* breaking that merge.
 
-- **Set `MINDLEAK_AGENT=<id>`** when launching the server (per agent / client).
-  When set, every ingest and focus also records a decay-weighted
-  `agent:<id> --observed--> <node>` edge. Unset ⇒ no attribution (byte-identical
-  to before — no `agent` nodes, no `observed` edges).
+- **Register the client session.** `MINDLEAK_AGENT` is a base label only. The
+  client calls `open_session` with one opaque 128-bit token and includes that
+  token on identity-bearing operations; every ingest and focus then records a
+  decay-weighted `agent:session:v1:<base>:<fingerprint> --observed--> <node>`
+  edge. Unknown tokens and arbitrary caller-selected ids are rejected.
 - **Attention decays.** Because an observation is an *edge*, an agent's recent
   focus ranks high and fades over days, exactly like every other signal — the
   graph forgets who looked at what, on the same half-life curve.

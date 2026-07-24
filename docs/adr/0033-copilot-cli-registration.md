@@ -5,7 +5,7 @@
 - Deciders: MindLeak maintainers
 - Related: [ADR-0016](0016-platform-packaging-and-registration.md) (packaging and
   workspace registration — this extends it), [ADR-0030](0030-discrete-per-agent-identity.md)
-  (per-process identity), [ADR-0027](0027-extension-led-progressive-disclosure.md)
+   (session-scoped identity), [ADR-0027](0027-extension-led-progressive-disclosure.md)
   (CLI is a first-class client), [ADR-0013](0013-local-data-lifecycle.md) (local
   stores)
 
@@ -63,9 +63,10 @@ under the wrong owner.
    guarantees as ADR-0016: parse JSON(C) tolerantly, keep unrelated servers and
    comments, write through a temporary sibling, and rename only after both native
    servers pass an MCP initialize/tools-list smoke test.
-5. **Identity and transport invariants are unchanged.** Per-process identity
-   (ADR-0030) applies: the CLI inherits the configured base `MINDLEAK_AGENT` /
-   `LODESTAR_AGENT` and derives a `copilot-<nonce>` per process. The servers stay
+5. **Identity and transport invariants are unchanged.** Session identity
+   (ADR-0030) applies: the CLI inherits matching `MINDLEAK_AGENT` /
+   `LODESTAR_AGENT` base labels, mints one opaque token, calls `open_session` on
+   both planes, and reuses it on identity-bearing calls. The servers stay
    stdio-only and unauthenticated (SPEC §8); registering the CLI adds no network
    listener.
 

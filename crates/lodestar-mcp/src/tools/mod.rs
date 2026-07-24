@@ -11,12 +11,14 @@ mod knowledge;
 mod lifecycle;
 
 use lodestar_core::Lodestar;
+use mindleak_session::SessionRegistry;
 use serde::Serialize;
 use serde_json::{json, Value};
 
 /// The advertised tool list (`tools/list`).
 pub fn list() -> Vec<Value> {
-    let mut tools = constitution::definitions();
+    let mut tools = vec![session_definition()];
+    tools.extend(constitution::definitions());
     tools.extend(executive::definitions());
     tools.extend(conformance::definitions());
     tools.extend(knowledge::definitions());
@@ -24,13 +26,47 @@ pub fn list() -> Vec<Value> {
     tools.extend(design::definitions());
     tools.extend(design_materialization::definitions());
     tools.extend(evidence::definitions());
-    tools
+    tools.into_iter().map(apply_session_contract).collect()
+}
+
+pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value, String> {
+    let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+    let mut bound = params.clone();
+    let args = bound
+        .get_mut("arguments")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "tool arguments must be an object".to_string())?;
+    if name == "open_session" {
+        let token = args
+            .get("session_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "missing required string arg: session_id".to_string())?;
+        let identity = sessions.open_session(token)?;
+        args.insert("resolved_agent".to_string(), json!(identity.agent_id));
+        return Ok(bound);
+    }
+    if requires_session(name) {
+        let token = args
+            .get("session_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "missing required string arg: session_id".to_string())?;
+        let identity = sessions.resolve(token)?;
+        args.insert("agent".to_string(), json!(identity.agent_id));
+        if let Some(evidence) = args.get_mut("evidence").and_then(Value::as_object_mut) {
+            evidence.insert("agent_id".to_string(), json!(identity.agent_id));
+        }
+    }
+    Ok(bound)
 }
 
 /// Dispatch a `tools/call`. Returns the MCP `content` object or an error string.
 pub fn call(engine: &Lodestar, params: &Value) -> Result<Value, String> {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
+
+    if name == "open_session" {
+        return ok(&json!({ "agent_id": req_str(&args, "resolved_agent")? }));
+    }
 
     if let Some(result) = constitution::dispatch(engine, name, &args) {
         return result;
@@ -59,6 +95,71 @@ pub fn call(engine: &Lodestar, params: &Value) -> Result<Value, String> {
     }
 
     Err(format!("unknown tool: {name}"))
+}
+
+fn session_definition() -> Value {
+    json!({
+        "name": "open_session",
+        "description": "Register one client-minted 128-bit session id and return its stable cross-plane agent identity. Reuse the same session_id on every identity-bearing tool call and after server restarts.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": { "type": "string", "pattern": "^[0-9a-f]{32}$" }
+            },
+            "required": ["session_id"]
+        }
+    })
+}
+
+fn requires_session(name: &str) -> bool {
+    matches!(
+        name,
+        "register_design"
+            | "claim_task"
+            | "renew_lease"
+            | "complete_task"
+            | "release_task"
+            | "recover_claim"
+            | "ask_question"
+            | "pause_task"
+            | "resume_task"
+            | "check_conformance"
+    )
+}
+
+fn apply_session_contract(mut tool: Value) -> Value {
+    let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
+    if !requires_session(name) {
+        return tool;
+    }
+    if let Some(properties) = tool
+        .get_mut("inputSchema")
+        .and_then(|schema| schema.get_mut("properties"))
+        .and_then(Value::as_object_mut)
+    {
+        properties.remove("agent");
+        properties.insert(
+            "session_id".to_string(),
+            json!({
+                "type": "string",
+                "pattern": "^[0-9a-f]{32}$",
+                "description": "Session id previously registered with open_session."
+            }),
+        );
+    }
+    if let Some(required) = tool
+        .get_mut("inputSchema")
+        .and_then(|schema| schema.get_mut("required"))
+        .and_then(Value::as_array_mut)
+    {
+        required.retain(|value| value != "agent");
+        if !required.iter().any(|value| value == "session_id") {
+            required.push(json!("session_id"));
+        }
+    } else if let Some(schema) = tool.get_mut("inputSchema").and_then(Value::as_object_mut) {
+        schema.insert("required".to_string(), json!(["session_id"]));
+    }
+    tool
 }
 
 // ---- helpers ---------------------------------------------------------------
@@ -173,5 +274,17 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), total, "duplicate tool name in tools/list");
+
+        for tool in tools.iter().filter(|tool| {
+            tool["inputSchema"]["properties"]["session_id"].is_object()
+                && tool["name"] != "open_session"
+        }) {
+            assert!(tool["inputSchema"]["properties"]["agent"].is_null());
+            assert!(!tool["inputSchema"]["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "agent"));
+        }
     }
 }

@@ -54,9 +54,10 @@ consequential* material into durable gist before it is pruned.
   + decay, not a new buffer to maintain (respecting the derived-not-stored
   invariant). A read tool (`working_set`, or an argument on existing queries)
   returns it; queries may be **scoped** to the working set for tight, low-token,
-  high-signal context without the agent supplying a seed. `working_set(limit?)`
-  requires `MINDLEAK_AGENT`; an optional lower limit may reduce but never exceed
-  the configured hard cap. Results expose attention score, observation count,
+  high-signal context without the agent supplying a seed.
+  `working_set(limit?, session_id)` requires a token previously registered by
+  `open_session`; an optional lower limit may reduce but never exceed the
+  configured hard cap. Results expose attention score, observation count,
   observation span, and last observation time.
 - It also provides the signal for Part B: nodes that stay in the working set
   across a span are "rehearsed" and are prime consolidation candidates.

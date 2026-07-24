@@ -3,6 +3,7 @@
 use std::io::{self, BufRead, Write};
 
 use mindleak_core::MindLeak;
+use mindleak_session::SessionRegistry;
 use serde_json::{json, Value};
 
 use crate::maintenance::ActivitySignal;
@@ -11,7 +12,11 @@ use crate::tools;
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
 /// Run the blocking request/response loop until stdin closes.
-pub fn run(engine: MindLeak, activity: ActivitySignal) -> anyhow::Result<()> {
+pub fn run(
+    engine: MindLeak,
+    sessions: SessionRegistry,
+    activity: ActivitySignal,
+) -> anyhow::Result<()> {
     let stdin = io::stdin();
     let mut reader = stdin.lock();
     let stdout = io::stdout();
@@ -41,14 +46,14 @@ pub fn run(engine: MindLeak, activity: ActivitySignal) -> anyhow::Result<()> {
             }
         };
 
-        if let Some(response) = handle(&engine, &request) {
+        if let Some(response) = handle(&engine, &sessions, &request) {
             write_message(&mut out, &response)?;
         }
     }
     Ok(())
 }
 
-fn handle(engine: &MindLeak, req: &Value) -> Option<Value> {
+fn handle(engine: &MindLeak, sessions: &SessionRegistry, req: &Value) -> Option<Value> {
     let id = req.get("id").cloned();
     let method = req.get("method").and_then(Value::as_str).unwrap_or("");
     let params = req.get("params").cloned().unwrap_or(Value::Null);
@@ -60,7 +65,9 @@ fn handle(engine: &MindLeak, req: &Value) -> Option<Value> {
         "tools/list" => Some(result_response(id?, json!({ "tools": tools::list() }))),
         "tools/call" => {
             let id = id?;
-            let response = match tools::call(engine, &params) {
+            let response = match tools::bind_session(&params, sessions)
+                .and_then(|bound| tools::call(engine, &bound))
+            {
                 Ok(content) => content,
                 Err(msg) => tool_error(&msg),
             };
@@ -125,10 +132,14 @@ mod tests {
         MindLeak::open_in_memory().unwrap()
     }
 
+    fn sessions() -> SessionRegistry {
+        SessionRegistry::new("test").unwrap()
+    }
+
     #[test]
     fn initialize_reports_server_info() {
         let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} });
-        let resp = handle(&engine(), &req).unwrap();
+        let resp = handle(&engine(), &sessions(), &req).unwrap();
         assert_eq!(resp["result"]["serverInfo"]["name"], "mindleak-mcp");
         assert_eq!(
             resp["result"]["serverInfo"]["version"],
@@ -144,7 +155,7 @@ mod tests {
     #[test]
     fn tools_list_returns_tool_array() {
         let req = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} });
-        let resp = handle(&engine(), &req).unwrap();
+        let resp = handle(&engine(), &sessions(), &req).unwrap();
         assert!(resp["result"]["tools"].as_array().unwrap().len() >= 10);
     }
 
@@ -154,27 +165,91 @@ mod tests {
             "jsonrpc": "2.0", "id": 3, "method": "tools/call",
             "params": { "name": "graph_stats", "arguments": {} }
         });
-        let resp = handle(&engine(), &req).unwrap();
+        let resp = handle(&engine(), &sessions(), &req).unwrap();
         assert!(resp["result"]["content"][0]["text"].is_string());
     }
 
     #[test]
     fn notification_produces_no_response() {
         let req = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
-        assert!(handle(&engine(), &req).is_none());
+        assert!(handle(&engine(), &sessions(), &req).is_none());
     }
 
     #[test]
     fn ping_returns_empty_result() {
         let req = json!({ "jsonrpc": "2.0", "id": 4, "method": "ping" });
-        let resp = handle(&engine(), &req).unwrap();
+        let resp = handle(&engine(), &sessions(), &req).unwrap();
         assert_eq!(resp["result"], json!({}));
     }
 
     #[test]
     fn unknown_method_returns_method_not_found() {
         let req = json!({ "jsonrpc": "2.0", "id": 5, "method": "does_not_exist" });
-        let resp = handle(&engine(), &req).unwrap();
+        let resp = handle(&engine(), &sessions(), &req).unwrap();
         assert_eq!(resp["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn multiplexed_sessions_produce_distinct_evidence() {
+        let engine = engine();
+        let sessions = sessions();
+        for (id, token, sha, path) in [
+            (
+                10,
+                "00112233445566778899aabbccddeeff",
+                "session-a",
+                "src/a.rs",
+            ),
+            (
+                11,
+                "ffeeddccbbaa99887766554433221100",
+                "session-b",
+                "src/b.rs",
+            ),
+        ] {
+            let open = json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": { "name": "open_session", "arguments": { "session_id": token } }
+            });
+            handle(&engine, &sessions, &open).unwrap();
+            let ingest = json!({
+                "jsonrpc": "2.0", "id": id + 10, "method": "tools/call",
+                "params": { "name": "ingest_commit", "arguments": {
+                    "session_id": token,
+                    "agent": "impersonator",
+                    "message": sha,
+                    "sha": sha,
+                    "changed_files": [path],
+                    "timestamp": 100
+                }}
+            });
+            handle(&engine, &sessions, &ingest).unwrap();
+        }
+
+        let evidence = |id, token: &str| {
+            let request = json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": { "name": "evidence_for", "arguments": {
+                    "session_id": token, "started_at": 90, "ended_at": 110
+                }}
+            });
+            let response = handle(&engine, &sessions, &request).unwrap();
+            serde_json::from_str::<Value>(
+                response["result"]["content"][0]["text"].as_str().unwrap(),
+            )
+            .unwrap()
+        };
+        let first = evidence(30, "00112233445566778899aabbccddeeff");
+        let second = evidence(31, "ffeeddccbbaa99887766554433221100");
+        assert_ne!(first["agent_id"], second["agent_id"]);
+        assert_ne!(first["agent_id"], "impersonator");
+        assert!(first["agent_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("session:v1:test:"));
+        assert_eq!(first["commit_ids"], json!(["intent:session-a"]));
+        assert_eq!(second["commit_ids"], json!(["intent:session-b"]));
+        assert_eq!(first["changed_node_ids"], json!(["artifact:src/a.rs"]));
+        assert_eq!(second["changed_node_ids"], json!(["artifact:src/b.rs"]));
     }
 }

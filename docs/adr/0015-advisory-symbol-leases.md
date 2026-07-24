@@ -9,7 +9,7 @@
 ## Context
 
 Lodestar coordinates parallel agents through **task ownership**. `claim_task(id,
-agent, lease_secs)` sets `owner` + `lease_expires_at` on a *task* row (`store.rs`)
+lease_secs, session_id)` sets `owner` + `lease_expires_at` on a *task* row (`store.rs`)
 via an atomic compare-and-swap; `renew_lease` extends it; expiry frees it for
 another agent. The TTL is **already caller-supplied**, so the "heartbeat" pattern
 (short lease + periodic `renew_lease`, auto-reclaim on crash) is expressible

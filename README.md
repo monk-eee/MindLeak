@@ -40,6 +40,12 @@ A **VS Code extension** ([`editors/vscode`](editors/vscode)) adds passive editor
 shell-execution, and Git sensors, a live Cytoscape graph visualizer, and an
 intent board.
 
+> **No editor required.** The two planes are plain stdio MCP servers, so they
+> work with **any** MCP client on their own. You can run MindLeak entirely from
+> the **GitHub Copilot CLI** (or Claude Desktop / Cursor) with no VS Code at all —
+> the extension is an optional richer surface, not a requirement. See
+> [Use it from the Copilot CLI](docs/QUICKSTART.md#github-copilot-cli--no-editor-required).
+
 It is a from-scratch replacement for flat-log / vector-only agent memory. See
 [`docs/SPEC.md`](docs/SPEC.md) for the design and [`docs/`](docs/) for the
 architecture and development guides.
@@ -61,6 +67,7 @@ architecture and development guides.
 | **See a normal workflow (scenarios)** | **[docs/WALKTHROUGH.md](docs/WALKTHROUGH.md)** |
 | **Learn how to use the tools** | **[docs/USAGE.md](docs/USAGE.md)** |
 | Use the VS Code extension | [editors/vscode/README.md](editors/vscode/README.md) |
+| **Use it from the Copilot CLI (no editor)** | **[docs/QUICKSTART.md](docs/QUICKSTART.md#github-copilot-cli--no-editor-required)** |
 | Understand the design | [docs/SPEC.md](docs/SPEC.md) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Understand the *intent plane* (spec brain) | [docs/SPEC-INTENT.md](docs/SPEC-INTENT.md) · [docs/SPEC-CONSTITUTION.md](docs/SPEC-CONSTITUTION.md) · [ADR-0004](docs/adr/0004-intent-plane-spec-brain.md) |
 | Set up & run locally | [DEVELOPERS.md](DEVELOPERS.md) |
@@ -206,9 +213,35 @@ It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
 }
 ```
 
+`MINDLEAK_AGENT` is a human-readable base label, not an owner credential. The
+client must mint one 128-bit lowercase-hex token, call `open_session` once, and
+reuse that `session_id` on identity-bearing tools. The extension does this
+automatically and shares one session across both planes (ADR-0030).
+
 For the **GitHub Copilot CLI**, the installer also writes
 `.mindleak/copilot-mcp.json` (absolute paths, `mcpServers` schema); pass it with
-`copilot --additional-mcp-config @.mindleak/copilot-mcp.json` (ADR-0033).
+`copilot --additional-mcp-config @.mindleak/copilot-mcp.json` (ADR-0033). See the
+no-editor walkthrough below.
+
+### Use it from the GitHub Copilot CLI — no editor required
+
+MindLeak is just two stdio MCP servers, so it works from the **`copilot` CLI on
+its own** — no VS Code, no extension. The release installer registers both planes
+for the CLI: it writes `.mindleak/copilot-mcp.json` with absolute paths and the
+`mcpServers` schema the CLI expects (the CLI does not expand VS Code's
+`${workspaceFolder}`). From your project root:
+
+```bash
+# 1. Register both planes (writes .vscode/mcp.json AND .mindleak/copilot-mcp.json)
+node /path/to/extracted/install.mjs --agent your-name
+
+# 2. Start the CLI pointed at the MindLeak config
+copilot --additional-mcp-config @.mindleak/copilot-mcp.json
+```
+
+To make it the machine-wide default instead, merge the same `mcpServers` block
+into `~/.copilot/mcp-config.json` (honours `COPILOT_HOME`). Full walkthrough:
+[docs/QUICKSTART.md](docs/QUICKSTART.md#github-copilot-cli--no-editor-required).
 
 ---
 
@@ -216,6 +249,7 @@ For the **GitHub Copilot CLI**, the installer also writes
 
 | Tool | Purpose |
 |---|---|
+| `open_session` | Register a client-minted 128-bit session id and return its stable cross-plane agent identity; required before identity-bearing calls (ADR-0030). |
 | `graph_multi_hop_query` | Traverse N hops from a seed node/phrase, decay-filtered. |
 | `get_impact_radius` | Blast radius of editing a file/symbol. |
 | `check_overlap` | Read-only, decay-aware footprint of other agents on concrete paths / symbol ids; combine with Lodestar's same-named claim check (ADR-0024). |
@@ -272,6 +306,7 @@ coordinate through one plane.
 | `create_task` / `decompose_goal` | Add claimable work; `create_task(blocked_by=...)` creates a progressive handoff. |
 | `next_task` | Suggest the next unblocked, claimable task. |
 | `claim_task` / `renew_lease` | **Atomic claim + lease** with optional advisory path globs / symbol ids — renewal is a live heartbeat; after expiry, re-claim opens a fresh evidence window. |
+| `recover_claim` / `claim_transfer_history` | Guardedly recover an expired compatible legacy claim into the registered session and inspect the append-only prior-owner/window audit. |
 | `task_scope` / `check_overlap` | Read one claim declaration or find live claims intersecting concrete paths / symbol ids; advisory only, and combined by the caller with MindLeak's footprint result (ADR-0024). |
 | `complete_task` | Consume the exact authoritative `check_conformance` result (owner-guarded); aligned completes, uncertainty reviews, violation blocks. |
 | `release_task` / `block_task` | Return or block work. |

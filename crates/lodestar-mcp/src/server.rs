@@ -4,6 +4,7 @@
 use std::io::{self, BufRead, Write};
 
 use lodestar_core::Lodestar;
+use mindleak_session::SessionRegistry;
 use serde_json::{json, Value};
 
 use crate::tools;
@@ -11,7 +12,7 @@ use crate::tools;
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
 /// Run the blocking request/response loop until stdin closes.
-pub fn run(engine: Lodestar) -> anyhow::Result<()> {
+pub fn run(engine: Lodestar, sessions: SessionRegistry) -> anyhow::Result<()> {
     let stdin = io::stdin();
     let mut reader = stdin.lock();
     let stdout = io::stdout();
@@ -40,14 +41,14 @@ pub fn run(engine: Lodestar) -> anyhow::Result<()> {
             }
         };
 
-        if let Some(response) = handle(&engine, &request) {
+        if let Some(response) = handle(&engine, &sessions, &request) {
             write_message(&mut out, &response)?;
         }
     }
     Ok(())
 }
 
-fn handle(engine: &Lodestar, req: &Value) -> Option<Value> {
+fn handle(engine: &Lodestar, sessions: &SessionRegistry, req: &Value) -> Option<Value> {
     let id = req.get("id").cloned();
     let method = req.get("method").and_then(Value::as_str).unwrap_or("");
     let params = req.get("params").cloned().unwrap_or(Value::Null);
@@ -59,7 +60,9 @@ fn handle(engine: &Lodestar, req: &Value) -> Option<Value> {
         "tools/list" => Some(result_response(id?, json!({ "tools": tools::list() }))),
         "tools/call" => {
             let id = id?;
-            let response = match tools::call(engine, &params) {
+            let response = match tools::bind_session(&params, sessions)
+                .and_then(|bound| tools::call(engine, &bound))
+            {
                 Ok(content) => content,
                 Err(msg) => tool_error(&msg),
             };
@@ -124,10 +127,14 @@ mod tests {
         Lodestar::open_in_memory().unwrap()
     }
 
+    fn sessions() -> SessionRegistry {
+        SessionRegistry::new("test").unwrap()
+    }
+
     #[test]
     fn initialize_reports_server_info() {
         let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} });
-        let resp = handle(&engine(), &req).unwrap();
+        let resp = handle(&engine(), &sessions(), &req).unwrap();
         assert_eq!(resp["result"]["serverInfo"]["name"], "lodestar-mcp");
         assert_eq!(
             resp["result"]["serverInfo"]["version"],
@@ -143,26 +150,27 @@ mod tests {
     #[test]
     fn tools_list_is_non_empty() {
         let req = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} });
-        let resp = handle(&engine(), &req).unwrap();
+        let resp = handle(&engine(), &sessions(), &req).unwrap();
         assert!(resp["result"]["tools"].as_array().unwrap().len() >= 15);
     }
 
     #[test]
     fn define_goal_then_get_constitution_via_tools() {
         let e = engine();
+        let sessions = sessions();
         let define = json!({
             "jsonrpc": "2.0", "id": 3, "method": "tools/call",
             "params": { "name": "define_goal", "arguments": {
                 "kind": "invariant", "title": "Zero token", "statement": "no llm on ingest" } }
         });
-        let resp = handle(&e, &define).unwrap();
+        let resp = handle(&e, &sessions, &define).unwrap();
         assert!(resp["result"]["content"][0]["text"].is_string());
 
         let get = json!({
             "jsonrpc": "2.0", "id": 4, "method": "tools/call",
             "params": { "name": "get_constitution", "arguments": {} }
         });
-        let resp = handle(&e, &get).unwrap();
+        let resp = handle(&e, &sessions, &get).unwrap();
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("Zero token"));
     }
@@ -173,13 +181,120 @@ mod tests {
             "jsonrpc": "2.0", "id": 5, "method": "tools/call",
             "params": { "name": "no_such_tool", "arguments": {} }
         });
-        let resp = handle(&engine(), &req).unwrap();
+        let resp = handle(&engine(), &sessions(), &req).unwrap();
         assert_eq!(resp["result"]["isError"], true);
     }
 
     #[test]
     fn notification_produces_no_response() {
         let req = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
-        assert!(handle(&engine(), &req).is_none());
+        assert!(handle(&engine(), &sessions(), &req).is_none());
+    }
+
+    #[test]
+    fn claim_requires_a_registered_session() {
+        let engine = engine();
+        let goal = engine
+            .define_goal(lodestar_core::GoalKind::Objective, "Goal", "work", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Task", "done").unwrap();
+        let sessions = sessions();
+        let claim = |session_id: &str| {
+            json!({
+                "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                "params": { "name": "claim_task", "arguments": {
+                    "task_id": task.id, "session_id": session_id
+                }}
+            })
+        };
+        let before = handle(
+            &engine,
+            &sessions,
+            &claim("00112233445566778899aabbccddeeff"),
+        )
+        .unwrap();
+        assert_eq!(before["result"]["isError"], true);
+
+        let open = json!({
+            "jsonrpc": "2.0", "id": 8, "method": "tools/call",
+            "params": { "name": "open_session", "arguments": {
+                "session_id": "00112233445566778899aabbccddeeff"
+            }}
+        });
+        let opened = handle(&engine, &sessions, &open).unwrap();
+        assert!(opened["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("session:v1:test:"));
+        let after = handle(
+            &engine,
+            &sessions,
+            &claim("00112233445566778899aabbccddeeff"),
+        )
+        .unwrap();
+        assert!(after["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("true"));
+    }
+
+    #[test]
+    fn malformed_session_is_rejected_before_domain_dispatch() {
+        let request = json!({
+            "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": { "name": "open_session", "arguments": {
+                "session_id": "00112233445566778899AABBCCDDEEFF"
+            }}
+        });
+        let response = handle(&engine(), &sessions(), &request).unwrap();
+        assert_eq!(response["result"]["isError"], true);
+        assert!(response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("32 lowercase hexadecimal"));
+    }
+
+    #[test]
+    fn multiplexed_sessions_claim_as_distinct_owners() {
+        let engine = engine();
+        let goal = engine
+            .define_goal(lodestar_core::GoalKind::Objective, "Goal", "work", None)
+            .unwrap();
+        let first = engine.create_task(&goal.id, "First", "done").unwrap();
+        let second = engine.create_task(&goal.id, "Second", "done").unwrap();
+        let sessions = sessions();
+        for (id, token, task_id) in [
+            (10, "00112233445566778899aabbccddeeff", first.id.as_str()),
+            (11, "ffeeddccbbaa99887766554433221100", second.id.as_str()),
+        ] {
+            let open = json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": { "name": "open_session", "arguments": { "session_id": token } }
+            });
+            handle(&engine, &sessions, &open).unwrap();
+            let claim = json!({
+                "jsonrpc": "2.0", "id": id + 10, "method": "tools/call",
+                "params": { "name": "claim_task", "arguments": {
+                    "task_id": task_id, "session_id": token
+                }}
+            });
+            handle(&engine, &sessions, &claim).unwrap();
+        }
+        let board = engine.board(true).unwrap();
+        let first_owner = board
+            .iter()
+            .find(|task| task.id == first.id)
+            .unwrap()
+            .owner
+            .as_ref();
+        let second_owner = board
+            .iter()
+            .find(|task| task.id == second.id)
+            .unwrap()
+            .owner
+            .as_ref();
+        assert_ne!(first_owner, second_owner);
+        assert!(first_owner.unwrap().starts_with("session:v1:test:"));
+        assert!(second_owner.unwrap().starts_with("session:v1:test:"));
     }
 }

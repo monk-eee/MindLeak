@@ -57,7 +57,7 @@ VS Code workspace state, but authority remains in the two databases.
 On first activation in a workspace, the extension guides rather than markets:
 
 1. verify both packaged servers and show exact build identity;
-2. establish or confirm one stable agent identity for both planes;
+2. register one client session and confirm its stable identity on both planes;
 3. ingest the active file and wait for one passive evidence event;
 4. display the first useful graph/impact or recall result;
 5. offer coordination only when the user has an objective, task, or proposed

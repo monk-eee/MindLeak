@@ -38,11 +38,9 @@ fn execution_attribution_decays_with_the_execution_not_slower() {
     // generic 48h `observed` half-life it pinned every spent execution in the
     // graph for ~9 days, so prune could not reap it. It is capped to the
     // execution decay tier (24h) so attribution and evidence fade together.
-    let engine = MindLeak::open_in_memory()
-        .unwrap()
-        .with_agent(Some("tester".to_string()));
+    let engine = MindLeak::open_in_memory().unwrap();
     let outcome = engine
-        .ingest_execution(&exec("cargo build", 0, "ok", &["src/auth.rs"]))
+        .ingest_execution_for_agent("tester", &exec("cargo build", 0, "ok", &["src/auth.rs"]))
         .unwrap();
     let exec_id = outcome
         .node_ids
@@ -69,14 +67,16 @@ fn forget_file_reaps_a_deleted_files_structure() {
     // artifact and every symbol it defined outright, even though an execution's
     // `modified` edge and the agent's `observed` edges would otherwise pin them
     // in the graph for weeks (the deleted/moved-source bloat).
-    let engine = MindLeak::open_in_memory()
-        .unwrap()
-        .with_agent(Some("tester".to_string()));
+    let engine = MindLeak::open_in_memory().unwrap();
     engine
-        .ingest_file("src/gone.rs", "pub fn alpha() {}\npub struct Beta;\n")
+        .ingest_file_for_agent(
+            "tester",
+            "src/gone.rs",
+            "pub fn alpha() {}\npub struct Beta;\n",
+        )
         .unwrap();
     engine
-        .ingest_execution(&exec("cargo build", 0, "ok", &["src/gone.rs"]))
+        .ingest_execution_for_agent("tester", &exec("cargo build", 0, "ok", &["src/gone.rs"]))
         .unwrap();
 
     let before = engine.snapshot(None, 200).unwrap();
@@ -291,10 +291,10 @@ fn ingest_file_creates_in_file_call_edges() {
 
 #[test]
 fn agent_attribution_records_observed_edges_and_roster() {
-    let engine = MindLeak::open_in_memory()
-        .unwrap()
-        .with_agent(Some("claude".into()));
-    engine.ingest_file("src/auth.rs", "fn a() {}\n").unwrap();
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file_for_agent("claude", "src/auth.rs", "fn a() {}\n")
+        .unwrap();
 
     // The agent observed the artifact it ingested.
     let sub = engine.multi_hop_query("agent:claude", 1, 0.05).unwrap();
@@ -972,49 +972,59 @@ fn var_shadowing_is_function_scoped_for_imported_calls_and_require() {
 fn evidence_bundle_uses_attributed_mutations_within_the_work_window() {
     // Regression: conformance previously inferred activity from goal-linked
     // files, so task presence could masquerade as proof of actual work.
-    let engine = MindLeak::open_in_memory()
-        .unwrap()
-        .with_agent(Some("agent-a".into()));
+    let engine = MindLeak::open_in_memory().unwrap();
     engine
-        .ingest_execution(&ExecutionRecord {
-            command: "old command".into(),
-            exit_code: 0,
-            output: String::new(),
-            cwd: None,
-            changed_files: vec!["src/old.rs".into()],
-            timestamp: 50,
-        })
+        .ingest_execution_for_agent(
+            "agent-a",
+            &ExecutionRecord {
+                command: "old command".into(),
+                exit_code: 0,
+                output: String::new(),
+                cwd: None,
+                changed_files: vec!["src/old.rs".into()],
+                timestamp: 50,
+            },
+        )
         .unwrap();
     engine
-        .ingest_execution(&ExecutionRecord {
-            command: "cargo test".into(),
-            exit_code: 101,
-            output: "error at src/failing.rs:7".into(),
-            cwd: None,
-            changed_files: vec!["src/auth.rs".into()],
-            timestamp: 100,
-        })
+        .ingest_execution_for_agent(
+            "agent-a",
+            &ExecutionRecord {
+                command: "cargo test".into(),
+                exit_code: 101,
+                output: "error at src/failing.rs:7".into(),
+                cwd: None,
+                changed_files: vec!["src/auth.rs".into()],
+                timestamp: 100,
+            },
+        )
         .unwrap();
     engine
-        .ingest_execution(&ExecutionRecord {
-            command: "cargo test".into(),
-            exit_code: 0,
-            output: "ok".into(),
-            cwd: None,
-            changed_files: vec!["src/auth.rs".into()],
-            timestamp: 110,
-        })
+        .ingest_execution_for_agent(
+            "agent-a",
+            &ExecutionRecord {
+                command: "cargo test".into(),
+                exit_code: 0,
+                output: "ok".into(),
+                cwd: None,
+                changed_files: vec!["src/auth.rs".into()],
+                timestamp: 110,
+            },
+        )
         .unwrap();
     engine
-        .ingest_commit(&CommitRecord {
-            sha: Some("proof123".into()),
-            message: "fix auth".into(),
-            changed_files: vec!["src/auth.rs".into()],
-            timestamp: 115,
-        })
+        .ingest_commit_for_agent(
+            "agent-a",
+            &CommitRecord {
+                sha: Some("proof123".into()),
+                message: "fix auth".into(),
+                changed_files: vec!["src/auth.rs".into()],
+                timestamp: 115,
+            },
+        )
         .unwrap();
     engine
-        .ingest_file("src/focus_only.rs", "fn seen() {}\n")
+        .ingest_file_for_agent("agent-a", "src/focus_only.rs", "fn seen() {}\n")
         .unwrap();
 
     let evidence = engine
@@ -1042,6 +1052,39 @@ fn evidence_bundle_uses_attributed_mutations_within_the_work_window() {
         .provenance
         .iter()
         .any(|fact| { fact.relation == "refactored" && fact.target_id == "artifact:src/auth.rs" }));
+}
+
+#[test]
+fn evidence_isolated_between_explicit_session_agents() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    for (agent, sha, path) in [
+        ("session:v1:test:first", "first", "src/first.rs"),
+        ("session:v1:test:second", "second", "src/second.rs"),
+    ] {
+        engine
+            .ingest_commit_for_agent(
+                agent,
+                &CommitRecord {
+                    sha: Some(sha.into()),
+                    message: format!("{agent} change"),
+                    changed_files: vec![path.into()],
+                    timestamp: 100,
+                },
+            )
+            .unwrap();
+    }
+
+    let first = engine
+        .evidence_for(None, "session:v1:test:first", 90, 110)
+        .unwrap();
+    let second = engine
+        .evidence_for(None, "session:v1:test:second", 90, 110)
+        .unwrap();
+
+    assert_eq!(first.commit_ids, vec!["intent:first"]);
+    assert_eq!(first.changed_node_ids, vec!["artifact:src/first.rs"]);
+    assert_eq!(second.commit_ids, vec!["intent:second"]);
+    assert_eq!(second.changed_node_ids, vec!["artifact:src/second.rs"]);
 }
 
 // ---- ADR-0008 semantic recall (embedder DI seam, no live model) ------------

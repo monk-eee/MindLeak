@@ -98,14 +98,16 @@ pub(super) fn dispatch(
 ) -> Option<Result<Value, String>> {
     match name {
         "record_architectural_decision" => Some((|| {
+            let agent = req_str(args, "agent")?;
             let text = req_str(args, "decision_text")?;
             let related = str_array(args, "related_nodes");
             let (id, outcome) = engine
-                .record_decision(&text, &related)
+                .record_decision_for_agent(&agent, &text, &related)
                 .map_err(|e| e.to_string())?;
             Ok(text_result(&json!({ "intent_id": id, "outcome": outcome })))
         })()),
         "ingest_execution" => Some((|| {
+            let agent = req_str(args, "agent")?;
             let rec = ExecutionRecord {
                 command: req_str(args, "command")?,
                 exit_code: opt_i64(args, "exit_code", 0) as i32,
@@ -114,24 +116,30 @@ pub(super) fn dispatch(
                 changed_files: str_array(args, "changed_files"),
                 timestamp: opt_i64(args, "timestamp", now_unix()),
             };
-            let outcome = engine.ingest_execution(&rec).map_err(|e| e.to_string())?;
+            let outcome = engine
+                .ingest_execution_for_agent(&agent, &rec)
+                .map_err(|e| e.to_string())?;
             Ok(text_result(&json!(outcome)))
         })()),
         "ingest_commit" => Some((|| {
+            let agent = req_str(args, "agent")?;
             let rec = CommitRecord {
                 message: req_str(args, "message")?,
                 sha: opt_str(args, "sha"),
                 changed_files: str_array(args, "changed_files"),
                 timestamp: opt_i64(args, "timestamp", now_unix()),
             };
-            let outcome = engine.ingest_commit(&rec).map_err(|e| e.to_string())?;
+            let outcome = engine
+                .ingest_commit_for_agent(&agent, &rec)
+                .map_err(|e| e.to_string())?;
             Ok(text_result(&json!(outcome)))
         })()),
         "ingest_file" => Some((|| {
+            let agent = req_str(args, "agent")?;
             let path = req_str(args, "path")?;
             let content = req_str(args, "content")?;
             let outcome = engine
-                .ingest_file(&path, &content)
+                .ingest_file_for_agent(&agent, &path, &content)
                 .map_err(|e| e.to_string())?;
             Ok(text_result(&json!(outcome)))
         })()),
@@ -148,8 +156,11 @@ pub(super) fn dispatch(
             Ok(text_result(&json!(outcome)))
         })()),
         "boost_entity" => Some((|| {
+            let agent = req_str(args, "agent")?;
             let id = req_str(args, "id")?;
-            let found = engine.boost(&id).map_err(|e| e.to_string())?;
+            let found = engine
+                .boost_for_agent(&agent, &id)
+                .map_err(|e| e.to_string())?;
             Ok(text_result(&json!({ "boosted": found, "id": id })))
         })()),
         _ => None,
@@ -177,7 +188,10 @@ mod tests {
     #[test]
     fn missing_required_arg_is_error() {
         let engine = MindLeak::open_in_memory().unwrap();
-        let params = json!({ "name": "ingest_file", "arguments": { "path": "x.rs" } });
+        // `agent` is injected by bind_session in production; supply it here so
+        // dispatch reaches the genuinely-missing `content` argument.
+        let params =
+            json!({ "name": "ingest_file", "arguments": { "agent": "a", "path": "x.rs" } });
         let err = call(&engine, &params).unwrap_err();
         assert!(err.contains("content"));
     }

@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 lodestar-core = { path = "../lodestar-core" }
+mindleak-session = { path = "../mindleak-session" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

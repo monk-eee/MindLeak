@@ -213,7 +213,6 @@ export type TaskLeaseState = "claimable" | "live" | "expired" | "parked" | "unav
 
 export interface TaskLeaseRequest {
   task_id: string;
-  agent: string;
   lease_secs: number;
   paths?: string[];
   symbols?: string[];
@@ -236,19 +235,44 @@ export function taskLeaseState(task: LodestarTask, nowUnix: number): TaskLeaseSt
 
 export function canClaimTask(task: LodestarTask, nowUnix: number): boolean {
   const state = taskLeaseState(task, nowUnix);
-  return state === "claimable" || state === "expired";
+  return (
+    state === "claimable" || (state === "expired" && task.owner?.startsWith("session:v1:") === true)
+  );
 }
 
-export function taskContextValue(task: LodestarTask, nowUnix: number): string {
+export function canRecoverLegacyClaim(task: LodestarTask, nowUnix: number): boolean {
+  const owner = task.owner?.trim();
+  if (!owner || owner.startsWith("session:v1:")) {
+    return false;
+  }
+  if (task.status === "claimed") {
+    return typeof task.lease_expires_at === "number" && task.lease_expires_at < nowUnix;
+  }
+  if (task.status === "needs_input" || task.status === "paused") {
+    return typeof task.parked_at === "number" && task.parked_at + 7 * 24 * 3600 < nowUnix;
+  }
+  return false;
+}
+
+export function taskContextValue(
+  task: LodestarTask,
+  nowUnix: number,
+  currentAgent?: string
+): string {
   const state = taskLeaseState(task, nowUnix);
   if (task.status === "claimed" && state === "live") {
-    return "claimed";
+    return task.owner === currentAgent ? "claimed.owned" : "claimed";
   }
   const tags = [task.status];
+  if (task.status === "paused" && task.owner === currentAgent) {
+    tags.push("owned");
+  }
   if (state === "claimable") {
     tags.push("claimable");
   } else if (state === "expired") {
-    tags.push("expired", "claimable");
+    tags.push("expired", canRecoverLegacyClaim(task, nowUnix) ? "recoverable" : "claimable");
+  } else if (state === "parked" && canRecoverLegacyClaim(task, nowUnix)) {
+    tags.push("recoverable");
   }
   if (canRetireTask(task, nowUnix)) {
     tags.push("retireable");
@@ -258,7 +282,6 @@ export function taskContextValue(task: LodestarTask, nowUnix: number): string {
 
 export function claimTaskRequest(
   task: LodestarTask,
-  agent: string,
   leaseSeconds: number,
   nowUnix: number,
   scope: TaskScope = { paths: [], symbols: [] }
@@ -267,7 +290,7 @@ export function claimTaskRequest(
     throw new Error(`task ${task.id} is not claimable`);
   }
   return {
-    ...leaseRequest(task.id, agent, leaseSeconds),
+    ...leaseRequest(task.id, leaseSeconds),
     ...(scope.paths.length > 0 ? { paths: [...scope.paths] } : {}),
     ...(scope.symbols.length > 0 ? { symbols: [...scope.symbols] } : {}),
   };
@@ -329,28 +352,24 @@ export function renewTaskRequest(
   if (taskLeaseState(task, nowUnix) !== "live" || !task.owner?.trim()) {
     throw new Error(`task ${task.id} does not have a renewable live claim`);
   }
-  return leaseRequest(task.id, task.owner, leaseSeconds);
+  return leaseRequest(task.id, leaseSeconds);
 }
 
 export function releaseTaskRequest(
   task: LodestarTask,
   nowUnix: number
-): Pick<TaskLeaseRequest, "task_id" | "agent"> {
+): Pick<TaskLeaseRequest, "task_id"> {
   if (taskLeaseState(task, nowUnix) !== "live" || !task.owner?.trim()) {
     throw new Error(`task ${task.id} does not have a releasable live claim`);
   }
-  return { task_id: task.id, agent: task.owner.trim() };
+  return { task_id: task.id };
 }
 
-function leaseRequest(taskId: string, agent: string, leaseSeconds: number): TaskLeaseRequest {
-  const identity = agent.trim();
-  if (!identity) {
-    throw new Error("an agent identity is required");
-  }
+function leaseRequest(taskId: string, leaseSeconds: number): TaskLeaseRequest {
   if (!Number.isInteger(leaseSeconds) || leaseSeconds < 60 || leaseSeconds > 8 * 3600) {
     throw new Error("lease duration must be a whole number from 60 to 28800 seconds");
   }
-  return { task_id: taskId, agent: identity, lease_secs: leaseSeconds };
+  return { task_id: taskId, lease_secs: leaseSeconds };
 }
 
 /** Whether a task can be deliberately retired without disturbing live ownership. */

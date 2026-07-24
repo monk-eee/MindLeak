@@ -11,6 +11,7 @@ use serde::Serialize;
 
 use crate::error::Result;
 
+mod claim_transfer;
 mod coordination;
 mod design;
 mod design_materialization;
@@ -23,6 +24,22 @@ mod lifecycle;
 mod test_support;
 
 pub(crate) use coordination::ConformanceAudit;
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ClaimTransfer {
+    pub id: i64,
+    pub task_id: String,
+    pub from_owner: String,
+    pub to_owner: String,
+    pub recovered_by: String,
+    pub reason: String,
+    pub from_status: String,
+    pub from_claim_started_at: Option<i64>,
+    pub from_lease_expires_at: Option<i64>,
+    pub from_parked_at: Option<i64>,
+    pub to_claim_started_at: i64,
+    pub transferred_at: i64,
+}
 
 /// Summary counts for status displays.
 #[derive(Debug, Clone, Serialize)]

@@ -6,12 +6,13 @@ import { BoardRow, boardRows, LodestarTask, taskContextValue } from "./util";
 export class BoardItem extends vscode.TreeItem {
   constructor(
     readonly task: LodestarTask,
-    row: BoardRow
+    row: BoardRow,
+    currentAgent?: string
   ) {
     super(row.label, vscode.TreeItemCollapsibleState.None);
     this.description = row.description;
     this.tooltip = row.tooltip;
-    this.contextValue = taskContextValue(task, Math.floor(Date.now() / 1000));
+    this.contextValue = taskContextValue(task, Math.floor(Date.now() / 1000), currentAgent);
     this.iconPath = iconFor(row.status);
   }
 }
@@ -49,11 +50,13 @@ export class BoardViewProvider implements vscode.TreeDataProvider<BoardItem> {
   private readonly emitter = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.emitter.event;
 
+  constructor(private readonly currentAgent?: string) {}
+
   update(tasks: LodestarTask[]): void {
     this.tasks = Array.isArray(tasks) ? tasks : [];
     this.items = boardRows(this.tasks).map((row) => {
       const task = this.tasks.find((candidate) => candidate.id === row.id);
-      return new BoardItem(task!, row);
+      return new BoardItem(task!, row, this.currentAgent);
     });
     this.emitter.fire();
   }

@@ -4,6 +4,7 @@ import { BoardItem, BoardViewProvider } from "./boardViewProvider";
 import { McpClient } from "./mcpClient";
 import {
   canClaimTask,
+  canRecoverLegacyClaim,
   claimTaskRequest,
   overlapWarningDetail,
   parseTaskScope,
@@ -32,28 +33,11 @@ export class TaskAllocationController {
     private readonly log: (message: string) => void
   ) {}
 
-  async allocate(item?: BoardItem): Promise<void> {
-    if (!this.requireItem(item, "Allocate Task")) {
-      return;
-    }
-    const agent = await vscode.window.showInputBox({
-      title: `Allocate: ${item.task.title}`,
-      prompt: "Stable agent identity",
-      value: item.task.owner?.trim() || this.configuredAgentId,
-      ignoreFocusOut: true,
-      validateInput: (value) => (value.trim() ? undefined : "An agent identity is required."),
-    });
-    if (agent === undefined) {
-      return;
-    }
-    await this.claim(item, agent);
-  }
-
   async claimForMe(item?: BoardItem): Promise<void> {
     if (!this.requireItem(item, "Claim for Me")) {
       return;
     }
-    await this.claim(item, this.configuredAgentId);
+    await this.claim(item);
   }
 
   async renew(item?: BoardItem): Promise<void> {
@@ -70,7 +54,9 @@ export class TaskAllocationController {
       if (!result?.renewed) {
         throw new Error("the lease changed or expired before renewal");
       }
-      vscode.window.showInformationMessage(`Renewed ${item.task.title} for ${request.agent}.`);
+      vscode.window.showInformationMessage(
+        `Renewed ${item.task.title} for ${this.configuredAgentId}.`
+      );
       await this.refresh();
     } catch (error) {
       this.reportError("Lease renewal", error);
@@ -89,7 +75,7 @@ export class TaskAllocationController {
       return;
     }
     const confirmed = await vscode.window.showWarningMessage(
-      `Release "${item.task.title}" from ${request.agent}?`,
+      `Release "${item.task.title}" from ${item.task.owner}?`,
       {
         modal: true,
         detail: "The task returns to the claimable pool. Existing task history is preserved.",
@@ -108,6 +94,47 @@ export class TaskAllocationController {
       await this.refresh();
     } catch (error) {
       this.reportError("Task release", error);
+    }
+  }
+
+  async recover(item?: BoardItem): Promise<void> {
+    if (!this.requireItem(item, "Recover Legacy Claim")) {
+      return;
+    }
+    const owner = item.task.owner?.trim();
+    if (!owner || !canRecoverLegacyClaim(item.task, nowUnix())) {
+      vscode.window.showWarningMessage(
+        "Only expired legacy base/process claims use recovery; session claims return to the normal pool after expiry."
+      );
+      return;
+    }
+    const reason = await vscode.window.showInputBox({
+      title: `Recover: ${item.task.title}`,
+      prompt: "Why is this legacy owner no longer able to resume the claim?",
+      ignoreFocusOut: true,
+      validateInput: (value) => (value.trim() ? undefined : "A recovery reason is required."),
+    });
+    if (!reason) {
+      return;
+    }
+    const leaseSeconds = await this.promptLease(`Recovery lease: ${item.task.title}`);
+    if (!leaseSeconds) {
+      return;
+    }
+    try {
+      const result = await this.client.callTool("recover_claim", {
+        task_id: item.task.id,
+        expected_owner: owner,
+        reason: reason.trim(),
+        lease_secs: leaseSeconds,
+      });
+      if (!result?.recovered) {
+        throw new Error("the owner or task state changed before recovery");
+      }
+      vscode.window.showInformationMessage(`Recovered ${item.task.title} for this session.`);
+      await this.refresh();
+    } catch (error) {
+      this.reportError("Claim recovery", error);
     }
   }
 
@@ -134,7 +161,7 @@ export class TaskAllocationController {
     }
   }
 
-  private async claim(item: BoardItem, agent: string): Promise<void> {
+  private async claim(item: BoardItem): Promise<void> {
     const scope = await this.promptScope(item.task.title);
     if (!scope) {
       return;
@@ -144,10 +171,10 @@ export class TaskAllocationController {
       return;
     }
     try {
-      if (!(await this.confirmPreflight(item, agent, scope))) {
+      if (!(await this.confirmPreflight(item, scope))) {
         return;
       }
-      const request = claimTaskRequest(item.task, agent, leaseSeconds, nowUnix(), scope);
+      const request = claimTaskRequest(item.task, leaseSeconds, nowUnix(), scope);
       const result = await this.client.callTool("claim_task", { ...request });
       if (!result?.won) {
         vscode.window.showWarningMessage(
@@ -156,18 +183,16 @@ export class TaskAllocationController {
         await this.refresh();
         return;
       }
-      vscode.window.showInformationMessage(`Allocated ${item.task.title} to ${request.agent}.`);
+      vscode.window.showInformationMessage(
+        `Claimed ${item.task.title} for ${this.configuredAgentId}.`
+      );
       await this.refresh();
     } catch (error) {
       this.reportError("Task allocation", error);
     }
   }
 
-  private async confirmPreflight(
-    item: BoardItem,
-    agent: string,
-    scope: TaskScope
-  ): Promise<boolean> {
+  private async confirmPreflight(item: BoardItem, scope: TaskScope): Promise<boolean> {
     if (scope.paths.length === 0 && scope.symbols.length === 0) {
       return true;
     }
@@ -182,7 +207,6 @@ export class TaskAllocationController {
         }),
         this.memoryClient.callTool("check_overlap", {
           ...scope,
-          exclude_agent: agent,
         }),
       ]);
       const detail = overlapWarningDetail({
