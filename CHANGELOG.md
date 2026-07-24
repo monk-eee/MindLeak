@@ -19,6 +19,13 @@ to [Semantic Versioning](https://semver.org/).
   changed governed code lacks an aligned receipt), and audit. README and
   ARCHITECTURE now explain why this chain is the fleet's only trustworthy
   proof-of-work — narration is not proof.
+- **The Evidence Board surfaces conformance proof in VS Code (ADR-0031).** A new
+  tree view lists tasks that carry a conformance chain, each showing its latest
+  verdict and expandable to the individual checks (the drift→aligned story a
+  reviewer needs), with inline **Inspect** (render the chain as markdown) and
+  **Export** (`export_evidence` to a committed artifact under `.lodestar/evidence/`)
+  actions. The grouping logic (`evidenceGroups`, `verdictIconId`) is pure and
+  vitest-tested; the vscode-coupled provider stays thin.
 - **Ask-before-act constitutional advice (ADR-0029).** Agents can now ask what
   governs an intended change *before* doing it, not only discover drift at
   `complete_task`. The new `advise` tool takes the `artifact:`/`symbol:` ids you

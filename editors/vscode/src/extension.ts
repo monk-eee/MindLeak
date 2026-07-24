@@ -6,6 +6,7 @@ import { BoardItem, BoardViewProvider } from "./boardViewProvider";
 import { WorkspaceChangeDetector } from "./changeDetector";
 import { DesignBoardController } from "./designBoardController";
 import { DesignBoardItem, DesignBoardViewProvider } from "./designBoardViewProvider";
+import { EvidenceBoardViewProvider, EvidenceNode } from "./evidenceBoardViewProvider";
 import { GitSensor } from "./gitSensor";
 import { GraphViewProvider } from "./graphViewProvider";
 import { McpClient } from "./mcpClient";
@@ -16,6 +17,7 @@ import {
   canRetireTask,
   conformanceDiagnostic,
   ConformanceRecord,
+  evidenceGroups,
   evidenceRequestForTask,
   formatTaskEvidence,
   GoverningClause,
@@ -42,6 +44,7 @@ let boardTree: vscode.TreeView<BoardItem> | undefined;
 let allocationController: TaskAllocationController | undefined;
 let designBoard: DesignBoardViewProvider | undefined;
 let designController: DesignBoardController | undefined;
+let evidenceBoard: EvidenceBoardViewProvider | undefined;
 let output: vscode.OutputChannel;
 let configuredAgentId = "vscode";
 let serverHealth = "memory starting";
@@ -131,6 +134,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider(DesignBoardViewProvider.viewType, designBoard)
   );
+  evidenceBoard = new EvidenceBoardViewProvider();
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider(EvidenceBoardViewProvider.viewType, evidenceBoard)
+  );
   const lodestarPath = resolveBinaryPath(
     config.get<string>("lodestarServerPath", "lodestar-mcp"),
     workspace,
@@ -191,6 +198,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     updateHealth();
     output.appendLine(`Connected to ${lodestarPath} (intent plane: ${lodestarDb})`);
     void refreshBoard();
+    void refreshEvidence();
     void designController.sync();
   } catch (err) {
     intentHealth = "intent unavailable";
@@ -275,6 +283,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
       }
     }),
     vscode.commands.registerCommand("mindleak.board.refresh", () => refreshBoard()),
+    vscode.commands.registerCommand("mindleak.evidence.refresh", () => refreshEvidence()),
+    vscode.commands.registerCommand("mindleak.evidence.inspect", (node?: EvidenceNode) => {
+      void inspectEvidenceNode(node);
+    }),
+    vscode.commands.registerCommand("mindleak.evidence.export", (node?: EvidenceNode) => {
+      void exportEvidenceNode(node);
+    }),
     vscode.commands.registerCommand("mindleak.task.next", () => allocationController?.revealNext()),
     vscode.commands.registerCommand("mindleak.task.allocate", (item?: BoardItem) => {
       void allocationController?.allocate(item);
@@ -588,6 +603,77 @@ async function refreshBoard(): Promise<void> {
     board.update(list);
   } catch (err) {
     output.appendLine(`board error: ${(err as Error).message}`);
+  }
+}
+
+async function refreshEvidence(): Promise<void> {
+  if (!lodestar?.isReady() || !evidenceBoard) {
+    return;
+  }
+  try {
+    const tasks = await lodestar.callTool("board", { include_terminal: true });
+    const list: LodestarTask[] = Array.isArray(tasks) ? tasks : [];
+    // Only completed/reviewed/blocked work carries conformance proof; skip the
+    // rest so the board is one bounded pass, not a lookup per open task.
+    const evidenced = list.filter((task) =>
+      ["done", "in_review", "blocked", "abandoned"].includes(task.status)
+    );
+    const historyByTask: Record<string, ConformanceRecord[]> = {};
+    await Promise.all(
+      evidenced.map(async (task) => {
+        try {
+          const records = await lodestar!.callTool("conformance_history", { task_id: task.id });
+          if (Array.isArray(records) && records.length) {
+            historyByTask[task.id] = records as ConformanceRecord[];
+          }
+        } catch {
+          // A failed lookup must not break the board.
+        }
+      })
+    );
+    evidenceBoard.update(evidenceGroups(list, historyByTask));
+  } catch (err) {
+    output.appendLine(`evidence board error: ${(err as Error).message}`);
+  }
+}
+
+/** Open a task's conformance chain as readable markdown from the Evidence Board. */
+async function inspectEvidenceNode(node?: EvidenceNode): Promise<void> {
+  const group = node?.group;
+  if (!group) {
+    vscode.window.showWarningMessage("Run this from a task on the Evidence Board.");
+    return;
+  }
+  const markdown = formatTaskEvidence(group.records, group.title);
+  if (!markdown) {
+    vscode.window.showInformationMessage(`No conformance evidence for ${group.title}.`);
+    return;
+  }
+  const doc = await vscode.workspace.openTextDocument({ content: markdown, language: "markdown" });
+  await vscode.window.showTextDocument(doc, { preview: true });
+}
+
+/** Export a task's proof-of-work to a committed artifact via `export_evidence` (ADR-0031). */
+async function exportEvidenceNode(node?: EvidenceNode): Promise<void> {
+  if (!lodestar?.isReady()) {
+    vscode.window.showWarningMessage("Lodestar must be connected to export evidence.");
+    return;
+  }
+  const group = node?.group;
+  if (!group) {
+    vscode.window.showWarningMessage("Run this from a task on the Evidence Board.");
+    return;
+  }
+  const safe = group.taskId.replace(/[^a-zA-Z0-9._-]/g, "-");
+  const relative = path.join(".lodestar", "evidence", `${safe}.md`);
+  try {
+    await lodestar.callTool("export_evidence", { task_id: group.taskId, path: relative });
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file(".");
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(root, relative));
+    await vscode.window.showTextDocument(doc, { preview: true });
+    vscode.window.showInformationMessage(`Exported evidence to ${relative}`);
+  } catch (err) {
+    vscode.window.showErrorMessage(`Evidence export failed: ${(err as Error).message}`);
   }
 }
 

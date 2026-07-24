@@ -680,6 +680,63 @@ function formatUnixSeconds(seconds: number): string {
   return `${new Date(seconds * 1000).toISOString().slice(0, 19).replace("T", " ")}Z`;
 }
 
+/** A task grouped with its conformance audit chain, for the Evidence Board. */
+export interface EvidenceGroup {
+  taskId: string;
+  title: string;
+  latestVerdict: string;
+  checkCount: number;
+  records: ConformanceRecord[];
+}
+
+/**
+ * Group tasks that have a conformance audit chain into Evidence Board rows,
+ * most-recently-checked first — the freshest proof leads. Tasks with no records
+ * are omitted (nothing to show). Pure: the vscode tree just renders these.
+ */
+export function evidenceGroups(
+  tasks: LodestarTask[],
+  historyByTask: Record<string, ConformanceRecord[]>
+): EvidenceGroup[] {
+  const groups: EvidenceGroup[] = [];
+  for (const task of tasks ?? []) {
+    const records = historyByTask?.[task.id];
+    if (!Array.isArray(records) || records.length === 0) {
+      continue;
+    }
+    const latest = records[records.length - 1];
+    groups.push({
+      taskId: task.id,
+      title: task.title,
+      latestVerdict: latest.verdict,
+      checkCount: records.length,
+      records,
+    });
+  }
+  groups.sort((a, b) => lastCheckedAt(b.records) - lastCheckedAt(a.records));
+  return groups;
+}
+
+function lastCheckedAt(records: ConformanceRecord[]): number {
+  return records.length ? (records[records.length - 1].checked_at ?? 0) : 0;
+}
+
+/** A ThemeIcon id for a conformance verdict. Pure — no vscode import. */
+export function verdictIconId(verdict: string): string {
+  switch (verdict) {
+    case "aligned":
+      return "verified-filled";
+    case "drift":
+      return "warning";
+    case "violation":
+      return "error";
+    case "needs_human":
+      return "person";
+    default:
+      return "question";
+  }
+}
+
 // ---- Telemetry & effectiveness (real-time observability pane) ---------------
 
 /**

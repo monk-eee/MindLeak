@@ -54,6 +54,11 @@
           "type": "tree"
         },
         {
+          "id": "mindleak.evidenceView",
+          "name": "Evidence Board",
+          "type": "tree"
+        },
+        {
           "id": "mindleak.telemetryView",
           "name": "Telemetry",
           "type": "webview"
@@ -142,6 +147,21 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "mindleak.evidence.refresh",
+        "title": "MindLeak: Refresh Evidence Board",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "mindleak.evidence.inspect",
+        "title": "MindLeak: Inspect Conformance Evidence",
+        "icon": "$(book)"
+      },
+      {
+        "command": "mindleak.evidence.export",
+        "title": "MindLeak: Export Conformance Evidence",
+        "icon": "$(export)"
+      },
+      {
         "command": "mindleak.task.completeWithEvidence",
         "title": "MindLeak: Complete Task With Evidence",
         "icon": "$(verified-filled)"
@@ -197,6 +217,11 @@
         {
           "command": "mindleak.telemetry.refresh",
           "when": "view == mindleak.telemetryView",
+          "group": "navigation"
+        },
+        {
+          "command": "mindleak.evidence.refresh",
+          "when": "view == mindleak.evidenceView",
           "group": "navigation"
         },
         {
@@ -270,6 +295,16 @@
           "command": "mindleak.task.resume",
           "when": "view == mindleak.boardView && viewItem == paused",
           "group": "inline"
+        },
+        {
+          "command": "mindleak.evidence.inspect",
+          "when": "view == mindleak.evidenceView && viewItem == evidence.group",
+          "group": "inline@1"
+        },
+        {
+          "command": "mindleak.evidence.export",
+          "when": "view == mindleak.evidenceView && viewItem == evidence.group",
+          "group": "inline@2"
         }
       ]
     },
