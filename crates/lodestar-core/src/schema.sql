@@ -124,6 +124,26 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_goal   ON tasks(goal_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_blocked_by ON tasks(blocked_by);
 
+-- Append-only ownership recovery audit (ADR-0030). Recovery never rewrites
+-- history: it records the full prior claim window before assigning a fresh one.
+CREATE TABLE IF NOT EXISTS task_claim_transfers (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id               TEXT NOT NULL,
+    from_owner            TEXT NOT NULL,
+    to_owner              TEXT NOT NULL,
+    recovered_by          TEXT NOT NULL,
+    reason                TEXT NOT NULL,
+    from_status           TEXT NOT NULL,
+    from_claim_started_at INTEGER,
+    from_lease_expires_at INTEGER,
+    from_parked_at        INTEGER,
+    to_claim_started_at   INTEGER NOT NULL,
+    transferred_at        INTEGER NOT NULL,
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_task_claim_transfers_task
+    ON task_claim_transfers(task_id, id);
+
 -- Optional advisory scope declared atomically with a task claim (ADR-0024).
 -- Values are workspace-relative path globs or opaque MindLeak symbol ids. They
 -- inform pre-flight checks only; they are not locks.

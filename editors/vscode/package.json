@@ -112,6 +112,26 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "mindleak.task.next",
+        "title": "MindLeak: Next Claimable Task",
+        "icon": "$(list-selection)"
+      },
+      {
+        "command": "mindleak.task.claimForMe",
+        "title": "MindLeak: Claim Task for This Session",
+        "icon": "$(account)"
+      },
+      {
+        "command": "mindleak.task.renew",
+        "title": "MindLeak: Renew Task Lease",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "mindleak.task.release",
+        "title": "MindLeak: Release Task",
+        "icon": "$(close)"
+      },
+      {
         "command": "mindleak.design.refresh",
         "title": "MindLeak: Refresh Design Board",
         "icon": "$(refresh)"
@@ -172,6 +192,11 @@
         "icon": "$(export)"
       },
       {
+        "command": "mindleak.task.recover",
+        "title": "MindLeak: Recover Legacy Claim",
+        "icon": "$(history)"
+      },
+      {
         "command": "mindleak.task.completeWithEvidence",
         "title": "MindLeak: Complete Task With Evidence",
         "icon": "$(verified-filled)"
@@ -217,7 +242,12 @@
         {
           "command": "mindleak.board.refresh",
           "when": "view == mindleak.boardView",
-          "group": "navigation"
+          "group": "navigation@1"
+        },
+        {
+          "command": "mindleak.task.next",
+          "when": "view == mindleak.boardView",
+          "group": "navigation@2"
         },
         {
           "command": "mindleak.design.refresh",
@@ -246,6 +276,21 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "mindleak.task.claimForMe",
+          "when": "view == mindleak.boardView && viewItem =~ /claimable/",
+          "group": "inline@1"
+        },
+        {
+          "command": "mindleak.task.renew",
+          "when": "view == mindleak.boardView && viewItem == claimed.owned",
+          "group": "inline@2"
+        },
+        {
+          "command": "mindleak.task.release",
+          "when": "view == mindleak.boardView && viewItem == claimed.owned",
+          "group": "inline@3"
+        },
         {
           "command": "mindleak.design.accept",
           "when": "view == mindleak.designView && viewItem == design.proposed",
@@ -277,8 +322,13 @@
           "group": "navigation"
         },
         {
+          "command": "mindleak.task.recover",
+          "when": "view == mindleak.boardView && viewItem =~ /recoverable/",
+          "group": "inline"
+        },
+        {
           "command": "mindleak.task.completeWithEvidence",
-          "when": "view == mindleak.boardView && viewItem == claimed",
+          "when": "view == mindleak.boardView && viewItem == claimed.owned",
           "group": "inline"
         },
         {
@@ -303,12 +353,12 @@
         },
         {
           "command": "mindleak.task.pause",
-          "when": "view == mindleak.boardView && viewItem == claimed",
+          "when": "view == mindleak.boardView && viewItem == claimed.owned",
           "group": "inline"
         },
         {
           "command": "mindleak.task.resume",
-          "when": "view == mindleak.boardView && viewItem == paused",
+          "when": "view == mindleak.boardView && viewItem == paused.owned",
           "group": "inline"
         },
         {
@@ -406,7 +456,7 @@
         "mindleak.agentId": {
           "type": "string",
           "default": "vscode",
-          "description": "Base attribution label. Each extension activation derives one unique fixed id from it and shares that exact identity across both MCP planes."
+          "description": "Base attribution label. Each activation registers one client-minted session token and shares the resulting stable identity across both MCP planes."
         },
         "mindleak.autonomousConsolidation": {
           "type": "boolean",

@@ -7,6 +7,15 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Session-scoped cross-plane identity and audited claim recovery (ADR-0030).**
+  Clients register one opaque 128-bit `session_id` with both stdio servers and
+  reuse it on identity-bearing calls. Both planes derive the same restart-stable
+  `session:v1:<base>:<fingerprint>` identity; multiplexed chats no longer alias
+  onto one process owner, and arbitrary per-call ids are ignored/rejected.
+  `recover_claim` moves only expired compatible legacy owners into the current
+  session, starts a fresh evidence window, preserves task scope/Q&A, and records
+  the complete prior claim in append-only `task_claim_transfers`; the Intent
+  Board exposes that guarded recovery path.
 - **First-class GitHub Copilot CLI registration (ADR-0033).** Both stdio planes
   already run under any MCP client, but the installer registered them only into
   `.vscode/mcp.json` — which the `copilot` CLI cannot read (it keys servers under

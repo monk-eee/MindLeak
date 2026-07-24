@@ -20,6 +20,14 @@ Shared platform-independent SQLite online backup and integrity verification
 (ADR-0013). Both planes call this primitive through their own stores; reset and
 export remain plane-specific operations.
 
+### `mindleak-session` (library)
+
+The shared ADR-0030 request identity contract. It validates client-minted
+128-bit session ids, derives the same restart-stable opaque agent id in both
+planes, keeps only process-local registrations, and recognizes the narrow legacy
+owner shapes eligible for audited claim recovery. Raw session tokens are never
+persisted or logged.
+
 ### `mindleak-core` (library)
 
 The engine. Modules:

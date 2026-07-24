@@ -1,3 +1,5 @@
+import { createHash } from "crypto";
+
 export type ReadinessState =
   "disconnected" | "ready_empty" | "observing" | "coordinating" | "degraded_optional";
 
@@ -60,13 +62,10 @@ export interface ReadinessRow {
   action?: ReadinessAction;
 }
 
-export function sessionAgentIdentity(base: string, nonce: string): string {
+export function sessionAgentIdentity(base: string, sessionId: string): string {
   const label = base.trim() || "vscode";
-  const suffix = nonce
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "")
-    .slice(0, 8);
-  return suffix ? `${label}-${suffix}` : label;
+  const fingerprint = createHash("sha256").update(sessionId).digest("hex").slice(0, 32);
+  return `session:v1:${label}:${fingerprint}`;
 }
 
 export function deriveReadiness(input: ReadinessInput): ReadinessSnapshot {

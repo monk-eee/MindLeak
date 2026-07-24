@@ -114,6 +114,29 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "recover_claim",
+            "description": "Recover an expired claim stranded under a compatible legacy base/process identity into this registered session. Requires the exact current owner and a reason; writes an append-only transfer audit and opens a fresh evidence window.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string" },
+                    "expected_owner": { "type": "string" },
+                    "reason": { "type": "string" },
+                    "lease_secs": { "type": "integer", "default": 300 }
+                },
+                "required": ["task_id", "expected_owner", "reason"]
+            }
+        }),
+        json!({
+            "name": "claim_transfer_history",
+            "description": "Read the append-only ownership recovery history for a task.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "task_id": { "type": "string" } },
+                "required": ["task_id"]
+            }
+        }),
+        json!({
             "name": "block_task",
             "description": "Mark a nonterminal task blocked and clear any live claim. An optional blocked_by predecessor must be same-goal, acyclic, and part of a one-to-one handoff chain; release/claim cannot bypass it.",
             "inputSchema": {
@@ -359,6 +382,23 @@ pub(super) fn dispatch(
                 .map_err(|e| e.to_string())?;
             ok(&json!({ "released": released }))
         })()),
+        "recover_claim" => Some((|| {
+            let recovered = engine
+                .recover_claim(
+                    req_str(args, "task_id")?,
+                    req_str(args, "expected_owner")?,
+                    opt_str(args, "agent").unwrap_or_default().as_str(),
+                    req_str(args, "reason")?,
+                    i64_arg(args, "lease_secs", 300),
+                )
+                .map_err(|e| e.to_string())?;
+            ok(&json!({ "recovered": recovered }))
+        })()),
+        "claim_transfer_history" => Some((|| {
+            ok(&engine
+                .claim_transfer_history(req_str(args, "task_id")?)
+                .map_err(|e| e.to_string())?)
+        })()),
         "block_task" => Some((|| {
             let blocked = engine
                 .block_task(
@@ -480,9 +520,7 @@ mod tests {
 
     #[test]
     fn scoped_claim_and_overlap_round_trip_through_tools() {
-        let engine = Lodestar::open_in_memory()
-            .unwrap()
-            .with_agent(Some("alice".into()));
+        let engine = Lodestar::open_in_memory().unwrap();
         let goal = engine
             .define_goal(GoalKind::Objective, "Scoped work", "avoid overlap", None)
             .unwrap();
@@ -495,6 +533,7 @@ mod tests {
                 "name": "claim_task",
                 "arguments": {
                     "task_id": task_id,
+                    "agent": "alice",
                     "lease_secs": 300,
                     "paths": ["crates/mindleak-core/src/**"],
                     "symbols": ["symbol:crates/mindleak-core/src/lib.rs:MindLeak"]

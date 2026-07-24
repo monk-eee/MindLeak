@@ -213,6 +213,11 @@ It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
 }
 ```
 
+`MINDLEAK_AGENT` is a human-readable base label, not an owner credential. The
+client must mint one 128-bit lowercase-hex token, call `open_session` once, and
+reuse that `session_id` on identity-bearing tools. The extension does this
+automatically and shares one session across both planes (ADR-0030).
+
 For the **GitHub Copilot CLI**, the installer also writes
 `.mindleak/copilot-mcp.json` (absolute paths, `mcpServers` schema); pass it with
 `copilot --additional-mcp-config @.mindleak/copilot-mcp.json` (ADR-0033). See the
@@ -244,6 +249,7 @@ into `~/.copilot/mcp-config.json` (honours `COPILOT_HOME`). Full walkthrough:
 
 | Tool | Purpose |
 |---|---|
+| `open_session` | Register a client-minted 128-bit session id and return its stable cross-plane agent identity; required before identity-bearing calls (ADR-0030). |
 | `graph_multi_hop_query` | Traverse N hops from a seed node/phrase, decay-filtered. |
 | `get_impact_radius` | Blast radius of editing a file/symbol. |
 | `check_overlap` | Read-only, decay-aware footprint of other agents on concrete paths / symbol ids; combine with Lodestar's same-named claim check (ADR-0024). |
@@ -300,6 +306,7 @@ coordinate through one plane.
 | `create_task` / `decompose_goal` | Add claimable work; `create_task(blocked_by=...)` creates a progressive handoff. |
 | `next_task` | Suggest the next unblocked, claimable task. |
 | `claim_task` / `renew_lease` | **Atomic claim + lease** with optional advisory path globs / symbol ids — renewal is a live heartbeat; after expiry, re-claim opens a fresh evidence window. |
+| `recover_claim` / `claim_transfer_history` | Guardedly recover an expired compatible legacy claim into the registered session and inspect the append-only prior-owner/window audit. |
 | `task_scope` / `check_overlap` | Read one claim declaration or find live claims intersecting concrete paths / symbol ids; advisory only, and combined by the caller with MindLeak's footprint result (ADR-0024). |
 | `complete_task` | Consume the exact authoritative `check_conformance` result (owner-guarded); aligned completes, uncertainty reviews, violation blocks. |
 | `release_task` / `block_task` | Return or block work. |

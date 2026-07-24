@@ -35,9 +35,10 @@ A new workspace can reach useful context without a model:
 
 ```text
 # 1. Initialize both stdio servers and retain each initialize.serverInfo build.
-#    Give both processes the same explicit agent id for one coordinated session.
-MINDLEAK_AGENT_ID = "client-a1b2c3d4"
-LODESTAR_AGENT_ID = "client-a1b2c3d4"
+#    Mint one 128-bit lowercase-hex token and register it with both planes.
+open_session(session_id = "00112233445566778899aabbccddeeff")
+#    Retain the returned agent_id and pass the same session_id on every
+#    identity-bearing tool call.
 # 2. Create the first deterministic structural context.
 ingest_file(path = "src/main.ts", content = "<current file content>")
 
@@ -141,7 +142,7 @@ graph_stats()      # node / active-edge counts
 prune_graph()      # purge decayed edges + unreferenced stubs
 promotion_candidates() # proven signal -> subject-level candidates for Lodestar promote_signals (ADR-0022)
 boost_entity(id)   # mark a node as recently focused, without rewriting evidence
-list_agents()      # roster + per-agent attention (needs MINDLEAK_AGENT set)
+list_agents()      # roster + per-session attention
 working_set()      # current agent's small ranked focus (default hard cap 7)
 export_graph()     # complete active graph JSON for review (not a backup)
 backup_database(path) # verified online backup; destination must not exist
@@ -150,9 +151,10 @@ backup_database(path) # verified online backup; destination must not exist
 Decay is the point — don't fight it. If context fades too fast or too slow, tune
 half-lives rather than disabling decay.
 
-`working_set(limit?)` is deliberately small. It requires `MINDLEAK_AGENT`, never
-returns another agent's attention, and a requested limit can reduce but cannot
-exceed `MINDLEAK_WORKING_SET_SIZE`. Each item includes effective attention,
+`working_set(limit?, session_id)` is deliberately small. It requires a session
+previously registered by `open_session`, never returns another session's
+attention, and a requested limit can reduce but cannot exceed
+`MINDLEAK_WORKING_SET_SIZE`. Each item includes effective attention,
 observation count/span, and last-observed time. It is a derived focus view, not a
 stored queue or a replacement for impact/graph traversal.
 
@@ -171,14 +173,15 @@ ledger** with atomic claim/lease coordination.
 Typical flow:
 
 ```text
+open_session(session_id)                     # once per client session, on both planes
 define_goal(kind, title, statement)          # write the constitution
 get_constitution()                           # read this BEFORE acting
 decompose_goal(goal_id)  /  create_task(...) # produce claimable work
 next_task()                                  # what should I pick up?
-claim_task(task_id, agent, paths?, symbols?) # atomic claim + optional advisory scope
+claim_task(task_id, paths?, symbols?, session_id) # atomic session claim + optional scope
 advise(task_id, node_ids)                    # ADR-0029: what governs this change? (advise/review/block) — before acting
-renew_lease(task_id, agent)                  # keep your claim alive while working
-complete_task(task_id, agent, evidence)      # owner-guarded; runs conformance
+renew_lease(task_id, session_id)             # keep your claim alive while working
+complete_task(task_id, evidence, check, session_id) # owner-guarded; consumes checked conformance
 board()                                      # live who-owns-what
 ```
 
@@ -194,8 +197,8 @@ their results:
 
 ```text
 lodestar.check_overlap(paths=["src/auth.ts"], symbols=[...]) # live declared claims
-mindleak.check_overlap(paths=["src/auth.ts"], symbols=[...], exclude_agent="agent-b")
-claim_task(task_id, "agent-b", paths=["src/auth.ts"], symbols=[...])
+mindleak.check_overlap(paths=["src/auth.ts"], symbols=[...], session_id) # excludes this session
+claim_task(task_id, paths=["src/auth.ts"], symbols=[...], session_id)
 ```
 
 Lodestar compares concrete requested paths with path globs declared by active
@@ -237,9 +240,9 @@ boundaries are not text locks. Serialize them with task dependencies instead:
 first  = create_task(goal_id, "Edit Router", acceptance = "...")
 second = create_task(goal_id, "Edit helper", acceptance = "...", blocked_by = first.id)
 
-claim_task(first.id, "agent-a")
-complete_task(first.id, "agent-a", evidence)  # aligned completion opens second
-claim_task(second.id, "agent-b")
+claim_task(first.id, session_id)
+complete_task(first.id, evidence, check, session_id) # aligned completion opens second
+claim_task(second.id, session_id)
 ```
 
 Only an aligned `done` transition opens the successor; review/violation leaves it
@@ -248,6 +251,12 @@ fan-out). The deterministic two-connection benchmark holds maximum same-file
 ownership at one with this pattern, versus two for independent tasks. It uses
 synthetic schema-valid evidence to test mechanics. This is task serialization,
 not a filesystem mutex (ADR-0015).
+
+An expired legacy owner (`<base>` or `<base>-<8hex>`) cannot be silently
+reclaimed by a session-qualified owner. Use
+`recover_claim(task_id, expected_owner, reason, lease_secs, session_id)` after
+the lease/grace window; inspect `claim_transfer_history(task_id)` for the
+append-only prior-owner and evidence-window audit.
 
 Full tool list: see the **Intent Plane tools** table in
 [../README.md](../README.md); design in
@@ -287,8 +296,7 @@ selecting a default.
 |---|---|---|
 | `MINDLEAK_WORKSPACE` | process working directory | project root used for default database/config paths |
 | `MINDLEAK_DB` | `<workspace>/.mindleak/graph.db` | graph database path |
-| `MINDLEAK_AGENT` | *(empty = off)* | agent **base label** for attribution (`observed` edges); the running id is `<base>-<nonce>`, unique per process so concurrent agents never alias onto one id (ADR-0030) |
-| `MINDLEAK_AGENT_ID` | *(empty)* | explicit, verbatim per-process id (pin); wins over the `MINDLEAK_AGENT` base + nonce, for tests and deliberately fixed identities (ADR-0030) |
+| `MINDLEAK_AGENT` | `agent` | human-readable base label used when `open_session` derives `session:v1:<base>:<fingerprint>` (ADR-0030) |
 | `MINDLEAK_WORKING_SET_SIZE` | `7` | hard cap for `working_set` results, bounded 1-32 |
 | `MINDLEAK_CONFIG` | `<workspace>/.mindleak.toml` | explicit config path; relative paths resolve from the workspace |
 | `MINDLEAK_PRUNE_THRESHOLD` | file or `0.05` | active-edge/prune threshold override |
@@ -315,8 +323,7 @@ selecting a default.
 | Variable | Default | Meaning |
 |---|---|---|
 | `LODESTAR_DB` | `<cwd>/.lodestar/spec.db` | intent-plane database path (share across worktrees) |
-| `LODESTAR_AGENT` | *(empty)* | agent **base label** for task ownership; the running id is `<base>-<nonce>`, unique per process so concurrent agents never alias onto one claim (ADR-0030) |
-| `LODESTAR_AGENT_ID` | *(empty)* | explicit, verbatim per-process id (pin); wins over the `LODESTAR_AGENT` base + nonce (ADR-0030) |
+| `LODESTAR_AGENT` | `agent` | human-readable base label used when `open_session` derives the same stable session identity as MindLeak (ADR-0030) |
 | `LODESTAR_LLM_URL` | `http://localhost:11434/v1` | OpenAI-compatible server for `decompose_goal` / semantic conformance |
 | `LODESTAR_MODEL` | `glm4:9b` | model |
 | `LODESTAR_LLM_API_KEY` | *(empty)* | bearer token for hosted servers |

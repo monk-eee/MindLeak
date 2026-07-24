@@ -98,8 +98,14 @@ describe("readinessRows", () => {
 
 describe("sessionAgentIdentity", () => {
   it("derives one bounded fixed identity from the configured base and activation nonce", () => {
-    expect(sessionAgentIdentity(" vscode ", "A1B2-C3D4-E5F6")).toBe("vscode-a1b2c3d4");
-    expect(sessionAgentIdentity("", "not-valid!suffix")).toBe("vscode-notvalid");
-    expect(sessionAgentIdentity("agent", "---")).toBe("agent");
+    expect(sessionAgentIdentity(" vscode ", "A1B2-C3D4-E5F6")).toBe(
+      "session:v1:vscode:16308361808fdf63e94ea02e7c0c02c2"
+    );
+    expect(sessionAgentIdentity("", "not-valid!suffix")).toBe(
+      "session:v1:vscode:089203652151b3043473cabe6ee03f86"
+    );
+    expect(sessionAgentIdentity("agent", "---")).toBe(
+      "session:v1:agent:cb3f91d54eee30e53e35b2b99905f70f"
+    );
   });
 });

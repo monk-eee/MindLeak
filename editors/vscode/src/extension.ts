@@ -85,7 +85,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   const dbPath =
     config.get<string>("databasePath", "") || path.join(workspace, ".mindleak", "graph.db");
   const agentId = config.get<string>("agentId", "vscode");
-  configuredAgentId = sessionAgentIdentity(agentId, randomBytes(4).toString("hex"));
+  const sessionId = randomBytes(16).toString("hex");
+  configuredAgentId = sessionAgentIdentity(agentId, sessionId);
 
   client = new McpClient(
     serverPath,
@@ -93,7 +94,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     {
       MINDLEAK_DB: dbPath,
       MINDLEAK_AGENT: agentId,
-      MINDLEAK_AGENT_ID: configuredAgentId,
       MINDLEAK_WORKSPACE: workspace,
       MINDLEAK_AUTONOMOUS_CONSOLIDATION: String(
         config.get<boolean>("autonomousConsolidation", false)
@@ -104,6 +104,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
       ),
       MINDLEAK_CONSOLIDATE_MAX_NODES: String(config.get<number>("consolidateMaxNodes", 20)),
     },
+    sessionId,
     (m) => output.appendLine(m)
   );
 
@@ -138,7 +139,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   }, telemetryRefreshMs);
   context.subscriptions.push({ dispose: () => clearInterval(telemetryTimer) });
 
-  board = new BoardViewProvider();
+  board = new BoardViewProvider(configuredAgentId);
   boardTree = vscode.window.createTreeView(BoardViewProvider.viewType, {
     treeDataProvider: board,
   });
@@ -165,8 +166,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     {
       LODESTAR_DB: lodestarDb,
       LODESTAR_AGENT: agentId,
-      LODESTAR_AGENT_ID: configuredAgentId,
     },
+    sessionId,
     (m) => output.appendLine(m)
   );
   readinessController = new ReadinessController(
@@ -204,6 +205,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
 
   try {
     await client.start();
+    if (client.agentIdentity() !== configuredAgentId) {
+      throw new Error("MindLeak session identity does not match the client contract");
+    }
     serverHealth = "memory connected";
     updateHealth();
     output.appendLine(`Connected to ${serverPath} (db: ${dbPath})`);
@@ -220,6 +224,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
 
   try {
     await lodestar.start();
+    if (lodestar.agentIdentity() !== configuredAgentId) {
+      throw new Error("Lodestar session identity does not match the memory plane");
+    }
     intentHealth = "intent connected";
     updateHealth();
     output.appendLine(`Connected to ${lodestarPath} (intent plane: ${lodestarDb})`);
@@ -322,9 +329,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
       void exportEvidenceNode(node);
     }),
     vscode.commands.registerCommand("mindleak.task.next", () => allocationController?.revealNext()),
-    vscode.commands.registerCommand("mindleak.task.allocate", (item?: BoardItem) => {
-      void allocationController?.allocate(item);
-    }),
     vscode.commands.registerCommand("mindleak.task.claimForMe", (item?: BoardItem) => {
       void allocationController?.claimForMe(item);
     }),
@@ -333,6 +337,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     }),
     vscode.commands.registerCommand("mindleak.task.release", (item?: BoardItem) => {
       void allocationController?.release(item);
+    }),
+    vscode.commands.registerCommand("mindleak.task.recover", (item?: BoardItem) => {
+      void allocationController?.recover(item);
     }),
     vscode.commands.registerCommand("mindleak.design.refresh", () => designController?.refresh()),
     vscode.commands.registerCommand("mindleak.design.sync", () => designController?.sync()),

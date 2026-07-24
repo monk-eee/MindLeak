@@ -168,26 +168,28 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
-- **One shared stdio MCP server gives concurrent chat sessions the same agent id.** —
-  ADR-0030 qualifies identity with a *per-process* nonce
-  (`process_nonce()` in [`crates/lodestar-mcp/src/main.rs`](crates/lodestar-mcp/src/main.rs)),
-  but VS Code multiplexes multiple concurrent chat sessions through a **single**
+- **One shared stdio MCP server gave concurrent chat sessions the same agent id — FIXED.** —
+  The first ADR-0030 implementation qualified identity with a *per-process*
+  nonce in both MCP entry points, but VS Code multiplexes multiple concurrent
+  chat sessions through a **single**
   long-lived MCP server process. All of those sessions therefore share one nonce
   and one identity (observed: `copilot-4e151e90` held three simultaneous live
   claims across independent sessions), so per-agent claim ownership, leases, and
   evidence attribution cannot distinguish the sessions. — Medium impact: owner
   guards and evidence loops treat distinct concurrent agents as one; there is no
-  data loss, but coordination invariants degrade under real fleet use. — Left
-  explicit: the per-process nonce needs a per-session/per-connection discriminator
-  (e.g. a nonce minted per JSON-RPC connection or an explicit `LODESTAR_AGENT_ID`
-  set on each session) before ADR-0030 identity is safe for multiplexed stdio.
-- **A server restart can strand a legacy base-id claim until lease expiry.** —
+  data loss, but coordination invariants degrade under real fleet use. — Fixed by
+  ADR-0030 session registration: clients mint one token, both planes derive one
+  stable identity, and every identity-bearing call is bound to that registered
+  token rather than process state.
+- **A server restart could strand a legacy base-id claim until lease expiry — FIXED.** —
   This run claimed work while the configured identity was the legacy `copilot`;
   after the ADR-0030 server restart the process identity became nonce-qualified,
   so owner-guarded lifecycle operations correctly refused the old owner's live
   claim. — Medium migration impact: work is preserved, but the new process must
-  wait for lease expiry. — Left explicit: drain live claims before enabling nonce
-  identities or add an attributed recovery path for legacy base-id claims.
+  wait for lease expiry. — `recover_claim` now requires expiry/grace, exact owner,
+  compatible base, and a reason; it starts a fresh window and appends the prior
+  owner/window/status to `task_claim_transfers`. Live claims, wrong bases, and
+  qualified sibling sessions are refused.
 - **`recall`'s one-off "100% failure" was a missing embedding model, not a bug.** —
   Telemetry showed `recall` as the only tool with an error (1 call / 1 error, 3ms
   fast-fail); the recorded detail was `/v1/embeddings status 404`. Root cause: the

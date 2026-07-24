@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   boardRows,
   canClaimTask,
+  canRecoverLegacyClaim,
   canRetireTask,
   claimTaskRequest,
   conformanceDiagnostic,
@@ -387,18 +388,32 @@ describe("task allocation", () => {
     expect(taskLeaseState(task("paused", undefined, "alice"), 100)).toBe("parked");
     expect(taskLeaseState(task("blocked"), 100)).toBe("unavailable");
     expect(canClaimTask(task("open"), 100)).toBe(true);
-    expect(canClaimTask(task("claimed", 99, "alice"), 100)).toBe(true);
+    expect(canClaimTask(task("claimed", 99, "alice"), 100)).toBe(false);
+    expect(canClaimTask(task("claimed", 99, "session:v1:alice:fingerprint"), 100)).toBe(true);
     expect(canClaimTask(task("claimed", 101, "alice"), 100)).toBe(false);
   });
 
-  it("builds bounded owner-explicit claim, renew, and release requests", () => {
-    expect(claimTaskRequest(task("open"), " agent-a ", 1800, 100)).toEqual({
+  it("offers recovery only for expired legacy owners", () => {
+    expect(canRecoverLegacyClaim(task("claimed", 99, "copilot-abcd1234"), 100)).toBe(true);
+    expect(canRecoverLegacyClaim(task("claimed", 99, "session:v1:copilot:fingerprint"), 100)).toBe(
+      false
+    );
+    expect(canRecoverLegacyClaim(task("claimed", 101, "copilot"), 100)).toBe(false);
+    expect(
+      canRecoverLegacyClaim(
+        { ...task("paused", undefined, "copilot"), parked_at: 100 - 7 * 24 * 3600 - 1 },
+        100
+      )
+    ).toBe(true);
+  });
+
+  it("builds bounded session-bound claim, renew, and release requests", () => {
+    expect(claimTaskRequest(task("open"), 1800, 100)).toEqual({
       task_id: "task:open",
-      agent: "agent-a",
       lease_secs: 1800,
     });
     expect(
-      claimTaskRequest(task("open"), "agent-a", 1800, 100, {
+      claimTaskRequest(task("open"), 1800, 100, {
         paths: ["src/auth.ts"],
         symbols: ["symbol:src/auth.ts:validate"],
       })
@@ -409,16 +424,13 @@ describe("task allocation", () => {
     const live = task("claimed", 200, "alice");
     expect(renewTaskRequest(live, 3600, 100)).toEqual({
       task_id: "task:claimed",
-      agent: "alice",
       lease_secs: 3600,
     });
     expect(releaseTaskRequest(live, 100)).toEqual({
       task_id: "task:claimed",
-      agent: "alice",
     });
-    expect(() => claimTaskRequest(task("blocked"), "agent", 300, 100)).toThrow("not claimable");
-    expect(() => claimTaskRequest(task("open"), "", 300, 100)).toThrow("identity");
-    expect(() => claimTaskRequest(task("open"), "agent", 30, 100)).toThrow("60 to 28800");
+    expect(() => claimTaskRequest(task("blocked"), 300, 100)).toThrow("not claimable");
+    expect(() => claimTaskRequest(task("open"), 30, 100)).toThrow("60 to 28800");
     expect(() => renewTaskRequest(task("claimed", 99, "alice"), 300, 100)).toThrow("renewable");
     expect(() => releaseTaskRequest(task("claimed", 101), 100)).toThrow("releasable");
   });
@@ -426,9 +438,20 @@ describe("task allocation", () => {
   it("renders claimable and expired contexts plus explicit lease windows", () => {
     expect(taskContextValue(task("open"), 100)).toBe("open.claimable.retireable");
     expect(taskContextValue(task("claimed", 99, "alice"), 100)).toBe(
-      "claimed.expired.claimable.retireable"
+      "claimed.expired.recoverable.retireable"
     );
     expect(taskContextValue(task("claimed", 200, "alice"), 100)).toBe("claimed");
+    expect(taskContextValue(task("claimed", 200, "alice"), 100, "alice")).toBe("claimed.owned");
+    expect(taskContextValue(task("claimed", 99, "session:v1:alice:fingerprint"), 100)).toBe(
+      "claimed.expired.claimable.retireable"
+    );
+    expect(taskContextValue(task("paused", undefined, "alice"), 100, "alice")).toBe("paused.owned");
+    expect(
+      taskContextValue(
+        { ...task("paused", undefined, "copilot"), parked_at: 100 - 7 * 24 * 3600 - 1 },
+        100
+      )
+    ).toBe("paused.recoverable");
 
     const rows = boardRows(
       [

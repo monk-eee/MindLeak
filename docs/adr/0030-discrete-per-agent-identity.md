@@ -1,6 +1,6 @@
 # ADR-0030: Discrete per-agent identity for concurrent coordination
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-24
 - Deciders: MindLeak maintainers
 - Related: [ADR-0003](0003-agent-attribution-as-observed-edges.md) (attribution as
@@ -42,38 +42,35 @@ turns N coordinating agents into one amnesiac identity.
 
 ## Decision
 
-The **runtime agent identity is unique per server process**, while staying
-human-traceable to a configured base label.
+Identity is **per logical client session**, not per server process. This amends
+the original process-nonce design: VS Code can multiplex concurrent chats through
+one long-lived stdio process, so a process nonce still aliases those chats.
 
-### Resolution order (each server, at startup)
+1. A client mints one opaque 128-bit lowercase-hex `session_id` and calls
+  `open_session(session_id)` on both planes.
+2. Each server validates and registers the token in process memory, then derives
+  `session:v1:<base>:<first 16 SHA-256 bytes as 32 lowercase hex characters>`.
+  `MINDLEAK_AGENT` and
+  `LODESTAR_AGENT` are human-readable base labels only; they default to `agent`.
+  Raw tokens are never persisted or logged.
+3. Every identity-bearing call carries the registered `session_id`. The server
+  resolves it and overwrites internal owner/evidence arguments, so an arbitrary
+  per-call `agent` value cannot impersonate another session. Unknown or malformed
+  tokens fail before domain dispatch.
+4. The same token/base yields the same identity after a server restart and across
+  both planes. Two tokens multiplexed through one process yield distinct owners,
+  working sets, and evidence.
+5. `recover_claim` is the only path from an expired legacy `<base>` or
+  `<base>-<8hex>` owner into a registered session. It requires the exact old
+  owner and a reason, refuses live/grace-period claims, wrong bases, and
+  session-qualified siblings, starts a fresh evidence window, preserves scope
+  and Q&A, and appends the full prior claim state to `task_claim_transfers`.
+  Ordinary `claim_task` cannot bypass that audit path.
 
-1. **Explicit pin wins.** If a fully-qualified id is provided
-   (`LODESTAR_AGENT_ID` / `MINDLEAK_AGENT_ID`), use it verbatim — for tests,
-   single-agent setups, and deliberately fixed identities.
-2. **Otherwise derive `"<base>-<nonce>"`.** Treat `LODESTAR_AGENT` / `MINDLEAK_AGENT`
-   as a **base label** and append a short process-unique `<nonce>` (8 hex chars from
-   a CSPRNG). With no base configured, the base defaults to `agent`.
-3. **Log the resolved id once** at startup (stderr) so it is visible and greppable
-   (`[lodestar-mcp] agent = copilot-3f9a1c02`).
-
-### Installer stops pinning a shared id
-
-The release installer ([`install.mjs`](../../editors/vscode/scripts/install.mjs))
-writes only a **base label** (or omits the variable); it never writes a concrete id
-that two concurrent processes would share. Explicit pinning stays available for
-single-agent or reproducible setups via the `*_AGENT_ID` escape hatch.
-
-### Identity is per session, not per logical human
-
-A reconnect spawns a new process and therefore a new id. That is **correct** for
-coordination: a dead session's claims expire and become reclaimable under the
-existing lease semantics ([ADR-0015](0015-advisory-symbol-leases.md)) rather than
-being silently inherited by an unrelated process that happened to reuse the same
-static id. `list_agents` then shows the true set of live sessions
-(`copilot-3f9a…`, `copilot-b2c1…`); attention still fades via `observed`-edge decay
-([ADR-0003](0003-agent-attribution-as-observed-edges.md)), and a retired session's
-agent node is retained but drops from the active roster
-([ADR-0021](0021-node-lifecycle-and-reaping.md)).
+The VS Code extension mints one token per activation, registers it with both
+children, verifies both return the same identity, and injects it after caller
+arguments. Headless clients do the same explicitly. The old `*_AGENT_ID` pins and
+process nonce are removed rather than retained as a second identity model.
 
 ## Consequences
 
@@ -87,27 +84,27 @@ agent node is retained but drops from the active roster
   ([ADR-0021](0021-node-lifecycle-and-reaping.md)); active attention still decays,
   so the *active* roster stays meaningful. An optional "active since" filter on
   `list_agents` is a possible follow-up, not required here.
-- Existing pinned single-agent workflows are unaffected via the explicit-id path.
-- New tests: a pure resolution test (explicit pin honoured; base → `base-nonce`;
-  two resolutions differ) and an integration test that two engines with distinct
-  ids cannot both win one claim, whereas a shared id aliases.
+- Restarted clients retain identity only by retaining their session token; claims
+  never transfer merely because a process restarted.
+- Recovery is explicit, attributed, and append-only rather than an owner rewrite.
+- Tests cover registry continuity, multiplexed owners/evidence, unknown tokens,
+  schema removal of caller-selected ids, and guarded legacy recovery.
 
 ### Rejected alternatives
 
 - **Installer-generated per-workspace id.** Two agents in the *same* workspace
   still share it. Insufficient — the collision is per process, not per workspace.
-- **Hard-require an explicit unique id (error when missing).** Brittle for the
-  common "just run it" path and pushes per-agent bookkeeping onto users. Keep the
-  auto-unique default; keep explicit pinning optional.
-- **Per-logical-agent stable id across reconnects.** Needs a durable client-identity
-  handshake and reintroduces aliasing when two clients assert the same logical id.
-  Session-scoped uniqueness is simpler and correct for coordination.
+- **Per-process nonce.** Insufficient when one process multiplexes several chats;
+  this was implemented and then falsified in production.
+- **Unregistered per-call id.** Lets callers accidentally change identity or
+  impersonate another session. Registration makes continuity explicit.
+- **Persist raw session tokens.** Unnecessary credential-like state; deterministic
+  fingerprints are sufficient for restart continuity.
 - **Identity solely from the MCP `initialize` `clientInfo`.** A useful signal that
-  could seed the base label, but clients may report identical `name`; a nonce is
-  still required for uniqueness. May inform the base in a follow-up.
+  could seed the base label, but clients may report identical `name`; an opaque
+  client-session token is still required for uniqueness. May inform the base in
+  a follow-up.
 
-This ADR carries no behavioural code; it is the design-first predecessor for the
-implementation task. Implementation touches
-`crates/{lodestar,mindleak}-mcp/src/main.rs` (resolution + a small shared nonce
-helper), the installer (stop pinning a shared id), and the config reference in
-[USAGE.md](../USAGE.md) / [README.md](../../README.md), plus the tests above.
+Implementation is shared by both MCP transports through `mindleak-session`, with
+session-bound graph attribution, Lodestar ownership, guarded claim recovery, and
+the optional VS Code product shell using the same protocol as headless clients.

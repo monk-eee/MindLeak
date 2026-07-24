@@ -10,6 +10,7 @@ import { McpClient } from "./mcpClient";
 vi.mock("child_process", () => ({ spawn: vi.fn() }));
 
 const mockedSpawn = vi.mocked(spawn);
+const SESSION_ID = "00112233445566778899aabbccddeeff";
 
 beforeEach(() => {
   mockedSpawn.mockReset();
@@ -24,22 +25,24 @@ describe("McpClient disposal", () => {
       },
     });
     mockedSpawn.mockReturnValue(fake.process);
-    const client = new McpClient("mindleak-mcp", "/workspace", {}, () => undefined);
+    const client = new McpClient("mindleak-mcp", "/workspace", {}, SESSION_ID, () => undefined);
 
     await client.start();
     expect(client.serverIdentity()).toEqual({
       name: "mindleak-mcp",
       version: "0.1.1+abc123",
     });
+    expect(client.agentIdentity()).toBe("session:v1:test:0123456789abcdef0123456789abcdef");
 
     await client.dispose(100);
     expect(client.serverIdentity()).toBeUndefined();
+    expect(client.agentIdentity()).toBeUndefined();
   });
 
   it("closes stdin and waits for a graceful server exit", async () => {
     const fake = fakeProcess({ exitOnEnd: true });
     mockedSpawn.mockReturnValue(fake.process);
-    const client = new McpClient("mindleak-mcp", "/workspace", {}, () => undefined);
+    const client = testClient();
     await client.start();
 
     await client.dispose(100);
@@ -52,7 +55,7 @@ describe("McpClient disposal", () => {
   it("force-kills after the grace period when EOF does not stop the server", async () => {
     const fake = fakeProcess({ exitOnEnd: false });
     mockedSpawn.mockReturnValue(fake.process);
-    const client = new McpClient("mindleak-mcp", "/workspace", {}, () => undefined);
+    const client = testClient();
     await client.start();
 
     await client.dispose(1);
@@ -64,7 +67,7 @@ describe("McpClient disposal", () => {
   it("rejects pending requests when disposed", async () => {
     const fake = fakeProcess({ exitOnEnd: true });
     mockedSpawn.mockReturnValue(fake.process);
-    const client = new McpClient("mindleak-mcp", "/workspace", {}, () => undefined);
+    const client = testClient();
     await client.start();
     const pending = client.callTool("graph_stats", {});
 
@@ -82,10 +85,16 @@ describe("McpClient disposal", () => {
       ],
     });
     mockedSpawn.mockReturnValue(fake.process);
-    const client = new McpClient("mindleak-mcp", "/workspace", {}, () => undefined);
+    const client = testClient();
     await client.start();
 
-    await expect(client.callTool("graph_stats", {})).resolves.toEqual({ nodes: 2 });
+    await expect(
+      client.callTool("graph_stats", { session_id: "ffffffffffffffffffffffffffffffff" })
+    ).resolves.toEqual({ nodes: 2 });
+    const graphCall = fake.requests.find(
+      (request) => request.method === "tools/call" && request.params?.name === "graph_stats"
+    );
+    expect(graphCall.params.arguments.session_id).toBe(SESSION_ID);
     await expect(client.callTool("graph_stats", {})).rejects.toThrow("tool failed");
     await client.dispose(100);
   });
@@ -94,7 +103,7 @@ describe("McpClient disposal", () => {
     const logs: string[] = [];
     const fake = fakeProcess({ exitOnEnd: true });
     mockedSpawn.mockReturnValue(fake.process);
-    const client = new McpClient("mindleak-mcp", "/workspace", {}, (message) => logs.push(message));
+    const client = testClient((message) => logs.push(message));
     await client.start();
 
     fake.process.stdout.write("not-json\n");
@@ -108,7 +117,7 @@ describe("McpClient disposal", () => {
     const logs: string[] = [];
     const fake = fakeProcess({ exitOnEnd: true });
     mockedSpawn.mockReturnValue(fake.process);
-    const client = new McpClient("mindleak-mcp", "/workspace", {}, (message) => logs.push(message));
+    const client = testClient((message) => logs.push(message));
     await client.start();
 
     fake.process.stdout.write("\n");
@@ -127,7 +136,7 @@ describe("McpClient disposal", () => {
       toolMessages: [{ error: { message: "rpc failed" } }, { result: { isError: true } }],
     });
     mockedSpawn.mockReturnValue(fake.process);
-    const client = new McpClient("mindleak-mcp", "/workspace", {}, () => undefined);
+    const client = testClient();
     await client.start();
 
     await expect(client.callTool("graph_stats", {})).rejects.toThrow("rpc failed");
@@ -136,7 +145,7 @@ describe("McpClient disposal", () => {
   });
 
   it("rejects calls before start and allows repeated disposal", async () => {
-    const client = new McpClient("mindleak-mcp", "/workspace", {}, () => undefined);
+    const client = testClient();
     await expect(client.callTool("graph_stats", {})).rejects.toThrow("not started");
     await client.dispose();
     await client.dispose();
@@ -145,7 +154,7 @@ describe("McpClient disposal", () => {
   it("returns immediately when the process already exited", async () => {
     const fake = fakeProcess({ exitOnEnd: false });
     mockedSpawn.mockReturnValue(fake.process);
-    const client = new McpClient("mindleak-mcp", "/workspace", {}, () => undefined);
+    const client = testClient();
     await client.start();
     fake.exit(0);
 
@@ -157,7 +166,7 @@ describe("McpClient disposal", () => {
   it("finishes disposal when force-kill reports no process", async () => {
     const fake = fakeProcess({ exitOnEnd: false, killResult: false });
     mockedSpawn.mockReturnValue(fake.process);
-    const client = new McpClient("mindleak-mcp", "/workspace", {}, () => undefined);
+    const client = testClient();
     await client.start();
 
     await client.dispose(1);
@@ -168,7 +177,7 @@ describe("McpClient disposal", () => {
   it("escalates and finishes when SIGTERM is accepted without exit", async () => {
     const fake = fakeProcess({ exitOnEnd: false, emitExitOnKill: false });
     mockedSpawn.mockReturnValue(fake.process);
-    const client = new McpClient("mindleak-mcp", "/workspace", {}, () => undefined);
+    const client = testClient();
     await client.start();
 
     await client.dispose(1, 1);
@@ -180,7 +189,7 @@ describe("McpClient disposal", () => {
   it("rejects pending work when the server exits without a code", async () => {
     const fake = fakeProcess({ exitOnEnd: false });
     mockedSpawn.mockReturnValue(fake.process);
-    const client = new McpClient("mindleak-mcp", "/workspace", {}, () => undefined);
+    const client = testClient();
     await client.start();
     const pending = client.callTool("graph_stats", {});
     fake.exit(null);
@@ -191,7 +200,7 @@ describe("McpClient disposal", () => {
   it("rejects start() when the process errors before initialize responds", async () => {
     const fake = fakeProcess({ exitOnEnd: false, answerInitialize: false });
     mockedSpawn.mockReturnValue(fake.process);
-    const client = new McpClient("missing-binary", "/workspace", {}, () => undefined);
+    const client = testClient(() => undefined, 30_000, "missing-binary");
     const started = client.start();
     fake.process.emit("error", new Error("spawn ENOENT"));
 
@@ -202,7 +211,7 @@ describe("McpClient disposal", () => {
   it("times out a request when the server never responds", async () => {
     const fake = fakeProcess({ exitOnEnd: true });
     mockedSpawn.mockReturnValue(fake.process);
-    const client = new McpClient("mindleak-mcp", "/workspace", {}, () => undefined, 20);
+    const client = testClient(() => undefined, 20);
     await client.start();
 
     await expect(client.callTool("graph_stats", {})).rejects.toThrow("timed out");
@@ -213,7 +222,7 @@ describe("McpClient disposal", () => {
     const logs: string[] = [];
     const fake = fakeProcess({ exitOnEnd: true });
     mockedSpawn.mockReturnValue(fake.process);
-    const client = new McpClient("mindleak-mcp", "/workspace", {}, (message) => logs.push(message));
+    const client = testClient((message) => logs.push(message));
     await client.start();
 
     fake.process.stdin.emit("error", new Error("EPIPE"));
@@ -223,6 +232,14 @@ describe("McpClient disposal", () => {
     await client.dispose(100);
   });
 });
+
+function testClient(
+  log: (message: string) => void = () => undefined,
+  timeout = 30_000,
+  command = "mindleak-mcp"
+): McpClient {
+  return new McpClient(command, "/workspace", {}, SESSION_ID, log, timeout);
+}
 
 function fakeProcess(options: {
   exitOnEnd: boolean;
@@ -234,6 +251,7 @@ function fakeProcess(options: {
   toolMessages?: Array<{ result?: unknown; error?: unknown }>;
 }) {
   const process = new EventEmitter() as any;
+  const requests: any[] = [];
   process.stdout = new PassThrough();
   process.stderr = new PassThrough();
   process.stdin = new PassThrough();
@@ -253,6 +271,7 @@ function fakeProcess(options: {
       const line = buffered.slice(0, newline);
       buffered = buffered.slice(newline + 1);
       const request = JSON.parse(line);
+      requests.push(request);
       if (request.method === "initialize" && options.answerInitialize !== false) {
         queueMicrotask(() => {
           process.stdout.write(
@@ -260,6 +279,23 @@ function fakeProcess(options: {
               jsonrpc: "2.0",
               id: request.id,
               result: options.initializeResult ?? {},
+            })}\n`
+          );
+        });
+      } else if (request.method === "tools/call" && request.params?.name === "open_session") {
+        queueMicrotask(() => {
+          process.stdout.write(
+            `${JSON.stringify({
+              jsonrpc: "2.0",
+              id: request.id,
+              result: {
+                content: [
+                  {
+                    type: "text",
+                    text: '{"agent_id":"session:v1:test:0123456789abcdef0123456789abcdef"}',
+                  },
+                ],
+              },
             })}\n`
           );
         });
@@ -294,5 +330,5 @@ function fakeProcess(options: {
     return result;
   });
   process.kill = kill;
-  return { process, end, kill, exit };
+  return { process, end, kill, exit, requests };
 }

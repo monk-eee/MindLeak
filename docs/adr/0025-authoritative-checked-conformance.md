@@ -27,7 +27,7 @@ Conformance completion is a two-phase checked protocol:
 2. It returns `ConformanceCheck { id, token, verdict, findings }`. The SHA-256
    token covers the audit id, exact evidence, result, current task goal, active
    bindings for changed nodes, and matching active knowledge.
-3. `complete_task(task_id, agent, evidence, check)` reloads the audit row and
+3. `complete_task(task_id, evidence, check, session_id)` reloads the audit row and
    verifies its task, evidence, verdict, findings, claim window, and recomputed
    token. It never invokes the semantic judge.
 4. A changed evidence bundle or relevant intent/knowledge state makes the check
