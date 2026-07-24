@@ -205,6 +205,19 @@ and footguns, with impact and status:
   one governing goal, so honest commits no longer drift. Data-plane only — no code
   change.
 
+- **A promoted cross-plane design can become one task that no single goal can
+  conform.** — ADR-0024 was correctly implemented across Lodestar, MindLeak, the
+  extension, evaluation, and docs under promoted `task:46dd49254e4c`, but that
+  task belongs only to `goal:local-temporal-context-graph`. Its exact published
+  commit evidence therefore produced conformance audit `65` with `drift` for the
+  independently governed Intent Plane and principled-delivery surfaces, leaving
+  the completed implementation in review. — Medium impact: promotion can create
+  honest but uncompletable coarse work for designs that necessarily cross goal
+  ownership. — Left open: promotion should partition implementation by governing
+  goal (with explicit dependencies/provenance), or the task/conformance model
+  needs reviewed multi-goal coverage. Do not hide it by post-hoc relinking or
+  narrowing authoritative commit evidence.
+
 - **The `evidence_for` → Lodestar conformance seam is sound, but convention-
   sensitive.** — The producer and consumer agree on schema version 1, normalized
   `agent:<id>` observation provenance, successful-execution subset rules, and
@@ -222,9 +235,11 @@ and footguns, with impact and status:
   composite typed-session fixture with Copilot CLI 1.0.63 / Haiku 4.5 cross the
   exploration and success thresholds, but do not establish general performance
   across repositories, models, or long-running teams. The two-agent duplicate-
-  work scenario is covered by the claim CAS proof, not this agent-loop result. —
-  Medium impact on claim breadth. — Productization may proceed; broader external
-  replications remain required for universal efficacy claims.
+  work mechanism is now covered by ADR-0024's deterministic two-plane overlap
+  benchmark, but independent agents' scope accuracy and willingness to heed an
+  advisory are not. — Medium impact on claim breadth. — Productization may
+  proceed; broader external replications remain required for universal efficacy
+  claims.
 
 - **Signal consequence remains a bounded temporal proxy.** — A failure earns
   consequence only when the same command later succeeds after a related change,

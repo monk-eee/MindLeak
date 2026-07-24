@@ -6,7 +6,7 @@
 - Related: [ADR-0003](0003-agent-attribution-as-observed-edges.md) (agent
   attribution), [ADR-0004](0004-intent-plane-spec-brain.md) (loose seam),
   [ADR-0015](0015-advisory-symbol-leases.md) (no symbol locks),
-  [ADR-0018](0018-conflict-safe-concurrent-editing.md) (worktree isolation),
+  [ADR-0018](0018-conflict-safe-concurrent-editing.md) (shared-tree conflict safety),
   [SPEC-INTENT.md](../SPEC-INTENT.md), [EVALUATION.md](../EVALUATION.md)
 
 ## Context
