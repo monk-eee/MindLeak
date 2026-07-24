@@ -168,6 +168,19 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **One shared stdio MCP server gives concurrent chat sessions the same agent id.** —
+  ADR-0030 qualifies identity with a *per-process* nonce
+  (`process_nonce()` in [`crates/lodestar-mcp/src/main.rs`](crates/lodestar-mcp/src/main.rs)),
+  but VS Code multiplexes multiple concurrent chat sessions through a **single**
+  long-lived MCP server process. All of those sessions therefore share one nonce
+  and one identity (observed: `copilot-4e151e90` held three simultaneous live
+  claims across independent sessions), so per-agent claim ownership, leases, and
+  evidence attribution cannot distinguish the sessions. — Medium impact: owner
+  guards and evidence loops treat distinct concurrent agents as one; there is no
+  data loss, but coordination invariants degrade under real fleet use. — Left
+  explicit: the per-process nonce needs a per-session/per-connection discriminator
+  (e.g. a nonce minted per JSON-RPC connection or an explicit `LODESTAR_AGENT_ID`
+  set on each session) before ADR-0030 identity is safe for multiplexed stdio.
 - **A server restart can strand a legacy base-id claim until lease expiry.** —
   This run claimed work while the configured identity was the legacy `copilot`;
   after the ADR-0030 server restart the process identity became nonce-qualified,
