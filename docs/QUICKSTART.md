@@ -45,7 +45,8 @@ No Rust toolchain and no `PATH` changes — three steps and a restart:
    ownership; it defaults to `copilot`.
 
 3. **Restart your MCP client** (VS Code / Copilot, Claude Desktop, or Cursor) so
-   it picks up the new registration.
+   it picks up the new registration. For the **Copilot CLI**, start it with
+   `copilot --additional-mcp-config @.mindleak/copilot-mcp.json`.
 
 Prefer the editor experience? Each release also ships a platform-targeted VSIX
 with both servers bundled. Install it via VS Code's **Extensions: Install from
