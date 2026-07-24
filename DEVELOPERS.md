@@ -383,7 +383,7 @@ and footguns, with impact and status:
   Git HEAD/ref changes and supports `MINDLEAK_BUILD_SHA` outside a checkout. —
   Resolved Jul 2026.
 - **Docs-only design tasks could not complete via conformance, stranding
-  successors — PARTIALLY FIXED.** — A design task produces a docs commit; `complete_task` runs
+  successors — FIXED.** — A design task produces a docs commit; `complete_task` runs
   ADR-0009 code conformance, which returns `needs_human` ("evidence does not touch
   code bound to the task goal") and parks the task in `in_review` forever. Any
   implementation task chained `blocked_by` a docs-ADR predecessor then never opens
@@ -395,13 +395,13 @@ and footguns, with impact and status:
   without code conformance, then a separately reviewed create/link/no-work plan
   maps it to executive work. Blind fallback creation was removed after ADR-0028
   exposed a duplicate-task failure. A docs-only task inside an *objective's*
-  task chain (not a registered design item) —
-  e.g. the AGENTS.md/README/USAGE/SPEC-INTENT task closing the ADR-0029 advise
-  chain — still lands `in_review` via the same `needs_human` verdict, and there is
-  **no task-level accept-to-`done` verb** (only `reopen_task` / `abandon_task`
-  exist). The docs are committed and correct; `in_review` is its accurate resting
-  state. The missing piece is a human-accept transition for `needs_human` tasks,
-  or excluding pure-documentation changes from code conformance.
+  task chain (not a registered design item) still lands `in_review` via the same
+  honest `needs_human` verdict. `resolve_task(task_id, human)` now provides the
+  task-level mirror of `accept_design`: an attributed human reviewer can move
+  that reviewed task to `done` without rerunning code conformance, while the
+  original audit remains durable and self-resolution by the reviewed agent is
+  refused. `reopen_task` and `abandon_task` retain their distinct recovery and
+  retirement meanings.
 - **`next_task` surfaces non-actionable policy tasks.** — A `constraint` goal was
   decomposed into four tasks that merely restate the constraint and can never
   accrue completion evidence; `next_task` (oldest-first) hands one out on every
