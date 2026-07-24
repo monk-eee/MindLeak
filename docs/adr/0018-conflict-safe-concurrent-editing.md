@@ -1,6 +1,6 @@
 # ADR-0018: Conflict-safe concurrent editing in a shared working tree (worktrees optional)
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-23
 - Deciders: MindLeak maintainers
 - Related: [ADR-0004](0004-intent-plane-spec-brain.md) (intent plane),
