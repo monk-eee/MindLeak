@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pilot": "v0.1.2-independent-developers",
+  "task_id": "task:8b15c8deb992",
+  "status": "recruiting",
+  "opened_at": "2026-07-24T08:05:00Z",
+  "release_url": "https://github.com/monk-eee/MindLeak/releases/tag/v0.1.2",
+  "protocol": "docs/pilots/v0.1.2-external-pilot.md",
+  "recruitment_issue": "https://github.com/monk-eee/MindLeak/issues/8",
+  "target": {
+    "minimum_recruited": 3,
+    "maximum_recruited": 5,
+    "minimum_day_7_completions": 2,
+    "observation_days": 7,
+    "first_useful_context_seconds": 300
+  },
+  "participants": [],
+  "counts": {
+    "recruited": 0,
+    "consented": 0,
+    "install_attempted": 0,
+    "install_succeeded": 0,
+    "day_1_observed": 0,
+    "day_7_observed": 0,
+    "retained": 0,
+    "disabled": 0,
+    "removed": 0
+  },
+  "claims": {
+    "external_adoption": "not_yet_measured",
+    "retention": "not_yet_measured"
+  }
+}
