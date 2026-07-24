@@ -24,6 +24,35 @@ worktrees) need to coordinate without diluting shared intent.
 Everything on the **write path is deterministic** (pattern matching, zero LLM
 tokens). Optional local models only run asynchronously, off the hot path.
 
+## First value without VS Code
+
+The extension's Workspace view is a projection over these same MCP primitives;
+headless clients remain first-class. A new workspace can reach useful context
+without a model:
+
+```text
+# 1. Initialize both stdio servers and retain each initialize.serverInfo build.
+#    Give both processes the same explicit agent id for one coordinated session.
+MINDLEAK_AGENT_ID = "client-a1b2c3d4"
+LODESTAR_AGENT_ID = "client-a1b2c3d4"
+# 2. Create the first deterministic structural context.
+ingest_file(path = "src/main.ts", content = "<current file content>")
+
+# 3. Confirm and inspect that context.
+graph_stats()
+graph_snapshot(seed = "artifact:src/main.ts", limit = 60)
+
+# 4. Surface coordination only when durable work exists.
+board(include_terminal = false)
+design_board()
+```
+
+If a server cannot initialize, report its command/path and initialize error. If
+terminal, Git, embeddings, or consolidation are unavailable, name that optional
+capability while continuing to use deterministic ingestion and graph queries.
+`recall` is optional; `graph_snapshot`, FTS-seeded traversal, and impact queries
+do not require an embedding model.
+
 ---
 
 ## The memory loop

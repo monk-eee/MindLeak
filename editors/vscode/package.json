@@ -39,6 +39,11 @@
     "views": {
       "mindleak": [
         {
+          "id": "mindleak.readinessView",
+          "name": "Workspace",
+          "type": "tree"
+        },
+        {
           "id": "mindleak.graphView",
           "name": "Context Graph",
           "type": "webview"
@@ -66,6 +71,11 @@
       ]
     },
     "commands": [
+      {
+        "command": "mindleak.readiness.refresh",
+        "title": "MindLeak: Refresh Workspace Readiness",
+        "icon": "$(refresh)"
+      },
       {
         "command": "mindleak.refresh",
         "title": "MindLeak: Refresh Graph",
@@ -194,6 +204,11 @@
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "mindleak.readiness.refresh",
+          "when": "view == mindleak.readinessView",
+          "group": "navigation"
+        },
         {
           "command": "mindleak.refresh",
           "when": "view == mindleak.graphView",
@@ -391,7 +406,7 @@
         "mindleak.agentId": {
           "type": "string",
           "default": "vscode",
-          "description": "Agent id recorded for attribution (MINDLEAK_AGENT). Empty disables attribution from this editor."
+          "description": "Base attribution label. Each extension activation derives one unique fixed id from it and shares that exact identity across both MCP planes."
         },
         "mindleak.autonomousConsolidation": {
           "type": "boolean",

@@ -121,6 +121,12 @@ Telemetry pane renders a derived, real-time effectiveness readout (graph size,
 tool success/error rates, latency, per-tool metrics) from `graph_stats` and
 `telemetry_snapshot`, with opt-in live event logging; the derivations are the
 pure helpers in `src/util.ts`.
+The Workspace readiness tree follows the same derived-state rule: pure
+`src/readiness.ts` maps MCP initialize identities, `graph_stats`, `board`,
+`design_board`, and sensor health to one next action; `readinessController.ts`
+performs those reads and `readinessViewProvider.ts` is thin VS Code rendering.
+Only the one-time teaching-view dismissal uses workspace state; no graph or
+intent authority is copied into the extension.
 The Intent Board's allocation flow collects optional concrete paths/symbol ids,
 combines both ADR-0024 overlap reads, and shows scoped work as a planning hint;
 warnings remain explicitly overridable.

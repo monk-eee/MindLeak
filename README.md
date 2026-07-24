@@ -156,6 +156,26 @@ install-to-first-prompt walkthrough. Measured outcomes, supported
 language/platform matrices, and limitations:
 [`docs/RELEASE-NOTES.md`](docs/RELEASE-NOTES.md).
 
+### First five minutes
+
+Open the MindLeak activity-bar icon after installing the VSIX. The **Workspace**
+view derives one current state from the two MCP servers; it does not keep a
+second copy of graph or task data.
+
+1. Confirm the Memory and Intent rows show the exact running server builds and
+   the effective per-activation identity shared by both planes.
+2. Open a source file and choose **Ingest active file** when the workspace is
+   `ready_empty`.
+3. Open the **Context Graph** from the next action to inspect the first useful
+   file/symbol neighbourhood.
+4. When Lodestar has actionable tasks or designs, the action switches to the
+   appropriate Intent or Design Board.
+
+No account, network service, Rust toolchain, embedding model, or chat model is
+required for this path. Optional terminal/Git capture failures are named
+separately and never present the deterministic core as offline. Headless MCP
+clients can follow the same calls in [docs/USAGE.md](docs/USAGE.md#first-value-without-vs-code).
+
 ---
 
 ## Run the MCP server
@@ -253,6 +273,7 @@ coordinate through one plane.
 | `release_task` / `block_task` | Return or block work. |
 | `reopen_task` | Return a stranded task (in review, or a manual hold) to claimable `open`. |
 | `abandon_task` | Retire open/review/blocked or expired-claim work to durable `abandoned`; live and parked ownership stays protected. |
+| `resolve_task` | Human-accept an `in_review` task (a `drift`/`needs_human` completion) to `done` with no code-conformance re-run — the task-level mirror of `accept_design`. Requires a reviewer identity and refuses self-resolution by the reviewed agent. |
 | `ask_question` / `answer` | Park a claimed task in `needs_input` with a durable question; a human `answer` resumes it under the same owner with a fresh lease. |
 | `pause_task` / `resume_task` | Owner deliberately parks (`paused`) and resumes work, keeping the claim and evidence window. |
 | `task_qa` | The durable, append-only question/answer thread for a task. |
