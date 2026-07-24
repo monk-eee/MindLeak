@@ -5,8 +5,8 @@ use crate::ingest::execution::ExecutionRecord;
 use crate::ingest::git::CommitRecord;
 use crate::ingest::structure::{HierarchyRelation, ImportTarget};
 use crate::{
-    ingest, now_unix, ArtifactStub, Edge, ForgetOutcome, MindLeak, Node, NodeType, RelationType,
-    Result, WriteOutcome,
+    ingest, now_unix, ArtifactStub, Edge, ForgetOutcome, MindLeak, Node, NodeType,
+    ReconcileOutcome, RelationType, Result, WriteOutcome,
 };
 
 impl MindLeak {
@@ -63,6 +63,34 @@ impl MindLeak {
         let norm = ingest::normalize_path(path);
         let artifact_id = format!("artifact:{norm}");
         self.store.forget_artifact(&artifact_id)
+    }
+
+    /// Reconcile the graph against the workspace's current file set: forget every
+    /// file artifact whose path is not in `current_paths` (deleted or moved
+    /// outside the editor's delete events) or is build/VCS junk. This cleans
+    /// stale structure in one pass rather than waiting ~a month for it to decay,
+    /// and catches deletions the editor's `forget_file` hook cannot see (e.g. a
+    /// terminal `git rm` or an external move).
+    pub fn reconcile_workspace(&self, current_paths: &[String]) -> Result<ReconcileOutcome> {
+        let keep: HashSet<String> = current_paths
+            .iter()
+            .map(|p| ingest::normalize_path(p))
+            .collect();
+        let mut outcome = ReconcileOutcome::default();
+        for artifact_id in self.store.artifact_ids()? {
+            let path = artifact_id
+                .strip_prefix("artifact:")
+                .unwrap_or(&artifact_id);
+            if ingest::is_ignored_path(path) || !keep.contains(path) {
+                let forgotten = self.store.forget_artifact(&artifact_id)?;
+                if forgotten.nodes_removed > 0 || forgotten.edges_removed > 0 {
+                    outcome.files_forgotten += 1;
+                    outcome.nodes_removed += forgotten.nodes_removed;
+                    outcome.edges_removed += forgotten.edges_removed;
+                }
+            }
+        }
+        Ok(outcome)
     }
 
     /// Replace a source file's authoritative structural snapshot.

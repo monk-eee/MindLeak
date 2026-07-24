@@ -161,6 +161,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     serverHealth = "memory connected";
     updateHealth();
     output.appendLine(`Connected to ${serverPath} (db: ${dbPath})`);
+    if (config.get<boolean>("autoIngestOnSave", true)) {
+      void reconcileWorkspace();
+    }
   } catch (err) {
     serverHealth = "memory unavailable";
     updateHealth();
@@ -248,6 +251,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   context.subscriptions.push(
     vscode.commands.registerCommand("mindleak.refresh", () => refresh()),
     vscode.commands.registerCommand("mindleak.prune", () => prune()),
+    vscode.commands.registerCommand("mindleak.reconcile", () => reconcileWorkspace()),
     vscode.commands.registerCommand("mindleak.export", () => exportSnapshot()),
     vscode.commands.registerCommand("mindleak.backup", () => backupBoth()),
     vscode.commands.registerCommand("mindleak.resetMemory", () => resetMemory()),
@@ -389,6 +393,34 @@ async function onDelete(uri: vscode.Uri): Promise<void> {
     await refresh();
   } catch (err) {
     output.appendLine(`forget error: ${(err as Error).message}`);
+  }
+}
+
+// Reconcile the graph against the workspace's real file set: forget artifacts for
+// files that no longer exist (deleted/moved outside the editor, or ingested
+// before the junk filter existed). The file list is the authoritative truth; the
+// server forgets anything not in it. Runs once on activation to clear accumulated
+// stale structure, and on demand via the command.
+async function reconcileWorkspace(): Promise<void> {
+  if (!client?.isReady()) {
+    return;
+  }
+  try {
+    const uris = await vscode.workspace.findFiles(
+      "**/*",
+      "**/{node_modules,target,dist,coverage,.git,.mindleak,.lodestar,.vscode-test,out}/**"
+    );
+    const paths = uris.map((u) => vscode.workspace.asRelativePath(u, false).replace(/\\/g, "/"));
+    const outcome = await client.callTool("reconcile_workspace", { paths });
+    if (outcome?.files_forgotten > 0) {
+      output.appendLine(
+        `Reconciled workspace: forgot ${outcome.files_forgotten} stale file(s) ` +
+          `(${outcome.nodes_removed} nodes, ${outcome.edges_removed} edges).`
+      );
+      await refresh();
+    }
+  } catch (err) {
+    output.appendLine(`reconcile error: ${(err as Error).message}`);
   }
 }
 

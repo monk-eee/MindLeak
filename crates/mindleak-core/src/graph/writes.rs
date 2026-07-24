@@ -182,6 +182,20 @@ impl GraphStore {
         Ok(outcome)
     }
 
+    /// Every artifact node id currently in the graph. Used to reconcile the
+    /// graph against the workspace's real file set.
+    pub fn artifact_ids(&self) -> Result<Vec<String>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT id FROM nodes WHERE type = 'artifact'")?;
+        let rows = statement.query_map([], |row| row.get(0))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row?);
+        }
+        Ok(ids)
+    }
+
     /// Forget everything the graph knows about a deleted file: the symbols it
     /// defined (and every edge touching them) plus the artifact node and its
     /// edges. Unlike `replace_structure`, this reaps symbols outright even when a

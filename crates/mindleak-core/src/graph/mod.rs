@@ -18,8 +18,9 @@ mod writes;
 
 pub use types::{
     AgentActivity, ArtifactStub, ConformanceEvidence, Direction, EvidenceProvenance, ForgetOutcome,
-    GraphExport, PromotionCandidate, PruneOutcome, ResetOutcome, ScoredNode, SignalCandidate,
-    SignalConsolidationOutcome, Subgraph, WeightedEdge, WorkingSetItem, WriteOutcome,
+    GraphExport, PromotionCandidate, PruneOutcome, ReconcileOutcome, ResetOutcome, ScoredNode,
+    SignalCandidate, SignalConsolidationOutcome, Subgraph, WeightedEdge, WorkingSetItem,
+    WriteOutcome,
 };
 
 /// The persistent graph store.

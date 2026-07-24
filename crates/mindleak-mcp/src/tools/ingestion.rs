@@ -71,6 +71,15 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "reconcile_workspace",
+            "description": "Reconcile the graph against the workspace's current file set: forget every file artifact whose path is not in `paths` (deleted/moved outside the editor) or is build/VCS junk. Cleans stale structure in one pass and catches deletions the editor never saw.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "paths": { "type": "array", "items": { "type": "string" }, "default": [] } },
+                "required": ["paths"]
+            }
+        }),
+        json!({
             "name": "boost_entity",
             "description": "Record that a node was focused so recency views surface it, without changing incident evidence weights or decay clocks.",
             "inputSchema": {
@@ -131,6 +140,13 @@ pub(super) fn dispatch(
             let outcome = engine.forget_file(&path).map_err(|e| e.to_string())?;
             Ok(text_result(&json!(outcome)))
         })()),
+        "reconcile_workspace" => Some((|| {
+            let paths = str_array(args, "paths");
+            let outcome = engine
+                .reconcile_workspace(&paths)
+                .map_err(|e| e.to_string())?;
+            Ok(text_result(&json!(outcome)))
+        })()),
         "boost_entity" => Some((|| {
             let id = req_str(args, "id")?;
             let found = engine.boost(&id).map_err(|e| e.to_string())?;
@@ -176,5 +192,36 @@ mod tests {
         );
         let res = call_ok(&engine, "forget_file", json!({ "path": "src/gone.rs" }));
         assert!(content_text(&res).contains("nodes_removed"));
+    }
+
+    #[test]
+    fn reconcile_workspace_forgets_absent_and_junk_files() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        call_ok(
+            &engine,
+            "ingest_file",
+            json!({ "path": "src/keep.rs", "content": "pub fn a() {}" }),
+        );
+        call_ok(
+            &engine,
+            "ingest_file",
+            json!({ "path": "src/gone.rs", "content": "pub fn b() {}" }),
+        );
+        let res = call_ok(
+            &engine,
+            "reconcile_workspace",
+            json!({ "paths": ["src/keep.rs"] }),
+        );
+        assert!(content_text(&res).contains("files_forgotten"));
+        assert!(engine
+            .store()
+            .get_node("artifact:src/keep.rs")
+            .unwrap()
+            .is_some());
+        assert!(engine
+            .store()
+            .get_node("artifact:src/gone.rs")
+            .unwrap()
+            .is_none());
     }
 }
