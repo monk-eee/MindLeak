@@ -254,7 +254,8 @@ selecting a default.
 |---|---|---|
 | `MINDLEAK_WORKSPACE` | process working directory | project root used for default database/config paths |
 | `MINDLEAK_DB` | `<workspace>/.mindleak/graph.db` | graph database path |
-| `MINDLEAK_AGENT` | *(empty = off)* | agent id for attribution (`observed` edges) |
+| `MINDLEAK_AGENT` | *(empty = off)* | agent **base label** for attribution (`observed` edges); the running id is `<base>-<nonce>`, unique per process so concurrent agents never alias onto one id (ADR-0030) |
+| `MINDLEAK_AGENT_ID` | *(empty)* | explicit, verbatim per-process id (pin); wins over the `MINDLEAK_AGENT` base + nonce, for tests and deliberately fixed identities (ADR-0030) |
 | `MINDLEAK_WORKING_SET_SIZE` | `7` | hard cap for `working_set` results, bounded 1-32 |
 | `MINDLEAK_CONFIG` | `<workspace>/.mindleak.toml` | explicit config path; relative paths resolve from the workspace |
 | `MINDLEAK_PRUNE_THRESHOLD` | file or `0.05` | active-edge/prune threshold override |
@@ -281,7 +282,8 @@ selecting a default.
 | Variable | Default | Meaning |
 |---|---|---|
 | `LODESTAR_DB` | `<cwd>/.lodestar/spec.db` | intent-plane database path (share across worktrees) |
-| `LODESTAR_AGENT` | *(empty)* | agent id for task ownership |
+| `LODESTAR_AGENT` | *(empty)* | agent **base label** for task ownership; the running id is `<base>-<nonce>`, unique per process so concurrent agents never alias onto one claim (ADR-0030) |
+| `LODESTAR_AGENT_ID` | *(empty)* | explicit, verbatim per-process id (pin); wins over the `LODESTAR_AGENT` base + nonce (ADR-0030) |
 | `LODESTAR_LLM_URL` | `http://localhost:11434/v1` | OpenAI-compatible server for `decompose_goal` / semantic conformance |
 | `LODESTAR_MODEL` | `glm4:9b` | model |
 | `LODESTAR_LLM_API_KEY` | *(empty)* | bearer token for hosted servers |
