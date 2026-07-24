@@ -1054,6 +1054,39 @@ fn evidence_bundle_uses_attributed_mutations_within_the_work_window() {
         .any(|fact| { fact.relation == "refactored" && fact.target_id == "artifact:src/auth.rs" }));
 }
 
+#[test]
+fn evidence_isolated_between_explicit_session_agents() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    for (agent, sha, path) in [
+        ("session:v1:test:first", "first", "src/first.rs"),
+        ("session:v1:test:second", "second", "src/second.rs"),
+    ] {
+        engine
+            .ingest_commit_for_agent(
+                agent,
+                &CommitRecord {
+                    sha: Some(sha.into()),
+                    message: format!("{agent} change"),
+                    changed_files: vec![path.into()],
+                    timestamp: 100,
+                },
+            )
+            .unwrap();
+    }
+
+    let first = engine
+        .evidence_for(None, "session:v1:test:first", 90, 110)
+        .unwrap();
+    let second = engine
+        .evidence_for(None, "session:v1:test:second", 90, 110)
+        .unwrap();
+
+    assert_eq!(first.commit_ids, vec!["intent:first"]);
+    assert_eq!(first.changed_node_ids, vec!["artifact:src/first.rs"]);
+    assert_eq!(second.commit_ids, vec!["intent:second"]);
+    assert_eq!(second.changed_node_ids, vec!["artifact:src/second.rs"]);
+}
+
 // ---- ADR-0008 semantic recall (embedder DI seam, no live model) ------------
 
 /// Deterministic keyword embedder: texts sharing a keyword share a vector
