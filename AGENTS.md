@@ -100,6 +100,22 @@ style nit.
 - **Keep the surface tight.** Only make items `pub` that are actually called from
   outside the module; a `pub fn` nobody calls is dead surface — delete it.
 
+### Ask before acting (NON-NEGOTIABLE, ADR-0029)
+- **Consult the constitution before you touch code.** At claim time, and before
+  editing any `governed`/`forbid_change` file, call Lodestar's `advise` (or read
+  the governing clauses surfaced on `claim_task` / `next_task`) with the
+  `artifact:`/`symbol:` ids you intend to change. It returns the clauses that
+  govern that scope and a proportional disposition — `advise` (proceed, honour
+  the clauses), `review` (you would drift outside a covering task — get one
+  first), `block` (a `forbid_change` lock — needs a waiver, not a commit), or
+  `needs_human` (no constitution adopted).
+- **`advise` informs; it never gates.** It is evidence-free, records no verdict,
+  changes no task state, needs no model, and never blocks a compare-and-swap
+  claim. Skipping it does not dodge the verdict — retrospective conformance at
+  `complete_task` (ADR-0009/0025) is still the backstop that lands drift or a
+  violation in review or blocked. The point is to catch it *before* you do the
+  work, not after.
+
 ### Test-driven workflow (NON-NEGOTIABLE)
 - **Tests are the only way we ship.** Every new tool, parser, or facade method
   gets a test — colocated `#[cfg(test)] mod tests` in the module, or an
@@ -137,6 +153,15 @@ style nit.
   markers — MindLeak ingests those into intent nodes.
 - **Stage explicitly with named paths** and review every diff before committing —
   do not blindly accept generated code. Never `git add -A` a mixed working tree.
+- **One checkout, one fleet branch, one publisher (ADR-0032).** Agents share the
+  primary checkout and one `fleet/<goal>` branch. Do not create Git worktrees and
+  do not cherry-pick routine work. Only the designated integrator may fetch,
+  reconcile, push with `node scripts/canonical-push.mjs`, or update the pull
+  request; every other agent edits and makes scoped commits only.
+- **Divergence stops the fleet.** If the remote branch is not an ancestor of
+  `HEAD`, stop taking work, finish or release current claims, reach a scoped clean
+  checkpoint, and reconcile once in the primary checkout. Never move `main`
+  underneath dirty files and never publish from a side lineage.
 
 ### Doc discipline (NON-NEGOTIABLE)
 Doc drift is treated like a failing test. A shipped change updates the relevant

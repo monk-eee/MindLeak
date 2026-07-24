@@ -7,6 +7,18 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Ask-before-act constitutional advice (ADR-0029).** Agents can now ask what
+  governs an intended change *before* doing it, not only discover drift at
+  `complete_task`. The new `advise` tool takes the `artifact:`/`symbol:` ids you
+  are about to change (and an optional covering task) and returns the governing
+  clauses plus a proportional disposition — advise / review / block / needs_human
+  — with no evidence, no recorded verdict, no task-state change, and no model
+  dependency; it never gates the compare-and-swap claim. `claim_task` and
+  `next_task` now surface the clauses governing a task on pickup,
+  `governing_for_task` exposes them for any task, and the VS Code Intent Board
+  shows them on a claimed task. AGENTS.md makes consulting the advisory a
+  claim-time ritual, with retrospective conformance (ADR-0009/0025) as the
+  backstop.
 - **Pre-flight duplicate-work awareness across both planes (ADR-0024).** A
   Lodestar claim can atomically declare advisory path globs and opaque MindLeak
   symbol ids; `task_scope`, scope-enriched `board`, and Lodestar `check_overlap`
@@ -29,6 +41,15 @@ to [Semantic Versioning](https://semver.org/).
   (editor-mediated events only, so a file briefly absent during a git operation
   is never wrongly reaped). Historical intent and execution nodes remain; only
   their edges to the gone file are cut.
+- **`reconcile_workspace` clears accumulated stale structure in one pass.**
+  `forget_file` only catches deletions the editor sees going forward; files
+  deleted or moved before it existed (or via a terminal `git rm`) leave structure
+  that lingers until it decays. The new `reconcile_workspace` tool takes the
+  workspace's current file set and forgets every file artifact not in it (plus any
+  build/VCS junk), and the extension runs it once on activation from an authoritative
+  `findFiles` listing (also available on demand via *MindLeak: Reconcile Graph with
+  Workspace Files*). No server-side filesystem scan, so a file briefly absent
+  during a git operation is never reaped.
 - **Telemetry distinguishes a resolved historical error from a currently failing
   tool (ADR-0010).** The append-only trail means a tool's lifetime `errors` never
   shrinks, so a single past failure used to read as a permanent fault in the VS
@@ -103,6 +124,13 @@ to [Semantic Versioning](https://semver.org/).
   multi-objective creation, and repair/history for materialized designs.
 
 ### Changed
+- **Fleet integration now preserves one canonical history (ADR-0032).** Repository
+  work uses one primary checkout, one shared `fleet/<goal>` branch, and one
+  designated publisher. `canonical-push.mjs` pushes only that branch's exact
+  `HEAD` and refuses protected branches, linked worktrees, staged index state,
+  and remote divergence; routine cherry-picking and side-lineage publication are
+  forbidden. Cargo hooks validate committed bytes through a temporary Git index
+  rather than registering a throwaway worktree.
 - **The install and usage on-ramp is action-first and easier to follow.** The
   Quickstart now leads with a three-step download-register-restart happy path,
   adds a "confirm it's connected" tool-list check with the one common failure
@@ -123,13 +151,6 @@ to [Semantic Versioning](https://semver.org/).
   action the board reflects rather than a button. The README index links both.
 
 ### Fixed
-- **`isolated-push` can create a new remote branch (ADR-0018).** The helper used
-  the shorthand `HEAD:<branch>` destination, which Git can resolve only when the
-  remote branch already exists; a first push to a new branch failed before any
-  hooks ran. It now pushes to the explicit `HEAD:refs/heads/<branch>` ref. The
-  collision harness exercises the helper against a throwaway local bare remote
-  from both primary and linked worktrees, proving new-branch creation while
-  excluding foreign staged or broken working-tree files.
 - **The Context Graph visualizer stays responsive on large graphs.** A seeded
   snapshot (the neighbourhood of the active file) expanded the full depth-2 reach
   with no cap, so expanding into a hub node — an agent that has observed
@@ -246,21 +267,21 @@ to [Semantic Versioning](https://semver.org/).
   abandoned work stays durable but drops out of a lean coordination view. Pairs
   with `abandon_task` to keep the board uncluttered without decaying intent
   (ADR-0004: the Intent Plane never expires tasks).
-- **Git hooks are scoped and isolation-aware to stop concurrent-agent poisoning.**
+- **Git hooks are scoped and committed-snapshot aware to stop concurrent-agent poisoning.**
   The cargo fmt/clippy/test pre-commit and pre-push hooks now run only for the
   crate packages a change touches, and — on push, or when a foreign untracked
-  file sits in an affected crate — validate against a throwaway worktree snapshot
-  rather than the shared dirty tree. An unrelated agent's broken crate or
+  file sits in an affected crate — validate a materialized tree through a
+  temporary Git index rather than the shared dirty tree. An unrelated agent's broken crate or
   uncommitted WIP can no longer fail your commit or push (portable runner
-  `scripts/cargo-precommit.mjs`; ADR-0018).
-- **Two helper scripts for safe concurrent git in a shared tree (ADR-0018).**
+  `scripts/cargo-precommit.mjs`; ADR-0032).
+- **Two helper scripts for safe concurrent git in one checkout (ADR-0032).**
   `scripts/scoped-commit.mjs` stages and commits only the paths you declare
   (pathspec; never `git add -A`), so another agent's staged work is never swept
-  into your commit; `scripts/isolated-push.mjs` pushes a commit through the hooks
-  from a throwaway worktree so another agent's broken WIP cannot poison your
-  pre-push validation. A collision harness (`scripts/collision-harness.mjs`,
-  `make collision-harness`) proves the no-clobber, independent-commit, and
-  honest-merge-conflict properties in a throwaway sandbox repo.
+  into your commit; `scripts/canonical-push.mjs` publishes only the current fleet
+  branch's exact `HEAD` from the primary checkout after fetching and proving the
+  remote branch is its ancestor. Vitest integration cases cover scoped-index
+  preservation, committed-snapshot validation, divergence refusal, and exact-HEAD
+  publication in disposable repositories.
 
 ### Added
 - **Constitutional governance now has a holistic adoption design (ADR-0026).**

@@ -28,7 +28,7 @@ repos:
         pass_filenames: false
 
       - id: cargo-clippy
-        name: cargo clippy (scoped, isolated)
+        name: cargo clippy (scoped, committed snapshot)
         entry: node scripts/cargo-precommit.mjs clippy commit
         language: system
         types: [rust]
@@ -51,11 +51,18 @@ repos:
         language: system
         files: ^(editors/vscode/(src|media)/.*\.(ts|js)|scripts/.*\.mjs)$
         pass_filenames: true
+      - id: canonical-push
+        name: canonical fleet publisher
+        entry: node scripts/canonical-push.mjs --verify-pre-push
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
 
       # Slower gate — runs on push, not every commit. Validates the pushed
-      # commit in isolation so another agent's uncommitted WIP cannot poison it.
+      # commit's tree so another agent's uncommitted WIP cannot poison it.
       - id: cargo-test
-        name: cargo test (scoped, isolated)
+        name: cargo test (scoped, committed snapshot)
         entry: node scripts/cargo-precommit.mjs test push
         language: system
         types: [rust]

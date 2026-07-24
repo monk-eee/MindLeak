@@ -147,7 +147,20 @@ or bounded semantic judgments. The first implementation uses typed control
 adapters, not a generic policy DSL, preserving ADR-0009's deliberately narrow
 surface.
 
-## 5. A common core for adoption
+Controls are not limited to code checks. A **workflow control** observes a
+procedural fact rather than a property of a changed file — for example, "this
+change reached a protected branch through a reviewed merge rather than a direct
+push". Branch-based development is the canonical illustration of the two
+enforcement layers working together: the clause is a workflow-scoped rule
+("development happens on branches; a protected branch advances only by reviewed
+merge", with its rationale, consequence, and waiver policy), while the control is
+the concrete mechanism that reports compliance — a client-side `pre-push` hook or
+a server-side branch policy. The hook supplies the teeth that exist today; the
+clause supplies the legitimacy and the bounded-waiver path for a justified
+exception (a hotfix), instead of a silent `--no-verify` bypass. It is also the
+first control whose scope is *workflow*, not a changed `artifact:`/`symbol:`
+node, so conformance must resolve it by declared workflow scope rather than by
+code bindings alone.
 
 Lodestar ships a small **Common Core** as a versioned proposal pack. It is a
 starting vocabulary, not universal law. Each project reviews every clause and
@@ -428,7 +441,7 @@ and documentation surface.
 | 1 | **Add constitutional representation and migrate existing goals.** Introduce constitution versions, project purpose/preamble, `principle`, clause provenance, evidence contract, consequence, waiver policy, and lifecycle state. | Existing active goals migrate into the first local version without invented rationale or authority; incomplete clauses are review-only; absent/draft/active states and migrations are covered; callers move to the new model in the same change rather than through a compatibility fork. |
 | 2 | **Implement immutable policy packs and the Common Core.** Add pack schema validation, content digest/version handling, conflict declarations, and the five Common Core proposals. | Pack adoption materialises self-contained local clauses with provenance; rejected dispositions persist; an upstream version change cannot alter active local policy; conflicting packs require review. |
 | 3 | **Build deterministic repository bootstrap and activation.** Add `constitution_status`, fact discovery, `propose_constitution`, `review_clause`, and `activate_constitution`. | A fixture repository with no constitution reaches a cited draft; every Common Core clause has an adopt/tailor/reject disposition; activation is atomic and refuses unresolved/conflicting drafts; no model is required and no proposal activates itself. |
-| 4 | **Bind typed controls and ratchets to clauses.** Add versioned `Control` and `ControlObservation` values, typed adapters, and clause-aware conformance resolution; migrate `forbid_change` as the first deterministic control and add one reviewed ratchet end to end. | A failed orphan control cannot block; the same observation maps to the consequence declared by its clause; broad principles route to review; conformance audit/token records the constitutional version, clause, control version, and evidence used. |
+| 4 | **Bind typed controls and ratchets to clauses.** Add versioned `Control` and `ControlObservation` values, typed adapters, and clause-aware conformance resolution; migrate `forbid_change` as the first deterministic code control, add one reviewed ratchet, and add branch-based development (no direct push to a protected branch) as the first *workflow* control end to end. | A failed orphan control cannot block; the same observation maps to the consequence declared by its clause; a workflow control resolves by declared workflow scope rather than by code-node bindings; broad principles route to review; conformance audit/token records the constitutional version, clause, control version, and evidence used. |
 | 5 | **Add amendments and bounded waivers.** Implement attributed constitutional versions, pack-upgrade proposals, `grant_waiver`, and `revoke_waiver`, including authority, scope, expiry, and remediation linkage. | Valid waivers affect only matching future checks and appear in the audit; expiry/revocation restores enforcement; permanent exceptions require an amendment; changed policy or waiver state invalidates a stale checked-conformance token. |
 | 6 | **Prove adoption and publish the extension contract.** Run end-to-end pilots for an ungoverned fixture and a migrated governed repository; publish pack authoring/upgrade guidance and a self-contained constitution export. | Both adoption paths satisfy §13; exported policy includes philosophy, versions, provenance, controls, and active waivers; deterministic operation works without an LLM; focused and workspace validation are green and user-visible surfaces are documented. |
 

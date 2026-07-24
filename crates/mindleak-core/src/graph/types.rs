@@ -117,6 +117,15 @@ pub struct ForgetOutcome {
     pub edges_removed: usize,
 }
 
+/// Result of reconciling the graph against the workspace's current file set:
+/// how many stale/junk file artifacts were forgotten and what that reaped.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct ReconcileOutcome {
+    pub files_forgotten: usize,
+    pub nodes_removed: usize,
+    pub edges_removed: usize,
+}
+
 /// Complete, human-readable view of the active graph at one point in time.
 #[derive(Debug, Clone, Serialize)]
 pub struct GraphExport {

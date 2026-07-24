@@ -200,6 +200,7 @@ It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
 | `ingest_commit` | Commit → intent node + refactored edges + rationale. |
 | `ingest_file` | File → artifact + extracted symbols (`contains`). |
 | `forget_file` | Deleted/renamed file → reap its artifact, symbols, and their edges. |
+| `reconcile_workspace` | Forget artifacts for files no longer in the workspace set (bulk cleanup). |
 | `boost_entity` | Record node focus for recency views without rewriting evidence. |
 | `graph_snapshot` | Subgraph for visualization. |
 | `prune_graph` | Surface near-expiry proven signal for consolidation, then purge decayed noise and unreferenced stubs. |
@@ -231,8 +232,10 @@ coordinate through one plane.
 |---|---|
 | `define_goal` / `supersede_goal` | Write/version the constitution (objective · constraint · invariant). |
 | `get_constitution` | The authoritative intent to read **before acting**. |
+| `advise` | **Ask before acting** (ADR-0029): given the `artifact:`/`symbol:` ids you intend to change, returns the governing clauses + a proportional disposition (advise / review / block / needs_human). Evidence-free, records nothing, needs no model, never gates a claim. |
 | `link_goal_to_code` | Bind a goal to MindLeak `artifact:`/`symbol:` nodes. |
 | `unlink_goal_from_code` / `governing_goals` | Prune a stale goal↔code binding, and audit which goals govern a node — keeps conformance honest. |
+| `governing_for_task` | The clauses governing a task's linked scope — what the Intent Board surfaces on a claimed task (ADR-0029). |
 | `export_constitution` | Render the constitution to committed-friendly markdown. |
 | `create_task` / `decompose_goal` | Add claimable work; `create_task(blocked_by=...)` creates a progressive handoff. |
 | `next_task` | Suggest the next unblocked, claimable task. |
@@ -313,7 +316,7 @@ crates/
   mindleak-core/   memory plane: db · model · decay · graph · ingest · consolidate
   mindleak-mcp/    stdio JSON-RPC MCP server (23 tools)
   lodestar-core/   intent plane: constitution · tasks (claim/lease) · conformance · knowledge
-  lodestar-mcp/    stdio JSON-RPC MCP server (43 tools)
+  lodestar-mcp/    stdio JSON-RPC MCP server (49 tools)
 editors/
   vscode/          passive sensor + Cytoscape visualizer
 docs/              SPEC · SPEC-INTENT · ARCHITECTURE · CONTRIBUTING

@@ -5,7 +5,7 @@ use super::conformance::parse_evidence;
 use super::{
     bool_arg, i64_arg, ok, opt_str, optional_string_arg, rendered, req_str, str_array, text,
 };
-use lodestar_core::{Lodestar, TaskScope};
+use lodestar_core::{GoverningClause, Lodestar, TaskScope};
 use serde_json::{json, Value};
 
 pub(super) fn definitions() -> Vec<Value> {
@@ -245,8 +245,11 @@ pub(super) fn dispatch(
         })()),
         "next_task" => Some((|| match engine.next_task().map_err(|e| e.to_string())? {
             Some(t) => {
+                let governing = engine
+                    .governing_clauses_for_task(&t.id)
+                    .map_err(|e| e.to_string())?;
                 let owner = t.owner.as_deref().unwrap_or("unclaimed");
-                let markdown = format!(
+                let mut markdown = format!(
                     "**Next task**: `{}`\n\n**{}**\n\n- Goal: `{}`\n- Status: **{}** / Owner: {}\n\n{}",
                     t.id,
                     t.title,
@@ -255,24 +258,42 @@ pub(super) fn dispatch(
                     owner,
                     t.acceptance
                 );
-                rendered(markdown, &t)
+                markdown.push_str(&render_governing(&governing));
+                let mut structured = serde_json::to_value(&t).map_err(|e| e.to_string())?;
+                if let Some(obj) = structured.as_object_mut() {
+                    obj.insert(
+                        "governing".to_string(),
+                        serde_json::to_value(&governing).map_err(|e| e.to_string())?,
+                    );
+                }
+                rendered(markdown, &structured)
             }
             None => text("no claimable task".to_string()),
         })()),
         "claim_task" => Some((|| {
+            let task_id = req_str(args, "task_id")?;
             let scope = TaskScope {
                 paths: str_array(args, "paths"),
                 symbols: str_array(args, "symbols"),
             };
             let won = engine
                 .claim_task_with_scope(
-                    req_str(args, "task_id")?,
+                    task_id,
                     opt_str(args, "agent").unwrap_or_default().as_str(),
                     i64_arg(args, "lease_secs", 300),
                     &scope,
                 )
                 .map_err(|e| e.to_string())?;
-            ok(&json!({ "won": won }))
+            // On a won claim, surface what governs the work so the agent sees it
+            // on pickup without a separate advise call (ADR-0029).
+            let governing = if won {
+                engine
+                    .governing_clauses_for_task(task_id)
+                    .map_err(|e| e.to_string())?
+            } else {
+                Vec::new()
+            };
+            ok(&json!({ "won": won, "governing": governing }))
         })()),
         "task_scope" => Some((|| {
             ok(&engine
@@ -411,6 +432,25 @@ pub(super) fn dispatch(
         })()),
         _ => None,
     }
+}
+
+/// Render the clauses governing a task's scope as a bounded Markdown section for
+/// pickup responses (`next_task` / `claim_task`). Empty when nothing governs.
+fn render_governing(governing: &[GoverningClause]) -> String {
+    if governing.is_empty() {
+        return String::new();
+    }
+    let mut section = String::from("\n\n**Governed by:**");
+    for clause in governing {
+        section.push_str(&format!(
+            "\n- `{}` ({}, {}) — {}",
+            clause.goal.id,
+            clause.goal.kind.as_str(),
+            clause.mode.as_str(),
+            clause.goal.title
+        ));
+    }
+    section
 }
 
 #[cfg(test)]
@@ -717,5 +757,59 @@ mod tests {
             serde_json::from_str(legacy["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(task["status"], "open");
         assert!(task["blocked_by"].is_null());
+    }
+
+    #[test]
+    fn claim_and_next_task_surface_governing_clauses_on_pickup() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship search", "add search", None)
+            .unwrap();
+        let node = "artifact:src/search.rs";
+        engine
+            .link_goal_to_code(&goal.id, &[node.into()], CodeBindingMode::Governed)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "wire search", "done").unwrap();
+        let open_next = engine
+            .create_task(&goal.id, "polish search", "done")
+            .unwrap();
+
+        // claim_task surfaces what governs the work on a won claim.
+        let claimed = call(
+            &engine,
+            &json!({ "name": "claim_task", "arguments": { "task_id": task.id, "agent": "agent-a" } }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(claimed["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["won"], true);
+        assert_eq!(body["governing"][0]["goal"]["id"], goal.id);
+
+        // next_task surfaces the same in structuredContent and the Markdown card.
+        let next = call(&engine, &json!({ "name": "next_task", "arguments": {} })).unwrap();
+        assert_eq!(next["structuredContent"]["id"], open_next.id);
+        assert_eq!(
+            next["structuredContent"]["governing"][0]["goal"]["id"],
+            goal.id
+        );
+        assert!(next["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Governed by"));
+
+        // A task whose goal governs no code surfaces an empty list, cleanly.
+        let free = engine
+            .define_goal(GoalKind::Objective, "Free work", "loose", None)
+            .unwrap();
+        let ftask = engine.create_task(&free.id, "loose", "x").unwrap();
+        let claimed_free = call(
+            &engine,
+            &json!({ "name": "claim_task", "arguments": { "task_id": ftask.id, "agent": "agent-b" } }),
+        )
+        .unwrap();
+        let free_body: Value =
+            serde_json::from_str(claimed_free["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(free_body["won"], true);
+        assert!(free_body["governing"].as_array().unwrap().is_empty());
     }
 }

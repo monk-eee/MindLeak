@@ -26,9 +26,10 @@ pub use design::{
 };
 pub use error::{LodestarError, Result};
 pub use model::{
-    ClaimOverlap, CodeBinding, CodeBindingMode, ConformanceCheck, ConformanceEvidence,
-    ConformanceRecord, ConformanceResult, EvidenceProvenance, Goal, GoalKind, GoalStatus,
-    Knowledge, SignalPromotion, Task, TaskQa, TaskScope, TaskStatus, Verdict,
+    Advice, AdviceDisposition, ClaimOverlap, CodeBinding, CodeBindingMode, ConformanceCheck,
+    ConformanceEvidence, ConformanceRecord, ConformanceResult, EvidenceProvenance, Goal, GoalKind,
+    GoalStatus, GoverningClause, Knowledge, SignalPromotion, Task, TaskQa, TaskScope, TaskStatus,
+    Verdict,
 };
 pub use store::{LodestarStore, ResetOutcome, Stats};
 

@@ -6,13 +6,51 @@ use sha2::{Digest, Sha256};
 use super::constitution::is_documentation_node;
 use crate::store::ConformanceAudit;
 use crate::{
-    now_unix, CodeBindingMode, ConformanceCheck, ConformanceEvidence, ConformanceResult, Lodestar,
-    LodestarError, Result, Task, TaskStatus, Verdict,
+    now_unix, CodeBindingMode, ConformanceCheck, ConformanceEvidence, ConformanceResult, Goal,
+    GoverningClause, Lodestar, LodestarError, Result, Task, TaskStatus, Verdict,
 };
 
 const MAX_EVIDENCE_EVENTS: usize = 200;
 const MAX_EVIDENCE_PROVENANCE: usize = 1_000;
 const MAX_EVIDENCE_SUMMARY_BYTES: usize = 4_096;
+
+/// The active clauses governing an intended or changed scope, bucketed by how
+/// each relates to a covering task's own goal. Produced by
+/// [`Lodestar::resolve_governing_clauses`] and consumed by both conformance and
+/// `advise`; `(node_id, goal)` pairs preserve which node each clause governs.
+#[derive(Debug, Default)]
+pub(crate) struct GoverningClauses {
+    /// Clauses that hard-lock a node against any change (`forbid_change`).
+    pub forbid: Vec<(String, Goal)>,
+    /// `governed` bindings to the covering task's own goal — the change is in scope.
+    pub in_scope: Vec<(String, Goal)>,
+    /// `governed` bindings to a different goal — a change here would drift.
+    pub other: Vec<(String, Goal)>,
+}
+
+impl GoverningClauses {
+    /// Flatten the buckets into governing-clause rows (forbids first) — the shape
+    /// surfaced by `advise` and by task pickup. Preserves which node each clause
+    /// governs and its binding mode, so both callers read one representation.
+    pub(crate) fn clauses(&self) -> Vec<GoverningClause> {
+        let mut out = Vec::new();
+        for (node, goal) in &self.forbid {
+            out.push(GoverningClause {
+                node_id: node.clone(),
+                goal: goal.clone(),
+                mode: CodeBindingMode::ForbidChange,
+            });
+        }
+        for (node, goal) in self.in_scope.iter().chain(self.other.iter()) {
+            out.push(GoverningClause {
+                node_id: node.clone(),
+                goal: goal.clone(),
+                mode: CodeBindingMode::Governed,
+            });
+        }
+        out
+    }
+}
 
 impl Lodestar {
     /// Complete a task using one authoritative, claim-bounded conformance check
@@ -263,36 +301,22 @@ impl Lodestar {
             });
         }
 
-        let mut touched_task_goal = false;
-        let mut wrong_goals = Vec::new();
-        for node in &evidence.changed_node_ids {
-            // Goals govern code, not the shared prose every task touches. A
-            // documentation node never drives a drift verdict: an explicit
-            // forbid_change lock is still honoured, but a `governed` binding to a
-            // doc is ignored so an unrelated commit that also touches the
-            // changelog does not drift against whatever goal owns it. Derived at
-            // read time — no stored binding is deleted, so nothing is clobbered.
-            let node_is_doc = is_documentation_node(node);
-            for binding in self.store.active_bindings_for_node(node)? {
-                if binding.mode == CodeBindingMode::ForbidChange {
-                    findings.push(format!("{} forbids changes to {node}", binding.goal.id));
-                    return Ok(ConformanceResult {
-                        verdict: Verdict::Violation,
-                        findings,
-                    });
-                }
-                if node_is_doc {
-                    continue;
-                }
-                match task {
-                    Some(task) if binding.goal.id == task.goal_id => touched_task_goal = true,
-                    Some(_) => wrong_goals.push(binding.goal.id),
-                    None => wrong_goals.push(binding.goal.id),
-                }
-            }
+        let task_goal_id = task.map(|t| t.goal_id.as_str());
+        let governing = self.resolve_governing_clauses(&evidence.changed_node_ids, task_goal_id)?;
+
+        // A hard forbid_change lock overrides everything: any change is a breach.
+        if let Some((node, goal)) = governing.forbid.first() {
+            findings.push(format!("{} forbids changes to {node}", goal.id));
+            return Ok(ConformanceResult {
+                verdict: Verdict::Violation,
+                findings,
+            });
         }
 
-        if !wrong_goals.is_empty() {
+        // Governed code touched by a goal that no covering task serves is drift.
+        if !governing.other.is_empty() {
+            let mut wrong_goals: Vec<String> =
+                governing.other.iter().map(|(_, g)| g.id.clone()).collect();
             wrong_goals.sort();
             wrong_goals.dedup();
             findings.push(format!(
@@ -304,7 +328,7 @@ impl Lodestar {
                 findings,
             });
         }
-
+        let touched_task_goal = !governing.in_scope.is_empty();
         let Some(task) = task else {
             findings.push("no governed code touched".to_string());
             return Ok(ConformanceResult {
@@ -358,6 +382,41 @@ impl Lodestar {
             verdict: Verdict::Aligned,
             findings,
         })
+    }
+
+    /// Resolve which active clauses govern a set of intended or changed nodes,
+    /// classified by how each relates to a covering task's own goal. This is the
+    /// one place the constitution is read against a change scope, shared by
+    /// retrospective conformance (`evaluate_base_conformance`) and the
+    /// forward-looking `advise` (ADR-0029) so neither forks the rule. A
+    /// documentation node contributes only a `forbid_change` lock; a `governed`
+    /// binding to a doc is ignored at read time (a changelog touch must not
+    /// drift), and no stored binding is mutated.
+    pub(crate) fn resolve_governing_clauses(
+        &self,
+        node_ids: &[String],
+        task_goal_id: Option<&str>,
+    ) -> Result<GoverningClauses> {
+        let mut resolved = GoverningClauses::default();
+        for node in node_ids {
+            let node_is_doc = is_documentation_node(node);
+            for binding in self.store.active_bindings_for_node(node)? {
+                if binding.mode == CodeBindingMode::ForbidChange {
+                    resolved.forbid.push((node.clone(), binding.goal));
+                    continue;
+                }
+                if node_is_doc {
+                    continue;
+                }
+                match task_goal_id {
+                    Some(goal_id) if binding.goal.id == goal_id => {
+                        resolved.in_scope.push((node.clone(), binding.goal))
+                    }
+                    _ => resolved.other.push((node.clone(), binding.goal)),
+                }
+            }
+        }
+        Ok(resolved)
     }
 
     fn validate_evidence_shape(&self, evidence: &ConformanceEvidence) -> Result<()> {

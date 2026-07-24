@@ -9,18 +9,20 @@ import { DesignBoardItem, DesignBoardViewProvider } from "./designBoardViewProvi
 import { GitSensor } from "./gitSensor";
 import { GraphViewProvider } from "./graphViewProvider";
 import { McpClient } from "./mcpClient";
+import { TaskAllocationController } from "./taskAllocationController";
 import { TelemetryViewProvider } from "./telemetryViewProvider";
 import { TerminalCaptureConfig, TerminalSensor } from "./terminalSensor";
-import { TaskAllocationController } from "./taskAllocationController";
 import {
   canRetireTask,
   conformanceDiagnostic,
   ConformanceRecord,
   evidenceRequestForTask,
   formatTaskEvidence,
+  GoverningClause,
   GraphCounts,
   healthSummary,
   leaseActionFor,
+  LodestarTask,
   logLines,
   pendingQuestion,
   resolveBinaryPath,
@@ -172,6 +174,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     serverHealth = "memory connected";
     updateHealth();
     output.appendLine(`Connected to ${serverPath} (db: ${dbPath})`);
+    if (config.get<boolean>("autoIngestOnSave", true)) {
+      void reconcileWorkspace();
+    }
   } catch (err) {
     serverHealth = "memory unavailable";
     updateHealth();
@@ -259,6 +264,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   context.subscriptions.push(
     vscode.commands.registerCommand("mindleak.refresh", () => refresh()),
     vscode.commands.registerCommand("mindleak.prune", () => prune()),
+    vscode.commands.registerCommand("mindleak.reconcile", () => reconcileWorkspace()),
     vscode.commands.registerCommand("mindleak.export", () => exportSnapshot()),
     vscode.commands.registerCommand("mindleak.backup", () => backupBoth()),
     vscode.commands.registerCommand("mindleak.resetMemory", () => resetMemory()),
@@ -419,6 +425,34 @@ async function onDelete(uri: vscode.Uri): Promise<void> {
   }
 }
 
+// Reconcile the graph against the workspace's real file set: forget artifacts for
+// files that no longer exist (deleted/moved outside the editor, or ingested
+// before the junk filter existed). The file list is the authoritative truth; the
+// server forgets anything not in it. Runs once on activation to clear accumulated
+// stale structure, and on demand via the command.
+async function reconcileWorkspace(): Promise<void> {
+  if (!client?.isReady()) {
+    return;
+  }
+  try {
+    const uris = await vscode.workspace.findFiles(
+      "**/*",
+      "**/{node_modules,target,dist,coverage,.git,.mindleak,.lodestar,.vscode-test,out}/**"
+    );
+    const paths = uris.map((u) => vscode.workspace.asRelativePath(u, false).replace(/\\/g, "/"));
+    const outcome = await client.callTool("reconcile_workspace", { paths });
+    if (outcome?.files_forgotten > 0) {
+      output.appendLine(
+        `Reconciled workspace: forgot ${outcome.files_forgotten} stale file(s) ` +
+          `(${outcome.nodes_removed} nodes, ${outcome.edges_removed} edges).`
+      );
+      await refresh();
+    }
+  } catch (err) {
+    output.appendLine(`reconcile error: ${(err as Error).message}`);
+  }
+}
+
 async function refresh(seed?: string): Promise<void> {
   if (!client?.isReady() || !provider) {
     return;
@@ -533,7 +567,25 @@ async function refreshBoard(): Promise<void> {
   }
   try {
     const tasks = await lodestar.callTool("board", { include_terminal: false });
-    board.update(Array.isArray(tasks) ? tasks : []);
+    const list: LodestarTask[] = Array.isArray(tasks) ? tasks : [];
+    // Enrich claimed tasks with the clauses governing their scope so the board
+    // shows what governs the work an agent picked up (ADR-0029). Best-effort:
+    // a failed enrichment must never break the board.
+    await Promise.all(
+      list
+        .filter((task) => task.status === "claimed")
+        .map(async (task) => {
+          try {
+            const governing = await lodestar!.callTool("governing_for_task", { task_id: task.id });
+            if (Array.isArray(governing)) {
+              task.governing = governing as GoverningClause[];
+            }
+          } catch {
+            // Leave the task without governing rather than failing the refresh.
+          }
+        })
+    );
+    board.update(list);
   } catch (err) {
     output.appendLine(`board error: ${(err as Error).message}`);
   }

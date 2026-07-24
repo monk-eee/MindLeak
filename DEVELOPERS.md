@@ -31,18 +31,20 @@ npm --prefix editors/vscode install
 
 On systems with `make`, `make setup` does the hook + extension steps.
 
-The cargo hooks are **scoped and isolation-aware** (`scripts/cargo-precommit.mjs`):
-they run `cargo fmt/clippy/test` only for the crate packages your change touches,
-and — on push, or when a foreign untracked file sits in an affected crate —
-validate a throwaway worktree snapshot instead of the shared working tree. This
-keeps a concurrent agent's broken crate or uncommitted WIP from failing your
-commit or push in a shared checkout (ADR-0018).
+The cargo hooks are **scoped and committed-snapshot aware**
+(`scripts/cargo-precommit.mjs`): they run `cargo fmt/clippy/test` only for the
+crate packages your change touches and, when the live tree could leak another
+agent's WIP, materialize the staged or committed tree through a temporary Git
+index. No worktree, branch, commit, or shared ref is created (ADR-0032).
 
-Two helpers make the safe path the easy path when agents share one checkout:
-`node scripts/scoped-commit.mjs -m "<msg>" -- <path>...` stages and commits only
-your declared paths (never `git add -A`), and `node scripts/isolated-push.mjs`
-pushes the current commit through the hooks from a throwaway worktree so another
-agent's broken WIP cannot poison your push.
+Agents use one primary checkout and one shared `fleet/<goal>` branch. Claim work,
+then run `node scripts/scoped-commit.mjs -m "<msg>" -- <path>...` to stage and
+commit only declared paths (never `git add -A`). Exactly one designated
+integrator fetches and reconciles, then publishes the branch's exact `HEAD` with
+`node scripts/canonical-push.mjs`. The publisher refuses protected branches,
+staged index state, linked worktrees, and remote divergence. If it refuses,
+drain active work and reconcile once in the primary checkout; do not cherry-pick
+routine work or move `main` beneath dirty files.
 
 **Success looks like:** `cargo test --all` reports `test result: ok` for every
 crate, and `target/debug/mindleak-mcp` starts and prints
@@ -166,15 +168,13 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
-- **`isolated-push` could not create a new remote branch — FIXED.** — During the
-  ADR-0018 implementation audit, a throwaway bare-remote scenario failed because
-  `scripts/isolated-push.mjs` used `HEAD:<branch>`; Git cannot infer the full
-  destination ref when that branch does not exist. — Medium workflow impact: the
-  documented `--branch` path worked for updates but failed on a branch's first
-  push, before validation hooks ran. — Fixed this run with the explicit
-  `HEAD:refs/heads/<branch>` refspec. `scripts/collision-harness.mjs` now creates
-  a local bare remote and proves both primary- and linked-worktree invocations
-  create new branches without including foreign staged or broken WIP.
+- **A server restart can strand a legacy base-id claim until lease expiry.** —
+  This run claimed work while the configured identity was the legacy `copilot`;
+  after the ADR-0030 server restart the process identity became nonce-qualified,
+  so owner-guarded lifecycle operations correctly refused the old owner's live
+  claim. — Medium migration impact: work is preserved, but the new process must
+  wait for lease expiry. — Left explicit: drain live claims before enabling nonce
+  identities or add an attributed recovery path for legacy base-id claims.
 - **`recall`'s one-off "100% failure" was a missing embedding model, not a bug.** —
   Telemetry showed `recall` as the only tool with an error (1 call / 1 error, 3ms
   fast-fail); the recorded detail was `/v1/embeddings status 404`. Root cause: the
@@ -370,17 +370,25 @@ and footguns, with impact and status:
   Git HEAD/ref changes and supports `MINDLEAK_BUILD_SHA` outside a checkout. —
   Resolved Jul 2026.
 - **Docs-only design tasks could not complete via conformance, stranding
-  successors — FIXED.** — A design task produces a docs commit; `complete_task` runs
+  successors — PARTIALLY FIXED.** — A design task produces a docs commit; `complete_task` runs
   ADR-0009 code conformance, which returns `needs_human` ("evidence does not touch
   code bound to the task goal") and parks the task in `in_review` forever. Any
   implementation task chained `blocked_by` a docs-ADR predecessor then never opens
   (`blocked_by` clears only on predecessor `done`), and with no live `reopen_task`
   it cannot be un-gated — clearing the gate via `block_task(id, None)` leaves it
   `blocked` with no predecessor and no path back to `open`. — High impact on the
-  design-first workflow. — Fixed by the accepted ADR-0023 Design Board path: a
-  human `accept_design` completes design review without code conformance, then a
-  separately reviewed create/link/no-work plan maps it to executive work. Blind
-  fallback creation was removed after ADR-0028 exposed a duplicate-task failure.
+  design-first workflow. — Fixed for registered *design items* by the accepted
+  ADR-0023 Design Board path: a human `accept_design` completes design review
+  without code conformance, then a separately reviewed create/link/no-work plan
+  maps it to executive work. Blind fallback creation was removed after ADR-0028
+  exposed a duplicate-task failure. A docs-only task inside an *objective's*
+  task chain (not a registered design item) —
+  e.g. the AGENTS.md/README/USAGE/SPEC-INTENT task closing the ADR-0029 advise
+  chain — still lands `in_review` via the same `needs_human` verdict, and there is
+  **no task-level accept-to-`done` verb** (only `reopen_task` / `abandon_task`
+  exist). The docs are committed and correct; `in_review` is its accurate resting
+  state. The missing piece is a human-accept transition for `needs_human` tasks,
+  or excluding pure-documentation changes from code conformance.
 - **`next_task` surfaces non-actionable policy tasks.** — A `constraint` goal was
   decomposed into four tasks that merely restate the constraint and can never
   accrue completion evidence; `next_task` (oldest-first) hands one out on every

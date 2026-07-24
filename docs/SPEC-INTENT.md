@@ -462,6 +462,14 @@ Newline-delimited JSON-RPC 2.0 over stdio, exactly like `mindleak-mcp`.
     each record's stable `id`, the recorded evidence bundle, `verdict`,
     `findings`, and `checked_at` — the durable, resolvable link proving how (and
     whether) a task reached completion.
+21. `advise(task_id?, node_ids[])` → `{ disposition, governing[], findings[] }`;
+    the forward-looking, evidence-free, state-free read (ADR-0029) — the clauses
+    governing an intended change plus a proportional disposition
+    (`advise`/`review`/`block`/`needs_human`), so an agent asks what governs the
+    work **before acting**. It records no verdict, changes no task state, needs no
+    model, and never gates the compare-and-swap claim. `governing_for_task(task_id)`
+    returns the clauses governing a task's linked scope — the same set surfaced on
+    `claim_task` / `next_task` and the VS Code Intent Board.
 
 ---
 

@@ -144,6 +144,7 @@ get_constitution()                           # read this BEFORE acting
 decompose_goal(goal_id)  /  create_task(...) # produce claimable work
 next_task()                                  # what should I pick up?
 claim_task(task_id, agent, paths?, symbols?) # atomic claim + optional advisory scope
+advise(task_id, node_ids)                    # ADR-0029: what governs this change? (advise/review/block) — before acting
 renew_lease(task_id, agent)                  # keep your claim alive while working
 complete_task(task_id, agent, evidence)      # owner-guarded; runs conformance
 board()                                      # live who-owns-what

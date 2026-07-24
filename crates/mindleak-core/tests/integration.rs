@@ -113,6 +113,39 @@ fn forget_file_reaps_a_deleted_files_structure() {
 }
 
 #[test]
+fn reconcile_workspace_forgets_files_not_in_the_current_set() {
+    // Bulk cleanup: the extension supplies the workspace's real file list and the
+    // graph forgets any file artifact not in it — deleted/moved files the editor
+    // never sent a delete event for, plus build/VCS junk ingested before filtering.
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine.ingest_file("src/keep.rs", "pub fn a() {}").unwrap();
+    engine.ingest_file("src/gone.rs", "pub fn b() {}").unwrap();
+
+    let outcome = engine
+        .reconcile_workspace(&["src/keep.rs".to_string()])
+        .unwrap();
+
+    assert_eq!(outcome.files_forgotten, 1);
+    assert!(outcome.nodes_removed >= 1);
+    assert!(engine
+        .store()
+        .get_node("artifact:src/keep.rs")
+        .unwrap()
+        .is_some());
+    assert!(engine
+        .store()
+        .get_node("artifact:src/gone.rs")
+        .unwrap()
+        .is_none());
+
+    // Re-running with everything present is a clean no-op.
+    let again = engine
+        .reconcile_workspace(&["src/keep.rs".to_string()])
+        .unwrap();
+    assert_eq!(again.files_forgotten, 0);
+}
+
+#[test]
 fn ingestion_rejects_vcs_and_build_output_paths() {
     let engine = MindLeak::open_in_memory().unwrap();
 

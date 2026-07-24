@@ -73,6 +73,15 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "governing_for_task",
+            "description": "Return the active clauses governing a task's linked scope (the code its goal is bound to), each with its goal and binding mode — so an agent or the Intent Board sees what governs the work an agent picked up, without a separate advise call (ADR-0029). Bounded and deduped by clause.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "task_id": { "type": "string" } },
+                "required": ["task_id"]
+            }
+        }),
+        json!({
             "name": "export_constitution",
             "description": "Render the active constitution as committed-friendly markdown; optionally write it to a path for review in a PR.",
             "inputSchema": {
@@ -138,6 +147,11 @@ pub(super) fn dispatch(
         "governing_goals" => Some((|| {
             ok(&engine
                 .governing_goals(req_str(args, "node_id")?)
+                .map_err(|e| e.to_string())?)
+        })()),
+        "governing_for_task" => Some((|| {
+            ok(&engine
+                .governing_clauses_for_task(req_str(args, "task_id")?)
                 .map_err(|e| e.to_string())?)
         })()),
         "export_constitution" => Some((|| {

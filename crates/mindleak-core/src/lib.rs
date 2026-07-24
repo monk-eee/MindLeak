@@ -31,8 +31,8 @@ pub use error::{MindLeakError, Result};
 pub use graph::{
     AgentActivity, AgentFootprintOverlap, ArtifactStub, ConformanceEvidence, Direction,
     EvidenceProvenance, ForgetOutcome, GraphExport, GraphStore, PromotionCandidate, PruneOutcome,
-    ResetOutcome, ScoredNode, SignalCandidate, SignalConsolidationOutcome, Subgraph, WeightedEdge,
-    WorkingSetItem, WriteOutcome,
+    ReconcileOutcome, ResetOutcome, ScoredNode, SignalCandidate, SignalConsolidationOutcome,
+    Subgraph, WeightedEdge, WorkingSetItem, WriteOutcome,
 };
 pub use model::{Edge, Node, NodeType, RelationType};
 

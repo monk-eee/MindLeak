@@ -2,7 +2,7 @@
   "name": "mindleak",
   "displayName": "MindLeak — Temporal Context Graph",
   "description": "Live, decay-weighted context graph for coding agents. Visualizes the MindLeak MCP memory engine and passively feeds editor focus into it.",
-  "version": "0.1.1",
+  "version": "0.1.0",
   "publisher": "monk-eee",
   "license": "MIT",
   "repository": {
@@ -71,6 +71,10 @@
         "title": "MindLeak: Prune Decayed Edges"
       },
       {
+        "command": "mindleak.reconcile",
+        "title": "MindLeak: Reconcile Graph with Workspace Files"
+      },
+      {
         "command": "mindleak.export",
         "title": "MindLeak: Export Complete Graph (JSON)"
       },
@@ -91,31 +95,6 @@
         "command": "mindleak.board.refresh",
         "title": "MindLeak: Refresh Intent Board",
         "icon": "$(refresh)"
-      },
-      {
-        "command": "mindleak.task.next",
-        "title": "MindLeak: Next Claimable Task",
-        "icon": "$(list-selection)"
-      },
-      {
-        "command": "mindleak.task.allocate",
-        "title": "MindLeak: Allocate Task…",
-        "icon": "$(person-add)"
-      },
-      {
-        "command": "mindleak.task.claimForMe",
-        "title": "MindLeak: Claim Task for Me",
-        "icon": "$(account)"
-      },
-      {
-        "command": "mindleak.task.renew",
-        "title": "MindLeak: Renew Task Lease",
-        "icon": "$(watch)"
-      },
-      {
-        "command": "mindleak.task.release",
-        "title": "MindLeak: Release Task",
-        "icon": "$(debug-disconnect)"
       },
       {
         "command": "mindleak.design.refresh",
@@ -203,12 +182,7 @@
         {
           "command": "mindleak.board.refresh",
           "when": "view == mindleak.boardView",
-          "group": "navigation@1"
-        },
-        {
-          "command": "mindleak.task.next",
-          "when": "view == mindleak.boardView",
-          "group": "navigation@2"
+          "group": "navigation"
         },
         {
           "command": "mindleak.design.refresh",
@@ -232,26 +206,6 @@
         }
       ],
       "view/item/context": [
-        {
-          "command": "mindleak.task.claimForMe",
-          "when": "view == mindleak.boardView && viewItem =~ /claimable/",
-          "group": "inline@1"
-        },
-        {
-          "command": "mindleak.task.allocate",
-          "when": "view == mindleak.boardView && viewItem =~ /claimable/",
-          "group": "allocation@1"
-        },
-        {
-          "command": "mindleak.task.renew",
-          "when": "view == mindleak.boardView && viewItem == claimed",
-          "group": "allocation@2"
-        },
-        {
-          "command": "mindleak.task.release",
-          "when": "view == mindleak.boardView && viewItem == claimed",
-          "group": "allocation@3"
-        },
         {
           "command": "mindleak.design.accept",
           "when": "view == mindleak.designView && viewItem == design.proposed",
