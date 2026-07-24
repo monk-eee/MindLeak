@@ -50,7 +50,7 @@ try {
       }
     }
   }
-  execFileSync("git", ["push", remote, `HEAD:${branch}`], {
+  execFileSync("git", ["push", remote, `HEAD:refs/heads/${branch}`], {
     cwd: worktree,
     stdio: "inherit",
   });

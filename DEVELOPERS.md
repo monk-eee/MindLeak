@@ -166,6 +166,15 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **`isolated-push` could not create a new remote branch — FIXED.** — During the
+  ADR-0018 implementation audit, a throwaway bare-remote scenario failed because
+  `scripts/isolated-push.mjs` used `HEAD:<branch>`; Git cannot infer the full
+  destination ref when that branch does not exist. — Medium workflow impact: the
+  documented `--branch` path worked for updates but failed on a branch's first
+  push, before validation hooks ran. — Fixed this run with the explicit
+  `HEAD:refs/heads/<branch>` refspec. `scripts/collision-harness.mjs` now creates
+  a local bare remote and proves both primary- and linked-worktree invocations
+  create new branches without including foreign staged or broken WIP.
 - **`recall`'s one-off "100% failure" was a missing embedding model, not a bug.** —
   Telemetry showed `recall` as the only tool with an error (1 call / 1 error, 3ms
   fast-fail); the recorded detail was `/v1/embeddings status 404`. Root cause: the

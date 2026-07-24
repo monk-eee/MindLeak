@@ -25,10 +25,12 @@ import { tmpdir } from "node:os";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const scopedCommit = join(scriptDir, "scoped-commit.mjs");
+const isolatedPush = join(scriptDir, "isolated-push.mjs");
 
 const sandbox = mkdtempSync(join(tmpdir(), "mindleak-collision-"));
 const main = join(sandbox, "main");
 const wtB = join(sandbox, "agent-b");
+const remote = join(sandbox, "remote.git");
 let failures = 0;
 
 const git = (cwd, args) =>
@@ -127,6 +129,38 @@ try {
     check(
       `mode-agnostic: scoped-commit stages only declared paths (${label})`,
       committed.includes("mine.txt") && !committed.includes("foreign.txt"),
+    );
+  }
+
+  // --- mode-agnostic: isolated-push excludes dirty WIP -----------------------
+  execFileSync("git", ["init", "--bare", "-q", remote], {
+    stdio: "ignore",
+  });
+  git(main, ["remote", "add", "audit", remote]);
+  for (const [label, cwd, branch] of [
+    ["primary worktree", main, "audit-primary"],
+    ["linked worktree", wtB, "audit-linked"],
+  ]) {
+    node(cwd, [
+      isolatedPush,
+      "--commit",
+      "HEAD",
+      "--remote",
+      "audit",
+      "--branch",
+      branch,
+    ]);
+    const pushed = git(sandbox, [
+      "--git-dir",
+      remote,
+      "ls-tree",
+      "-r",
+      "--name-only",
+      branch,
+    ]);
+    check(
+      `mode-agnostic: isolated-push excludes foreign WIP (${label})`,
+      pushed.includes("mine.txt") && !pushed.includes("foreign.txt"),
     );
   }
 } finally {

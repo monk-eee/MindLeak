@@ -110,6 +110,13 @@ to [Semantic Versioning](https://semver.org/).
   action the board reflects rather than a button. The README index links both.
 
 ### Fixed
+- **`isolated-push` can create a new remote branch (ADR-0018).** The helper used
+  the shorthand `HEAD:<branch>` destination, which Git can resolve only when the
+  remote branch already exists; a first push to a new branch failed before any
+  hooks ran. It now pushes to the explicit `HEAD:refs/heads/<branch>` ref. The
+  collision harness exercises the helper against a throwaway local bare remote
+  from both primary and linked worktrees, proving new-branch creation while
+  excluding foreign staged or broken working-tree files.
 - **Build and VCS output is no longer ingested into the graph.** A passive save
   sensor or a build/git command's changed-files could pull `.git/`, `target/`,
   `node_modules/`, `dist/`, `coverage/`, and other regenerated or throwaway paths
