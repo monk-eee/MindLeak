@@ -238,7 +238,13 @@ describe("smokeServer", () => {
     expect(spawnProcess).toHaveBeenCalledWith(
       "mindleak-mcp",
       [],
-      expect.objectContaining({ env: expect.objectContaining({ MINDLEAK_DB: ":memory:" }) })
+      expect.objectContaining({
+        env: expect.objectContaining({
+          MINDLEAK_DB: ":memory:",
+          MINDLEAK_AUTONOMOUS_PRUNE: "false",
+          MINDLEAK_AUTONOMOUS_CONSOLIDATION: "false",
+        }),
+      })
     );
     expect(fake.requests.map((request) => request.method)).toEqual(["initialize", "tools/list"]);
     expect(fake.child.kill).toHaveBeenCalledOnce();

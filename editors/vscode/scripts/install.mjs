@@ -272,7 +272,13 @@ export function smokeServer(
 ) {
   return new Promise((resolve, reject) => {
     const child = spawnProcess(binary, [], {
-      env: { ...process.env, [databaseVariable]: ":memory:", MINDLEAK_LOG: "off" },
+      env: {
+        ...process.env,
+        [databaseVariable]: ":memory:",
+        MINDLEAK_LOG: "off",
+        MINDLEAK_AUTONOMOUS_PRUNE: "false",
+        MINDLEAK_AUTONOMOUS_CONSOLIDATION: "false",
+      },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stderr = "";
