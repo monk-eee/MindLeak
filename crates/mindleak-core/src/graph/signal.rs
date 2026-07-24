@@ -121,7 +121,7 @@ impl GraphStore {
         nodes: &[Node],
         edges: &[Edge],
     ) -> Result<(WriteOutcome, usize, usize)> {
-        let transaction = self.conn.unchecked_transaction()?;
+        let transaction = self.write_txn()?;
         let lease_valid: bool = transaction.query_row(
             "SELECT EXISTS(
                  SELECT 1 FROM maintenance_leases
@@ -358,7 +358,7 @@ impl GraphStore {
                 stale.push((raw.source_id, raw.target_id, raw.relation));
             }
         }
-        let transaction = self.conn.unchecked_transaction()?;
+        let transaction = self.write_txn()?;
         let mut edges_removed = 0;
         for (source, target, relation) in stale {
             edges_removed += transaction.execute(
