@@ -11,9 +11,11 @@ import {
   conformanceDiagnostic,
   evidenceRequestForTask,
   filterChangedPaths,
+  formatGoverningClauses,
   formatLogLine,
   formatQaThread,
   formatTaskEvidence,
+  GoverningClause,
   healthSummary,
   leaseActionFor,
   logLines,
@@ -213,6 +215,48 @@ describe("boardRows", () => {
 
     expect(boardRows(tasks).map((row) => row.id)).toEqual(["open"]);
     expect(boardRows(tasks, true).map((row) => row.id)).toEqual(["open", "done", "abandoned"]);
+  });
+});
+
+describe("formatGoverningClauses", () => {
+  const clause = (over: Partial<GoverningClause> = {}): GoverningClause => ({
+    node_id: "artifact:src/pay.rs",
+    goal: { id: "goal:pay", title: "Payments boundary", kind: "constraint" },
+    mode: "governed",
+    ...over,
+  });
+
+  it("returns empty string when nothing governs", () => {
+    expect(formatGoverningClauses(undefined)).toBe("");
+    expect(formatGoverningClauses([])).toBe("");
+  });
+
+  it("renders a bounded 'Governed by' section with title, kind, and mode", () => {
+    const text = formatGoverningClauses([
+      clause(),
+      clause({
+        goal: { id: "goal:frozen", title: "Frozen schema", kind: "invariant" },
+        mode: "forbid_change",
+      }),
+    ]);
+    expect(text).toContain("Governed by:");
+    expect(text).toContain("Payments boundary (constraint, governed)");
+    expect(text).toContain("Frozen schema (invariant, forbid_change)");
+  });
+
+  it("surfaces governing clauses in a claimed board row's tooltip", () => {
+    const rows = boardRows([
+      {
+        id: "t",
+        goal_id: "goal:pay",
+        title: "Wire payments",
+        status: "claimed",
+        owner: "agent-a",
+        governing: [clause()],
+      },
+    ]);
+    expect(rows[0].tooltip).toContain("Governed by:");
+    expect(rows[0].tooltip).toContain("Payments boundary");
   });
 });
 

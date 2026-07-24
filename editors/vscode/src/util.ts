@@ -176,6 +176,31 @@ export interface LodestarTask {
   lease_expires_at?: number | null;
   blocked_by?: string | null;
   parked_at?: number | null;
+  /** Clauses governing this task's scope, when the client has fetched them (ADR-0029). */
+  governing?: GoverningClause[];
+}
+
+/** One active clause governing a task's scope, from `advise` / `governing_for_task` (ADR-0029). */
+export interface GoverningClause {
+  node_id: string;
+  goal: { id: string; title: string; kind: string };
+  mode: string; // "governed" | "forbid_change"
+}
+
+/**
+ * Render the clauses governing a task as a bounded tooltip section, so a human
+ * reading the board sees what governs the work an agent picked up (ADR-0029).
+ * Pure and empty-safe: returns "" when nothing governs, so callers can append
+ * it unconditionally.
+ */
+export function formatGoverningClauses(governing: GoverningClause[] | undefined): string {
+  if (!governing || governing.length === 0) {
+    return "";
+  }
+  const lines = governing.map(
+    (clause) => `\n- ${clause.goal.title} (${clause.goal.kind}, ${clause.mode})`
+  );
+  return `\n\nGoverned by:${lines.join("")}`;
 }
 
 export type TaskLeaseState = "claimable" | "live" | "expired" | "parked" | "unavailable";
@@ -415,7 +440,7 @@ function taskTooltip(task: LodestarTask, nowUnix: number): string {
   if (task.acceptance) {
     lines.push(task.acceptance);
   }
-  return lines.join("\n");
+  return lines.join("\n") + formatGoverningClauses(task.governing);
 }
 
 function remainingLease(task: LodestarTask, nowUnix: number): string {

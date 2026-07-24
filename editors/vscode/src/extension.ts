@@ -17,9 +17,11 @@ import {
   ConformanceRecord,
   evidenceRequestForTask,
   formatTaskEvidence,
+  GoverningClause,
   GraphCounts,
   healthSummary,
   leaseActionFor,
+  LodestarTask,
   logLines,
   pendingQuestion,
   resolveBinaryPath,
@@ -504,7 +506,25 @@ async function refreshBoard(): Promise<void> {
   }
   try {
     const tasks = await lodestar.callTool("board", { include_terminal: false });
-    board.update(Array.isArray(tasks) ? tasks : []);
+    const list: LodestarTask[] = Array.isArray(tasks) ? tasks : [];
+    // Enrich claimed tasks with the clauses governing their scope so the board
+    // shows what governs the work an agent picked up (ADR-0029). Best-effort:
+    // a failed enrichment must never break the board.
+    await Promise.all(
+      list
+        .filter((task) => task.status === "claimed")
+        .map(async (task) => {
+          try {
+            const governing = await lodestar!.callTool("governing_for_task", { task_id: task.id });
+            if (Array.isArray(governing)) {
+              task.governing = governing as GoverningClause[];
+            }
+          } catch {
+            // Leave the task without governing rather than failing the refresh.
+          }
+        })
+    );
+    board.update(list);
   } catch (err) {
     output.appendLine(`board error: ${(err as Error).message}`);
   }
