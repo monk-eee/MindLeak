@@ -145,6 +145,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   );
   allocationController = new TaskAllocationController(
     lodestar,
+    client,
     board,
     boardTree,
     configuredAgentId,

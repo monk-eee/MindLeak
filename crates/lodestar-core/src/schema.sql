@@ -82,6 +82,18 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_goal   ON tasks(goal_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_blocked_by ON tasks(blocked_by);
 
+-- Optional advisory scope declared atomically with a task claim (ADR-0024).
+-- Values are workspace-relative path globs or opaque MindLeak symbol ids. They
+-- inform pre-flight checks only; they are not locks.
+CREATE TABLE IF NOT EXISTS task_scopes (
+    task_id TEXT NOT NULL,
+    kind    TEXT NOT NULL,              -- path | symbol
+    value   TEXT NOT NULL,
+    PRIMARY KEY (task_id, kind, value),
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_task_scopes_value ON task_scopes(kind, value);
+
 -- Durable, append-only question/answer thread for needs_input tasks (ADR-0020):
 -- an agent's question awaiting a human answer. Never edited or deleted.
 CREATE TABLE IF NOT EXISTS task_qa (

@@ -194,6 +194,7 @@ It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
 |---|---|
 | `graph_multi_hop_query` | Traverse N hops from a seed node/phrase, decay-filtered. |
 | `get_impact_radius` | Blast radius of editing a file/symbol. |
+| `check_overlap` | Read-only, decay-aware footprint of other agents on concrete paths / symbol ids; combine with Lodestar's same-named claim check (ADR-0024). |
 | `record_architectural_decision` | Persist a decision as a linked intent node. |
 | `ingest_execution` | Command + exit code → execution/modified/failed_on edges. |
 | `ingest_commit` | Commit → intent node + refactored edges + rationale. |
@@ -234,7 +235,8 @@ coordinate through one plane.
 | `export_constitution` | Render the constitution to committed-friendly markdown. |
 | `create_task` / `decompose_goal` | Add claimable work; `create_task(blocked_by=...)` creates a progressive handoff. |
 | `next_task` | Suggest the next unblocked, claimable task. |
-| `claim_task` / `renew_lease` | **Atomic claim + lease** — renewal is a live heartbeat; after expiry, re-claim opens a fresh evidence window. |
+| `claim_task` / `renew_lease` | **Atomic claim + lease** with optional advisory path globs / symbol ids — renewal is a live heartbeat; after expiry, re-claim opens a fresh evidence window. |
+| `task_scope` / `check_overlap` | Read one claim declaration or find live claims intersecting concrete paths / symbol ids; advisory only, and combined by the caller with MindLeak's footprint result (ADR-0024). |
 | `complete_task` | Consume the exact authoritative `check_conformance` result (owner-guarded); aligned completes, uncertainty reviews, violation blocks. |
 | `release_task` / `block_task` | Return or block work. |
 | `reopen_task` | Return a stranded task (in review, or a manual hold) to claimable `open`. |
@@ -242,7 +244,7 @@ coordinate through one plane.
 | `ask_question` / `answer` | Park a claimed task in `needs_input` with a durable question; a human `answer` resumes it under the same owner with a fresh lease. |
 | `pause_task` / `resume_task` | Owner deliberately parks (`paused`) and resumes work, keeping the claim and evidence window. |
 | `task_qa` | The durable, append-only question/answer thread for a task. |
-| `board` | Who-owns-what snapshot; the VS Code Intent Board defaults to live/actionable work, while `include_terminal=true` returns durable history. |
+| `board` | Who-owns-what-and-where snapshot including advisory scope; the VS Code Intent Board defaults to live/actionable work, while `include_terminal=true` returns durable history. |
 | `register_design` / `reconcile_designs` / `design_board` | Register one ADR or idempotently import structured repository ADR metadata; list proposed decisions and accepted designs awaiting promotion, without creating tasks during reconciliation. |
 | `accept_design` / `promote_design` / `reject_design` | Human completion path for design work — accept (no code conformance), idempotently materialize reviewed work under an objective, or durably reject; no agent may decide its own design. |
 | `check_conformance` | Persist and return `{ id, token, verdict, findings }` for exact checked completion. |
@@ -304,9 +306,9 @@ model never enables autonomous spend.
 ```
 crates/
   mindleak-core/   memory plane: db · model · decay · graph · ingest · consolidate
-  mindleak-mcp/    stdio JSON-RPC MCP server (16 tools)
+  mindleak-mcp/    stdio JSON-RPC MCP server (23 tools)
   lodestar-core/   intent plane: constitution · tasks (claim/lease) · conformance · knowledge
-  lodestar-mcp/    stdio JSON-RPC MCP server (23 tools)
+  lodestar-mcp/    stdio JSON-RPC MCP server (43 tools)
 editors/
   vscode/          passive sensor + Cytoscape visualizer
 docs/              SPEC · SPEC-INTENT · ARCHITECTURE · CONTRIBUTING

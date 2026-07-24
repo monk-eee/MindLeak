@@ -2,8 +2,10 @@
 //! Executive tool definitions and dispatch.
 
 use super::conformance::parse_evidence;
-use super::{bool_arg, i64_arg, ok, opt_str, optional_string_arg, rendered, req_str, text};
-use lodestar_core::Lodestar;
+use super::{
+    bool_arg, i64_arg, ok, opt_str, optional_string_arg, rendered, req_str, str_array, text,
+};
+use lodestar_core::{Lodestar, TaskScope};
 use serde_json::{json, Value};
 
 pub(super) fn definitions() -> Vec<Value> {
@@ -38,15 +40,38 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "claim_task",
-            "description": "Atomically claim a task with a lease (TTL seconds). Returns won=true only if this agent won the race — the coordination primitive that stops parallel agents colliding.",
+            "description": "Atomically claim a task with a lease and optional advisory path globs / MindLeak symbol ids (ADR-0024). Returns won=true only if this agent won; a losing claimant cannot overwrite scope.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "task_id": { "type": "string" },
                     "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." },
-                    "lease_secs": { "type": "integer", "default": 300 }
+                    "lease_secs": { "type": "integer", "default": 300 },
+                    "paths": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Workspace-relative path globs this work expects to touch." },
+                    "symbols": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Opaque MindLeak symbol ids this work expects to touch." }
                 },
                 "required": ["task_id"]
+            }
+        }),
+        json!({
+            "name": "task_scope",
+            "description": "Read one task's declared advisory path/symbol scope (ADR-0024). Scope is a planning hint, never a lock.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "task_id": { "type": "string" } },
+                "required": ["task_id"]
+            }
+        }),
+        json!({
+            "name": "check_overlap",
+            "description": "Read-only pre-flight check for live Lodestar claims whose declared scope intersects these concrete workspace-relative paths or symbol ids (ADR-0024). Advisory only; combine with MindLeak's check_overlap footprint result for cross-plane awareness.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "paths": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Concrete workspace-relative paths about to be touched; claim scopes are the glob side of the comparison." },
+                    "symbols": { "type": "array", "items": { "type": "string" }, "default": [] },
+                    "exclude_task_id": { "type": "string", "description": "Optional current task to omit from results." }
+                }
             }
         }),
         json!({
@@ -235,14 +260,34 @@ pub(super) fn dispatch(
             None => text("no claimable task".to_string()),
         })()),
         "claim_task" => Some((|| {
+            let scope = TaskScope {
+                paths: str_array(args, "paths"),
+                symbols: str_array(args, "symbols"),
+            };
             let won = engine
-                .claim_task(
+                .claim_task_with_scope(
                     req_str(args, "task_id")?,
                     opt_str(args, "agent").unwrap_or_default().as_str(),
                     i64_arg(args, "lease_secs", 300),
+                    &scope,
                 )
                 .map_err(|e| e.to_string())?;
             ok(&json!({ "won": won }))
+        })()),
+        "task_scope" => Some((|| {
+            ok(&engine
+                .task_scope(req_str(args, "task_id")?)
+                .map_err(|e| e.to_string())?)
+        })()),
+        "check_overlap" => Some((|| {
+            let scope = TaskScope {
+                paths: str_array(args, "paths"),
+                symbols: str_array(args, "symbols"),
+            };
+            let overlaps = engine
+                .check_claim_overlap(&scope, opt_str(args, "exclude_task_id").as_deref())
+                .map_err(|e| e.to_string())?;
+            ok(&json!({ "claims": overlaps }))
         })()),
         "renew_lease" => Some((|| {
             let renewed = engine
@@ -350,9 +395,19 @@ pub(super) fn dispatch(
                 .map_err(|e| e.to_string())?)
         })()),
         "board" => Some((|| {
-            ok(&engine
+            let tasks = engine
                 .board(bool_arg(args, "include_terminal", true))
-                .map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+            let mut rows = Vec::with_capacity(tasks.len());
+            for task in tasks {
+                let scope = engine.task_scope(&task.id).map_err(|e| e.to_string())?;
+                let mut row = serde_json::to_value(task).map_err(|e| e.to_string())?;
+                row.as_object_mut()
+                    .ok_or_else(|| "task did not serialize as an object".to_string())?
+                    .insert("scope".to_string(), json!(scope));
+                rows.push(row);
+            }
+            ok(&rows)
         })()),
         _ => None,
     }
@@ -364,6 +419,68 @@ mod tests {
     use super::*;
     use lodestar_core::llm::LlmClient;
     use lodestar_core::{now_unix, CodeBindingMode, GoalKind};
+
+    #[test]
+    fn scoped_claim_and_overlap_round_trip_through_tools() {
+        let engine = Lodestar::open_in_memory()
+            .unwrap()
+            .with_agent(Some("alice".into()));
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Scoped work", "avoid overlap", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Edit graph", "done").unwrap();
+        let task_id = task.id.clone();
+
+        let claimed = call(
+            &engine,
+            &json!({
+                "name": "claim_task",
+                "arguments": {
+                    "task_id": task_id,
+                    "lease_secs": 300,
+                    "paths": ["crates/mindleak-core/src/**"],
+                    "symbols": ["symbol:crates/mindleak-core/src/lib.rs:MindLeak"]
+                }
+            }),
+        )
+        .unwrap();
+        assert!(claimed["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("true"));
+
+        let overlap = call(
+            &engine,
+            &json!({
+                "name": "check_overlap",
+                "arguments": {
+                    "paths": ["crates/mindleak-core/src/lib.rs"],
+                    "symbols": ["symbol:crates/mindleak-core/src/lib.rs:MindLeak"]
+                }
+            }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(overlap["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["claims"].as_array().unwrap().len(), 1);
+        assert_eq!(body["claims"][0]["owner"], "alice");
+
+        let board = call(
+            &engine,
+            &json!({
+                "name": "board",
+                "arguments": { "include_terminal": false }
+            }),
+        )
+        .unwrap();
+        let rows: Value =
+            serde_json::from_str(board["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(rows[0]["scope"]["paths"][0], "crates/mindleak-core/src/**");
+        assert_eq!(
+            rows[0]["scope"]["symbols"][0],
+            "symbol:crates/mindleak-core/src/lib.rs:MindLeak"
+        );
+    }
 
     #[test]
     fn checked_conformance_completes_with_one_authoritative_audit() {

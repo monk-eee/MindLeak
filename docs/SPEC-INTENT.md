@@ -295,12 +295,11 @@ UPDATE tasks
 
 No cross-process locks beyond SQLite; WAL handles concurrent readers.
 
-### 6.1 Pre-flight overlap awareness (designed — ADR-0024)
+### 6.1 Pre-flight overlap awareness (implemented — ADR-0024)
 
 The compare-and-swap above is exact for the **same task**, but it says nothing
 about two agents touching the **same files or symbols under different tasks**, or
-solving the same problem in parallel — the duplicate-work gap
-[EVALUATION.md](EVALUATION.md) still calls out. The designed answer is a
+solving the same problem in parallel. The implemented answer is a
 read-only, advisory, **decay-aware** pre-flight check
 ([ADR-0024](adr/0024-preflight-overlap-detection.md)) run *before* claiming or
 starting work — not a lock (Lodestar does not own the filesystem, so it must not
@@ -310,10 +309,11 @@ pretend to, per [ADR-0015](adr/0015-advisory-symbol-leases.md)).
   symbol ids it intends to touch. This is the *same* scope-declaration model as
   [ADR-0018](adr/0018-conflict-safe-concurrent-editing.md)'s path-ownership
   advisory — one mechanism, surfaced on the board as a planning hint, not forked.
-- **`check_overlap(paths[], symbols[])`.** A read-only query that fuses both
-  planes and returns (1) **active claims** whose declared scope intersects the
-  request, and (2) other agents' **recent above-threshold `observed`/`modified`
-  footprint** on the same artifact/symbol nodes from MindLeak
+- **`check_overlap(paths[], symbols[])`.** Each plane exposes this read-only
+  tool and the caller combines the results: Lodestar returns **active claims**
+  whose declared scope intersects concrete requested paths/exact symbol ids;
+  MindLeak returns other agents' **recent above-threshold `observed`/`modified`
+  footprint** on the same artifact/symbol nodes
   ([ADR-0003](adr/0003-agent-attribution-as-observed-edges.md)). Decay means
   stale attention has already faded below threshold, so only *currently hot*
   overlap raises a flag — no false alarms from last week's edits.
@@ -323,10 +323,13 @@ pretend to, per [ADR-0015](adr/0015-advisory-symbol-leases.md)).
 - **Loose seam.** The cross-plane read crosses by opaque MindLeak node id only —
   no shared tables or transactions
   ([ADR-0004](adr/0004-intent-plane-spec-brain.md)).
+- **Visible hint.** `task_scope` reads one declaration, `board` includes scope in
+  each task row, and the VS Code allocator calls both checks before claiming and
+  presents an overridable warning.
 
-This is a design contract, not yet implemented: the `check_overlap` tool enters
-the §9 tool surface at implementation, and effective weight stays derived, never
-a stored lock.
+The deterministic two-agent gate in [EVALUATION.md](EVALUATION.md) demonstrates
+the blind collision, live claim + footprint detection, a decayed control, and a
+`blocked_by` steer. Effective weight stays derived; neither check stores a lock.
 
 ---
 
@@ -405,41 +408,46 @@ Newline-delimited JSON-RPC 2.0 over stdio, exactly like `mindleak-mcp`.
    otherwise). Objective goals only — constraints and invariants are enforced
    continuously by conformance, not broken into completable tasks.
 8. `next_task(agent_id, capabilities?)` → a suggested unclaimed, unblocked task.
-9. `claim_task(task_id, agent_id, lease_secs)` → `{ won, lease_expires_at }` (§6).
-10. `renew_lease(task_id, agent_id, lease_secs)` → heartbeat.
-11. `complete_task(task_id, agent_id, evidence, check)` → `blocked` /
+9. `claim_task(task_id, agent_id, lease_secs, paths?, symbols?)` → `{ won }` (§6);
+  path globs and opaque symbol ids are stored atomically only for the winning
+  claim.
+10. `task_scope(task_id)` → the advisory declaration; `check_overlap(paths[],
+  symbols[], exclude_task_id?)` → live claim intersections for concrete paths
+  and exact symbol ids. Combine with MindLeak's same-named footprint tool.
+11. `renew_lease(task_id, agent_id, lease_secs)` → heartbeat.
+12. `complete_task(task_id, agent_id, evidence, check)` → `blocked` /
   `in_review` / `done`; consumes the exact authoritative check and rejects it
   if evidence or relevant intent state changed.
-12. `release_task(task_id, agent_id)` / `block_task(task_id, reason, blocked_by?)` /
+13. `release_task(task_id, agent_id)` / `block_task(task_id, reason, blocked_by?)` /
   `reopen_task(task_id)` → return a stranded task (`in_review`, or a manual
   hold with no live predecessor gate) to claimable `open`; `abandon_task`
   durably retires open/review/blocked or expired-claim work without deleting
   its audit history. Both refuse to disturb live or parked ownership.
-13. `board(include_terminal=true)` → coordination snapshot: every task, owner,
-    status, lease — so humans and agents see the parallel state at a glance.
+14. `board(include_terminal=true)` → coordination snapshot: every task, owner,
+    status, lease, and advisory scope — so humans and agents see the parallel state at a glance.
     `include_terminal=false` returns only the live/actionable set (open, claimed,
     needs_input, paused, in_review, blocked); done/abandoned stay durable but out
     of the operational view used by the VS Code Intent Board.
 
 **Design**
 
-14. `register_design(adr_path, title, summary?)` → one proposed design item.
-15. `reconcile_designs(designs[])` → idempotently import structured ADR path,
+15. `register_design(adr_path, title, summary?)` → one proposed design item.
+16. `reconcile_designs(designs[])` → idempotently import structured ADR path,
   title, summary, and declared status. Reconciliation is deterministic: it
   never invokes a model or creates goals/tasks, and never overwrites an
   existing Design Board decision or promotion state.
-16. `design_board()` → actionable design work: proposed items awaiting a human
+17. `design_board()` → actionable design work: proposed items awaiting a human
   decision plus accepted items whose promotion is pending or retryable.
-17. `accept_design(id, human)` / `reject_design(id, human, reason)` → attributed
+18. `accept_design(id, human)` / `reject_design(id, human, reason)` → attributed
   human decision; no code conformance and no self-acceptance.
-18. `promote_design(id, objective_goal_id, constraints?)` → idempotently
+19. `promote_design(id, objective_goal_id, constraints?)` → idempotently
   materialize tasks and mandated normative goals with durable provenance.
 
 **Conformance**
 
-19. `check_conformance(evidence, task_id?)` →
+20. `check_conformance(evidence, task_id?)` →
   `{ id, token, verdict, findings[] }`; persists one authoritative audit row.
-20. `conformance_history(task_id)` → the append-only evidence chain for a task:
+21. `conformance_history(task_id)` → the append-only evidence chain for a task:
     each record's stable `id`, the recorded evidence bundle, `verdict`,
     `findings`, and `checked_at` — the durable, resolvable link proving how (and
     whether) a task reached completion.

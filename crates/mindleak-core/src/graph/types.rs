@@ -143,6 +143,18 @@ pub struct AgentActivity {
     pub last_active: i64,
 }
 
+/// One other agent's decay-active footprint intersecting a requested
+/// artifact/symbol (ADR-0024). Derived at read time and never a lock.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentFootprintOverlap {
+    pub agent_id: String,
+    pub node_id: String,
+    pub via_node_id: String,
+    pub relation: RelationType,
+    pub effective: f64,
+    pub last_observed_at: i64,
+}
+
 /// One node in an agent's bounded, derived attentional working set.
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkingSetItem {

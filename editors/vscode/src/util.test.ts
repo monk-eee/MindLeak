@@ -17,7 +17,9 @@ import {
   healthSummary,
   leaseActionFor,
   logLines,
+  overlapWarningDetail,
   parseToolResult,
+  parseTaskScope,
   pendingQuestion,
   redactTerminalOutput,
   releaseTaskRequest,
@@ -194,6 +196,7 @@ describe("boardRows", () => {
           status: "claimed",
           owner: "alice",
           lease_expires_at: 200,
+          scope: { paths: ["src/auth.ts"], symbols: ["symbol:src/auth.ts:validate"] },
         },
       ],
       true,
@@ -201,6 +204,9 @@ describe("boardRows", () => {
     );
     expect(rows[0].label).toBe("mine");
     expect(rows[0].description).toContain("claimed \u00b7 alice");
+    expect(rows[0].description).toContain("2 scoped");
+    expect(rows[0].tooltip).toContain("scope paths: src/auth.ts");
+    expect(rows[0].tooltip).toContain("scope symbols: symbol:src/auth.ts:validate");
     expect(rows[1].status).toBe("done");
   });
 
@@ -345,6 +351,15 @@ describe("task allocation", () => {
       agent: "agent-a",
       lease_secs: 1800,
     });
+    expect(
+      claimTaskRequest(task("open"), "agent-a", 1800, 100, {
+        paths: ["src/auth.ts"],
+        symbols: ["symbol:src/auth.ts:validate"],
+      })
+    ).toMatchObject({
+      paths: ["src/auth.ts"],
+      symbols: ["symbol:src/auth.ts:validate"],
+    });
     const live = task("claimed", 200, "alice");
     expect(renewTaskRequest(live, 3600, 100)).toEqual({
       task_id: "task:claimed",
@@ -382,6 +397,42 @@ describe("task allocation", () => {
     expect(rows.some((row) => row.description.includes("expired claim"))).toBe(true);
     expect(rows.some((row) => row.description === "open · claimable")).toBe(true);
     expect(rows.some((row) => row.description.includes("2m left"))).toBe(true);
+  });
+});
+
+describe("overlap pre-flight", () => {
+  it("normalises and deduplicates concrete paths and symbol ids", () => {
+    expect(
+      parseTaskScope(
+        "src\\auth.ts, src/auth.ts\nsrc/session.ts",
+        "symbol:src/auth.ts:validate, symbol:src/auth.ts:validate"
+      )
+    ).toEqual({
+      paths: ["src/auth.ts", "src/session.ts"],
+      symbols: ["symbol:src/auth.ts:validate"],
+    });
+  });
+
+  it("renders bounded claim and footprint evidence, or nothing when clear", () => {
+    expect(overlapWarningDetail({ claims: [], footprints: [] })).toBeUndefined();
+    const detail = overlapWarningDetail({
+      claims: [
+        {
+          task_id: "task:a",
+          owner: "alice",
+          matching_paths: ["src/auth.ts"],
+        },
+      ],
+      footprints: [
+        {
+          agent_id: "agent:bob",
+          node_id: "artifact:src/auth.ts",
+          via_node_id: "execution:run",
+        },
+      ],
+    });
+    expect(detail).toContain("Claim task:a (alice): src/auth.ts");
+    expect(detail).toContain("Footprint agent:bob: artifact:src/auth.ts via execution:run");
   });
 });
 

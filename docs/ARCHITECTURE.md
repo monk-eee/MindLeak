@@ -74,14 +74,16 @@ waivers, and a draft-to-active onboarding lifecycle. Common and domain policy
 packs propose locally materialised clauses rather than creating live inherited
 law. See [`SPEC-CONSTITUTION.md`](SPEC-CONSTITUTION.md).
 
-[ADR-0024](adr/0024-preflight-overlap-detection.md) designs the next
-coordination layer above the compare-and-swap claim: a read-only, decay-aware
-**pre-flight overlap check** that fuses Lodestar active claims with MindLeak's
-recent `observed`/`modified` attribution, so an agent can see — *before*
-claiming — whether another agent is already touching the paths/symbols it intends
-to change. It is advisory (never a lock, per ADR-0015), crosses the plane seam by
-opaque node id only (ADR-0004), and complements the physical worktree isolation
-of ADR-0018. Designed here; not yet implemented.
+[ADR-0024](adr/0024-preflight-overlap-detection.md) adds the coordination layer
+above the compare-and-swap claim. Lodestar stores optional claim path globs and
+opaque symbol ids in `task_scopes`; its read-only `check_overlap` returns live
+scope intersections. MindLeak's same-named query derives other agents' direct or
+mutation-linked footprint after decay filtering. The caller combines those two
+results by node id: no shared tables, transactions, or plane dependency. The VS
+Code allocator performs both reads before claiming, displays an overridable
+warning, and renders persisted scope on the Intent Board. The flow is advisory
+(never a lock, per ADR-0015) and complements ADR-0018's physical integration
+discipline.
 
 ### `lodestar-mcp` (binary)
 
@@ -102,6 +104,9 @@ Telemetry pane renders a derived, real-time effectiveness readout (graph size,
 tool success/error rates, latency, per-tool metrics) from `graph_stats` and
 `telemetry_snapshot`, with opt-in live event logging; the derivations are the
 pure helpers in `src/util.ts`.
+The Intent Board's allocation flow collects optional concrete paths/symbol ids,
+combines both ADR-0024 overlap reads, and shows scoped work as a planning hint;
+warnings remain explicitly overridable.
 
 ## Data model
 

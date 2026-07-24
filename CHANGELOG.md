@@ -7,6 +7,18 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Pre-flight duplicate-work awareness across both planes (ADR-0024).** A
+  Lodestar claim can atomically declare advisory path globs and opaque MindLeak
+  symbol ids; `task_scope`, scope-enriched `board`, and Lodestar `check_overlap`
+  expose intersections with live claims. MindLeak's same-named read derives
+  other agents' direct or mutation-linked artifact/symbol footprint after decay
+  filtering, with effective weight still computed at query time. The VS Code
+  allocator collects concrete paths/symbols, combines both reads before the
+  claim CAS, shows an explicitly overridable warning, and renders scoped work on
+  the Intent Board. A locked, source-hashed two-agent benchmark proves the blind
+  two-owner control, live claim + footprint detection, 336-hour decay control,
+  read-only checks, and a successful `blocked_by` steer; it does not claim agents
+  always obey advisory output.
 - **Telemetry distinguishes a resolved historical error from a currently failing
   tool (ADR-0010).** The append-only trail means a tool's lifetime `errors` never
   shrinks, so a single past failure used to read as a permanent fault in the VS
