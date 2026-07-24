@@ -193,8 +193,22 @@ jobs:
                     if (!Array.isArray(message.result?.tools) || message.result.tools.length === 0) {
                       finish(new Error(`${server} returned no tools`));
                     } else {
-                      finish();
+                      child.stdin.write(JSON.stringify({
+                        jsonrpc: "2.0",
+                        id: 3,
+                        method: "tools/call",
+                        params: {
+                          name: "open_session",
+                          arguments: { session_id: "00112233445566778899aabbccddeeff" },
+                        },
+                      }) + "\n");
                     }
+                  } else if (message.id === 3) {
+                    const text = message.result?.content?.[0]?.text;
+                    const identity = typeof text === "string" ? JSON.parse(text)?.agent_id : null;
+                    identity?.startsWith("session:v1:")
+                      ? finish()
+                      : finish(new Error(`${server} did not register a session identity`));
                   } else if (message.error) {
                     finish(new Error(`${server} returned an MCP error: ${JSON.stringify(message.error)}`));
                   }

@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "lodestar-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "globset",
  "mindleak-core",
@@ -293,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "lodestar-mcp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "lodestar-core",
@@ -325,7 +325,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mindleak-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "mindleak-storage",
  "pep508_rs",
@@ -344,7 +344,7 @@ dependencies = [
 
 [[package]]
 name = "mindleak-mcp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "mindleak-core",
@@ -356,14 +356,14 @@ dependencies = [
 
 [[package]]
 name = "mindleak-session"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "sha2",
 ]
 
 [[package]]
 name = "mindleak-storage"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "rusqlite",
 ]

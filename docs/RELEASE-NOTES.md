@@ -1,29 +1,28 @@
-# MindLeak 0.1.1 Release Notes
+# MindLeak 0.1.2 Release Notes
 
-MindLeak 0.1.1 turns the local Temporal Context Graph and Lodestar Intent Plane
-into a usable multi-agent coordination surface. The release includes both native
-MCP servers, targeted VS Code packages, a human Design Board, task allocation and
-lease controls, passive evidence capture, autonomous graph maintenance, and
-versioned constitutional design documentation.
+MindLeak 0.1.2 fixes identity at the boundary where local multi-agent work
+actually happens: one stdio process may serve several logical client sessions.
+The release adds an explicit cross-plane session handshake, audited recovery for
+legacy claims, reviewed design materialization, exportable conformance evidence,
+first-value Workspace guidance, and first-class GitHub Copilot CLI registration.
 
 ## Highlights
 
-- **Design Board** — repository ADRs synchronize into a separate review queue.
-  Human reviewers can accept or reject proposed designs, promote accepted work
-  under an objective, retry pending promotion, and inspect persisted objective,
-  task, and constraint provenance.
-- **Task allocation** — the Intent Board can allocate open or expired work to a
-  named agent, claim for the configured extension identity, renew or release
-  live leases, and reveal the next claimable task without auto-claiming it.
-- **Reliable coordination** — authoritative checked conformance prevents
-  preflight/completion verdict drift; build identities expose stale binaries;
-  worktree-aware Lodestar storage and scoped isolated hooks support concurrent
-  local agents.
-- **Self-maintaining memory** — idle maintenance prunes decayed graph state, and
-  model-backed embeddings/consolidation use bounded no-retry network behavior.
-- **Better operator experience** — rich Markdown read tools, actionable install
-  guidance, deterministic ADR reconciliation, Design Board/Intent Board/Q&A/
-  pause-resume workflows, and Windows-safe coverage accounting.
+- **Session-scoped identity** — clients register one opaque 128-bit token with
+  both planes. The servers derive the same stable owner, reject unknown tokens,
+  and overwrite caller-selected identity fields. Concurrent chats through one
+  process now retain distinct claims, attention, and evidence (ADR-0030).
+- **Audited legacy recovery** — `recover_claim` transfers only an expired
+  compatible legacy owner into the registered session, starts a fresh evidence
+  window, preserves task scope/Q&A, and appends the complete prior claim state.
+- **Reviewed design materialization** — acceptance no longer creates work.
+  Humans review explicit create/link/no-work plans; repairs append a new revision
+  without deleting the original plan or its tasks.
+- **Evidence as proof-of-work** — the Evidence Board, `export_evidence`, and the
+  conformance manifest make the checked task history portable for review and CI.
+- **One first-value path** — the Workspace view guides connection, first ingest,
+  and first useful graph result; the installer also emits a Copilot CLI-ready
+  config that uses the same local databases as VS Code.
 
 ## Install
 
@@ -38,7 +37,8 @@ node /path/to/extracted/install.mjs
 The installer requires Node.js 20 or newer. It smoke-tests both servers before
 copying them to `.mindleak/bin/<version>/`, preserves unrelated registrations and
 comments in `.vscode/mcp.json`, and adds local-state privacy rules to `.gitignore`.
-Use `--agent <stable-id>` to set the attribution/task identity.
+Use `--agent <label>` to set the human-readable identity base. Each client mints
+and registers its own session token; the label is not an owner credential.
 
 For the editor experience, install the matching platform-targeted `.vsix` from
 VS Code's **Extensions: Install from VSIX** command. The VSIX contains both
@@ -103,7 +103,7 @@ so operating-system trust prompts may appear.
 | Failure locations | Generic `path:line`; Python `File "path", line N` | Failed execution to artifact evidence |
 | Direct dependencies | Cargo.toml, package.json, go.mod, requirements.txt / PEP 508 | Direct declarations only; fail closed when malformed |
 
-Not supported in 0.1.1: transitive/lockfile dependency resolution; TypeScript
+Not supported in 0.1.2: transitive/lockfile dependency resolution; TypeScript
 path aliases, re-exports, namespace/default cross-file calls, or expression-based
 mixins; precise cross-file structure for languages other than JavaScript and
 TypeScript; shared graph databases across unrelated repositories.
@@ -136,9 +136,11 @@ backup, export, and reset procedures.
   maintenance telemetry for completed attempts. Manual and idle calls share a
   persisted rate limit; bounded shutdown may terminate an in-flight HTTP attempt
   before its final telemetry event.
-- Unit Test MCP currently reports successful Rust/custom runs with zero test
-  counts; compile failures still surface, while CI remains the authoritative
-  count/coverage gate.
+- Unit Test MCP does not route this Rust workspace (`INVALID_ROOT_DIR`) and may
+  report zero Vitest counts despite executing the suite; repository hooks and CI
+  remain the authoritative Rust test/count and coverage gates.
 - The measured agent result has one model, one runner, one engineered composite
   task, and three repetitions per arm. Do not generalize the percentages beyond
   that scope.
+- The independent-developer v0.1.2 pilot starts only after public assets exist.
+  No external-adoption or retention claim is made by these release notes.
