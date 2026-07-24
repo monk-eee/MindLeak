@@ -19,6 +19,16 @@ to [Semantic Versioning](https://semver.org/).
   two-owner control, live claim + footprint detection, 336-hour decay control,
   read-only checks, and a successful `blocked_by` steer; it does not claim agents
   always obey advisory output.
+- **`forget_file` reaps a deleted file's structure instead of leaving it to
+  decay for a month.** When a file is deleted or renamed in the editor, its
+  symbols and artifact node — and every edge touching them — used to linger in
+  the graph until decay pruned them (~30 days), and a live graph showed hundreds
+  of such stale nodes for moved/split source. The new `forget_file` tool reaps
+  that structure outright (a vanished file's structure is definitively invalid),
+  and the VS Code extension calls it on `onDidDeleteFiles` / `onDidRenameFiles`
+  (editor-mediated events only, so a file briefly absent during a git operation
+  is never wrongly reaped). Historical intent and execution nodes remain; only
+  their edges to the gone file are cut.
 - **Telemetry distinguishes a resolved historical error from a currently failing
   tool (ADR-0010).** The append-only trail means a tool's lifetime `errors` never
   shrinks, so a single past failure used to read as a permanent fault in the VS

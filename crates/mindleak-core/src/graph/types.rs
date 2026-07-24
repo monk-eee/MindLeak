@@ -108,6 +108,15 @@ pub struct WriteOutcome {
     pub node_ids: Vec<String>,
 }
 
+/// Counts removed when forgetting a deleted file: its artifact node, the symbols
+/// it defined, and every edge touching them. Structure for a vanished file is
+/// definitively invalid, so it is reaped outright rather than left to decay.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct ForgetOutcome {
+    pub nodes_removed: usize,
+    pub edges_removed: usize,
+}
+
 /// Complete, human-readable view of the active graph at one point in time.
 #[derive(Debug, Clone, Serialize)]
 pub struct GraphExport {

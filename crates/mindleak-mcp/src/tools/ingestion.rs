@@ -62,6 +62,15 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "forget_file",
+            "description": "Forget a deleted or renamed file: reap its artifact node and the symbols it defined, plus every edge touching them, so the graph stops carrying structure for a path that no longer exists.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "path": { "type": "string" } },
+                "required": ["path"]
+            }
+        }),
+        json!({
             "name": "boost_entity",
             "description": "Record that a node was focused so recency views surface it, without changing incident evidence weights or decay clocks.",
             "inputSchema": {
@@ -117,6 +126,11 @@ pub(super) fn dispatch(
                 .map_err(|e| e.to_string())?;
             Ok(text_result(&json!(outcome)))
         })()),
+        "forget_file" => Some((|| {
+            let path = req_str(args, "path")?;
+            let outcome = engine.forget_file(&path).map_err(|e| e.to_string())?;
+            Ok(text_result(&json!(outcome)))
+        })()),
         "boost_entity" => Some((|| {
             let id = req_str(args, "id")?;
             let found = engine.boost(&id).map_err(|e| e.to_string())?;
@@ -150,5 +164,17 @@ mod tests {
         let params = json!({ "name": "ingest_file", "arguments": { "path": "x.rs" } });
         let err = call(&engine, &params).unwrap_err();
         assert!(err.contains("content"));
+    }
+
+    #[test]
+    fn forget_file_reaps_ingested_structure() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        call_ok(
+            &engine,
+            "ingest_file",
+            json!({ "path": "src/gone.rs", "content": "pub fn a() {}" }),
+        );
+        let res = call_ok(&engine, "forget_file", json!({ "path": "src/gone.rs" }));
+        assert!(content_text(&res).contains("nodes_removed"));
     }
 }

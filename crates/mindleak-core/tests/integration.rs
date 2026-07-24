@@ -64,6 +64,55 @@ fn execution_attribution_decays_with_the_execution_not_slower() {
 }
 
 #[test]
+fn forget_file_reaps_a_deleted_files_structure() {
+    // A deleted file's structure is definitively invalid: forget_file reaps the
+    // artifact and every symbol it defined outright, even though an execution's
+    // `modified` edge and the agent's `observed` edges would otherwise pin them
+    // in the graph for weeks (the deleted/moved-source bloat).
+    let engine = MindLeak::open_in_memory()
+        .unwrap()
+        .with_agent(Some("tester".to_string()));
+    engine
+        .ingest_file("src/gone.rs", "pub fn alpha() {}\npub struct Beta;\n")
+        .unwrap();
+    engine
+        .ingest_execution(&exec("cargo build", 0, "ok", &["src/gone.rs"]))
+        .unwrap();
+
+    let before = engine.snapshot(None, 200).unwrap();
+    let symbols: Vec<String> = before
+        .nodes
+        .iter()
+        .map(|n| n.node.id.clone())
+        .filter(|id| id.starts_with("symbol:src/gone.rs:"))
+        .collect();
+    assert!(!symbols.is_empty(), "the file should define symbols");
+    assert!(engine
+        .store()
+        .get_node("artifact:src/gone.rs")
+        .unwrap()
+        .is_some());
+
+    let outcome = engine.forget_file("src/gone.rs").unwrap();
+    assert!(outcome.nodes_removed > symbols.len()); // the artifact plus its symbols
+
+    // The artifact and every symbol it defined are gone.
+    assert!(engine
+        .store()
+        .get_node("artifact:src/gone.rs")
+        .unwrap()
+        .is_none());
+    for sym in &symbols {
+        assert!(
+            engine.store().get_node(sym).unwrap().is_none(),
+            "{sym} should be reaped"
+        );
+    }
+    // Forgetting an unknown path is a harmless no-op.
+    assert_eq!(engine.forget_file("src/never.rs").unwrap().nodes_removed, 0);
+}
+
+#[test]
 fn ingestion_rejects_vcs_and_build_output_paths() {
     let engine = MindLeak::open_in_memory().unwrap();
 

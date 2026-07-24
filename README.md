@@ -199,6 +199,7 @@ It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
 | `ingest_execution` | Command + exit code → execution/modified/failed_on edges. |
 | `ingest_commit` | Commit → intent node + refactored edges + rationale. |
 | `ingest_file` | File → artifact + extracted symbols (`contains`). |
+| `forget_file` | Deleted/renamed file → reap its artifact, symbols, and their edges. |
 | `boost_entity` | Record node focus for recency views without rewriting evidence. |
 | `graph_snapshot` | Subgraph for visualization. |
 | `prune_graph` | Surface near-expiry proven signal for consolidation, then purge decayed noise and unreferenced stubs. |
