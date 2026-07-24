@@ -216,6 +216,7 @@ mod tests {
                 "jsonrpc": "2.0", "id": id + 10, "method": "tools/call",
                 "params": { "name": "ingest_commit", "arguments": {
                     "session_id": token,
+                    "agent": "impersonator",
                     "message": sha,
                     "sha": sha,
                     "changed_files": [path],
@@ -241,6 +242,11 @@ mod tests {
         let first = evidence(30, "00112233445566778899aabbccddeeff");
         let second = evidence(31, "ffeeddccbbaa99887766554433221100");
         assert_ne!(first["agent_id"], second["agent_id"]);
+        assert_ne!(first["agent_id"], "impersonator");
+        assert!(first["agent_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("session:v1:test:"));
         assert_eq!(first["commit_ids"], json!(["intent:session-a"]));
         assert_eq!(second["commit_ids"], json!(["intent:session-b"]));
         assert_eq!(first["changed_node_ids"], json!(["artifact:src/a.rs"]));
