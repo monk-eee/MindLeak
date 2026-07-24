@@ -69,6 +69,20 @@ intersects a proven regularity attaches an **advisory** finding and may nudge an
 otherwise-`Aligned` verdict to `NeedsHuman`, but can never emit `Violation` (only
 the Constitution hard-fails). The read path stays deterministic — no LLM.
 
+**Evidence is the proof-of-work — the load-bearing guarantee.** Completion is not a
+status an agent can assert: `complete_task` consumes only a bounded,
+provenance-bearing evidence bundle (`evidence_for`, from the Memory plane) that
+`check_conformance` scores against the goal's code bindings, writing a durable,
+resolvable record to an append-only `conformance_history` (ADR-0009/0025). In a
+multi-agent fleet this chain is the **only** trustworthy proof that the agents did
+the sanctioned work — every other signal (an agent's summary, a green check, a PR
+body) is narration an agent can fabricate. It is bounded by the live claim,
+attributed to the acting agent (ADR-0030), and anchored to real executions and
+commits in the graph. `export_evidence` (ADR-0031) renders that chain as a
+committed, verifiable artifact so the proof leaves the ledger for human review, a
+CI conformance gate (`scripts/conformance-gate.mjs`), and audit — the durable
+counterweight to decay: episodes fade, but the record of what conformed survives.
+
 ADR-0026 proposes the next governance layer above this implementation. The
 current `Goal` model remains authoritative today; the target model adds an
 explicit philosophy/preamble, broad principles, constitution versions, clause

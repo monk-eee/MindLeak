@@ -228,6 +228,14 @@ diluting it. Register it alongside `mindleak-mcp`; it uses `LODESTAR_DB` (else
 `<cwd>/.lodestar/spec.db`), a shared file so local agents and worktrees
 coordinate through one plane.
 
+> **Evidence is the proof.** Completion here isn't a claim an agent makes — it's
+> proof it must produce. `complete_task` accepts only a provenance-bearing evidence
+> bundle that a separate `check_conformance` scores against the goal's code, bounded
+> by the live claim and attributed to the acting agent. The durable
+> `conformance_history` chain is the **only** trustworthy record that a fleet did
+> the right thing — narration is not proof — and `export_evidence` makes it portable
+> for review, a CI gate, and audit.
+
 | Tool | Purpose |
 |---|---|
 | `define_goal` / `supersede_goal` | Write/version the constitution (objective · constraint · invariant). |
@@ -256,6 +264,7 @@ coordinate through one plane.
 | `design_promotion` / `design_materialization_history` | Read the current task/objective projection or its complete immutable review history. |
 | `check_conformance` | Persist and return `{ id, token, verdict, findings }` for exact checked completion. |
 | `conformance_history` | Resolve a task's durable evidence chain — the recorded bundle, verdict, and stable id per check. |
+| `export_evidence` | Render a task's conformance chain as a committed, verifiable **proof-of-work** artifact — the proof leaves the local ledger for review, CI, and audit (ADR-0031). |
 | `consolidate` / `record_knowledge` | Gated promotion of learned regularities. |
 | `promote_signals` | Promotion bridge (ADR-0022): batch-feed MindLeak `promotion_candidates` into the gated consolidator; deterministic, model-optional. |
 | `active_knowledge` / `reconfirm_knowledge` / `prune_knowledge` | Durable-but-revalidated knowledge. |

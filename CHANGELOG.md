@@ -7,6 +7,18 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Conformance evidence is exportable, verifiable proof-of-work (ADR-0031).** The
+  evidence-backed conformance loop (ADR-0009/0025) already refuses to let an agent
+  mark work "done" by asserting it — `complete_task` consumes only a bounded,
+  provenance-bearing bundle that a separate `check_conformance` scores against the
+  goal's code bindings, bounded by the live claim and attributed to the acting
+  agent. Now that proof can leave the local ledger: `export_evidence` renders a
+  task's durable `conformance_history` chain (check id, verdict, acting agent,
+  claim window, evidence summary) as a committed, verifiable artifact for human
+  review, a CI conformance gate (`scripts/conformance-gate.mjs`, which fails when
+  changed governed code lacks an aligned receipt), and audit. README and
+  ARCHITECTURE now explain why this chain is the fleet's only trustworthy
+  proof-of-work — narration is not proof.
 - **Ask-before-act constitutional advice (ADR-0029).** Agents can now ask what
   governs an intended change *before* doing it, not only discover drift at
   `complete_task`. The new `advise` tool takes the `artifact:`/`symbol:` ids you
