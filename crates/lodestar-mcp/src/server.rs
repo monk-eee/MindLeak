@@ -239,6 +239,22 @@ mod tests {
     }
 
     #[test]
+    fn malformed_session_is_rejected_before_domain_dispatch() {
+        let request = json!({
+            "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": { "name": "open_session", "arguments": {
+                "session_id": "00112233445566778899AABBCCDDEEFF"
+            }}
+        });
+        let response = handle(&engine(), &sessions(), &request).unwrap();
+        assert_eq!(response["result"]["isError"], true);
+        assert!(response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("32 lowercase hexadecimal"));
+    }
+
+    #[test]
     fn multiplexed_sessions_claim_as_distinct_owners() {
         let engine = engine();
         let goal = engine
