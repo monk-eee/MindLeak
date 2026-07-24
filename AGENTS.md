@@ -100,6 +100,22 @@ style nit.
 - **Keep the surface tight.** Only make items `pub` that are actually called from
   outside the module; a `pub fn` nobody calls is dead surface — delete it.
 
+### Ask before acting (NON-NEGOTIABLE, ADR-0029)
+- **Consult the constitution before you touch code.** At claim time, and before
+  editing any `governed`/`forbid_change` file, call Lodestar's `advise` (or read
+  the governing clauses surfaced on `claim_task` / `next_task`) with the
+  `artifact:`/`symbol:` ids you intend to change. It returns the clauses that
+  govern that scope and a proportional disposition — `advise` (proceed, honour
+  the clauses), `review` (you would drift outside a covering task — get one
+  first), `block` (a `forbid_change` lock — needs a waiver, not a commit), or
+  `needs_human` (no constitution adopted).
+- **`advise` informs; it never gates.** It is evidence-free, records no verdict,
+  changes no task state, needs no model, and never blocks a compare-and-swap
+  claim. Skipping it does not dodge the verdict — retrospective conformance at
+  `complete_task` (ADR-0009/0025) is still the backstop that lands drift or a
+  violation in review or blocked. The point is to catch it *before* you do the
+  work, not after.
+
 ### Test-driven workflow (NON-NEGOTIABLE)
 - **Tests are the only way we ship.** Every new tool, parser, or facade method
   gets a test — colocated `#[cfg(test)] mod tests` in the module, or an
