@@ -149,6 +149,19 @@ impl LodestarStore {
         })?;
         collect(rows)
     }
+
+    /// Every code node under an active goal's policy — the governed set a
+    /// conformance manifest gates on (ADR-0031). Distinct node ids, ordered.
+    pub fn governed_node_ids(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT c.node_id FROM goal_code c
+             JOIN goals g ON g.id = c.goal_id
+             WHERE g.status = 'active'
+             ORDER BY c.node_id",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        collect(rows)
+    }
 }
 
 pub(super) fn define_goal_on(

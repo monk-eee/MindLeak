@@ -148,6 +148,18 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "resolve_task",
+            "description": "Human-accept an in_review task to done — the task-level mirror of accept_design. A task lands in_review when conformance returns drift/needs_human (the work is plausibly complete but wants human judgement); this records that judgement and moves it to done with no code-conformance re-run, opening any blocked successor. Human-in-the-loop: the resolver identity is required and may not be the agent whose work is under review.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string" },
+                    "human": { "type": "string", "description": "The human reviewer's identity (must differ from the agent whose work is under review)." }
+                },
+                "required": ["task_id", "human"]
+            }
+        }),
+        json!({
             "name": "ask_question",
             "description": "Park a claimed task with a durable question for a human (ADR-0020). Owner-guarded: moves the task to needs_input, clearing the live lease but keeping the owner and evidence window. Answer it with 'answer'.",
             "inputSchema": {
@@ -368,6 +380,12 @@ pub(super) fn dispatch(
                 .map_err(|e| e.to_string())?;
             ok(&json!({ "abandoned": abandoned }))
         })()),
+        "resolve_task" => Some((|| {
+            let resolved = engine
+                .resolve_task(req_str(args, "task_id")?, req_str(args, "human")?)
+                .map_err(|e| e.to_string())?;
+            ok(&json!({ "resolved": resolved }))
+        })()),
         "ask_question" => Some((|| {
             let parked = engine
                 .ask_question(
@@ -458,7 +476,7 @@ mod tests {
     use super::super::call;
     use super::*;
     use lodestar_core::llm::LlmClient;
-    use lodestar_core::{now_unix, CodeBindingMode, GoalKind};
+    use lodestar_core::{now_unix, CodeBindingMode, ConformanceEvidence, GoalKind};
 
     #[test]
     fn scoped_claim_and_overlap_round_trip_through_tools() {
@@ -680,6 +698,63 @@ mod tests {
         let board = engine.board(true).unwrap();
         let reopened = board.iter().find(|t| t.id == task.id).unwrap();
         assert_eq!(reopened.status.as_str(), "open");
+    }
+
+    #[test]
+    fn resolve_task_dispatch_human_accepts_an_in_review_task() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship auth", "change auth", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "change auth", "done").unwrap();
+        engine.claim_task(&task.id, "agent-a", 300).unwrap();
+        let started = engine
+            .board(true)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == task.id)
+            .unwrap()
+            .claim_started_at
+            .unwrap();
+        let evidence = ConformanceEvidence {
+            schema_version: 1,
+            task_id: Some(task.id.clone()),
+            agent_id: "agent-a".into(),
+            started_at: started,
+            ended_at: now_unix(),
+            changed_node_ids: Vec::new(),
+            failed_node_ids: Vec::new(),
+            execution_ids: Vec::new(),
+            successful_execution_ids: Vec::new(),
+            commit_ids: Vec::new(),
+            summary: "no mutation evidence".into(),
+            provenance: Vec::new(),
+        };
+        let checked = engine.check_conformance(&evidence, Some(&task.id)).unwrap();
+        engine
+            .complete_task(&task.id, "agent-a", &evidence, &checked)
+            .unwrap();
+
+        // The reviewed agent may not sign off on its own work.
+        let denied = call(
+            &engine,
+            &json!({ "name": "resolve_task", "arguments": { "task_id": task.id, "human": "agent-a" } }),
+        );
+        assert!(denied.unwrap_err().contains("may not resolve its own"));
+
+        // A distinct human accepts it to done with no conformance re-run.
+        let result = call(
+            &engine,
+            &json!({ "name": "resolve_task", "arguments": { "task_id": task.id, "human": "reviewer" } }),
+        )
+        .unwrap();
+        let payload: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["resolved"], true);
+
+        let board = engine.board(true).unwrap();
+        let resolved = board.iter().find(|t| t.id == task.id).unwrap();
+        assert_eq!(resolved.status.as_str(), "done");
     }
 
     #[test]

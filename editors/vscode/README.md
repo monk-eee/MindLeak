@@ -15,6 +15,9 @@ graph engine.
   is required.
 - **Visible capture health** — the graph status reports active, disabled, or the
   concrete degraded reason. Terminal capture requires VS Code shell integration.
+- **Workspace readiness** — one derived tree shows the exact Memory/Intent
+  builds, attribution identity, current first-value state, optional degradation,
+  and the next concrete action. It stores no graph or task authority.
 - **Privacy by default** — command metadata is enabled; terminal output storage
   is disabled unless explicitly opted in, then redacted and capped.
 - **Live graph** — a Cytoscape sidebar renders the current context subgraph:
@@ -41,11 +44,25 @@ graph engine.
 
 ## Guided tour
 
-Click the **MindLeak icon in the activity bar** to open four views in the
-sidebar. You mostly *watch* them while your agent works; a few actions are yours
-to click.
+Click the **MindLeak icon in the activity bar** to open the operational views in
+the sidebar. You mostly *watch* them while your agent works; a few actions are
+yours to click.
 
 ![MindLeak's four views open in the VS Code sidebar next to an editor](media/screenshots/overview.png)
+
+### Workspace
+
+The first row is the current derived readiness state: connection remediation,
+first ingest, Context Graph, Intent Board, Design Board, or optional-capability
+telemetry. The following rows show both MCP build identities and the configured
+base label's effective per-activation identity. The extension passes that exact
+fixed id to both MCP planes, so attribution and claims agree. A fresh workspace
+opens this view once; afterward it stays an ordinary refreshable tree that can
+be collapsed or ignored.
+
+The state comes from `graph_stats`, `board`, `design_board`, MCP initialize
+metadata, and sensor health. The extension never persists a parallel readiness,
+graph, goal, or task state.
 
 ### Context Graph
 
@@ -117,6 +134,7 @@ Override with `mindleak.serverPath` / `mindleak.lodestarServerPath`.
 | `mindleak.databasePath` | `` | Graph DB path; empty = `<workspace>/.mindleak/graph.db`. |
 | `mindleak.lodestarServerPath` | `lodestar-mcp` | Path to the Intent Plane server. |
 | `mindleak.lodestarDatabasePath` | `` | Intent DB path; empty = `<workspace>/.lodestar/spec.db`. |
+| `mindleak.agentId` | `vscode` | Base label for one unique per-activation id shared by both child MCP servers. |
 | `mindleak.autoIngestOnSave` | `true` | Ingest a file's symbols on save. |
 | `mindleak.captureExecutions` | `true` | Capture shell-integrated command metadata and outcomes. |
 | `mindleak.captureTerminalOutput` | `false` | Retain bounded, redacted output with executions. |

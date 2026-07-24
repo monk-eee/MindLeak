@@ -15,9 +15,15 @@ async function run() {
   const api = await extension.activate();
   assert.equal(api.health().memory, "memory connected");
   assert.equal(api.health().intent, "intent connected");
+  assert.equal(api.readiness().state, "ready_empty");
+  assert.match(api.readiness().memory, /mindleak-mcp .+\+/);
+  assert.match(api.readiness().intent, /lodestar-mcp .+\+/);
+  assert.match(api.readiness().agent, /^vscode-[a-f0-9]{8}$/);
+  assert.equal(api.readiness().graph.nodes, 0);
 
   const commands = await vscode.commands.getCommands(true);
   for (const command of [
+    "mindleak.readiness.refresh",
     "mindleak.refresh",
     "mindleak.board.refresh",
     "mindleak.task.next",
@@ -44,6 +50,9 @@ async function run() {
   await vscode.window.showTextDocument(document);
   await vscode.commands.executeCommand("mindleak.ingestActiveFile");
   await vscode.commands.executeCommand("mindleak.refresh");
+  await vscode.commands.executeCommand("mindleak.readiness.refresh");
+  assert.ok(api.readiness().graph.nodes > 0, "first ingest must create graph context");
+  assert.equal(api.readiness().state, "observing");
   await vscode.commands.executeCommand("mindleak.board.refresh");
   await vscode.commands.executeCommand("mindleak.task.next");
 
@@ -55,6 +64,9 @@ async function run() {
   );
   await vscode.commands.executeCommand("mindleak.design.sync");
   await vscode.commands.executeCommand("mindleak.design.refresh");
+  await vscode.commands.executeCommand("mindleak.readiness.refresh");
+  assert.equal(api.readiness().state, "coordinating");
+  assert.equal(api.readiness().action.command, "mindleak.designView.focus");
 
   await waitForFile(path.join(workspace, ".mindleak", "graph.db"));
   await waitForFile(path.join(workspace, ".lodestar", "spec.db"));

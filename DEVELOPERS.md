@@ -384,11 +384,15 @@ and footguns, with impact and status:
   exposed a duplicate-task failure. A docs-only task inside an *objective's*
   task chain (not a registered design item) —
   e.g. the AGENTS.md/README/USAGE/SPEC-INTENT task closing the ADR-0029 advise
-  chain — still lands `in_review` via the same `needs_human` verdict, and there is
-  **no task-level accept-to-`done` verb** (only `reopen_task` / `abandon_task`
-  exist). The docs are committed and correct; `in_review` is its accurate resting
-  state. The missing piece is a human-accept transition for `needs_human` tasks,
-  or excluding pure-documentation changes from code conformance.
+  chain — still lands `in_review` via the same `needs_human` verdict. — **Fixed
+  Jul 2026:** `resolve_task(task_id, human)` (facade + MCP) is the task-level
+  mirror of `accept_design` — it human-accepts an `in_review` task to `done` with
+  no code-conformance re-run, opens any blocked successor, and refuses
+  self-resolution by the reviewed agent (the worker read from the task's
+  conformance evidence). Tests:
+  `resolve_task_accepts_an_in_review_task_to_done`,
+  `resolve_task_refuses_self_resolution_by_the_reviewed_agent`,
+  `resolve_in_review_opens_a_blocked_successor`.
 - **`next_task` surfaces non-actionable policy tasks.** — A `constraint` goal was
   decomposed into four tasks that merely restate the constraint and can never
   accrue completion evidence; `next_task` (oldest-first) hands one out on every

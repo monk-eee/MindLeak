@@ -16,6 +16,26 @@ beforeEach(() => {
 });
 
 describe("McpClient disposal", () => {
+  it("exposes the initialized server build and clears it on disposal", async () => {
+    const fake = fakeProcess({
+      exitOnEnd: true,
+      initializeResult: {
+        serverInfo: { name: "mindleak-mcp", version: "0.1.1+abc123" },
+      },
+    });
+    mockedSpawn.mockReturnValue(fake.process);
+    const client = new McpClient("mindleak-mcp", "/workspace", {}, () => undefined);
+
+    await client.start();
+    expect(client.serverIdentity()).toEqual({
+      name: "mindleak-mcp",
+      version: "0.1.1+abc123",
+    });
+
+    await client.dispose(100);
+    expect(client.serverIdentity()).toBeUndefined();
+  });
+
   it("closes stdin and waits for a graceful server exit", async () => {
     const fake = fakeProcess({ exitOnEnd: true });
     mockedSpawn.mockReturnValue(fake.process);
@@ -209,6 +229,7 @@ function fakeProcess(options: {
   emitExitOnKill?: boolean;
   killResult?: boolean;
   answerInitialize?: boolean;
+  initializeResult?: unknown;
   toolResults?: unknown[];
   toolMessages?: Array<{ result?: unknown; error?: unknown }>;
 }) {
@@ -235,7 +256,11 @@ function fakeProcess(options: {
       if (request.method === "initialize" && options.answerInitialize !== false) {
         queueMicrotask(() => {
           process.stdout.write(
-            `${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} })}\n`
+            `${JSON.stringify({
+              jsonrpc: "2.0",
+              id: request.id,
+              result: options.initializeResult ?? {},
+            })}\n`
           );
         });
       } else if (request.method === "tools/call" && options.toolMessages?.length) {
