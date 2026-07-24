@@ -188,7 +188,10 @@ mod tests {
     #[test]
     fn missing_required_arg_is_error() {
         let engine = MindLeak::open_in_memory().unwrap();
-        let params = json!({ "name": "ingest_file", "arguments": { "path": "x.rs" } });
+        // `agent` is injected by bind_session in production; supply it here so
+        // dispatch reaches the genuinely-missing `content` argument.
+        let params =
+            json!({ "name": "ingest_file", "arguments": { "agent": "a", "path": "x.rs" } });
         let err = call(&engine, &params).unwrap_err();
         assert!(err.contains("content"));
     }
