@@ -21,7 +21,6 @@ pub(crate) struct ActivitySignal {
 
 struct ActivityState {
     last_request: Instant,
-    last_attempt: Option<Instant>,
     active_requests: usize,
     shutdown: bool,
 }
@@ -32,7 +31,6 @@ impl ActivitySignal {
             shared: Arc::new((
                 Mutex::new(ActivityState {
                     last_request: Instant::now(),
-                    last_attempt: None,
                     active_requests: 0,
                     shutdown: false,
                 }),
@@ -158,34 +156,58 @@ fn is_unsupported_maintenance_database(path: &str) -> bool {
 }
 
 fn run_worker(engine: MindLeak, activity: ActivitySignal, config: MaintenanceConfig) {
+    // Cadence trackers are worker-local. The deterministic prune runs on a fixed
+    // wall-clock interval that ignores request activity (it is a cheap, zero-token
+    // SQL sweep), so heavy UI polling can never starve it. Consolidation stays
+    // gated on genuine request idle plus a rate-limiting interval because it is
+    // expensive and spends local-model tokens.
+    let mut last_prune: Option<Instant> = None;
+    let mut last_consolidation: Option<Instant> = None;
+    // Cap each sleep so the loop re-evaluates periodically even when the next
+    // deadline is far off or a tier is disabled. Shutdown wakes the worker
+    // immediately via the condvar, so this does not affect shutdown latency.
+    const MAX_WAIT: Duration = Duration::from_secs(30);
+
     loop {
         let (state, condition) = &*activity.shared;
         let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
         if state.shutdown {
             break;
         }
-        if state.active_requests > 0 {
-            state = condition
-                .wait(state)
-                .unwrap_or_else(|error| error.into_inner());
-            if state.shutdown {
-                break;
-            }
-            continue;
-        }
         let now = Instant::now();
-        let idle_remaining = config
-            .idle
-            .saturating_sub(now.saturating_duration_since(state.last_request));
-        let interval_remaining = state
-            .last_attempt
-            .map(|last| {
-                config
-                    .min_interval
-                    .saturating_sub(now.saturating_duration_since(last))
-            })
-            .unwrap_or(Duration::ZERO);
-        let wait = idle_remaining.max(interval_remaining);
+
+        // Prune is due once its interval has elapsed since the last run (or it has
+        // never run). Independent of active_requests and the idle window.
+        let prune_wait = if config.prune_enabled {
+            match last_prune {
+                Some(last) => config
+                    .prune_interval
+                    .saturating_sub(now.saturating_duration_since(last)),
+                None => Duration::ZERO,
+            }
+        } else {
+            MAX_WAIT
+        };
+
+        // Consolidation waits for the process to be genuinely idle (no active
+        // request for `idle`) and is rate-limited by `min_interval`.
+        let consolidation_wait = if config.enabled && state.active_requests == 0 {
+            let idle_remaining = config
+                .idle
+                .saturating_sub(now.saturating_duration_since(state.last_request));
+            let interval_remaining = last_consolidation
+                .map(|last| {
+                    config
+                        .min_interval
+                        .saturating_sub(now.saturating_duration_since(last))
+                })
+                .unwrap_or(Duration::ZERO);
+            idle_remaining.max(interval_remaining)
+        } else {
+            MAX_WAIT
+        };
+
+        let wait = prune_wait.min(consolidation_wait).min(MAX_WAIT);
         if !wait.is_zero() {
             let result = condition
                 .wait_timeout(state, wait)
@@ -196,25 +218,25 @@ fn run_worker(engine: MindLeak, activity: ActivitySignal, config: MaintenanceCon
             }
             continue;
         }
-        state.last_attempt = Some(Instant::now());
-        drop(state);
-        run_pass(&engine, config, &activity);
-    }
-}
 
-fn run_pass(engine: &MindLeak, config: MaintenanceConfig, activity: &ActivitySignal) {
-    // Deterministic graph hygiene first (zero-token, always safe); then the
-    // optional model-dependent consolidation/index tier.
-    if config.prune_enabled {
-        run_prune(engine);
-    }
-    if config.enabled && !activity.is_shutdown() {
-        run_consolidation(
-            engine,
-            config.max_nodes,
-            config.min_interval.as_secs(),
-            activity,
-        );
+        let prune_due = config.prune_enabled && prune_wait.is_zero();
+        let consolidate_due =
+            config.enabled && state.active_requests == 0 && consolidation_wait.is_zero();
+        drop(state);
+
+        if prune_due {
+            run_prune(&engine);
+            last_prune = Some(Instant::now());
+        }
+        if consolidate_due && !activity.is_shutdown() {
+            run_consolidation(
+                &engine,
+                config.max_nodes,
+                config.min_interval.as_secs(),
+                &activity,
+            );
+            last_consolidation = Some(Instant::now());
+        }
     }
 }
 
@@ -395,6 +417,7 @@ mod tests {
         let config = MaintenanceConfig {
             enabled: false,
             prune_enabled: false,
+            prune_interval: Duration::from_secs(3600),
             idle: Duration::from_secs(30),
             min_interval: Duration::from_secs(60),
             max_nodes: 20,
@@ -415,6 +438,7 @@ mod tests {
         let config = MaintenanceConfig {
             enabled: true,
             prune_enabled: false,
+            prune_interval: Duration::from_secs(3600),
             idle: Duration::from_secs(30),
             min_interval: Duration::from_secs(60),
             max_nodes: 20,
@@ -458,17 +482,7 @@ mod tests {
         let engine = MindLeak::open_in_memory().unwrap();
 
         let activity = ActivitySignal::new();
-        run_pass(
-            &engine,
-            MaintenanceConfig {
-                enabled: true,
-                prune_enabled: false,
-                idle: Duration::from_secs(30),
-                min_interval: Duration::from_secs(60),
-                max_nodes: 20,
-            },
-            &activity,
-        );
+        run_consolidation(&engine, 20, 60, &activity);
 
         let snapshot = engine.telemetry_snapshot(1).unwrap();
         assert_eq!(snapshot.recent[0].kind, "maintenance");
@@ -481,18 +495,7 @@ mod tests {
         // Deterministic prune runs with no model configured and records its own
         // telemetry — the self-cleaning that keeps the graph bounded.
         let engine = MindLeak::open_in_memory().unwrap();
-        let activity = ActivitySignal::new();
-        run_pass(
-            &engine,
-            MaintenanceConfig {
-                enabled: false,
-                prune_enabled: true,
-                idle: Duration::from_secs(30),
-                min_interval: Duration::from_secs(60),
-                max_nodes: 20,
-            },
-            &activity,
-        );
+        run_prune(&engine);
         let snapshot = engine.telemetry_snapshot(5).unwrap();
         assert!(snapshot
             .recent
@@ -512,6 +515,7 @@ mod tests {
             MaintenanceConfig {
                 enabled: true,
                 prune_enabled: false,
+                prune_interval: Duration::from_secs(3600),
                 idle: Duration::from_millis(10),
                 min_interval: Duration::from_secs(60),
                 max_nodes: 20,
@@ -556,6 +560,7 @@ mod tests {
                 MaintenanceConfig {
                     enabled: true,
                     prune_enabled: false,
+                    prune_interval: Duration::from_secs(3600),
                     idle: Duration::from_millis(10),
                     min_interval: Duration::from_secs(60),
                     max_nodes: 20,
@@ -589,6 +594,64 @@ mod tests {
         worker.join().unwrap();
         drop(inspector);
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn prune_runs_on_its_cadence_despite_continuous_request_activity() {
+        // Regression (the "pruning never works" report): the deterministic prune
+        // must fire on its own wall-clock cadence even while requests keep the
+        // process non-idle. Before the fix, prune shared consolidation's idle
+        // gate, so an extension polling every few seconds meant the idle window
+        // was never reached and the autonomous prune never ran. Here the idle
+        // window is an hour and requests arrive continuously, yet prune still
+        // fires because its cadence is independent of request activity.
+        let path = temporary_database("prune-cadence");
+        let engine = MindLeak::open(path.to_str().unwrap()).unwrap();
+        let inspector = MindLeak::open(path.to_str().unwrap()).unwrap();
+        let activity = ActivitySignal::new();
+        let worker_activity = activity.clone();
+        let worker = std::thread::spawn(move || {
+            run_worker(
+                engine,
+                worker_activity,
+                MaintenanceConfig {
+                    enabled: false,
+                    prune_enabled: true,
+                    prune_interval: Duration::from_millis(10),
+                    idle: Duration::from_secs(3600),
+                    min_interval: Duration::from_secs(3600),
+                    max_nodes: 20,
+                },
+            );
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut pruned = false;
+        while Instant::now() < deadline {
+            // Simulate a polling UI: each request refreshes last_request, so the
+            // consolidation idle window would never be reached.
+            drop(activity.begin_request());
+            if inspector
+                .telemetry_snapshot(5)
+                .unwrap()
+                .recent
+                .iter()
+                .any(|event| event.kind == "maintenance" && event.name == "autonomous_prune")
+            {
+                pruned = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        activity.shutdown();
+        worker.join().unwrap();
+        drop(inspector);
+        fs::remove_file(path).unwrap();
+        assert!(
+            pruned,
+            "autonomous prune never ran despite its cadence elapsing under load"
+        );
     }
 
     fn temporary_database(name: &str) -> PathBuf {

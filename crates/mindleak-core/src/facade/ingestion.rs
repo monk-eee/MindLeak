@@ -19,10 +19,21 @@ impl MindLeak {
         self.store
             .upsert_node(&Node::new(&agent_id, NodeType::Agent, agent.clone(), now))?;
         for id in ids {
-            if id != &agent_id {
-                self.store
-                    .upsert_edge(&Edge::new(&agent_id, id, RelationType::Observed, now))?;
+            if id == &agent_id {
+                continue;
             }
+            let mut edge = Edge::new(&agent_id, id, RelationType::Observed, now);
+            // Attribution of a transient execution must not outlive the
+            // execution's own evidence. Left at the generic `observed` half-life
+            // (48h) the attribution edge pins the execution in the graph for
+            // roughly twice as long as its 24h `modified` evidence, so prune
+            // cannot reap the spent execution until ~9 days out. Cap execution
+            // attribution to the execution decay tier so both fade together and
+            // the orphaned execution is reaped promptly (ADR-0021 / ADR-0003).
+            if id.starts_with("execution:") {
+                edge.half_life_hours = RelationType::Modified.default_half_life_hours();
+            }
+            self.store.upsert_edge(&edge)?;
         }
         Ok(())
     }

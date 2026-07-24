@@ -6,6 +6,7 @@ use std::time::Duration;
 const DEFAULT_IDLE_SECS: u64 = 300;
 const DEFAULT_MIN_INTERVAL_SECS: u64 = 3_600;
 const DEFAULT_MAX_NODES: usize = 20;
+const DEFAULT_PRUNE_INTERVAL_SECS: u64 = 300;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MaintenanceConfig {
@@ -16,6 +17,10 @@ pub(crate) struct MaintenanceConfig {
     /// orphaned nodes, ADR-0021). On by default: it costs nothing and keeps the
     /// graph from growing unbounded between manual `prune_graph` calls.
     pub prune_enabled: bool,
+    /// How often the deterministic prune runs. This is a wall-clock cadence that
+    /// is independent of request activity, so UI polling cannot starve it the way
+    /// it can starve the consolidation idle gate.
+    pub prune_interval: Duration,
     pub idle: Duration,
     pub min_interval: Duration,
     pub max_nodes: usize,
@@ -41,6 +46,13 @@ impl MaintenanceConfig {
         Self {
             enabled,
             prune_enabled,
+            prune_interval: Duration::from_secs(bounded_u64(
+                &environment,
+                "MINDLEAK_PRUNE_INTERVAL_SECS",
+                DEFAULT_PRUNE_INTERVAL_SECS,
+                30,
+                86_400,
+            )),
             idle: Duration::from_secs(bounded_u64(
                 &environment,
                 "MINDLEAK_CONSOLIDATE_IDLE_SECS",
@@ -110,6 +122,10 @@ mod tests {
         assert!(!disabled.enabled);
         // Zero-token prune defaults ON so the graph self-cleans.
         assert!(disabled.prune_enabled);
+        assert_eq!(
+            disabled.prune_interval,
+            Duration::from_secs(DEFAULT_PRUNE_INTERVAL_SECS)
+        );
         assert_eq!(disabled.idle, Duration::from_secs(DEFAULT_IDLE_SECS));
 
         let values = HashMap::from([

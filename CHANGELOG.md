@@ -98,6 +98,23 @@ to [Semantic Versioning](https://semver.org/).
   action the board reflects rather than a button. The README index links both.
 
 ### Fixed
+- **Autonomous prune now actually runs, so the graph self-cleans during use.**
+  The idle maintenance worker gated the deterministic prune behind the same
+  request-idle window as token-heavy consolidation, but the extension polls the
+  server every few seconds, so that window was never reached and the autonomous
+  prune never fired (a live graph showed thousands of edges and zero
+  `autonomous_prune` events). Prune now runs on its own wall-clock cadence
+  (`MINDLEAK_PRUNE_INTERVAL_SECS`, default 5 minutes) that is independent of
+  request activity, so UI polling can no longer starve it. Consolidation keeps its
+  idle gate.
+- **Spent executions no longer linger ~9 days before they can be pruned.** The
+  agent attribution edge to a transient execution was created at the generic
+  `observed` half-life (48h), so it outlived the execution's own 24h `modified`
+  evidence and pinned the execution in the graph long after it was spent. Agent
+  attribution to an execution now decays at the execution tier (24h) so the
+  attribution and evidence fade together and prune reaps the orphaned execution
+  promptly (roughly halving execution retention). Attribution to durable nodes
+  (artifacts, symbols, intents) is unchanged, and `evidence_for` is unaffected.
 - **Extension coverage no longer false-fails the 80% gate on Windows.** The V8
   provider's default `all` baseline walk resolved each included file under the
   OS's uppercase drive letter while recording executed coverage under the

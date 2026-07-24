@@ -32,6 +32,38 @@ fn ingest_execution_creates_execution_and_artifact_nodes() {
 }
 
 #[test]
+fn execution_attribution_decays_with_the_execution_not_slower() {
+    // Regression (graph bloat): the agent->execution `observed` attribution edge
+    // must not outlive the execution's own 24h `modified` evidence. Left at the
+    // generic 48h `observed` half-life it pinned every spent execution in the
+    // graph for ~9 days, so prune could not reap it. It is capped to the
+    // execution decay tier (24h) so attribution and evidence fade together.
+    let engine = MindLeak::open_in_memory()
+        .unwrap()
+        .with_agent(Some("tester".to_string()));
+    let outcome = engine
+        .ingest_execution(&exec("cargo build", 0, "ok", &["src/auth.rs"]))
+        .unwrap();
+    let exec_id = outcome
+        .node_ids
+        .iter()
+        .find(|id| id.starts_with("execution:"))
+        .expect("execution node id")
+        .clone();
+
+    let snap = engine.snapshot(None, 100).unwrap();
+    let exec_attr = snap
+        .edges
+        .iter()
+        .find(|e| e.relation.as_str() == "observed" && e.target_id == exec_id)
+        .expect("agent should observe the execution node");
+
+    // The attribution decays at the execution tier (24h), not the generic
+    // observed tier (48h) that was pinning spent executions in the graph.
+    assert_eq!(exec_attr.half_life_hours, 24.0);
+}
+
+#[test]
 fn facade_injects_the_startup_decay_policy_into_the_store() {
     let engine = MindLeak::open_in_memory()
         .unwrap()
