@@ -242,7 +242,7 @@ pub(super) fn define_goal_on(
     Ok(goal)
 }
 
-fn insert_goal_on(connection: &Connection, g: &Goal) -> Result<()> {
+pub(super) fn insert_goal_on(connection: &Connection, g: &Goal) -> Result<()> {
     connection.execute(
         "INSERT INTO goals
             (id, slug, kind, title, statement, status, version, parent_id, superseded_by, reason, created_at,

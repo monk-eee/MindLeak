@@ -59,11 +59,13 @@ root retains the single timed telemetry wrapper around dispatch.
 
 The **durable** counterpart to the decay graph (ADR-0004): a separate crate and
 store so the zero-token decay engine stays uncontaminated. Modules: `model`
-(goals/tasks/knowledge), `schema.sql`, `db` (+ a knowledge `effective_weight`
+(goals/tasks/knowledge), `policy` (immutable pack schema/digest validation and
+the five-clause Common Core), `schema.sql`, `db` (+ a knowledge `effective_weight`
 scalar), `decay` (long-horizon revalidation), `store` (`LodestarStore`: the
 `goals` and goal↔code seam, `coordination` task/handoff/conformance ledger,
-reviewed `design` materialization plus validation, learned `knowledge`, and
-`lifecycle` operations), `llm` (optional local model), and `lib` (the `Lodestar`
+transactional `policy_packs` proposal/disposition/provenance ledger, reviewed
+`design` materialization plus validation, learned `knowledge`, and `lifecycle`
+operations), `llm` (optional local model), and `lib` (the `Lodestar`
 facade wiring). Facade behavior is grouped under `facade/`: `constitution`,
 `executive`, `design`, `design_materialization`, `conformance`, and `knowledge`.
 Each design materialization writes an immutable plan revision; task/goal link
@@ -91,13 +93,14 @@ committed, verifiable artifact so the proof leaves the ledger for human review, 
 CI conformance gate (`scripts/conformance-gate.mjs`), and audit — the durable
 counterweight to decay: episodes fade, but the record of what conformed survives.
 
-ADR-0026 proposes the next governance layer above this implementation. The
-current `Goal` model remains authoritative today; the target model adds an
-explicit philosophy/preamble, broad principles, constitution versions, clause
-provenance and consequences, typed controls (including ratchets), bounded
-waivers, and a draft-to-active onboarding lifecycle. Common and domain policy
-packs propose locally materialised clauses rather than creating live inherited
-law. See [`SPEC-CONSTITUTION.md`](SPEC-CONSTITUTION.md).
+ADR-0026's representation and immutable-pack layers are implemented without a
+parallel policy source: `Goal` remains the constitutional clause, while
+`constitution_versions` freezes attributed snapshots and `policy_packs` copies
+reviewed clauses into local goals with source provenance. Pack rejections remain
+durable; conflicts require review; upstream versions cannot mutate local law.
+The remaining layers are deterministic repository bootstrap/atomic activation,
+typed controls, amendments/waivers, and adoption proof. See
+[`SPEC-CONSTITUTION.md`](SPEC-CONSTITUTION.md).
 
 [ADR-0024](adr/0024-preflight-overlap-detection.md) adds the coordination layer
 above the compare-and-swap claim. Lodestar stores optional claim path globs and

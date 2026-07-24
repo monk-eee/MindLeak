@@ -20,6 +20,7 @@ mod design_tests;
 mod goals;
 mod knowledge;
 mod lifecycle;
+mod policy_packs;
 #[cfg(test)]
 mod test_support;
 

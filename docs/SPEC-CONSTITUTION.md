@@ -410,6 +410,24 @@ The adoption workflow adds a small constitutional lifecycle around the existing
 source provenance, controls, active waivers, and version. Agents still read the
 active constitution before acting.
 
+The implemented task-2 pack surface is deliberately narrower than the later
+repository-bootstrap lifecycle:
+
+- `register_policy_pack(pack)` validates schema, compatibility, and canonical
+  digest, then stores one immutable id/version;
+- `propose_policy_pack(...)` / `propose_common_core()` create durable per-clause
+  proposals and surface declared conflicts as `needs_human`;
+- `review_pack_clause(...)` records an attributed adopt/tailor/reject disposition
+  (session-bound over MCP), materializing adopted/tailored clauses as local
+  `Goal` rows with immutable source provenance; and
+- `list_pack_proposals(...)` / `pack_clause_provenance(goal_id)` expose the
+  review ledger and source.
+
+This does not pre-empt task 3's atomic draft activation or task 5's pack-upgrade
+amendment diff: absent projects receive draft-only materializations, and a newer
+version of an already-adopted pack clause is refused with an amendment-required
+error rather than silently changing active policy.
+
 ## 12. Delivery phases
 
 1. **Representation:** add constitution versions, preamble/principles, clause
@@ -439,7 +457,7 @@ and documentation surface.
 | Order | Task | Acceptance |
 |---|---|---|
 | 1 | **Add constitutional representation and migrate existing goals.** Introduce constitution versions, project purpose/preamble, `principle`, clause provenance, evidence contract, consequence, waiver policy, and lifecycle state. | Existing active goals migrate into the first local version without invented rationale or authority; incomplete clauses are review-only; absent/draft/active states and migrations are covered; callers move to the new model in the same change rather than through a compatibility fork. |
-| 2 | **Implement immutable policy packs and the Common Core.** Add pack schema validation, content digest/version handling, conflict declarations, and the five Common Core proposals. | Pack adoption materialises self-contained local clauses with provenance; rejected dispositions persist; an upstream version change cannot alter active local policy; conflicting packs require review. |
+| 2 | **Implement immutable policy packs and the Common Core.** Add pack schema validation, content digest/version handling, conflict declarations, and the five Common Core proposals. **Implemented Jul 2026.** | Pack adoption materialises self-contained local clauses with provenance; rejected dispositions persist; an upstream version change cannot alter active local policy; conflicting packs require review. |
 | 3 | **Build deterministic repository bootstrap and activation.** Add `constitution_status`, fact discovery, `propose_constitution`, `review_clause`, and `activate_constitution`. | A fixture repository with no constitution reaches a cited draft; every Common Core clause has an adopt/tailor/reject disposition; activation is atomic and refuses unresolved/conflicting drafts; no model is required and no proposal activates itself. |
 | 4 | **Bind typed controls and ratchets to clauses.** Add versioned `Control` and `ControlObservation` values, typed adapters, and clause-aware conformance resolution; migrate `forbid_change` as the first deterministic code control, add one reviewed ratchet, and add branch-based development (no direct push to a protected branch) as the first *workflow* control end to end. | A failed orphan control cannot block; the same observation maps to the consequence declared by its clause; a workflow control resolves by declared workflow scope rather than by code-node bindings; broad principles route to review; conformance audit/token records the constitutional version, clause, control version, and evidence used. |
 | 5 | **Add amendments and bounded waivers.** Implement attributed constitutional versions, pack-upgrade proposals, `grant_waiver`, and `revoke_waiver`, including authority, scope, expiry, and remediation linkage. | Valid waivers affect only matching future checks and appear in the audit; expiry/revocation restores enforcement; permanent exceptions require an amendment; changed policy or waiver state invalidates a stale checked-conformance token. |

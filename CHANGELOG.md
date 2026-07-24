@@ -6,6 +6,20 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Immutable policy packs and the five-principle Common Core (ADR-0026 task
+  2).** Lodestar validates a canonical SHA-256 digest and engine compatibility
+  before registering a pack version; the same id/version/digest is idempotent,
+  while changed bytes under an existing version are refused. Pack clauses enter
+  a durable adopt/tailor/reject review ledger. Adoption atomically materializes
+  a self-contained local constitutional clause plus immutable source pack id,
+  version, digest, key, and original content; rejection persists so bootstrap
+  cannot repeatedly propose it. Declared pack conflicts route to human review,
+  and a newer pack version cannot rewrite an adopted active clause (it requires
+  the later amendment workflow). `propose_common_core` uses this same path for
+  evidence, intent, safety, proportionality, and evolution principles; MCP
+  review is attributed to a registered session.
+
 ## [0.1.2] - 2026-07-24
 
 ### Added

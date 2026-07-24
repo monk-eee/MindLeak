@@ -115,6 +115,7 @@ fn requires_session(name: &str) -> bool {
     matches!(
         name,
         "register_design"
+            | "review_pack_clause"
             | "claim_task"
             | "renew_lease"
             | "complete_task"
