@@ -160,6 +160,43 @@ pub struct CodeBinding {
     pub mode: CodeBindingMode,
 }
 
+/// The forward-looking disposition returned by `advise` (ADR-0029): a
+/// proportional judgment made *before* work is done, from clause resolution
+/// alone. It is deliberately not a `Verdict` — advice never records a
+/// conformance result and never runs the semantic judge, so it can only surface
+/// what governs the intended change, warn about a would-be drift, block on a
+/// hard `forbid_change` lock, or defer to a human when no constitution exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdviceDisposition {
+    /// Nothing blocks the change; any in-scope governing clauses are surfaced to honour.
+    Advise,
+    /// The change would drift outside a covering task; get a covering task or review first.
+    Review,
+    /// A hard `forbid_change` clause locks this code; do not proceed without a waiver.
+    Block,
+    /// No constitution is adopted (or policy is genuinely ambiguous); a human should look.
+    NeedsHuman,
+}
+
+/// One active clause governing a node in an intended change scope (ADR-0029).
+#[derive(Debug, Clone, Serialize)]
+pub struct GoverningClause {
+    pub node_id: String,
+    pub goal: Goal,
+    pub mode: CodeBindingMode,
+}
+
+/// The result of `advise` (ADR-0029): the active clauses governing an intended
+/// change scope plus one proportional disposition. It carries no evidence and
+/// records no verdict — a read-only projection of the adopted constitution.
+#[derive(Debug, Clone, Serialize)]
+pub struct Advice {
+    pub disposition: AdviceDisposition,
+    pub governing: Vec<GoverningClause>,
+    pub findings: Vec<String>,
+}
+
 /// One MindLeak graph fact supporting an evidence claim.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvidenceProvenance {

@@ -22,9 +22,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub use design::{DesignItem, DesignPromotion, DesignPromotionStatus, DesignStatus};
 pub use error::{LodestarError, Result};
 pub use model::{
-    CodeBinding, CodeBindingMode, ConformanceCheck, ConformanceEvidence, ConformanceRecord,
-    ConformanceResult, EvidenceProvenance, Goal, GoalKind, GoalStatus, Knowledge, SignalPromotion,
-    Task, TaskQa, TaskStatus, Verdict,
+    Advice, AdviceDisposition, CodeBinding, CodeBindingMode, ConformanceCheck, ConformanceEvidence,
+    ConformanceRecord, ConformanceResult, EvidenceProvenance, Goal, GoalKind, GoalStatus,
+    GoverningClause, Knowledge, SignalPromotion, Task, TaskQa, TaskStatus, Verdict,
 };
 pub use store::{LodestarStore, ResetOutcome, Stats};
 
