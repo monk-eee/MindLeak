@@ -46,6 +46,12 @@ staged index state, linked worktrees, and remote divergence. If it refuses,
 drain active work and reconcile once in the primary checkout; do not cherry-pick
 routine work or move `main` beneath dirty files.
 
+`main` is a protected branch: it advances only through a pull request whose five
+CI checks pass, and it refuses force pushes and deletion. Land a fleet branch by
+opening a PR; `gh pr merge --auto` queues the merge until CI is green rather than
+landing on an unverified tree. Admin bypass is currently still possible — see the
+`enforce_admins` note in [ADR-0034](docs/adr/0034-typed-controls-and-enforcement-ceilings.md).
+
 **Success looks like:** `cargo test --all` reports `test result: ok` for every
 crate, and `target/debug/mindleak-mcp` starts and prints
 `[mindleak-mcp] ready — graph at …` on stderr.

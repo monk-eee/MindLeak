@@ -89,7 +89,7 @@ where it is harder to see.
 
    | Key | Kind | Scope | Declared | Control (power) | Effective |
    |---|---|---|---|---|---|
-   | `fleet.protected_branch` | invariant | `review.pull_request`, `git.publish` | block | pre-push refusal (mechanical); history inspection (observed) | block |
+   | `fleet.protected_branch` | invariant | `review.pull_request`, `git.publish` | block | branch policy + pre-push refusal (mechanical); history inspection (observed) | block |
    | `fleet.single_publisher` | constraint | `git.publish` | block | `canonical-push.mjs` refusals (mechanical) | block |
    | `fleet.commit_identity` | invariant | `git.publish` | block | non-ancestor refusal (mechanical); patch-id scan (observed) | block / review |
    | `fleet.scoped_commit` | constraint | `git.commit` | block | scoped-commit guard (mechanical) | block |
@@ -131,12 +131,20 @@ where it is harder to see.
 - A clause can no longer overstate its power. The cost is that some clauses
   resolve weaker than their author intended until a mechanical control exists,
   which is the honest reading.
-- `fleet.protected_branch` binds immediately, but its only mechanical control is
-  a local pre-push hook, which a determined agent can still evade. The paired
-  observed control detects a protected branch that advanced by anything other
-  than a reviewed merge, so evasion is caught retrospectively. A server-side
-  branch protection rule should be added to make the clause mechanically sound;
-  until then the clause is deliberately stronger than its local enforcement.
+- `fleet.protected_branch` now has a genuine server-side control. `main`
+  requires a pull request and the five CI checks, and refuses force pushes and
+  branch deletion, so the clause's declared `block` is backed mechanically
+  rather than by a local `pre-push` hook alone. The paired observed control
+  still detects a protected branch that advanced by anything other than a
+  reviewed merge, which remains the backstop.
+- **That control is bounded by `enforce_admins`.** It is currently disabled, and
+  the fleet's agents authenticate as a repository admin, so an admin token can
+  still push directly to `main`. Against the actor this clause exists to
+  constrain, the control is therefore `observed`, not `mechanical`, and the
+  ceiling rule caps its effective consequence at `review` until either
+  `enforce_admins` is enabled or the bounded-waiver path (task 5) gives an
+  attributed, expiring alternative to bypass. Recording this rather than
+  claiming enforcement the repository does not have.
 - Conformance gains a second resolution path. Code-node resolution is unchanged,
   limiting regression risk to the new workflow bucket.
 
