@@ -98,6 +98,38 @@ const DESIGN_STATUS_ORDER: Record<string, number> = {
   rejected: 4,
 };
 
+/** Cap on the summary handed to planning, so a long ADR cannot flood the prompt. */
+const SUMMARY_MAX_CHARS = 2000;
+
+function adrSection(content: string, heading: string): string {
+  const start = new RegExp(`^##\\s+${heading}\\b[^\\n]*$`, "im").exec(content);
+  if (!start) {
+    return "";
+  }
+  const rest = content.slice(start.index + start[0].length);
+  const next = /^##\s/m.exec(rest);
+  return (next ? rest.slice(0, next.index) : rest).trim();
+}
+
+/**
+ * The decision text design planning needs: `## Decision` says what to build and
+ * `## Context` says why. Without it the planner sees only the ADR title and
+ * invents generic filler work, which is how an accepted design turns into
+ * duplicate or orphan tasks (ADR-0028).
+ */
+export function extractAdrSummary(content: string): string {
+  const body = [adrSection(content, "Decision"), adrSection(content, "Context")]
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+  if (body.length <= SUMMARY_MAX_CHARS) {
+    return body;
+  }
+  const clipped = body.slice(0, SUMMARY_MAX_CHARS);
+  const boundary = clipped.lastIndexOf("\n");
+  return (boundary > 0 ? clipped.slice(0, boundary) : clipped).trimEnd();
+}
+
 export function parseAdrMetadata(
   adrPath: string,
   content: string,
@@ -116,7 +148,7 @@ export function parseAdrMetadata(
   return {
     adr_path: normalizedPath,
     title,
-    summary: "",
+    summary: extractAdrSummary(content),
     status: statusText,
     ...(proposedBy ? { proposed_by: proposedBy } : {}),
   };

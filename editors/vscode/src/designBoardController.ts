@@ -132,6 +132,7 @@ export class DesignBoardController {
     try {
       const selection = await this.choosePlan(item.design, false);
       if (!selection || !(await this.confirmPlan(item.design, selection, false))) {
+        this.reportCancelled("Materialization", item.design);
         return;
       }
       const promotion = (await this.client.callTool("promote_design", {
@@ -154,11 +155,13 @@ export class DesignBoardController {
     }
     const human = await this.promptHuman("Repair Materialization", item.design);
     if (!human) {
+      this.reportCancelled("Materialization repair", item.design);
       return;
     }
     try {
       const selection = await this.choosePlan(item.design, true);
       if (!selection || !(await this.confirmPlan(item.design, selection, true))) {
+        this.reportCancelled("Materialization repair", item.design);
         return;
       }
       const promotion = (await this.client.callTool("revise_design_promotion", {
@@ -323,6 +326,12 @@ export class DesignBoardController {
     const objectives = goals.filter(
       (goal) => goal.kind === "objective" && goal.status === "active"
     );
+    if (!objectives.length) {
+      vscode.window.showWarningMessage(
+        "No active objective goal can hold new tasks. Define an objective first, or choose Link existing tasks or No new work."
+      );
+      return [];
+    }
     const selected = await vscode.window.showQuickPick(
       objectives.map((goal) => ({ label: goal.title, description: goal.id, goal })),
       {
@@ -421,6 +430,17 @@ export class DesignBoardController {
     const message = `${action} failed: ${(error as Error).message}`;
     this.log(message);
     vscode.window.showErrorMessage(`MindLeak ${message}`);
+  }
+
+  /**
+   * A dismissed quick pick or input box used to return silently, which is
+   * indistinguishable from a failed materialization: the design simply stayed
+   * pending with no message and no log entry.
+   */
+  private reportCancelled(action: string, design: DesignItem): void {
+    const message = `${action} cancelled - ${design.title} is unchanged.`;
+    this.log(message);
+    vscode.window.showInformationMessage(`MindLeak ${message}`);
   }
 }
 
