@@ -6,6 +6,7 @@ import {
   DesignItem,
   DesignMaterializationPlan,
   DesignPromotion,
+  extractAdrSummary,
   formatDesignPromotion,
   formatMaterializationPlan,
   parseAdrMetadata,
@@ -82,6 +83,49 @@ describe("parseAdrMetadata", () => {
     expect(parseAdrMetadata("docs/adr/no-title.md", "- Status: Proposed")).toBeNull();
     expect(parseAdrMetadata("docs/adr/no-status.md", "# No status")).toBeNull();
     expect(parseAdrMetadata("docs/adr/draft.md", "# Draft\n- Status: Draft")).toBeNull();
+  });
+
+  it("carries the ADR decision text so planning does not see only a title", () => {
+    const parsed = parseAdrMetadata(
+      "docs/adr/0099-example.md",
+      "# ADR-0099\n\n- Status: Proposed\n\n## Context\n\nThe old way broke.\n\n## Decision\n\nDo the new thing.\n"
+    );
+    expect(parsed?.summary).toBe("Do the new thing.\n\nThe old way broke.");
+  });
+});
+
+describe("extractAdrSummary", () => {
+  it("prefers the decision, then the context, and ignores other sections", () => {
+    const adr = [
+      "# ADR-0099: Example",
+      "",
+      "- Status: Proposed",
+      "",
+      "## Context",
+      "",
+      "The old way broke.",
+      "",
+      "## Decision",
+      "",
+      "Do the new thing.",
+      "",
+      "## Consequences",
+      "",
+      "Some cost.",
+    ].join("\n");
+    expect(extractAdrSummary(adr)).toBe("Do the new thing.\n\nThe old way broke.");
+  });
+
+  it("returns empty rather than inventing content when neither section exists", () => {
+    expect(extractAdrSummary("# Title\n\n- Status: Accepted\n")).toBe("");
+  });
+
+  it("truncates a long decision at a line boundary", () => {
+    const line = "x".repeat(120);
+    const body = Array.from({ length: 40 }, () => line).join("\n");
+    const summary = extractAdrSummary(`# T\n\n## Decision\n\n${body}\n`);
+    expect(summary.length).toBeLessThanOrEqual(2000);
+    expect(summary.split("\n").every((entry) => entry === line)).toBe(true);
   });
 });
 

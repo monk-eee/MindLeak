@@ -26,14 +26,31 @@ impl LodestarStore {
     /// Reconcile structured repository ADR metadata into the durable design
     /// ledger. Existing rows always win: repository discovery must never
     /// overwrite a Design Board decision or re-arm promotion.
+    /// Reconcile one ADR's repository-derived metadata. The ADR file is
+    /// authoritative for `title` and `summary`, so both refresh on every pass —
+    /// otherwise a design registered before its summary could be extracted keeps
+    /// an empty one forever, and promotion planning sees only the title. A
+    /// durable human decision is never touched: `status`, `decided_by`,
+    /// `reason`, `proposed_by`, and promotion state all survive reconciliation.
+    /// `updated_at` moves only when a fact actually changed, so a no-op pass
+    /// stays genuinely idempotent.
     pub fn reconcile_design_item(&self, metadata: &DesignMetadata, now: i64) -> Result<DesignItem> {
         let id = design_id_from_path(&metadata.adr_path);
         self.conn.execute(
-            "INSERT OR IGNORE INTO design_items
+            "INSERT INTO design_items
                 (id, adr_path, title, summary, status, proposed_by, decided_by,
                  reason, created_at, updated_at, promotion_status, materialization_revision)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, ?7, ?7,
-                     'not_required', 0)",
+                     'not_required', 0)
+             ON CONFLICT(id) DO UPDATE SET
+                 title = excluded.title,
+                 summary = excluded.summary,
+                 updated_at = CASE
+                     WHEN design_items.title <> excluded.title
+                       OR design_items.summary <> excluded.summary
+                     THEN excluded.updated_at
+                     ELSE design_items.updated_at
+                 END",
             params![
                 id,
                 metadata.adr_path,

@@ -503,8 +503,14 @@ mod tests {
                 ..entries[0].clone()
             }])
             .unwrap();
-        assert_eq!(retry, vec![accepted.clone()]);
-        assert_eq!(e.design_board().unwrap(), vec![accepted]);
+        // The edited ADR title lands, but acceptance and promotion state do not
+        // regress to whatever the repository file happens to declare.
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].title, "Must not overwrite");
+        assert_eq!(retry[0].status, accepted.status);
+        assert_eq!(retry[0].decided_by, accepted.decided_by);
+        assert_eq!(retry[0].promotion_status, accepted.promotion_status);
+        assert_eq!(e.design_board().unwrap(), retry);
         assert!(e.next_task().unwrap().is_none());
     }
 }
