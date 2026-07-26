@@ -182,7 +182,11 @@ and footguns, with impact and status:
   planning output untrustworthy. — Fixed Jul 2026: every abort path reports and
   logs, an empty objective list explains itself instead of closing, and
   `extractAdrSummary` carries bounded `## Decision` + `## Context` text into the
-  design item planning reads. Note the fix is TypeScript, so an **installed**
+  design item planning reads. The store half mattered just as much:
+  `reconcile_design_item` used `INSERT OR IGNORE`, so no repository pass could
+  ever repair an already-registered empty summary; it now refreshes `title` and
+  `summary` while leaving status, decision, proposer, and promotion state
+  durable. Note the extension half is TypeScript, so an **installed**
   extension keeps the old behaviour until it is rebuilt and reloaded.
 - **One shared stdio MCP server gave concurrent chat sessions the same agent id — FIXED.** —
   The first ADR-0030 implementation qualified identity with a *per-process*

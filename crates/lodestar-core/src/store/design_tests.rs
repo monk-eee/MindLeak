@@ -21,32 +21,78 @@ fn create_plan(goal_id: &str, title: &str) -> DesignMaterializationPlan {
 }
 
 #[test]
-fn reconciliation_is_idempotent_and_never_creates_tasks() {
+fn reconciliation_refreshes_repository_facts_but_never_review_state() {
     let store = store();
-    let metadata = DesignMetadata {
-        adr_path: "docs/adr/0026-constitution.md".into(),
-        title: "Constitution".into(),
-        summary: "review governance".into(),
-        status: DesignStatus::Proposed,
-        proposed_by: Some("workspace-sensor".into()),
-    };
-    let first = store.reconcile_design_item(&metadata, NOW).unwrap();
-    let retry = store
+    let first = store
         .reconcile_design_item(
             &DesignMetadata {
-                title: "Changed metadata must not overwrite review state".into(),
-                summary: "changed".into(),
-                status: DesignStatus::Rejected,
-                proposed_by: Some("different-sensor".into()),
-                ..metadata
+                adr_path: "docs/adr/0026-constitution.md".into(),
+                title: "Constitution".into(),
+                summary: "review governance".into(),
+                status: DesignStatus::Proposed,
+                proposed_by: Some("workspace-sensor".into()),
+            },
+            NOW,
+        )
+        .unwrap();
+    let edited = || DesignMetadata {
+        adr_path: "docs/adr/0026-constitution.md".into(),
+        title: "Constitution, reworded".into(),
+        summary: "the edited decision text".into(),
+        status: DesignStatus::Rejected,
+        proposed_by: Some("different-sensor".into()),
+    };
+    let retry = store.reconcile_design_item(&edited(), NOW + 1).unwrap();
+
+    // The ADR file is authoritative for derived facts.
+    assert_eq!(retry.title, "Constitution, reworded");
+    assert_eq!(retry.summary, "the edited decision text");
+    // It is never authoritative for a durable decision or its provenance.
+    assert_eq!(retry.status, first.status);
+    assert_eq!(retry.decided_by, first.decided_by);
+    assert_eq!(retry.proposed_by, first.proposed_by);
+    assert_eq!(retry.promotion_status, first.promotion_status);
+    assert_eq!(store.list_design_items(None).unwrap(), vec![retry.clone()]);
+    assert!(store.next_task(NOW + 1).unwrap().is_none());
+
+    // A pass that changes nothing must not churn the row.
+    let unchanged = store.reconcile_design_item(&edited(), NOW + 2).unwrap();
+    assert_eq!(unchanged, retry);
+}
+
+#[test]
+fn reconciliation_backfills_a_summary_recorded_before_it_could_be_extracted() {
+    // Regression: reconcile used INSERT OR IGNORE, so a design registered with
+    // an empty summary kept it forever. Promotion planning then saw only the
+    // ADR title and drafted generic filler instead of the real decision.
+    let store = store();
+    let registered = store
+        .reconcile_design_item(
+            &DesignMetadata {
+                adr_path: "docs/adr/0034-controls.md".into(),
+                title: "Typed controls".into(),
+                summary: String::new(),
+                status: DesignStatus::Proposed,
+                proposed_by: Some("workspace-sensor".into()),
+            },
+            NOW,
+        )
+        .unwrap();
+    assert!(registered.summary.is_empty());
+
+    let backfilled = store
+        .reconcile_design_item(
+            &DesignMetadata {
+                adr_path: "docs/adr/0034-controls.md".into(),
+                title: "Typed controls".into(),
+                summary: "Bind typed controls to clauses.".into(),
+                status: DesignStatus::Proposed,
+                proposed_by: Some("workspace-sensor".into()),
             },
             NOW + 1,
         )
         .unwrap();
-
-    assert_eq!(retry, first);
-    assert_eq!(store.list_design_items(None).unwrap(), vec![first]);
-    assert!(store.next_task(NOW + 1).unwrap().is_none());
+    assert_eq!(backfilled.summary, "Bind typed controls to clauses.");
 }
 
 #[test]
@@ -124,7 +170,17 @@ fn actionable_board_preserves_decisions_and_tracks_pending_only() {
             NOW + 3,
         )
         .unwrap();
-    assert_eq!(reconciled, before);
+    // Derived facts follow the ADR file; the decision and its promotion state
+    // are durable and survive a repository pass that disagrees with them.
+    assert_eq!(
+        reconciled.title,
+        "Repository status must not overwrite the decision"
+    );
+    assert_eq!(reconciled.summary, "changed");
+    assert_eq!(reconciled.status, before.status);
+    assert_eq!(reconciled.decided_by, before.decided_by);
+    assert_eq!(reconciled.proposed_by, before.proposed_by);
+    assert_eq!(reconciled.promotion_status, before.promotion_status);
 
     let rows = store.actionable_design_items().unwrap();
     assert_eq!(

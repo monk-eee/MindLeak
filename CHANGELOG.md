@@ -32,6 +32,16 @@ to [Semantic Versioning](https://semver.org/).
   generic filler tasks; design metadata now carries the ADR's `## Decision` and
   `## Context` text — bounded, and truncated at a line boundary — into the
   design item that planning reads.
+- **Repository ADR reconciliation refreshes derived facts instead of freezing
+  them.** `reconcile_designs` used `INSERT OR IGNORE`, so a design item kept
+  whatever title and summary it was first registered with — including an empty
+  summary recorded before summaries were extracted at all, which left promotion
+  planning with nothing but an ADR title to work from and no way to repair it.
+  Reconciliation now refreshes `title` and `summary` from the ADR file, while
+  every durable decision (`status`, `decided_by`, `reason`, the original
+  proposer, and promotion state) still survives a repository pass that disagrees
+  with it. `updated_at` moves only when a fact actually changed, so a no-op pass
+  remains genuinely idempotent.
 
 ## [0.1.2] - 2026-07-24
 
