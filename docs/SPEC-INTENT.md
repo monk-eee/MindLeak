@@ -162,8 +162,9 @@ Live coordination state. Not versioned; churny.
 | `title` / `acceptance` | what "done" means |
 | `status` | `open` · `claimed` · `in_review` · `done` · `blocked` · `abandoned` · `needs_input`† · `paused`† |
 | `owner` | stable opaque id derived from the registered client session (ADR-0030) |
-| `claim_started_at` | start of the current owner's evidence window; lease renewal does not move it |
+| `claim_started_at` | start of the current owner's evidence window; neither lease renewal nor a same-owner re-claim moves it (ADR-0048) |
 | `lease_expires_at` | unix seconds; a claim past this is reclaimable |
+| `claim_lapses` / `unleased_seconds` | how many times the lease lapsed inside the current window, and how much of it was held under no lease; non-zero caps conformance at `needs_human` (ADR-0048) |
 | `blocked_by` | optional task id |
 | `created_at` / `updated_at` | unix seconds |
 
@@ -271,7 +272,9 @@ task:
 UPDATE tasks
    SET status = 'claimed',
        owner = :agent,
-       claim_started_at = :now,
+       -- A same-owner re-claim keeps the window open; anyone else starts fresh.
+       claim_started_at = CASE WHEN status = 'claimed' AND owner = :agent
+                               THEN claim_started_at ELSE :now END,
        lease_expires_at = :now + :ttl,
        updated_at = :now
  WHERE id = :task
@@ -286,9 +289,15 @@ UPDATE tasks
 - **Leases with TTL.** A crashed agent's claim expires and the task becomes
   reclaimable — no work is stranded. `renew_lease` is a heartbeat for a
   still-live lease only and preserves `claim_started_at`. Once the lease lapses,
-  renewal fails; the owner uses `claim_task` like any other contender, and a
-  successful re-claim sets `claim_started_at` to the re-claim time so stale work
-  cannot silently remain inside the conformance evidence window.
+  renewal fails and the owner uses `claim_task` like any other contender.
+- **A lapse holes the evidence window; it does not move it (ADR-0048).** A
+  re-claim by the *same* owner keeps `claim_started_at`, so work done before the
+  lapse stays provable, and increments `claim_lapses` / `unleased_seconds` to
+  record the discontinuity. A claim by a *different* owner opens a fresh window,
+  so reach-back never crosses a period somebody else owned the task. A non-zero
+  `claim_lapses` caps the conformance verdict at `needs_human`: a window with a
+  hole in it cannot certify itself, and the cap follows the task rather than the
+  submitted interval so narrowing the evidence cannot dodge it.
 - **Completion is guarded too:** `… SET status='in_review' WHERE id=:task AND
   owner=:agent AND status='claimed'` — you can only complete what you still hold.
 

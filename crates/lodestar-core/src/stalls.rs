@@ -214,6 +214,8 @@ mod tests {
             owner: None,
             claim_started_at: None,
             lease_expires_at: None,
+            claim_lapses: 0,
+            unleased_seconds: 0,
             blocked_by: None,
             parked_at: None,
             created_at: NOW - 10_000,
