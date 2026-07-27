@@ -93,9 +93,20 @@ pub fn call_with_storage(
         // sessions of whichever server answered while looking like the whole
         // fleet (ADR-0044). bind_session has no engine; this is the first point
         // that does.
-        engine
-            .declare_session_context(agent_id, &SessionContext::from_arguments(&args)?)
-            .map_err(|e| e.to_string())?;
+        //
+        // Only a call that actually declares something writes. Declaring
+        // nothing is not declaring emptiness: a re-registration for identity
+        // alone — which every publish does — would otherwise erase the branch
+        // and head this session had already reported, and `fleet_view` would go
+        // blind precisely when the fleet is busiest. Within a real declaration
+        // the store still replaces wholesale, because an omitted field there is
+        // the client saying that field is no longer known.
+        let declared = SessionContext::from_arguments(&args)?;
+        if declared.is_declared() {
+            engine
+                .declare_session_context(agent_id, &declared)
+                .map_err(|e| e.to_string())?;
+        }
         let mut body = json!({ "agent_id": agent_id });
         if let Some(context) = args.get("resolved_context") {
             body["context"] = context.clone();
@@ -334,6 +345,45 @@ mod tests {
             sessions.resolve(TOKEN).unwrap().context.branch.unwrap(),
             "fleet/typed-controls"
         );
+    }
+
+    // Regression (ADR-0044): the durable row survives a bare re-registration.
+    //
+    // `canonical-push` re-opens the session on every publish just to learn its
+    // own agent id, declaring nothing. That used to overwrite the stored row
+    // with an empty one, so `fleet_view` reported `branch: null` for agents that
+    // had declared a branch minutes earlier — the fleet went blind at exactly
+    // the moment it was busiest, and the tool that blinded it was the one added
+    // to record where everyone was working.
+    #[test]
+    fn a_bare_re_registration_does_not_erase_the_durable_context() {
+        let engine = Lodestar::open_in_memory().expect("in-memory engine");
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        const TOKEN: &str = "aabbccddeeff00112233445566778899";
+        let open = |arguments: Value| {
+            let params = json!({ "name": "open_session", "arguments": arguments });
+            let bound = bind_session(&params, &sessions).expect("session binds");
+            call(&engine, &bound).expect("open_session succeeds");
+        };
+
+        open(json!({ "session_id": TOKEN, "branch": "fleet/claim-gate", "behind": 0 }));
+        let agent_id = sessions.resolve(TOKEN).unwrap().agent_id;
+        assert_eq!(
+            engine.fleet_view().unwrap().sessions[0].context.branch,
+            Some("fleet/claim-gate".to_string())
+        );
+
+        // The publish path: identity only, nothing declared.
+        open(json!({ "session_id": TOKEN }));
+
+        let view = engine.fleet_view().unwrap();
+        let session = view
+            .sessions
+            .iter()
+            .find(|session| session.agent_id == agent_id)
+            .expect("the session is still in the view");
+        assert_eq!(session.context.branch, Some("fleet/claim-gate".to_string()));
+        assert_eq!(session.context.behind, Some(0));
     }
 
     #[test]
