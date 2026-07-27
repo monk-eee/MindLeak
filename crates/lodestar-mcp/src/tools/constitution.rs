@@ -92,6 +92,11 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "constitution_status",
+            "description": "Report whether this project has an active constitution, a draft awaiting review, or none at all, with the version and its clause count. Read-only; never proposes or activates.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
             "name": "register_policy_pack",
             "description": "Validate and register one immutable policy-pack version. Same id/version/digest is idempotent; different content under an existing version is refused.",
             "inputSchema": {
@@ -229,6 +234,11 @@ pub(super) fn dispatch(
                 .map_err(|e| e.to_string())?;
             text(md)
         })()),
+        "constitution_status" => Some((|| {
+            ok(&engine
+                .constitution_status()
+                .map_err(|error| error.to_string())?)
+        })()),
         "register_policy_pack" => Some((|| {
             let pack: ConstitutionPack = serde_json::from_value(
                 args.get("pack")
@@ -310,6 +320,26 @@ mod tests {
 
     fn result_json(result: &Value) -> Value {
         serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn constitution_status_reports_absent_on_a_fresh_engine() {
+        // A project with no constitution must say so plainly, so an agent can
+        // distinguish "no policy" from "policy permits this".
+        assert!(list()
+            .into_iter()
+            .any(|tool| tool["name"] == "constitution_status"));
+
+        let engine = Lodestar::open_in_memory().unwrap();
+        let result = call(
+            &engine,
+            &json!({ "name": "constitution_status", "arguments": {} }),
+        )
+        .unwrap();
+        let status = result_json(&result);
+        assert_eq!(status["state"], "absent");
+        assert!(status["version"].is_null());
+        assert_eq!(status["clause_count"], 0);
     }
 
     #[test]

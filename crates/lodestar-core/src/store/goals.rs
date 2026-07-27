@@ -121,6 +121,54 @@ impl LodestarStore {
         }
     }
 
+    /// The newest drafted constitutional version, if one awaits review. Kept
+    /// separate from [`active_constitution_version`](Self::active_constitution_version)
+    /// because a draft must never be mistaken for governing policy
+    /// (SPEC-CONSTITUTION §7.5) — it exists so bootstrap can report progress.
+    pub fn draft_constitution_version(&self) -> Result<Option<ConstitutionVersion>> {
+        let sql = format!(
+            "SELECT {CONSTITUTION_COLS} FROM constitution_versions
+             WHERE status = 'draft' ORDER BY version DESC LIMIT 1"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query([])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row_to_constitution_version(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// How many clauses sit at one lifecycle status.
+    pub fn count_goals_by_status(&self, status: GoalStatus) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM goals WHERE status = ?1",
+            params![status.as_str()],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Record one constitutional version. Bootstrap writes a `draft`;
+    /// activation is a separate, explicit promotion (SPEC-CONSTITUTION §7.5),
+    /// so no path can activate a version as a side effect of creating it.
+    pub fn create_constitution_version(
+        &self,
+        id: &str,
+        version: i64,
+        status: GoalStatus,
+        created_by: Option<&str>,
+        now: i64,
+    ) -> Result<ConstitutionVersion> {
+        self.conn.execute(
+            "INSERT INTO constitution_versions (id, version, status, created_by, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, version, status.as_str(), created_by, now],
+        )?;
+        let sql = format!("SELECT {CONSTITUTION_COLS} FROM constitution_versions WHERE id = ?1");
+        Ok(self
+            .conn
+            .query_row(&sql, params![id], row_to_constitution_version)?)
+    }
+
     pub fn link_goal_to_code(
         &self,
         goal_id: &str,
@@ -363,6 +411,41 @@ mod tests {
         let active = s.active_constitution_version().unwrap().unwrap();
         assert_eq!(active.status, GoalStatus::Active);
         assert_eq!(active.id, "constitution:draft");
+    }
+
+    #[test]
+    fn draft_lookup_finds_only_drafts_and_ignores_the_activated_version() {
+        // Bootstrap needs to see a pending draft, but must never confuse it
+        // with governing policy (SPEC-CONSTITUTION §7.5).
+        let s = store();
+        assert!(s.draft_constitution_version().unwrap().is_none());
+
+        s.conn
+            .execute(
+                "INSERT INTO constitution_versions (id, version, status, created_at)
+                 VALUES ('constitution:v1', 1, 'active', 1),
+                        ('constitution:v2', 2, 'draft', 2)",
+                [],
+            )
+            .unwrap();
+
+        let draft = s.draft_constitution_version().unwrap().unwrap();
+        assert_eq!(draft.id, "constitution:v2");
+        assert_eq!(draft.status, GoalStatus::Draft);
+        // The activated version is still resolved independently.
+        assert_eq!(
+            s.active_constitution_version().unwrap().unwrap().id,
+            "constitution:v1"
+        );
+    }
+
+    #[test]
+    fn clause_counts_are_reported_per_lifecycle_status() {
+        let s = store();
+        assert_eq!(s.count_goals_by_status(GoalStatus::Active).unwrap(), 0);
+        goal(&s);
+        assert_eq!(s.count_goals_by_status(GoalStatus::Active).unwrap(), 1);
+        assert_eq!(s.count_goals_by_status(GoalStatus::Draft).unwrap(), 0);
     }
 
     #[test]
