@@ -15,6 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::fleet::{wait_cycles, Wait};
 use crate::model::{Task, TaskStatus};
 
 /// The shape of a stall. Each variant names something an agent cannot resolve
@@ -25,15 +26,26 @@ pub enum StallKind {
     /// Claimed, but the lease expired. Nobody is renewing and no verdict was
     /// ever recorded, so the work may exist in Git and not in the ledger.
     LapsedLease,
-    /// Completed and awaiting a human decision. Nothing an agent does moves it.
+    /// Waiting on a person: completed and awaiting a human decision, or parked
+    /// on a question addressed to nobody in particular. Nothing an agent does
+    /// moves it.
     AwaitingHuman,
+    /// Parked on a question addressed to a specific peer agent (ADR-0046). That
+    /// peer can still answer, so this is a live wait rather than a dead one —
+    /// but it names who has to act, which `awaiting_human` would not.
+    AwaitingAgent,
+    /// Parked on a peer who is themselves parked on this agent, directly or
+    /// through a ring (ADR-0046). Nobody in the set can move, so waiting is not
+    /// a strategy: it needs an answer from outside, or the parking grace.
+    Deadlocked,
     /// Blocked by a task no agent will advance — one already terminal, or
     /// itself parked or awaiting a human.
     BlockedByUnfinished,
     /// Blocked by a task id that is not on the board at all.
     BlockedByMissingTask,
-    /// Parked awaiting an answer, with no answer yet.
-    Parked,
+    /// Deliberately suspended by its owner. Nobody was asked anything, so
+    /// nobody owes an answer; only the owner resumes it.
+    Paused,
 }
 
 impl StallKind {
@@ -41,9 +53,11 @@ impl StallKind {
         match self {
             StallKind::LapsedLease => "lapsed_lease",
             StallKind::AwaitingHuman => "awaiting_human",
+            StallKind::AwaitingAgent => "awaiting_agent",
+            StallKind::Deadlocked => "deadlocked",
             StallKind::BlockedByUnfinished => "blocked_by_unfinished",
             StallKind::BlockedByMissingTask => "blocked_by_missing_task",
-            StallKind::Parked => "parked",
+            StallKind::Paused => "paused",
         }
     }
 }
@@ -77,9 +91,18 @@ fn agent_can_advance(status: TaskStatus) -> bool {
 
 /// Report every task that is not progressing, newest stall last.
 ///
-/// Pure over the board so it is testable without a database, and so the rules
-/// are readable in one place rather than spread across SQL.
-pub fn stalls(tasks: &[Task], now: i64) -> Vec<Stall> {
+/// Pure over the board and the wait graph so it is testable without a database,
+/// and so the rules are readable in one place rather than spread across SQL.
+///
+/// `waits` is the same unanswered-addressed-question set the fleet view reads
+/// (ADR-0046). It is passed in rather than re-derived so the two surfaces
+/// cannot disagree about who is waiting on whom: this one answers per task,
+/// the fleet view answers per agent, and both are the same fact.
+pub fn stalls(tasks: &[Task], waits: &[Wait], now: i64) -> Vec<Stall> {
+    let deadlocked: Vec<String> = wait_cycles(waits)
+        .into_iter()
+        .flat_map(|cycle| cycle.task_ids)
+        .collect();
     let mut found = Vec::new();
     for task in tasks {
         let stall = match task.status {
@@ -100,10 +123,37 @@ pub fn stalls(tasks: &[Task], now: i64) -> Vec<Stall> {
                 task.updated_at,
                 "completed with a verdict that needs a human decision".to_string(),
             )),
-            TaskStatus::NeedsInput | TaskStatus::Paused => Some((
-                StallKind::Parked,
+            TaskStatus::NeedsInput => {
+                let since = task.parked_at.unwrap_or(task.updated_at);
+                Some(match waits.iter().find(|wait| wait.task_id == task.id) {
+                    Some(wait) if deadlocked.contains(&task.id) => (
+                        StallKind::Deadlocked,
+                        since,
+                        format!(
+                            "parked on {}, who is waiting on this agent in turn; \
+                             only an answer from outside breaks it",
+                            wait.waited_on
+                        ),
+                    ),
+                    Some(wait) => (
+                        StallKind::AwaitingAgent,
+                        since,
+                        format!("parked awaiting an answer from {}", wait.waited_on),
+                    ),
+                    None => (
+                        StallKind::AwaitingHuman,
+                        since,
+                        "parked awaiting an answer from a human".to_string(),
+                    ),
+                })
+            }
+            TaskStatus::Paused => Some((
+                StallKind::Paused,
                 task.parked_at.unwrap_or(task.updated_at),
-                "parked awaiting an answer".to_string(),
+                format!(
+                    "deliberately suspended by {}",
+                    task.owner.as_deref().unwrap_or("its owner")
+                ),
             )),
             TaskStatus::Blocked => match task.blocked_by.as_deref() {
                 Some(blocker_id) => match tasks.iter().find(|other| other.id == blocker_id) {
@@ -175,6 +225,20 @@ mod tests {
         found.iter().map(|s| (s.task_id.as_str(), s.kind)).collect()
     }
 
+    /// Most cases do not involve anyone waiting on anyone.
+    fn no_waits() -> Vec<Wait> {
+        Vec::new()
+    }
+
+    fn waiting(task_id: &str, waiter: &str, waited_on: &str) -> Wait {
+        Wait {
+            task_id: task_id.to_string(),
+            waiter: waiter.to_string(),
+            waited_on: waited_on.to_string(),
+            asked_at: NOW - 1_000,
+        }
+    }
+
     /// The real stall this was built for: work was built and opened as a pull
     /// request, but conformance was never run and the lease quietly expired.
     /// Nothing reported it, so the work existed in Git and not in the ledger.
@@ -184,7 +248,7 @@ mod tests {
         claimed.owner = Some("session:v1:copilot:abc".to_string());
         claimed.lease_expires_at = Some(NOW - 3_600);
 
-        let found = stalls(&[claimed], NOW);
+        let found = stalls(&[claimed], &no_waits(), NOW);
 
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].kind, StallKind::LapsedLease);
@@ -198,7 +262,7 @@ mod tests {
     fn stays_silent_about_a_claim_whose_lease_is_still_live() {
         let mut claimed = task("task:live", TaskStatus::Claimed);
         claimed.lease_expires_at = Some(NOW + 600);
-        assert!(stalls(&[claimed], NOW).is_empty());
+        assert!(stalls(&[claimed], &no_waits(), NOW).is_empty());
     }
 
     #[test]
@@ -206,7 +270,7 @@ mod tests {
         let mut review = task("task:review", TaskStatus::InReview);
         review.updated_at = NOW - 7_200;
 
-        let found = stalls(&[review], NOW);
+        let found = stalls(&[review], &no_waits(), NOW);
 
         assert_eq!(
             kinds(&found),
@@ -223,7 +287,7 @@ mod tests {
         let mut blocked = task("task:blocked", TaskStatus::Blocked);
         blocked.blocked_by = Some("task:blocker".to_string());
 
-        let found = stalls(&[blocker, blocked], NOW);
+        let found = stalls(&[blocker, blocked], &no_waits(), NOW);
 
         let blocked_row = found
             .iter()
@@ -241,7 +305,7 @@ mod tests {
         let mut blocked = task("task:stale", TaskStatus::Blocked);
         blocked.blocked_by = Some("task:done".to_string());
 
-        let found = stalls(&[blocker, blocked], NOW);
+        let found = stalls(&[blocker, blocked], &no_waits(), NOW);
 
         assert_eq!(
             kinds(&found),
@@ -255,7 +319,7 @@ mod tests {
         let blocker = task("task:open", TaskStatus::Open);
         let mut blocked = task("task:waiting", TaskStatus::Blocked);
         blocked.blocked_by = Some("task:open".to_string());
-        assert!(stalls(&[blocker, blocked], NOW).is_empty());
+        assert!(stalls(&[blocker, blocked], &no_waits(), NOW).is_empty());
     }
 
     #[test]
@@ -263,7 +327,7 @@ mod tests {
         let mut blocked = task("task:orphan", TaskStatus::Blocked);
         blocked.blocked_by = Some("task:vanished".to_string());
 
-        let found = stalls(&[blocked], NOW);
+        let found = stalls(&[blocked], &no_waits(), NOW);
 
         assert_eq!(
             kinds(&found),
@@ -272,15 +336,87 @@ mod tests {
         assert!(found[0].detail.contains("task:vanished"));
     }
 
+    /// ADR-0046: a park with no addressed question is a park on a person. The
+    /// pre-fold report called every park "parked awaiting an answer", which said
+    /// nothing about who owed it.
     #[test]
     fn reports_parked_work_from_when_it_was_parked() {
         let mut parked = task("task:parked", TaskStatus::NeedsInput);
         parked.parked_at = Some(NOW - 250_000);
 
-        let found = stalls(&[parked], NOW);
+        let found = stalls(&[parked], &no_waits(), NOW);
 
-        assert_eq!(kinds(&found), vec![("task:parked", StallKind::Parked)]);
+        assert_eq!(
+            kinds(&found),
+            vec![("task:parked", StallKind::AwaitingHuman)]
+        );
         assert_eq!(found[0].stalled_seconds, 250_000);
+        assert!(found[0].detail.contains("human"));
+    }
+
+    /// ADR-0046: a park on a named peer is a live wait, and naming the peer is
+    /// the whole point — "awaiting a human" would send the reader to the wrong
+    /// person, which is worse than saying nothing.
+    #[test]
+    fn a_park_on_a_peer_names_the_peer_rather_than_a_human() {
+        let mut parked = task("task:asked", TaskStatus::NeedsInput);
+        parked.parked_at = Some(NOW - 400);
+
+        let found = stalls(
+            &[parked],
+            &[waiting("task:asked", "agent-a", "agent-b")],
+            NOW,
+        );
+
+        assert_eq!(
+            kinds(&found),
+            vec![("task:asked", StallKind::AwaitingAgent)]
+        );
+        assert!(found[0].detail.contains("agent-b"));
+    }
+
+    /// ADR-0046: the case both halves of this fold exist for. Two agents parked
+    /// on each other are not waiting, they are stuck, and before the fold this
+    /// report rendered them as two ordinary parked rows.
+    #[test]
+    fn a_mutual_park_is_reported_as_a_deadlock_not_an_ordinary_wait() {
+        let mut first = task("task:one", TaskStatus::NeedsInput);
+        first.parked_at = Some(NOW - 900);
+        let mut second = task("task:two", TaskStatus::NeedsInput);
+        second.parked_at = Some(NOW - 900);
+
+        let found = stalls(
+            &[first, second],
+            &[
+                waiting("task:one", "agent-a", "agent-b"),
+                waiting("task:two", "agent-b", "agent-a"),
+            ],
+            NOW,
+        );
+
+        assert_eq!(
+            kinds(&found),
+            vec![
+                ("task:one", StallKind::Deadlocked),
+                ("task:two", StallKind::Deadlocked)
+            ]
+        );
+        assert!(found[0].detail.contains("outside"));
+    }
+
+    /// A deliberate pause is not an unanswered question. Nobody was asked, so
+    /// reporting it as awaiting an answer would send someone looking for a
+    /// person who owes nothing.
+    #[test]
+    fn a_deliberate_pause_is_not_reported_as_awaiting_an_answer() {
+        let mut paused = task("task:paused", TaskStatus::Paused);
+        paused.owner = Some("agent-a".to_string());
+        paused.parked_at = Some(NOW - 60);
+
+        let found = stalls(&[paused], &no_waits(), NOW);
+
+        assert_eq!(kinds(&found), vec![("task:paused", StallKind::Paused)]);
+        assert!(found[0].detail.contains("agent-a"));
     }
 
     /// Longest-stalled first: the thing that has been ignored most is the thing
@@ -300,6 +436,7 @@ mod tests {
                 task("task:gone", TaskStatus::Abandoned),
                 task("task:open", TaskStatus::Open),
             ],
+            &no_waits(),
             NOW,
         );
 
