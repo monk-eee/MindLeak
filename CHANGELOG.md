@@ -7,6 +7,47 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **The fleet view now shows who is waiting on whom, and names the deadlocks
+  (ADR-0046).** Addressed questions made a wait cycle reachable: agent A parks
+  on B while B parks on A, and both tasks sit in `needs_input` — which every
+  surface renders as ordinary parked work. A pair could burn the whole seven-day
+  parking grace doing nothing while the board read healthy. `fleet_view` now
+  carries `waits` (who is parked on whom, derived from the ledger's own
+  unanswered addressed questions rather than declared by anyone) and
+  `wait_cycles` (sets of agents each transitively waiting on the others, so no
+  member can unblock any other). Each cycle names the tasks that form it:
+  answering any one of them breaks it, and the test asserts that it does — a
+  finding whose implied remedy does not work is just an alarm. A one-way wait is
+  deliberately *not* a cycle, because the addressee can still answer, and
+  reporting a legitimate wait as a deadlock is the fastest way to make an
+  advisory signal ignored. Longer rings are found by the same rule rather than a
+  special case for pairs. Still advisory and capped at `review` (ADR-0034): the
+  remedy is a human answering a question, and a view that blocked on its own
+  observation would be a control nobody asked for.
+- **Agents can now say something to each other, through the durable thread
+  rather than to each other (ADR-0046).** Two agents shared a blackboard but
+  could address nothing at one another, and two specific things were missing
+  rather than merely absent. `block_task` took a predecessor id and no reason,
+  so an agent could have work taken off it — blocking clears a live claim — with
+  no way to discover why; `pause_task` was the same. That is precisely the
+  failure ADR-0045 names, produced by the system that exists to make verdicts
+  explicable. And `ask_question` could only reach a human, so an agent needing
+  something only a peer knew had to park for a person who would go and ask that
+  peer. Both are now answered on the existing append-only thread: `task_qa`
+  gains a `note` kind carrying an optional `reason` on `block_task` and
+  `pause_task`, and `ask_question` gains an optional `audience` addressing the
+  question at a peer agent. `pending_questions` returns what is addressed to
+  you. It is a query, never a delivery: nothing is reserved or consumed, so two
+  readers see the same rows and reading can never lose a question, and it needs
+  no arbiter because it mutates nothing. A mailbox or queue was rejected — it
+  would put decisions somewhere the evidence bundle cannot see, add a shared
+  mutable resource requiring an arbiter, and introduce a way to lose a message
+  that a table read does not have. The park is deliberately identical for a
+  human and a peer, so the ADR-0020 parking grace still protects a task from an
+  addressee that never replies; anyone may answer, so a human can always unstick
+  two agents waiting on each other; and addressing a question to yourself is
+  refused, because it parks the task on the only agent that cannot act while it
+  is parked.
 - **`adr-guard` refuses to let a decision record exist in only one place.** An
   ADR is the reasoning behind the code, and losing one is silent — nothing
   fails, the file is simply not there any more. Three near-misses in a single

@@ -181,6 +181,18 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **A stalled wait is only bounded by the seven-day parking grace — SURFACED,
+  not prevented.** — ADR-0046 lets `ask_question` address a peer, so an agent
+  can park on one that never answers. The mutual case (a wait cycle) is now
+  detected and reported by `fleet_view`, and answering any named task breaks it.
+  What is *not* solved: a one-way wait on an agent that has vanished is not a
+  cycle and is not flagged — correctly, since the addressee could still answer,
+  but it means a task can sit parked for a week on someone who is never coming
+  back. Nothing alerts either way: `fleet_view` is a pull, so the finding is only
+  seen if a human or agent looks. Impact: bounded wasted wall-clock, never
+  permanent. Fix would be a staleness threshold on an unanswered wait — an
+  addressee with no live claim and no recent session is a different, weaker
+  signal than a cycle and should read as such.
 - **Accepting a design wrote `Accepted` into whichever worktree resolved the ADR
   path first — FIXED.** — Observed Jul 2026 while ADR-0044 was still an unmerged
   proposal on its own branch. Two ADR files in this checkout changed from
