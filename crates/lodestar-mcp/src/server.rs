@@ -5,6 +5,7 @@ use std::io::{self, BufRead, Write};
 
 use lodestar_core::Lodestar;
 use mindleak_session::SessionRegistry;
+use mindleak_storage::StorageStatus;
 use serde_json::{json, Value};
 
 use crate::tools;
@@ -12,7 +13,11 @@ use crate::tools;
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
 /// Run the blocking request/response loop until stdin closes.
-pub fn run(engine: Lodestar, sessions: SessionRegistry) -> anyhow::Result<()> {
+pub fn run(
+    engine: Lodestar,
+    sessions: SessionRegistry,
+    storage: StorageStatus,
+) -> anyhow::Result<()> {
     let stdin = io::stdin();
     let mut reader = stdin.lock();
     let stdout = io::stdout();
@@ -41,14 +46,24 @@ pub fn run(engine: Lodestar, sessions: SessionRegistry) -> anyhow::Result<()> {
             }
         };
 
-        if let Some(response) = handle(&engine, &sessions, &request) {
+        if let Some(response) = handle_with_storage(&engine, &sessions, Some(&storage), &request) {
             write_message(&mut out, &response)?;
         }
     }
     Ok(())
 }
 
+#[cfg(test)]
 fn handle(engine: &Lodestar, sessions: &SessionRegistry, req: &Value) -> Option<Value> {
+    handle_with_storage(engine, sessions, None, req)
+}
+
+fn handle_with_storage(
+    engine: &Lodestar,
+    sessions: &SessionRegistry,
+    storage: Option<&StorageStatus>,
+    req: &Value,
+) -> Option<Value> {
     let id = req.get("id").cloned();
     let method = req.get("method").and_then(Value::as_str).unwrap_or("");
     let params = req.get("params").cloned().unwrap_or(Value::Null);
@@ -61,7 +76,7 @@ fn handle(engine: &Lodestar, sessions: &SessionRegistry, req: &Value) -> Option<
         "tools/call" => {
             let id = id?;
             let response = match tools::bind_session(&params, sessions)
-                .and_then(|bound| tools::call(engine, &bound))
+                .and_then(|bound| tools::call_with_storage(engine, &bound, storage))
             {
                 Ok(content) => content,
                 Err(msg) => tool_error(&msg),

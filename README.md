@@ -188,11 +188,18 @@ clients can follow the same calls in [docs/USAGE.md](docs/USAGE.md#first-value-w
 ## Run the MCP server
 
 ```bash
-# Uses MINDLEAK_DB if set, else <cwd>/.mindleak/graph.db
-MINDLEAK_DB="$PWD/.mindleak/graph.db" ./target/release/mindleak-mcp
+# Inside Git, every linked worktree shares the clone's repository-id store.
+./target/release/mindleak-mcp
 ```
 
 It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
+
+On first start, MindLeak writes a 128-bit `mindleak.repositoryId` to shared
+local Git config and stores both planes beneath the platform-local, non-roaming
+state root. Independent clones receive independent ids; linked worktrees share
+one `graph.db` and `spec.db`. Use `storage_status` to inspect the exact id and
+paths. `MINDLEAK_HOME` relocates the root; direct `MINDLEAK_DB` / `LODESTAR_DB`
+overrides remain available for managed environments (ADR-0038).
 
 ### Register with an MCP client (VS Code / Copilot example)
 
@@ -204,7 +211,6 @@ It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
     "mindleak": {
       "command": "${workspaceFolder}/target/release/mindleak-mcp",
       "env": {
-        "MINDLEAK_DB": "${workspaceFolder}/.mindleak/graph.db",
         "MINDLEAK_AGENT": "copilot",
         "MINDLEAK_WORKSPACE": "${workspaceFolder}"
       }
@@ -275,6 +281,7 @@ into `~/.copilot/mcp-config.json` (honours `COPILOT_HOME`). Full walkthrough:
 | `index` | Optional: embed nodes lacking a current vector via a local `/v1/embeddings` server (ADR-0008). |
 | `recall` | Optional: nearest node ids by cosine similarity — entry points to *seed* `graph_multi_hop_query`. |
 | `telemetry_snapshot` | Observability record (ADR-0010): per-tool lifetime call/error counts, latency, current health (whether each tool's most recent call failed), and recent invocations from the durable audit trail. |
+| `storage_status` | Resolved repository id, graph database path, storage origin, legacy migration source, and whether migration ran (ADR-0038). |
 
 ---
 
@@ -282,9 +289,9 @@ into `~/.copilot/mcp-config.json` (honours `COPILOT_HOME`). Full walkthrough:
 
 A second, **durable** MCP server ([`lodestar-mcp`](crates/lodestar-mcp)) — the
 "spec brain" that keeps parallel agents aligned to shared intent instead of
-diluting it. Register it alongside `mindleak-mcp`; it uses `LODESTAR_DB` (else
-`<cwd>/.lodestar/spec.db`), a shared file so local agents and worktrees
-coordinate through one plane.
+diluting it. Register it alongside `mindleak-mcp`; both servers derive the same
+per-clone repository id and user-local directory, so isolated worktrees share
+one intent plane and one memory graph by default.
 
 > **Evidence is the proof.** Completion here isn't a claim an agent makes — it's
 > proof it must produce. `complete_task` accepts only a provenance-bearing evidence
@@ -303,7 +310,7 @@ coordinate through one plane.
 | `activate_constitution` | Promote a reviewed draft to the governing constitution in one atomic transaction. Refuses undecided clauses, an empty draft, a non-draft, or a second active version. |
 | `register_policy_pack` / `propose_policy_pack` | Validate and register one immutable pack version, then create durable clause-review proposals for a draft or active constitution. |
 | `propose_common_core` / `list_pack_proposals` | Propose the five review-first Common Core principles through the same pack path, and inspect undecided or historical dispositions. |
-| `propose_fleet_delivery` | Propose the optional fleet-delivery pack: protected-branch review, single publisher, commit identity, scoped commits, freshness, and topology honesty. |
+| `propose_fleet_delivery` | Propose fleet-delivery v2: protected-branch review, one publishing owner per task branch, isolated worktrees, commit identity, scoped commits, freshness, and topology honesty. |
 | `review_pack_clause` / `pack_clause_provenance` | Session-attributed adopt/tailor/reject; adoption copies a self-contained local clause and preserves immutable source pack provenance. |
 | `advise` | **Ask before acting** (ADR-0029): given the `artifact:`/`symbol:` ids you intend to change, returns the governing clauses + a proportional disposition (advise / review / block / needs_human). Evidence-free, records nothing, needs no model, never gates a claim. |
 | `link_goal_to_code` | Bind a goal to MindLeak `artifact:`/`symbol:` nodes. |
@@ -343,6 +350,7 @@ coordinate through one plane.
 | `promote_signals` | Promotion bridge (ADR-0022): batch-feed MindLeak `promotion_candidates` into the gated consolidator; deterministic, model-optional. |
 | `active_knowledge` / `reconfirm_knowledge` / `prune_knowledge` | Durable-but-revalidated knowledge. |
 | `lodestar_stats` | Goal / task / knowledge counts. |
+| `storage_status` | Resolved repository id, intent database path, storage origin, legacy migration source, and whether migration ran (ADR-0038). |
 | `backup_database` | Create an integrity-checked online SQLite backup of the intent plane. |
 | `reset_database` | Clear durable intent only with the exact `RESET LODESTAR` token. |
 

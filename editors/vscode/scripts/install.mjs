@@ -89,7 +89,6 @@ export function registrations(version, platform, agent) {
     mindleak: {
       command: `${installRoot}/mindleak-mcp${executableExtension}`,
       env: {
-        MINDLEAK_DB: "${workspaceFolder}/.mindleak/graph.db",
         MINDLEAK_AGENT: agent,
         MINDLEAK_WORKSPACE: "${workspaceFolder}",
       },
@@ -97,8 +96,8 @@ export function registrations(version, platform, agent) {
     lodestar: {
       command: `${installRoot}/lodestar-mcp${executableExtension}`,
       env: {
-        LODESTAR_DB: "${workspaceFolder}/.lodestar/spec.db",
         LODESTAR_AGENT: agent,
+        MINDLEAK_WORKSPACE: "${workspaceFolder}",
       },
     },
   };
@@ -107,9 +106,9 @@ export function registrations(version, platform, agent) {
 /**
  * Copilot CLI, Claude Desktop, and Cursor key servers under `mcpServers` and do
  * not expand VS Code's `${workspaceFolder}` variable (ADR-0033), so this renders
- * the same two servers with absolute, install-time paths. The database and
- * workspace targets are identical to the `.vscode/mcp.json` registration, so the
- * editor and the CLI read and write the same local stores.
+ * the same two servers with absolute, install-time paths. Both registrations
+ * declare the worktree but leave database resolution to the servers, so every
+ * client for one clone reaches the same repository-id store (ADR-0038).
  */
 export function copilotRegistrations(installDirectory, workspace, platform, agent) {
   const executableExtension = platform === "win32" ? ".exe" : "";
@@ -118,7 +117,6 @@ export function copilotRegistrations(installDirectory, workspace, platform, agen
       command: path.join(installDirectory, `mindleak-mcp${executableExtension}`),
       args: [],
       env: {
-        MINDLEAK_DB: path.join(workspace, ".mindleak", "graph.db"),
         MINDLEAK_AGENT: agent,
         MINDLEAK_WORKSPACE: workspace,
       },
@@ -127,8 +125,8 @@ export function copilotRegistrations(installDirectory, workspace, platform, agen
       command: path.join(installDirectory, `lodestar-mcp${executableExtension}`),
       args: [],
       env: {
-        LODESTAR_DB: path.join(workspace, ".lodestar", "spec.db"),
         LODESTAR_AGENT: agent,
+        MINDLEAK_WORKSPACE: workspace,
       },
     },
   };

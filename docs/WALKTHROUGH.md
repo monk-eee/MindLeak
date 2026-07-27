@@ -111,7 +111,8 @@ define_goal(kind = "feature", title = "Token rotation", statement = "...")
 decompose_goal(goal_id)        # produces claimable tasks
 ```
 
-Each agent runs its own loop against the one shared `.lodestar/spec.db`:
+Each agent runs in its own branch/worktree while both planes resolve the same
+repository-id state directory:
 
 ```text
 open_session(session_id)                 # one client-minted token, shared with MindLeak

@@ -94,7 +94,6 @@ identity-bearing calls. The VS Code extension performs this handshake itself.
     "mindleak": {
       "command": "${workspaceFolder}/target/release/mindleak-mcp",
       "env": {
-        "MINDLEAK_DB": "${workspaceFolder}/.mindleak/graph.db",
         "MINDLEAK_AGENT": "copilot",
         "MINDLEAK_WORKSPACE": "${workspaceFolder}"
       }
@@ -102,8 +101,8 @@ identity-bearing calls. The VS Code extension performs this handshake itself.
     "lodestar": {
       "command": "${workspaceFolder}/target/release/lodestar-mcp",
       "env": {
-        "LODESTAR_DB": "${workspaceFolder}/.lodestar/spec.db",
-        "LODESTAR_AGENT": "copilot"
+        "LODESTAR_AGENT": "copilot",
+        "MINDLEAK_WORKSPACE": "${workspaceFolder}"
       }
     }
   }
@@ -121,14 +120,13 @@ use the `mcpServers` key:
     "mindleak": {
       "command": "/abs/path/to/mindleak-mcp",
       "env": {
-        "MINDLEAK_DB": "/abs/path/to/project/.mindleak/graph.db",
         "MINDLEAK_AGENT": "claude",
         "MINDLEAK_WORKSPACE": "/abs/path/to/project"
       }
     },
     "lodestar": {
       "command": "/abs/path/to/lodestar-mcp",
-      "env": { "LODESTAR_DB": "/abs/path/to/project/.lodestar/spec.db", "LODESTAR_AGENT": "claude" }
+      "env": { "LODESTAR_AGENT": "claude", "MINDLEAK_WORKSPACE": "/abs/path/to/project" }
     }
   }
 }
@@ -156,14 +154,13 @@ into `~/.copilot/mcp-config.json` (honours `COPILOT_HOME`):
     "mindleak": {
       "command": "/abs/path/to/mindleak-mcp",
       "env": {
-        "MINDLEAK_DB": "/abs/path/to/project/.mindleak/graph.db",
         "MINDLEAK_AGENT": "copilot",
         "MINDLEAK_WORKSPACE": "/abs/path/to/project"
       }
     },
     "lodestar": {
       "command": "/abs/path/to/lodestar-mcp",
-      "env": { "LODESTAR_DB": "/abs/path/to/project/.lodestar/spec.db", "LODESTAR_AGENT": "copilot" }
+      "env": { "LODESTAR_AGENT": "copilot", "MINDLEAK_WORKSPACE": "/abs/path/to/project" }
     }
   }
 }
@@ -180,6 +177,11 @@ tools (`get_impact_radius`, `graph_multi_hop_query`, `recall`, the `ingest_*`
 family, …) and — if you registered it — Lodestar's intent tools (`define_goal`,
 `next_task`, `claim_task`, …). A headless client must call `open_session` before
 using identity-bearing tools. If the tools appear, you're live.
+
+Call `storage_status` on both planes. Their `repository_id` values must match;
+the database paths should share one `repositories/<id>/` directory. Every linked
+worktree of this clone resolves the same pair automatically. Independent clones
+intentionally receive different ids.
 
 Not seeing them? Diagnostics go to **stderr** (stdout carries only the MCP
 protocol), so launch the client from a terminal or set `MINDLEAK_LOG=debug` and
@@ -214,7 +216,7 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"open_session","arguments":{"session_id":"00112233445566778899aabbccddeeff"}}}' \
   '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ingest_file","arguments":{"session_id":"00112233445566778899aabbccddeeff","path":"src/auth.ts","content":"export function validateSession(t){return Boolean(t);}"}}}' \
   '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_impact_radius","arguments":{"target_artifact":"artifact:src/auth.ts"}}}' \
-  | MINDLEAK_DB="$PWD/.mindleak/graph.db" ./target/release/mindleak-mcp
+  | ./target/release/mindleak-mcp
 ```
 
 Startup logs and diagnostics go to **stderr**; stdout carries only JSON-RPC (so

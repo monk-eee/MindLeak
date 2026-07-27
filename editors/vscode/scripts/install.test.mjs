@@ -39,6 +39,9 @@ describe("registrations", () => {
     expect(windows.lodestar.command).toContain("lodestar-mcp.exe");
     expect(windows.mindleak.env.MINDLEAK_AGENT).toBe("copilot");
     expect(windows.mindleak.env.MINDLEAK_WORKSPACE).toBe("${workspaceFolder}");
+    expect(windows.lodestar.env.MINDLEAK_WORKSPACE).toBe("${workspaceFolder}");
+    expect(windows.mindleak.env).not.toHaveProperty("MINDLEAK_DB");
+    expect(windows.lodestar.env).not.toHaveProperty("LODESTAR_DB");
     expect(linux.mindleak.command.endsWith("mindleak-mcp")).toBe(true);
     expect(linux.lodestar.env.LODESTAR_AGENT).toBe("agent-a");
   });
@@ -90,12 +93,13 @@ describe("copilotRegistrations", () => {
     );
     expect(windows.mindleak.command).not.toContain("${workspaceFolder}");
     expect(Array.isArray(windows.mindleak.args)).toBe(true);
-    expect(windows.mindleak.env.MINDLEAK_DB).toBe(path.join("C:/ws", ".mindleak", "graph.db"));
     expect(windows.mindleak.env.MINDLEAK_AGENT).toBe("agent-a");
     expect(windows.mindleak.env.MINDLEAK_WORKSPACE).toBe("C:/ws");
+    expect(windows.mindleak.env).not.toHaveProperty("MINDLEAK_DB");
     expect(linux.lodestar.command).toBe(path.join("/ws/.mindleak/bin/v1", "lodestar-mcp"));
-    expect(linux.lodestar.env.LODESTAR_DB).toBe(path.join("/ws", ".lodestar", "spec.db"));
     expect(linux.lodestar.env.LODESTAR_AGENT).toBe("copilot");
+    expect(linux.lodestar.env.MINDLEAK_WORKSPACE).toBe("/ws");
+    expect(linux.lodestar.env).not.toHaveProperty("LODESTAR_DB");
   });
 });
 
@@ -120,9 +124,8 @@ describe("updateCopilotConfig", () => {
     expect(parsed.mcpServers.github.command).toBe("gh-mcp");
     expect(parsed.mcpServers.mindleak.command).toBe(path.join("/ws/bin", "mindleak-mcp"));
     expect(parsed.mcpServers.lodestar.command).toBe(path.join("/ws/bin", "lodestar-mcp"));
-    expect(parsed.mcpServers.mindleak.env.MINDLEAK_DB).toBe(
-      path.join("/ws", ".mindleak", "graph.db")
-    );
+    expect(parsed.mcpServers.mindleak.env).not.toHaveProperty("MINDLEAK_DB");
+    expect(parsed.mcpServers.lodestar.env).not.toHaveProperty("LODESTAR_DB");
   });
 
   it("creates a valid document from an empty source and rejects malformed JSONC", () => {
@@ -203,7 +206,8 @@ describe("install", () => {
     expect(fs.readFileSync(path.join(workspace, ".gitignore"), "utf8")).toContain(".lodestar/*");
 
     // The Copilot CLI config is written alongside, with absolute paths and the
-    // same local stores, so both clients drive the same servers (ADR-0033).
+    // same repository identity, so both clients drive the same stores
+    // without worktree-local database overrides (ADR-0033/0038).
     const copilotConfig = parse(
       fs.readFileSync(path.join(workspace, ".mindleak", "copilot-mcp.json"), "utf8")
     );
@@ -212,9 +216,8 @@ describe("install", () => {
     );
     expect(copilotConfig.mcpServers.mindleak.command).not.toContain("${workspaceFolder}");
     expect(copilotConfig.mcpServers.mindleak.env.MINDLEAK_AGENT).toBe("agent-a");
-    expect(copilotConfig.mcpServers.lodestar.env.LODESTAR_DB).toBe(
-      path.join(workspace, ".lodestar", "spec.db")
-    );
+    expect(copilotConfig.mcpServers.mindleak.env).not.toHaveProperty("MINDLEAK_DB");
+    expect(copilotConfig.mcpServers.lodestar.env).not.toHaveProperty("LODESTAR_DB");
   });
 
   it("replaces an existing version only when forced", async () => {

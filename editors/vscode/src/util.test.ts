@@ -9,6 +9,7 @@ import {
   canRecoverLegacyClaim,
   canRetireTask,
   claimTaskRequest,
+  configuredPathEnvironment,
   conformanceDiagnostic,
   evidenceGroups,
   evidenceRequestForTask,
@@ -81,6 +82,19 @@ describe("healthSummary", () => {
     expect(
       healthSummary("memory connected", "intent unavailable", "terminal active", "Git off")
     ).toBe("memory connected · intent unavailable · terminal active · Git off");
+  });
+});
+
+describe("configuredPathEnvironment", () => {
+  it("omits empty settings so the server resolves shared repository state", () => {
+    expect(configuredPathEnvironment("MINDLEAK_DB", undefined)).toEqual({});
+    expect(configuredPathEnvironment("LODESTAR_DB", "   ")).toEqual({});
+  });
+
+  it("preserves an explicit database override", () => {
+    expect(configuredPathEnvironment("MINDLEAK_DB", "  D:/state/graph.db  ")).toEqual({
+      MINDLEAK_DB: "D:/state/graph.db",
+    });
   });
 });
 

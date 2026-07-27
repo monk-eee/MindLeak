@@ -1,6 +1,7 @@
 # ADR-0032: Single-checkout, single-publisher fleet integration
 
-- Status: Accepted
+- Status: Superseded by
+   [ADR-0038](0038-isolated-worktrees-shared-repository-state.md)
 - Date: 2026-07-24
 - Deciders: MindLeak maintainers
 - Supersedes: [ADR-0018](0018-conflict-safe-concurrent-editing.md) for repository
@@ -70,3 +71,10 @@ release trains that are reconciled after every task.
 - Any pre-existing detached checkout is migration debt: preserve its WIP, recover
   it into the shared fleet branch through ordinary commits or a reviewed merge,
   then remove it. Do not cherry-pick it into `main` merely to make it disappear.
+
+## Superseded
+
+ADR-0038 preserves this decision's commit-identity, divergence, and PR-only
+mainline invariants but replaces the single physical checkout with isolated
+agent worktrees, shared repository-scoped MindLeak/Lodestar state, and exact-HEAD
+publication from any clean worktree.

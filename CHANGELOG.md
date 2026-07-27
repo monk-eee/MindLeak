@@ -7,6 +7,21 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Isolated agent worktrees now share one repository brain and converge only
+  through reviewed pull requests (ADR-0038, superseding ADR-0032).** Each clone
+  bootstraps a random 128-bit `mindleak.repositoryId` in shared local Git config;
+  both planes resolve to one platform-local, non-roaming
+  `repositories/<id>/{graph.db,spec.db}` directory from every linked worktree.
+  Independent clones remain isolated. Existing repository-root databases migrate
+  once by verified SQLite online backup and are left untouched; `MINDLEAK_HOME`
+  relocates the shared root, while direct DB overrides still win. VS Code,
+  installer, Copilot CLI, and dogfood registrations no longer force
+  worktree-local databases, and both planes expose `storage_status` for the id,
+  resolved path, origin, legacy source, and migration result. The canonical
+  publisher now accepts any clean attached worktree, refuses protected branches,
+  dirty/detached/divergent state, and pushes exact `HEAD` to the same branch;
+  only protected PR merge advances `main`. Fleet-delivery v2 proposes isolated
+  worktrees and branch-owned publication without mutating immutable pack v1.
 - **Bounded waivers: the reviewable form of `--no-verify` (ADR-0026 task 5,
   SPEC-CONSTITUTION §9).** `grant_waiver` records a scoped, expiring, attributed
   exception to one clause, and `revoke_waiver` withdraws it. An exception was
