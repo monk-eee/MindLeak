@@ -6,6 +6,23 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`draft_questions`: the collision you already have, as a question you can send
+  (ADR-0055).** ADR-0046 built agent-to-agent dialogue properly and nothing ever
+  used it — measured after an eight-hour session, `pending_questions` was empty
+  and all five stalled tasks were `awaiting_human`, one of them for seventy-five
+  hours. The gap was never capability; nothing surfaced that there *was* a
+  question to ask. `draft_questions(task_id)` finds peers whose live claims
+  intersect this task's declared scope and returns an addressed draft for each,
+  ready to hand to `ask_question`. It records nothing, parks nothing and
+  addresses nothing, so a draft nobody sends leaves no trace. The collision is
+  found deterministically; only the phrasing is model-assisted and it falls back
+  to a template when no local model is reachable, with every draft reporting
+  `drafted_by: model | template`. The model is asked to draft, never to
+  arbitrate: it may ask about intent and ordering and is forbidden from deciding
+  who is right, because a model verdict carries no evidence and ADR-0009 makes
+  evidence the basis of every verdict here.
+
 ## [0.1.3] - 2026-07-27
 
 ### Added
