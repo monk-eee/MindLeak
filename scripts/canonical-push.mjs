@@ -4,6 +4,12 @@
 
 import { execFileSync } from "node:child_process";
 
+import {
+  armedPullRequestNumber,
+  armedRefusal,
+  queryPullRequest,
+} from "./auto-merge-guard.mjs";
+
 const args = process.argv.slice(2);
 const verifyPrePush = args.includes("--verify-pre-push");
 const opt = (name, fallback) => {
@@ -66,6 +72,16 @@ if (remoteBranchExists) {
       `${remote}/${branch} is not an ancestor of HEAD; reconcile in this checkout before publishing`,
     );
   }
+}
+
+// Arming auto-merge is a promise to merge whatever is on the branch the moment
+// checks go green. Pushing after that promise is made is a second writer to the
+// same decision, and the branch loses: PR #37 merged at 08:09:21Z and the next
+// commit landed 13 seconds later, stranding four commits with nothing reported.
+// So arming means finished. If more work is coming, disarm first.
+const armed = armedPullRequestNumber(queryPullRequest(branch, repoRoot));
+if (armed !== null) {
+  fail(armedRefusal(armed, branch));
 }
 
 run(["push", remote, `HEAD:refs/heads/${branch}`], {
