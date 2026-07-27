@@ -1,6 +1,6 @@
 # ADR-0043: Adopting a pack clause into an active constitution is an amendment
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-27
 - Deciders: MindLeak maintainers
 - Refines: [ADR-0026](0026-constitutional-policy-over-mechanistic-ratchets.md)

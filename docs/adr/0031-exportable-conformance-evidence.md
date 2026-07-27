@@ -1,6 +1,6 @@
 # ADR-0031: Exportable conformance evidence, the Evidence Board, and a CI conformance gate
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-24
 - Deciders: MindLeak maintainers
 - Related: [ADR-0009](0009-evidence-backed-conformance.md) (evidence-backed

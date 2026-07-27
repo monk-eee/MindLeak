@@ -6,7 +6,24 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-27
 ### Added
+- **`make design-audit` reports where the ADR files and the design ledger stop
+  agreeing.** Every drift found so far was found by hand, one ad-hoc query at a
+  time, and each was invisible until someone thought to look: an ADR merged
+  without ever being registered, a file still saying `Proposed` after the
+  decision was recorded, and a row imported as `accepted` with `decided_by`
+  empty — a decision nobody made, which `accept_design` then refuses because
+  deciding twice is not an undo (ADR-0047). The audit names all four shapes. Its
+  first run found 23 undecided rows and one unregistered ADR. It reads the ledger
+  through `list_designs` on the release `lodestar-mcp` rather than opening
+  `spec.db`: the server already resolves its own per-repository database
+  (ADR-0038), so the path rule is not forked, and `list_designs` already omits
+  retired records, so a retired row cannot masquerade as an orphan. It is a local
+  diagnostic, not a hook — CI has no ledger to read, which is exactly why the
+  ADR-index guard can gate and this cannot. `Superseded by <ref>` is reported as
+  a note rather than drift: the ledger has no such status, so neither side is
+  stale and forcing agreement would throw information away.
 - **A question addressed to you now arrives on a call you already make
   (ADR-0046).** `ask_question` could address a peer and `pending_questions` could
   find it, but only if the peer thought to look — and a capability that depends
@@ -33,6 +50,25 @@ to [Semantic Versioning](https://semver.org/).
   alone, in both the in-process registry and the durable row. Within a real
   declaration the replace-wholesale rule is unchanged, because there an omitted
   field is the client saying that field is no longer known.
+- **A lapsed lease no longer lets an agent launder unchecked work into an
+  `aligned` receipt (ADR-0048).** Re-claiming after a lapse reset
+  `claim_started_at` to the moment of the re-claim, so everything done before the
+  lapse fell outside the interval the agent was allowed to submit and
+  `check_conformance` rejected it with "evidence interval falls outside the live
+  claim". That read like under-reporting, but the verdict is computed over
+  whatever the evidence covers: the only way forward was to narrow the interval
+  until it was admitted, and the narrowed interval passed on the surviving sliver
+  and returned `aligned`, which sends the task straight to `done` with every
+  governed change made before the lapse never examined by anything. A lapse now
+  punches a hole in the window instead of moving it — a same-owner re-claim keeps
+  `claim_started_at`, so the earlier work stays provable, while new
+  `claim_lapses` and `unleased_seconds` columns record the discontinuity and cap
+  the verdict at `needs_human` with a finding naming it. The cap follows the
+  task rather than the submitted interval, so shrinking the evidence no longer
+  buys a clean pass. A claim by a *different* owner still opens a fresh window,
+  so reach-back can never cross a period somebody else owned the task. Both
+  columns are additive with defaults; existing databases migrate without
+  backfill and windows already open are treated as continuous.
 - **A current build could not open an existing database.** Indexes lived in
   `schema.sql` and therefore ran *before* migrations. On an existing database
   `CREATE TABLE IF NOT EXISTS` is a no-op, so the pre-migration table shape was
@@ -45,6 +81,7 @@ to [Semantic Versioning](https://semver.org/).
   structural rather than something each new migration has to remember.
 
 ### Added
+
 - **Arming auto-merge now means finished, and a merged branch is checked for
   what it left behind (ADR-0045 clause 2).** A pull request's merge decision has
   two writers — the agent pushing commits and whoever arms auto-merge — and
@@ -377,6 +414,7 @@ to [Semantic Versioning](https://semver.org/).
   silently discard a deliberate local decision.
 
 ### Changed
+
 - **Scope matching moved to one shared `scope` module.** Clauses and waivers
   both declare scope, and forking the matcher would let the two disagree about
   what a scope reaches. It stays deliberately not a glob engine — exact match,
@@ -461,6 +499,18 @@ to [Semantic Versioning](https://semver.org/).
   review is attributed to a registered session.
 
 ### Fixed
+
+- **A current build could not open an existing database.** Indexes lived in
+  `schema.sql` and therefore ran *before* migrations. On an existing database
+  `CREATE TABLE IF NOT EXISTS` is a no-op, so the pre-migration table shape was
+  still in place when `idx_task_qa_audience` tried to index
+  `task_qa(audience, kind)`. The batch failed with `no such column: audience`,
+  the migration that would have added the column never ran, and every
+  pre-existing database became unopenable — a hard upgrade failure rather than a
+  degradation, and silent until someone ran a fresh binary. Indexes now live in
+  `indexes.sql` and are applied *after* migrations, so the ordering is
+  structural rather than something each new migration has to remember.
+
 - **An ADR whose status carries a parenthetical is no longer dropped from the
   design ledger in silence.** `Accepted (implemented)` is still accepted — a
   parenthetical is commentary on a decision, not a different lifecycle state.
@@ -517,7 +567,6 @@ to [Semantic Versioning](https://semver.org/).
   with it. `updated_at` moves only when a fact actually changed, so a no-op pass
   remains genuinely idempotent.
 
-### Fixed
 - **Accepting a design no longer guesses which checkout records the decision.**
   `resolveAdrUri` wrote the ADR's `Status:` line into the first workspace folder
   containing that path. Under ADR-0038 a fleet routinely has several worktrees
@@ -1162,7 +1211,8 @@ to [Semantic Versioning](https://semver.org/).
   pruned after historical evidence expires, structural ownership conflicts fail
   atomically, and legacy migrations serialize concurrent openers.
 
-[Unreleased]: https://github.com/monk-eee/MindLeak/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/monk-eee/MindLeak/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/monk-eee/MindLeak/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/monk-eee/MindLeak/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/monk-eee/MindLeak/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/monk-eee/MindLeak/compare/v0.1.0-preview.1...v0.1.0

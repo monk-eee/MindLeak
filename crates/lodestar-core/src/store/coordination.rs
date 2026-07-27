@@ -10,7 +10,8 @@ use crate::util::short_hash;
 use super::{collect, goals, LodestarStore};
 
 const TASK_COLS: &str = "id, goal_id, parent_task_id, title, acceptance, status, owner, \
-    claim_started_at, lease_expires_at, blocked_by, parked_at, created_at, updated_at";
+    claim_started_at, lease_expires_at, blocked_by, parked_at, created_at, updated_at, \
+    claim_lapses, unleased_seconds";
 const CONFORMANCE_COLS: &str =
     "id, task_id, evidence_schema_version, evidence, verdict, findings, checked_at";
 const QA_COLS: &str = "id, task_id, kind, body, author, audience, created_at";
@@ -117,12 +118,31 @@ impl LodestarStore {
         let scope = normalize_scope(scope)?;
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let parked_cutoff = now - PARKING_GRACE_SECS;
+        // The evidence window survives a lapse, and the lapse is counted
+        // (ADR-0048). Re-claiming used to reset `claim_started_at` to now, which
+        // silently put every commit made before the lapse outside the window the
+        // agent could prove. That did not merely under-report: because the
+        // verdict is computed over the nodes the evidence covers, a lapse let an
+        // agent submit the surviving sliver and collect an `aligned` receipt
+        // while the bulk of the change went unchecked. So a re-claim by the same
+        // owner keeps the window open and records the hole instead; conformance
+        // refuses to certify a discontinuous window on its own authority.
         let changed = transaction.execute(
             "UPDATE tasks
                 SET status = 'claimed', owner = ?2,
                     claim_started_at = CASE
-                        WHEN status = 'claimed' AND owner = ?2 AND lease_expires_at >= ?4
+                        WHEN status = 'claimed' AND owner = ?2
                         THEN claim_started_at ELSE ?4 END,
+                    claim_lapses = CASE
+                        WHEN status = 'claimed' AND owner = ?2 AND lease_expires_at < ?4
+                        THEN claim_lapses + 1
+                        WHEN status = 'claimed' AND owner = ?2 THEN claim_lapses
+                        ELSE 0 END,
+                    unleased_seconds = CASE
+                        WHEN status = 'claimed' AND owner = ?2 AND lease_expires_at < ?4
+                        THEN unleased_seconds + (?4 - lease_expires_at)
+                        WHEN status = 'claimed' AND owner = ?2 THEN unleased_seconds
+                        ELSE 0 END,
                     lease_expires_at = ?3, parked_at = NULL, updated_at = ?4
               WHERE id = ?1
                                 AND blocked_by IS NULL
@@ -219,7 +239,8 @@ impl LodestarStore {
     }
 
     /// Extend a still-live lease on a task the caller owns (heartbeat). Once a
-    /// lease lapses, the owner must re-claim so a fresh evidence window opens.
+    /// lease lapses it cannot be renewed: the owner must re-claim, which keeps
+    /// the evidence window open but records the lapse (ADR-0048).
     pub fn renew_lease(&self, id: &str, agent: &str, lease_secs: i64, now: i64) -> Result<bool> {
         let changed = self.conn.execute(
             "UPDATE tasks SET lease_expires_at = ?3, updated_at = ?4
@@ -859,6 +880,8 @@ fn create_task_after_on(
         owner: None,
         claim_started_at: None,
         lease_expires_at: None,
+        claim_lapses: 0,
+        unleased_seconds: 0,
         blocked_by,
         parked_at: None,
         created_at: now,
@@ -1048,6 +1071,8 @@ fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
         parked_at: row.get(10)?,
         created_at: row.get(11)?,
         updated_at: row.get(12)?,
+        claim_lapses: row.get(13)?,
+        unleased_seconds: row.get(14)?,
     })
 }
 
@@ -2034,25 +2059,72 @@ mod tests {
         );
     }
 
+    // Bug (ADR-0048): a lapsed lease used to silently shrink the evidence
+    // window. Re-claiming reset `claim_started_at` to the moment of the
+    // re-claim, so every commit made before the lapse fell outside the window
+    // the agent was allowed to prove — and because the verdict is computed over
+    // whatever the evidence covers, the agent could submit the surviving sliver
+    // and collect an `aligned` receipt while the bulk of the work went
+    // unchecked. The fix keeps the window open across a lapse by the same owner
+    // and counts the hole instead, so the work stays provable and the
+    // discontinuity is on the record for conformance to act on.
     #[test]
-    fn expired_renewal_requires_reclaim_and_opens_a_fresh_evidence_window() {
+    fn a_lapsed_lease_keeps_the_evidence_window_and_counts_the_hole() {
         let s = store();
         let g = goal(&s);
         let t = s.create_task(&g.id, "task", "", None, NOW).unwrap();
 
         assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
         assert!(s.renew_lease(&t.id, "alice", 60, NOW + 30).unwrap());
-        assert_eq!(
-            s.get_task(&t.id).unwrap().unwrap().claim_started_at,
-            Some(NOW)
-        );
+        let live = s.get_task(&t.id).unwrap().unwrap();
+        assert_eq!(live.claim_started_at, Some(NOW));
+        // A renewed, unbroken window has nothing to declare.
+        assert_eq!(live.claim_lapses, 0);
+        assert_eq!(live.unleased_seconds, 0);
 
+        // The lease lapses at NOW + 90 and alice does not return for 2 hours.
         let after_expiry = NOW + 2 * HOUR;
         assert!(!s.renew_lease(&t.id, "alice", 60, after_expiry).unwrap());
         assert!(s.claim_task(&t.id, "alice", 60, after_expiry).unwrap());
+
         let reclaimed = s.get_task(&t.id).unwrap().unwrap();
-        assert_eq!(reclaimed.claim_started_at, Some(after_expiry));
+        // The window still reaches back to the original claim, so work done
+        // before the lapse remains provable.
+        assert_eq!(reclaimed.claim_started_at, Some(NOW));
         assert_eq!(reclaimed.lease_expires_at, Some(after_expiry + 60));
+        // ...and the hole it now contains is recorded rather than forgotten.
+        assert_eq!(reclaimed.claim_lapses, 1);
+        assert_eq!(reclaimed.unleased_seconds, after_expiry - (NOW + 90));
+    }
+
+    #[test]
+    fn a_second_lapse_accumulates_and_a_new_owner_starts_clean() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "task", "", None, NOW).unwrap();
+
+        assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
+        let first = NOW + HOUR;
+        assert!(s.claim_task(&t.id, "alice", 60, first).unwrap());
+        let second = NOW + 2 * HOUR;
+        assert!(s.claim_task(&t.id, "alice", 60, second).unwrap());
+
+        let twice_lapsed = s.get_task(&t.id).unwrap().unwrap();
+        assert_eq!(twice_lapsed.claim_started_at, Some(NOW));
+        assert_eq!(twice_lapsed.claim_lapses, 2);
+        assert_eq!(
+            twice_lapsed.unleased_seconds,
+            (first - (NOW + 60)) + (second - (first + 60))
+        );
+
+        // A different owner inherits none of it: the window is theirs alone, so
+        // it starts now, continuous, and carries no one else's holes.
+        let third = NOW + 3 * HOUR;
+        assert!(s.claim_task(&t.id, "bob", 60, third).unwrap());
+        let bob = s.get_task(&t.id).unwrap().unwrap();
+        assert_eq!(bob.claim_started_at, Some(third));
+        assert_eq!(bob.claim_lapses, 0);
+        assert_eq!(bob.unleased_seconds, 0);
     }
 
     #[test]

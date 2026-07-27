@@ -47,9 +47,13 @@ repos:
         name: prettier (vscode extension)
         # Check only the staged files, not the whole tree, so another agent's
         # unformatted WIP can never poison this commit (ADR-0018).
+        # This set must match the `format` script in editors/vscode/package.json,
+        # which is what CI checks. It did not: editors/vscode/scripts/*.mjs was
+        # checked by CI and not by this hook, so nine test files were formatted
+        # only by luck and a tenth failed the build.
         entry: node editors/vscode/node_modules/prettier/bin/prettier.cjs --check
         language: system
-        files: ^(editors/vscode/(src|media)/.*\.(ts|js)|scripts/.*\.mjs)$
+        files: ^(editors/vscode/(src|media|scripts)/.*\.(ts|js|mjs|cjs)|scripts/.*\.mjs)$
         pass_filenames: true
 
       - id: adr-number-guard
