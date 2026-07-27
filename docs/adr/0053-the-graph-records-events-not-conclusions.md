@@ -29,18 +29,33 @@ verbatim:
 | `no such column audience index migration order` | `symbol: previous_non_newline (fn)` (0.54) |
 
 Four out of four returned noise. Not a weak answer — no answer, dressed as one.
-`merge_import` is a lexical collision on the word "merge"; the cargo commands
-share no meaningful token with the query at all.
 
-The reason is not a ranking defect. `recall` searches FTS5 over node labels and
-content, ranked by decayed weight ([ADR-0002](0002-sqlite-decay-over-vector-llm.md);
-the optional embedding index of [ADR-0008](0008-semantic-recall-embedding-index.md)
-is off by default and was not indexed). It returned command lines and symbol
-names because **command lines and symbol names are the only things in there.**
-That follows directly from invariant 1: the write path is zero-token, so
-ingestion can capture only what a machine emitted — executions, diffs, AST
-symbols, artifacts. A conclusion is a sentence. Deterministic pattern matching
-cannot manufacture one, so none is ever written.
+Three separate causes were confirmed by reading the code, after a first pass at
+this ADR asserted the wrong one:
+
+**(a) There is nothing to retrieve.** Invariant 1 makes the write path
+zero-token, so ingestion captures only what a machine emitted — executions,
+diffs, AST symbols, artifacts. A conclusion is a sentence, and deterministic
+pattern matching cannot manufacture one, so none is ever written.
+
+**(b) `recall` has no similarity floor.** It is not full-text search. It is
+cosine similarity over the optional embedding index
+([ADR-0008](0008-semantic-recall-embedding-index.md)): `embed::recall` scores
+*every* embedded node, sorts, and truncates to `limit`. There is no threshold
+below which it declines to answer. It therefore always returns exactly `limit`
+results, however unrelated. Demonstrated directly — the query
+`zzzzqqq wibble flarp` returns `chore(vscode): register both local MCP planes`
+at **0.54**, a *higher* score than any of the four real questions above scored.
+Nonsense outranks a genuine query. Every one of those four "results" was the
+nearest vector in an unrelated cloud, presented with a number that reads like
+confidence.
+
+**(c) A recorded conclusion is invisible until an offline pass runs.** Embeddings
+are produced only by `index_nodes`. Recording ADR-0053's own decision through
+`record_architectural_decision` created `intent:8ac3a2338d52` — and `recall`
+for `ADR-0053 graph records events not conclusions` returned **`[]`**, because
+the node it had just created had no vector yet. The verb this ADR is about
+writes knowledge that cannot be read back until someone remembers to reindex.
 
 Meanwhile all four lessons *were* durably recorded and *were* acted on — in
 prose, in flat files: ADRs, `CHANGELOG.md`, the Known gaps section of
@@ -50,8 +65,10 @@ those notes and changed its behaviour because of them. It never once called
 
 That comparison has to be stated plainly, because it is the uncomfortable part:
 **for recalling knowledge, a flat markdown file outperformed a 9,572-edge
-decay-weighted graph.** Not by a little. The file contained sentences; the graph
-contained events.
+decay-weighted graph.** Not by a little. The file contained sentences, returned
+them exactly, and needed no index pass. And it never invented an answer, which
+is the failure that matters most: an empty `grep` is honestly empty, whereas
+`recall` cannot say "I do not know".
 
 The capability is not missing. `record_knowledge` (Intent Plane) and
 `record_architectural_decision` (Memory Plane) both exist and both write exactly
@@ -75,19 +92,32 @@ that never reaches for a verb may as well not have it.
    `learned: n/a`. Making the gap visible is what turns it from invisible into
    measurable.
 
-3. **Prose outranks events for a prose question.** A knowledge or decision node
-   must rank above execution and symbol nodes when a query has no lexical anchor
-   in code. Recording is worthless if retrieval buries one sentence under four
-   thousand command lines — the failure above would survive the fix otherwise.
+3. **`recall` gets a similarity floor and is allowed to return nothing.** Below
+   a configurable threshold, `embed::recall` returns no rows rather than its
+   nearest neighbours. An honest empty answer is strictly more useful than a
+   confident wrong one: the caller can then fall back to `multi_hop_query`,
+   `graph_snapshot`, or reading the repository, whereas today it is handed
+   `cargo check` and no way to tell that is not an answer. This is the single
+   highest-value item here — it is worth more than decision 2, because without
+   it every recorded conclusion still arrives buried under five plausible
+   strangers.
 
-4. **Conclusions decay on their own clock.** Invariant 2 holds — nothing here
+4. **Recording a node indexes it.** A conclusion that cannot be read back until
+   someone remembers to run `index_nodes` is not recorded, it is queued.
+   `record_knowledge` and `record_architectural_decision` embed the node they
+   write, and degrade to writing it unembedded — with that fact visible — when
+   no embedding server is reachable. This does not breach invariant 1: those two
+   verbs are *already* the explicit, human-or-agent-supplied path, not the
+   deterministic ingest hot path, and `ingest_*` is untouched.
+
+5. **Conclusions decay on their own clock.** Invariant 2 holds — nothing here
    disables decay. But "PowerShell reports exit 1 on any stderr write" does not
    go stale on the same half-life as a single `cargo check`. Knowledge gets a
    long half-life, and `reconfirm_knowledge` resets it on use. A lesson nobody
    reconfirms fades out, which is decay doing precisely the job it was designed
    for.
 
-5. **This does not replace per-agent scratch notes, and must not try to.** Local
+6. **This does not replace per-agent scratch notes, and must not try to.** Local
    markdown loaded into context at zero latency is a different artefact from
    fleet-shared, attributed, decaying knowledge. The former is one agent's
    working memory; the latter is what the next agent inherits. An agent that
@@ -106,9 +136,21 @@ that never reaches for a verb may as well not have it.
 - Prompting at completion adds friction to every task, including the many that
   teach nothing. Decision 2 keeps that friction to a report rather than a gate
   for exactly that reason.
-- Decision 3 changes `recall` ranking, which will move results for existing
-  queries. That is intended, but it is a behavioural change to the one verb
+- **Decision 3 will make `recall` return fewer results, and sometimes none.**
+  That will read as a regression to anyone who mistook the old output for
+  answers. It is the opposite, but the threshold has to be tuned against real
+  queries and defended, not picked. It is a behavioural change to the one verb
   every consumer depends on and needs its own tests.
+- Decision 4 makes two verbs depend on a reachable embedding server where they
+  previously did not. They must degrade rather than fail — invariant 4 says the
+  deterministic path never depends on a model, and recording a conclusion must
+  not become impossible because Ollama is down.
+- **The measurement in this ADR was wrong on its first pass, and that is worth
+  keeping.** It asserted `recall` was FTS5 ranked by decayed weight. It is
+  cosine similarity over an embedding index. The observation was right and the
+  cause was wrong, which is precisely the failure mode a graph full of events
+  and empty of conclusions produces: plenty of evidence, no one who wrote down
+  what it meant.
 - The honest scope of the finding: the *coordination and evidence* half of this
   system — claims, leases, `evidence_for`, conformance refusing to certify work
   it cannot bound — was not in question and did its job all session. It is the

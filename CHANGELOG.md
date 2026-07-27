@@ -10,15 +10,17 @@ to [Semantic Versioning](https://semver.org/).
 - **ADR-0053: the graph records events, not conclusions (Proposed).** After an
   eight-hour session, `recall` was put to the four lessons that session had
   actually cost time to learn. All four returned noise from a graph of 4,463
-  nodes and 9,572 active edges — command lines and symbol names, because those
-  are the only things the zero-token write path can capture. The same four
-  lessons were durably recorded in prose, in flat files, and were the ones that
-  changed the agent's behaviour. `record_knowledge` and
-  `record_architectural_decision` exist and were called zero times, because
-  nothing in the loop asks for them. The ADR proposes recording what was learned
-  as part of finishing work, ranking prose above events for a prose query, and a
-  long half-life for conclusions — without touching the zero-token invariant.
-  Proposed only, not accepted, nothing implemented in this build.
+  nodes and 9,572 active edges. Three causes, all confirmed in the code: the
+  zero-token write path can only capture executions and symbols, never a
+  sentence; `recall` is cosine similarity with **no floor**, so it always returns
+  `limit` rows however unrelated — the nonsense query `zzzzqqq wibble flarp`
+  scores 0.54, higher than any of the four real questions; and a recorded node is
+  invisible until the offline `index_nodes` pass embeds it, demonstrated by
+  `record_architectural_decision` writing a node whose own title then recalled
+  `[]`. The ADR proposes a similarity floor that lets `recall` honestly return
+  nothing, indexing on record, recording what was learned as part of finishing
+  work, and a long half-life for conclusions — without touching the zero-token
+  invariant. Proposed only, not accepted, nothing implemented in this build.
 
 ### Fixed
 - **A wrapped `Status:` line no longer loses its reference.** ADR-0032 writes
