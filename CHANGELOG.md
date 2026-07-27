@@ -53,8 +53,10 @@ to [Semantic Versioning](https://semver.org/).
   what replaced it". The answer was one line further down, and the superseding
   commit names ADR-0038 in its `DECISION:` line. The parser now reads indented
   continuation lines, and the ADR index row for 0032 names its successor again.
+## [0.1.3] - 2026-07-27
 
 ### Added
+
 - **`attribute_design_decision`: a decision already made can still be signed
   (ADR-0051).** ADR-0047 named this failure exactly — a row that "asserts a
   decision that can never be attributed" — and then repaired it only for designs
@@ -87,17 +89,6 @@ to [Semantic Versioning](https://semver.org/).
   inferred from an ADR's prose — deriving it would repeat exactly the mistake
   ADR-0047 documents.
 
-### Changed
-- **`make design-audit` now reports a superseded ADR as drift rather than as an
-  unrepresentable note.** It reported those two files as a modelling gap because
-  neither side was stale — they were saying different things, and the ledger
-  could not hold one of them. It can now, so a file claiming supersession the
-  ledger has not been told about is ordinary drift, and so is the reverse. The
-  `unrepresentable` category and the `isDrift` predicate that existed only to
-  exempt it are both gone.
-
-## [0.1.3] - 2026-07-27
-### Added
 - **Publishing declares where it is working, and warns when one identity is in
   two places (ADR-0044, ADR-0049).** The claim gate re-opened the session on
   every push and declared nothing, so it replaced a real declaration with
@@ -141,49 +132,6 @@ to [Semantic Versioning](https://semver.org/).
   read over the durable thread, so two readers still see the same rows and no new
   shared mutable resource is introduced (ADR-0045 clause 2).
 
-### Fixed
-- **Re-registering a session no longer erases where it said it was working
-  (ADR-0044).** `canonical-push` re-opens the session on every publish purely to
-  learn its own agent id, declaring no context. That overwrote the stored
-  declaration with an empty one, so `fleet_view` reported `branch: null` for
-  agents that had declared a branch minutes earlier — the fleet went blind at
-  exactly the moment it was busiest, and the tool that blinded it was the one
-  added to record where everyone is working. Declaring nothing is not a claim to
-  be nowhere: a call that declares no context now leaves the stored context
-  alone, in both the in-process registry and the durable row. Within a real
-  declaration the replace-wholesale rule is unchanged, because there an omitted
-  field is the client saying that field is no longer known.
-- **A lapsed lease no longer lets an agent launder unchecked work into an
-  `aligned` receipt (ADR-0048).** Re-claiming after a lapse reset
-  `claim_started_at` to the moment of the re-claim, so everything done before the
-  lapse fell outside the interval the agent was allowed to submit and
-  `check_conformance` rejected it with "evidence interval falls outside the live
-  claim". That read like under-reporting, but the verdict is computed over
-  whatever the evidence covers: the only way forward was to narrow the interval
-  until it was admitted, and the narrowed interval passed on the surviving sliver
-  and returned `aligned`, which sends the task straight to `done` with every
-  governed change made before the lapse never examined by anything. A lapse now
-  punches a hole in the window instead of moving it — a same-owner re-claim keeps
-  `claim_started_at`, so the earlier work stays provable, while new
-  `claim_lapses` and `unleased_seconds` columns record the discontinuity and cap
-  the verdict at `needs_human` with a finding naming it. The cap follows the
-  task rather than the submitted interval, so shrinking the evidence no longer
-  buys a clean pass. A claim by a *different* owner still opens a fresh window,
-  so reach-back can never cross a period somebody else owned the task. Both
-  columns are additive with defaults; existing databases migrate without
-  backfill and windows already open are treated as continuous.
-- **A current build could not open an existing database.** Indexes lived in
-  `schema.sql` and therefore ran *before* migrations. On an existing database
-  `CREATE TABLE IF NOT EXISTS` is a no-op, so the pre-migration table shape was
-  still in place when `idx_task_qa_audience` tried to index
-  `task_qa(audience, kind)`. The batch failed with `no such column: audience`,
-  the migration that would have added the column never ran, and every
-  pre-existing database became unopenable — a hard upgrade failure rather than a
-  degradation, and silent until someone ran a fresh binary. Indexes now live in
-  `indexes.sql` and are applied *after* migrations, so the ordering is
-  structural rather than something each new migration has to remember.
-
-### Added
 - **Publication requires a live claim; the ledger is no longer optional
   (ADR-0049).** The Intent Plane had one real arbiter (`claim_task`) and **zero
   automatic integration points** — nothing in the hooks, the scripts, or CI ever
@@ -537,6 +485,15 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`make design-audit` now reports a superseded ADR as drift rather than as an
+  unrepresentable note.** It reported those two files as a modelling gap because
+  neither side was stale — they were saying different things, and the ledger
+  could not hold one of them. It can now, so a file claiming supersession the
+  ledger has not been told about is ordinary drift, and so is the reverse. The
+  `unrepresentable` category and the `isDrift` predicate that existed only to
+  exempt it are both gone.
+
+
 - **Scope matching moved to one shared `scope` module.** Clauses and waivers
   both declare scope, and forking the matcher would let the two disagree about
   what a scope reaches. It stays deliberately not a glob engine — exact match,
@@ -622,6 +579,75 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **An unknown tool argument is now reported instead of silently dropped.**
+  Passing `lease_seconds` where `claim_task` declares `lease_secs` did nothing
+  visible: the key was ignored, the 300-second default applied, and the claim
+  lapsed mid-work. The only symptom was an expired lease, so the typo read as a
+  server bug and cost twenty minutes of wrong diagnosis before the real cause
+  surfaced. A caller naming an argument a tool does not have is wrong about the
+  contract, and the cheapest moment to say so is immediately — the error now
+  names the offending key and lists what the tool accepts. Checked at the tool
+  boundary against the schema each tool already advertises, so there is no
+  second list to drift. Only top-level names are validated, and the keys that
+  belong to the call *envelope* rather than to any tool's contract are exempt:
+  `agent`, `resolved_agent` and `resolved_context`, which `bind_session` adds
+  itself, and `session_id`, which every client adds to every call in one place
+  while `apply_session_contract` only declares it on tools that require a
+  session. Treating the envelope as an argument rejected every call to a tool
+  that needs no session — `board`, `design_board`, `graph_stats` — which took
+  the extension's whole readiness path down to `disconnected`. Who supplies an
+  envelope key is not what makes it one.
+- **A wrapped `Status:` line no longer loses its reference.** ADR-0032 writes
+  `- Status: Superseded by` and puts `[ADR-0038](...)` on the next line.
+  `scripts/adr-files.mjs` read to the end of the line, so the file parsed as a
+  bare `Superseded by` — and that value reached the ADR index table, the
+  `make design-audit` report, and a question put to a human as "nobody can tell
+  what replaced it". The answer was one line further down, and the superseding
+  commit names ADR-0038 in its `DECISION:` line. The parser now reads indented
+  continuation lines, and the ADR index row for 0032 names its successor again.
+
+- **Re-registering a session no longer erases where it said it was working
+  (ADR-0044).** `canonical-push` re-opens the session on every publish purely to
+  learn its own agent id, declaring no context. That overwrote the stored
+  declaration with an empty one, so `fleet_view` reported `branch: null` for
+  agents that had declared a branch minutes earlier — the fleet went blind at
+  exactly the moment it was busiest, and the tool that blinded it was the one
+  added to record where everyone is working. Declaring nothing is not a claim to
+  be nowhere: a call that declares no context now leaves the stored context
+  alone, in both the in-process registry and the durable row. Within a real
+  declaration the replace-wholesale rule is unchanged, because there an omitted
+  field is the client saying that field is no longer known.
+- **A lapsed lease no longer lets an agent launder unchecked work into an
+  `aligned` receipt (ADR-0048).** Re-claiming after a lapse reset
+  `claim_started_at` to the moment of the re-claim, so everything done before the
+  lapse fell outside the interval the agent was allowed to submit and
+  `check_conformance` rejected it with "evidence interval falls outside the live
+  claim". That read like under-reporting, but the verdict is computed over
+  whatever the evidence covers: the only way forward was to narrow the interval
+  until it was admitted, and the narrowed interval passed on the surviving sliver
+  and returned `aligned`, which sends the task straight to `done` with every
+  governed change made before the lapse never examined by anything. A lapse now
+  punches a hole in the window instead of moving it — a same-owner re-claim keeps
+  `claim_started_at`, so the earlier work stays provable, while new
+  `claim_lapses` and `unleased_seconds` columns record the discontinuity and cap
+  the verdict at `needs_human` with a finding naming it. The cap follows the
+  task rather than the submitted interval, so shrinking the evidence no longer
+  buys a clean pass. A claim by a *different* owner still opens a fresh window,
+  so reach-back can never cross a period somebody else owned the task. Both
+  columns are additive with defaults; existing databases migrate without
+  backfill and windows already open are treated as continuous.
+- **A current build could not open an existing database.** Indexes lived in
+  `schema.sql` and therefore ran *before* migrations. On an existing database
+  `CREATE TABLE IF NOT EXISTS` is a no-op, so the pre-migration table shape was
+  still in place when `idx_task_qa_audience` tried to index
+  `task_qa(audience, kind)`. The batch failed with `no such column: audience`,
+  the migration that would have added the column never ran, and every
+  pre-existing database became unopenable — a hard upgrade failure rather than a
+  degradation, and silent until someone ran a fresh binary. Indexes now live in
+  `indexes.sql` and are applied *after* migrations, so the ordering is
+  structural rather than something each new migration has to remember.
+
+
 - **A current build could not open an existing database.** Indexes lived in
   `schema.sql` and therefore ran *before* migrations. On an existing database
   `CREATE TABLE IF NOT EXISTS` is a no-op, so the pre-migration table shape was
@@ -702,6 +728,23 @@ to [Semantic Versioning](https://semver.org/).
   aborts without writing; none keeps the existing clear error. The fix
   deliberately does not bind a design record to a worktree — that would put a
   machine-specific path in a database ADR-0038 shares across checkouts.
+
+### Documentation
+
+- **ADR-0053: the graph records events, not conclusions (Proposed).** After an
+  eight-hour session, `recall` was put to the four lessons that session had
+  actually cost time to learn. All four returned noise from a graph of 4,463
+  nodes and 9,572 active edges. Three causes, all confirmed in the code: the
+  zero-token write path can only capture executions and symbols, never a
+  sentence; `recall` is cosine similarity with **no floor**, so it always returns
+  `limit` rows however unrelated — the nonsense query `zzzzqqq wibble flarp`
+  scores 0.54, higher than any of the four real questions; and a recorded node is
+  invisible until the offline `index_nodes` pass embeds it, demonstrated by
+  `record_architectural_decision` writing a node whose own title then recalled
+  `[]`. The ADR proposes a similarity floor that lets `recall` honestly return
+  nothing, indexing on record, recording what was learned as part of finishing
+  work, and a long half-life for conclusions — without touching the zero-token
+  invariant. Proposed only, not accepted, nothing implemented in this build.
 
 ## [0.1.2] - 2026-07-24
 
