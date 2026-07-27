@@ -2,6 +2,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 
 import {
+  chooseAdrTarget,
   DesignGoal,
   DesignItem,
   DesignMaterializationPlan,
@@ -404,18 +405,47 @@ export class DesignBoardController {
   }
 
   private async resolveAdrUri(design: DesignItem): Promise<vscode.Uri> {
+    const candidates: vscode.Uri[] = [];
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
       const uri = vscode.Uri.joinPath(folder.uri, ...design.adr_path.split("/"));
       try {
         await vscode.workspace.fs.stat(uri);
-        return uri;
+        candidates.push(uri);
       } catch (error) {
         if ((error as vscode.FileSystemError).code !== "FileNotFound") {
           throw error;
         }
       }
     }
-    throw new Error(`cannot find ${design.adr_path} in the open workspace`);
+
+    const choice = chooseAdrTarget(candidates.map((uri) => uri.fsPath));
+    switch (choice.kind) {
+      case "none":
+        throw new Error(`cannot find ${design.adr_path} in the open workspace`);
+      case "one":
+        return candidates[0];
+      case "ambiguous": {
+        // Several checkouts of one repository are open, so which of them should
+        // carry this decision is a question only the reviewer can answer. They
+        // are already in the accept/reject prompt; one more is cheaper than
+        // recording a decision on the wrong branch.
+        const picked = await vscode.window.showQuickPick(choice.candidates, {
+          title: `Which checkout records this decision for ${design.adr_path}?`,
+          placeHolder: "Several open worktrees contain this ADR",
+          ignoreFocusOut: true,
+        });
+        if (!picked) {
+          throw new Error(
+            `cancelled: ${design.adr_path} exists in ${choice.candidates.length} open worktrees and none was chosen`
+          );
+        }
+        const target = candidates.find((uri) => uri.fsPath === picked);
+        if (!target) {
+          throw new Error(`cannot resolve the chosen checkout for ${design.adr_path}`);
+        }
+        return target;
+      }
+    }
   }
 
   private async promptHuman(title: string, design: DesignItem): Promise<string | undefined> {
