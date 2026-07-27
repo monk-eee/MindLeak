@@ -22,6 +22,8 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
     for (table, column, definition) in [
         ("tasks", "claim_started_at", "INTEGER"),
         ("tasks", "parked_at", "INTEGER"),
+        ("tasks", "claim_lapses", "INTEGER NOT NULL DEFAULT 0"),
+        ("tasks", "unleased_seconds", "INTEGER NOT NULL DEFAULT 0"),
         ("goal_code", "mode", "TEXT NOT NULL DEFAULT 'governed'"),
         ("conformance", "evidence_schema_version", "INTEGER"),
         ("conformance", "evidence", "TEXT"),

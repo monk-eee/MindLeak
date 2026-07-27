@@ -333,7 +333,7 @@ one intent plane and one memory graph by default.
 | `export_constitution` | Render the constitution to committed-friendly markdown. |
 | `create_task` / `decompose_goal` | Add claimable work; `create_task(blocked_by=...)` creates a progressive handoff, and `create_task(also_serves=[...])` declares up front the additional goals genuinely cross-cutting work serves (ADR-0041). |
 | `next_task` | Suggest the next unblocked, claimable task. |
-| `claim_task` / `renew_lease` | **Atomic claim + lease** with optional advisory path globs / symbol ids — renewal is a live heartbeat; after expiry, re-claim opens a fresh evidence window. |
+| `claim_task` / `renew_lease` | **Atomic claim + lease** with optional advisory path globs / symbol ids — renewal is a live heartbeat; after expiry, a same-owner re-claim keeps the evidence window and records the lapse (ADR-0048). |
 | `recover_claim` / `claim_transfer_history` | Guardedly recover an expired compatible legacy claim into the registered session and inspect the append-only prior-owner/window audit. |
 | `task_scope` / `check_overlap` | Read one claim declaration or find live claims intersecting concrete paths / symbol ids; advisory only, and combined by the caller with MindLeak's footprint result (ADR-0024). |
 | `complete_task` | Consume the exact authoritative `check_conformance` result (owner-guarded); aligned completes, uncertainty reviews, violation blocks. |

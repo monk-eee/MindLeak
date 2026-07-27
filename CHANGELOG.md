@@ -6,6 +6,27 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A lapsed lease no longer lets an agent launder unchecked work into an
+  `aligned` receipt (ADR-0048).** Re-claiming after a lapse reset
+  `claim_started_at` to the moment of the re-claim, so everything done before the
+  lapse fell outside the interval the agent was allowed to submit and
+  `check_conformance` rejected it with "evidence interval falls outside the live
+  claim". That read like under-reporting, but the verdict is computed over
+  whatever the evidence covers: the only way forward was to narrow the interval
+  until it was admitted, and the narrowed interval passed on the surviving sliver
+  and returned `aligned`, which sends the task straight to `done` with every
+  governed change made before the lapse never examined by anything. A lapse now
+  punches a hole in the window instead of moving it — a same-owner re-claim keeps
+  `claim_started_at`, so the earlier work stays provable, while new
+  `claim_lapses` and `unleased_seconds` columns record the discontinuity and cap
+  the verdict at `needs_human` with a finding naming it. The cap follows the
+  task rather than the submitted interval, so shrinking the evidence no longer
+  buys a clean pass. A claim by a *different* owner still opens a fresh window,
+  so reach-back can never cross a period somebody else owned the task. Both
+  columns are additive with defaults; existing databases migrate without
+  backfill and windows already open are treated as continuous.
+
 ### Added
 - **`stalled_work` and the fleet view now read one wait graph, and the parked
   taxonomy stopped lying (ADR-0046).** These landed as two independent answers

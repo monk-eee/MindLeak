@@ -287,24 +287,28 @@ and footguns, with impact and status:
   full `make setup` per worktree would re-run `pip install` and
   `cargo install` for no reason.
 
-- **A lapsed lease silently shrinks the evidence window a task can prove — OPEN.** —
-  Observed Jul 2026 closing ADR-0026 task 4. Building three commits took longer
-  than the lease, and the only route back to a live claim is `claim_task`, which
-  opens a **fresh** `claim_started_at`. `evidence_for` is bounded by that window,
-  so the three implementation commits sat outside it and the receipt covers only
-  the final ADR commit plus its validation run. Nothing was lost and nothing was
-  falsified — this is the evidence contract correctly refusing to certify work it
-  cannot bound — but the durable proof under-reports the work, which is a
-  different kind of wrong than over-reporting. `recover_claim` does not help: it
-  is deliberately restricted to *legacy* pre-ADR-0030 owners and refuses a
-  same-session expired claim with "requires a compatible legacy owner". — Medium
-  impact: no incorrect completion, but proof-of-work is thinner than reality and
-  the operator has no honest way to reattach. — Left for later: the fix is either
-  a same-owner reattach that preserves the original window, or renewal semantics
-  that survive a lapse when nobody else claimed the task. Both are policy
-  decisions about how much an expired lease should forfeit, so they want an ADR
-  rather than a quiet patch. Mitigation today: renew the lease before long
-  builds.
+- **A lapsed lease silently shrank the evidence window a task can prove —
+  FIXED (ADR-0048).** — Observed Jul 2026 closing ADR-0026 task 4. Building
+  three commits took longer than the lease, and the only route back to a live
+  claim is `claim_task`, which opened a **fresh** `claim_started_at`. The three
+  implementation commits sat outside the new window and the receipt covered only
+  the final ADR commit plus its validation run. Filed as "the proof
+  under-reports", which undersold it: because the verdict is computed over
+  whatever the evidence covers, the only way to get a lapsed task accepted was to
+  narrow the interval until it was admitted — and the narrowed interval passed on
+  the surviving sliver, returned `aligned`, and sent the task to `done` with
+  every governed change made before the lapse never examined at all. Being slow
+  could therefore stand down the drift check and produce a clean receipt over
+  work nothing had read (the ADR-0015 false-safety shape). — High impact once
+  understood: not a wrong verdict, but a confident verdict on a question never
+  asked. — Fixed this run. A lapse now holes the window instead of moving it: a
+  same-owner re-claim keeps `claim_started_at`, so earlier work stays provable,
+  while `tasks.claim_lapses` and `tasks.unleased_seconds` record the
+  discontinuity and cap conformance at `needs_human`. The cap follows the task,
+  not the submitted interval, so shrinking the evidence no longer buys a pass. A
+  different owner still opens a fresh window, so reach-back never crosses a
+  period somebody else owned the task. `recover_claim` remains restricted to
+  *legacy* pre-ADR-0030 owners; it was never the answer here.
 - **A renamed ADR leaves an unreachable Design Board row forever — OPEN.** —
   Observed Jul 2026 while investigating "the Design Board seems to have errors".
   `list_designs` returned two rows, `design:0036-one-work-surface` and
