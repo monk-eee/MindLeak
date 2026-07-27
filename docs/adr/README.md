@@ -39,11 +39,12 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0029](0029-proactive-constitutional-advice.md) | Proactive constitutional advice (ask-before-act) | Proposed |
 | [0030](0030-discrete-per-agent-identity.md) | Discrete per-agent identity for concurrent coordination | Accepted |
 | [0031](0031-exportable-conformance-evidence.md) | Exportable conformance evidence, Evidence Board, and CI gate | Proposed |
-| [0032](0032-single-checkout-fleet-integration.md) | Single-checkout, single-publisher fleet integration | Accepted |
+| [0032](0032-single-checkout-fleet-integration.md) | Single-checkout, single-publisher fleet integration | Superseded by [0038](0038-isolated-worktrees-shared-repository-state.md) |
 | [0033](0033-copilot-cli-registration.md) | First-class GitHub Copilot CLI registration for both planes | Proposed |
 | [0034](0034-typed-controls-and-enforcement-ceilings.md) | Typed controls, workflow scope, and enforcement ceilings | Proposed |
 | [0035](0035-fleet-management-heuristics.md) | Fleet management heuristics and feedback | Accepted |
 | [0036](0036-forbid-change-is-its-own-consequence.md) | A `forbid_change` lock is its own consequence declaration | Accepted |
+| [0038](0038-isolated-worktrees-shared-repository-state.md) | Isolated worktrees, shared repository state, reviewed convergence | Accepted |
 
 ## Writing a new ADR
 
