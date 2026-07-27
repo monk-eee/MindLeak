@@ -1,7 +1,9 @@
 //! Typed control tool definitions and dispatch (ADR-0034, SPEC-CONSTITUTION §4).
 
-use super::{f64_arg, ok, req_str, str_array};
-use lodestar_core::controls::{Ratchet, RatchetDirection};
+use super::{f64_arg, i64_arg, ok, opt_str, req_str, str_array};
+use lodestar_core::controls::{
+    Control, ControlKind, ControlStatus, EnforcementPower, Ratchet, RatchetDirection,
+};
 use lodestar_core::Lodestar;
 use serde_json::{json, Value};
 
@@ -61,6 +63,22 @@ pub(super) fn definitions() -> Vec<Value> {
                 "required": ["clause_id"]
             }
         }),
+        json!({
+            "name": "register_control",
+            "description": "Bind a versioned mechanism to a clause. Without one a clause is an orphan: it resolves at advise no matter what consequence it declares, because a rule with no mechanism behind it is a preference (ADR-0034). Declare the power the mechanism honestly has — mechanical only if it genuinely prevented the action (a hook exited non-zero, a required gate went red); observed if it proves after the fact from complete data; advisory if it reports a hint that may be stale. Observed and advisory cap at review, which is the point: an advisory that looks like a mutex grants false safety.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "control_id": { "type": "string", "description": "Stable id, e.g. control:branch-policy." },
+                    "clause_id": { "type": "string" },
+                    "kind": { "type": "string", "enum": ["check", "threshold", "ratchet", "procedure", "judgment"] },
+                    "power": { "type": "string", "enum": ["mechanical", "observed", "advisory"] },
+                    "version": { "type": "integer", "default": 1, "description": "Bump when what the control does changes; a version never moves backwards, and a mismatched observation resolves as unknown rather than being trusted." },
+                    "configuration": { "type": "string", "description": "Optional opaque configuration for the mechanism." }
+                },
+                "required": ["control_id", "clause_id", "kind", "power"]
+            }
+        }),
     ]
 }
 
@@ -74,8 +92,41 @@ pub(super) fn dispatch(
         "accept_ratchet_baseline" => Some(accept_ratchet_baseline(engine, args)),
         "observe_ratchet" => Some(observe_ratchet(engine, args)),
         "clause_controls" => Some(clause_controls(engine, args)),
+        "register_control" => Some(register_control(engine, args)),
         _ => None,
     }
+}
+
+fn register_control(engine: &Lodestar, args: &Value) -> Result<Value, String> {
+    let kind = match req_str(args, "kind")? {
+        "check" => ControlKind::Check,
+        "threshold" => ControlKind::Threshold,
+        "ratchet" => ControlKind::Ratchet,
+        "procedure" => ControlKind::Procedure,
+        "judgment" => ControlKind::Judgment,
+        other => return Err(format!("unknown control kind: {other}")),
+    };
+    let power_tag = req_str(args, "power")?;
+    let power = EnforcementPower::from_tag(power_tag)
+        .ok_or_else(|| format!("unknown enforcement power: {power_tag}"))?;
+    let control = engine
+        .register_control(&Control {
+            id: req_str(args, "control_id")?.to_string(),
+            clause_id: req_str(args, "clause_id")?.to_string(),
+            kind,
+            power,
+            version: i64_arg(args, "version", 1),
+            configuration: opt_str(args, "configuration"),
+            status: ControlStatus::Active,
+        })
+        .map_err(|e| e.to_string())?;
+    ok(&json!({
+        "control_id": control.id,
+        "clause_id": control.clause_id,
+        "power": control.power.as_str(),
+        "ceiling": control.power.ceiling().as_str(),
+        "version": control.version,
+    }))
 }
 
 fn register_ratchet(engine: &Lodestar, args: &Value) -> Result<Value, String> {
