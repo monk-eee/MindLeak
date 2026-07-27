@@ -39,6 +39,7 @@ fn git(cwd: &Path, args: &[&str]) {
     let output = Command::new("git")
         .args(args)
         .current_dir(cwd)
+        .env("PRE_COMMIT_ALLOW_NO_CONFIG", "1")
         .output()
         .unwrap();
     assert!(
