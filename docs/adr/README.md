@@ -58,3 +58,14 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 1. Copy an existing file to `NNNN-short-title.md` (next number).
 2. Fill in Context / Decision / Consequences.
 3. Add a row above. Link it from the code or doc it constrains.
+
+"Next number" is not obvious when several branches are in flight: your working
+tree cannot see a sibling branch's unmerged ADR. A pre-commit hook
+(`scripts/adr-number-guard.mjs`) checks the number against every ref and names
+the first free one, so a collision costs seconds here instead of a renumber
+across the file, its cross-links, and every commit message citing it. Run it
+directly to pick a number before you start:
+
+```bash
+node scripts/adr-number-guard.mjs docs/adr/0042-my-decision.md
+```
