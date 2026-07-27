@@ -456,15 +456,29 @@ export interface BoardRow {
 
 const BOARD_STATUS_ORDER = [
   "needs_input",
+  "in_review",
   "claimed",
   "paused",
   "open",
-  "in_review",
   "blocked",
   "done",
   "abandoned",
 ];
 const TERMINAL_TASK_STATUSES = new Set(["done", "abandoned"]);
+const TASK_STATUS_LABELS: Record<string, string> = {
+  abandoned: "Retired",
+  blocked: "Blocked",
+  claimed: "In progress",
+  done: "Verified",
+  in_review: "Review needed",
+  needs_input: "Input needed",
+  open: "Ready",
+  paused: "Paused",
+};
+
+function taskStatusLabel(status: string): string {
+  return TASK_STATUS_LABELS[status] ?? status.replace(/_/g, " ");
+}
 
 /** Render the active board by default; terminal history remains explicitly available. */
 export function boardRows(
@@ -492,20 +506,21 @@ function taskDescription(task: LodestarTask, nowUnix: number): string {
   const state = taskLeaseState(task, nowUnix);
   let description: string;
   if (state === "expired") {
-    description = `expired claim · ${task.owner ?? "unknown"} · reclaimable`;
+    description = `Claim expired · ${task.owner ?? "unknown"} · Ready`;
   } else if (state === "live") {
-    description = `claimed · ${task.owner ?? "unknown"} · ${remainingLease(task, nowUnix)}`;
+    description = `In progress · ${task.owner ?? "unknown"} · ${remainingLease(task, nowUnix)}`;
   } else if (state === "claimable") {
-    description = "open · claimable";
+    description = "Ready";
   } else {
-    description = task.owner ? `${task.status} · ${task.owner}` : task.status;
+    const status = taskStatusLabel(task.status);
+    description = task.owner ? `${status} · ${task.owner}` : status;
   }
   const scopedItems = (task.scope?.paths.length ?? 0) + (task.scope?.symbols.length ?? 0);
   return scopedItems > 0 ? `${description} · ${scopedItems} scoped` : description;
 }
 
 function taskTooltip(task: LodestarTask, nowUnix: number): string {
-  const lines = [task.title, `goal: ${task.goal_id}`, `status: ${task.status}`];
+  const lines = [task.title, `goal: ${task.goal_id}`, `status: ${taskStatusLabel(task.status)}`];
   if (task.owner) {
     lines.push(`owner: ${task.owner}`);
   }

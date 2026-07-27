@@ -208,7 +208,7 @@ describe("boardRows", () => {
       100
     );
     expect(rows[0].label).toBe("mine");
-    expect(rows[0].description).toContain("claimed \u00b7 alice");
+    expect(rows[0].description).toContain("In progress · alice");
     expect(rows[0].description).toContain("2 scoped");
     expect(rows[0].tooltip).toContain("scope paths: src/auth.ts");
     expect(rows[0].tooltip).toContain("scope symbols: symbol:src/auth.ts:validate");
@@ -224,6 +224,23 @@ describe("boardRows", () => {
 
     expect(boardRows(tasks).map((row) => row.id)).toEqual(["open"]);
     expect(boardRows(tasks, true).map((row) => row.id)).toEqual(["open", "done", "abandoned"]);
+  });
+
+  it("puts review decisions before ready work and uses action-oriented labels", () => {
+    const rows = boardRows(
+      [
+        { id: "ready", goal_id: "g", title: "ready", status: "open" },
+        { id: "review", goal_id: "g", title: "review", status: "in_review" },
+        { id: "done", goal_id: "g", title: "done", status: "done" },
+      ],
+      true
+    );
+
+    expect(rows.map((row) => row.id)).toEqual(["review", "ready", "done"]);
+    expect(rows[0].description).toBe("Review needed");
+    expect(rows[1].description).toBe("Ready");
+    expect(rows[2].description).toBe("Verified");
+    expect(rows[0].tooltip).toContain("status: Review needed");
   });
 });
 
@@ -463,8 +480,8 @@ describe("task allocation", () => {
       100
     );
     expect(rows.find((row) => row.id === "task:claimed")?.tooltip).toContain("lease expires:");
-    expect(rows.some((row) => row.description.includes("expired claim"))).toBe(true);
-    expect(rows.some((row) => row.description === "open · claimable")).toBe(true);
+    expect(rows.some((row) => row.description.includes("Claim expired"))).toBe(true);
+    expect(rows.some((row) => row.description === "Ready")).toBe(true);
     expect(rows.some((row) => row.description.includes("2m left"))).toBe(true);
   });
 });

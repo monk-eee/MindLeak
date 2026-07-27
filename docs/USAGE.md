@@ -208,7 +208,7 @@ derived effective weight remains active. Neither tool locks anything. On a
 warning, coordinate, choose different work, or create a `blocked_by` handoff;
 claiming anyway remains possible. The VS Code allocator runs this pre-flight,
 asks before proceeding on overlap or a failed check, and shows persisted scope on
-the Intent Board.
+the Work view.
 
 ### The learned-knowledge loop (cross-plane, ADR-0022)
 

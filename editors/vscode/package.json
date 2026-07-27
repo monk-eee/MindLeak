@@ -50,7 +50,7 @@
         },
         {
           "id": "mindleak.boardView",
-          "name": "Intent Board",
+          "name": "Work",
           "type": "tree"
         },
         {
@@ -61,7 +61,8 @@
         {
           "id": "mindleak.evidenceView",
           "name": "Evidence Board",
-          "type": "tree"
+          "type": "tree",
+          "visibility": "hidden"
         },
         {
           "id": "mindleak.telemetryView",
@@ -108,7 +109,7 @@
       },
       {
         "command": "mindleak.board.refresh",
-        "title": "MindLeak: Refresh Intent Board",
+        "title": "MindLeak: Refresh Work",
         "icon": "$(refresh)"
       },
       {
@@ -130,6 +131,16 @@
         "command": "mindleak.task.release",
         "title": "MindLeak: Release Task",
         "icon": "$(close)"
+      },
+      {
+        "command": "mindleak.task.acceptReview",
+        "title": "MindLeak: Accept Reviewed Work",
+        "icon": "$(check)"
+      },
+      {
+        "command": "mindleak.task.retryReview",
+        "title": "MindLeak: Retry Work",
+        "icon": "$(debug-restart)"
       },
       {
         "command": "mindleak.design.refresh",
@@ -339,12 +350,22 @@
         {
           "command": "mindleak.task.inspectEvidence",
           "when": "view == mindleak.boardView && (viewItem == in_review || viewItem == in_review.retireable)",
-          "group": "inline"
+          "group": "inline@3"
+        },
+        {
+          "command": "mindleak.task.acceptReview",
+          "when": "view == mindleak.boardView && (viewItem == in_review || viewItem == in_review.retireable)",
+          "group": "inline@1"
+        },
+        {
+          "command": "mindleak.task.retryReview",
+          "when": "view == mindleak.boardView && (viewItem == in_review || viewItem == in_review.retireable)",
+          "group": "inline@2"
         },
         {
           "command": "mindleak.task.retire",
           "when": "view == mindleak.boardView && viewItem =~ /\\.retireable$/",
-          "group": "inline"
+          "group": "navigation"
         },
         {
           "command": "mindleak.task.answer",

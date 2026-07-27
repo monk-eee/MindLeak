@@ -109,7 +109,7 @@ scope intersections. MindLeak's same-named query derives other agents' direct or
 mutation-linked footprint after decay filtering. The caller combines those two
 results by node id: no shared tables, transactions, or plane dependency. The VS
 Code allocator performs both reads before claiming, displays an overridable
-warning, and renders persisted scope on the Intent Board. The flow is advisory
+warning, and renders persisted scope in the Work view. The flow is advisory
 (never a lock, per ADR-0015) and complements ADR-0018's physical integration
 discipline.
 
@@ -138,9 +138,12 @@ The Workspace readiness tree follows the same derived-state rule: pure
 performs those reads and `readinessViewProvider.ts` is thin VS Code rendering.
 Only the one-time teaching-view dismissal uses workspace state; no graph or
 intent authority is copied into the extension.
-The Intent Board's allocation flow collects optional concrete paths/symbol ids,
+The Work view's allocation flow collects optional concrete paths/symbol ids,
 combines both ADR-0024 overlap reads, and shows scoped work as a planning hint;
-warnings remain explicitly overridable.
+warnings remain explicitly overridable. Review-needed rows call the existing
+`resolve_task`, `reopen_task`, and `conformance_history` tools in place; the
+complete Evidence Board remains an advanced, hidden-by-default audit view
+(ADR-0036).
 
 ## Data model
 

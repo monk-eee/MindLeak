@@ -23,13 +23,13 @@ task with evidence, pause/resume) are yours to click.
 | View | Type | You use it to… |
 |---|---|---|
 | **Context Graph** | live graph | See the decay-weighted subgraph — what connects to what, right now. |
-| **Intent Board** | task tree | Watch who owns which task; complete with evidence, pause, resume, answer, retire. |
+| **Work** | task tree | Pick up work, watch ownership, verify completion, and accept or retry review-needed results. |
 | **Telemetry** | live readout | Verify what actually ran — call counts, error rates, latency, recent events. |
 | **Design Board** | review tree | Turn ADRs into work: accept / reject a proposal, promote it under a goal. |
 
-> **Claiming is an agent action, not a button.** Agents claim and complete tasks
-> through the MCP tools; the Intent Board shows you the resulting ownership and
-> lets you intervene (pause, answer a question, complete with evidence).
+> Agents and humans use the same authoritative task state. Agents can claim and
+> complete through MCP; the Work view can start, pause, resume, answer, verify,
+> accept, or retry work without copying task ids.
 
 ---
 
@@ -86,7 +86,7 @@ wired to the new decision node, and **Telemetry** confirms the calls landed.
    design→goal / design→task provenance — **exactly once** (promotion is
    idempotent, so a retry returns the same plan).
 
-The new tasks show up on the **Intent Board**, ready to claim. The same flow from
+The new tasks show up in **Work**, ready to claim. The same flow from
 an agent:
 
 ```text
@@ -130,10 +130,11 @@ first  = create_task(goal_id, "Edit Router", acceptance = "...")
 second = create_task(goal_id, "Edit helper", acceptance = "...", blocked_by = first.id)
 ```
 
-Watch it on the **Intent Board**: each task shows its owner and lease; hover a
-`claimed` task to **Pause**/**Complete With Evidence**, answer a `needs_input`
-task, or **Retire** a stale one. A completion that drifts or violates the
-constitution is blocked and leaves the successor blocked too.
+Watch it in **Work**: each task shows its owner and lease; hover in-progress work
+to **Pause** or **Complete With Evidence**, answer an input-needed task, or
+**Retire** stale work. A completion that needs judgment rises to **Review
+needed**, where **Accept**, **Retry**, and **Inspect proof** close the loop in
+place. A violation remains blocked and leaves its successor blocked too.
 
 ---
 

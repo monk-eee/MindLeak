@@ -307,7 +307,7 @@ coordinate through one plane.
 | `advise` | **Ask before acting** (ADR-0029): given the `artifact:`/`symbol:` ids you intend to change, returns the governing clauses + a proportional disposition (advise / review / block / needs_human). Evidence-free, records nothing, needs no model, never gates a claim. |
 | `link_goal_to_code` | Bind a goal to MindLeak `artifact:`/`symbol:` nodes. |
 | `unlink_goal_from_code` / `governing_goals` | Prune a stale goal↔code binding, and audit which goals govern a node — keeps conformance honest. |
-| `governing_for_task` | The clauses governing a task's linked scope — what the Intent Board surfaces on a claimed task (ADR-0029). |
+| `governing_for_task` | The clauses governing a task's linked scope — what the Work view surfaces on in-progress work (ADR-0029). |
 | `export_constitution` | Render the constitution to committed-friendly markdown. |
 | `create_task` / `decompose_goal` | Add claimable work; `create_task(blocked_by=...)` creates a progressive handoff. |
 | `next_task` | Suggest the next unblocked, claimable task. |
@@ -322,7 +322,7 @@ coordinate through one plane.
 | `ask_question` / `answer` | Park a claimed task in `needs_input` with a durable question; a human `answer` resumes it under the same owner with a fresh lease. |
 | `pause_task` / `resume_task` | Owner deliberately parks (`paused`) and resumes work, keeping the claim and evidence window. |
 | `task_qa` | The durable, append-only question/answer thread for a task. |
-| `board` | Who-owns-what-and-where snapshot including advisory scope; the VS Code Intent Board defaults to live/actionable work, while `include_terminal=true` returns durable history. |
+| `board` | Who-owns-what-and-where snapshot including advisory scope; the VS Code Work view defaults to live/actionable work, while `include_terminal=true` returns durable history. |
 | `register_design` / `reconcile_designs` / `design_board` | Register one ADR or idempotently import structured repository ADR metadata; list proposed decisions and accepted designs awaiting promotion, without creating tasks during reconciliation. |
 | `accept_design` / `reject_design` | Attributed human decision with no code conformance or self-acceptance; the Design Board aligns the ADR file's declared status. |
 | `plan_design_promotion` / `promote_design` | Preview task drafts without writes, then atomically materialize one reviewed create/link/no-work plan across the named objectives. |

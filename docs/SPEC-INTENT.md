@@ -443,7 +443,7 @@ Caller-selected `agent`/`agent_id` values are not part of the public schema.
     status, lease, and advisory scope — so humans and agents see the parallel state at a glance.
     `include_terminal=false` returns only the live/actionable set (open, claimed,
     needs_input, paused, in_review, blocked); done/abandoned stay durable but out
-    of the operational view used by the VS Code Intent Board.
+    of the operational view used by the VS Code Work view.
 
 **Design**
 
@@ -485,7 +485,7 @@ Caller-selected `agent`/`agent_id` values are not part of the public schema.
     work **before acting**. It records no verdict, changes no task state, needs no
     model, and never gates the compare-and-swap claim. `governing_for_task(task_id)`
     returns the clauses governing a task's linked scope — the same set surfaced on
-    `claim_task` / `next_task` and the VS Code Intent Board.
+    `claim_task` / `next_task` and the VS Code Work view.
 
 ---
 

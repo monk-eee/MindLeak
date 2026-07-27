@@ -7,6 +7,13 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Human review now closes inside the default Work view (ADR-0036).** The
+  former Intent Board uses action-oriented labels and puts `Review needed` work
+  first, with inline **Accept**, **Retry**, and **Inspect proof** actions backed
+  by the existing `resolve_task`, `reopen_task`, and `conformance_history` tools.
+  The complete Evidence Board and export flow remain available as advanced
+  history but are hidden by default, reducing the common workflow to one surface
+  without weakening proof or changing MCP semantics.
 - **`constitution_status` reports adoption state instead of leaving it inferred
   (ADR-0026 task 3).** An agent could previously read the active clause set but
   not tell an ungoverned project apart from a governed one that happens to
