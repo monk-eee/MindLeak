@@ -186,6 +186,22 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **`recall` cannot answer a prose question, because nothing prose is ever
+  ingested — OPEN, recorded as [ADR-0053](docs/adr/0053-the-graph-records-events-not-conclusions.md)
+  (Proposed).** — Measured 2026-07-27 against this repository's graph: 4,463
+  nodes, 9,572 active edges. Four queries, each naming a lesson that session had
+  genuinely cost hours to learn, returned only `execution:` command lines and
+  `symbol:` function names — `merge_import (fn)` for a question about merge
+  conflicts in `CHANGELOG.md`, `cargo check` for a question about PowerShell exit
+  codes. Not a ranking defect: the zero-token write path (invariant 1) can only
+  capture what a machine emitted, so there is no sentence in the graph to match.
+  Impact: the memory half of the product loses to a flat markdown file for the
+  one job it exists to do, and every consumer of `recall` gets confident noise
+  rather than an empty result. `record_knowledge` and
+  `record_architectural_decision` already write the right node and were called
+  **zero times in an eight-hour session**, because nothing in the loop asks. Not
+  fixed this run — ADR-0053 proposes the fix and is deliberately Proposed, not
+  accepted.
 - **A shared session token collapses every agent into one identity — GUARDED,
   not prevented.** — `LODESTAR_SESSION_ID` is minted by the client, so a token
   written anywhere several agents read (repository memory, a dotfile, a prompt)

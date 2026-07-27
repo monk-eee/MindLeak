@@ -6,6 +6,20 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Documentation
+- **ADR-0053: the graph records events, not conclusions (Proposed).** After an
+  eight-hour session, `recall` was put to the four lessons that session had
+  actually cost time to learn. All four returned noise from a graph of 4,463
+  nodes and 9,572 active edges — command lines and symbol names, because those
+  are the only things the zero-token write path can capture. The same four
+  lessons were durably recorded in prose, in flat files, and were the ones that
+  changed the agent's behaviour. `record_knowledge` and
+  `record_architectural_decision` exist and were called zero times, because
+  nothing in the loop asks for them. The ADR proposes recording what was learned
+  as part of finishing work, ranking prose above events for a prose query, and a
+  long half-life for conclusions — without touching the zero-token invariant.
+  Proposed only, not accepted, nothing implemented in this build.
+
 ### Fixed
 - **A wrapped `Status:` line no longer loses its reference.** ADR-0032 writes
   `- Status: Superseded by` and puts `[ADR-0038](...)` on the next line.
