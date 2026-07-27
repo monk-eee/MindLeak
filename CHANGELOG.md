@@ -6,7 +6,10 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-27
+
 ### Added
+
 - **`questions_for_a_human`: the other half of ADR-0046's dialogue.** Agents
   could address a question at a peer and list what was addressed to them, but
   there was no way to list what was waiting on a **person** — `pending_questions`
@@ -36,22 +39,6 @@ to [Semantic Versioning](https://semver.org/).
   arbitrate: it may ask about intent and ordering and is forbidden from deciding
   who is right, because a model verdict carries no evidence and ADR-0009 makes
   evidence the basis of every verdict here.
-### Fixed
-- **The server no longer exits at startup when the database path has no
-  directory.** `MINDLEAK_DB=":memory:"` — or a bare `graph.db` — resolves to a
-  path whose `parent()` is `Some("")`, not `None`. `create_dir_all("")`
-  short-circuits to `Ok`, so the happy path hid it, but the Unix branch then
-  called `set_permissions` on that empty path and got `ENOENT`. The process
-  died immediately on Linux and macOS reporting only "No such file or directory
-  (os error 2)", while Windows started fine because it has no permissions call.
-  This is what failed the v0.1.3 release: both platform jobs that actually
-  executed a Unix binary failed their smoke test and publication was skipped.
-  The macOS x64 job passed only because it is cross-compiled and skips
-  execution — a green matrix cell is not always an executed one.
-
-## [0.1.3] - 2026-07-27
-
-### Added
 
 - **`attribute_design_decision`: a decision already made can still be signed
   (ADR-0051).** ADR-0047 named this failure exactly — a row that "asserts a
@@ -574,6 +561,20 @@ to [Semantic Versioning](https://semver.org/).
   review is attributed to a registered session.
 
 ### Fixed
+
+- **The server no longer exits at startup when the database path has no
+  directory.** `MINDLEAK_DB=":memory:"` — or a bare `graph.db` — resolves to a
+  path whose `parent()` is `Some("")`, not `None`. `create_dir_all("")`
+  short-circuits to `Ok`, so the happy path hid it, but the Unix branch then
+  called `set_permissions` on that empty path and got `ENOENT`. The process
+  died immediately on Linux and macOS reporting only "No such file or directory
+  (os error 2)", while Windows started fine because it has no permissions call.
+  This is what failed the v0.1.3 release: both platform jobs that actually
+  executed a Unix binary failed their smoke test and publication was skipped.
+  The macOS x64 job passed only because it is cross-compiled and skips
+  execution — a green matrix cell is not always an executed one.
+
+
 
 - **A release platform nobody could execute no longer reports itself as
   verified.** The release smoke ran the freshly built servers only when the
