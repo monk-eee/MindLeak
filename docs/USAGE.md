@@ -190,6 +190,95 @@ shared repository-id `spec.db` with **no duplicate winners**. `complete_task` ru
 conformance check (aligned / drift / violation) and a violation blocks the
 transition.
 
+### Where `evidence` and `check` actually come from
+
+The flow above hides the step people get wrong. `complete_task` will not accept
+a summary of what you did — it consumes a bounded, provenance-bearing bundle
+built by the **memory** plane and scored by the intent plane:
+
+```text
+# ... you do the work, and commit it ...
+ingest_commit(...)                                   # mindleak: the work enters the graph
+evidence_for(task_id, paths, started_at, ended_at, session_id)   # mindleak: build the bundle
+check_conformance(task_id, evidence, session_id)     # lodestar: score it -> { id, token, verdict }
+complete_task(task_id, evidence, check, session_id)  # lodestar: consume the checked result
+```
+
+Three rules that are easy to violate and produce unhelpful errors:
+
+- **`ended_at` must not be in the future.** A window ending even a second ahead
+  of the server clock is rejected as outside the live claim.
+- **The window must sit inside the current claim.** `claim_task` starts a fresh
+  window; a window that begins before it is refused.
+- **`evidence.task_id` must name the task you are completing**, or the check is
+  rejected as identifying a different task.
+
+If the bundle contains no commits or executions, the verdict is `needs_human`
+with *"evidence contains no provenance-bearing mutation"*. That is the contract
+working: it refuses to certify work it cannot bound. Widening the window until
+it goes green is the one thing you must not do.
+
+### What each verdict means, and who clears it
+
+| Verdict | Meaning | Who unblocks it |
+|---|---|---|
+| `aligned` | The change matched the goal's code bindings. | Nobody — the task completes. |
+| `drift` | Governed code changed without a covering task, naming the goals it belongs to. | A human. Declare breadth **at creation** with `create_task(also_serves=...)`; it cannot be added afterwards (ADR-0041). |
+| `violation` | A constitutional clause was breached. | A human, or a bounded `grant_waiver`. Blocks completion. |
+| `needs_human` | The check could not certify — commonly an empty window, or a verdict that leaned on declared breadth. | A human, via `resolve_task` (or `reopen_task` to send it back). |
+
+`complete_task` returning `completed: false` is **not** a failure to record — the
+task moves to `in_review` with its verdict attached and waits for a person.
+
+### When nothing seems to be moving
+
+`stalled_work` answers "why is the board stuck?" — lapsed leases, work awaiting a
+human or a peer agent, deadlocked waits, blocks behind something no agent will
+advance, and paused work. It reports how long each stall has been true and
+deliberately does not decide whether that is too long.
+
+Reach for it when the board looks idle but work is clearly outstanding. A lapsed
+lease in particular produces **no other signal**: the work may exist in Git with
+no matching receipt, and nothing will tell you.
+
+### Changing the rules, and excepting them
+
+The constitution has its own lifecycle, separate from task work:
+
+```text
+define_goal / propose_policy_pack -> review_pack_clause   # draft or adopt clauses
+activate_constitution                                     # adopt a first constitution
+propose_amendment -> amend_constitution                   # change an ADOPTED one
+constitution_diff                                         # what an amendment would do
+grant_waiver / revoke_waiver                              # a bounded, attributed exception
+clause_waivers / active_waivers                           # how often a rule gets excepted
+```
+
+Two distinctions worth knowing before you start:
+
+- **Adopting and amending are different calls.** `activate_constitution` adopts a
+  first constitution; `amend_constitution` changes one people are already working
+  under, and only the second retires live rules.
+- **Every waiver expires.** There is no open-ended waiver, because an exception
+  that never ends is the policy — and changing the policy is an amendment.
+
+### Which verbs you actually need
+
+Lodestar exposes 85 tools. Almost none are needed on day one:
+
+- **Day one:** `open_session`, `get_constitution`, `next_task`, `claim_task`,
+  `advise`, `renew_lease`, `evidence_for`, `check_conformance`, `complete_task`,
+  `board`.
+- **When coordinating:** `check_overlap`, `task_scope`, `stalled_work`,
+  `ask_question` / `answer`, `pause_task` / `resume_task`.
+- **When governing:** the constitution, controls, ratchet, amendment, and waiver
+  families above.
+- **When auditing:** `conformance_history`, `export_evidence`,
+  `export_conformance_manifest`, `claim_transfer_history`.
+
+The [`README.md`](../README.md) tool tables describe every verb individually;
+this page is the order to call them in.
+
 ### Pre-flight overlap awareness
 
 Before claiming work with known files or symbols, query both planes and combine

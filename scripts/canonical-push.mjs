@@ -9,6 +9,15 @@ import {
   armedRefusal,
   queryPullRequest,
 } from "./auto-merge-guard.mjs";
+import {
+  callTools,
+  declaredContext,
+  identityCollisionNotice,
+  overlapNotice,
+  publishVerdict,
+  resolveServer,
+  sameSession,
+} from "./claim-gate.mjs";
 
 const args = process.argv.slice(2);
 const verifyPrePush = args.includes("--verify-pre-push");
@@ -82,6 +91,107 @@ if (remoteBranchExists) {
 const armed = armedPullRequestNumber(queryPullRequest(branch, repoRoot));
 if (armed !== null) {
   fail(armedRefusal(armed, branch));
+}
+
+// Publication requires a live claim (ADR-0049). This is the one place the
+// intent plane is not optional: a push is where work becomes visible to the
+// rest of the fleet, so it is where the ledger has to already know what the
+// work was for. Commits stay ungated - a commit is a draft, a push is a claim
+// about the world.
+const sessionId = process.env.LODESTAR_SESSION_ID || "";
+const server = resolveServer(repoRoot);
+let agent = "";
+let reachable = false;
+let tasks = [];
+let overlaps = [];
+let declaredBranch = null;
+
+if (server && /^[0-9a-f]{32}$/.test(sessionId)) {
+  let changed = [];
+  try {
+    changed = git(["diff", "--name-only", `${remote}/main...HEAD`])
+      .split("\n")
+      .map((path) => path.trim())
+      .filter(Boolean);
+  } catch {
+    // A branch with no common ancestor still publishes; the overlap notice is
+    // advisory and must never be the reason a push fails.
+  }
+  let behind;
+  try {
+    behind = Number(
+      git(["rev-list", "--count", `HEAD..${remote}/main`]).trim(),
+    );
+  } catch {
+    // Undeclared reports as unknown rather than being guessed (ADR-0044).
+  }
+  // Declare where this session is working while we are already here. The push
+  // is the one moment these facts are certainly true, and the fleet view is
+  // only as good as the last thing somebody declared.
+  const context = declaredContext({
+    branch,
+    headSha: git(["rev-parse", "HEAD"]),
+    base: `${remote}/main`,
+    behind,
+  });
+  try {
+    // `fleet_view` first, deliberately: it must be read *before* this push
+    // declares its own context, or the "previously declared branch" would be
+    // the declaration made microseconds earlier and the collision check would
+    // compare a value with itself.
+    const [fleet, session, board, overlapResult] = callTools(server, repoRoot, [
+      { name: "fleet_view", arguments: {} },
+      {
+        name: "open_session",
+        arguments: { session_id: sessionId, ...context },
+      },
+      { name: "board", arguments: { include_terminal: false } },
+      { name: "check_overlap", arguments: { paths: changed } },
+    ]);
+    // Identity is whatever the ledger says this session is, never what the
+    // caller asserts: a claim is recorded against the resolved agent id, so
+    // matching on anything else would compare two different things.
+    agent = session?.agent_id ?? "";
+    declaredBranch =
+      (fleet?.sessions ?? []).find((entry) =>
+        sameSession(entry.agent_id, agent),
+      )?.context?.branch ?? null;
+    reachable = Boolean(agent) && Array.isArray(board);
+    tasks = Array.isArray(board) ? board : [];
+    overlaps = overlapResult ?? [];
+  } catch {
+    reachable = false;
+  }
+}
+
+const verdict = publishVerdict({
+  reachable,
+  sessionDeclared: Boolean(sessionId),
+  agent,
+  tasks,
+  branch,
+  now: Math.floor(Date.now() / 1000),
+});
+if (!verdict.ok) {
+  fail(verdict.message);
+}
+
+const notice = overlapNotice(
+  overlaps,
+  verdict.claims.map((claim) => claim.id),
+);
+if (notice) {
+  console.warn(`canonical-push: ${notice}`);
+}
+
+const collision = identityCollisionNotice({
+  agent,
+  branch,
+  declaredBranch,
+  claims: verdict.claims,
+});
+if (collision) {
+  console.warn(`canonical-push: ${collision}`);
 }
 
 run(["push", remote, `HEAD:refs/heads/${branch}`], {
