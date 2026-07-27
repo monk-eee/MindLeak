@@ -9,6 +9,7 @@ mod design;
 mod design_materialization;
 mod evidence;
 mod executive;
+mod fleet;
 mod knowledge;
 mod lifecycle;
 mod waivers;
@@ -33,6 +34,7 @@ pub fn list() -> Vec<Value> {
     tools.extend(design::definitions());
     tools.extend(design_materialization::definitions());
     tools.extend(evidence::definitions());
+    tools.extend(fleet::definitions());
     tools.into_iter().map(apply_session_contract).collect()
 }
 
@@ -85,7 +87,16 @@ pub fn call_with_storage(
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
 
     if name == "open_session" {
-        let mut body = json!({ "agent_id": req_str(&args, "resolved_agent")? });
+        let agent_id = req_str(&args, "resolved_agent")?;
+        // Persist here rather than in bind_session: the fleet spans processes,
+        // so a view backed by the in-memory registry would report only the
+        // sessions of whichever server answered while looking like the whole
+        // fleet (ADR-0043). bind_session has no engine; this is the first point
+        // that does.
+        engine
+            .declare_session_context(agent_id, &SessionContext::from_arguments(&args)?)
+            .map_err(|e| e.to_string())?;
+        let mut body = json!({ "agent_id": agent_id });
         if let Some(context) = args.get("resolved_context") {
             body["context"] = context.clone();
         }
@@ -127,6 +138,9 @@ pub fn call_with_storage(
     }
 
     if let Some(result) = evidence::dispatch(engine, name, &args) {
+        return result;
+    }
+    if let Some(result) = fleet::dispatch(engine, name, &args) {
         return result;
     }
 

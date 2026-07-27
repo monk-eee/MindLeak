@@ -48,7 +48,8 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0038](0038-isolated-worktrees-shared-repository-state.md) | Isolated worktrees, shared repository state, reviewed convergence | Accepted |
 | [0039](0039-waivers-end-amendments-change.md) | Every waiver ends; changing the rule is an amendment | Accepted |
 | [0040](0040-one-work-surface.md) | One Work surface with advanced proof | Accepted |
-| [0041](0041-cross-cutting-work-is-declared.md) | Cross-cutting work is declared, not waived | Proposed |
+| [0041](0041-cross-cutting-work-is-declared.md) | Cross-cutting work is declared, not waived | Accepted |
+| [0043](0043-declared-context-is-durable.md) | Declared context is durable, and staleness is declared too | Proposed |
 
 ## Writing a new ADR
 

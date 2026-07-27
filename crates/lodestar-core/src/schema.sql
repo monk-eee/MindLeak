@@ -355,3 +355,20 @@ CREATE TABLE IF NOT EXISTS knowledge (
     confirmed_at    INTEGER NOT NULL,      -- last reconfirmation (decay clock)
     created_at      INTEGER NOT NULL
 );
+
+-- Where each agent session declared it is working (ADR-0035, amended by
+-- ADR-0043). Durable because the fleet spans processes: linked worktrees share
+-- one spec.db, but each runs its own server with its own in-memory registry, so
+-- an in-process view would report a fraction of the fleet as if it were all of
+-- it. Every value is self-reported and strictly advisory; declared_at is kept so
+-- a reader can discount a stale declaration rather than trust it silently.
+CREATE TABLE IF NOT EXISTS session_context (
+    agent_id    TEXT PRIMARY KEY,
+    branch      TEXT,
+    head_sha    TEXT,
+    base        TEXT,
+    dirty       INTEGER,               -- 0/1, NULL when undeclared
+    behind      INTEGER,               -- commits behind base, counted by the client
+    declared_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_context_base ON session_context(base);
