@@ -16,8 +16,35 @@ impl Lodestar {
         acceptance: &str,
         blocked_by: Option<String>,
     ) -> Result<Task> {
-        self.store
-            .create_task_after(goal_id, title, acceptance, None, blocked_by, now_unix())
+        self.create_task_covering(goal_id, title, acceptance, blocked_by, &[])
+    }
+
+    /// Create a task that declares, up front, the additional goals it serves
+    /// (ADR-0041). Coverage is fixed here and has no later mutator: declared
+    /// before the work it is a prediction the evidence can contradict, declared
+    /// afterwards it is a rationalisation for a finding already raised.
+    pub fn create_task_covering(
+        &self,
+        goal_id: &str,
+        title: &str,
+        acceptance: &str,
+        blocked_by: Option<String>,
+        also_serves: &[String],
+    ) -> Result<Task> {
+        self.store.create_task_covering(
+            goal_id,
+            title,
+            acceptance,
+            None,
+            blocked_by,
+            also_serves,
+            now_unix(),
+        )
+    }
+
+    /// The additional goals a task declared it serves (ADR-0041).
+    pub fn task_goal_coverage(&self, task_id: &str) -> Result<Vec<String>> {
+        self.store.goal_coverage(task_id)
     }
 
     /// Break a goal into tasks. Uses the local model when reachable, else a

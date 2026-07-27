@@ -18,6 +18,26 @@ to [Semantic Versioning](https://semver.org/).
   can be stranded in any of them. A pre-push hook runs the working-tree half
   (`--uncommitted`); the unpublished check is deliberately excluded there,
   because it would fail the very push that publishes the ADR.
+- **Cross-cutting work can be declared instead of read as drift (ADR-0041).**
+  A task serves one goal, so conformance returned `Drift` for any governed node
+  bound to a different one — the same verdict, and the same finding, that an
+  unsanctioned edit produces. Three legitimate cross-plane changes hit it
+  (ADR-0018, ADR-0024, ADR-0035), and the audit could not tell them apart from
+  drift. `create_task` now accepts `also_serves`, declaring at creation the
+  additional goals the work serves; a binding to one of those counts as in
+  scope. Coverage is fixed at creation and has no later mutator, because
+  coverage added once conformance has complained is a rationalisation, not a
+  plan. A verdict that leaned on a declaration caps at `needs_human` and names
+  the goals it relied on, so declared breadth buys a review rather than a pass
+  (ADR-0034 ceiling rule). A task that declares nothing is unchanged, including
+  still returning `Drift`.
+- **Human review now closes inside the default Work view (ADR-0040).** The
+  former Intent Board uses action-oriented labels and puts `Review needed` work
+  first, with inline **Accept**, **Retry**, and **Inspect proof** actions backed
+  by the existing `resolve_task`, `reopen_task`, and `conformance_history` tools.
+  The complete Evidence Board and export flow remain available as advanced
+  history but are hidden by default, reducing the common workflow to one surface
+  without weakening proof or changing MCP semantics.
 - **`scoped-commit` refuses the pre-commit stash race (ADR-0038).** `pre-commit`
   stashes every unstaged change before running hooks and restores it afterwards.
   Alone that is invisible; in a fleet it corrupts. If a second agent writes to

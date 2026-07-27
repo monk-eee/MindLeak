@@ -336,7 +336,11 @@ and footguns, with impact and status:
   per-file owner) on `model.rs` and `graph/evidence.rs`. Those 10 bindings were
   dropped (explicit/audited, no auto-delete); each of the 10 files now has exactly
   one governing goal, so honest commits no longer drift. Data-plane only — no code
-  change.
+  change. — **Follow-up Jul 2026:** the triage did not, and could not, cover files
+  whose two bindings are *both* accurate — `crates/mindleak-mcp/src/tools/mod.rs`
+  is legitimately the graph engine's MCP surface *and* the ADR-0030 session
+  registrar. That residue is addressed by ADR-0041 (declared coverage), not by
+  more unlinking: there is no wrong binding left to remove.
 
 - **Blind design promotion could omit governing goals or duplicate existing work
   — FIXED.** — ADR-0024
@@ -541,6 +545,16 @@ and footguns, with impact and status:
   `resolve_task_accepts_an_in_review_task_to_done`,
   `resolve_task_refuses_self_resolution_by_the_reviewed_agent`,
   `resolve_in_review_opens_a_blocked_successor`.
+- **Human task-review attribution is checked but not persisted.** —
+  `facade::executive::resolve_task` requires a non-empty human identity and
+  refuses the worker recorded in the latest conformance evidence, but
+  `store::coordination::resolve_in_review` records only the transition to
+  `done`; the supplied reviewer and decision timestamp are not written to an
+  append-only review record. — Medium audit impact: the ledger proves that a
+  task required review and later became done, but cannot answer who accepted
+  it. The Work view asks for identity only to enforce independent review and
+  does not claim durable attribution. — **Left for later:** add a task-resolution
+  audit record and expose it in task proof without rewriting conformance history.
 - **`next_task` surfaces non-actionable policy tasks.** — A `constraint` goal was
   decomposed into four tasks that merely restate the constraint and can never
   accrue completion evidence; `next_task` (oldest-first) hands one out on every

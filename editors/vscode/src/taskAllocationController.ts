@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 
-import { BoardItem, BoardViewProvider } from "./boardViewProvider";
-import { McpClient } from "./mcpClient";
+import type { BoardItem, BoardViewProvider } from "./boardViewProvider";
+import type { McpClient } from "./mcpClient";
 import {
   canClaimTask,
   canRecoverLegacyClaim,
@@ -135,6 +135,76 @@ export class TaskAllocationController {
       await this.refresh();
     } catch (error) {
       this.reportError("Claim recovery", error);
+    }
+  }
+
+  async accept(item?: BoardItem): Promise<void> {
+    if (!this.requireReviewItem(item, "Accept Review")) {
+      return;
+    }
+    const human = await vscode.window.showInputBox({
+      title: `Accept: ${item.task.title}`,
+      prompt: "Human reviewer identity (must differ from the agent under review)",
+      ignoreFocusOut: true,
+      validateInput: (value) => (value.trim() ? undefined : "A reviewer identity is required."),
+    });
+    if (!human) {
+      return;
+    }
+    const confirmed = await vscode.window.showWarningMessage(
+      `Accept "${item.task.title}" after human review?`,
+      {
+        modal: true,
+        detail:
+          "The task moves to done without rerunning conformance. Its original evidence and verdict remain in the audit history.",
+      },
+      "Accept Task"
+    );
+    if (confirmed !== "Accept Task") {
+      return;
+    }
+    try {
+      const result = await this.client.callTool("resolve_task", {
+        task_id: item.task.id,
+        human: human.trim(),
+      });
+      if (!result?.resolved) {
+        throw new Error("the task state changed before review was accepted");
+      }
+      vscode.window.showInformationMessage(`Accepted ${item.task.title}.`);
+      await this.refresh();
+    } catch (error) {
+      this.reportError("Review acceptance", error);
+    }
+  }
+
+  async retry(item?: BoardItem): Promise<void> {
+    if (!this.requireReviewItem(item, "Retry Work")) {
+      return;
+    }
+    const confirmed = await vscode.window.showWarningMessage(
+      `Return "${item.task.title}" to ready work?`,
+      {
+        modal: true,
+        detail:
+          "The task becomes claimable again so an agent can correct the work or gather fresh evidence. Existing audit history is preserved.",
+      },
+      "Retry Task"
+    );
+    if (confirmed !== "Retry Task") {
+      return;
+    }
+    try {
+      const result = await this.client.callTool("reopen_task", {
+        task_id: item.task.id,
+      });
+      if (!result?.reopened) {
+        throw new Error("the task state changed before it could be reopened");
+      }
+      vscode.window.showInformationMessage(`Returned ${item.task.title} to ready work.`);
+      await this.refresh();
+    } catch (error) {
+      this.reportError("Work retry", error);
     }
   }
 
@@ -280,6 +350,17 @@ export class TaskAllocationController {
       !canClaimTask(item.task, nowUnix())
     ) {
       vscode.window.showWarningMessage(`Task ${item.task.title} is not currently claimable.`);
+      return false;
+    }
+    return true;
+  }
+
+  private requireReviewItem(item: BoardItem | undefined, action: string): item is BoardItem {
+    if (!this.requireItem(item, action)) {
+      return false;
+    }
+    if (item.task.status !== "in_review") {
+      vscode.window.showWarningMessage(`Task ${item.task.title} is not awaiting review.`);
       return false;
     }
     return true;
