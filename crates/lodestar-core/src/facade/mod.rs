@@ -8,6 +8,7 @@ mod design;
 mod design_materialization;
 mod evidence;
 mod executive;
+mod fleet;
 mod knowledge;
 mod waivers;
 
