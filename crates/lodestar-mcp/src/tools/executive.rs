@@ -272,6 +272,11 @@ pub(super) fn definitions() -> Vec<Value> {
                 }
             }
         }),
+        json!({
+            "name": "stalled_work",
+            "description": "Every task that is not progressing, and the fact that stalled it: lapsed leases, work awaiting a human decision, tasks blocked behind something no agent will advance, blocks naming a task that is not on the board, and parked work. Read-only and evidence-free — it records nothing, changes no task state, and produces no verdict. It reports how long each stall has been true and deliberately does not decide whether that is too long, because a staleness threshold invented here would become policy nobody agreed to.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
     ]
 }
 
@@ -503,6 +508,9 @@ pub(super) fn dispatch(
             ok(&engine
                 .task_qa(req_str(args, "task_id")?)
                 .map_err(|e| e.to_string())?)
+        })()),
+        "stalled_work" => Some((|| {
+            ok(&engine.stalled_work().map_err(|e| e.to_string())?)
         })()),
         "board" => Some((|| {
             let tasks = engine
