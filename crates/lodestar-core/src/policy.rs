@@ -264,6 +264,156 @@ pub fn common_core_pack() -> ConstitutionPack {
     pack
 }
 
+/// The optional `fleet-delivery` pack (ADR-0034): how a fleet of agents lands
+/// work safely.
+///
+/// Unlike the Common Core these are mostly enforceable clauses rather than
+/// principles, because each names a concrete scope and evidence contract. They
+/// are still only *proposals*: shipping pack bytes is not enforcement, and every
+/// clause needs an explicit adopt/tailor/reject before it governs anything.
+///
+/// `default_consequence` is what the clause asks for. What it actually gets is
+/// bounded at resolution time by the power of whatever control backs it, so a
+/// clause declaring `block` with only an advisory mechanism still resolves at
+/// `review`.
+pub fn fleet_delivery_pack() -> ConstitutionPack {
+    let clauses = vec![
+        PackClause {
+            key: "fleet.protected_branch".to_string(),
+            kind: GoalKind::Invariant,
+            title: "A protected branch advances only by reviewed merge".to_string(),
+            statement:
+                "A protected branch advances only through a reviewed pull request whose required checks passed. No agent pushes directly to a protected branch."
+                    .to_string(),
+            rationale:
+                "Review is where a fleet's work becomes one history someone actually read. A direct push skips the only step that catches an agent confidently doing the wrong thing."
+                    .to_string(),
+            default_scope: Some("workflow:git.publish".to_string()),
+            evidence_contract: Some(
+                "The push target ref, the pull request that merged it, and the conclusion of its required checks."
+                    .to_string(),
+            ),
+            default_consequence: Some(Consequence::Block),
+            suggested_controls: vec![
+                "pre-push hook refusing a protected branch".to_string(),
+                "server-side branch protection".to_string(),
+                "history inspection for a non-merge advance".to_string(),
+            ],
+        },
+        PackClause {
+            key: "fleet.single_publisher".to_string(),
+            kind: GoalKind::Constraint,
+            title: "One designated publisher per fleet branch".to_string(),
+            statement:
+                "Exactly one designated integrator publishes a fleet branch, pushing the current branch's exact HEAD from the primary checkout."
+                    .to_string(),
+            rationale:
+                "Concurrent publishers reconcile the same divergence differently and produce competing histories; one publisher makes integration a decision rather than a race."
+                    .to_string(),
+            default_scope: Some("workflow:git.publish".to_string()),
+            evidence_contract: Some(
+                "The publishing identity, the checkout it published from, and the exact HEAD pushed."
+                    .to_string(),
+            ),
+            default_consequence: Some(Consequence::Block),
+            suggested_controls: vec!["canonical publisher refusals".to_string()],
+        },
+        PackClause {
+            key: "fleet.commit_identity".to_string(),
+            kind: GoalKind::Invariant,
+            title: "One logical change has one commit identity".to_string(),
+            statement:
+                "Work already published under one commit id is not republished under another. Cherry-pick is reserved for a declared backport or human-approved recovery."
+                    .to_string(),
+            rationale:
+                "Intent and conformance evidence are addressed by commit id. Routine cherry-picking gives one logical change two identities and splits its provenance in half."
+                    .to_string(),
+            default_scope: Some("workflow:git.publish".to_string()),
+            evidence_contract: Some(
+                "The published commit ids and whether the remote tip is an ancestor of the pushed HEAD."
+                    .to_string(),
+            ),
+            default_consequence: Some(Consequence::Block),
+            suggested_controls: vec![
+                "non-ancestor push refusal".to_string(),
+                "patch-id comparison against remote ancestry".to_string(),
+            ],
+        },
+        PackClause {
+            key: "fleet.scoped_commit".to_string(),
+            kind: GoalKind::Constraint,
+            title: "A commit stays inside its declared scope".to_string(),
+            statement:
+                "An agent commits only paths within the scope it declared on its claim; the staged set may not escape that scope."
+                    .to_string(),
+            rationale:
+                "Agents share one index. An unscoped commit silently carries another agent's work under the wrong attribution, which is unrecoverable once history moves on."
+                    .to_string(),
+            default_scope: Some("workflow:git.commit".to_string()),
+            evidence_contract: Some(
+                "The staged path set compared against the claim's declared scope.".to_string(),
+            ),
+            default_consequence: Some(Consequence::Block),
+            suggested_controls: vec!["scoped-commit guard".to_string()],
+        },
+        PackClause {
+            key: "fleet.branch_freshness".to_string(),
+            kind: GoalKind::Constraint,
+            title: "Work starts from, and lands close to, the current head".to_string(),
+            statement:
+                "Work is based on a recent head and reconciled before publication rather than after divergence has accumulated."
+                    .to_string(),
+            rationale:
+                "Staleness is cheap to fix early and expensive later. Divergence discovered at the publisher or the merge has already cost the work it conflicts with."
+                    .to_string(),
+            default_scope: Some("workflow:git".to_string()),
+            evidence_contract: Some(
+                "Commits behind the declared base at claim time and at publication."
+                    .to_string(),
+            ),
+            default_consequence: Some(Consequence::Review),
+            suggested_controls: vec![
+                "required up-to-date branch before merge".to_string(),
+                "declared session context staleness (ADR-0035)".to_string(),
+            ],
+        },
+        PackClause {
+            key: "fleet.topology_honesty".to_string(),
+            kind: GoalKind::Principle,
+            title: "Declared working topology matches actual".to_string(),
+            statement:
+                "The checkout topology an agent declares matches the one it is working in."
+                    .to_string(),
+            rationale:
+                "This does not prefer a topology. It exists so coordination advice is computed from what is true rather than from what was assumed."
+                    .to_string(),
+            default_scope: Some("workflow:topology".to_string()),
+            evidence_contract: Some(
+                "The declared branch and checkout compared with the observed ones.".to_string(),
+            ),
+            default_consequence: Some(Consequence::Review),
+            suggested_controls: vec!["declared versus observed comparison".to_string()],
+        },
+    ];
+    let mut pack = ConstitutionPack {
+        id: "fleet-delivery".to_string(),
+        version: "1".to_string(),
+        digest: String::new(),
+        title: "Fleet delivery".to_string(),
+        description:
+            "How a fleet of agents lands work safely: review, publication, commit identity, scope, and freshness. Proposed, never imposed."
+                .to_string(),
+        compatible_engine_versions: vec!["*".to_string()],
+        preamble_fragments: Vec::new(),
+        clauses,
+        conflicts: Vec::new(),
+    };
+    pack.digest = pack
+        .computed_digest()
+        .expect("fleet-delivery serialization is infallible");
+    pack
+}
+
 fn valid_key(value: &str) -> bool {
     !value.is_empty()
         && value.chars().all(|character| {

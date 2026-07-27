@@ -36,8 +36,8 @@ pub use model::{
     Verdict,
 };
 pub use policy::{
-    common_core_pack, ConstitutionPack, PackClause, PackClauseDisposition, PackClauseProposal,
-    PackClauseProvenance, PackConflict, PackProposalBatch, PackReviewOutcome,
+    common_core_pack, fleet_delivery_pack, ConstitutionPack, PackClause, PackClauseDisposition,
+    PackClauseProposal, PackClauseProvenance, PackConflict, PackProposalBatch, PackReviewOutcome,
 };
 pub use store::{ClaimTransfer, LodestarStore, ResetOutcome, Stats};
 

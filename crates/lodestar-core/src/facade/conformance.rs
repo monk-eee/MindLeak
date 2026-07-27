@@ -247,6 +247,35 @@ impl Lodestar {
                 basis.push(format!("knowledge:{}", serde_json::to_string(&knowledge)?));
             }
         }
+
+        // Policy identity (ADR-0034). A token must not survive a change to the
+        // constitution that authorised it, or to the controls that resolve its
+        // clauses: a check issued under one policy is not evidence about
+        // another. Recording the control *version* matters as much as its id,
+        // because a redefined mechanism can reach a different verdict from the
+        // same observation.
+        if let Some(version) = self.store.active_constitution_version()? {
+            basis.push(format!("constitution:{}:{}", version.id, version.version));
+        }
+        let mut clause_ids: Vec<String> = Vec::new();
+        for node in &nodes {
+            for binding in self.store.active_bindings_for_node(node)? {
+                clause_ids.push(binding.goal.id);
+            }
+        }
+        clause_ids.sort();
+        clause_ids.dedup();
+        for clause_id in &clause_ids {
+            for control in self.store.controls_for_clause(clause_id)? {
+                basis.push(format!(
+                    "control:{}:{}:{}:{}",
+                    control.id,
+                    control.clause_id,
+                    control.version,
+                    control.power.as_str()
+                ));
+            }
+        }
         basis.sort();
 
         let mut hasher = Sha256::new();
@@ -629,6 +658,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::controls::{Control, ControlKind, ControlStatus, EnforcementPower};
     use crate::facade::test_support::engine;
     use crate::{EvidenceProvenance, GoalKind};
 
@@ -795,6 +825,55 @@ mod tests {
         let drift_evidence = test_evidence(None, "agent-a", "artifact:src/auth.rs");
         let drift = e.check_conformance(&drift_evidence, None).unwrap();
         assert_eq!(drift.verdict, Verdict::Drift);
+    }
+
+    #[test]
+    fn a_control_version_bump_invalidates_a_previously_issued_token() {
+        // ADR-0034: a check issued under one policy is not evidence about
+        // another. A redefined mechanism can reach a different verdict from the
+        // same observation, so the token must not survive the change.
+        let e = engine();
+        let goal = e
+            .define_goal(
+                GoalKind::Invariant,
+                "Reviewed merge",
+                "A protected branch advances only by reviewed merge.",
+                None,
+            )
+            .unwrap();
+        let node = "artifact:crates/core/src/publish.rs".to_string();
+        e.link_goal_to_code(
+            &goal.id,
+            std::slice::from_ref(&node),
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
+        let control = Control {
+            id: "control:branch-policy".into(),
+            clause_id: goal.id.clone(),
+            kind: ControlKind::Check,
+            power: EnforcementPower::Mechanical,
+            version: 1,
+            configuration: None,
+            status: ControlStatus::Active,
+        };
+        e.register_control(&control).unwrap();
+
+        let evidence = test_evidence(None, "agent-a", &node);
+        let first = e.check_conformance(&evidence, None).unwrap();
+
+        // Redefine what the control does. Same evidence, same clause.
+        e.register_control(&Control {
+            version: 2,
+            ..control
+        })
+        .unwrap();
+        let second = e.check_conformance(&evidence, None).unwrap();
+
+        assert_ne!(
+            first.token, second.token,
+            "a token must not survive a control redefinition"
+        );
     }
 
     #[test]

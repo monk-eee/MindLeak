@@ -3,6 +3,7 @@
 
 mod conformance;
 mod constitution;
+mod controls;
 mod design;
 mod design_materialization;
 mod evidence;
@@ -21,6 +22,7 @@ pub fn list() -> Vec<Value> {
     tools.extend(constitution::definitions());
     tools.extend(executive::definitions());
     tools.extend(conformance::definitions());
+    tools.extend(controls::definitions());
     tools.extend(knowledge::definitions());
     tools.extend(lifecycle::definitions());
     tools.extend(design::definitions());
@@ -77,6 +79,9 @@ pub fn call(engine: &Lodestar, params: &Value) -> Result<Value, String> {
     if let Some(result) = conformance::dispatch(engine, name, &args) {
         return result;
     }
+    if let Some(result) = controls::dispatch(engine, name, &args) {
+        return result;
+    }
     if let Some(result) = knowledge::dispatch(engine, name, &args) {
         return result;
     }
@@ -127,6 +132,7 @@ fn requires_session(name: &str) -> bool {
             | "pause_task"
             | "resume_task"
             | "check_conformance"
+            | "accept_ratchet_baseline"
     )
 }
 
@@ -195,6 +201,10 @@ pub(super) fn i64_arg(args: &Value, key: &str, default: i64) -> i64 {
 
 pub(super) fn bool_arg(args: &Value, key: &str, default: bool) -> bool {
     args.get(key).and_then(Value::as_bool).unwrap_or(default)
+}
+
+pub(super) fn f64_arg(args: &Value, key: &str, default: f64) -> f64 {
+    args.get(key).and_then(Value::as_f64).unwrap_or(default)
 }
 
 pub(super) fn str_array(args: &Value, key: &str) -> Vec<String> {
