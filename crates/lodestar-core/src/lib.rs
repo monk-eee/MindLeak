@@ -9,6 +9,7 @@
 pub mod db;
 pub mod decay;
 pub mod design;
+pub mod discovery;
 pub mod error;
 mod facade;
 pub mod llm;
