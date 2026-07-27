@@ -347,6 +347,7 @@ one intent plane and one memory graph by default.
 | `board` | Who-owns-what-and-where snapshot including advisory scope; the VS Code Work view defaults to live/actionable work, while `include_terminal=true` returns durable history. |
 | `register_design` / `reconcile_designs` / `design_board` | Register one ADR or idempotently import structured repository ADR metadata; list proposed decisions and accepted designs awaiting promotion, without creating tasks during reconciliation. |
 | `accept_design` / `reject_design` | Attributed human decision with no code conformance or self-acceptance; the Design Board aligns the ADR file's declared status. |
+| `retire_design` | Retire an orphaned design record left by a renamed ADR — an explicit, attributed human act (ADR-0042). Retiring is not deleting: the row keeps its id, path, decision, and materialization history, and simply leaves the working board. Nothing retires a design automatically, because a file missing from one worktree is alive on another branch. |
 | `plan_design_promotion` / `promote_design` | Preview task drafts without writes, then atomically materialize one reviewed create/link/no-work plan across the named objectives. |
 | `revise_design_promotion` | Append an attributed, rationale-bearing repair revision; prior plans and tasks remain durable. |
 | `design_promotion` / `design_materialization_history` | Read the current task/objective projection or its complete immutable review history. |

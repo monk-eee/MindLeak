@@ -81,6 +81,20 @@ impl DesignPromotionStatus {
     }
 }
 
+/// Why a design record left the working board, and who said so (ADR-0042).
+///
+/// One value object rather than three loose fields: retirement is a single
+/// fact, and three parallel `Option`s could disagree — a row retired with no
+/// actor, or an actor with no timestamp, would both be representable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Retirement {
+    pub at: i64,
+    /// The person who retired it. Never an agent session: retirement is a human
+    /// act, because no code path may infer it from a missing file.
+    pub by: String,
+    pub reason: String,
+}
+
 /// An ADR under review in the Intent Plane.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DesignItem {
@@ -104,6 +118,11 @@ pub struct DesignItem {
     pub promotion_status: DesignPromotionStatus,
     /// Latest append-only materialization audit revision, or zero before one exists.
     pub materialization_revision: i64,
+    /// Set once a person retires the record (ADR-0042). Orthogonal to `status`:
+    /// retirement says this row is no longer a live entry, and must not
+    /// overwrite what a human decided about the design itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retired: Option<Retirement>,
 }
 
 /// Structured repository ADR metadata accepted by deterministic reconciliation.
