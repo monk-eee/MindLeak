@@ -14,6 +14,19 @@ to [Semantic Versioning](https://semver.org/).
   The complete Evidence Board and export flow remain available as advanced
   history but are hidden by default, reducing the common workflow to one surface
   without weakening proof or changing MCP semantics.
+- **A session can declare where it is working (ADR-0035).** `open_session` now
+  accepts optional `branch`, `head_sha`, `base`, and `dirty` on both planes, and
+  the shared session registry records them against the registered token so a
+  later call resolves them. The client supplies the facts; the server performs
+  no Git or filesystem inspection of its own, which is the only correct answer
+  for a stdio server that may not share the agent's working directory and for a
+  linked worktree whose branch differs from the database root. Declared context
+  round-trips under the same token, including across a server restart, because
+  identity is derived from the token rather than process state. A session that
+  declares nothing is unchanged: no `context` in the response, no nulls, and
+  nothing for a caller to guess at. A malformed declaration is refused rather
+  than silently dropped. This is the substrate the staleness, divergence, and
+  overlap-precision heuristics read from; it derives nothing on its own yet.
 - **Isolated agent worktrees now share one repository brain and converge only
   through reviewed pull requests (ADR-0038, superseding ADR-0032).** Each clone
   bootstraps a random 128-bit `mindleak.repositoryId` in shared local Git config;
@@ -30,7 +43,8 @@ to [Semantic Versioning](https://semver.org/).
   only protected PR merge advances `main`. Fleet-delivery v2 proposes isolated
   worktrees and branch-owned publication without mutating immutable pack v1.
 - **Bounded waivers: the reviewable form of `--no-verify` (ADR-0026 task 5,
-  SPEC-CONSTITUTION §9).** `grant_waiver` records a scoped, expiring, attributed
+  SPEC-CONSTITUTION §9, [ADR-0039](docs/adr/0039-waivers-end-amendments-change.md)).**
+  `grant_waiver` records a scoped, expiring, attributed
   exception to one clause, and `revoke_waiver` withdraws it. An exception was
   always possible — `--no-verify` and a commented-out check are exceptions too,
   just unattributed, unbounded, and invisible. A waiver is the same act made

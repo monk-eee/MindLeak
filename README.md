@@ -224,6 +224,11 @@ client must mint one 128-bit lowercase-hex token, call `open_session` once, and
 reuse that `session_id` on identity-bearing tools. The extension does this
 automatically and shares one session across both planes (ADR-0030).
 
+`open_session` also accepts optional `branch`, `head_sha`, `base`, and `dirty`
+so a session can declare *where* it is working. The server records what you
+declare and never inspects Git itself; declare nothing and everything behaves
+exactly as before (ADR-0035).
+
 For the **GitHub Copilot CLI**, the installer also writes
 `.mindleak/copilot-mcp.json` (absolute paths, `mcpServers` schema); pass it with
 `copilot --additional-mcp-config @.mindleak/copilot-mcp.json` (ADR-0033). See the
@@ -255,7 +260,7 @@ into `~/.copilot/mcp-config.json` (honours `COPILOT_HOME`). Full walkthrough:
 
 | Tool | Purpose |
 |---|---|
-| `open_session` | Register a client-minted 128-bit session id and return its stable cross-plane agent identity; required before identity-bearing calls (ADR-0030). |
+| `open_session` | Register a client-minted 128-bit session id and return its stable cross-plane agent identity; required before identity-bearing calls (ADR-0030). Optionally declares the session's `branch` / `head_sha` / `base` / `dirty` working context (ADR-0035). |
 | `graph_multi_hop_query` | Traverse N hops from a seed node/phrase, decay-filtered. |
 | `get_impact_radius` | Blast radius of editing a file/symbol. |
 | `check_overlap` | Read-only, decay-aware footprint of other agents on concrete paths / symbol ids; combine with Lodestar's same-named claim check (ADR-0024). |

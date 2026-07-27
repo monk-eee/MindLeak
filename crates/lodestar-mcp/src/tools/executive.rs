@@ -750,7 +750,10 @@ mod tests {
         assert!(engine.claim_task(&task.id, "copilot-abcd1234", -1).unwrap());
         let agent = SessionRegistry::new("copilot")
             .unwrap()
-            .open_session("00112233445566778899aabbccddeeff")
+            .open_session(
+                "00112233445566778899aabbccddeeff",
+                mindleak_session::SessionContext::default(),
+            )
             .unwrap()
             .agent_id;
 
