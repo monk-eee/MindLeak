@@ -6,6 +6,21 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **A question addressed to you now arrives on a call you already make
+  (ADR-0046).** `ask_question` could address a peer and `pending_questions` could
+  find it, but only if the peer thought to look — and a capability that depends
+  on remembering is adopted at the rate the whole intent plane measured while
+  participation was optional: zero. `claim_task` and `renew_lease` now carry
+  `waiting_on_you` when a peer is waiting on this agent. The heartbeat is the
+  one that matters: a question usually arrives *during* the work, long after the
+  claim. It is absent when nothing is waiting — no key, no empty array — because
+  "no questions" and "this server does not report questions" must not look the
+  same to a reader, and it stops arriving once answered, or the delivery becomes
+  noise an agent learns to skip past. Nothing is reserved or consumed: it stays a
+  read over the durable thread, so two readers still see the same rows and no new
+  shared mutable resource is introduced (ADR-0045 clause 2).
+
 ### Fixed
 - **A lapsed lease no longer lets an agent launder unchecked work into an
   `aligned` receipt (ADR-0048).** Re-claiming after a lapse reset
@@ -38,6 +53,24 @@ to [Semantic Versioning](https://semver.org/).
   structural rather than something each new migration has to remember.
 
 ### Added
+- **Arming auto-merge now means finished, and a merged branch is checked for
+  what it left behind (ADR-0045 clause 2).** A pull request's merge decision has
+  two writers — the agent pushing commits and whoever arms auto-merge — and
+  nothing arbitrated between them. Observed in production: PR #37 was armed at
+  07:51:12Z, merged at 08:09:21Z, and the next commit landed **13 seconds
+  later**; four commits, including the one that stopped two surfaces
+  disagreeing, never reached `main`. Nothing failed. The pull request read
+  merged, the branch read ahead, and CI was green on both — the only signal was
+  an ancestry check nobody was running. `canonical-push` now refuses to publish
+  onto a branch whose open pull request has auto-merge armed, naming the pull
+  request and the exact `gh pr merge <n> --disable-auto` that satisfies it: the
+  promise to merge is a promise the branch is done, so more work means disarm
+  first. When `gh` is absent or unauthenticated the guard permits the push — a
+  guard that blocks on its own blindness is unsatisfiable, and an unsatisfiable
+  guard teaches bypass. `make merge-audit` is the backstop, reporting any merged
+  branch whose commits never reached the base regardless of how it happened; a
+  deleted branch reports as *unverifiable* rather than clean, because "we cannot
+  tell" and "nothing was lost" are different answers.
 - **`reopen_undecided_design` lets an imported status become a real decision
   (ADR-0047).** `reconcile_designs` imports each ADR's declared `Status:`
   faithfully — importing thirty-five settled decisions as `proposed` would
