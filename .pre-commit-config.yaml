@@ -71,6 +71,17 @@ repos:
         always_run: true
         stages: [pre-push]
 
+      # An ADR left in the working tree is one `git clean -fd` from gone, and
+      # nothing else reports it. Only the working-tree check runs here: the
+      # unpublished check would fail the very push that publishes the ADR.
+      - id: adr-guard
+        name: no ADR left uncommitted
+        entry: node scripts/adr-guard.mjs --uncommitted
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
       # Slower gate — runs on push, not every commit. Validates the pushed
       # commit's tree so another agent's uncommitted WIP cannot poison it.
       - id: cargo-test
