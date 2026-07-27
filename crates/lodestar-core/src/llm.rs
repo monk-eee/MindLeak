@@ -88,6 +88,44 @@ impl LlmClient {
         Ok(serde_json::from_str(extract_json(content))?)
     }
 
+    /// Phrase the question one agent should put to a peer whose live claim
+    /// collides with theirs.
+    ///
+    /// Advisory drafting, never arbitration. The model is given two task
+    /// descriptions and the shared scope and asked for one sentence; it is
+    /// never asked who should win, because a model verdict carries no evidence
+    /// and ADR-0009 makes evidence the basis of every verdict here. Callers
+    /// fall back to `dialogue::template_question` when this fails, so the
+    /// capability never depends on a reachable model.
+    pub fn draft_question(
+        &self,
+        my_title: &str,
+        their_title: &str,
+        shared_scope: &str,
+    ) -> Result<String> {
+        let system = "You draft one short question from one engineer to another whose work \
+             overlaps theirs. Ask only about intent and ordering - what they plan to do next, \
+             and whose change should land first. Never decide who is right, never assign the \
+             work, and never assert a fact you were not given. One or two sentences, plain \
+             and specific. Respond with ONLY JSON: {\"question\":string}.";
+        let user = format!(
+            "My task: {my_title}\nTheir task: {their_title}\nWe both hold a live claim on: {shared_scope}"
+        );
+        let value = self.chat_json(system, &user)?;
+        let question = value
+            .get("question")
+            .and_then(|q| q.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if question.is_empty() {
+            return Err(LodestarError::Http(
+                "model returned no question text".into(),
+            ));
+        }
+        Ok(question)
+    }
+
     /// Break a goal into concrete, independently-claimable tasks.
     pub fn decompose(&self, goal_title: &str, goal_statement: &str) -> Result<Vec<TaskDraft>> {
         let system = "You are a planning engine. Break a goal into 2-6 concrete, \
