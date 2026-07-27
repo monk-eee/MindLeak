@@ -71,6 +71,7 @@ crate, and `target/debug/mindleak-mcp` starts and prints
 | ADR safety | `make adr-guard` | `node scripts/adr-guard.mjs` — fails if any ADR is uncommitted or on no remote ref |
 | Merge audit | `make merge-audit` | `node scripts/merge-audit.mjs` — fails if a merged branch has commits that never reached `main` |
 | Design audit | `make design-audit` | `node scripts/design-audit.mjs` — reports drift between the ADR files and the design ledger. Local only: it reads the ledger through a release `lodestar-mcp`, which CI has no database for |
+| Changelog | `make changelog` | `node scripts/changelog.mjs` — show what the next release contains. A change adds `changelog.d/<section>-<slug>.md`; **do not edit `CHANGELOG.md` in a pull request** (ADR-0056) |
 | Everything CI runs | `make ci` | see [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
 
 > **`make` is optional.** Every target maps to the direct command in the

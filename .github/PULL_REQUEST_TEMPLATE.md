@@ -28,7 +28,7 @@
 
 ## Docs updated
 
-- [ ] `CHANGELOG.md` (any user- or operator-visible change)
+- [ ] `changelog.d/<section>-<slug>.md` (any user- or operator-visible change — not `CHANGELOG.md`, which is assembled at release, ADR-0056)
 - [ ] `docs/SPEC.md` / `docs/ARCHITECTURE.md` (design or module change)
 - [ ] `README.md` tool table (added/removed an MCP tool)
 - [ ] `docs/adr/` (a decision that is hard to reverse or surprising)
