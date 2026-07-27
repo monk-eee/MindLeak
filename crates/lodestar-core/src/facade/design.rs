@@ -114,6 +114,43 @@ impl Lodestar {
             .ok_or_else(|| LodestarError::NotFound(id.to_string()))
     }
 
+    /// Return a design whose status nobody ever decided to `proposed`, so it can
+    /// be decided properly (ADR-0047).
+    ///
+    /// This repairs one specific injury: a reconciliation that copied a status
+    /// out of an ADR file, leaving `decided_by` empty. Because deciding is
+    /// guarded on `proposed`, such a row is otherwise frozen — it asserts a
+    /// decision and can never name who made it.
+    ///
+    /// It is deliberately not an undo. A design with a `decided_by` is a
+    /// recorded human act and stays that way; rejecting or superseding it is a
+    /// new decision, not the erasure of the old one (ADR-0019).
+    pub fn reopen_undecided_design(&self, id: &str) -> Result<DesignItem> {
+        let item = self
+            .store
+            .get_design_item(id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
+        if item.status == DesignStatus::Proposed {
+            return Err(LodestarError::Invalid(format!(
+                "design item {id} is already proposed"
+            )));
+        }
+        if item.decided_by.is_some() {
+            return Err(LodestarError::Invalid(format!(
+                "design item {id} was decided by {}; a recorded decision is not undone here",
+                item.decided_by.unwrap_or_default()
+            )));
+        }
+        if !self.store.reopen_undecided_design(id, now_unix())? {
+            return Err(LodestarError::Invalid(format!(
+                "design item {id} cannot be reopened: it is retired, or its promotion has already materialised work"
+            )));
+        }
+        self.store
+            .get_design_item(id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))
+    }
+
     /// Human rejection — durable and auditable (archive-not-delete); spawns no
     /// work. Requires a rationale.
     pub fn reject_design(&self, id: &str, human: &str, reason: &str) -> Result<DesignItem> {

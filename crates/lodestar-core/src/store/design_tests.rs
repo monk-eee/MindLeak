@@ -356,3 +356,84 @@ fn retiring_an_unknown_design_is_not_found() {
         .retire_design_item("design:does-not-exist", "someone", "why", NOW)
         .is_err());
 }
+
+// ADR-0047. An imported status reflects a decision; it does not record one, so
+// `decided_by` stays empty. Because deciding is guarded on `proposed`, such a
+// row is frozen: it asserts a decision that can never be attributed to anyone.
+// Observed live on ADR-0045, where a reviewer said "I agree with it" and there
+// was no way to write that down.
+#[test]
+fn an_imported_status_can_be_reopened_but_a_real_decision_cannot() {
+    let store = store();
+    let item = store
+        .reconcile_design_item(
+            &DesignMetadata {
+                adr_path: "docs/adr/0045-fleet.md".into(),
+                title: "A fleet is a distributed system".into(),
+                summary: "treat agents as a distributed system".into(),
+                status: DesignStatus::Accepted,
+                proposed_by: None,
+            },
+            NOW,
+        )
+        .unwrap();
+
+    // Imported at face value, and therefore unattributable and undecidable.
+    assert_eq!(item.status, DesignStatus::Accepted);
+    assert_eq!(item.decided_by, None);
+    assert!(!store
+        .decide_design_item(&item.id, DesignStatus::Accepted, "monk-eee", None, NOW)
+        .unwrap());
+
+    assert!(store.reopen_undecided_design(&item.id, NOW).unwrap());
+    assert_eq!(
+        store.get_design_item(&item.id).unwrap().unwrap().status,
+        DesignStatus::Proposed
+    );
+
+    // Now decidable by a person — and that decision is not reopenable.
+    assert!(store
+        .decide_design_item(&item.id, DesignStatus::Accepted, "monk-eee", None, NOW)
+        .unwrap());
+    assert!(!store.reopen_undecided_design(&item.id, NOW).unwrap());
+    let decided = store.get_design_item(&item.id).unwrap().unwrap();
+    assert_eq!(decided.status, DesignStatus::Accepted);
+    assert_eq!(decided.decided_by.as_deref(), Some("monk-eee"));
+}
+
+// Reopening is scoped to the damage it repairs: a design whose promotion has
+// already materialised work rests on that acceptance, so it stays put.
+#[test]
+fn reopening_is_refused_once_promotion_has_left_not_required() {
+    let store = store();
+    let item = store
+        .reconcile_design_item(
+            &DesignMetadata {
+                adr_path: "docs/adr/0045-fleet.md".into(),
+                title: "A fleet is a distributed system".into(),
+                summary: "treat agents as a distributed system".into(),
+                status: DesignStatus::Proposed,
+                proposed_by: None,
+            },
+            NOW,
+        )
+        .unwrap();
+    assert!(store
+        .decide_design_item(&item.id, DesignStatus::Accepted, "monk-eee", None, NOW)
+        .unwrap());
+    // Strip the decider but keep promotion armed: the residual guard, not the
+    // decided_by one, is what must refuse here.
+    store
+        .conn
+        .execute(
+            "UPDATE design_items SET decided_by = NULL WHERE id = ?1",
+            rusqlite::params![item.id],
+        )
+        .unwrap();
+
+    assert!(!store.reopen_undecided_design(&item.id, NOW).unwrap());
+    assert_eq!(
+        store.get_design_item(&item.id).unwrap().unwrap().status,
+        DesignStatus::Accepted
+    );
+}
