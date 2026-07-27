@@ -7,6 +7,30 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Reviewed ratchets: a metric that must not regress, bound to a clause
+  (ADR-0026 task 4, ADR-0034).** `register_ratchet` binds a metric and a
+  direction to one constitutional clause; `accept_ratchet_baseline` records the
+  value it compares against, attributed to the accepting session; and
+  `observe_ratchet` reports a measurement and resolves it through the clause.
+  Three refusals make the mechanism trustworthy. A ratchet with **no reviewed
+  baseline reports `unknown`, never `pass`** — reporting conformance it never
+  checked is how an unbaselined ratchet certifies nothing while looking green.
+  A ratchet **never moves its own baseline**: a mechanism that adopts whatever it
+  last measured launders a regression into the new normal, so one bad run would
+  quietly ratchet the standard *down*. And accepting a baseline **bumps the
+  control version**, so an observation taken against the old baseline resolves as
+  `unknown` rather than being silently re-judged against a number it never saw.
+  A failed ratchet resolves at `review` however hard its clause declares, because
+  its power is `observed` — it reads a report and proves what already happened,
+  it stopped nothing, and whether a particular regression is acceptable is a
+  judgement about the change (SPEC-CONSTITUTION §4). The adapter is deliberately
+  generic and the engine ships no coverage ratchet: §4 says a ratchet cannot
+  determine whether coverage is the right proxy for confidence, so baking one in
+  would answer, for every project, the one question the mechanism is not
+  entitled to answer.
+- **`clause_controls` shows the mechanisms behind a rule.** Each control lists
+  the enforcement power it actually has and the ceiling that power implies, so
+  the hardest consequence a clause can reach is inspectable rather than assumed.
 - **`constitution_status` reports adoption state instead of leaving it inferred
   (ADR-0026 task 3).** An agent could previously read the active clause set but
   not tell an ungoverned project apart from a governed one that happens to

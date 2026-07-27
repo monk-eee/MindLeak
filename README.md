@@ -309,6 +309,8 @@ coordinate through one plane.
 | `link_goal_to_code` | Bind a goal to MindLeak `artifact:`/`symbol:` nodes. |
 | `unlink_goal_from_code` / `governing_goals` | Prune a stale goal↔code binding, and audit which goals govern a node — keeps conformance honest. |
 | `governing_for_task` | The clauses governing a task's linked scope — what the Intent Board surfaces on a claimed task (ADR-0029). |
+| `register_ratchet` / `accept_ratchet_baseline` | Bind a metric that must not regress to one clause, then accept the reviewed baseline it compares against. A ratchet never moves its own baseline, and reports `unknown` until one exists. |
+| `observe_ratchet` / `clause_controls` | Report a measurement and resolve it through its clause, capped at `review` by the ratchet's observed power (ADR-0034); and list the mechanisms behind a clause with the force each actually has. |
 | `export_constitution` | Render the constitution to committed-friendly markdown. |
 | `create_task` / `decompose_goal` | Add claimable work; `create_task(blocked_by=...)` creates a progressive handoff. |
 | `next_task` | Suggest the next unblocked, claimable task. |
