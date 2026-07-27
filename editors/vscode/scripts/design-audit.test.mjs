@@ -25,7 +25,7 @@ describe("auditDesigns", () => {
   it("reports nothing when every file has a matching decided row", () => {
     const findings = auditDesigns(
       [adr("0001", "Accepted"), adr("0002", "Proposed", "other")],
-      [row("0001", "accepted", "monk-eee"), row("0002", "proposed", null, "other")],
+      [row("0001", "accepted", "monk-eee"), row("0002", "proposed", null, "other")]
     );
     expect(findings).toEqual([]);
   });
@@ -42,10 +42,7 @@ describe("auditDesigns", () => {
   });
 
   it("flags a file and ledger that disagree about status", () => {
-    const findings = auditDesigns(
-      [adr("0020", "Accepted")],
-      [row("0020", "proposed", null)],
-    );
+    const findings = auditDesigns([adr("0020", "Accepted")], [row("0020", "proposed", null)]);
     expect(kinds(findings)).toEqual(["disagreement"]);
     expect(findings[0].detail).toMatch(/file says Accepted, ledger says proposed/);
   });
@@ -55,10 +52,7 @@ describe("auditDesigns", () => {
   // then refuses it, because deciding again is not an undo — so this state is
   // stuck until someone reopens it, and it is invisible without this check.
   it("flags a decision that names no decider", () => {
-    const findings = auditDesigns(
-      [adr("0001", "Accepted")],
-      [row("0001", "accepted", null)],
-    );
+    const findings = auditDesigns([adr("0001", "Accepted")], [row("0001", "accepted", null)]);
     expect(kinds(findings)).toEqual(["undecided"]);
     expect(findings[0].detail).toMatch(/reopen_undecided_design/);
   });
@@ -74,7 +68,7 @@ describe("auditDesigns", () => {
   it("reports a superseded file as a modelling gap rather than drift", () => {
     const findings = auditDesigns(
       [adr("0018", "Superseded by [ADR-0032](0032-x.md)")],
-      [row("0018", "accepted", "monk-eee")],
+      [row("0018", "accepted", "monk-eee")]
     );
     expect(kinds(findings)).toEqual(["unrepresentable"]);
     expect(findings.filter(isDrift)).toEqual([]);
@@ -83,7 +77,7 @@ describe("auditDesigns", () => {
   it("separates drift from notes", () => {
     const findings = auditDesigns(
       [adr("0018", "Superseded by [ADR-0032](0032-x.md)"), adr("0048", "Proposed", "new")],
-      [row("0018", "accepted", "monk-eee")],
+      [row("0018", "accepted", "monk-eee")]
     );
     expect(findings).toHaveLength(2);
     expect(kinds(findings.filter(isDrift))).toEqual(["unregistered"]);
