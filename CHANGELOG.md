@@ -7,6 +7,25 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Publication requires a live claim; the ledger is no longer optional
+  (ADR-0049).** The Intent Plane had one real arbiter (`claim_task`) and **zero
+  automatic integration points** — nothing in the hooks, the scripts, or CI ever
+  consulted it. That is not a plane being bypassed, it is one that is optional by
+  construction, and a single night of concurrent work measured the cost: 9 pull
+  requests merged with **0 conformance receipts**, 61 done tasks against **61
+  abandoned** ones, **2 claim owners across 23 agent identities**, and two agents
+  independently building overlapping answers to the same question, discovered
+  only when both pull requests were open. `canonical-push` now refuses to publish
+  without a live claim owned by `LODESTAR_AGENT`, naming `claim_task` and
+  `create_task` as the actions that satisfy it. The gate is at **push, not
+  commit**: a commit is a draft, and gating commits makes people invent tasks to
+  get past the check — a lying ledger, which is worse than an empty one because
+  it reads as governed. An unreachable ledger **refuses**, deliberately unlike
+  the auto-merge guard: `gh` being absent is an ordinary condition, but Lodestar
+  is local SQLite behind a local binary, so unreachable means broken, and failing
+  open would make "the ledger was down" the universal bypass. Overlapping live
+  claims on the branch's paths are **reported, never enforced** (ADR-0024) — the
+  collision is named at the one moment it is still cheap to act on.
 - **`reopen_undecided_design` lets an imported status become a real decision
   (ADR-0047).** `reconcile_designs` imports each ADR's declared `Status:`
   faithfully — importing thirty-five settled decisions as `proposed` would

@@ -4,6 +4,13 @@
 
 import { execFileSync } from "node:child_process";
 
+import {
+  callTools,
+  overlapNotice,
+  publishVerdict,
+  resolveServer,
+} from "./claim-gate.mjs";
+
 const args = process.argv.slice(2);
 const verifyPrePush = args.includes("--verify-pre-push");
 const opt = (name, fallback) => {
@@ -66,6 +73,60 @@ if (remoteBranchExists) {
       `${remote}/${branch} is not an ancestor of HEAD; reconcile in this checkout before publishing`,
     );
   }
+}
+
+// Publication requires a live claim (ADR-0048). This is the one place the
+// intent plane is not optional: a push is where work becomes visible to the
+// rest of the fleet, so it is where the ledger has to already know what the
+// work was for. Commits stay ungated - a commit is a draft, a push is a claim
+// about the world.
+const agent = process.env.LODESTAR_AGENT || "";
+const server = resolveServer(repoRoot);
+let reachable = false;
+let tasks = [];
+let overlaps = [];
+
+if (server) {
+  let changed = [];
+  try {
+    changed = git(["diff", "--name-only", `${remote}/main...HEAD`])
+      .split("\n")
+      .map((path) => path.trim())
+      .filter(Boolean);
+  } catch {
+    // A branch with no common ancestor still publishes; the overlap notice is
+    // advisory and must never be the reason a push fails.
+  }
+  try {
+    const [board, overlapResult] = callTools(server, repoRoot, [
+      { name: "board", arguments: { include_terminal: false } },
+      { name: "check_overlap", arguments: { paths: changed } },
+    ]);
+    reachable = Array.isArray(board);
+    tasks = Array.isArray(board) ? board : [];
+    overlaps = Array.isArray(overlapResult) ? overlapResult : [];
+  } catch {
+    reachable = false;
+  }
+}
+
+const verdict = publishVerdict({
+  reachable,
+  agent,
+  tasks,
+  branch,
+  now: Math.floor(Date.now() / 1000),
+});
+if (!verdict.ok) {
+  fail(verdict.message);
+}
+
+const notice = overlapNotice(
+  overlaps,
+  verdict.claims.map((claim) => claim.id),
+);
+if (notice) {
+  console.warn(`canonical-push: ${notice}`);
 }
 
 run(["push", remote, `HEAD:refs/heads/${branch}`], {
