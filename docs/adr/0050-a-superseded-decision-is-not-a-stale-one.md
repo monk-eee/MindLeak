@@ -1,6 +1,6 @@
 # ADR-0050: A superseded decision is not a stale one
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-27
 - Related: [ADR-0023](0023-design-items-and-the-accept-bridge.md) (design items
   and human acceptance), [ADR-0042](0042-designs-are-retired-by-a-person.md)
