@@ -11,6 +11,7 @@ use serde::Serialize;
 
 use crate::error::Result;
 
+mod amendments;
 mod claim_transfer;
 mod controls;
 mod coordination;
@@ -24,6 +25,7 @@ mod lifecycle;
 mod policy_packs;
 #[cfg(test)]
 mod test_support;
+mod waivers;
 
 pub(crate) use coordination::ConformanceAudit;
 

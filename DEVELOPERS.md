@@ -174,6 +174,55 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **A lapsed lease silently shrinks the evidence window a task can prove — OPEN.** —
+  Observed Jul 2026 closing ADR-0026 task 4. Building three commits took longer
+  than the lease, and the only route back to a live claim is `claim_task`, which
+  opens a **fresh** `claim_started_at`. `evidence_for` is bounded by that window,
+  so the three implementation commits sat outside it and the receipt covers only
+  the final ADR commit plus its validation run. Nothing was lost and nothing was
+  falsified — this is the evidence contract correctly refusing to certify work it
+  cannot bound — but the durable proof under-reports the work, which is a
+  different kind of wrong than over-reporting. `recover_claim` does not help: it
+  is deliberately restricted to *legacy* pre-ADR-0030 owners and refuses a
+  same-session expired claim with "requires a compatible legacy owner". — Medium
+  impact: no incorrect completion, but proof-of-work is thinner than reality and
+  the operator has no honest way to reattach. — Left for later: the fix is either
+  a same-owner reattach that preserves the original window, or renewal semantics
+  that survive a lapse when nobody else claimed the task. Both are policy
+  decisions about how much an expired lease should forfeit, so they want an ADR
+  rather than a quiet patch. Mitigation today: renew the lease before long
+  builds.
+- **New MCP tools are invisible until VS Code reloads, and the binaries cannot be
+  rebuilt while it runs — OPEN.** — `cargo build --release` fails with `Access is
+  denied (os error 5)` on `lodestar-mcp.exe` / `mindleak-mcp.exe` because the
+  running servers hold the files open. So a session that adds a tool cannot
+  exercise it, and there is no in-band signal that the advertised tool list is
+  stale — the tool simply does not exist. — Low impact, high friction: purely an
+  inner-loop cost, but it silently blocks end-to-end verification of anything
+  added to the MCP surface within the same session. — Left for later; workaround
+  is to reload the window (or restart the servers) before verifying new tools.
+- **A dead extension-side server left every pane blank and the health line
+  lying — FIXED.** — Observed Jul 2026: the MindLeak views were all
+  empty while the agent-facing `mcp_*` tools worked normally. The extension
+  spawns its **own** `mindleak-mcp` / `lodestar-mcp` children (`McpClient` in
+  [`editors/vscode/src/mcpClient.ts`](editors/vscode/src/mcpClient.ts), resolved
+  by `resolveBinaryPath` to the *bundled* `bin/`, not `target/release`), and the
+  previous session's `taskkill` — the documented step before rebuilding the
+  release binaries — killed them. Nothing restarted them, so the panes stayed
+  dead for hours until the extension host happened to restart. The health line
+  compounded it: `activate()` recorded `memory connected` once and never revised
+  it, so the one surface that should have said something was confidently wrong.
+  — Medium impact: no data loss, but the product looks broken and the cause is
+  invisible unless you think to open the output channel. — Fixed Jul 2026: the
+  client relaunches the server itself (three consecutive attempts, then it says
+  a reload is needed), no longer logs from the exit handler during disposal —
+  which was raising `Channel has been closed` in the extension host log — and
+  publishes `connected` / `reconnecting` / `disconnected` to a state listener
+  that the extension maps onto the plane's health line. The four independent
+  health strings collapsed into the `RuntimeHealth` record they already modelled,
+  behind one change-guarded `setHealth`. Note the fix is TypeScript, so an
+  **installed** extension keeps the old behaviour until it is rebuilt and
+  reloaded.
 - **The Design Board silently swallowed a cancelled materialization, and planned
   from an empty summary — FIXED.** — `promote` / `revisePromotion` returned with
   no message, no log line, and no state change whenever any quick pick or input

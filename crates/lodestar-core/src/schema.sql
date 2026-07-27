@@ -50,6 +50,47 @@ CREATE TABLE IF NOT EXISTS controls (
 );
 CREATE INDEX IF NOT EXISTS idx_controls_clause ON controls(clause_id);
 
+-- Waivers: bounded, attributed exceptions to one clause (SPEC-CONSTITUTION §9).
+-- expires_at is NOT NULL by design: there is no open-ended waiver, because an
+-- exception that never ends is the policy, and changing policy is an amendment.
+-- Expiry is not a status transition — a lapsed waiver keeps status 'active' and
+-- simply stops matching, so history reads as it was judged rather than being
+-- rewritten by the passage of time. Revocation is recorded with its own
+-- attribution and never deletes the row.
+CREATE TABLE IF NOT EXISTS waivers (
+    id                    TEXT PRIMARY KEY,
+    clause_id             TEXT NOT NULL,
+    constitution_version  TEXT,            -- the policy this excepted
+    scope                 TEXT NOT NULL,   -- artifact:/symbol:/workflow: token or prefix**
+    reason                TEXT NOT NULL,
+    approved_by           TEXT NOT NULL,
+    created_at            INTEGER NOT NULL,
+    expires_at            INTEGER NOT NULL,
+    remediation_task_id   TEXT,
+    status                TEXT NOT NULL,   -- active | revoked
+    revoked_by            TEXT,
+    revoked_at            INTEGER,
+    revocation_reason     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_waivers_clause ON waivers(clause_id);
+CREATE INDEX IF NOT EXISTS idx_waivers_expiry ON waivers(expires_at);
+
+-- Amendments: the attributed record of adopted policy changing
+-- (SPEC-CONSTITUTION §9). A waiver bends a rule once; an amendment changes it.
+-- The diff is stored rather than recomputed because it is the reviewed artifact:
+-- recomputing it later from the two versions would show what the clauses say
+-- now, not what the amender was looking at when they decided.
+CREATE TABLE IF NOT EXISTS constitution_amendments (
+    id            TEXT PRIMARY KEY,
+    from_version  TEXT NOT NULL,
+    to_version    TEXT NOT NULL,
+    rationale     TEXT NOT NULL,
+    amended_by    TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    diff          TEXT NOT NULL          -- JSON array of ClauseDiff
+);
+CREATE INDEX IF NOT EXISTS idx_amendments_to ON constitution_amendments(to_version);
+
 -- Goals: the clauses of the constitution. Durable and versioned. Superseding
 -- creates a new row and marks the old one 'superseded' (never edited in place).
 -- The enforcement fields (scope, evidence_contract, consequence) stay NULL until

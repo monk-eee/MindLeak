@@ -346,6 +346,22 @@ impl LodestarStore {
         get_proposal_on(&self.conn, id)
     }
 
+    /// How the local clause `goal_id` was dispositioned when it was adopted.
+    ///
+    /// Distinguishing `tailored` from `adopted` is what lets a pack upgrade warn
+    /// before an upstream change overwrites a deliberate local edit.
+    pub fn pack_clause_disposition(&self, goal_id: &str) -> Result<Option<PackClauseDisposition>> {
+        let tag: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT disposition FROM pack_clause_proposals WHERE adopted_goal_id = ?1",
+                [goal_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(tag.as_deref().and_then(PackClauseDisposition::from_tag))
+    }
+
     pub fn pack_clause_provenance(&self, goal_id: &str) -> Result<Option<PackClauseProvenance>> {
         self.conn
             .query_row(
