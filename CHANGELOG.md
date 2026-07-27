@@ -8,6 +8,19 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [0.1.3] - 2026-07-27
 ### Added
+- **Publishing declares where it is working, and warns when one identity is in
+  two places (ADR-0044, ADR-0049).** The claim gate re-opened the session on
+  every push and declared nothing, so it replaced a real declaration with
+  silence — `fleet_view` reported `branch: null` for agents that had declared a
+  branch minutes earlier. It now declares branch, head, base, a counted
+  `behind`, and a clean tree, at the one moment those are certainly true. It
+  also warns when an identity publishes a branch it did not declare while
+  holding live claims: one agent cannot publish two branches at once, so that is
+  the observable signature of several agents sharing a session token and
+  resolving to one identity — a failure that ran unnoticed for a whole session
+  and silently voided every claim, overlap check and wait cycle keyed on it.
+  Advisory, because switching branch with work still claimed is legitimate; it
+  names a suspicion nobody could previously have formed at all.
 - **A question addressed to you now arrives on a call you already make
   (ADR-0046).** `ask_question` could address a peer and `pending_questions` could
   find it, but only if the peer thought to look — and a capability that depends

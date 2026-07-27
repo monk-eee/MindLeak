@@ -11,9 +11,12 @@ import {
 } from "./auto-merge-guard.mjs";
 import {
   callTools,
+  declaredContext,
+  identityCollisionNotice,
   overlapNotice,
   publishVerdict,
   resolveServer,
+  sameSession,
 } from "./claim-gate.mjs";
 
 const args = process.argv.slice(2);
@@ -101,6 +104,7 @@ let agent = "";
 let reachable = false;
 let tasks = [];
 let overlaps = [];
+let declaredBranch = null;
 
 if (server && /^[0-9a-f]{32}$/.test(sessionId)) {
   let changed = [];
@@ -113,9 +117,34 @@ if (server && /^[0-9a-f]{32}$/.test(sessionId)) {
     // A branch with no common ancestor still publishes; the overlap notice is
     // advisory and must never be the reason a push fails.
   }
+  let behind;
   try {
-    const [session, board, overlapResult] = callTools(server, repoRoot, [
-      { name: "open_session", arguments: { session_id: sessionId } },
+    behind = Number(
+      git(["rev-list", "--count", `HEAD..${remote}/main`]).trim(),
+    );
+  } catch {
+    // Undeclared reports as unknown rather than being guessed (ADR-0044).
+  }
+  // Declare where this session is working while we are already here. The push
+  // is the one moment these facts are certainly true, and the fleet view is
+  // only as good as the last thing somebody declared.
+  const context = declaredContext({
+    branch,
+    headSha: git(["rev-parse", "HEAD"]),
+    base: `${remote}/main`,
+    behind,
+  });
+  try {
+    // `fleet_view` first, deliberately: it must be read *before* this push
+    // declares its own context, or the "previously declared branch" would be
+    // the declaration made microseconds earlier and the collision check would
+    // compare a value with itself.
+    const [fleet, session, board, overlapResult] = callTools(server, repoRoot, [
+      { name: "fleet_view", arguments: {} },
+      {
+        name: "open_session",
+        arguments: { session_id: sessionId, ...context },
+      },
       { name: "board", arguments: { include_terminal: false } },
       { name: "check_overlap", arguments: { paths: changed } },
     ]);
@@ -123,6 +152,10 @@ if (server && /^[0-9a-f]{32}$/.test(sessionId)) {
     // caller asserts: a claim is recorded against the resolved agent id, so
     // matching on anything else would compare two different things.
     agent = session?.agent_id ?? "";
+    declaredBranch =
+      (fleet?.sessions ?? []).find((entry) =>
+        sameSession(entry.agent_id, agent),
+      )?.context?.branch ?? null;
     reachable = Boolean(agent) && Array.isArray(board);
     tasks = Array.isArray(board) ? board : [];
     overlaps = overlapResult ?? [];
@@ -149,6 +182,16 @@ const notice = overlapNotice(
 );
 if (notice) {
   console.warn(`canonical-push: ${notice}`);
+}
+
+const collision = identityCollisionNotice({
+  agent,
+  branch,
+  declaredBranch,
+  claims: verdict.claims,
+});
+if (collision) {
+  console.warn(`canonical-push: ${collision}`);
 }
 
 run(["push", remote, `HEAD:refs/heads/${branch}`], {

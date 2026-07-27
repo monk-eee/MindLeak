@@ -185,6 +185,28 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **A shared session token collapses every agent into one identity — GUARDED,
+  not prevented.** — `LODESTAR_SESSION_ID` is minted by the client, so a token
+  written anywhere several agents read (repository memory, a dotfile, a prompt)
+  makes all of them resolve to the same `session:v1:<base>:<fingerprint>`.
+  Nothing errors. Claims, `check_overlap` and wait-cycle detection are all keyed
+  on that identity and silently stop meaning anything: `fleet_view` shows one
+  busy agent instead of three colliding ones, and a cycle needs two distinct
+  nodes so it can never be seen. Observed Jul 2026 — it ran for a whole session
+  before anyone noticed, and only because someone asked who owned a branch and
+  the ledger could not answer. `canonical-push` now warns when one identity
+  publishes a branch it did not declare while holding live claims, which is the
+  only observable signature (one agent cannot publish two branches at once). It
+  is a suspicion, not a verdict: switching branch with work still claimed is
+  legitimate. **Mint the token per session and never write it down.**
+- **The Vitest run occasionally dies with `Timeout calling "onTaskUpdate"` —
+  OPEN, infrastructure only.** — Seen once Jul 2026 on a full
+  `npm --prefix editors/vscode test`; the same suites passed immediately after,
+  individually and together. It is a worker/reporter timeout rather than an
+  assertion, so it reports as a run failure with no failing test named. Impact:
+  a red CI run that is not a real regression. Re-run before investigating; if it
+  becomes frequent, raise the pool timeout rather than chasing a test.
+
 - **A stalled wait is only bounded by the seven-day parking grace — SURFACED,
   not prevented.** — ADR-0046 lets `ask_question` address a peer, so an agent
   can park on one that never answers. The mutual case (a wait cycle) is now

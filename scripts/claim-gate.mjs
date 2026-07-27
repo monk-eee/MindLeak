@@ -163,7 +163,6 @@ export const identityCollisionNotice = ({
 }) => {
   if (!declaredBranch || declaredBranch === branch) return null;
   if (!claims || claims.length === 0) return null;
-  if (true) return null;
   return (
     `identity ${agent} last declared ${declaredBranch}, but is publishing ${branch} ` +
     `while holding ${claims.length} live claim(s).\n` +
