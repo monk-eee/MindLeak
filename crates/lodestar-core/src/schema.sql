@@ -18,7 +18,6 @@ CREATE TABLE IF NOT EXISTS constitution_versions (
     activated_by     TEXT,
     activated_at     INTEGER
 );
-CREATE INDEX IF NOT EXISTS idx_constitution_status ON constitution_versions(status);
 
 -- Cited project facts discovered during bootstrap (SPEC-CONSTITUTION 7.2).
 -- Facts ground a draft in what the repository actually does. They are evidence,
@@ -48,7 +47,6 @@ CREATE TABLE IF NOT EXISTS controls (
     status        TEXT NOT NULL,        -- active | retired
     created_at    INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_controls_clause ON controls(clause_id);
 
 -- Waivers: bounded, attributed exceptions to one clause (SPEC-CONSTITUTION §9).
 -- expires_at is NOT NULL by design: there is no open-ended waiver, because an
@@ -72,8 +70,6 @@ CREATE TABLE IF NOT EXISTS waivers (
     revoked_at            INTEGER,
     revocation_reason     TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_waivers_clause ON waivers(clause_id);
-CREATE INDEX IF NOT EXISTS idx_waivers_expiry ON waivers(expires_at);
 
 -- Amendments: the attributed record of adopted policy changing
 -- (SPEC-CONSTITUTION §9). A waiver bends a rule once; an amendment changes it.
@@ -89,7 +85,6 @@ CREATE TABLE IF NOT EXISTS constitution_amendments (
     created_at    INTEGER NOT NULL,
     diff          TEXT NOT NULL          -- JSON array of ClauseDiff
 );
-CREATE INDEX IF NOT EXISTS idx_amendments_to ON constitution_amendments(to_version);
 
 -- Goals: the clauses of the constitution. Durable and versioned. Superseding
 -- creates a new row and marks the old one 'superseded' (never edited in place).
@@ -116,8 +111,6 @@ CREATE TABLE IF NOT EXISTS goals (
     waiver_authority     TEXT,             -- authority required to waive
     origin               TEXT NOT NULL DEFAULT 'local'  -- local | pack | discovered
 );
-CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
-CREATE INDEX IF NOT EXISTS idx_goals_slug   ON goals(slug);
 
 -- Policy packs are immutable, versioned inputs to constitutional drafting
 -- (SPEC-CONSTITUTION section 6). Adoption copies a clause into goals and records
@@ -202,7 +195,6 @@ CREATE TABLE IF NOT EXISTS design_items (
     retired_by     TEXT,
     retired_reason TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_design_items_status ON design_items(status);
 
 -- Append-only record of every reviewed materialization. The current link tables
 -- below are a projection of the latest revision; earlier reviewed plans remain
@@ -260,9 +252,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at       INTEGER NOT NULL,
     updated_at       INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
-CREATE INDEX IF NOT EXISTS idx_tasks_goal   ON tasks(goal_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_blocked_by ON tasks(blocked_by);
 
 -- Append-only ownership recovery audit (ADR-0030). Recovery never rewrites
 -- history: it records the full prior claim window before assigning a fresh one.
@@ -281,8 +270,6 @@ CREATE TABLE IF NOT EXISTS task_claim_transfers (
     transferred_at        INTEGER NOT NULL,
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS idx_task_claim_transfers_task
-    ON task_claim_transfers(task_id, id);
 
 -- Optional advisory scope declared atomically with a task claim (ADR-0024).
 -- Values are workspace-relative path globs or opaque MindLeak symbol ids. They
@@ -294,7 +281,6 @@ CREATE TABLE IF NOT EXISTS task_scopes (
     PRIMARY KEY (task_id, kind, value),
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS idx_task_scopes_value ON task_scopes(kind, value);
 
 -- Durable, append-only dialogue thread for a task (ADR-0020, ADR-0046). Holds
 -- the agent's question and its answer, plus a `note` recording why a state
@@ -311,8 +297,6 @@ CREATE TABLE IF NOT EXISTS task_qa (
     created_at INTEGER NOT NULL,
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS idx_task_qa_task ON task_qa(task_id);
-CREATE INDEX IF NOT EXISTS idx_task_qa_audience ON task_qa(audience, kind);
 
 -- Additional goals a task declares it serves (ADR-0041). Written once at
 -- creation and never updated: coverage declared before the work is a prediction
@@ -327,7 +311,6 @@ CREATE TABLE IF NOT EXISTS task_goal_coverage (
     PRIMARY KEY (task_id, goal_id),
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS idx_task_goal_coverage_goal ON task_goal_coverage(goal_id);
 
 -- Durable progressive-handoff lineage. `tasks.blocked_by` is cleared when the
 -- successor opens; this table retains the one-to-one chain invariant.
@@ -347,7 +330,6 @@ CREATE TABLE IF NOT EXISTS goal_code (
     mode    TEXT NOT NULL DEFAULT 'governed', -- governed | forbid_change
     PRIMARY KEY (goal_id, node_id)
 );
-CREATE INDEX IF NOT EXISTS idx_goal_code_node ON goal_code(node_id);
 
 -- Conformance audit trail.
 CREATE TABLE IF NOT EXISTS conformance (
@@ -387,4 +369,3 @@ CREATE TABLE IF NOT EXISTS session_context (
     behind      INTEGER,               -- commits behind base, counted by the client
     declared_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_session_context_base ON session_context(base);
