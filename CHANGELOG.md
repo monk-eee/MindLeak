@@ -6,6 +6,24 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`check_overlap` no longer reports an agent colliding with itself
+  (ADR-0054).** The Memory Plane carried the same forked identity the Intent
+  Plane did: attribution nodes are `agent:{id}` (ADR-0003), so one session
+  observed under two process environments produced two agent nodes. This was
+  first assessed as cosmetic and it was not — `check_overlap` skips the caller
+  by exact id, so an agent's other half was never excluded and the tool reported
+  a collision with itself, a false positive indistinguishable from a real one
+  that would tell an agent to back off work nobody else was doing.
+  `working_set` likewise returned half of an agent's own attention. The
+  migration folds the halves rather than picking one: the canonical node takes
+  the earliest creation and latest activity, and a shared observation takes the
+  strongest weight, the latest touch, the earliest first sighting, and the
+  **summed** reinforcement count — a node observed under both names really was
+  observed twice. Verified against the live graph, where 17 agent nodes still
+  carried a label segment after the Intent Plane migration had already run.
+
 ## [0.1.3] - 2026-07-27
 
 ### Added
