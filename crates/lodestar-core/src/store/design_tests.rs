@@ -437,3 +437,193 @@ fn reopening_is_refused_once_promotion_has_left_not_required() {
         DesignStatus::Accepted
     );
 }
+
+/// Register a design and have a person accept it, which is the only state from
+/// which supersession is meaningful.
+fn accepted_design(store: &crate::store::LodestarStore, path: &str, title: &str) -> String {
+    let item = store
+        .register_design_item(
+            &crate::design::design_id_from_path(path),
+            path,
+            title,
+            "summary",
+            Some("agent"),
+            NOW,
+        )
+        .unwrap();
+    assert!(store
+        .decide_design_item(&item.id, DesignStatus::Accepted, "monk-eee", None, NOW)
+        .unwrap());
+    item.id
+}
+
+// ADR-0050. The gap this closes: ADR-0018 says "Superseded by ADR-0032" and the
+// ledger had no way to hold that, so the row sat `accepted` and every
+// ledger-driven view showed a withdrawn decision as live.
+#[test]
+fn superseding_records_the_replacement_without_erasing_the_decision() {
+    let store = store();
+    let old = accepted_design(
+        &store,
+        "docs/adr/0018-single-checkout.md",
+        "Single checkout",
+    );
+    let new = accepted_design(&store, "docs/adr/0032-fleet.md", "Fleet integration");
+
+    let superseded = store
+        .supersede_design_item(&old, &new, "monk-eee", NOW + 1)
+        .unwrap();
+
+    // The decision survives: it was accepted, and by whom, is still recorded.
+    assert_eq!(superseded.status, DesignStatus::Accepted);
+    assert_eq!(superseded.decided_by.as_deref(), Some("monk-eee"));
+    let link = superseded.superseded.expect("supersession recorded");
+    assert_eq!(link.by_design, new);
+    assert_eq!(link.by, "monk-eee");
+    assert_eq!(link.at, NOW + 1);
+}
+
+// A superseded design is no longer live work, so the board stops offering it —
+// the same treatment retirement gets, for a different reason.
+#[test]
+fn a_superseded_design_leaves_the_actionable_board() {
+    let store = store();
+    let old = accepted_design(
+        &store,
+        "docs/adr/0018-single-checkout.md",
+        "Single checkout",
+    );
+    let new = accepted_design(&store, "docs/adr/0032-fleet.md", "Fleet integration");
+    assert_eq!(store.actionable_design_items().unwrap().len(), 2);
+
+    store
+        .supersede_design_item(&old, &new, "monk-eee", NOW + 1)
+        .unwrap();
+
+    let live: Vec<String> = store
+        .actionable_design_items()
+        .unwrap()
+        .into_iter()
+        .map(|item| item.id)
+        .collect();
+    assert_eq!(live, vec![new]);
+    // Still in the durable audit view: superseding is not deleting (ADR-0019).
+    assert_eq!(store.list_design_items(None, false).unwrap().len(), 2);
+}
+
+// Superseding is a statement about a decision that was actually made. A row
+// carrying an imported status with nobody behind it (the ADR-0047 shape) has no
+// decision to supersede — it should be reopened and decided, or retired.
+#[test]
+fn a_status_nobody_decided_cannot_be_superseded() {
+    let store = store();
+    let undecided = store
+        .reconcile_design_item(
+            &DesignMetadata {
+                adr_path: "docs/adr/0018-single-checkout.md".into(),
+                title: "Single checkout".into(),
+                summary: "imported".into(),
+                status: DesignStatus::Accepted,
+                proposed_by: None,
+            },
+            NOW,
+        )
+        .unwrap();
+    let new = accepted_design(&store, "docs/adr/0032-fleet.md", "Fleet integration");
+    assert_eq!(undecided.decided_by, None);
+
+    let refused = store.supersede_design_item(&undecided.id, &new, "monk-eee", NOW + 1);
+    assert!(refused.is_err());
+    assert!(store
+        .get_design_item(&undecided.id)
+        .unwrap()
+        .unwrap()
+        .superseded
+        .is_none());
+}
+
+// A proposed design has not been decided at all, so there is nothing to replace.
+#[test]
+fn a_proposed_design_cannot_be_superseded() {
+    let store = store();
+    let proposed = store
+        .register_design_item(
+            "design:0018-single-checkout",
+            "docs/adr/0018-single-checkout.md",
+            "Single checkout",
+            "summary",
+            Some("agent"),
+            NOW,
+        )
+        .unwrap();
+    let new = accepted_design(&store, "docs/adr/0032-fleet.md", "Fleet integration");
+
+    assert!(store
+        .supersede_design_item(&proposed.id, &new, "monk-eee", NOW + 1)
+        .is_err());
+}
+
+// A dangling replacement would leave a reader with a withdrawn decision and
+// nowhere to go, so the successor must already be registered.
+#[test]
+fn the_replacement_must_be_a_registered_design() {
+    let store = store();
+    let old = accepted_design(
+        &store,
+        "docs/adr/0018-single-checkout.md",
+        "Single checkout",
+    );
+
+    let refused = store.supersede_design_item(&old, "design:0032-not-registered", "monk-eee", NOW);
+    assert!(refused.is_err());
+    assert!(store
+        .get_design_item(&old)
+        .unwrap()
+        .unwrap()
+        .superseded
+        .is_none());
+}
+
+#[test]
+fn a_design_cannot_supersede_itself() {
+    let store = store();
+    let old = accepted_design(
+        &store,
+        "docs/adr/0018-single-checkout.md",
+        "Single checkout",
+    );
+
+    assert!(store
+        .supersede_design_item(&old, &old, "monk-eee", NOW)
+        .is_err());
+}
+
+// Guarded in a single statement so two concurrent supersessions cannot both
+// claim to be the one that did it, and the first actor is never overwritten.
+#[test]
+fn superseding_twice_keeps_the_first_actor() {
+    let store = store();
+    let old = accepted_design(
+        &store,
+        "docs/adr/0018-single-checkout.md",
+        "Single checkout",
+    );
+    let first = accepted_design(&store, "docs/adr/0032-fleet.md", "Fleet integration");
+    let second = accepted_design(&store, "docs/adr/0038-worktrees.md", "One worktree each");
+
+    store
+        .supersede_design_item(&old, &first, "monk-eee", NOW + 1)
+        .unwrap();
+    assert!(store
+        .supersede_design_item(&old, &second, "someone-else", NOW + 2)
+        .is_err());
+
+    let link = store
+        .get_design_item(&old)
+        .unwrap()
+        .unwrap()
+        .superseded
+        .expect("supersession recorded");
+    assert_eq!(link.by_design, first);
+    assert_eq!(link.by, "monk-eee");
+}

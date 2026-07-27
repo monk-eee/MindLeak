@@ -465,6 +465,15 @@ Caller-selected `agent`/`agent_id` values are not part of the public schema.
 18. `accept_design(id, human)` / `reject_design(id, human, reason)` → attributed
   human decision; no code conformance and no self-acceptance. The VS Code
   workflow writes the matching ADR `Status` in the same operation.
+18a. `supersede_design(id, superseded_by, human)` → record that an accepted
+  design has been replaced. `status` is unchanged: the design was accepted, and
+  supersession is a fact about that decision rather than a different one, so a
+  live design is one with no `superseded_by` — the same shape as
+  `goal.superseded_by`. Guarded on a recorded `decided_by`, because superseding
+  is a statement about a decision that was actually made; a row carrying an
+  imported status with nobody behind it is reopened (ADR-0047) or retired
+  (ADR-0042) instead. The replacement must already be registered, and the link
+  is never inferred from an ADR's prose.
 19. `plan_design_promotion(id, objective_goal_id)` → a read-only suggested
   `create` plan; optional model output and the deterministic fallback cannot
   create work before human review.

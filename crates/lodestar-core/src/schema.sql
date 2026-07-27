@@ -193,7 +193,14 @@ CREATE TABLE IF NOT EXISTS design_items (
     -- the design. Archived, never deleted (ADR-0019).
     retired_at     INTEGER,
     retired_by     TEXT,
-    retired_reason TEXT
+    retired_reason TEXT,
+    -- Supersession (ADR-0050): this decision was made, it held, and it has since
+    -- been replaced. `status` deliberately stays `accepted` — supersession is a
+    -- fact about a decision, not a different decision — so a live design is
+    -- `superseded_by IS NULL`, mirroring goals.superseded_by.
+    superseded_by  TEXT REFERENCES design_items(id),
+    superseded_at  INTEGER,
+    superseded_by_human TEXT
 );
 
 -- Append-only record of every reviewed materialization. The current link tables
