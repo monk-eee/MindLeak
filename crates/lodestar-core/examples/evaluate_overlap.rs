@@ -70,7 +70,13 @@ fn overlap_aware_arm(now: i64) -> EvaluationResult<Value> {
     let stale_graph = footprint_graph(now - STALE_AGE_HOURS * 3600)?;
     let stale_footprints = stale_graph.check_overlap(&[PATH.to_string()], &[], Some("bob"))?;
     let should_steer = !claims.is_empty() || !footprints.is_empty();
-    let handoff_applied = should_steer && engine.block_task(&second.id, Some(first.id.clone()))?;
+    let handoff_applied = should_steer
+        && engine.block_task(
+            &second.id,
+            Some(first.id.clone()),
+            Some("steered into a handoff chain by the overlap evaluation"),
+            "evaluate_overlap",
+        )?;
     let second_claimed_after_steer = engine.claim_task(&second.id, "bob", LEASE_SECS)?;
     let second_after_steer = engine.store().get_task(&second.id)?.unwrap();
     let concurrent_claims_after_steer = claimed_count(&engine)?;

@@ -500,8 +500,14 @@ pub struct ClaimOverlap {
     pub matching_symbols: Vec<String>,
 }
 
-/// One durable, append-only entry in a task's question/answer thread (ADR-0020):
-/// a `needs_input` question from the owning agent or the human `answer`.
+/// One durable, append-only entry in a task's dialogue thread (ADR-0020,
+/// ADR-0046): a `needs_input` question from the owning agent, its `answer`, or
+/// a `note` recording why a state change parked or blocked the work.
+///
+/// `audience` is the agent id a question is addressed to; `None` means a human.
+/// It is the only addressing in the system, and it routes nothing — an addressed
+/// question is a durable row a peer discovers by asking, never a message pushed
+/// at it (ADR-0046).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskQa {
     pub id: i64,
@@ -509,6 +515,7 @@ pub struct TaskQa {
     pub kind: String,
     pub body: String,
     pub author: String,
+    pub audience: Option<String>,
     pub created_at: i64,
 }
 

@@ -176,6 +176,7 @@ fn requires_session(name: &str) -> bool {
             | "release_task"
             | "recover_claim"
             | "ask_question"
+            | "pending_questions"
             | "pause_task"
             | "resume_task"
             | "check_conformance"
