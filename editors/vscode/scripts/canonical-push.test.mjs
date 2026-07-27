@@ -61,7 +61,7 @@ describe("canonical-push", () => {
     expect(result.stderr).toMatch(/direct protected-branch publication is forbidden/);
   }, 30_000);
 
-  it("refuses publication while the shared index has staged changes", () => {
+  it("refuses publication while the worktree has staged changes", () => {
     const { repo } = sandbox();
     git(repo, ["checkout", "-b", "fleet/staged"]);
     writeFileSync(join(repo, "staged.txt"), "not committed\n");
@@ -70,7 +70,29 @@ describe("canonical-push", () => {
     const result = runPublisher(repo);
 
     expect(result.status).toBe(2);
-    expect(result.stderr).toMatch(/shared index contains staged changes/);
+    expect(result.stderr).toMatch(/worktree has uncommitted changes/);
+  }, 30_000);
+
+  it("refuses publication while the worktree has unstaged or untracked changes", () => {
+    const { repo } = sandbox();
+    git(repo, ["checkout", "-b", "fleet/dirty"]);
+    writeFileSync(join(repo, "README.md"), "modified\n");
+    writeFileSync(join(repo, "untracked.txt"), "untracked\n");
+
+    const result = runPublisher(repo);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/worktree has uncommitted changes/);
+  }, 30_000);
+
+  it("refuses publication from a detached HEAD", () => {
+    const { repo } = sandbox();
+    git(repo, ["checkout", "--detach"]);
+
+    const result = runPublisher(repo);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/HEAD is detached/);
   }, 30_000);
 
   it("allows the pre-push hook only through the canonical publisher", () => {
@@ -122,5 +144,19 @@ describe("canonical-push", () => {
     expect(git(root, ["--git-dir", remote, "rev-parse", "refs/heads/fleet/canonical"])).toBe(
       expected
     );
+  }, 30_000);
+
+  it("publishes a linked worktree branch's exact HEAD", () => {
+    const { root, remote, repo } = sandbox();
+    const linked = join(root, "linked");
+    git(repo, ["worktree", "add", "-b", "fleet/linked", linked]);
+    commitFile(linked, "feature.txt", "linked feature\n", "linked feature");
+    const expected = git(linked, ["rev-parse", "HEAD"]);
+
+    const result = runPublisher(linked);
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/published HEAD -> origin\/fleet\/linked/);
+    expect(git(root, ["--git-dir", remote, "rev-parse", "refs/heads/fleet/linked"])).toBe(expected);
   }, 30_000);
 });

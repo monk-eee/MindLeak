@@ -539,7 +539,7 @@ mod tests {
         let e = engine();
         let batch = e.propose_fleet_delivery().unwrap();
 
-        assert_eq!(batch.proposals.len(), 6);
+        assert_eq!(batch.proposals.len(), 7);
         assert!(batch.conflicts.is_empty());
         assert!(batch.proposals.iter().all(|p| p.disposition.is_none()));
         assert!(
@@ -570,7 +570,7 @@ mod tests {
             .filter_map(|p| p.clause.default_scope.as_deref())
             .filter(|scope| scope.starts_with("workflow:"))
             .collect();
-        assert_eq!(workflow.len(), 6);
+        assert_eq!(workflow.len(), 7);
     }
 
     #[test]

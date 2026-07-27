@@ -1,9 +1,9 @@
 // Commit-scope guard (ADR-0018). Stages and commits ONLY the paths you declare,
 // via `git add -- <paths>` + `git commit -- <paths>` (pathspec) — never
-// `git add -A` / `commit -a`. In a shared index this guarantees another agent's
-// staged work is never swept into your commit or mis-attributed to your message.
-// Any pre-existing staged path outside your declared set is reported and left
-// uncommitted.
+// `git add -A` / `commit -a`. Worktree isolation prevents cross-agent staging;
+// this guard separately guarantees the current worktree cannot sweep unrelated
+// staged paths into the wrong task or attribution. Any pre-existing staged path
+// outside the declared set is reported and left uncommitted.
 //
 // Platform-agnostic: git + node only. Usage:
 //   node scripts/scoped-commit.mjs -m "<message>" -- <path> [<path> ...]

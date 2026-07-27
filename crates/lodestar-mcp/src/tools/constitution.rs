@@ -155,7 +155,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "propose_fleet_delivery",
-            "description": "Register and propose the optional fleet-delivery pack: protected-branch review, single publisher, commit identity, scoped commits, branch freshness, and topology honesty. Proposals only — every clause still needs an explicit adopt, tailor, or reject before it governs anything.",
+            "description": "Register and propose fleet-delivery v2: protected-branch review, one publishing owner per task branch, isolated worktrees, commit identity, scoped commits, branch freshness, and topology honesty. Proposals only — every clause still needs an explicit adopt, tailor, or reject before it governs anything.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
