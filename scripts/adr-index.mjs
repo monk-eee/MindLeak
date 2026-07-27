@@ -11,48 +11,14 @@
 //   node scripts/adr-index.mjs           rewrite the table
 //   node scripts/adr-index.mjs --check   fail if it is out of date (hook mode)
 
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const ADR_DIR = "docs/adr";
+import { ADR_DIR, readAdrFiles } from "./adr-files.mjs";
+
 const README = join(ADR_DIR, "README.md");
-const VALID_STATUS = new Set([
-  "Proposed",
-  "Accepted",
-  "Rejected",
-  "Deprecated",
-]);
 
-const parse = (file) => {
-  const text = readFileSync(join(ADR_DIR, file), "utf8");
-  const number = /^(\d{4})-/.exec(file)?.[1];
-
-  // "# ADR-0039: Every waiver ends" -> "Every waiver ends"
-  const heading = /^#\s+(.+?)\s*$/m.exec(text)?.[1];
-  const title = heading?.replace(/^ADR-\d{4}\s*[:\u2014-]\s*/, "").trim();
-
-  // "- Status: Accepted" or "- Status: Superseded by [0038](...)"
-  const status = /^\s*-?\s*(?:\*\*)?Status:(?:\*\*)?\s*([^\r\n]+)/im
-    .exec(text)?.[1]
-    ?.replace(/\*/g, "")
-    .trim();
-
-  if (!number || !title || !status) {
-    throw new Error(
-      `${file}: cannot read ${!number ? "number" : !title ? "title" : "status"}`,
-    );
-  }
-  const head = status.split(/\s+/)[0];
-  if (!VALID_STATUS.has(head) && !/^Superseded/i.test(status)) {
-    throw new Error(`${file}: unrecognised status "${status}"`);
-  }
-  return { number, file, title, status };
-};
-
-const rows = readdirSync(ADR_DIR)
-  .filter((f) => /^\d{4}-.*\.md$/.test(f))
-  .sort()
-  .map(parse);
+const rows = readAdrFiles();
 
 const table = [
   "| ADR | Title | Status |",
