@@ -310,7 +310,11 @@ and footguns, with impact and status:
   per-file owner) on `model.rs` and `graph/evidence.rs`. Those 10 bindings were
   dropped (explicit/audited, no auto-delete); each of the 10 files now has exactly
   one governing goal, so honest commits no longer drift. Data-plane only — no code
-  change.
+  change. — **Follow-up Jul 2026:** the triage did not, and could not, cover files
+  whose two bindings are *both* accurate — `crates/mindleak-mcp/src/tools/mod.rs`
+  is legitimately the graph engine's MCP surface *and* the ADR-0030 session
+  registrar. That residue is addressed by ADR-0041 (declared coverage), not by
+  more unlinking: there is no wrong binding left to remove.
 
 - **Blind design promotion could omit governing goals or duplicate existing work
   — FIXED.** — ADR-0024

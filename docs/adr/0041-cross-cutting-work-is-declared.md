@@ -43,6 +43,26 @@ unsanctioned edit produces. The audit cannot tell honest breadth from drift, so
 the verdict stops meaning anything: the reviewer learns only that goals were
 crossed, never whether crossing them was the point.
 
+## This is not the mislabelled-bindings problem again
+
+DEVELOPERS.md records a related gap as resolved: repeated `link_goal_to_code`
+calls had left ten source files bound to two active goals, and a human-in-the-loop
+`unlink_goal_from_code` triage dropped the mistaken binding from each so that
+"each of the 10 files now has exactly one governing goal". That was the right fix
+for *pollution* — a binding that was simply wrong.
+
+It does not cover this case, and the difference matters. That triage worked
+because each of those files had one true owner and one accident. A file whose two
+bindings are *both* accurate has no accident to remove: unlinking either would
+delete a true statement about what governs the code, to make a verdict
+convenient. Nor does finer granularity help — evidence is artifact-granular, so
+binding the identity goal to a symbol rather than the whole file still leaves
+every binding on that file implicated by a change to it.
+
+The two fixes are complementary. Triage removes bindings that lie. This ADR
+addresses the case where they all tell the truth and the task model still cannot
+express it.
+
 ## Decision
 
 **A task may declare, at creation, the additional goals it serves.** Conformance
