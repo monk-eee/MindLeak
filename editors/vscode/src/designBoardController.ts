@@ -12,6 +12,7 @@ import {
   formatDesignPromotion,
   formatMaterializationPlan,
   parseAdrMetadata,
+  rawAdrStatus,
   replaceAdrStatus,
 } from "./designBoard";
 import { DesignBoardItem, DesignBoardViewProvider } from "./designBoardViewProvider";
@@ -40,10 +41,21 @@ export class DesignBoardController {
       return;
     }
     try {
-      const metadata = await readWorkspaceAdrMetadata(this.agentId);
+      const { metadata, skipped } = await readWorkspaceAdrMetadata(this.agentId);
       await this.client.callTool("reconcile_designs", { designs: metadata });
       await this.refresh();
       this.log(`Design Board synchronized ${metadata.length} repository ADRs.`);
+      // An ADR the parser cannot read is an ADR the board can never show. That
+      // has to be noisy: silence is what let two accepted decisions sit
+      // unregistered while the sync kept reporting success.
+      for (const { adrPath, reason } of skipped) {
+        this.log(`Design Board skipped ${adrPath}: ${reason}`);
+      }
+      if (skipped.length) {
+        vscode.window.showWarningMessage(
+          `MindLeak registered ${metadata.length} ADRs and skipped ${skipped.length}. See the MindLeak output channel.`
+        );
+      }
     } catch (error) {
       this.reportError("ADR synchronization", error);
     }
@@ -56,7 +68,10 @@ export class DesignBoardController {
     try {
       const designs = (await this.client.callTool("list_designs", {})) as DesignItem[];
       const materialized = designs.filter((design) => design.promotion_status === "materialized");
-      const promotionEntries = await Promise.all(
+      // One unreadable promotion must not blank the whole board. `Promise.all`
+      // rejected the entire batch, so a single bad row left the view showing
+      // stale contents with only an error toast to explain it.
+      const settled = await Promise.allSettled(
         materialized.map(async (design) => {
           const promotion = (await this.client.callTool("design_promotion", {
             id: design.id,
@@ -65,11 +80,18 @@ export class DesignBoardController {
         })
       );
       const promotions = new Map<string, DesignPromotion>();
-      for (const [id, promotion] of promotionEntries) {
+      settled.forEach((outcome, index) => {
+        if (outcome.status === "rejected") {
+          this.log(
+            `Design Board could not read materialization for ${materialized[index].id}: ${describeError(outcome.reason)}`
+          );
+          return;
+        }
+        const [id, promotion] = outcome.value;
         if (promotion) {
           promotions.set(id, promotion);
         }
-      }
+      });
       this.provider.update(designs, promotions);
     } catch (error) {
       this.reportError("Design Board refresh", error);
@@ -427,7 +449,7 @@ export class DesignBoardController {
   }
 
   private reportError(action: string, error: unknown): void {
-    const message = `${action} failed: ${(error as Error).message}`;
+    const message = `${action} failed: ${describeError(error)}`;
     this.log(message);
     vscode.window.showErrorMessage(`MindLeak ${message}`);
   }
@@ -444,12 +466,31 @@ export class DesignBoardController {
   }
 }
 
-export async function readWorkspaceAdrMetadata(proposedBy: string): Promise<DesignMetadata[]> {
+export interface SkippedAdr {
+  adrPath: string;
+  reason: string;
+}
+
+export interface WorkspaceAdrScan {
+  metadata: DesignMetadata[];
+  skipped: SkippedAdr[];
+}
+
+/** A thrown value is not always an `Error`; say something useful regardless. */
+export function describeError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return typeof error === "string" ? error : JSON.stringify(error);
+}
+
+export async function readWorkspaceAdrMetadata(proposedBy: string): Promise<WorkspaceAdrScan> {
   const files = await vscode.workspace.findFiles(
     "**/docs/adr/*.md",
     "**/{.git,node_modules,target,.vscode-test}/**"
   );
   const metadata: DesignMetadata[] = [];
+  const skipped: SkippedAdr[] = [];
   for (const uri of files) {
     const folder = vscode.workspace.getWorkspaceFolder(uri);
     if (!folder) {
@@ -460,7 +501,15 @@ export async function readWorkspaceAdrMetadata(proposedBy: string): Promise<Desi
     const parsed = parseAdrMetadata(relativePath, content, proposedBy);
     if (parsed) {
       metadata.push(parsed);
+      continue;
     }
+    const raw = rawAdrStatus(content);
+    skipped.push({
+      adrPath: relativePath,
+      reason: raw ? `unrecognised status "${raw}"` : "no readable title or Status line",
+    });
   }
-  return metadata.sort((left, right) => left.adr_path.localeCompare(right.adr_path));
+  metadata.sort((left, right) => left.adr_path.localeCompare(right.adr_path));
+  skipped.sort((left, right) => left.adrPath.localeCompare(right.adrPath));
+  return { metadata, skipped };
 }
