@@ -39,7 +39,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0029](0029-proactive-constitutional-advice.md) | Proactive constitutional advice (ask-before-act) | Accepted |
 | [0030](0030-discrete-per-agent-identity.md) | Discrete per-agent identity for concurrent coordination | Accepted |
 | [0031](0031-exportable-conformance-evidence.md) | Exportable conformance evidence, the Evidence Board, and a CI conformance gate | Accepted |
-| [0032](0032-single-checkout-fleet-integration.md) | Single-checkout, single-publisher fleet integration | Superseded by |
+| [0032](0032-single-checkout-fleet-integration.md) | Single-checkout, single-publisher fleet integration | Superseded by [ADR-0038](0038-isolated-worktrees-shared-repository-state.md) |
 | [0033](0033-copilot-cli-registration.md) | First-class GitHub Copilot CLI registration for both planes | Accepted |
 | [0034](0034-typed-controls-and-enforcement-ceilings.md) | Typed controls, workflow scope, and enforcement ceilings | Accepted |
 | [0035](0035-fleet-management-heuristics.md) | Fleet management heuristics and feedback | Accepted |

@@ -19,6 +19,14 @@ to [Semantic Versioning](https://semver.org/).
   second list to drift. Only top-level names are validated, and the server's own
   injected keys are exempt: reporting `agent`, which `bind_session` adds itself,
   would blame the caller for the server's work and make binding non-idempotent.
+- **A wrapped `Status:` line no longer loses its reference.** ADR-0032 writes
+  `- Status: Superseded by` and puts `[ADR-0038](...)` on the next line.
+  `scripts/adr-files.mjs` read to the end of the line, so the file parsed as a
+  bare `Superseded by` — and that value reached the ADR index table, the
+  `make design-audit` report, and a question put to a human as "nobody can tell
+  what replaced it". The answer was one line further down, and the superseding
+  commit names ADR-0038 in its `DECISION:` line. The parser now reads indented
+  continuation lines, and the ADR index row for 0032 names its successor again.
 
 ### Added
 - **`attribute_design_decision`: a decision already made can still be signed
