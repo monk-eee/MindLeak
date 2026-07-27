@@ -7,7 +7,7 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **Human review now closes inside the default Work view (ADR-0037).** The
+- **Human review now closes inside the default Work view (ADR-0040).** The
   former Intent Board uses action-oriented labels and puts `Review needed` work
   first, with inline **Accept**, **Retry**, and **Inspect proof** actions backed
   by the existing `resolve_task`, `reopen_task`, and `conformance_history` tools.
