@@ -219,41 +219,70 @@ and footguns, with impact and status:
   A real fix means making the Git fixtures cheaper (a template repository copied
   per test instead of `git init` plus commits), not more pool tuning.
 
-- **23 designs are `accepted` in the ledger with nobody named as the decider,
-  and the count grows on its own — SURFACED, not fixed.** — Found Jul 2026 by
-  the first run of `make design-audit`. `reconcile_designs` imports the status
-  out of the ADR file, so ADR-0001..0019, 0025, 0036, 0037, 0039, 0040 and 0046
-  landed as `accepted` with `decided_by` null. They read as decided and are not:
-  nobody approved them through Lodestar. Because deciding twice is not an undo,
-  `accept_design` refuses them, so they are also *stuck* — the ADR-0047 shape,
-  and the reason `reopen_undecided_design` exists.
+- **Imported ADR statuses landed `accepted` with nobody named as the decider —
+  FIXED (ADR-0051), ledger fully signed.** — Found Jul 2026 by the first
+  run of `make design-audit`. `reconcile_designs` imports the status out of the
+  ADR file, so a large part of the ADR history landed as `accepted` with
+  `decided_by` null. They read as decided and are not: nobody approved them
+  through Lodestar.
+  **Two earlier versions of this entry were wrong, in opposite directions, and
+  both are worth keeping written down.** The first said the repair was
+  mechanical — reopen, then accept — and attempting it on all of them is how we
+  found out otherwise: the stuck rows were all `promotion_status = materialized`,
+  and `reopen_undecided_design` deliberately refuses a row whose promotion has
+  left `not_required` (ADR-0047), because materialized work rests on that
+  acceptance. The second concluded from that the rows were unrepairable, which
+  only held while the missing verb did not exist.
+  [ADR-0051](docs/adr/0051-a-decision-already-made-can-still-be-signed.md) adds
+  it: `attribute_design_decision` records who made a decision the ledger already
+  asserts, changing status, reason and promotion state not at all. It takes
+  precisely the rows `reopen_undecided_design` refuses, so the two verbs
+  partition the undecided rows rather than overlapping, and no guard had to be
+  softened to let the repair through.
+  **All 51 design rows now carry a decider — `list_designs` reports zero
+  unattributed.** Seven rows that had materialized nothing were reopened and
+  decided properly (0015, 0017, 0036, 0037, 0039, 0040, 0046); the rest,
+  including the founding ADR-0001..0014, 0016, 0019, 0025 and 0032, were signed
+  with the new verb.
+  One residue remains, and it is permanent: the decider name is free text and
+  nothing normalises it, so the same person appears as `monk-eee` (49 rows),
+  `monk-ee` (1) and `Lyndon Swan` (1). A typo there cannot be corrected —
+  `attribute_design_decision` refuses a row that already has a name, by design,
+  so a wrong name cannot be quietly rewritten into a different one. Correcting
+  one is superseding a real decision and needs its own verb.
   This is not only inherited history. `DesignBoardController.sync()` calls
   `reconcile_designs` over the whole ADR directory, so **every ADR merged with
   `Status: Accepted` already written in its file becomes another undecided row
-  on the next sync.** ADR-0039, ADR-0040 and ADR-0046 are recent, authored here,
-  and already in the list; ADR-0048 is unregistered today and will be number 24.
-  Impact: the ledger overstates how much has actually been reviewed, which is
-  the one thing it exists to be trusted about, and the overstatement compounds.
-  The repair is mechanical — reopen, then accept with a real decider — but it is
-  23 attributed decisions and should be the human's, not an agent's. Stopping
-  the inflow is a convention question: an ADR authored here would land as
-  `Status: Proposed` and be accepted through the Design Board, so the file
-  follows the decision instead of asserting it.
+  on the next sync.** Stopping the inflow is a convention question: an ADR
+  authored here would land as `Status: Proposed` and be accepted through the
+  Design Board, so the file follows the decision instead of asserting it.
   Earlier this session the ledger was described as "fully remediated" after the
   `proposed` rows were cleared; that was wrong, and only checking a second
   property caught it.
-- **The design ledger could not say `Superseded` — FIXED, but two rows still
-  need a person.** — ADR-0018 and ADR-0032 declare `Superseded by <ref>` while
+- **The design ledger could not say `Superseded` — FIXED; one row still needs a
+  decider first.** — ADR-0018 and ADR-0032 declare `Superseded by <ref>` while
   the ledger had only `proposed`, `accepted`, `rejected`, so both sat `accepted`
   and every ledger-driven view showed a withdrawn decision as live.
   [ADR-0050](docs/adr/0050-a-superseded-decision-is-not-a-stale-one.md) gives a
   design the `superseded_by` link the goal model already has, and
-  `make design-audit` now reports the two files as drift instead of as an
-  unrepresentable note. The remaining work is not code: someone has to run
-  `supersede_design`, because the link is deliberately never inferred from the
-  file. ADR-0018 → ADR-0032 is unambiguous; **ADR-0032's own file says
-  `Superseded by` with no reference at all**, so nobody can tell what replaced
-  it without asking.
+  `make design-audit` now reports an unrecorded supersession as drift instead of
+  as an unrepresentable note. ADR-0018 → ADR-0032 is recorded.
+  ADR-0032 → ADR-0038 cannot be: `supersede_design` requires a recorded
+  `decided_by` and ADR-0032 is one of the unattributed rows above, so it needs
+  the signing verb first. **Its successor was never actually unknown** — see the
+  parser gap below.
+- **A wrapped `Status:` line silently lost its reference — FIXED.** — ADR-0032
+  writes `- Status: Superseded by` and puts `[ADR-0038](...)` on the next line.
+  `scripts/adr-files.mjs` read to the end of the line, so the file parsed as a
+  bare `Superseded by`. That value went into the ADR index table, into
+  `make design-audit`, and into a question put to a human as "nobody can tell
+  what replaced it" — when the answer was one line further down, and the
+  superseding commit (`8c6f0a1`, authored by the maintainer) names ADR-0038 in
+  its `DECISION:` line. Impact: a tool's blind spot was escalated as a knowledge
+  gap. Fixed by reading indented continuation lines, with a regression test in
+  `editors/vscode/scripts/adr-files.test.mjs`. Worth remembering as a class:
+  **check whether the tool can see it before concluding the information is not
+  there.**
 - **A stalled wait is only bounded by the seven-day parking grace — SURFACED,
   not prevented.** — ADR-0046 lets `ask_question` address a peer, so an agent
   can park on one that never answers. The mutual case (a wait cycle) is now
