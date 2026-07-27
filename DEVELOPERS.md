@@ -183,17 +183,26 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
-- **23 designs are `accepted` in the ledger with nobody named as the decider —
-  SURFACED, not fixed.** — Found Jul 2026 by the first run of
-  `make design-audit`. `reconcile_designs` imports the status out of the ADR
-  file, so ADR-0001..0019, 0025, 0036, 0037, 0039, 0040 and 0046 landed as
-  `accepted` with `decided_by` null. They read as decided and are not: nobody
-  approved them through Lodestar. Because deciding twice is not an undo,
+- **23 designs are `accepted` in the ledger with nobody named as the decider,
+  and the count grows on its own — SURFACED, not fixed.** — Found Jul 2026 by
+  the first run of `make design-audit`. `reconcile_designs` imports the status
+  out of the ADR file, so ADR-0001..0019, 0025, 0036, 0037, 0039, 0040 and 0046
+  landed as `accepted` with `decided_by` null. They read as decided and are not:
+  nobody approved them through Lodestar. Because deciding twice is not an undo,
   `accept_design` refuses them, so they are also *stuck* — the ADR-0047 shape,
-  and the reason `reopen_undecided_design` exists. Impact: the ledger overstates
-  how much has actually been reviewed, which is the one thing it exists to be
-  trusted about. Fix is mechanical — reopen, then accept with a real decider —
-  but it is 23 attributed decisions and should be the human's, not an agent's.
+  and the reason `reopen_undecided_design` exists.
+  This is not only inherited history. `DesignBoardController.sync()` calls
+  `reconcile_designs` over the whole ADR directory, so **every ADR merged with
+  `Status: Accepted` already written in its file becomes another undecided row
+  on the next sync.** ADR-0039, ADR-0040 and ADR-0046 are recent, authored here,
+  and already in the list; ADR-0048 is unregistered today and will be number 24.
+  Impact: the ledger overstates how much has actually been reviewed, which is
+  the one thing it exists to be trusted about, and the overstatement compounds.
+  The repair is mechanical — reopen, then accept with a real decider — but it is
+  23 attributed decisions and should be the human's, not an agent's. Stopping
+  the inflow is a convention question: an ADR authored here would land as
+  `Status: Proposed` and be accepted through the Design Board, so the file
+  follows the decision instead of asserting it.
   Earlier this session the ledger was described as "fully remediated" after the
   `proposed` rows were cleared; that was wrong, and only checking a second
   property caught it.
