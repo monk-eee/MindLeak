@@ -168,6 +168,21 @@ to [Semantic Versioning](https://semver.org/).
   review is attributed to a registered session.
 
 ### Fixed
+- **An ADR whose status carries a parenthetical is no longer dropped from the
+  design ledger in silence.** `Accepted (implemented)` is still accepted — a
+  parenthetical is commentary on a decision, not a different lifecycle state.
+  Requiring an exact match meant ADR-0015 and ADR-0017 were never registered at
+  all, while the sync kept reporting success with a quietly lower count. An
+  accepted decision the ledger has never heard of is precisely what the ledger
+  exists to prevent, so the parser now maps a qualified status to its lifecycle
+  state, and any ADR it still cannot read is reported by path and reason to the
+  output channel and a warning rather than skipped invisibly.
+- **One unreadable materialization no longer blanks the whole Design Board.**
+  The refresh fanned `design_promotion` out across every materialized design
+  with `Promise.all`, so a single rejection rejected the batch and the view kept
+  its stale contents behind one error toast — the board looked out of date
+  rather than broken. It now settles each lookup independently, logs the failed
+  design id, and renders every row it could read.
 - **The extension relaunches its MCP server instead of going quietly dead.**
   The VS Code extension spawns its own `mindleak-mcp` and `lodestar-mcp`
   children, and nothing restarted them when one exited mid-session — a crash,

@@ -130,6 +130,27 @@ export function extractAdrSummary(content: string): string {
   return (boundary > 0 ? clipped.slice(0, boundary) : clipped).trimEnd();
 }
 
+/** The `- Status:` line, with markdown emphasis stripped, lowercased. */
+const ADR_STATUS_PATTERN = /^\s*-?\s*(?:\*\*)?Status:(?:\*\*)?\s*([^\r\n]+)/im;
+
+export function rawAdrStatus(content: string): string | undefined {
+  return content.match(ADR_STATUS_PATTERN)?.[1]?.replace(/\*/g, "").trim().toLowerCase();
+}
+
+/**
+ * `Accepted (implemented)` is still accepted: a parenthetical is commentary on
+ * a decision, not a different lifecycle state. Requiring an exact match dropped
+ * ADR-0015 and ADR-0017 from the ledger entirely — the board cannot show a
+ * design it never registered, and nothing reported the loss.
+ *
+ * A status this cannot map (`Superseded by ...`) still returns undefined, but
+ * the caller is expected to say so rather than skip in silence.
+ */
+export function normalizeAdrStatus(raw: string | undefined): DesignStatus | undefined {
+  const head = raw?.replace(/\s*\(.*$/, "").trim();
+  return head && isDesignStatus(head) ? head : undefined;
+}
+
 export function parseAdrMetadata(
   adrPath: string,
   content: string,
@@ -137,19 +158,15 @@ export function parseAdrMetadata(
 ): DesignMetadata | null {
   const normalizedPath = adrPath.replace(/\\/g, "/");
   const title = content.match(/^#\s+(.+?)\s*$/m)?.[1]?.trim();
-  const statusText = content
-    .match(/^\s*-?\s*(?:\*\*)?Status:(?:\*\*)?\s*([^\r\n]+)/im)?.[1]
-    ?.replace(/\*/g, "")
-    .trim()
-    .toLowerCase();
-  if (!title || !statusText || !isDesignStatus(statusText)) {
+  const status = normalizeAdrStatus(rawAdrStatus(content));
+  if (!title || !status) {
     return null;
   }
   return {
     adr_path: normalizedPath,
     title,
     summary: extractAdrSummary(content),
-    status: statusText,
+    status,
     ...(proposedBy ? { proposed_by: proposedBy } : {}),
   };
 }
