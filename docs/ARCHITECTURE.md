@@ -61,17 +61,33 @@ root retains the single timed telemetry wrapper around dispatch.
 
 The **durable** counterpart to the decay graph (ADR-0004): a separate crate and
 store so the zero-token decay engine stays uncontaminated. Modules: `model`
-(goals/tasks/knowledge), `policy` (immutable pack schema/digest validation and
-the five-clause Common Core), `schema.sql`, `db` (+ a knowledge `effective_weight`
-scalar), `decay` (long-horizon revalidation), `store` (`LodestarStore`: the
-`goals` and goal↔code seam, `coordination` task/handoff/conformance ledger,
-transactional `policy_packs` proposal/disposition/provenance ledger, reviewed
-`design` materialization plus validation, learned `knowledge`, and `lifecycle`
-operations), `llm` (optional local model), and `lib` (the `Lodestar`
-facade wiring). Facade behavior is grouped under `facade/`: `constitution`,
-`executive`, `design`, `design_materialization`, `conformance`, and `knowledge`.
+(goals/tasks/knowledge), `design` (design items and materialization plans),
+`policy` (immutable pack schema/digest validation and the five-clause Common
+Core), `controls` (typed enforcement mechanisms and their ceilings, ADR-0034),
+`amendment` and `waiver` (changing adopted policy, and bounded exceptions to it,
+ADR-0039), `scope` (the one matcher both clauses and waivers use, so the two
+cannot disagree about how far a scope reaches), `fleet` (staleness and
+divergence derived from declared session context), `stalls` (why work is not
+moving — a pure function over the board), `discovery`, `schema.sql` +
+`indexes.sql`, `db` (+ a knowledge `effective_weight` scalar), `decay`
+(long-horizon revalidation), `store` (`LodestarStore`: the `goals` and goal↔code
+seam, `coordination` task/handoff/conformance ledger, transactional
+`policy_packs` proposal/disposition/provenance ledger, reviewed `design`
+materialization plus validation, `amendments` and `waivers`, learned
+`knowledge`, and `lifecycle` operations), `llm` (optional local model), and
+`lib` (the `Lodestar` facade wiring). Facade behavior is grouped under
+`facade/`: `constitution`, `executive`, `design`, `design_materialization`,
+`conformance`, `controls`, `amendments`, `waivers`, `advice`, `fleet`,
+`evidence`, and `knowledge`.
 Each design materialization writes an immutable plan revision; task/goal link
 tables are the current projection and can be repaired without deleting history.
+
+**Boot order is load-bearing.** `db::configure` applies `schema.sql`, then
+migrations, then `indexes.sql`. Indexes live in their own file because an index
+over a column a migration adds cannot be created before that migration runs: on
+an existing database `CREATE TABLE IF NOT EXISTS` is a no-op, so the whole batch
+fails and the migration never runs. Keeping the phases ordered makes that
+structural rather than something each migration author must remember.
 
 **Repository topology (ADR-0038).** Every concurrent workstream uses its own Git
 worktree and branch. `mindleak.repositoryId` lives in shared local Git config and
@@ -107,9 +123,22 @@ parallel policy source: `Goal` remains the constitutional clause, while
 `constitution_versions` freezes attributed snapshots and `policy_packs` copies
 reviewed clauses into local goals with source provenance. Pack rejections remain
 durable; conflicts require review; upstream versions cannot mutate local law.
-The remaining layers are deterministic repository bootstrap/atomic activation,
-typed controls, amendments/waivers, and adoption proof. See
+Typed controls, ratchets, amendments, and bounded waivers have since landed on
+top of that: a **control** declares the enforcement power a clause actually has
+and the ceiling it implies; a **ratchet** binds a metric that must not regress to
+a clause and refuses to set its own baseline (ADR-0037); an **amendment** is the
+only way to change adopted policy, carrying every active clause forward so the
+diff shows what actually changed; and a **waiver** is the reviewable form of
+`--no-verify` — scoped, attributed, and always expiring, because an exception
+that never ends is the policy (ADR-0039). See
 [`SPEC-CONSTITUTION.md`](SPEC-CONSTITUTION.md).
+
+**Knowing why nothing is moving is a first-class read.** `stalls` reports lapsed
+leases, work awaiting a human or a peer agent, deadlocked waits, blocks behind
+something no agent will advance, and paused work. It is read-only, evidence-free,
+and deliberately threshold-free: it reports how long a stall has been true and
+leaves "is that too long?" to a person, because a staleness threshold invented in
+the engine would become policy nobody agreed to.
 
 [ADR-0024](adr/0024-preflight-overlap-detection.md) adds the coordination layer
 above the compare-and-swap claim. Lodestar stores optional claim path globs and
@@ -127,7 +156,11 @@ discipline.
 A second MCP stdio server exposing the Intent Plane tools for constitution,
 tasks, conformance, and knowledge. It uses the same newline-delimited JSON-RPC
 as `mindleak-mcp`; schemas and handlers are grouped under `tools/` by
-constitution, executive, conformance, knowledge, and lifecycle responsibility.
+constitution, executive, conformance, knowledge, lifecycle, controls,
+amendments, waivers, design, design materialization, evidence, and fleet
+responsibility. See [`USAGE.md`](USAGE.md) for the workflows those verbs
+compose into — the tool tables in [`README.md`](../README.md) describe each verb,
+not the order to call them in.
 
 ### `editors/vscode` (extension)
 
