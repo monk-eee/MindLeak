@@ -410,7 +410,10 @@ mod tests {
 
         let sessions = SessionRegistry::new("reviewer").unwrap();
         let identity = sessions
-            .open_session("00112233445566778899aabbccddeeff")
+            .open_session(
+                "00112233445566778899aabbccddeeff",
+                mindleak_session::SessionContext::default(),
+            )
             .unwrap();
         let params = json!({
             "name": "review_pack_clause",
