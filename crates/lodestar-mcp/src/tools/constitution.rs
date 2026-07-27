@@ -154,6 +154,11 @@ pub(super) fn definitions() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
+            "name": "propose_fleet_delivery",
+            "description": "Register and propose the optional fleet-delivery pack: protected-branch review, single publisher, commit identity, scoped commits, branch freshness, and topology honesty. Proposals only — every clause still needs an explicit adopt, tailor, or reject before it governs anything.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
             "name": "list_pack_proposals",
             "description": "List policy-pack clause proposals for one pack/version and constitution context.",
             "inputSchema": {
@@ -290,6 +295,11 @@ pub(super) fn dispatch(
         "propose_common_core" => Some((|| {
             ok(&engine
                 .propose_common_core()
+                .map_err(|error| error.to_string())?)
+        })()),
+        "propose_fleet_delivery" => Some((|| {
+            ok(&engine
+                .propose_fleet_delivery()
                 .map_err(|error| error.to_string())?)
         })()),
         "list_pack_proposals" => Some((|| {
