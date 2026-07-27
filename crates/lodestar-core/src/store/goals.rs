@@ -328,26 +328,41 @@ impl LodestarStore {
     /// Completing that contract is therefore explicit and attributable, never a
     /// side effect of defining the clause — a rule should not silently acquire
     /// the power to block.
+    ///
+    /// Waivability is part of the same contract (SPEC-CONSTITUTION §9): a clause
+    /// that can block should also say whether it can be excepted and by whom.
+    /// The default is `false`, so a clause refuses exceptions by omission rather
+    /// than granting them by omission.
     pub fn complete_clause_contract(
         &self,
         goal_id: &str,
         scope: &str,
         evidence_contract: &str,
         consequence: Option<Consequence>,
+        waivable: bool,
+        waiver_authority: Option<&str>,
     ) -> Result<Goal> {
         if scope.trim().is_empty() || evidence_contract.trim().is_empty() {
             return Err(LodestarError::Invalid(
                 "an enforcement contract requires a scope and an evidence contract".to_string(),
             ));
         }
+        if !waivable && waiver_authority.is_some_and(|a| !a.trim().is_empty()) {
+            return Err(LodestarError::Invalid(
+                "an unwaivable clause cannot name a waiver authority".to_string(),
+            ));
+        }
         let changed = self.conn.execute(
-            "UPDATE goals SET scope = ?2, evidence_contract = ?3, consequence = ?4
+            "UPDATE goals SET scope = ?2, evidence_contract = ?3, consequence = ?4,
+                    waivable = ?5, waiver_authority = ?6
              WHERE id = ?1 AND status <> 'superseded'",
             params![
                 goal_id,
                 scope.trim(),
                 evidence_contract.trim(),
-                consequence.map(|value| value.as_str())
+                consequence.map(|value| value.as_str()),
+                waivable,
+                waiver_authority.map(str::trim).filter(|a| !a.is_empty())
             ],
         )?;
         if changed == 0 {

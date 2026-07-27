@@ -311,6 +311,8 @@ coordinate through one plane.
 | `governing_for_task` | The clauses governing a task's linked scope — what the Intent Board surfaces on a claimed task (ADR-0029). |
 | `register_ratchet` / `accept_ratchet_baseline` | Bind a metric that must not regress to one clause, then accept the reviewed baseline it compares against. A ratchet never moves its own baseline, and reports `unknown` until one exists. |
 | `observe_ratchet` / `clause_controls` | Report a measurement and resolve it through its clause, capped at `review` by the ratchet's observed power (ADR-0034); and list the mechanisms behind a clause with the force each actually has. |
+| `grant_waiver` / `revoke_waiver` | The reviewable form of `--no-verify`: a scoped, expiring, attributed exception to one clause. Refuses an unwaivable clause, the wrong approver, and any expiry not in the future — a permanent exception is an amendment. Revocation is immediate for future checks and never retroactive. |
+| `clause_waivers` / `active_waivers` | Every exception ever granted against a clause (a rule waived repeatedly is a rule that wants amending), and everything not being enforced right now, soonest to expire first. |
 | `export_constitution` | Render the constitution to committed-friendly markdown. |
 | `create_task` / `decompose_goal` | Add claimable work; `create_task(blocked_by=...)` creates a progressive handoff. |
 | `next_task` | Suggest the next unblocked, claimable task. |

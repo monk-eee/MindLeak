@@ -10,6 +10,7 @@ mod evidence;
 mod executive;
 mod knowledge;
 mod lifecycle;
+mod waivers;
 
 use lodestar_core::Lodestar;
 use mindleak_session::SessionRegistry;
@@ -23,6 +24,7 @@ pub fn list() -> Vec<Value> {
     tools.extend(executive::definitions());
     tools.extend(conformance::definitions());
     tools.extend(controls::definitions());
+    tools.extend(waivers::definitions());
     tools.extend(knowledge::definitions());
     tools.extend(lifecycle::definitions());
     tools.extend(design::definitions());
@@ -82,6 +84,9 @@ pub fn call(engine: &Lodestar, params: &Value) -> Result<Value, String> {
     if let Some(result) = controls::dispatch(engine, name, &args) {
         return result;
     }
+    if let Some(result) = waivers::dispatch(engine, name, &args) {
+        return result;
+    }
     if let Some(result) = knowledge::dispatch(engine, name, &args) {
         return result;
     }
@@ -133,6 +138,8 @@ fn requires_session(name: &str) -> bool {
             | "resume_task"
             | "check_conformance"
             | "accept_ratchet_baseline"
+            | "grant_waiver"
+            | "revoke_waiver"
     )
 }
 

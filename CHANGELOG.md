@@ -7,6 +7,48 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Bounded waivers: the reviewable form of `--no-verify` (ADR-0026 task 5,
+  SPEC-CONSTITUTION §9).** `grant_waiver` records a scoped, expiring, attributed
+  exception to one clause, and `revoke_waiver` withdraws it. An exception was
+  always possible — `--no-verify` and a commented-out check are exceptions too,
+  just unattributed, unbounded, and invisible. A waiver is the same act made
+  reviewable.
+  **Every waiver ends.** There is no open-ended waiver, because an exception
+  that never expires is not an exception — it is the policy, and changing policy
+  is an amendment. That one refusal is what stops the waiver table becoming a
+  second constitution nobody reviewed. Granting also refuses a clause that
+  declares itself unwaivable (otherwise `waivable: false` is decorative) and an
+  approver who is not the authority the clause names — so an agent session
+  cannot approve an exception to a clause reserved to a human.
+  **Expiry is not a status transition.** A lapsed waiver keeps `status: active`
+  and simply stops matching, so enforcement returns with nothing having run and
+  history reads as it was judged rather than being rewritten by the passage of
+  time. Revocation is immediate for future checks, attributed, and never a
+  delete — the exception happened, and the record survives.
+  A waived breach is **not** silent: the conformance findings name the waiver,
+  its approver, and its expiry, so a waived change and a change that never
+  touched a governed node are distinguishable in the audit.
+- **Waiver state is part of the conformance token (ADR-0025).** A check made
+  while an exception was in force is not evidence about a world where it was
+  revoked, and one made under enforcement is not evidence about a world where an
+  exception was since granted. The token records each waiver's status *and*
+  expiry, so it also stops matching once a waiver lapses — which no row rewrite
+  would otherwise signal.
+- **`clause_waivers` / `active_waivers` make exceptions countable.** How often a
+  rule has been excepted is usually the more useful question than what is
+  excepted right now: a clause waived repeatedly is a clause that wants
+  amending.
+
+### Changed
+- **Scope matching moved to one shared `scope` module.** Clauses and waivers
+  both declare scope, and forking the matcher would let the two disagree about
+  what a scope reaches. It stays deliberately not a glob engine — exact match,
+  or a trailing `**` — because the point of a bounded exception is that a
+  reviewer can see how far it goes.
+- **A clause's enforcement contract now also declares waivability and
+  authority.** A clause that can block should say whether it can be excepted and
+  by whom, and the default is `false`, so a clause refuses exceptions by
+  omission rather than granting them by omission.
 - **Reviewed ratchets: a metric that must not regress, bound to a clause
   (ADR-0026 task 4, ADR-0034).** `register_ratchet` binds a metric and a
   direction to one constitutional clause; `accept_ratchet_baseline` records the

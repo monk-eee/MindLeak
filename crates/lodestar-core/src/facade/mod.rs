@@ -8,6 +8,7 @@ mod design_materialization;
 mod evidence;
 mod executive;
 mod knowledge;
+mod waivers;
 
 #[cfg(test)]
 pub(super) mod test_support {

@@ -24,6 +24,7 @@ mod lifecycle;
 mod policy_packs;
 #[cfg(test)]
 mod test_support;
+mod waivers;
 
 pub(crate) use coordination::ConformanceAudit;
 
