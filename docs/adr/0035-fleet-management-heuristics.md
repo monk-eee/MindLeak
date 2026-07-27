@@ -1,6 +1,6 @@
 # ADR-0035: Fleet management heuristics and feedback
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-27
 - Deciders: MindLeak maintainers
 - Related: [ADR-0030](0030-discrete-per-agent-identity.md) (session identity),

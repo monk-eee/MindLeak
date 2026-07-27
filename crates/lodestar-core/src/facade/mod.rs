@@ -2,6 +2,7 @@
 mod advice;
 mod conformance;
 mod constitution;
+mod controls;
 mod design;
 mod design_materialization;
 mod evidence;

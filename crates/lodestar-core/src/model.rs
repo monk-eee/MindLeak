@@ -46,8 +46,9 @@ impl GoalKind {
 
 /// The proportional outcome when a clause is not met (SPEC-CONSTITUTION §4/§8):
 /// uncertainty asks for review, only a specific active clause with adequate
-/// evidence can hard-block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// evidence can hard-block. Ordered by severity: `advise < review < block`, so
+/// the ADR-0034 ceiling rule can take a minimum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Consequence {
     /// Surface guidance; never blocks.

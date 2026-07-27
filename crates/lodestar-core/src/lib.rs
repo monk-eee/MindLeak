@@ -6,6 +6,7 @@
 //! conformance check that flags drift/violations, and consolidated learned
 //! knowledge that is durable-but-revalidated (ADR-0004, ADR-0005, SPEC-INTENT).
 
+pub mod controls;
 pub mod db;
 pub mod decay;
 pub mod design;
