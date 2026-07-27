@@ -7,6 +7,19 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`reopen_undecided_design` lets an imported status become a real decision
+  (ADR-0047).** `reconcile_designs` imports each ADR's declared `Status:`
+  faithfully — importing thirty-five settled decisions as `proposed` would
+  misrepresent the repository's own record — but reconciliation observes a
+  file, it does not witness a decision, so the row lands with `decided_by`
+  empty. Deciding is guarded on `proposed`, so that row was then frozen:
+  permanently asserting a decision nobody could be named for. Hit on ADR-0045,
+  where a reviewer said "I agree with it" and `accept_design` answered
+  *already accepted; only a proposed item can be decided*. The new verb returns
+  such a row to `proposed`. It is not an undo: a design carrying a `decided_by`
+  is refused, because superseding a recorded human act is a new decision rather
+  than the erasure of the old one, and so is one whose promotion has already
+  materialized work.
 - **`stalled_work` and the fleet view now read one wait graph, and the parked
   taxonomy stopped lying (ADR-0046).** These landed as two independent answers
   to "why is this not moving?" and immediately disagreed: `stalled_work` labelled

@@ -77,6 +77,17 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "reopen_undecided_design",
+            "description": "Return a design whose status nobody ever decided to 'proposed', so a human can decide it (ADR-0047). An imported status reflects a decision but records none, leaving decided_by empty, and because deciding is guarded on 'proposed' the row is frozen: it asserts a decision that can never be attributed. This is NOT an undo. A design carrying a decided_by is a recorded human act and is refused; superseding it is a new decision, not the erasure of the old one. Also refused once promotion has materialised work, or after retirement.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Design item id, e.g. design:0045-...." }
+                },
+                "required": ["id"]
+            }
+        }),
+        json!({
             "name": "accept_design",
             "description": "Human acceptance of a design item (ADR-0023): the attributed, guarded human decision only. The design becomes accepted with promotion state 'pending' — it does NOT run code conformance and does NOT create tasks. Materialise the work with promote_design. No agent may accept its own design.",
             "inputSchema": {
@@ -149,6 +160,12 @@ pub(super) fn dispatch(
                     req_str(args, "human")?,
                     req_str(args, "reason")?,
                 )
+                .map_err(|e| e.to_string())?;
+            ok(&item)
+        })()),
+        "reopen_undecided_design" => Some((|| {
+            let item = engine
+                .reopen_undecided_design(req_str(args, "id")?)
                 .map_err(|e| e.to_string())?;
             ok(&item)
         })()),
