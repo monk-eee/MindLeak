@@ -9,7 +9,7 @@ mod lifecycle;
 mod telemetry;
 
 use mindleak_core::MindLeak;
-use mindleak_session::SessionRegistry;
+use mindleak_session::{session_input_schema, SessionContext, SessionRegistry};
 use mindleak_storage::StorageStatus;
 use serde_json::{json, Value};
 
@@ -41,8 +41,12 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
             .get("session_id")
             .and_then(Value::as_str)
             .ok_or_else(|| "missing required argument: session_id".to_string())?;
-        let identity = sessions.open_session(token)?;
+        let declared = SessionContext::from_arguments(&Value::Object(args.clone()))?;
+        let identity = sessions.open_session(token, declared)?;
         args.insert("resolved_agent".to_string(), json!(identity.agent_id));
+        if let Some(context) = identity.context.declared_json() {
+            args.insert("resolved_context".to_string(), context);
+        }
         return Ok(bound);
     }
     if requires_session(name) {
@@ -103,9 +107,11 @@ fn dispatch(
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
 
     if name == "open_session" {
-        return Ok(text_result(&json!({
-            "agent_id": req_str(&args, "resolved_agent")?,
-        })));
+        let mut body = json!({ "agent_id": req_str(&args, "resolved_agent")? });
+        if let Some(context) = args.get("resolved_context") {
+            body["context"] = context.clone();
+        }
+        return Ok(text_result(&body));
     }
     if name == "storage_status" {
         let status = storage.ok_or("storage status is unavailable")?;
@@ -138,14 +144,8 @@ fn dispatch(
 fn session_definition() -> Value {
     json!({
         "name": "open_session",
-        "description": "Register one client-minted 128-bit session id and return its stable cross-plane agent identity. Reuse the same session_id on every identity-bearing tool call and after server restarts.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "session_id": { "type": "string", "pattern": "^[0-9a-f]{32}$" }
-            },
-            "required": ["session_id"]
-        }
+        "description": "Register one client-minted 128-bit session id and return its stable cross-plane agent identity. Optionally declare where this session is working (branch, head_sha, base, dirty); the server records what you declare and never inspects Git itself. Reuse the same session_id on every identity-bearing tool call and after server restarts.",
+        "inputSchema": session_input_schema()
     })
 }
 
@@ -290,6 +290,63 @@ mod tests {
 
     pub(super) fn content_text(result: &Value) -> String {
         result["content"][0]["text"].as_str().unwrap().to_string()
+    }
+
+    fn open_session_body(sessions: &SessionRegistry, arguments: Value) -> Value {
+        let engine = MindLeak::open_in_memory().expect("in-memory engine");
+        let params = json!({ "name": "open_session", "arguments": arguments });
+        let bound = bind_session(&params, sessions).expect("session binds");
+        let result = call(&engine, &bound).expect("open_session succeeds");
+        serde_json::from_str(&content_text(&result)).expect("body is JSON")
+    }
+
+    // ADR-0035 decisions 1 and 6: a client may declare where it is working, and
+    // one that declares nothing gets byte-for-byte the response it got before
+    // working context existed — no `context`, no nulls, nothing to guess at.
+    #[test]
+    fn open_session_records_declared_context_and_omits_it_when_undeclared() {
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        const TOKEN: &str = "00112233445566778899aabbccddeeff";
+
+        let undeclared = open_session_body(&sessions, json!({ "session_id": TOKEN }));
+        assert!(undeclared["agent_id"].is_string());
+        assert!(undeclared.get("context").is_none());
+
+        let declared = open_session_body(
+            &sessions,
+            json!({
+                "session_id": TOKEN,
+                "branch": "fleet/typed-controls",
+                "head_sha": "7723f78",
+                "base": "origin/main",
+                "dirty": true,
+            }),
+        );
+        assert_eq!(declared["agent_id"], undeclared["agent_id"]);
+        assert_eq!(declared["context"]["branch"], "fleet/typed-controls");
+        assert_eq!(declared["context"]["head_sha"], "7723f78");
+        assert_eq!(declared["context"]["base"], "origin/main");
+        assert_eq!(declared["context"]["dirty"], true);
+
+        // Declared context is durable for the token, so a later call resolves it.
+        assert_eq!(
+            sessions.resolve(TOKEN).unwrap().context.branch.unwrap(),
+            "fleet/typed-controls"
+        );
+    }
+
+    // A malformed declaration is refused rather than silently ignored: the
+    // client asked for something it did not get.
+    #[test]
+    fn open_session_refuses_a_malformed_declaration() {
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        let params = json!({
+            "name": "open_session",
+            "arguments": { "session_id": "00112233445566778899aabbccddeeff", "dirty": "yes" }
+        });
+
+        let error = bind_session(&params, &sessions).unwrap_err();
+        assert!(error.contains("dirty"), "unexpected error: {error}");
     }
 
     #[test]

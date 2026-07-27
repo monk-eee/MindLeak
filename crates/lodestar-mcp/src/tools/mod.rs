@@ -14,7 +14,7 @@ mod lifecycle;
 mod waivers;
 
 use lodestar_core::Lodestar;
-use mindleak_session::SessionRegistry;
+use mindleak_session::{session_input_schema, SessionContext, SessionRegistry};
 use mindleak_storage::StorageStatus;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -48,8 +48,12 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
             .get("session_id")
             .and_then(Value::as_str)
             .ok_or_else(|| "missing required string arg: session_id".to_string())?;
-        let identity = sessions.open_session(token)?;
+        let declared = SessionContext::from_arguments(&Value::Object(args.clone()))?;
+        let identity = sessions.open_session(token, declared)?;
         args.insert("resolved_agent".to_string(), json!(identity.agent_id));
+        if let Some(context) = identity.context.declared_json() {
+            args.insert("resolved_context".to_string(), context);
+        }
         return Ok(bound);
     }
     if requires_session(name) {
@@ -81,7 +85,11 @@ pub fn call_with_storage(
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
 
     if name == "open_session" {
-        return ok(&json!({ "agent_id": req_str(&args, "resolved_agent")? }));
+        let mut body = json!({ "agent_id": req_str(&args, "resolved_agent")? });
+        if let Some(context) = args.get("resolved_context") {
+            body["context"] = context.clone();
+        }
+        return ok(&body);
     }
     if name == "storage_status" {
         return ok(storage.ok_or("storage status is unavailable")?);
@@ -128,14 +136,8 @@ pub fn call_with_storage(
 fn session_definition() -> Value {
     json!({
         "name": "open_session",
-        "description": "Register one client-minted 128-bit session id and return its stable cross-plane agent identity. Reuse the same session_id on every identity-bearing tool call and after server restarts.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "session_id": { "type": "string", "pattern": "^[0-9a-f]{32}$" }
-            },
-            "required": ["session_id"]
-        }
+        "description": "Register one client-minted 128-bit session id and return its stable cross-plane agent identity. Optionally declare where this session is working (branch, head_sha, base, dirty); the server records what you declare and never inspects Git itself. Reuse the same session_id on every identity-bearing tool call and after server restarts.",
+        "inputSchema": session_input_schema()
     })
 }
 
@@ -282,6 +284,42 @@ mod tests {
     use super::*;
     use mindleak_storage::DatabaseOrigin;
     use std::path::PathBuf;
+
+    // ADR-0035 decisions 1 and 6, on the Intent Plane. Both planes share one
+    // registry and one input schema, so the risk is that only one of them is
+    // actually wired; this proves the Lodestar side records and echoes what a
+    // client declares, and stays silent when it declares nothing.
+    #[test]
+    fn open_session_records_declared_context_and_omits_it_when_undeclared() {
+        let engine = Lodestar::open_in_memory().expect("in-memory engine");
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        const TOKEN: &str = "00112233445566778899aabbccddeeff";
+        let body = |arguments: Value| -> Value {
+            let params = json!({ "name": "open_session", "arguments": arguments });
+            let bound = bind_session(&params, &sessions).expect("session binds");
+            let result = call(&engine, &bound).expect("open_session succeeds");
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap())
+                .expect("body is JSON")
+        };
+
+        let undeclared = body(json!({ "session_id": TOKEN }));
+        assert!(undeclared["agent_id"].is_string());
+        assert!(undeclared.get("context").is_none());
+
+        let declared = body(json!({
+            "session_id": TOKEN,
+            "branch": "fleet/typed-controls",
+            "dirty": false,
+        }));
+        assert_eq!(declared["agent_id"], undeclared["agent_id"]);
+        assert_eq!(declared["context"]["branch"], "fleet/typed-controls");
+        assert_eq!(declared["context"]["dirty"], false);
+        assert!(declared["context"].get("head_sha").is_none());
+        assert_eq!(
+            sessions.resolve(TOKEN).unwrap().context.branch.unwrap(),
+            "fleet/typed-controls"
+        );
+    }
 
     #[test]
     fn tool_contract_requires_evidence_and_exposes_binding_mode() {
