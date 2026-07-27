@@ -36,6 +36,12 @@ impl LodestarStore {
     /// stays genuinely idempotent.
     pub fn reconcile_design_item(&self, metadata: &DesignMetadata, now: i64) -> Result<DesignItem> {
         let id = design_id_from_path(&metadata.adr_path);
+        // The declared status is imported as-is, so a repository's ADR history
+        // arrives as the record it already is rather than as 35 decisions
+        // pretending to be pending. The cost is that an imported status has no
+        // `decided_by`: it reflects a decision, it does not record one. That is
+        // visible in the row, and `reopen_undecided_design` is the way to turn
+        // one into an attributed decision (ADR-0047).
         self.conn.execute(
             "INSERT INTO design_items
                 (id, adr_path, title, summary, status, proposed_by, decided_by,
@@ -63,6 +69,31 @@ impl LodestarStore {
         )?;
         self.get_design_item(&id)?
             .ok_or_else(|| LodestarError::NotFound(id))
+    }
+
+    /// Return a design whose status was never actually decided to `proposed`,
+    /// so a human can decide it (ADR-0047).
+    ///
+    /// Guarded on `decided_by IS NULL`: a real decision carries an actor, and
+    /// this verb must never be able to erase one. It also refuses once
+    /// promotion has moved off `not_required`, because materialized work rests
+    /// on that acceptance. What remains is exactly the damage an over-trusting
+    /// reconciliation caused — a status with nobody behind it.
+    pub fn reopen_undecided_design(&self, id: &str, now: i64) -> Result<bool> {
+        if self.get_design_item(id)?.is_none() {
+            return Err(LodestarError::NotFound(id.to_string()));
+        }
+        let changed = self.conn.execute(
+            "UPDATE design_items
+             SET status = 'proposed', reason = NULL, updated_at = ?2
+             WHERE id = ?1
+               AND decided_by IS NULL
+               AND status <> 'proposed'
+               AND promotion_status = 'not_required'
+               AND retired_at IS NULL",
+            params![id, now],
+        )?;
+        Ok(changed == 1)
     }
 
     /// Register a new proposed design item. Fails if the ADR is already
