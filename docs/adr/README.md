@@ -48,6 +48,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0038](0038-isolated-worktrees-shared-repository-state.md) | Isolated worktrees, shared repository state, reviewed convergence | Accepted |
 | [0039](0039-waivers-end-amendments-change.md) | Every waiver ends; changing the rule is an amendment | Accepted |
 | [0040](0040-one-work-surface.md) | One Work surface with advanced proof | Accepted |
+| [0042](0042-designs-are-retired-by-a-person.md) | A design is retired by a person, never by a missing file | Proposed |
 
 ## Writing a new ADR
 
