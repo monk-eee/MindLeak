@@ -253,7 +253,7 @@ pub struct RatchetBaseline {
 /// ratchet cannot determine whether coverage is the right proxy for confidence —
 /// baking that judgement into the engine would answer, on every project's
 /// behalf, the one question the mechanism is not entitled to answer. A project
-/// registers the ratchets its own clauses justify.
+/// registers the ratchets its own clauses justify. See ADR-0037.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Ratchet {
     pub control_id: String,

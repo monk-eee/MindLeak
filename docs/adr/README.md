@@ -44,6 +44,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0034](0034-typed-controls-and-enforcement-ceilings.md) | Typed controls, workflow scope, and enforcement ceilings | Proposed |
 | [0035](0035-fleet-management-heuristics.md) | Fleet management heuristics and feedback | Accepted |
 | [0036](0036-forbid-change-is-its-own-consequence.md) | A `forbid_change` lock is its own consequence declaration | Accepted |
+| [0037](0037-ratchet-baselines-are-not-self-adopted.md) | A ratchet never sets its own baseline | Accepted |
 | [0038](0038-isolated-worktrees-shared-repository-state.md) | Isolated worktrees, shared repository state, reviewed convergence | Accepted |
 
 ## Writing a new ADR
