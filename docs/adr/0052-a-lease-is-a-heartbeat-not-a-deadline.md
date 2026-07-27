@@ -1,6 +1,6 @@
 # ADR-0052: A lease is a heartbeat, not a deadline
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-27
 - Deciders: MindLeak maintainers
 - Related: [ADR-0030](0030-discrete-per-agent-identity.md) (per-agent identity),

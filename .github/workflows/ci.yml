@@ -58,6 +58,12 @@ jobs:
         run: npm test
       - name: Compile
         run: npm run compile
+      # A fragment that cannot be placed is silently lost at release (ADR-0056).
+      # The pre-commit hook catches it locally; this catches a push that skipped
+      # hooks, and costs nothing when changelog.d is empty.
+      - name: Changelog fragments
+        run: node scripts/changelog.mjs --check
+        working-directory: .
 
   extension-host:
     name: VS Code 1.93 Extension Host smoke
