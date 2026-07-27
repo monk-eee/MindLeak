@@ -72,6 +72,58 @@ const runPublisher = (repo, args = [], env = process.env) =>
     env: isolatedGitEnvironment(env),
   });
 
+const SESSION = "0123456789abcdef0123456789abcdef";
+const AGENT = "session:v1:test:0123456789abcdef0123456789abcdef";
+
+/**
+ * A stub ledger speaking the server's newline-delimited JSON-RPC.
+ *
+ * Publication now requires a live claim (ADR-0049), so a sandbox with no ledger
+ * could only ever assert refusal. Standing one up keeps the publish path itself
+ * under test rather than trading that coverage away for the new guard.
+ */
+const stubLedger = (root, { claims = [], overlaps = [] } = {}) => {
+  const path = join(root, "stub-ledger.mjs");
+  const source = [
+    'import { createInterface } from "node:readline";',
+    `const board = ${JSON.stringify(claims)};`,
+    `const overlaps = ${JSON.stringify(overlaps)};`,
+    "const reply = (id, value) =>",
+    "  process.stdout.write(",
+    "    JSON.stringify({",
+    '      jsonrpc: "2.0",',
+    "      id,",
+    '      result: { content: [{ type: "text", text: JSON.stringify(value) }] },',
+    '    }) + "\\n",',
+    "  );",
+    'createInterface({ input: process.stdin }).on("line", (line) => {',
+    "  if (!line.trim()) return;",
+    "  const message = JSON.parse(line);",
+    '  if (message.method === "initialize") return;',
+    "  const name = message.params?.name;",
+    `  if (name === "open_session") reply(message.id, { agent_id: ${JSON.stringify(AGENT)} });`,
+    '  else if (name === "board") reply(message.id, board);',
+    '  else if (name === "check_overlap") reply(message.id, { claims: overlaps });',
+    "});",
+    "",
+  ].join("\n");
+  writeFileSync(path, source);
+  return path;
+};
+
+const claimEnv = (root, options) => ({
+  ...process.env,
+  LODESTAR_SESSION_ID: SESSION,
+  LODESTAR_MCP_BIN: stubLedger(root, options),
+});
+
+const liveClaim = {
+  id: "task:live",
+  status: "claimed",
+  owner: AGENT,
+  lease_expires_at: Math.floor(Date.now() / 1000) + 3600,
+};
+
 describe("canonical-push", () => {
   it("refuses direct publication from main", () => {
     const { repo } = sandbox();
@@ -158,13 +210,63 @@ describe("canonical-push", () => {
     commitFile(repo, "feature.txt", "feature\n", "fleet feature");
     const expected = git(repo, ["rev-parse", "HEAD"]);
 
-    const result = runPublisher(repo);
+    const result = runPublisher(repo, [], claimEnv(root, { claims: [liveClaim] }));
 
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toMatch(/published HEAD -> origin\/fleet\/canonical/);
     expect(git(root, ["--git-dir", remote, "rev-parse", "refs/heads/fleet/canonical"])).toBe(
       expected
     );
+  }, 30_000);
+
+  // ADR-0049: the ledger stops being optional at exactly this boundary.
+  it("refuses publication with no live claim", () => {
+    const { root, repo } = sandbox();
+    git(repo, ["checkout", "-b", "fleet/unclaimed"]);
+    commitFile(repo, "feature.txt", "feature\n", "unclaimed feature");
+
+    const result = runPublisher(repo, [], claimEnv(root, { claims: [] }));
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/no live Lodestar claim/);
+    expect(result.stderr).toMatch(/claim_task/);
+  }, 30_000);
+
+  // An unreachable ledger must not become the way past the gate, unlike the
+  // auto-merge guard, where an absent `gh` is an ordinary condition.
+  it("refuses publication when the ledger cannot be reached", () => {
+    const { root, repo } = sandbox();
+    git(repo, ["checkout", "-b", "fleet/no-ledger"]);
+    commitFile(repo, "feature.txt", "feature\n", "feature");
+
+    const result = runPublisher(repo, [], {
+      ...process.env,
+      LODESTAR_SESSION_ID: SESSION,
+      LODESTAR_MCP_BIN: join(root, "absent-ledger.mjs"),
+    });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/unreachable/);
+  }, 30_000);
+
+  // Advisory, never a gate: the collision is named and the push still lands.
+  it("reports an overlapping claim but publishes anyway", () => {
+    const { root, repo } = sandbox();
+    git(repo, ["checkout", "-b", "fleet/overlapping"]);
+    commitFile(repo, "feature.txt", "feature\n", "feature");
+
+    const result = runPublisher(
+      repo,
+      [],
+      claimEnv(root, {
+        claims: [liveClaim],
+        overlaps: [{ task_id: "task:theirs", owner: "agent-b", matching_paths: ["feature.txt"] }],
+      })
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toMatch(/agent-b/);
+    expect(result.stdout).toMatch(/published HEAD/);
   }, 30_000);
 
   it("publishes a linked worktree branch's exact HEAD", () => {
@@ -174,7 +276,7 @@ describe("canonical-push", () => {
     commitFile(linked, "feature.txt", "linked feature\n", "linked feature");
     const expected = git(linked, ["rev-parse", "HEAD"]);
 
-    const result = runPublisher(linked);
+    const result = runPublisher(linked, [], claimEnv(root, { claims: [liveClaim] }));
 
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toMatch(/published HEAD -> origin\/fleet\/linked/);
