@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-27
+
 ### Added
 - **The enforcement machinery is now reachable.** `complete_clause_contract` and
   `register_control` close a gap that made every other constitutional feature
@@ -925,7 +927,8 @@ to [Semantic Versioning](https://semver.org/).
   pruned after historical evidence expires, structural ownership conflicts fail
   atomically, and legacy migrations serialize concurrent openers.
 
-[Unreleased]: https://github.com/monk-eee/MindLeak/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/monk-eee/MindLeak/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/monk-eee/MindLeak/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/monk-eee/MindLeak/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/monk-eee/MindLeak/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/monk-eee/MindLeak/compare/v0.1.0-preview.1...v0.1.0
