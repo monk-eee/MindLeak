@@ -96,6 +96,38 @@ impl LodestarStore {
         Ok(changed == 1)
     }
 
+    /// Record who made a decision the ledger already asserts but attributes to
+    /// nobody (ADR-0051). Sets `decided_by` and nothing else: the status, the
+    /// reason, and the promotion state are all left exactly as they are,
+    /// because the decision itself is not in question — only who made it.
+    ///
+    /// The guard is the deliberate complement of
+    /// [`reopen_undecided_design`](Self::reopen_undecided_design). That verb
+    /// takes the rows still worth deciding properly; this one takes the rows it
+    /// must refuse, where promotion has already materialised work and reopening
+    /// would leave tasks descending from a decision the ledger no longer shows.
+    /// Between them every undecided row has exactly one route, so neither is a
+    /// softer way of doing the other's job.
+    ///
+    /// `decided_by IS NULL` is the load-bearing condition: a recorded human act
+    /// is never overwritten here, so a wrong name cannot be quietly corrected
+    /// into a different one.
+    pub fn attribute_design_decision(&self, id: &str, human: &str, now: i64) -> Result<bool> {
+        if self.get_design_item(id)?.is_none() {
+            return Err(LodestarError::NotFound(id.to_string()));
+        }
+        let changed = self.conn.execute(
+            "UPDATE design_items
+             SET decided_by = ?2, updated_at = ?3
+             WHERE id = ?1
+               AND decided_by IS NULL
+               AND status <> 'proposed'
+               AND promotion_status <> 'not_required'",
+            params![id, human, now],
+        )?;
+        Ok(changed == 1)
+    }
+
     /// Register a new proposed design item. Fails if the ADR is already
     /// registered (its id is derived from the ADR path, so this is idempotent
     /// per ADR).

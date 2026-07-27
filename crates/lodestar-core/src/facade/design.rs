@@ -3,7 +3,9 @@
 //! read the Design Board, and the human accept/reject decision that completes
 //! design work without code conformance.
 
-use crate::design::{design_id_from_path, DesignItem, DesignMetadata, DesignStatus};
+use crate::design::{
+    design_id_from_path, DesignItem, DesignMetadata, DesignPromotionStatus, DesignStatus,
+};
 use crate::{now_unix, Lodestar, LodestarError, Result};
 
 impl Lodestar {
@@ -172,6 +174,54 @@ impl Lodestar {
         if !self.store.reopen_undecided_design(id, now_unix())? {
             return Err(LodestarError::Invalid(format!(
                 "design item {id} cannot be reopened: it is retired, or its promotion has already materialised work"
+            )));
+        }
+        self.store
+            .get_design_item(id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))
+    }
+
+    /// Record who made a decision the ledger already asserts but attributes to
+    /// nobody (ADR-0051).
+    ///
+    /// This is not a decision — the decision is already there, and work already
+    /// descends from it. It records the person behind it, and changes nothing
+    /// else. Reserved for rows [`reopen_undecided_design`](Self::reopen_undecided_design)
+    /// must refuse: once promotion has materialised work, reopening would leave
+    /// tasks descending from a decision the ledger no longer shows, which left
+    /// those rows asserting a decision that could never be attributed.
+    pub fn attribute_design_decision(&self, id: &str, human: &str) -> Result<DesignItem> {
+        let human = human.trim();
+        if human.is_empty() {
+            return Err(LodestarError::Invalid(
+                "attributing a decision requires the person who made it".to_string(),
+            ));
+        }
+        let item = self
+            .store
+            .get_design_item(id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
+        if let Some(decider) = item.decided_by.as_deref() {
+            return Err(LodestarError::Invalid(format!(
+                "design item {id} is already attributed to {decider}; a recorded human act is not rewritten here"
+            )));
+        }
+        if item.status == DesignStatus::Proposed {
+            return Err(LodestarError::Invalid(format!(
+                "design item {id} is proposed and asserts no decision yet; accept or reject it instead"
+            )));
+        }
+        if item.promotion_status == DesignPromotionStatus::NotRequired {
+            return Err(LodestarError::Invalid(format!(
+                "design item {id} has materialised no work, so it can still be decided properly; reopen_undecided_design then accept or reject it"
+            )));
+        }
+        if !self
+            .store
+            .attribute_design_decision(id, human, now_unix())?
+        {
+            return Err(LodestarError::Invalid(format!(
+                "design item {id} was attributed concurrently"
             )));
         }
         self.store

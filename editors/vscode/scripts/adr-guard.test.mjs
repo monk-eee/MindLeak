@@ -74,117 +74,126 @@ const repositoryWithPublishedAdr = () => {
   return repo;
 };
 
-describe("adr-guard", () => {
-  it("passes when every ADR is committed and reachable from a remote ref", () => {
-    const repo = repositoryWithPublishedAdr();
-    const result = runGuard(repo);
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain("every ADR is committed");
-  });
+// Every case here spawns real git repositories, and several spawn worktrees.
+// The timeout is set on the suite rather than per test: two of these were timed
+// out individually and the rest still flaked under full-suite load, because the
+// slow part is git, which every case uses. One place cannot be forgotten by the
+// next test added.
+describe(
+  "adr-guard",
+  () => {
+    it("passes when every ADR is committed and reachable from a remote ref", () => {
+      const repo = repositoryWithPublishedAdr();
+      const result = runGuard(repo);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("every ADR is committed");
+    });
 
-  /**
-   * Bug this guards: ADR-0041 existed only as an untracked file in the working
-   * tree. Nothing failed and nothing reported it, so a single `git clean -fd`
-   * would have destroyed the decision record with no way back.
-   */
-  it("fails on an ADR that was never added to Git", () => {
-    const repo = repositoryWithPublishedAdr();
-    writeAdr(repo, "0002-untracked-decision.md");
-    const result = runGuard(repo);
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("UNCOMMITTED docs/adr/0002-untracked-decision.md");
-    expect(result.stderr).toContain("untracked - not in Git at all");
-  });
+    /**
+     * Bug this guards: ADR-0041 existed only as an untracked file in the working
+     * tree. Nothing failed and nothing reported it, so a single `git clean -fd`
+     * would have destroyed the decision record with no way back.
+     */
+    it("fails on an ADR that was never added to Git", () => {
+      const repo = repositoryWithPublishedAdr();
+      writeAdr(repo, "0002-untracked-decision.md");
+      const result = runGuard(repo);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("UNCOMMITTED docs/adr/0002-untracked-decision.md");
+      expect(result.stderr).toContain("untracked - not in Git at all");
+    });
 
-  /**
-   * Bug this guards: ADR-0039 was staged but the commit had aborted, so the
-   * decision lived only in the index while the session reported success.
-   */
-  it("fails on an ADR that is staged but never committed", () => {
-    const repo = repositoryWithPublishedAdr();
-    writeAdr(repo, "0003-staged-decision.md");
-    git(repo, ["add", "docs/adr/0003-staged-decision.md"]);
-    const result = runGuard(repo);
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("UNCOMMITTED docs/adr/0003-staged-decision.md");
-  });
+    /**
+     * Bug this guards: ADR-0039 was staged but the commit had aborted, so the
+     * decision lived only in the index while the session reported success.
+     */
+    it("fails on an ADR that is staged but never committed", () => {
+      const repo = repositoryWithPublishedAdr();
+      writeAdr(repo, "0003-staged-decision.md");
+      git(repo, ["add", "docs/adr/0003-staged-decision.md"]);
+      const result = runGuard(repo);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("UNCOMMITTED docs/adr/0003-staged-decision.md");
+    });
 
-  /**
-   * Bug this guards: ADR-0040 was committed only on `fleet/work-surface`, a
-   * branch that had never been pushed. It survived a crash but not a deleted
-   * branch or a lost machine.
-   */
-  it("fails on an ADR committed only to a branch with no remote copy", () => {
-    const repo = repositoryWithPublishedAdr();
-    git(repo, ["checkout", "-b", "fleet/local-only"]);
-    writeAdr(repo, "0004-stranded-decision.md");
-    git(repo, ["add", "docs/adr/0004-stranded-decision.md"]);
-    git(repo, ["commit", "-m", "docs(adr): stranded"]);
-    const result = runGuard(repo);
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("UNPUBLISHED docs/adr/0004-stranded-decision.md");
-    expect(result.stderr).toContain("fleet/local-only");
-  });
-
-  it(
-    "ignores the unpublished check under --uncommitted so a push can proceed",
-    () => {
+    /**
+     * Bug this guards: ADR-0040 was committed only on `fleet/work-surface`, a
+     * branch that had never been pushed. It survived a crash but not a deleted
+     * branch or a lost machine.
+     */
+    it("fails on an ADR committed only to a branch with no remote copy", () => {
       const repo = repositoryWithPublishedAdr();
       git(repo, ["checkout", "-b", "fleet/local-only"]);
-      writeAdr(repo, "0005-about-to-be-pushed.md");
-      git(repo, ["add", "docs/adr/0005-about-to-be-pushed.md"]);
-      git(repo, ["commit", "-m", "docs(adr): about to be pushed"]);
-      expect(runGuard(repo).status).toBe(1);
-      expect(runGuard(repo, ["--uncommitted"]).status).toBe(0);
-    },
-    GIT_TEST_TIMEOUT_MS
-  );
+      writeAdr(repo, "0004-stranded-decision.md");
+      git(repo, ["add", "docs/adr/0004-stranded-decision.md"]);
+      git(repo, ["commit", "-m", "docs(adr): stranded"]);
+      const result = runGuard(repo);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("UNPUBLISHED docs/adr/0004-stranded-decision.md");
+      expect(result.stderr).toContain("fleet/local-only");
+    });
 
-  /**
-   * Bug this guards: the pre-push check scanned every worktree, so a
-   * half-finished ADR renumber in one checkout blocked an unrelated push from
-   * a different, clean worktree — naming a file the pusher never touched.
-   * Under ADR-0038 a linked worktree belongs to one agent, so pre-push judges
-   * only the tree doing the pushing. The full audit still spans all of them.
-   */
-  it(
-    "does not let another worktree's uncommitted ADR block this push",
-    () => {
-      const repo = repositoryWithPublishedAdr();
-      const linked = mkdtempSync(join(tmpdir(), "mindleak-adr-linked-"));
-      rmSync(linked, { recursive: true, force: true });
-      temporaryDirectories.push(linked);
-      git(repo, ["worktree", "add", "-b", "fleet/other-agent", linked]);
-
-      // The other agent is mid-renumber; this worktree is clean.
-      writeAdr(linked, "0009-their-work-in-progress.md");
-
-      expect(runGuard(repo, ["--uncommitted"]).status).toBe(0);
-
-      // The full audit still reports it, from either worktree.
-      const audit = runGuard(repo);
-      expect(audit.status).toBe(1);
-      expect(audit.stderr).toContain("0009-their-work-in-progress.md");
-    },
-    GIT_TEST_TIMEOUT_MS
-  );
-
-  it("ignores non-ADR files under docs/adr so a README cannot fail the guard", () => {
-    const repo = repositoryWithPublishedAdr();
-    mkdirSync(join(repo, "docs", "adr"), { recursive: true });
-    writeFileSync(join(repo, "docs", "adr", "README.md"), "index\n");
-    expect(runGuard(repo).status).toBe(0);
-  });
-
-  it("reports machine-readable findings under --format json", () => {
-    const repo = repositoryWithPublishedAdr();
-    writeAdr(repo, "0006-untracked.md");
-    const result = runGuard(repo, ["--format", "json"]);
-    expect(result.status).toBe(1);
-    const report = JSON.parse(result.stdout);
-    expect(report.ok).toBe(false);
-    expect(report.uncommitted.map((finding) => finding.adrPath)).toContain(
-      "docs/adr/0006-untracked.md"
+    it(
+      "ignores the unpublished check under --uncommitted so a push can proceed",
+      () => {
+        const repo = repositoryWithPublishedAdr();
+        git(repo, ["checkout", "-b", "fleet/local-only"]);
+        writeAdr(repo, "0005-about-to-be-pushed.md");
+        git(repo, ["add", "docs/adr/0005-about-to-be-pushed.md"]);
+        git(repo, ["commit", "-m", "docs(adr): about to be pushed"]);
+        expect(runGuard(repo).status).toBe(1);
+        expect(runGuard(repo, ["--uncommitted"]).status).toBe(0);
+      },
+      GIT_TEST_TIMEOUT_MS
     );
-  });
-});
+
+    /**
+     * Bug this guards: the pre-push check scanned every worktree, so a
+     * half-finished ADR renumber in one checkout blocked an unrelated push from
+     * a different, clean worktree — naming a file the pusher never touched.
+     * Under ADR-0038 a linked worktree belongs to one agent, so pre-push judges
+     * only the tree doing the pushing. The full audit still spans all of them.
+     */
+    it(
+      "does not let another worktree's uncommitted ADR block this push",
+      () => {
+        const repo = repositoryWithPublishedAdr();
+        const linked = mkdtempSync(join(tmpdir(), "mindleak-adr-linked-"));
+        rmSync(linked, { recursive: true, force: true });
+        temporaryDirectories.push(linked);
+        git(repo, ["worktree", "add", "-b", "fleet/other-agent", linked]);
+
+        // The other agent is mid-renumber; this worktree is clean.
+        writeAdr(linked, "0009-their-work-in-progress.md");
+
+        expect(runGuard(repo, ["--uncommitted"]).status).toBe(0);
+
+        // The full audit still reports it, from either worktree.
+        const audit = runGuard(repo);
+        expect(audit.status).toBe(1);
+        expect(audit.stderr).toContain("0009-their-work-in-progress.md");
+      },
+      GIT_TEST_TIMEOUT_MS
+    );
+
+    it("ignores non-ADR files under docs/adr so a README cannot fail the guard", () => {
+      const repo = repositoryWithPublishedAdr();
+      mkdirSync(join(repo, "docs", "adr"), { recursive: true });
+      writeFileSync(join(repo, "docs", "adr", "README.md"), "index\n");
+      expect(runGuard(repo).status).toBe(0);
+    });
+
+    it("reports machine-readable findings under --format json", () => {
+      const repo = repositoryWithPublishedAdr();
+      writeAdr(repo, "0006-untracked.md");
+      const result = runGuard(repo, ["--format", "json"]);
+      expect(result.status).toBe(1);
+      const report = JSON.parse(result.stdout);
+      expect(report.ok).toBe(false);
+      expect(report.uncommitted.map((finding) => finding.adrPath)).toContain(
+        "docs/adr/0006-untracked.md"
+      );
+    });
+  },
+  GIT_TEST_TIMEOUT_MS
+);
