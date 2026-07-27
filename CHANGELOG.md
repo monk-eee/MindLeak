@@ -7,6 +7,19 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Append-only lists merge instead of colliding.** In one session seven merges
+  of `main` into feature branches produced conflicts, and **every one** was in
+  `CHANGELOG.md` or `docs/adr/README.md` — never in source. Concurrent branches
+  all append an entry at the same place, so the collision is structural and the
+  resolution was "keep both" every single time. Both files now declare git's
+  built-in `merge=union` driver, which takes both sides of a conflicting hunk
+  rather than writing markers. `DEVELOPERS.md` is deliberately **excluded**
+  despite colliding just as often: its prose is revised in place, and union
+  never reports a conflict, so two branches rewording the same paragraph would
+  silently keep both copies. A file whose lines only accumulate can merge
+  itself; a file whose lines change needs a human to look. Union removes the
+  mechanical conflict, not the reading — it can still reorder entries or leave a
+  duplicate if two branches added the same one.
 - **`adr-guard` refuses to let a decision record exist in only one place.** An
   ADR is the reasoning behind the code, and losing one is silent — nothing
   fails, the file is simply not there any more. Three near-misses in a single
