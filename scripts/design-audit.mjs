@@ -57,14 +57,26 @@ export const auditDesigns = (files, designs) => {
     }
     seen.add(file.path);
 
-    // "Superseded by [0032](...)" is a statement the ledger's three statuses
-    // cannot hold. Report it so the gap stays visible, but it is not drift:
-    // neither side is stale, they are saying different things.
+    // "Superseded by [0032](...)" used to be a statement the ledger could not
+    // hold, and was reported as a note. Since ADR-0050 it can: a file claiming
+    // supersession that the ledger has not been told about is drift, and so is
+    // the reverse.
     if (isSuperseded(file.status)) {
+      if (!design.superseded) {
+        findings.push({
+          kind: "supersession",
+          adr: file.number,
+          detail: `file says "${file.status}"; the ledger has no supersession recorded. A person runs supersede_design; it is never inferred from the file`,
+        });
+      }
+      continue;
+    }
+
+    if (design.superseded) {
       findings.push({
-        kind: "unrepresentable",
+        kind: "supersession",
         adr: file.number,
-        detail: `file says "${file.status}"; the ledger has no such status`,
+        detail: `ledger says superseded by ${design.superseded.by_design}, recorded by ${design.superseded.by}; the file does not say so`,
       });
       continue;
     }
@@ -101,9 +113,6 @@ export const auditDesigns = (files, designs) => {
 
   return findings;
 };
-
-/** Drift a human should act on. `unrepresentable` is a modelling gap, not drift. */
-export const isDrift = (finding) => finding.kind !== "unrepresentable";
 
 const serverBinary = () => {
   const suffix = process.platform === "win32" ? ".exe" : "";
@@ -185,20 +194,19 @@ const main = async () => {
   const files = readAdrFiles();
   const designs = await readLedger();
   const findings = auditDesigns(files, designs);
-  const drift = findings.filter(isDrift);
 
   console.log(
     `design-audit: ${files.length} ADR files, ${designs.length} ledger rows`,
   );
   for (const finding of findings) {
     console.log(
-      `  ${isDrift(finding) ? "DRIFT" : "note "} ${finding.kind.padEnd(15)} ${finding.adr}  ${finding.detail}`,
+      `  ${finding.kind.padEnd(13)} ${finding.adr}  ${finding.detail}`,
     );
   }
   if (!findings.length) console.log("  files and ledger agree");
 
-  if (drift.length && process.argv.includes("--check")) {
-    console.error(`design-audit: ${drift.length} item(s) drifted`);
+  if (findings.length && process.argv.includes("--check")) {
+    console.error(`design-audit: ${findings.length} item(s) drifted`);
     process.exit(1);
   }
 };

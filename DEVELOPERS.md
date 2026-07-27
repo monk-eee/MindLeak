@@ -206,13 +206,18 @@ and footguns, with impact and status:
   Earlier this session the ledger was described as "fully remediated" after the
   `proposed` rows were cleared; that was wrong, and only checking a second
   property caught it.
-- **The design ledger cannot say `Superseded`.** — ADR-0018 and ADR-0032 declare
-  `Superseded by <ref>`; the ledger has `proposed`, `accepted`, `rejected`.
-  `make design-audit` reports these as a note rather than drift, because neither
-  side is stale — they are saying different things. Impact: a superseded decision
-  is indistinguishable from a live one in any ledger-driven view. Proposed fix in
-  [ADR-0050](docs/adr/0050-a-superseded-decision-is-not-a-stale-one.md) — give a
-  design the `superseded_by` link the goal model already has. Not yet decided.
+- **The design ledger could not say `Superseded` — FIXED, but two rows still
+  need a person.** — ADR-0018 and ADR-0032 declare `Superseded by <ref>` while
+  the ledger had only `proposed`, `accepted`, `rejected`, so both sat `accepted`
+  and every ledger-driven view showed a withdrawn decision as live.
+  [ADR-0050](docs/adr/0050-a-superseded-decision-is-not-a-stale-one.md) gives a
+  design the `superseded_by` link the goal model already has, and
+  `make design-audit` now reports the two files as drift instead of as an
+  unrepresentable note. The remaining work is not code: someone has to run
+  `supersede_design`, because the link is deliberately never inferred from the
+  file. ADR-0018 → ADR-0032 is unambiguous; **ADR-0032's own file says
+  `Superseded by` with no reference at all**, so nobody can tell what replaced
+  it without asking.
 - **A stalled wait is only bounded by the seven-day parking grace — SURFACED,
   not prevented.** — ADR-0046 lets `ask_question` address a peer, so an agent
   can park on one that never answers. The mutual case (a wait cycle) is now

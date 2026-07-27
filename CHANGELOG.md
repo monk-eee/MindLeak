@@ -6,6 +6,33 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`supersede_design` records that an accepted design has been replaced
+  (ADR-0050).** The ledger had `proposed`, `accepted`, `rejected`, and no way to
+  say "this was decided, it held, and something better replaced it". ADR-0018
+  and ADR-0032 declare `Superseded by <ref>` in their files; both sat `accepted`
+  in the ledger, so every ledger-driven view showed a withdrawn decision as
+  live. Rather than a fourth status — which would discard the fact that the
+  design *was* accepted and could not say by what — a design now carries the
+  same `superseded_by` link the goal model already has, so there is one
+  vocabulary for supersession instead of two. `status` is deliberately
+  untouched; a live design is one with no `superseded_by`, and the Design Board
+  filters on it. Guarded on a recorded `decided_by`: superseding is a statement
+  about a decision that was actually made, so a row carrying an imported status
+  with nobody behind it must be reopened (ADR-0047) or retired (ADR-0042)
+  instead. The replacement must already be registered, and the link is never
+  inferred from an ADR's prose — deriving it would repeat exactly the mistake
+  ADR-0047 documents.
+
+### Changed
+- **`make design-audit` now reports a superseded ADR as drift rather than as an
+  unrepresentable note.** It reported those two files as a modelling gap because
+  neither side was stale — they were saying different things, and the ledger
+  could not hold one of them. It can now, so a file claiming supersession the
+  ledger has not been told about is ordinary drift, and so is the reverse. The
+  `unrepresentable` category and the `isDrift` predicate that existed only to
+  exempt it are both gone.
+
 ## [0.1.3] - 2026-07-27
 ### Added
 - **`make design-audit` reports where the ADR files and the design ledger stop
