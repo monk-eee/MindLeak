@@ -103,14 +103,15 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "complete_task",
-            "description": "Consume an authoritative check_conformance result for the same claim-bounded ADR-0009 evidence. Aligned completes; drift/uncertainty stay in review; violation blocks.",
+            "description": "Consume an authoritative check_conformance result for the same claim-bounded ADR-0009 evidence. Aligned completes; drift/uncertainty stay in review; violation blocks. Pass `learned` with what the next agent should know — it is recorded as durable knowledge at the moment you hold it, because a conclusion is supplied, not extracted from an execution log (ADR-0053). Omitting it never blocks completion; the response names the omission instead.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "task_id": { "type": "string" },
                     "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." },
                     "evidence": { "type": "object", "description": "Versioned ConformanceEvidence returned by MindLeak evidence_for." },
-                    "check": { "type": "object", "description": "The exact id/token/verdict/findings object returned by check_conformance." }
+                    "check": { "type": "object", "description": "The exact id/token/verdict/findings object returned by check_conformance." },
+                    "learned": { "type": "string", "description": "What this task taught that the next agent would otherwise rediscover. Omit when it taught nothing." }
                 },
                 "required": ["task_id", "evidence", "check"]
             }
@@ -412,15 +413,34 @@ pub(super) fn dispatch(
                     .ok_or_else(|| "missing required object arg: check".to_string())?,
             )
             .map_err(|error| format!("invalid conformance check: {error}"))?;
-            let (completed, conformance) = engine
+            let learned = opt_str(args, "learned");
+            let completion = engine
                 .complete_task(
                     req_str(args, "task_id")?,
                     opt_str(args, "agent").unwrap_or_default().as_str(),
                     &evidence,
                     &check,
+                    learned.as_deref(),
                 )
                 .map_err(|e| e.to_string())?;
-            ok(&json!({ "completed": completed, "conformance": conformance }))
+            let mut response = json!({
+                "completed": completion.completed,
+                "conformance": completion.conformance,
+            });
+            // The omission is reported, never blocked (ADR-0053). Most tasks
+            // teach nothing; a gate would produce a column of "n/a" and the gap
+            // would stay invisible. Naming it is what makes it measurable.
+            match &completion.learned {
+                Some(id) => {
+                    response["learned"] = json!(id);
+                }
+                None => {
+                    response["learned_omitted"] = json!(
+                        "no conclusion recorded; pass `learned` with what the next agent should know, or nothing if this taught nothing"
+                    );
+                }
+            }
+            ok(&response)
         })()),
         "release_task" => Some((|| {
             let released = engine
@@ -961,7 +981,7 @@ mod tests {
         };
         let checked = engine.check_conformance(&evidence, Some(&task.id)).unwrap();
         engine
-            .complete_task(&task.id, "agent-a", &evidence, &checked)
+            .complete_task(&task.id, "agent-a", &evidence, &checked, None)
             .unwrap();
 
         // The reviewed agent may not sign off on its own work.
