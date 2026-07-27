@@ -59,6 +59,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0049](0049-publication-requires-a-claim.md) | Publication requires a claim; the ledger is not optional | Accepted |
 | [0050](0050-a-superseded-decision-is-not-a-stale-one.md) | A superseded decision is not a stale one | Accepted |
 | [0051](0051-a-decision-already-made-can-still-be-signed.md) | A decision already made can still be signed | Accepted |
+| [0052](0052-a-lease-is-a-heartbeat-not-a-deadline.md) | A lease is a heartbeat, not a deadline | Proposed |
 
 ## Writing a new ADR
 
