@@ -63,6 +63,19 @@ repos:
         language: system
         files: ^docs/adr/\d{4}-.*\.md$
         pass_filenames: true
+
+      - id: adr-index
+        name: ADR index matches the ADR files
+        # The index is derived data: number, title, and status all live in the
+        # ADR itself. Hand-maintaining it meant every concurrent branch appended
+        # a row to the same table, so every merge conflicted on it — and the
+        # table drifted anyway. Ten of forty-five rows were wrong when this was
+        # added, including an ADR the whole constitution backlog gates on.
+        entry: node scripts/adr-index.mjs --check
+        language: system
+        files: ^docs/adr/.*\.md$
+        pass_filenames: false
+
       - id: canonical-push
         name: canonical fleet publisher
         entry: node scripts/canonical-push.mjs --verify-pre-push
