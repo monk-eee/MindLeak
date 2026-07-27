@@ -15,33 +15,33 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0005](0005-signal-weighted-decay.md) | Signal-weighted decay ("decay noise, not signal") | Accepted |
 | [0006](0006-structural-dependency-edges.md) | Structural & dependency edges (graph enrichment for impact analysis) | Accepted |
 | [0007](0007-structural-snapshot-reconciliation.md) | Structural snapshots replace owned facts | Accepted |
-| [0008](0008-semantic-recall-embedding-index.md) | Optional semantic recall via a local embedding index | Accepted |
+| [0008](0008-semantic-recall-embedding-index.md) | Optional semantic recall via a local embedding index (complements, never replaces, the decay graph) | Accepted |
 | [0009](0009-evidence-backed-conformance.md) | Evidence-backed conformance across the memory and intent planes | Accepted |
 | [0010](0010-observability-and-resilience.md) | Observability, telemetry, and network resilience | Accepted |
 | [0011](0011-passive-terminal-and-git-sensors.md) | Passive terminal and Git evidence sensors | Accepted |
 | [0012](0012-derived-signal-evidence.md) | Derived bounded signal evidence | Accepted |
 | [0013](0013-local-data-lifecycle.md) | Local data backup, export, and reset lifecycle | Accepted |
 | [0014](0014-per-project-decay-configuration.md) | Per-project decay configuration | Accepted |
-| [0015](0015-advisory-symbol-leases.md) | Progressive task handoffs before advisory symbol leases | Accepted (no symbol lease) |
+| [0015](0015-advisory-symbol-leases.md) | Progressive task handoffs before advisory symbol leases | Accepted (no symbol-lease primitive) |
 | [0016](0016-platform-packaging-and-registration.md) | Platform packaging and workspace registration | Accepted |
 | [0017](0017-working-memory-and-autonomous-consolidation.md) | Working-memory tier and autonomous consolidation cycle | Accepted (implemented) |
-| [0018](0018-conflict-safe-concurrent-editing.md) | Conflict-safe concurrent editing in a shared working tree (worktrees optional) | Superseded by ADR-0032 |
+| [0018](0018-conflict-safe-concurrent-editing.md) | Conflict-safe concurrent editing in a shared working tree (worktrees optional) | Superseded by [ADR-0032](0032-single-checkout-fleet-integration.md) |
 | [0019](0019-task-retention-and-board-hygiene.md) | Task retention and board hygiene - hide, never delete | Accepted |
-| [0020](0020-task-lifecycle-states.md) | Task lifecycle states — `needs_input` and `paused` | Proposed |
+| [0020](0020-task-lifecycle-states.md) | Task lifecycle state machine — `needs_input` and `paused` | Proposed |
 | [0021](0021-node-lifecycle-and-reaping.md) | Node lifecycle and maintenance reaping semantics | Proposed |
-| [0022](0022-learned-knowledge-loop.md) | Learned-knowledge loop — promotion, revalidation, advisory conformance | Proposed |
+| [0022](0022-learned-knowledge-loop.md) | The learned-knowledge loop — promotion, revalidation, and advisory conformance | Proposed |
 | [0023](0023-design-board-accept-bridge.md) | Design items, the Design Board, and reviewed materialization | Accepted |
 | [0024](0024-preflight-overlap-detection.md) | Pre-flight work-overlap detection across both planes | Accepted |
 | [0025](0025-authoritative-checked-conformance.md) | Authoritative checked conformance | Accepted |
-| [0026](0026-constitutional-policy-over-mechanistic-ratchets.md) | Constitutional policy over mechanistic ratchets | Proposed |
+| [0026](0026-constitutional-policy-over-mechanistic-ratchets.md) | Constitutional policy over mechanistic ratchets | Accepted |
 | [0027](0027-extension-led-progressive-disclosure.md) | Extension-led progressive disclosure over MCP primitives | Accepted |
 | [0028](0028-external-adoption-evidence-gate.md) | External adoption evidence before broad product claims | Accepted |
 | [0029](0029-proactive-constitutional-advice.md) | Proactive constitutional advice (ask-before-act) | Proposed |
 | [0030](0030-discrete-per-agent-identity.md) | Discrete per-agent identity for concurrent coordination | Accepted |
-| [0031](0031-exportable-conformance-evidence.md) | Exportable conformance evidence, Evidence Board, and CI gate | Proposed |
-| [0032](0032-single-checkout-fleet-integration.md) | Single-checkout, single-publisher fleet integration | Superseded by [0038](0038-isolated-worktrees-shared-repository-state.md) |
-| [0033](0033-copilot-cli-registration.md) | First-class GitHub Copilot CLI registration for both planes | Proposed |
-| [0034](0034-typed-controls-and-enforcement-ceilings.md) | Typed controls, workflow scope, and enforcement ceilings | Proposed |
+| [0031](0031-exportable-conformance-evidence.md) | Exportable conformance evidence, the Evidence Board, and a CI conformance gate | Proposed |
+| [0032](0032-single-checkout-fleet-integration.md) | Single-checkout, single-publisher fleet integration | Superseded by |
+| [0033](0033-copilot-cli-registration.md) | First-class GitHub Copilot CLI registration for both planes | Accepted |
+| [0034](0034-typed-controls-and-enforcement-ceilings.md) | Typed controls, workflow scope, and enforcement ceilings | Accepted |
 | [0035](0035-fleet-management-heuristics.md) | Fleet management heuristics and feedback | Accepted |
 | [0036](0036-forbid-change-is-its-own-consequence.md) | A `forbid_change` lock is its own consequence declaration | Accepted |
 | [0037](0037-ratchet-baselines-are-not-self-adopted.md) | A ratchet never sets its own baseline | Accepted |
@@ -59,7 +59,14 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 
 1. Copy an existing file to `NNNN-short-title.md` (next number).
 2. Fill in Context / Decision / Consequences.
-3. Add a row above. Link it from the code or doc it constrains.
+3. Link it from the code or doc it constrains.
+
+**Do not edit the table above by hand** — it is generated from the ADR files by
+`scripts/adr-index.mjs`, and a pre-commit hook fails if it drifts. Run
+`make adr-index` (or the script directly) after adding or restatusing an ADR.
+Hand-maintaining it meant every branch appended a row to the same table, so
+every merge conflicted on it; it also drifted, with ten of forty-five rows wrong
+when the generator was introduced.
 
 "Next number" is not obvious when several branches are in flight: your working
 tree cannot see a sibling branch's unmerged ADR. A pre-commit hook
