@@ -6,7 +6,28 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`check_overlap` no longer reports an agent colliding with itself
+  (ADR-0054).** The Memory Plane carried the same forked identity the Intent
+  Plane did: attribution nodes are `agent:{id}` (ADR-0003), so one session
+  observed under two process environments produced two agent nodes. This was
+  first assessed as cosmetic and it was not — `check_overlap` skips the caller
+  by exact id, so an agent's other half was never excluded and the tool reported
+  a collision with itself, a false positive indistinguishable from a real one
+  that would tell an agent to back off work nobody else was doing.
+  `working_set` likewise returned half of an agent's own attention. The
+  migration folds the halves rather than picking one: the canonical node takes
+  the earliest creation and latest activity, and a shared observation takes the
+  strongest weight, the latest touch, the earliest first sighting, and the
+  **summed** reinforcement count — a node observed under both names really was
+  observed twice. Verified against the live graph, where 17 agent nodes still
+  carried a label segment after the Intent Plane migration had already run.
+
+## [0.1.3] - 2026-07-27
+
 ### Added
+
 - **`questions_for_a_human`: the other half of ADR-0046's dialogue.** Agents
   could address a question at a peer and list what was addressed to them, but
   there was no way to list what was waiting on a **person** — `pending_questions`
@@ -36,68 +57,6 @@ to [Semantic Versioning](https://semver.org/).
   arbitrate: it may ask about intent and ordering and is forbidden from deciding
   who is right, because a model verdict carries no evidence and ADR-0009 makes
   evidence the basis of every verdict here.
-### Fixed
-- **One agent is one identity again (ADR-0054).** The agent id was
-  `session:v1:{base}:{fingerprint}`, where the fingerprint came from the session
-  token but `base` came from `LODESTAR_AGENT` / `MINDLEAK_AGENT` **in the hosting
-  server process**. Because every comparison in the system is whole-string
-  equality, one session hosted by two differently configured processes resolved
-  to two agents. Observed live: `fleet_view` listed
-  `session:v1:agent:bff9…` holding one claim and `session:v1:copilot:bff9…`
-  holding two — same token, same fingerprint, three claims split in half; two
-  further agents in the same fleet were split the same way. Worse, an addressed
-  question is matched on `audience = ?1` exactly, so a peer addressed under the
-  other half's name never sees it and the task parks until the grace expires —
-  which made agent-to-agent dialogue (ADR-0046) undeliverable in practice. The
-  id is now `session:v1:{fingerprint}`, derived from the session token alone;
-  the label survives as a display name that is written to no key. A migration
-  collapses stored ids across all sixteen identity columns, which *heals* the
-  existing split because both halves share the fingerprint and merge onto one
-  agent. `DEVELOPERS.md`'s "publishing must use the same base that claimed"
-  instruction is deleted rather than amended — it was advice for working around
-  this bug.
-
-- **An unknown tool argument is now reported instead of silently dropped.**
-  Passing `lease_seconds` where `claim_task` declares `lease_secs` did nothing
-  visible: the key was ignored, the 300-second default applied, and the claim
-  lapsed mid-work. The only symptom was an expired lease, so the typo read as a
-  server bug and cost twenty minutes of wrong diagnosis before the real cause
-  surfaced. A caller naming an argument a tool does not have is wrong about the
-  contract, and the cheapest moment to say so is immediately — the error now
-  names the offending key and lists what the tool accepts. Checked at the tool
-  boundary against the schema each tool already advertises, so there is no
-  second list to drift. Only top-level names are validated, and the keys that
-  belong to the call *envelope* rather than to any tool's contract are exempt:
-  `agent`, `resolved_agent` and `resolved_context`, which `bind_session` adds
-  itself, and `session_id`, which every client adds to every call in one place
-  while `apply_session_contract` only declares it on tools that require a
-  session. Treating the envelope as an argument rejected every call to a tool
-  that needs no session — `board`, `design_board`, `graph_stats` — which took
-  the extension's whole readiness path down to `disconnected`. Who supplies an
-  envelope key is not what makes it one.
-- **A wrapped `Status:` line no longer loses its reference.** ADR-0032 writes
-  `- Status: Superseded by` and puts `[ADR-0038](...)` on the next line.
-  `scripts/adr-files.mjs` read to the end of the line, so the file parsed as a
-  bare `Superseded by` — and that value reached the ADR index table, the
-  `make design-audit` report, and a question put to a human as "nobody can tell
-  what replaced it". The answer was one line further down, and the superseding
-  commit names ADR-0038 in its `DECISION:` line. The parser now reads indented
-  continuation lines, and the ADR index row for 0032 names its successor again.
-- **The server no longer exits at startup when the database path has no
-  directory.** `MINDLEAK_DB=":memory:"` — or a bare `graph.db` — resolves to a
-  path whose `parent()` is `Some("")`, not `None`. `create_dir_all("")`
-  short-circuits to `Ok`, so the happy path hid it, but the Unix branch then
-  called `set_permissions` on that empty path and got `ENOENT`. The process
-  died immediately on Linux and macOS reporting only "No such file or directory
-  (os error 2)", while Windows started fine because it has no permissions call.
-  This is what failed the v0.1.3 release: both platform jobs that actually
-  executed a Unix binary failed their smoke test and publication was skipped.
-  The macOS x64 job passed only because it is cross-compiled and skips
-  execution — a green matrix cell is not always an executed one.
-
-## [0.1.3] - 2026-07-27
-
-### Added
 
 - **`attribute_design_decision`: a decision already made can still be signed
   (ADR-0051).** ADR-0047 named this failure exactly — a row that "asserts a
@@ -620,6 +579,106 @@ to [Semantic Versioning](https://semver.org/).
   review is attributed to a registered session.
 
 ### Fixed
+
+- **One agent is one identity again (ADR-0054).** The agent id was
+  `session:v1:{base}:{fingerprint}`, where the fingerprint came from the session
+  token but `base` came from `LODESTAR_AGENT` / `MINDLEAK_AGENT` **in the hosting
+  server process**. Because every comparison in the system is whole-string
+  equality, one session hosted by two differently configured processes resolved
+  to two agents. Observed live: `fleet_view` listed
+  `session:v1:agent:bff9…` holding one claim and `session:v1:copilot:bff9…`
+  holding two — same token, same fingerprint, three claims split in half; two
+  further agents in the same fleet were split the same way. Worse, an addressed
+  question is matched on `audience = ?1` exactly, so a peer addressed under the
+  other half's name never sees it and the task parks until the grace expires —
+  which made agent-to-agent dialogue (ADR-0046) undeliverable in practice. The
+  id is now `session:v1:{fingerprint}`, derived from the session token alone;
+  the label survives as a display name that is written to no key. A migration
+  collapses stored ids across all sixteen identity columns, which *heals* the
+  existing split because both halves share the fingerprint and merge onto one
+  agent. `DEVELOPERS.md`'s "publishing must use the same base that claimed"
+  instruction is deleted rather than amended — it was advice for working around
+  this bug.
+
+- **An unknown tool argument is now reported instead of silently dropped.**
+  Passing `lease_seconds` where `claim_task` declares `lease_secs` did nothing
+  visible: the key was ignored, the 300-second default applied, and the claim
+  lapsed mid-work. The only symptom was an expired lease, so the typo read as a
+  server bug and cost twenty minutes of wrong diagnosis before the real cause
+  surfaced. A caller naming an argument a tool does not have is wrong about the
+  contract, and the cheapest moment to say so is immediately — the error now
+  names the offending key and lists what the tool accepts. Checked at the tool
+  boundary against the schema each tool already advertises, so there is no
+  second list to drift. Only top-level names are validated, and the keys that
+  belong to the call *envelope* rather than to any tool's contract are exempt:
+  `agent`, `resolved_agent` and `resolved_context`, which `bind_session` adds
+  itself, and `session_id`, which every client adds to every call in one place
+  while `apply_session_contract` only declares it on tools that require a
+  session. Treating the envelope as an argument rejected every call to a tool
+  that needs no session — `board`, `design_board`, `graph_stats` — which took
+  the extension's whole readiness path down to `disconnected`. Who supplies an
+  envelope key is not what makes it one.
+- **A wrapped `Status:` line no longer loses its reference.** ADR-0032 writes
+  `- Status: Superseded by` and puts `[ADR-0038](...)` on the next line.
+  `scripts/adr-files.mjs` read to the end of the line, so the file parsed as a
+  bare `Superseded by` — and that value reached the ADR index table, the
+  `make design-audit` report, and a question put to a human as "nobody can tell
+  what replaced it". The answer was one line further down, and the superseding
+  commit names ADR-0038 in its `DECISION:` line. The parser now reads indented
+  continuation lines, and the ADR index row for 0032 names its successor again.
+- **The server no longer exits at startup when the database path has no
+  directory.** `MINDLEAK_DB=":memory:"` — or a bare `graph.db` — resolves to a
+  path whose `parent()` is `Some("")`, not `None`. `create_dir_all("")`
+  short-circuits to `Ok`, so the happy path hid it, but the Unix branch then
+  called `set_permissions` on that empty path and got `ENOENT`. The process
+  died immediately on Linux and macOS reporting only "No such file or directory
+  (os error 2)", while Windows started fine because it has no permissions call.
+  This is what failed the v0.1.3 release: both platform jobs that actually
+  executed a Unix binary failed their smoke test and publication was skipped.
+  The macOS x64 job passed only because it is cross-compiled and skips
+  execution — a green matrix cell is not always an executed one.
+
+
+
+- **The server no longer exits at startup when the database path has no
+  directory.** `MINDLEAK_DB=":memory:"` — or a bare `graph.db` — resolves to a
+  path whose `parent()` is `Some("")`, not `None`. `create_dir_all("")`
+  short-circuits to `Ok`, so the happy path hid it, but the Unix branch then
+  called `set_permissions` on that empty path and got `ENOENT`. The process
+  died immediately on Linux and macOS reporting only "No such file or directory
+  (os error 2)", while Windows started fine because it has no permissions call.
+  This is what failed the v0.1.3 release: both platform jobs that actually
+  executed a Unix binary failed their smoke test and publication was skipped.
+  The macOS x64 job passed only because it is cross-compiled and skips
+  execution — a green matrix cell is not always an executed one.
+
+
+
+- **A release platform nobody could execute no longer reports itself as
+  verified.** The release smoke ran the freshly built servers only when the
+  runner's architecture matched the target, and otherwise printed a notice and
+  returned — so the job went green having tested nothing. `macos-x64` builds
+  `x86_64-apple-darwin` on `macos-14`, which is arm64, so **two of the four
+  v0.1.3 platforms were never smoke-tested** and a startup crash reached a
+  tagged release with green ticks beside it. The x64 macOS build now runs on
+  `macos-13` so every target is native, and a mismatch is a hard failure rather
+  than a skip: a binary this workflow cannot execute is one it must not ship.
+  A check that reports success on a question it never asked is worth less than
+  no check, because it is trusted.
+
+- **The server no longer exits at startup when the database path has no
+  directory.** `MINDLEAK_DB=":memory:"` — or a bare `graph.db` — resolves to a
+  path whose `parent()` is `Some("")`, not `None`. `create_dir_all("")`
+  short-circuits to `Ok`, so the happy path hid it, but the Unix branch then
+  called `set_permissions` on that empty path and got `ENOENT`. The process
+  died immediately on Linux and macOS reporting only "No such file or directory
+  (os error 2)", while Windows started fine because it has no permissions call.
+  This is what failed the v0.1.3 release: both platform jobs that actually
+  executed a Unix binary failed their smoke test and publication was skipped.
+  The macOS x64 job passed only because it is cross-compiled and skips
+  execution — a green matrix cell is not always an executed one.
+
+
 
 - **An unknown tool argument is now reported instead of silently dropped.**
   Passing `lease_seconds` where `claim_task` declares `lease_secs` did nothing

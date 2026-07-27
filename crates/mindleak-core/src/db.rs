@@ -124,6 +124,82 @@ fn migrate_locked(conn: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_edges_owner ON edges(owner_id)",
         [],
     )?;
+    merge_forked_agent_nodes(conn)?;
+    Ok(())
+}
+
+/// Merge `agent:session:v1:{name}:{fingerprint}` nodes onto one identity per
+/// session (ADR-0054).
+///
+/// The Memory Plane carries the same defect the Intent Plane did: the label in
+/// the id came from the hosting server process, so one session observed under
+/// two process environments produced two agent nodes. Here it is worse than a
+/// miscount. `check_overlap` skips `exclude_agent` by exact id, so an agent's
+/// *other half* is not excluded and it reports a collision with itself — a
+/// false positive that reads exactly like a real one, telling an agent to back
+/// off work nobody else is doing. `working_set` matches `source_id` exactly and
+/// so returns half of its own attention.
+///
+/// The halves share the fingerprint, so the merge heals it. Observation edges
+/// are combined rather than overwritten: the strongest weight, the latest
+/// touch, the earliest first sighting, and the summed reinforcement count —
+/// the same node observed twice under two names really was observed twice.
+fn merge_forked_agent_nodes(conn: &Connection) -> Result<()> {
+    // The canonical node: earliest creation and latest access across the halves.
+    conn.execute(
+        "INSERT INTO nodes (id, type, label, content, created_at, last_accessed_at)
+         SELECT 'agent:session:v1:' || substr(id, -32), 'agent',
+                'session:v1:' || substr(id, -32), NULL,
+                min(created_at), max(last_accessed_at)
+         FROM nodes
+         WHERE type = 'agent' AND id GLOB 'agent:session:v1:*:*'
+         GROUP BY substr(id, -32)
+         ON CONFLICT(id) DO UPDATE SET
+             created_at = min(created_at, excluded.created_at),
+             last_accessed_at = max(last_accessed_at, excluded.last_accessed_at)",
+        [],
+    )?;
+    // Repoint attribution onto it, folding the halves' duplicate observations.
+    conn.execute(
+        "INSERT INTO edges (source_id, target_id, relation, weight, half_life_hours,
+                            updated_at, first_seen, reinforcement_count, owner_id)
+         SELECT 'agent:session:v1:' || substr(source_id, -32), target_id, relation,
+                max(weight), max(half_life_hours), max(updated_at),
+                min(first_seen), sum(reinforcement_count), NULL
+         FROM edges
+         WHERE source_id GLOB 'agent:session:v1:*:*'
+         GROUP BY substr(source_id, -32), target_id, relation
+         ON CONFLICT(source_id, target_id, relation) DO UPDATE SET
+             weight = max(weight, excluded.weight),
+             updated_at = max(updated_at, excluded.updated_at),
+             first_seen = min(first_seen, excluded.first_seen),
+             reinforcement_count = reinforcement_count + excluded.reinforcement_count",
+        [],
+    )?;
+    conn.execute(
+        "DELETE FROM edges WHERE source_id GLOB 'agent:session:v1:*:*'",
+        [],
+    )?;
+    // The `nodes_ad` trigger clears the FTS rows; the canonical id carries no
+    // label segment, so it does not match the pattern and survives.
+    conn.execute(
+        "DELETE FROM nodes WHERE type = 'agent' AND id GLOB 'agent:session:v1:*:*'",
+        [],
+    )?;
+    // `embeddings` is created lazily by the optional index pass and has no
+    // foreign key, so its rows for the retired halves must be cleared here or
+    // they outlive the nodes they describe.
+    let has_embeddings: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'embeddings')",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_embeddings {
+        conn.execute(
+            "DELETE FROM embeddings WHERE node_id GLOB 'agent:session:v1:*:*'",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -239,6 +315,102 @@ mod tests {
         assert_eq!(first_seen, 10);
         assert_eq!(reinforcement_count, 1);
         assert_eq!(owner_id.as_deref(), Some("artifact:a"));
+    }
+
+    /// Bug: the Memory Plane carried the same forked identity the Intent Plane
+    /// did (ADR-0054) — the label inside `agent:session:v1:{label}:{fp}` came
+    /// from the hosting server process, so one session observed under two
+    /// environments produced two agent nodes.
+    ///
+    /// Here it is worse than a miscount. `check_overlap` skips `exclude_agent`
+    /// by exact id, so an agent's *other half* is not excluded and it reports a
+    /// collision **with itself** — a false positive indistinguishable from a
+    /// real one, telling an agent to back off work nobody else is doing. And
+    /// `working_set` matches `source_id` exactly, so it returns half of its own
+    /// attention.
+    ///
+    /// The merge folds the halves rather than picking one: the same artifact
+    /// observed under both names really was observed twice, so the
+    /// reinforcement counts add.
+    #[test]
+    fn migrate_merges_agent_nodes_that_forked_on_the_host_process_name() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(SCHEMA).unwrap();
+        let fingerprint = "bff9bbe3968f16636cbc5522086114e3";
+        connection
+            .execute_batch(&format!(
+                "INSERT INTO nodes (id, type, label, content, created_at, last_accessed_at) VALUES
+                     ('agent:session:v1:agent:{fingerprint}', 'agent', 'session:v1:agent:{fingerprint}', NULL, 10, 40),
+                     ('agent:session:v1:copilot:{fingerprint}', 'agent', 'session:v1:copilot:{fingerprint}', NULL, 20, 60),
+                     ('artifact:shared.rs', 'artifact', 'shared.rs', NULL, 10, 10),
+                     ('artifact:only-one-half.rs', 'artifact', 'only-one-half.rs', NULL, 10, 10);
+                 INSERT INTO edges (source_id, target_id, relation, weight, half_life_hours, updated_at, first_seen, reinforcement_count) VALUES
+                     ('agent:session:v1:agent:{fingerprint}', 'artifact:shared.rs', 'observed', 0.6, 48.0, 30, 10, 2),
+                     ('agent:session:v1:copilot:{fingerprint}', 'artifact:shared.rs', 'observed', 0.9, 48.0, 55, 20, 3),
+                     ('agent:session:v1:copilot:{fingerprint}', 'artifact:only-one-half.rs', 'observed', 0.5, 48.0, 50, 50, 1);"
+            ))
+            .unwrap();
+
+        configure(&connection).unwrap();
+
+        let canonical = format!("agent:session:v1:{fingerprint}");
+        let agents: Vec<String> = connection
+            .prepare("SELECT id FROM nodes WHERE type = 'agent' ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            agents,
+            vec![canonical.clone()],
+            "two halves become one agent"
+        );
+
+        // The node spans both halves: earliest creation, latest activity.
+        let (created, accessed): (i64, i64) = connection
+            .query_row(
+                "SELECT created_at, last_accessed_at FROM nodes WHERE id = ?1",
+                rusqlite::params![canonical],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((created, accessed), (10, 60));
+
+        // Both halves' observations survive, folded rather than overwritten.
+        let (weight, updated, first_seen, reinforcements): (f64, i64, i64, i64) = connection
+            .query_row(
+                "SELECT weight, updated_at, first_seen, reinforcement_count FROM edges
+                 WHERE source_id = ?1 AND target_id = 'artifact:shared.rs'",
+                rusqlite::params![canonical],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(weight, 0.9, "the stronger observation wins");
+        assert_eq!(updated, 55, "the later touch wins");
+        assert_eq!(first_seen, 10, "the earlier sighting anchors the span");
+        assert_eq!(
+            reinforcements, 5,
+            "2 + 3: it really was observed five times"
+        );
+
+        let owned: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM edges WHERE source_id = ?1",
+                rusqlite::params![canonical],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(owned, 2, "the half-only observation is not dropped");
+
+        let orphaned: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM edges WHERE source_id GLOB 'agent:session:v1:*:*'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(orphaned, 0, "no attribution is left on a retired half");
     }
 
     #[test]
