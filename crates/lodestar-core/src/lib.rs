@@ -9,6 +9,7 @@
 pub mod db;
 pub mod decay;
 pub mod design;
+pub mod discovery;
 pub mod error;
 mod facade;
 pub mod llm;
@@ -28,9 +29,10 @@ pub use design::{
 pub use error::{LodestarError, Result};
 pub use model::{
     Advice, AdviceDisposition, ClaimOverlap, CodeBinding, CodeBindingMode, ConformanceCheck,
-    ConformanceEvidence, ConformanceRecord, ConformanceResult, ConstitutionState,
-    ConstitutionStatus, ConstitutionVersion, EvidenceProvenance, Goal, GoalKind, GoalStatus,
-    GoverningClause, Knowledge, SignalPromotion, Task, TaskQa, TaskScope, TaskStatus, Verdict,
+    ConformanceEvidence, ConformanceRecord, ConformanceResult, ConstitutionProposal,
+    ConstitutionState, ConstitutionStatus, ConstitutionVersion, EvidenceProvenance, Goal, GoalKind,
+    GoalStatus, GoverningClause, Knowledge, SignalPromotion, Task, TaskQa, TaskScope, TaskStatus,
+    Verdict,
 };
 pub use policy::{
     common_core_pack, ConstitutionPack, PackClause, PackClauseDisposition, PackClauseProposal,

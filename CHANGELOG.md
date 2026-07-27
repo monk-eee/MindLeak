@@ -15,6 +15,20 @@ to [Semantic Versioning](https://semver.org/).
   its clause count. An activated version always wins over a later draft, so a
   project mid-amendment still reads as governed, and a draft never reads as
   governing policy (SPEC-CONSTITUTION §7.5).
+- **`propose_constitution` drafts policy from cited repository facts, and never
+  activates it (ADR-0026 task 3).** Bootstrap classifies supplied repository
+  paths — README, AGENTS.md, contributing guidance, ADRs, manifests, CI,
+  linters, test configuration, ownership — into durable *project facts*, then
+  drafts a constitutional version grounded in them and proposes the Common Core
+  for review. Discovery reports evidence, never clauses: an existing CI gate
+  proves the project uses a mechanism, not the reason, scope, or desired
+  consequence, so every mechanism fact carries the question its configuration
+  cannot answer while stated intent carries none. Classification is by path
+  alone over paths the caller supplies, so the server performs no filesystem
+  scan and discovery stays a deterministic, model-free function. The result is
+  always a `draft` with every Common Core clause left undecided; an already
+  active constitution is refused as an amendment, and an unresolved draft is
+  refused rather than stacked.
 - **Immutable policy packs and the five-principle Common Core (ADR-0026 task
   2).** Lodestar validates a canonical SHA-256 digest and engine compatibility
   before registering a pack version; the same id/version/digest is idempotent,
