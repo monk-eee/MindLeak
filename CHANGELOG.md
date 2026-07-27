@@ -31,6 +31,9 @@ to [Semantic Versioning](https://semver.org/).
 - **`clause_controls` shows the mechanisms behind a rule.** Each control lists
   the enforcement power it actually has and the ceiling that power implies, so
   the hardest consequence a clause can reach is inspectable rather than assumed.
+- **ADR-0037 records why a ratchet never sets its own baseline**, refining
+  ADR-0034 with the question SPEC-CONSTITUTION §4 raises and leaves open —
+  whether the baseline was trustworthy — and the four refusals that answer it.
 - **`constitution_status` reports adoption state instead of leaving it inferred
   (ADR-0026 task 3).** An agent could previously read the active clause set but
   not tell an ungoverned project apart from a governed one that happens to
