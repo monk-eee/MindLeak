@@ -59,10 +59,10 @@ fn declared_arguments(name: &str) -> Option<Vec<String>> {
 
 /// Keys that belong to the call envelope rather than to any tool's contract.
 ///
-/// `agent`, `resolved_agent` and `resolved_context` are injected by the server
-/// (`bind_session`); tolerating them keeps validation idempotent, because
-/// binding already-bound params must not report the server's own additions as
-/// the caller's mistake.
+/// `agent`, `resolved_agent`, `resolved_name` and `resolved_context` are
+/// injected by the server (`bind_session`); tolerating them keeps validation
+/// idempotent, because binding already-bound params must not report the
+/// server's own additions as the caller's mistake.
 ///
 /// `session_id` is the mirror case, supplied by the client. Every MCP client
 /// here adds it to *every* call — the VS Code extension does so in one place
@@ -73,7 +73,13 @@ fn declared_arguments(name: &str) -> Option<Vec<String>> {
 /// up: the extension reached `disconnected` instead of `ready_empty` because
 /// its whole readiness path is such tools. Who supplies an envelope key is not
 /// what makes it one.
-const ENVELOPE_ARGUMENTS: [&str; 4] = ["agent", "resolved_agent", "resolved_context", "session_id"];
+const ENVELOPE_ARGUMENTS: [&str; 5] = [
+    "agent",
+    "resolved_agent",
+    "resolved_name",
+    "resolved_context",
+    "session_id",
+];
 
 /// Refuse an argument no tool declares.
 ///
@@ -136,6 +142,7 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
         let declared = SessionContext::from_arguments(&Value::Object(args.clone()))?;
         let identity = sessions.open_session(token, declared)?;
         args.insert("resolved_agent".to_string(), json!(identity.agent_id));
+        args.insert("resolved_name".to_string(), json!(identity.name));
         if let Some(context) = identity.context.declared_json() {
             args.insert("resolved_context".to_string(), context);
         }
@@ -148,6 +155,7 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
             .ok_or_else(|| "missing required string arg: session_id".to_string())?;
         let identity = sessions.resolve(token)?;
         args.insert("agent".to_string(), json!(identity.agent_id));
+        args.insert("resolved_name".to_string(), json!(identity.name));
         if let Some(evidence) = args.get_mut("evidence").and_then(Value::as_object_mut) {
             evidence.insert("agent_id".to_string(), json!(identity.agent_id));
         }

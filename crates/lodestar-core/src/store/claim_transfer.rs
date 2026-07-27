@@ -9,22 +9,38 @@ use crate::error::{LodestarError, Result};
 use super::coordination::PARKING_GRACE_SECS;
 use super::{ClaimTransfer, LodestarStore};
 
+/// The session taking over a stranded claim.
+///
+/// Its id and the name it declares travel together because since ADR-0054 the
+/// id is `session:v1:{fingerprint}` and carries no label — the name can no
+/// longer be parsed back out of it, which is exactly the coupling that ADR
+/// removes.
+#[derive(Debug, Clone, Copy)]
+pub struct RecoveringSession<'a> {
+    pub agent: &'a str,
+    pub name: &'a str,
+}
+
 impl LodestarStore {
     pub fn recover_claim(
         &self,
         task_id: &str,
         expected_owner: &str,
-        target_agent: &str,
+        recovering: RecoveringSession<'_>,
         reason: &str,
         lease_secs: i64,
         now: i64,
     ) -> Result<bool> {
+        let RecoveringSession {
+            agent: target_agent,
+            name: target_name,
+        } = recovering;
         if reason.trim().is_empty() {
             return Err(LodestarError::Invalid(
                 "claim recovery requires a reason".to_string(),
             ));
         }
-        if !compatible_legacy_owner(expected_owner, target_agent) {
+        if !compatible_legacy_owner(expected_owner, target_agent, target_name) {
             return Err(LodestarError::Invalid(
                 "claim recovery requires a compatible legacy owner and registered session identity"
                     .to_string(),
@@ -186,7 +202,10 @@ mod tests {
             .recover_claim(
                 &task.id,
                 "copilot-abcd1234",
-                &target,
+                RecoveringSession {
+                    agent: &target,
+                    name: "copilot"
+                },
                 "server identity changed",
                 60,
                 NOW + 11,
@@ -214,22 +233,28 @@ mod tests {
             .unwrap();
         assert!(store.claim_task(&live.id, "copilot", 60, NOW).unwrap());
         let target = session(SESSION_A);
+        let as_copilot = RecoveringSession {
+            agent: &target,
+            name: "copilot",
+        };
         assert!(store
-            .recover_claim(&live.id, "copilot", &target, "too early", 60, NOW + 1)
+            .recover_claim(&live.id, "copilot", as_copilot, "too early", 60, NOW + 1)
             .is_err());
         assert!(store
-            .recover_claim(&live.id, "copilot", &target, "  ", 60, NOW + 61)
+            .recover_claim(&live.id, "copilot", as_copilot, "  ", 60, NOW + 61)
             .is_err());
+        // The id no longer carries a label (ADR-0054), so a session recovering
+        // under a different declared name is rejected on the name it supplies
+        // rather than on a segment parsed out of its identity.
         assert!(store
             .recover_claim(
                 &live.id,
                 "copilot",
-                &SessionRegistry::new("claude")
-                    .unwrap()
-                    .open_session(SESSION_A, SessionContext::default())
-                    .unwrap()
-                    .agent_id,
-                "wrong base",
+                RecoveringSession {
+                    agent: &target,
+                    name: "claude"
+                },
+                "wrong name",
                 60,
                 NOW + 61,
             )
@@ -243,7 +268,10 @@ mod tests {
             .recover_claim(
                 &sibling.id,
                 &target,
-                &session(SESSION_B),
+                RecoveringSession {
+                    agent: &session(SESSION_B),
+                    name: "copilot"
+                },
                 "session theft",
                 60,
                 NOW + 11,
@@ -270,7 +298,10 @@ mod tests {
             .recover_claim(
                 &task.id,
                 "copilot",
-                &target,
+                RecoveringSession {
+                    agent: &target,
+                    name: "copilot"
+                },
                 "before grace",
                 60,
                 NOW + 1 + PARKING_GRACE_SECS,
@@ -280,7 +311,10 @@ mod tests {
             .recover_claim(
                 &task.id,
                 "copilot",
-                &target,
+                RecoveringSession {
+                    agent: &target,
+                    name: "copilot"
+                },
                 "owner disappeared",
                 60,
                 NOW + 2 + PARKING_GRACE_SECS,

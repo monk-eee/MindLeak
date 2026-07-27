@@ -7,6 +7,26 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **One agent is one identity again (ADR-0054).** The agent id was
+  `session:v1:{base}:{fingerprint}`, where the fingerprint came from the session
+  token but `base` came from `LODESTAR_AGENT` / `MINDLEAK_AGENT` **in the hosting
+  server process**. Because every comparison in the system is whole-string
+  equality, one session hosted by two differently configured processes resolved
+  to two agents. Observed live: `fleet_view` listed
+  `session:v1:agent:bff9…` holding one claim and `session:v1:copilot:bff9…`
+  holding two — same token, same fingerprint, three claims split in half; two
+  further agents in the same fleet were split the same way. Worse, an addressed
+  question is matched on `audience = ?1` exactly, so a peer addressed under the
+  other half's name never sees it and the task parks until the grace expires —
+  which made agent-to-agent dialogue (ADR-0046) undeliverable in practice. The
+  id is now `session:v1:{fingerprint}`, derived from the session token alone;
+  the label survives as a display name that is written to no key. A migration
+  collapses stored ids across all sixteen identity columns, which *heals* the
+  existing split because both halves share the fingerprint and merge onto one
+  agent. `DEVELOPERS.md`'s "publishing must use the same base that claimed"
+  instruction is deleted rather than amended — it was advice for working around
+  this bug.
+
 - **An unknown tool argument is now reported instead of silently dropped.**
   Passing `lease_seconds` where `claim_task` declares `lease_secs` did nothing
   visible: the key was ignored, the 300-second default applied, and the claim
