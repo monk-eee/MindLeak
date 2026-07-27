@@ -86,8 +86,12 @@ discovered by reading. There is no channel, and nothing is ever delivered.**
   column is added by transactional migration and is `NULL` for existing rows,
   which reads correctly as "addressed to a human".
 - Two agents can now wait on each other. Clause 5 keeps that recoverable by a
-  human and clause 3 keeps the parking grace as the backstop, but the deadlock
-  is reachable and `fleet_view` does not yet surface it.
+  human and clause 3 keeps the parking grace as the backstop, and `fleet_view`
+  reports both the wait graph and any cycle in it, naming the tasks that break
+  it. A one-way wait is deliberately not reported as a cycle: the addressee can
+  still answer, and calling a legitimate wait a deadlock is how an advisory
+  signal earns being ignored. What remains is a wait on an agent that never
+  returns — not a cycle, not flagged, and bounded only by the grace.
 
 ## Rejected alternatives
 

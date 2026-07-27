@@ -7,6 +7,23 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **The fleet view now shows who is waiting on whom, and names the deadlocks
+  (ADR-0046).** Addressed questions made a wait cycle reachable: agent A parks
+  on B while B parks on A, and both tasks sit in `needs_input` — which every
+  surface renders as ordinary parked work. A pair could burn the whole seven-day
+  parking grace doing nothing while the board read healthy. `fleet_view` now
+  carries `waits` (who is parked on whom, derived from the ledger's own
+  unanswered addressed questions rather than declared by anyone) and
+  `wait_cycles` (sets of agents each transitively waiting on the others, so no
+  member can unblock any other). Each cycle names the tasks that form it:
+  answering any one of them breaks it, and the test asserts that it does — a
+  finding whose implied remedy does not work is just an alarm. A one-way wait is
+  deliberately *not* a cycle, because the addressee can still answer, and
+  reporting a legitimate wait as a deadlock is the fastest way to make an
+  advisory signal ignored. Longer rings are found by the same rule rather than a
+  special case for pairs. Still advisory and capped at `review` (ADR-0034): the
+  remedy is a human answering a question, and a view that blocked on its own
+  observation would be a control nobody asked for.
 - **Agents can now say something to each other, through the durable thread
   rather than to each other (ADR-0046).** Two agents shared a blackboard but
   could address nothing at one another, and two specific things were missing

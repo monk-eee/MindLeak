@@ -181,18 +181,18 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
-- **Two agents can now wait on each other, and nothing surfaces it — KNOWN, left
-  for later.** — ADR-0046 lets `ask_question` address a peer agent, so agent A
-  can park on B while B parks on A. Both tasks sit in `needs_input` looking like
-  legitimate waits. It is recoverable — any author may answer, so a human can
-  break either side — and the ADR-0020 parking grace releases both after seven
-  days, so it cannot deadlock forever. But nothing detects or reports it:
-  `fleet_view` shows claims and staleness, not who is waiting on whom, and a
-  cycle among addressed questions is exactly the shape it cannot see. Impact: two
-  agents can burn up to a week of wall-clock doing nothing while the board reads
-  healthy. Introduced knowingly with the feature rather than discovered.
-  Fix would be a cycle check over unanswered `task_qa.audience` edges, surfaced
-  in `fleet_view` as an advisory finding.
+- **A stalled wait is only bounded by the seven-day parking grace — SURFACED,
+  not prevented.** — ADR-0046 lets `ask_question` address a peer, so an agent
+  can park on one that never answers. The mutual case (a wait cycle) is now
+  detected and reported by `fleet_view`, and answering any named task breaks it.
+  What is *not* solved: a one-way wait on an agent that has vanished is not a
+  cycle and is not flagged — correctly, since the addressee could still answer,
+  but it means a task can sit parked for a week on someone who is never coming
+  back. Nothing alerts either way: `fleet_view` is a pull, so the finding is only
+  seen if a human or agent looks. Impact: bounded wasted wall-clock, never
+  permanent. Fix would be a staleness threshold on an unanswered wait — an
+  addressee with no live claim and no recent session is a different, weaker
+  signal than a cycle and should read as such.
 - **Stalled ledger work is invisible: nothing notices a lapsed lease or a
   shipped change with no receipt — OPEN.** — Found Jul 2026 auditing why three
   tasks sat unfinished. They stalled for three *different* reasons and the board

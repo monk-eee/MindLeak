@@ -3,6 +3,7 @@ use globset::{GlobBuilder, GlobMatcher};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 
 use crate::error::{LodestarError, Result};
+use crate::fleet::Wait;
 use crate::model::{ClaimOverlap, ConformanceRecord, Task, TaskQa, TaskScope, TaskStatus, Verdict};
 use crate::util::short_hash;
 
@@ -13,6 +14,17 @@ const TASK_COLS: &str = "id, goal_id, parent_task_id, title, acceptance, status,
 const CONFORMANCE_COLS: &str =
     "id, task_id, evidence_schema_version, evidence, verdict, findings, checked_at";
 const QA_COLS: &str = "id, task_id, kind, body, author, audience, created_at";
+
+/// An addressed question is still pending while its task carries no later
+/// answer (ADR-0046). Shared by the two readers of the wait state so they can
+/// never disagree about what "still waiting" means. Assumes the outer query
+/// aliases `task_qa` as `question`.
+const UNANSWERED: &str = "NOT EXISTS (
+         SELECT 1 FROM task_qa AS reply
+         WHERE reply.task_id = question.task_id
+           AND reply.kind = 'answer'
+           AND reply.id > question.id
+     )";
 
 /// How long a parked (needs_input/paused) task stays owned before the pool may
 /// reclaim it (ADR-0020 anti-stranding). Deliberately far longer than an active
@@ -459,16 +471,39 @@ impl LodestarStore {
         let sql = format!(
             "SELECT {QA_COLS} FROM task_qa AS question
              WHERE question.kind = 'question' AND question.audience = ?1
-               AND NOT EXISTS (
-                   SELECT 1 FROM task_qa AS reply
-                   WHERE reply.task_id = question.task_id
-                     AND reply.kind = 'answer'
-                     AND reply.id > question.id
-               )
+               AND {UNANSWERED}
              ORDER BY question.id ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![agent], row_to_qa)?;
+        collect(rows)
+    }
+
+    /// Every agent currently parked waiting on an answer from another agent
+    /// (ADR-0046), oldest question first.
+    ///
+    /// The task must still be `needs_input`: a question whose task has moved on
+    /// is history, not a live wait, and reporting it would manufacture a stall
+    /// that no longer exists.
+    pub fn waits(&self) -> Result<Vec<Wait>> {
+        let sql = format!(
+            "SELECT question.task_id, question.author, question.audience, question.created_at
+             FROM task_qa AS question
+             JOIN tasks ON tasks.id = question.task_id
+             WHERE question.kind = 'question' AND question.audience IS NOT NULL
+               AND tasks.status = 'needs_input'
+               AND {UNANSWERED}
+             ORDER BY question.id ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Wait {
+                task_id: row.get(0)?,
+                waiter: row.get(1)?,
+                waited_on: row.get(2)?,
+                asked_at: row.get(3)?,
+            })
+        })?;
         collect(rows)
     }
 
