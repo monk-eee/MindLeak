@@ -161,7 +161,7 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 | `MINDLEAK_DB` | repository-id store, or workspace-local outside Git | explicit server graph override |
 | `MINDLEAK_AGENT` | *(empty)* | agent id for attribution (`observed` edges); empty = off |
 | `LODESTAR_SESSION_ID` | *(empty)* | 32-hex session id resolved to this agent's identity; **required to publish** (ADR-0049) |
-| `LODESTAR_AGENT` | `agent` | identity base; the resolved agent id is `session:v1:<base>:<hash>`, so publishing must use the same base that claimed |
+| `LODESTAR_AGENT` | `agent` | display name for this process's sessions in reports; not part of the agent id (ADR-0054) |
 | `LODESTAR_MCP_BIN` | `target/release`, then `target/debug` | Lodestar server the claim gate drives; set it when publishing from a worktree with no local build |
 | `MINDLEAK_CONFIG` | `<workspace>/.mindleak.toml` | per-project decay policy |
 | `MINDLEAK_WORKING_SET_SIZE` | `7` | hard cap for the current agent's derived working set (1-32) |
@@ -211,7 +211,7 @@ and footguns, with impact and status:
 - **A shared session token collapses every agent into one identity — GUARDED,
   not prevented.** — `LODESTAR_SESSION_ID` is minted by the client, so a token
   written anywhere several agents read (repository memory, a dotfile, a prompt)
-  makes all of them resolve to the same `session:v1:<base>:<fingerprint>`.
+  makes all of them resolve to the same `session:v1:<fingerprint>`.
   Nothing errors. Claims, `check_overlap` and wait-cycle detection are all keyed
   on that identity and silently stop meaning anything: `fleet_view` shows one
   busy agent instead of three colliding ones, and a cycle needs two distinct

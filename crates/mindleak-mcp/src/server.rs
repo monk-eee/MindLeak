@@ -264,10 +264,11 @@ mod tests {
         let second = evidence(31, "ffeeddccbbaa99887766554433221100");
         assert_ne!(first["agent_id"], second["agent_id"]);
         assert_ne!(first["agent_id"], "impersonator");
-        assert!(first["agent_id"]
-            .as_str()
-            .unwrap()
-            .starts_with("session:v1:test:"));
+        // ADR-0054: `session:v1:{fingerprint}` — no label segment, so exactly
+        // two colons whatever this process was named.
+        let first_id = first["agent_id"].as_str().unwrap();
+        assert!(first_id.starts_with("session:v1:"));
+        assert_eq!(first_id.matches(':').count(), 2);
         assert_eq!(first["commit_ids"], json!(["intent:session-a"]));
         assert_eq!(second["commit_ids"], json!(["intent:session-b"]));
         assert_eq!(first["changed_node_ids"], json!(["artifact:src/a.rs"]));

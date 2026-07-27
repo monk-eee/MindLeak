@@ -401,7 +401,7 @@ Newline-delimited JSON-RPC 2.0 over stdio, exactly like `mindleak-mcp`.
 **Session identity (ADR-0030).** The client first calls
 `open_session(session_id)` with one 128-bit lowercase-hex token on both planes.
 Every identity-bearing call then includes that registered `session_id`; server
-dispatch resolves and injects the stable `session:v1:<base>:<fingerprint>` owner.
+dispatch resolves and injects the stable `session:v1:<fingerprint>` owner.
 Caller-selected `agent`/`agent_id` values are not part of the public schema.
 
 **Constitution**

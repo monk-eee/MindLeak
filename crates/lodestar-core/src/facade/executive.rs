@@ -226,12 +226,19 @@ impl Lodestar {
         id: &str,
         expected_owner: &str,
         agent: &str,
+        name: &str,
         reason: &str,
         lease_secs: i64,
     ) -> Result<bool> {
         let agent = self.resolve_agent(agent)?;
-        self.store
-            .recover_claim(id, expected_owner, agent, reason, lease_secs, now_unix())
+        self.store.recover_claim(
+            id,
+            expected_owner,
+            crate::store::RecoveringSession { agent, name },
+            reason,
+            lease_secs,
+            now_unix(),
+        )
     }
 
     pub fn claim_transfer_history(&self, task_id: &str) -> Result<Vec<ClaimTransfer>> {
