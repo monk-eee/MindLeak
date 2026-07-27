@@ -153,15 +153,20 @@ style nit.
   markers — MindLeak ingests those into intent nodes.
 - **Stage explicitly with named paths** and review every diff before committing —
   do not blindly accept generated code. Never `git add -A` a mixed working tree.
-- **One checkout, one fleet branch, one publisher (ADR-0032).** Agents share the
-  primary checkout and one `fleet/<goal>` branch. Do not create Git worktrees and
-  do not cherry-pick routine work. Only the designated integrator may fetch,
-  reconcile, push with `node scripts/canonical-push.mjs`, or update the pull
-  request; every other agent edits and makes scoped commits only.
-- **Divergence stops the fleet.** If the remote branch is not an ancestor of
-  `HEAD`, stop taking work, finish or release current claims, reach a scoped clean
-  checkpoint, and reconcile once in the primary checkout. Never move `main`
-  underneath dirty files and never publish from a side lineage.
+- **One isolated worktree and branch per concurrent workstream (ADR-0038).** Git
+  isolates files, the index, and branch selection; Lodestar coordinates claims
+  and proof; MindLeak shares repository learning. Sharing one writable checkout
+  is a reviewed exception, not the default. Do not cherry-pick, rebase, or squash
+  routine work: those operations replace evidence-bearing commit identities.
+- **Publish exact commits; converge through review.** Any clean attached worktree
+  may publish its current non-protected branch with
+  `node scripts/canonical-push.mjs`. The script pushes exact `HEAD` to the same
+  branch name and refuses dirty state or remote divergence. Only a protected,
+  policy-compliant pull-request merge may advance `main`.
+- **Divergence stops that branch.** If the remote branch is not an ancestor of
+  `HEAD`, stop work on that branch, reach a clean checkpoint, and reconcile in
+  its own worktree. Never move refs underneath dirty files or repair routine
+  divergence by manufacturing replacement commits.
 
 ### Doc discipline (NON-NEGOTIABLE)
 Doc drift is treated like a failing test. A shipped change updates the relevant
@@ -211,8 +216,9 @@ Idiomatic, testable Rust by default.
   (`MINDLEAK_LLM_API_KEY`) is read from the environment and never logged.
 - **`mindleak-mcp` is stdio-only and unauthenticated by design** — it has no
   network listener. Do not add one without an auth layer (see
-  [`docs/SPEC.md` § 8](docs/SPEC.md)). Treat `.mindleak/graph.db` as workspace-
-  sensitive (it is gitignored and regenerable).
+  [`docs/SPEC.md` § 8](docs/SPEC.md)). Treat the per-repository user-local
+  `graph.db` and `spec.db` as workspace-sensitive; inspect their resolved paths
+  with `storage_status` (ADR-0038).
 
 ### Toolchain (NON-NEGOTIABLE — platform-agnostic only)
 - **Everything must run identically on Linux, macOS, and Windows.** Use `cargo`,
@@ -233,7 +239,7 @@ Idiomatic, testable Rust by default.
 | LLM (optional) | any OpenAI-compatible server (`/v1`) via `ureq`, async only |
 | Server transport | hand-rolled newline-delimited JSON-RPC 2.0 (MCP) |
 | Extension | TypeScript, VS Code Webview API, vendored Cytoscape.js |
-| Storage | single-file SQLite (`.mindleak/graph.db`, WAL), regenerable |
+| Storage | per-clone repository id → user-local `graph.db` + `spec.db` (SQLite WAL) |
 
 ## Project structure
 

@@ -7,18 +7,20 @@ library behind its own MCP stdio server; everything communicates only over the
 Model Context Protocol — no shared memory, no sockets beyond stdio.
 
 ```
-Agents · VS Code ─┬─ MCP/stdio ─▶ mindleak-mcp ─▶ mindleak-core ─▶ .mindleak/graph.db  (decays)
-                  │                                     └── async ──▶ Ollama (optional)
-                  └─ MCP/stdio ─▶ lodestar-mcp ─▶ lodestar-core ─▶ .lodestar/spec.db   (durable)
+Agent worktrees ─┬─ MCP/stdio ─▶ mindleak-mcp ─▶ mindleak-core ─▶ user state/<repo-id>/graph.db
+                 │                                     └── async ──▶ Ollama (optional)
+                 └─ MCP/stdio ─▶ lodestar-mcp ─▶ lodestar-core ─▶ user state/<repo-id>/spec.db
 ```
 
 ## Crates
 
 ### `mindleak-storage` (library)
 
-Shared platform-independent SQLite online backup and integrity verification
-(ADR-0013). Both planes call this primitive through their own stores; reset and
-export remain plane-specific operations.
+Shared platform-independent repository identity, user-local database resolution,
+legacy online migration, backup, and integrity verification (ADR-0013/0038).
+Both planes resolve one per-clone id from shared Git config, so linked worktrees
+share state without sharing files, indexes, or branches. Reset and export remain
+plane-specific operations.
 
 ### `mindleak-session` (library)
 
@@ -70,6 +72,13 @@ facade wiring). Facade behavior is grouped under `facade/`: `constitution`,
 `executive`, `design`, `design_materialization`, `conformance`, and `knowledge`.
 Each design materialization writes an immutable plan revision; task/goal link
 tables are the current projection and can be repaired without deleting history.
+
+**Repository topology (ADR-0038).** Every concurrent workstream uses its own Git
+worktree and branch. `mindleak.repositoryId` lives in shared local Git config and
+selects one platform-local `repositories/<id>/` directory for both SQLite files.
+Lodestar coordinates claims and proof; MindLeak shares learned context; only a
+protected pull-request merge advances `main`. `storage_status` exposes the exact
+id, path, origin, and legacy migration result on each plane.
 
 The learned-knowledge loop is wired end to end (ADR-0022): `knowledge`'s
 `promote_signals` bridge feeds MindLeak proven-signal candidates through the

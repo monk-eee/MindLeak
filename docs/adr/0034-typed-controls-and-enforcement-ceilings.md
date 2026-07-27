@@ -12,6 +12,12 @@
   [ADR-0025](0025-authoritative-checked-conformance.md) (conformance),
   [ADR-0031](0031-exportable-conformance-evidence.md) (CI gate)
 
+> **Amended by ADR-0038.** The immutable initial `fleet-delivery` v1 remains
+> historical. Version 2 replaces primary-checkout publication with clean
+> task-branch publication from linked worktrees and adds the review-level
+> `fleet.isolated_worktree` clause; protected-main and commit-identity rules are
+> unchanged.
+
 ## Context
 
 ADR-0026 established that a clause carries legitimacy — rationale, scope,

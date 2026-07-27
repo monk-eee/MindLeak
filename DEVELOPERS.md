@@ -35,16 +35,15 @@ The cargo hooks are **scoped and committed-snapshot aware**
 (`scripts/cargo-precommit.mjs`): they run `cargo fmt/clippy/test` only for the
 crate packages your change touches and, when the live tree could leak another
 agent's WIP, materialize the staged or committed tree through a temporary Git
-index. No worktree, branch, commit, or shared ref is created (ADR-0032).
+index. No worktree, branch, commit, or shared ref is created by validation.
 
-Agents use one primary checkout and one shared `fleet/<goal>` branch. Claim work,
-then run `node scripts/scoped-commit.mjs -m "<msg>" -- <path>...` to stage and
-commit only declared paths (never `git add -A`). Exactly one designated
-integrator fetches and reconciles, then publishes the branch's exact `HEAD` with
-`node scripts/canonical-push.mjs`. The publisher refuses protected branches,
-staged index state, linked worktrees, and remote divergence. If it refuses,
-drain active work and reconcile once in the primary checkout; do not cherry-pick
-routine work or move `main` beneath dirty files.
+Each concurrent workstream uses its own linked worktree and task branch
+(ADR-0038). Claim work with that concrete path scope, then run
+`node scripts/scoped-commit.mjs -m "<msg>" -- <path>...` inside the worktree to
+commit only declared paths (never `git add -A`). A clean worktree may publish
+its own branch's exact `HEAD` with `node scripts/canonical-push.mjs`; the
+publisher refuses protected branches, detached `HEAD`, any uncommitted state,
+and remote divergence. Do not cherry-pick, rebase, or squash routine work.
 
 `main` is a protected branch: it advances only through a pull request whose five
 CI checks pass, and it refuses force pushes and deletion. Land a fleet branch by
@@ -121,8 +120,14 @@ fix the code instead. Configuration: [`.pre-commit-config.yaml`](.pre-commit-con
 ## Running the MCP server by hand
 
 ```bash
-MINDLEAK_DB="$PWD/.mindleak/graph.db" cargo run -p mindleak-mcp
+cargo run -p mindleak-mcp
 ```
+
+Inside Git, both servers bootstrap one clone-local repository id in shared local
+Git config and resolve to the same user-local repository directory from every
+linked worktree. Call `storage_status` on either plane to inspect the id, path,
+origin, and legacy migration result. Set `MINDLEAK_HOME` to relocate the shared
+root, or `MINDLEAK_DB` / `LODESTAR_DB` only for an explicit direct override.
 
 Then paste newline-delimited JSON-RPC requests on stdin, e.g.:
 
@@ -148,8 +153,9 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 
 | Variable | Default | Used by |
 |---|---|---|
-| `MINDLEAK_WORKSPACE` | process working directory | project root for default graph/config paths |
-| `MINDLEAK_DB` | `<workspace>/.mindleak/graph.db` | server graph location |
+| `MINDLEAK_WORKSPACE` | process working directory | worktree used for Git repository identity and project config |
+| `MINDLEAK_HOME` | platform-local non-roaming state directory | shared per-repository storage root |
+| `MINDLEAK_DB` | repository-id store, or workspace-local outside Git | explicit server graph override |
 | `MINDLEAK_AGENT` | *(empty)* | agent id for attribution (`observed` edges); empty = off |
 | `MINDLEAK_CONFIG` | `<workspace>/.mindleak.toml` | per-project decay policy |
 | `MINDLEAK_WORKING_SET_SIZE` | `7` | hard cap for the current agent's derived working set (1-32) |
@@ -358,14 +364,14 @@ and footguns, with impact and status:
   text. Concurrent terminal executions can both observe one workspace mutation,
   so changed paths prove temporal overlap rather than process-level causality. —
   Medium impact on provenance precision in overlapping command sessions.
-- **Lodestar worktree sharing is path-based, not git-aware.** — The Intent Plane
-  DB resolves from `LODESTAR_DB` else `<cwd>/.lodestar/spec.db`; sibling git
-  worktrees share one plane only if pointed at the same path. — Low impact. —
-  **Fixed Jul 2026:** resolution now falls to the git *common* dir's parent
-  (`git rev-parse --git-common-dir`) so every worktree of a repo shares
-  `<repo-root>/.lodestar/spec.db` by default (`LODESTAR_DB` still overrides; cwd
-  fallback outside a git repo). Pure `resolve_db_path_from` is unit-tested for all
-  three cases.
+- **Lodestar worktree sharing was path-based, then checkout-root based.** — The
+  original server used `LODESTAR_DB` or the process CWD; the first fix resolved
+  through Git's common directory but still privileged the checkout owning
+  `.git`. — Low impact on correctness, high coupling to physical topology. —
+  **Superseded Jul 2026 by ADR-0038:** both planes now resolve one random
+  per-clone repository id from shared local Git config and use the same
+  platform-local user store from every linked worktree. Explicit DB overrides
+  still win; scratch use outside Git remains workspace-local.
 - **Unit Test MCP 1.3.6 cannot validate this workspace reliably.** — Its Vitest
   discovery finds `src/util.test.ts`, but `run_tests` reports a passing total of
   zero even for that explicit path. On Windows, a backslash Cargo root is

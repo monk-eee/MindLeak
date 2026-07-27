@@ -104,7 +104,7 @@ proven regularities into **learned knowledge** before the raw episodes fade — 
 │  lodestar-mcp │  (node-id refs) │  mindleak-mcp │
 └───────┬───────┘                 └───────┬───────┘
         ▼                                 ▼
-  .lodestar/spec.db  (shared, WAL)   .mindleak/graph.db
+  user state/<repo-id>/spec.db       user state/<repo-id>/graph.db
   goals · tasks · links              nodes · edges (decay)
 ```
 
@@ -112,12 +112,11 @@ proven regularities into **learned knowledge** before the raw episodes fade — 
   the **same** `spec.db`. SQLite in WAL mode gives concurrent readers plus a
   single serialised writer; coordination correctness comes from guarded
   transactions (§6), not from a daemon.
-- **Worktree-agnostic path.** The DB lives at a stable per-repo location so
-  worktrees share one plane. Resolution order:
-  1. `LODESTAR_DB` if set;
-  2. else the git *common* dir's parent (the main working tree root) →
-     `<repo-root>/.lodestar/spec.db`;
-  3. else `<cwd>/.lodestar/spec.db`.
+- **Worktree-agnostic identity and path.** Linked worktrees read one 128-bit
+  `mindleak.repositoryId` from shared local Git config. `LODESTAR_DB` remains an
+  explicit override; otherwise `spec.db` lives beside `graph.db` under the
+  platform-local `repositories/<id>/` directory. Outside Git, scratch use falls
+  back to `<cwd>/.lodestar/spec.db` (ADR-0038).
 - **No network, no auth.** `lodestar-mcp` is stdio-only, single-machine — the
   same boundary as MindLeak ([SPEC.md §8](SPEC.md)). Multi-machine is a separate,
   larger design (out of scope).

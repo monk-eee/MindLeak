@@ -334,9 +334,10 @@ MindLeak is a **local, single-user tool** and its threat model is scoped to that
   can write nodes/edges — acceptable locally, **not** safe to expose over a
   network. Exposing the server remotely requires an auth layer and is out of
   scope; the server will not open a socket on its own.
-- **Data at rest.** The graph (`.mindleak/graph.db`) may contain source
-  excerpts, commit messages, and command output. It is gitignored and
-  regenerable; treat it with the same sensitivity as the workspace.
+- **Data at rest.** Each clone's graph and Intent Plane live in a user-local,
+  non-roaming `repositories/<repository-id>/` directory (ADR-0038). They may
+  contain source excerpts, commit messages, command output, goals, and proof;
+  treat the directory with the same sensitivity as the workspace.
 - **LLM boundary.** Consolidation only reaches the configured
   `MINDLEAK_LLM_URL`. Pointed at a local server (the default), nothing leaves
   the machine. See [SECURITY.md](../SECURITY.md).
@@ -372,8 +373,10 @@ Query it with the existing surface plus one helper:
 - `list_agents` — the roster: each `agent` node with its active observation
   count and last-active time.
 
-**Isolation is per-database.** Point each agent / worktree at its own
-`MINDLEAK_DB` for separate brains, or a shared absolute path for a merged one.
-Ids are workspace-relative, so worktrees of the *same* repo merge cleanly;
-sharing one DB across *different* repos is not supported (path ids collide).
-Rationale: [ADR-0003](adr/0003-agent-attribution-as-observed-edges.md).
+**Isolation is per clone; learning is shared across its worktrees.** Linked
+worktrees resolve one random repository id from shared local Git config and use
+the same graph automatically. Independent clones receive different ids. Direct
+`MINDLEAK_DB` overrides remain available for deliberate isolation, but sharing
+one graph across unrelated repositories is unsupported (path ids collide).
+Rationale: [ADR-0003](adr/0003-agent-attribution-as-observed-edges.md) and
+[ADR-0038](adr/0038-isolated-worktrees-shared-repository-state.md).
