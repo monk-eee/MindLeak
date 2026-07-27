@@ -17,6 +17,7 @@ describe("claim-gate", () => {
   it("refuses to publish without a live claim", () => {
     const verdict = publishVerdict({
       reachable: true,
+      sessionDeclared: true,
       agent: "agent-a",
       tasks: [],
       branch: "fleet/thing",
@@ -32,6 +33,7 @@ describe("claim-gate", () => {
   it("allows a publication backed by a live claim", () => {
     const verdict = publishVerdict({
       reachable: true,
+      sessionDeclared: true,
       agent: "agent-a",
       tasks: [claimed("task:1", "agent-a", NOW + 300)],
       branch: "fleet/thing",
@@ -50,6 +52,7 @@ describe("claim-gate", () => {
   it("refuses when the ledger cannot be reached, rather than waving the push through", () => {
     const verdict = publishVerdict({
       reachable: false,
+      sessionDeclared: true,
       agent: "agent-a",
       tasks: [],
       branch: "fleet/thing",
@@ -63,9 +66,10 @@ describe("claim-gate", () => {
 
   // An unattributed push is a receipt for nobody, so identity is required
   // before anything else is even checked.
-  it("refuses without an agent identity", () => {
+  it("refuses without a declared session", () => {
     const verdict = publishVerdict({
       reachable: true,
+      sessionDeclared: false,
       agent: "",
       tasks: [claimed("task:1", "someone", NOW + 300)],
       branch: "fleet/thing",
@@ -74,6 +78,24 @@ describe("claim-gate", () => {
 
     expect(verdict.ok).toBe(false);
     expect(verdict.message).toContain("LODESTAR_SESSION_ID");
+  });
+
+  // A session was declared but no identity came back, which means the ledger
+  // did not answer. Reporting that as a missing session would send the reader
+  // to fix the one thing that is not broken.
+  it("blames the ledger, not the session, when identity cannot be resolved", () => {
+    const verdict = publishVerdict({
+      reachable: true,
+      sessionDeclared: true,
+      agent: "",
+      tasks: [],
+      branch: "fleet/thing",
+      now: NOW,
+    });
+
+    expect(verdict.ok).toBe(false);
+    expect(verdict.message).toContain("unreachable");
+    expect(verdict.message).not.toContain("LODESTAR_SESSION_ID");
   });
 
   // Another agent's claim is not this agent's licence to publish.

@@ -118,7 +118,8 @@ if (server && /^[0-9a-f]{32}$/.test(sessionId)) {
 
 const verdict = publishVerdict({
   reachable,
-  agent: sessionId ? agent : "",
+  sessionDeclared: Boolean(sessionId),
+  agent,
   tasks,
   branch,
   now: Math.floor(Date.now() / 1000),

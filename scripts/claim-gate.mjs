@@ -30,14 +30,26 @@ export const liveClaims = (tasks, agent, now) =>
 /**
  * Whether this publication may proceed.
  *
+ * The checks are ordered so each refusal names its own cause. An unreachable
+ * ledger cannot resolve an identity either, so testing identity first would
+ * report a broken ledger as a missing session and send the reader to fix the
+ * wrong thing — the failure mode ADR-0045 exists to stop.
+ *
  * `reachable: false` refuses. Unlike `gh`, whose absence is an ordinary
  * condition, Lodestar is local SQLite behind a local binary: unreachable means
  * genuinely broken, not merely unconfigured. Failing open here would make "the
  * ledger was down" the universal bypass inside a week, and the gate would be
  * decorative — the exact state it exists to end.
  */
-export const publishVerdict = ({ reachable, agent, tasks, branch, now }) => {
-  if (!agent) {
+export const publishVerdict = ({
+  reachable,
+  sessionDeclared,
+  agent,
+  tasks,
+  branch,
+  now,
+}) => {
+  if (!sessionDeclared) {
     return {
       ok: false,
       message:
@@ -46,7 +58,7 @@ export const publishVerdict = ({ reachable, agent, tasks, branch, now }) => {
         "  one a claim is recorded against. An unattributed push is a receipt for nobody.",
     };
   }
-  if (!reachable) {
+  if (!reachable || !agent) {
     return {
       ok: false,
       message:
@@ -64,7 +76,9 @@ export const publishVerdict = ({ reachable, agent, tasks, branch, now }) => {
         `no live Lodestar claim for ${agent}; publishing ${branch} would leave no record of what this work was for.\n` +
         "  Claim existing work:  claim_task(task_id)\n" +
         "  Or declare it first:  create_task(goal_id, title, acceptance) then claim_task\n" +
-        "  A lapsed lease cannot be renewed — re-claim to open a fresh evidence window.",
+        "  A lapsed lease cannot be renewed — re-claim to open a fresh evidence window.\n" +
+        "  If you do hold a claim, check LODESTAR_AGENT matches the value in use when you claimed:\n" +
+        "  the identity above is derived from it, so a different base resolves to a different agent.",
     };
   }
   return { ok: true, claims: held };
@@ -120,8 +134,16 @@ export const resolveServer = (repoRoot) => {
 /**
  * Drive one batch of tool calls over the server's newline-delimited JSON-RPC
  * stdio (not Content-Length framed), returning the parsed results by id.
+ *
+ * A `.mjs` server path is run through Node. That is a real wrapper case, and it
+ * is also the seam the publisher's own tests use to stand up a ledger without
+ * building the Rust binary — a test that cannot reach the ledger could only
+ * assert refusal, which would leave the publish path itself untested.
  */
 export const callTools = (binary, cwd, calls) => {
+  const [command, leadingArgs] = binary.endsWith(".mjs")
+    ? [process.execPath, [binary]]
+    : [binary, []];
   const requests = [
     {
       jsonrpc: "2.0",
@@ -140,7 +162,7 @@ export const callTools = (binary, cwd, calls) => {
       params: { name: call.name, arguments: call.arguments ?? {} },
     })),
   ];
-  const raw = execFileSync(binary, [], {
+  const raw = execFileSync(command, leadingArgs, {
     cwd,
     encoding: "utf8",
     input: requests.map((request) => JSON.stringify(request)).join("\n") + "\n",
