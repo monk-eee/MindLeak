@@ -403,6 +403,17 @@ pub struct ConstitutionStatus {
     pub clause_count: i64,
 }
 
+/// A bootstrap proposal (SPEC-CONSTITUTION 7.3): a drafted version, the cited
+/// repository facts grounding it, and the Common Core clauses awaiting an
+/// adopt/tailor/reject disposition. Nothing here governs anything — the draft
+/// authorises no verdict until it is explicitly activated.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstitutionProposal {
+    pub version: ConstitutionVersion,
+    pub facts: Vec<crate::discovery::ProjectFact>,
+    pub common_core: crate::policy::PackProposalBatch,
+}
+
 /// A goal row: a clause of the constitution (SPEC-CONSTITUTION §10). The
 /// enforcement fields (`scope`, `evidence_contract`, `consequence`) stay absent
 /// until explicitly completed; an incomplete clause is review-only and can

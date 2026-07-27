@@ -54,6 +54,19 @@ impl ProjectFactKind {
             ProjectFactKind::Ownership => "ownership",
         }
     }
+
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        match tag {
+            "documentation" => Some(ProjectFactKind::Documentation),
+            "decision_record" => Some(ProjectFactKind::DecisionRecord),
+            "manifest" => Some(ProjectFactKind::Manifest),
+            "continuous_integration" => Some(ProjectFactKind::ContinuousIntegration),
+            "linter" => Some(ProjectFactKind::Linter),
+            "test_configuration" => Some(ProjectFactKind::TestConfiguration),
+            "ownership" => Some(ProjectFactKind::Ownership),
+            _ => None,
+        }
+    }
 }
 
 /// One cited observation about a repository. `question` is present whenever the

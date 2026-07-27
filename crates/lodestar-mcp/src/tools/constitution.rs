@@ -97,6 +97,22 @@ pub(super) fn definitions() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
+            "name": "propose_constitution",
+            "description": "Draft a constitution for an ungoverned project: classify the supplied repository paths into cited project facts, record them as the draft's provenance, and propose the Common Core for review. Deterministic, model-free, and never activates. Refuses an already-active constitution (that is an amendment) or an existing unresolved draft.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Workspace-relative repository paths to classify. The caller supplies them; the server performs no filesystem scan."
+                    },
+                    "session_id": { "type": "string", "pattern": "^[0-9a-f]{32}$", "description": "Session id previously registered with open_session." }
+                },
+                "required": ["paths", "session_id"]
+            }
+        }),
+        json!({
             "name": "register_policy_pack",
             "description": "Validate and register one immutable policy-pack version. Same id/version/digest is idempotent; different content under an existing version is refused.",
             "inputSchema": {
@@ -291,6 +307,11 @@ pub(super) fn dispatch(
                     req_str(args, "agent")?,
                     opt_str(args, "reason").as_deref(),
                 )
+                .map_err(|error| error.to_string())?)
+        })()),
+        "propose_constitution" => Some((|| {
+            ok(&engine
+                .propose_constitution(&str_array(args, "paths"), Some(req_str(args, "agent")?))
                 .map_err(|error| error.to_string())?)
         })()),
         "pack_clause_provenance" => Some((|| {

@@ -20,6 +20,19 @@ CREATE TABLE IF NOT EXISTS constitution_versions (
 );
 CREATE INDEX IF NOT EXISTS idx_constitution_status ON constitution_versions(status);
 
+-- Cited project facts discovered during bootstrap (SPEC-CONSTITUTION 7.2).
+-- Facts ground a draft in what the repository actually does. They are evidence,
+-- never clauses: an unanswered question is recorded rather than assumed away.
+CREATE TABLE IF NOT EXISTS constitution_facts (
+    constitution_version TEXT NOT NULL,
+    kind                 TEXT NOT NULL,
+    source_path          TEXT NOT NULL,
+    detail               TEXT NOT NULL,
+    question             TEXT,
+    discovered_at        INTEGER NOT NULL,
+    PRIMARY KEY (constitution_version, kind, source_path)
+);
+
 -- Goals: the clauses of the constitution. Durable and versioned. Superseding
 -- creates a new row and marks the old one 'superseded' (never edited in place).
 -- The enforcement fields (scope, evidence_contract, consequence) stay NULL until
