@@ -194,7 +194,13 @@ CREATE TABLE IF NOT EXISTS design_items (
     created_at   INTEGER NOT NULL,
     updated_at   INTEGER NOT NULL,
     promotion_status TEXT NOT NULL DEFAULT 'not_required',
-    materialization_revision INTEGER NOT NULL DEFAULT 0
+    materialization_revision INTEGER NOT NULL DEFAULT 0,
+    -- Retirement (ADR-0042): a person, never a missing file. Kept separate from
+    -- status so retiring a record cannot overwrite what a human decided about
+    -- the design. Archived, never deleted (ADR-0019).
+    retired_at     INTEGER,
+    retired_by     TEXT,
+    retired_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_design_items_status ON design_items(status);
 

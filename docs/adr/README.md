@@ -49,6 +49,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0039](0039-waivers-end-amendments-change.md) | Every waiver ends; changing the rule is an amendment | Accepted |
 | [0040](0040-one-work-surface.md) | One Work surface with advanced proof | Accepted |
 | [0041](0041-cross-cutting-work-is-declared.md) | Cross-cutting work is declared, not waived | Accepted |
+| [0042](0042-designs-are-retired-by-a-person.md) | A design is retired by a person, never by a missing file | Proposed |
 | [0043](0043-adoption-into-active-constitution-is-an-amendment.md) | Adopting a pack clause into an active constitution is an amendment | Proposed |
 | [0044](0044-declared-context-is-durable.md) | Declared context is durable, and staleness is declared too | Proposed |
 
