@@ -9,6 +9,8 @@ use rusqlite::Connection;
 use crate::error::Result;
 
 const SCHEMA: &str = include_str!("schema.sql");
+/// Indexes are applied *after* migrations — see the header of `indexes.sql`.
+const INDEXES: &str = include_str!("indexes.sql");
 
 /// Open (or create) a Lodestar database at `path` and configure it.
 pub fn open(path: &str) -> Result<Connection> {
@@ -31,7 +33,12 @@ fn configure(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "busy_timeout", 5000)?;
     conn.execute_batch(SCHEMA)?;
+    // Order is load-bearing: an index over a column a migration adds cannot be
+    // created before that migration runs. On an existing database the CREATE
+    // TABLE statements are no-ops, so the pre-migration table shape is what the
+    // index would be built against.
     migrations::migrate(conn)?;
+    conn.execute_batch(INDEXES)?;
     functions::register(conn)?;
     Ok(())
 }
@@ -44,6 +51,53 @@ mod tests {
     use crate::design::{DesignMaterializationMode, DesignMaterializationPlan};
     use crate::model::{ClauseOrigin, TaskStatus, Verdict};
     use crate::store::{ConformanceAudit, LodestarStore};
+
+    /// Bug: indexes lived in `schema.sql` and therefore ran *before* migrations.
+    /// On an existing database `CREATE TABLE IF NOT EXISTS` is a no-op, so the
+    /// pre-migration table shape was still in place when
+    /// `idx_task_qa_audience` tried to index `task_qa(audience, kind)`. The
+    /// batch failed with "no such column: audience", the migration that adds
+    /// the column never ran, and **every pre-existing database became
+    /// unopenable** by a current build. Found driving a freshly built server
+    /// against the live repository database.
+    #[test]
+    fn opens_a_database_whose_table_predates_a_migrated_column() {
+        let path = temporary_database("pre-migration-column");
+        {
+            // A database as it existed before `audience` was added: the table is
+            // real, the column is not.
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE task_qa (
+                         id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                         task_id    TEXT NOT NULL,
+                         kind       TEXT NOT NULL,
+                         body       TEXT NOT NULL,
+                         author     TEXT NOT NULL,
+                         created_at INTEGER NOT NULL
+                     );",
+                )
+                .unwrap();
+        }
+
+        let connection = open(path.to_str().unwrap()).expect("a legacy database still opens");
+
+        // The migration ran, so the column exists and the index over it is real.
+        let rows: i64 = connection
+            .query_row("SELECT count(audience) FROM task_qa", [], |row| row.get(0))
+            .expect("the audience column exists after migration");
+        assert_eq!(rows, 0);
+        let indexes: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_task_qa_audience'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexes, 1, "the index is created after the migration");
+    }
 
     #[test]
     fn migration_backfills_legacy_handoff_and_completion_opens_successor() {

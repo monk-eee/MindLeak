@@ -6,6 +6,18 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A current build could not open an existing database.** Indexes lived in
+  `schema.sql` and therefore ran *before* migrations. On an existing database
+  `CREATE TABLE IF NOT EXISTS` is a no-op, so the pre-migration table shape was
+  still in place when `idx_task_qa_audience` tried to index
+  `task_qa(audience, kind)`. The batch failed with `no such column: audience`,
+  the migration that would have added the column never ran, and every
+  pre-existing database became unopenable — a hard upgrade failure rather than a
+  degradation, and silent until someone ran a fresh binary. Indexes now live in
+  `indexes.sql` and are applied *after* migrations, so the ordering is
+  structural rather than something each new migration has to remember.
+
 ### Added
 - **`stalled_work` and the fleet view now read one wait graph, and the parked
   taxonomy stopped lying (ADR-0046).** These landed as two independent answers
