@@ -7,6 +7,23 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`retire_design` removes an orphaned design record — by a person, never by a
+  missing file (ADR-0042).** `reconcile_designs` keys on the ADR path, so
+  renaming an ADR registers a new record and orphans the old one permanently.
+  Two such rows existed, left by renumbering one decision twice on its way to
+  ADR-0040; their paths exist on no branch, and every Design Board row is
+  clickable, so both threw when opened. There was no retirement path at all.
+  The tempting fix — retire any design whose ADR file is absent — is refused:
+  under ADR-0038 several worktrees on different branches share one `spec.db`, so
+  "missing from this checkout" is routine and retiring on it would silently
+  delete live decisions on someone else's branch. Retirement is therefore an
+  explicit human act carrying an actor and a rationale, guarded so a second
+  caller cannot rewrite who did it, and it is **not** a delete (ADR-0019): the
+  row keeps its id, path, decision, decider, and materialization history.
+  Retirement is also kept orthogonal to `proposed`/`accepted`/`rejected` — a
+  fourth status would overwrite the human decision and make "was this accepted?"
+  unanswerable. Retired records leave the board and stay in the audit view under
+  `list_designs(include_retired: true)`.
 - **Human review now closes inside the default Work view (ADR-0040).** The
   former Intent Board uses action-oriented labels and puts `Review needed` work
   first, with inline **Accept**, **Retry**, and **Inspect proof** actions backed
