@@ -6,6 +6,18 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A current build could not open an existing database.** Indexes lived in
+  `schema.sql` and therefore ran *before* migrations. On an existing database
+  `CREATE TABLE IF NOT EXISTS` is a no-op, so the pre-migration table shape was
+  still in place when `idx_task_qa_audience` tried to index
+  `task_qa(audience, kind)`. The batch failed with `no such column: audience`,
+  the migration that would have added the column never ran, and every
+  pre-existing database became unopenable — a hard upgrade failure rather than a
+  degradation, and silent until someone ran a fresh binary. Indexes now live in
+  `indexes.sql` and are applied *after* migrations, so the ordering is
+  structural rather than something each new migration has to remember.
+
 ### Added
 - **Publication requires a live claim; the ledger is no longer optional
   (ADR-0049).** The Intent Plane had one real arbiter (`claim_task`) and **zero
@@ -26,6 +38,24 @@ to [Semantic Versioning](https://semver.org/).
   open would make "the ledger was down" the universal bypass. Overlapping live
   claims on the branch's paths are **reported, never enforced** (ADR-0024) — the
   collision is named at the one moment it is still cheap to act on.
+- **Arming auto-merge now means finished, and a merged branch is checked for
+  what it left behind (ADR-0045 clause 2).** A pull request's merge decision has
+  two writers — the agent pushing commits and whoever arms auto-merge — and
+  nothing arbitrated between them. Observed in production: PR #37 was armed at
+  07:51:12Z, merged at 08:09:21Z, and the next commit landed **13 seconds
+  later**; four commits, including the one that stopped two surfaces
+  disagreeing, never reached `main`. Nothing failed. The pull request read
+  merged, the branch read ahead, and CI was green on both — the only signal was
+  an ancestry check nobody was running. `canonical-push` now refuses to publish
+  onto a branch whose open pull request has auto-merge armed, naming the pull
+  request and the exact `gh pr merge <n> --disable-auto` that satisfies it: the
+  promise to merge is a promise the branch is done, so more work means disarm
+  first. When `gh` is absent or unauthenticated the guard permits the push — a
+  guard that blocks on its own blindness is unsatisfiable, and an unsatisfiable
+  guard teaches bypass. `make merge-audit` is the backstop, reporting any merged
+  branch whose commits never reached the base regardless of how it happened; a
+  deleted branch reports as *unverifiable* rather than clean, because "we cannot
+  tell" and "nothing was lost" are different answers.
 - **`reopen_undecided_design` lets an imported status become a real decision
   (ADR-0047).** `reconcile_designs` imports each ADR's declared `Status:`
   faithfully — importing thirty-five settled decisions as `proposed` would

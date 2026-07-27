@@ -5,6 +5,11 @@
 import { execFileSync } from "node:child_process";
 
 import {
+  armedPullRequestNumber,
+  armedRefusal,
+  queryPullRequest,
+} from "./auto-merge-guard.mjs";
+import {
   callTools,
   overlapNotice,
   publishVerdict,
@@ -75,7 +80,17 @@ if (remoteBranchExists) {
   }
 }
 
-// Publication requires a live claim (ADR-0048). This is the one place the
+// Arming auto-merge is a promise to merge whatever is on the branch the moment
+// checks go green. Pushing after that promise is made is a second writer to the
+// same decision, and the branch loses: PR #37 merged at 08:09:21Z and the next
+// commit landed 13 seconds later, stranding four commits with nothing reported.
+// So arming means finished. If more work is coming, disarm first.
+const armed = armedPullRequestNumber(queryPullRequest(branch, repoRoot));
+if (armed !== null) {
+  fail(armedRefusal(armed, branch));
+}
+
+// Publication requires a live claim (ADR-0049). This is the one place the
 // intent plane is not optional: a push is where work becomes visible to the
 // rest of the fleet, so it is where the ledger has to already know what the
 // work was for. Commits stay ungated - a commit is a draft, a push is a claim

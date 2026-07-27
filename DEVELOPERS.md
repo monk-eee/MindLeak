@@ -69,6 +69,7 @@ crate, and `target/debug/mindleak-mcp` starts and prints
 | Test (extension) | `make ext-test` | `npm --prefix editors/vscode test` |
 | Compile extension | `make ext-compile` | `npm --prefix editors/vscode run compile` |
 | ADR safety | `make adr-guard` | `node scripts/adr-guard.mjs` — fails if any ADR is uncommitted or on no remote ref |
+| Merge audit | `make merge-audit` | `node scripts/merge-audit.mjs` — fails if a merged branch has commits that never reached `main` |
 | Everything CI runs | `make ci` | see [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
 
 > **`make` is optional.** Every target maps to the direct command in the
