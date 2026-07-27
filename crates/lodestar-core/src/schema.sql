@@ -298,6 +298,21 @@ CREATE TABLE IF NOT EXISTS task_qa (
 );
 CREATE INDEX IF NOT EXISTS idx_task_qa_task ON task_qa(task_id);
 
+-- Additional goals a task declares it serves (ADR-0041). Written once at
+-- creation and never updated: coverage declared before the work is a prediction
+-- the evidence can contradict, coverage added afterwards is a rationalisation.
+-- A binding to any covered goal counts as in scope at conformance time, but a
+-- verdict that depended on one caps at needs_human — declared breadth is
+-- reviewed, never self-certified.
+CREATE TABLE IF NOT EXISTS task_goal_coverage (
+    task_id     TEXT NOT NULL,
+    goal_id     TEXT NOT NULL,
+    declared_at INTEGER NOT NULL,
+    PRIMARY KEY (task_id, goal_id),
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_task_goal_coverage_goal ON task_goal_coverage(goal_id);
+
 -- Durable progressive-handoff lineage. `tasks.blocked_by` is cleared when the
 -- successor opens; this table retains the one-to-one chain invariant.
 CREATE TABLE IF NOT EXISTS task_handoffs (

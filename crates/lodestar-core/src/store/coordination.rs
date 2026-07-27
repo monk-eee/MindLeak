@@ -48,6 +48,21 @@ impl LodestarStore {
         blocked_by: Option<String>,
         now: i64,
     ) -> Result<Task> {
+        self.create_task_covering(goal_id, title, acceptance, parent, blocked_by, &[], now)
+    }
+
+    /// Create a task declaring the additional goals it serves (ADR-0041).
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_task_covering(
+        &self,
+        goal_id: &str,
+        title: &str,
+        acceptance: &str,
+        parent: Option<String>,
+        blocked_by: Option<String>,
+        also_serves: &[String],
+        now: i64,
+    ) -> Result<Task> {
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let task = create_task_after_on(
             &transaction,
@@ -56,6 +71,7 @@ impl LodestarStore {
             acceptance,
             parent,
             blocked_by,
+            also_serves,
             now,
         )?;
         transaction.commit()?;
@@ -183,6 +199,11 @@ impl LodestarStore {
             return Err(LodestarError::NotFound(task_id.to_string()));
         }
         task_scope_on(&self.conn, task_id)
+    }
+
+    /// Read the additional goals a task declared it serves (ADR-0041).
+    pub fn goal_coverage(&self, task_id: &str) -> Result<Vec<String>> {
+        goal_coverage_on(&self.conn, task_id)
     }
 
     /// Extend a still-live lease on a task the caller owns (heartbeat). Once a
@@ -695,9 +716,10 @@ pub(super) fn create_task_on(
     acceptance: &str,
     now: i64,
 ) -> Result<Task> {
-    create_task_after_on(connection, goal_id, title, acceptance, None, None, now)
+    create_task_after_on(connection, goal_id, title, acceptance, None, None, &[], now)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_task_after_on(
     connection: &Connection,
     goal_id: &str,
@@ -705,6 +727,7 @@ fn create_task_after_on(
     acceptance: &str,
     parent: Option<String>,
     blocked_by: Option<String>,
+    also_serves: &[String],
     now: i64,
 ) -> Result<Task> {
     if !goals::goal_exists_on(connection, goal_id)? {
@@ -759,7 +782,33 @@ fn create_task_after_on(
             params![predecessor_id, task.id, now],
         )?;
     }
+    for covered in also_serves {
+        if covered == goal_id {
+            return Err(LodestarError::Invalid(format!(
+                "{covered} is already this task's goal; declare only the \
+                 additional goals it serves"
+            )));
+        }
+        if !goals::goal_exists_on(connection, covered)? {
+            return Err(LodestarError::NotFound(covered.clone()));
+        }
+        connection.execute(
+            "INSERT OR IGNORE INTO task_goal_coverage (task_id, goal_id, declared_at)
+             VALUES (?1, ?2, ?3)",
+            params![task.id, covered, now],
+        )?;
+    }
     Ok(task)
+}
+
+/// The additional goals a task declared it serves (ADR-0041). Read-only: there
+/// is deliberately no verb that adds coverage after creation, because coverage
+/// added once conformance has complained is a rationalisation, not a plan.
+pub(super) fn goal_coverage_on(connection: &Connection, task_id: &str) -> Result<Vec<String>> {
+    let mut statement = connection
+        .prepare("SELECT goal_id FROM task_goal_coverage WHERE task_id = ?1 ORDER BY goal_id")?;
+    let rows = statement.query_map(params![task_id], |row| row.get::<_, String>(0))?;
+    collect(rows)
 }
 
 pub(super) fn get_task_on(connection: &Connection, id: &str) -> Result<Option<Task>> {

@@ -331,7 +331,7 @@ one intent plane and one memory graph by default.
 | `constitution_diff` / `amendments` | What an amendment would do, and how policy got to where it is. Clauses match on slug, so a restated rule reads as `changed` — and a clause that only hardens its scope or consequence still shows up. |
 | `plan_pack_upgrade` | Compare a newer pack version against what this project adopted from it. A proposal, never an upgrade — upstream can never alter active local policy. Locally tailored clauses are flagged, because accepting an upstream change to one would silently discard a deliberate decision. |
 | `export_constitution` | Render the constitution to committed-friendly markdown. |
-| `create_task` / `decompose_goal` | Add claimable work; `create_task(blocked_by=...)` creates a progressive handoff. |
+| `create_task` / `decompose_goal` | Add claimable work; `create_task(blocked_by=...)` creates a progressive handoff, and `create_task(also_serves=[...])` declares up front the additional goals genuinely cross-cutting work serves (ADR-0041). |
 | `next_task` | Suggest the next unblocked, claimable task. |
 | `claim_task` / `renew_lease` | **Atomic claim + lease** with optional advisory path globs / symbol ids — renewal is a live heartbeat; after expiry, re-claim opens a fresh evidence window. |
 | `recover_claim` / `claim_transfer_history` | Guardedly recover an expired compatible legacy claim into the registered session and inspect the append-only prior-owner/window audit. |
