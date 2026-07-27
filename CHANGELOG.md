@@ -53,6 +53,18 @@ to [Semantic Versioning](https://semver.org/).
   what replaced it". The answer was one line further down, and the superseding
   commit names ADR-0038 in its `DECISION:` line. The parser now reads indented
   continuation lines, and the ADR index row for 0032 names its successor again.
+- **The server no longer exits at startup when the database path has no
+  directory.** `MINDLEAK_DB=":memory:"` — or a bare `graph.db` — resolves to a
+  path whose `parent()` is `Some("")`, not `None`. `create_dir_all("")`
+  short-circuits to `Ok`, so the happy path hid it, but the Unix branch then
+  called `set_permissions` on that empty path and got `ENOENT`. The process
+  died immediately on Linux and macOS reporting only "No such file or directory
+  (os error 2)", while Windows started fine because it has no permissions call.
+  This is what failed the v0.1.3 release: both platform jobs that actually
+  executed a Unix binary failed their smoke test and publication was skipped.
+  The macOS x64 job passed only because it is cross-compiled and skips
+  execution — a green matrix cell is not always an executed one.
+
 ## [0.1.3] - 2026-07-27
 
 ### Added
