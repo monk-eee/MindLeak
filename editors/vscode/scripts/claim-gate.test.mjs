@@ -321,5 +321,58 @@ describe("claim-gate", () => {
       expect(overlapNotice(undefined, [])).toBeNull();
       expect(overlapNotice({ claims: [] }, [])).toBeNull();
     });
+
+    // Observed: an agent's own claim was reported as "another agent has a live
+    // claim" because identity resolution had drifted, so the derived task list
+    // came back empty while the claim was plainly its own. Comparing the owner
+    // directly makes the notice right even when the list is wrong — and a
+    // warning that names the wrong party is worse than none, because it sends
+    // someone to ask a question of themselves.
+    it("recognises this session's own claim even when the task list is empty", () => {
+      const notice = overlapNotice(
+        [
+          {
+            task_id: "task:mine",
+            owner: "session:v1:abc",
+            matching_paths: ["a.rs"],
+          },
+        ],
+        [],
+        "session:v1:abc"
+      );
+
+      expect(notice).toBeNull();
+    });
+
+    it("still names a peer whose identity differs", () => {
+      const notice = overlapNotice(
+        [
+          {
+            task_id: "task:theirs",
+            owner: "session:v1:def",
+            matching_paths: ["a.rs"],
+          },
+        ],
+        [],
+        "session:v1:abc"
+      );
+
+      expect(notice).toContain("another agent");
+      expect(notice).toContain("session:v1:def");
+    });
+
+    // With no identity to compare against, the honest statement is that a claim
+    // exists and whose it is cannot be determined here — not that it is someone
+    // else's.
+    it("does not assert another agent when this session has no identity", () => {
+      const notice = overlapNotice(
+        [{ task_id: "task:x", owner: "session:v1:def", matching_paths: ["a.rs"] }],
+        [],
+        ""
+      );
+
+      expect(notice).not.toContain("another agent");
+      expect(notice).toContain("no identity to compare");
+    });
   });
 });
