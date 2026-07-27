@@ -69,4 +69,107 @@ describe("scoped-commit", () => {
     expect(git(repo, ["diff", "--cached", "--name-only"])).toBe("foreign.txt");
     expect(result.stderr).toMatch(/staged paths are not yours/);
   }, 30_000);
+
+  // The pre-commit stash race (ADR-0038). pre-commit stashes every unstaged
+  // change around the hook run; when a second worktree means a second agent may
+  // be writing, that restore can collide and the hooks report a fictitious
+  // failure that is very hard to trace back to the real cause.
+  const repoWithSecondWorktree = () => {
+    const repo = mkdtempSync(join(tmpdir(), "mindleak-stash-race-"));
+    temporaryDirectories.push(repo);
+    git(repo, ["init", "-b", "main"]);
+    git(repo, ["config", "user.name", "Stash Race Test"]);
+    git(repo, ["config", "user.email", "stash-race@example.invalid"]);
+    writeFileSync(join(repo, "base.txt"), "base\n");
+    writeFileSync(join(repo, "theirs.txt"), "theirs\n");
+    git(repo, ["add", "base.txt", "theirs.txt"]);
+    git(repo, ["commit", "-m", "base"]);
+    return repo;
+  };
+
+  const attachWorktree = (repo) => {
+    const linked = mkdtempSync(join(tmpdir(), "mindleak-stash-race-linked-"));
+    temporaryDirectories.push(linked);
+    rmSync(linked, { recursive: true, force: true });
+    git(repo, ["worktree", "add", linked, "-b", "fleet/other"]);
+    return linked;
+  };
+
+  const commit = (repo, args) =>
+    spawnSync(process.execPath, [scopedCommit, ...args], {
+      cwd: repo,
+      encoding: "utf8",
+      env: isolatedGitEnvironment(),
+    });
+
+  it("refuses to commit over another agent's unstaged work when a fleet is live", () => {
+    const repo = repoWithSecondWorktree();
+    attachWorktree(repo);
+
+    writeFileSync(join(repo, "mine.txt"), "declared\n");
+    // Another agent's live, unstaged edit in this same working tree.
+    writeFileSync(join(repo, "theirs.txt"), "being edited right now\n");
+
+    const result = commit(repo, ["-m", "scoped", "--", "mine.txt"]);
+
+    expect(result.status).toBe(3);
+    expect(result.stderr).toMatch(/refusing to commit/);
+    expect(result.stderr).toMatch(/theirs\.txt/);
+    expect(result.stderr).toMatch(/worktree add/);
+    // Nothing was committed, and their edit is untouched.
+    expect(git(repo, ["log", "--oneline"]).split("\n")).toHaveLength(1);
+  }, 30_000);
+
+  it("still commits when the only unstaged work is inside the declared paths", () => {
+    // The guard must not fire on your own in-progress edits, or it would just
+    // train people to pass the escape hatch every time.
+    const repo = repoWithSecondWorktree();
+    attachWorktree(repo);
+    writeFileSync(join(repo, "mine.txt"), "declared\n");
+
+    const result = commit(repo, ["-m", "scoped", "--", "mine.txt"]);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(git(repo, ["show", "--name-only", "--format=", "HEAD"])).toBe("mine.txt");
+  }, 30_000);
+
+  it("does not fire inside a linked worktree, which belongs to one agent", () => {
+    // The danger is the shared primary checkout, not the existence of a fleet.
+    // Firing in your own worktree would make the guard noise, and noise is how
+    // a guard turns into a reflexive --allow-foreign-wip.
+    const repo = repoWithSecondWorktree();
+    const linked = attachWorktree(repo);
+
+    writeFileSync(join(linked, "mine.txt"), "declared\n");
+    writeFileSync(join(linked, "theirs.txt"), "my own unrelated wip\n");
+
+    const result = commit(linked, ["-m", "scoped", "--", "mine.txt"]);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(git(linked, ["show", "--name-only", "--format=", "HEAD"])).toBe("mine.txt");
+  }, 30_000);
+
+  it("does not fire for a single operator with one working tree", () => {
+    // Unrelated WIP is normal and harmless when nobody else can write here.
+    const repo = repoWithSecondWorktree();
+    writeFileSync(join(repo, "mine.txt"), "declared\n");
+    writeFileSync(join(repo, "theirs.txt"), "my own unrelated wip\n");
+
+    const result = commit(repo, ["-m", "scoped", "--", "mine.txt"]);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(git(repo, ["show", "--name-only", "--format=", "HEAD"])).toBe("mine.txt");
+  }, 30_000);
+
+  it("lets a single operator override deliberately", () => {
+    const repo = repoWithSecondWorktree();
+    attachWorktree(repo);
+    writeFileSync(join(repo, "mine.txt"), "declared\n");
+    writeFileSync(join(repo, "theirs.txt"), "mine really\n");
+
+    const result = commit(repo, ["-m", "scoped", "--allow-foreign-wip", "--", "mine.txt"]);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(git(repo, ["show", "--name-only", "--format=", "HEAD"])).toBe("mine.txt");
+  }, 30_000);
 });
