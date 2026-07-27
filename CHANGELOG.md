@@ -7,6 +7,13 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Human review now closes inside the default Work view (ADR-0040).** The
+  former Intent Board uses action-oriented labels and puts `Review needed` work
+  first, with inline **Accept**, **Retry**, and **Inspect proof** actions backed
+  by the existing `resolve_task`, `reopen_task`, and `conformance_history` tools.
+  The complete Evidence Board and export flow remain available as advanced
+  history but are hidden by default, reducing the common workflow to one surface
+  without weakening proof or changing MCP semantics.
 - **`scoped-commit` refuses the pre-commit stash race (ADR-0038).** `pre-commit`
   stashes every unstaged change before running hooks and restores it afterwards.
   Alone that is invisible; in a fleet it corrupts. If a second agent writes to
