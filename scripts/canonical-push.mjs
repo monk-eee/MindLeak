@@ -1,9 +1,8 @@
-// Publish the current fleet branch from the repository's primary checkout.
-// The exact HEAD is pushed: this helper never creates side lineages, rewrites
-// commits, or targets a different branch.
+// Publish the current task branch from any clean checkout or linked worktree.
+// The exact HEAD is pushed to the same branch name: this helper never rewrites
+// commits, selects another destination, or advances a protected branch.
 
 import { execFileSync } from "node:child_process";
-import { resolve } from "node:path";
 
 const args = process.argv.slice(2);
 const verifyPrePush = args.includes("--verify-pre-push");
@@ -23,26 +22,21 @@ const run = (gitArgs, options = {}) =>
 const repoRoot = capture(["rev-parse", "--show-toplevel"]);
 const git = (gitArgs, options = {}) =>
   capture(gitArgs, { cwd: repoRoot, ...options });
-const gitDir = resolve(repoRoot, git(["rev-parse", "--git-dir"]));
-const commonDir = resolve(repoRoot, git(["rev-parse", "--git-common-dir"]));
 
-if (gitDir.toLowerCase() !== commonDir.toLowerCase()) {
-  fail("run from the primary checkout, not a linked worktree");
+let branch;
+try {
+  branch = git(["symbolic-ref", "--quiet", "--short", "HEAD"]);
+} catch {
+  fail("HEAD is detached; publish from an attached task branch");
 }
-
-const branch = git(["symbolic-ref", "--quiet", "--short", "HEAD"]);
 if (branch === "main" || branch === "master") {
   fail(
     "direct protected-branch publication is forbidden; use a fleet branch and PR",
   );
 }
 
-try {
-  git(["diff", "--cached", "--quiet"]);
-} catch {
-  fail(
-    "the shared index contains staged changes; finish a scoped commit first",
-  );
+if (git(["status", "--porcelain", "--untracked-files=normal"])) {
+  fail("the worktree has uncommitted changes; finish a scoped commit first");
 }
 
 if (verifyPrePush) {

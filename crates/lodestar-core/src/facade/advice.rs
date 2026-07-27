@@ -194,7 +194,7 @@ mod tests {
             .unwrap();
         engine
             .store
-            .complete_clause_contract(&goal.id, scope, "push target ref", consequence)
+            .complete_clause_contract(&goal.id, scope, "push target ref", consequence, false, None)
             .unwrap();
         goal.id
     }

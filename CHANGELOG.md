@@ -14,6 +14,118 @@ to [Semantic Versioning](https://semver.org/).
   The complete Evidence Board and export flow remain available as advanced
   history but are hidden by default, reducing the common workflow to one surface
   without weakening proof or changing MCP semantics.
+- **Isolated agent worktrees now share one repository brain and converge only
+  through reviewed pull requests (ADR-0038, superseding ADR-0032).** Each clone
+  bootstraps a random 128-bit `mindleak.repositoryId` in shared local Git config;
+  both planes resolve to one platform-local, non-roaming
+  `repositories/<id>/{graph.db,spec.db}` directory from every linked worktree.
+  Independent clones remain isolated. Existing repository-root databases migrate
+  once by verified SQLite online backup and are left untouched; `MINDLEAK_HOME`
+  relocates the shared root, while direct DB overrides still win. VS Code,
+  installer, Copilot CLI, and dogfood registrations no longer force
+  worktree-local databases, and both planes expose `storage_status` for the id,
+  resolved path, origin, legacy source, and migration result. The canonical
+  publisher now accepts any clean attached worktree, refuses protected branches,
+  dirty/detached/divergent state, and pushes exact `HEAD` to the same branch;
+  only protected PR merge advances `main`. Fleet-delivery v2 proposes isolated
+  worktrees and branch-owned publication without mutating immutable pack v1.
+- **Bounded waivers: the reviewable form of `--no-verify` (ADR-0026 task 5,
+  SPEC-CONSTITUTION §9).** `grant_waiver` records a scoped, expiring, attributed
+  exception to one clause, and `revoke_waiver` withdraws it. An exception was
+  always possible — `--no-verify` and a commented-out check are exceptions too,
+  just unattributed, unbounded, and invisible. A waiver is the same act made
+  reviewable.
+  **Every waiver ends.** There is no open-ended waiver, because an exception
+  that never expires is not an exception — it is the policy, and changing policy
+  is an amendment. That one refusal is what stops the waiver table becoming a
+  second constitution nobody reviewed. Granting also refuses a clause that
+  declares itself unwaivable (otherwise `waivable: false` is decorative) and an
+  approver who is not the authority the clause names — so an agent session
+  cannot approve an exception to a clause reserved to a human.
+  **Expiry is not a status transition.** A lapsed waiver keeps `status: active`
+  and simply stops matching, so enforcement returns with nothing having run and
+  history reads as it was judged rather than being rewritten by the passage of
+  time. Revocation is immediate for future checks, attributed, and never a
+  delete — the exception happened, and the record survives.
+  A waived breach is **not** silent: the conformance findings name the waiver,
+  its approver, and its expiry, so a waived change and a change that never
+  touched a governed node are distinguishable in the audit.
+- **Waiver state is part of the conformance token (ADR-0025).** A check made
+  while an exception was in force is not evidence about a world where it was
+  revoked, and one made under enforcement is not evidence about a world where an
+  exception was since granted. The token records each waiver's status *and*
+  expiry, so it also stops matching once a waiver lapses — which no row rewrite
+  would otherwise signal.
+- **`clause_waivers` / `active_waivers` make exceptions countable.** How often a
+  rule has been excepted is usually the more useful question than what is
+  excepted right now: a clause waived repeatedly is a clause that wants
+  amending.
+- **Amendments: changing adopted policy explicitly (ADR-0026 task 5,
+  SPEC-CONSTITUTION §9).** `propose_amendment` drafts the next constitutional
+  version **carrying every active clause forward**, so the draft starts as the
+  current policy and the eventual diff shows only what the author actually
+  changed — an empty draft would make every amendment a re-adoption of the whole
+  constitution and report every untouched rule as removed and re-added.
+  `amend_constitution` then promotes it with an attributed rationale and a
+  stored clause diff, superseding the outgoing version and its clauses rather
+  than deleting them, so a prior conformance record keeps naming the policy it
+  was judged under.
+  It is deliberately a **different call** from `activate_constitution`: adopting
+  a first constitution and changing an adopted one are different acts, and only
+  the second retires rules people are currently working under. It refuses an
+  amendment that changes nothing (a no-op version bump would retire and re-issue
+  every clause identically, invalidating live conformance tokens for no reason),
+  one that leaves no clauses at all, and one carrying an undecided proposal.
+- **`constitution_diff` matches clauses on `slug` and compares the enforcement
+  contract, not just the words.** A restated rule reads as `changed` rather than
+  a removal plus an addition; and a clause whose consequence moves from `review`
+  to `block`, or whose scope widens, is reported even when its statement is
+  identical — the quiet amendment a statement-only diff would miss entirely.
+- **`plan_pack_upgrade` compares a newer pack against what was actually
+  adopted.** A proposal, never an upgrade: upstream can never alter active local
+  policy, so planning is a pure read. It compares against the recorded
+  provenance rather than the local clause, so a tailored clause does not read as
+  an upstream change — and clauses that *were* tailored are flagged, because
+  accepting an upstream change to one is the single way a pack upgrade can
+  silently discard a deliberate local decision.
+
+### Changed
+- **Scope matching moved to one shared `scope` module.** Clauses and waivers
+  both declare scope, and forking the matcher would let the two disagree about
+  what a scope reaches. It stays deliberately not a glob engine — exact match,
+  or a trailing `**` — because the point of a bounded exception is that a
+  reviewer can see how far it goes.
+- **A clause's enforcement contract now also declares waivability and
+  authority.** A clause that can block should say whether it can be excepted and
+  by whom, and the default is `false`, so a clause refuses exceptions by
+  omission rather than granting them by omission.
+- **Reviewed ratchets: a metric that must not regress, bound to a clause
+  (ADR-0026 task 4, ADR-0034).** `register_ratchet` binds a metric and a
+  direction to one constitutional clause; `accept_ratchet_baseline` records the
+  value it compares against, attributed to the accepting session; and
+  `observe_ratchet` reports a measurement and resolves it through the clause.
+  Three refusals make the mechanism trustworthy. A ratchet with **no reviewed
+  baseline reports `unknown`, never `pass`** — reporting conformance it never
+  checked is how an unbaselined ratchet certifies nothing while looking green.
+  A ratchet **never moves its own baseline**: a mechanism that adopts whatever it
+  last measured launders a regression into the new normal, so one bad run would
+  quietly ratchet the standard *down*. And accepting a baseline **bumps the
+  control version**, so an observation taken against the old baseline resolves as
+  `unknown` rather than being silently re-judged against a number it never saw.
+  A failed ratchet resolves at `review` however hard its clause declares, because
+  its power is `observed` — it reads a report and proves what already happened,
+  it stopped nothing, and whether a particular regression is acceptable is a
+  judgement about the change (SPEC-CONSTITUTION §4). The adapter is deliberately
+  generic and the engine ships no coverage ratchet: §4 says a ratchet cannot
+  determine whether coverage is the right proxy for confidence, so baking one in
+  would answer, for every project, the one question the mechanism is not
+  entitled to answer.
+- **`clause_controls` shows the mechanisms behind a rule.** Each control lists
+  the enforcement power it actually has and the ceiling that power implies, so
+  the hardest consequence a clause can reach is inspectable rather than assumed.
+- **ADR-0037 records why a ratchet never sets its own baseline**, refining
+  ADR-0034 with the question SPEC-CONSTITUTION §4 raises and leaves open —
+  whether the baseline was trustworthy — and the four refusals that answer it.
 - **`constitution_status` reports adoption state instead of leaving it inferred
   (ADR-0026 task 3).** An agent could previously read the active clause set but
   not tell an ungoverned project apart from a governed one that happens to
@@ -62,6 +174,25 @@ to [Semantic Versioning](https://semver.org/).
   review is attributed to a registered session.
 
 ### Fixed
+- **The extension relaunches its MCP server instead of going quietly dead.**
+  The VS Code extension spawns its own `mindleak-mcp` and `lodestar-mcp`
+  children, and nothing restarted them when one exited mid-session — a crash,
+  or an external `taskkill` while the release binaries were rebuilt. Every
+  MindLeak pane then stayed blank until the window was reloaded, with only a
+  line in the output channel to say why. The client now relaunches the server
+  itself, up to three consecutive attempts before it reports that a reload is
+  needed. The exit handler also stays silent when the exit came from disposal,
+  which is what raised `Channel has been closed` in the extension host log
+  during teardown, and the exit message now names the server that actually
+  exited rather than always saying `mindleak-mcp`.
+- **The health line follows the server instead of the moment it started.**
+  `activate()` recorded `memory connected` / `intent connected` once and never
+  revised it, so a server that died mid-session left the one surface meant to
+  explain the silence confidently wrong. `McpClient` now publishes
+  `connected` / `reconnecting` / `disconnected`, and the extension maps that
+  onto the plane's health line. The four independent health strings collapsed
+  into the `RuntimeHealth` record they already modelled, behind a single
+  change-guarded setter.
 - **The Design Board no longer fails silently, and an accepted ADR plans real
   work.** Materializing an accepted design aborted with no message, no log
   entry, and no state change whenever a quick pick or input box was dismissed,

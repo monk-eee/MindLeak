@@ -411,7 +411,7 @@
         "mindleak.databasePath": {
           "type": "string",
           "default": "",
-          "description": "Path to the MindLeak graph database (MINDLEAK_DB). Empty uses <workspace>/.mindleak/graph.db."
+          "description": "Explicit path to the MindLeak graph database (MINDLEAK_DB). Empty uses the shared per-repository user-local store."
         },
         "mindleak.autoIngestOnSave": {
           "type": "boolean",
@@ -513,7 +513,7 @@
         "mindleak.lodestarDatabasePath": {
           "type": "string",
           "default": "",
-          "description": "Path to the Lodestar intent database (LODESTAR_DB). Empty uses <workspace>/.lodestar/spec.db."
+          "description": "Explicit path to the Lodestar intent database (LODESTAR_DB). Empty uses the shared per-repository user-local store."
         }
       }
     }

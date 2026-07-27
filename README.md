@@ -188,11 +188,18 @@ clients can follow the same calls in [docs/USAGE.md](docs/USAGE.md#first-value-w
 ## Run the MCP server
 
 ```bash
-# Uses MINDLEAK_DB if set, else <cwd>/.mindleak/graph.db
-MINDLEAK_DB="$PWD/.mindleak/graph.db" ./target/release/mindleak-mcp
+# Inside Git, every linked worktree shares the clone's repository-id store.
+./target/release/mindleak-mcp
 ```
 
 It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
+
+On first start, MindLeak writes a 128-bit `mindleak.repositoryId` to shared
+local Git config and stores both planes beneath the platform-local, non-roaming
+state root. Independent clones receive independent ids; linked worktrees share
+one `graph.db` and `spec.db`. Use `storage_status` to inspect the exact id and
+paths. `MINDLEAK_HOME` relocates the root; direct `MINDLEAK_DB` / `LODESTAR_DB`
+overrides remain available for managed environments (ADR-0038).
 
 ### Register with an MCP client (VS Code / Copilot example)
 
@@ -204,7 +211,6 @@ It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
     "mindleak": {
       "command": "${workspaceFolder}/target/release/mindleak-mcp",
       "env": {
-        "MINDLEAK_DB": "${workspaceFolder}/.mindleak/graph.db",
         "MINDLEAK_AGENT": "copilot",
         "MINDLEAK_WORKSPACE": "${workspaceFolder}"
       }
@@ -275,6 +281,7 @@ into `~/.copilot/mcp-config.json` (honours `COPILOT_HOME`). Full walkthrough:
 | `index` | Optional: embed nodes lacking a current vector via a local `/v1/embeddings` server (ADR-0008). |
 | `recall` | Optional: nearest node ids by cosine similarity — entry points to *seed* `graph_multi_hop_query`. |
 | `telemetry_snapshot` | Observability record (ADR-0010): per-tool lifetime call/error counts, latency, current health (whether each tool's most recent call failed), and recent invocations from the durable audit trail. |
+| `storage_status` | Resolved repository id, graph database path, storage origin, legacy migration source, and whether migration ran (ADR-0038). |
 
 ---
 
@@ -282,9 +289,9 @@ into `~/.copilot/mcp-config.json` (honours `COPILOT_HOME`). Full walkthrough:
 
 A second, **durable** MCP server ([`lodestar-mcp`](crates/lodestar-mcp)) — the
 "spec brain" that keeps parallel agents aligned to shared intent instead of
-diluting it. Register it alongside `mindleak-mcp`; it uses `LODESTAR_DB` (else
-`<cwd>/.lodestar/spec.db`), a shared file so local agents and worktrees
-coordinate through one plane.
+diluting it. Register it alongside `mindleak-mcp`; both servers derive the same
+per-clone repository id and user-local directory, so isolated worktrees share
+one intent plane and one memory graph by default.
 
 > **Evidence is the proof.** Completion here isn't a claim an agent makes — it's
 > proof it must produce. `complete_task` accepts only a provenance-bearing evidence
@@ -303,11 +310,19 @@ coordinate through one plane.
 | `activate_constitution` | Promote a reviewed draft to the governing constitution in one atomic transaction. Refuses undecided clauses, an empty draft, a non-draft, or a second active version. |
 | `register_policy_pack` / `propose_policy_pack` | Validate and register one immutable pack version, then create durable clause-review proposals for a draft or active constitution. |
 | `propose_common_core` / `list_pack_proposals` | Propose the five review-first Common Core principles through the same pack path, and inspect undecided or historical dispositions. |
+| `propose_fleet_delivery` | Propose fleet-delivery v2: protected-branch review, one publishing owner per task branch, isolated worktrees, commit identity, scoped commits, freshness, and topology honesty. |
 | `review_pack_clause` / `pack_clause_provenance` | Session-attributed adopt/tailor/reject; adoption copies a self-contained local clause and preserves immutable source pack provenance. |
 | `advise` | **Ask before acting** (ADR-0029): given the `artifact:`/`symbol:` ids you intend to change, returns the governing clauses + a proportional disposition (advise / review / block / needs_human). Evidence-free, records nothing, needs no model, never gates a claim. |
 | `link_goal_to_code` | Bind a goal to MindLeak `artifact:`/`symbol:` nodes. |
 | `unlink_goal_from_code` / `governing_goals` | Prune a stale goal↔code binding, and audit which goals govern a node — keeps conformance honest. |
 | `governing_for_task` | The clauses governing a task's linked scope — what the Work view surfaces on in-progress work (ADR-0029). |
+| `register_ratchet` / `accept_ratchet_baseline` | Bind a metric that must not regress to one clause, then accept the reviewed baseline it compares against. A ratchet never moves its own baseline, and reports `unknown` until one exists. |
+| `observe_ratchet` / `clause_controls` | Report a measurement and resolve it through its clause, capped at `review` by the ratchet's observed power (ADR-0034); and list the mechanisms behind a clause with the force each actually has. |
+| `grant_waiver` / `revoke_waiver` | The reviewable form of `--no-verify`: a scoped, expiring, attributed exception to one clause. Refuses an unwaivable clause, the wrong approver, and any expiry not in the future — a permanent exception is an amendment. Revocation is immediate for future checks and never retroactive. |
+| `clause_waivers` / `active_waivers` | Every exception ever granted against a clause (a rule waived repeatedly is a rule that wants amending), and everything not being enforced right now, soonest to expire first. |
+| `propose_amendment` / `amend_constitution` | Change adopted policy explicitly: draft the next version carrying every active clause forward, then promote it with an attributed rationale and a clause diff. The old version is superseded, never deleted, so prior conformance records keep naming the policy they were judged under. |
+| `constitution_diff` / `amendments` | What an amendment would do, and how policy got to where it is. Clauses match on slug, so a restated rule reads as `changed` — and a clause that only hardens its scope or consequence still shows up. |
+| `plan_pack_upgrade` | Compare a newer pack version against what this project adopted from it. A proposal, never an upgrade — upstream can never alter active local policy. Locally tailored clauses are flagged, because accepting an upstream change to one would silently discard a deliberate decision. |
 | `export_constitution` | Render the constitution to committed-friendly markdown. |
 | `create_task` / `decompose_goal` | Add claimable work; `create_task(blocked_by=...)` creates a progressive handoff. |
 | `next_task` | Suggest the next unblocked, claimable task. |
@@ -335,6 +350,7 @@ coordinate through one plane.
 | `promote_signals` | Promotion bridge (ADR-0022): batch-feed MindLeak `promotion_candidates` into the gated consolidator; deterministic, model-optional. |
 | `active_knowledge` / `reconfirm_knowledge` / `prune_knowledge` | Durable-but-revalidated knowledge. |
 | `lodestar_stats` | Goal / task / knowledge counts. |
+| `storage_status` | Resolved repository id, intent database path, storage origin, legacy migration source, and whether migration ran (ADR-0038). |
 | `backup_database` | Create an integrity-checked online SQLite backup of the intent plane. |
 | `reset_database` | Clear durable intent only with the exact `RESET LODESTAR` token. |
 

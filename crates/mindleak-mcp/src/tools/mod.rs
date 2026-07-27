@@ -10,11 +10,12 @@ mod telemetry;
 
 use mindleak_core::MindLeak;
 use mindleak_session::SessionRegistry;
+use mindleak_storage::StorageStatus;
 use serde_json::{json, Value};
 
 /// The advertised tool list (`tools/list`).
 pub fn list() -> Vec<Value> {
-    let mut definitions = vec![session_definition()];
+    let mut definitions = vec![session_definition(), storage_definition()];
     definitions.extend(graph::definitions());
     definitions.extend(ingestion::definitions());
     definitions.extend(lifecycle::graph_definitions());
@@ -60,7 +61,16 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
 /// Dispatch a `tools/call` request with observability: every call is timed,
 /// traced (stderr-only), and recorded to the durable telemetry audit trail so an
 /// operator can confirm what ran and whether it succeeded (ADR-0010).
+#[cfg(test)]
 pub fn call(engine: &MindLeak, params: &Value) -> Result<Value, String> {
+    call_with_storage(engine, params, None)
+}
+
+pub fn call_with_storage(
+    engine: &MindLeak,
+    params: &Value,
+    storage: Option<&StorageStatus>,
+) -> Result<Value, String> {
     let name = params
         .get("name")
         .and_then(Value::as_str)
@@ -69,7 +79,7 @@ pub fn call(engine: &MindLeak, params: &Value) -> Result<Value, String> {
     let span = tracing::info_span!("tool_call", tool = %name);
     let _enter = span.enter();
     let start = std::time::Instant::now();
-    let result = dispatch(engine, params);
+    let result = dispatch(engine, params, storage);
     let duration_ms = start.elapsed().as_millis() as i64;
     let detail = result.as_ref().err().map(|e| json!({ "error": e }));
     engine.record_tool_call(&name, result.is_ok(), duration_ms, detail);
@@ -81,7 +91,11 @@ pub fn call(engine: &MindLeak, params: &Value) -> Result<Value, String> {
 }
 
 /// Route a `tools/call` request to the matching tool implementation.
-fn dispatch(engine: &MindLeak, params: &Value) -> Result<Value, String> {
+fn dispatch(
+    engine: &MindLeak,
+    params: &Value,
+    storage: Option<&StorageStatus>,
+) -> Result<Value, String> {
     let name = params
         .get("name")
         .and_then(Value::as_str)
@@ -92,6 +106,11 @@ fn dispatch(engine: &MindLeak, params: &Value) -> Result<Value, String> {
         return Ok(text_result(&json!({
             "agent_id": req_str(&args, "resolved_agent")?,
         })));
+    }
+    if name == "storage_status" {
+        let status = storage.ok_or("storage status is unavailable")?;
+        let value = serde_json::to_value(status).map_err(|error| error.to_string())?;
+        return Ok(text_result(&value));
     }
 
     if let Some(result) = graph::dispatch(engine, name, &args) {
@@ -127,6 +146,14 @@ fn session_definition() -> Value {
             },
             "required": ["session_id"]
         }
+    })
+}
+
+fn storage_definition() -> Value {
+    json!({
+        "name": "storage_status",
+        "description": "Report this plane's resolved repository id, database path, storage origin, legacy migration source, and whether migration ran. Read-only; uses the startup snapshot without re-reading Git or SQLite.",
+        "inputSchema": { "type": "object", "properties": {} }
     })
 }
 
@@ -238,6 +265,8 @@ fn str_array(args: &Value, key: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use mindleak_core::MindLeak;
+    use mindleak_storage::DatabaseOrigin;
+    use std::path::PathBuf;
 
     pub(super) fn call_ok(engine: &MindLeak, name: &str, args: Value) -> Value {
         let mut args = args;
@@ -282,6 +311,7 @@ mod tests {
             "export_graph",
             "backup_database",
             "reset_database",
+            "storage_status",
         ] {
             assert!(
                 names.contains(&expected.to_string()),
@@ -321,5 +351,26 @@ mod tests {
         let engine = MindLeak::open_in_memory().unwrap();
         let params = json!({ "name": "nope", "arguments": {} });
         assert!(call(&engine, &params).unwrap_err().contains("unknown tool"));
+    }
+
+    #[test]
+    fn storage_status_returns_the_injected_startup_snapshot() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        let status = StorageStatus {
+            plane: "mindleak".into(),
+            repository_id: Some("0123456789abcdef0123456789abcdef".into()),
+            database_path: PathBuf::from("state/graph.db"),
+            origin: DatabaseOrigin::Repository,
+            legacy_path: Some(PathBuf::from("repo/.mindleak/graph.db")),
+            migrated_legacy: true,
+        };
+        let params = json!({ "name": "storage_status", "arguments": {} });
+
+        let result = call_with_storage(&engine, &params, Some(&status)).unwrap();
+        let value: Value = serde_json::from_str(&content_text(&result)).unwrap();
+        assert_eq!(value["plane"], "mindleak");
+        assert_eq!(value["repository_id"], status.repository_id.unwrap());
+        assert_eq!(value["origin"], "repository");
+        assert_eq!(value["migrated_legacy"], true);
     }
 }

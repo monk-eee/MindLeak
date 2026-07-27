@@ -6,6 +6,7 @@
 //! conformance check that flags drift/violations, and consolidated learned
 //! knowledge that is durable-but-revalidated (ADR-0004, ADR-0005, SPEC-INTENT).
 
+pub mod amendment;
 pub mod controls;
 pub mod db;
 pub mod decay;
@@ -16,8 +17,10 @@ mod facade;
 pub mod llm;
 pub mod model;
 pub mod policy;
+pub mod scope;
 pub mod store;
 mod util;
+pub mod waiver;
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -36,8 +39,8 @@ pub use model::{
     Verdict,
 };
 pub use policy::{
-    common_core_pack, ConstitutionPack, PackClause, PackClauseDisposition, PackClauseProposal,
-    PackClauseProvenance, PackConflict, PackProposalBatch, PackReviewOutcome,
+    common_core_pack, fleet_delivery_pack, ConstitutionPack, PackClause, PackClauseDisposition,
+    PackClauseProposal, PackClauseProvenance, PackConflict, PackProposalBatch, PackReviewOutcome,
 };
 pub use store::{ClaimTransfer, LodestarStore, ResetOutcome, Stats};
 

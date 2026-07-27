@@ -2,10 +2,17 @@
 
 MindLeak keeps two independent SQLite databases. Treat them differently:
 
-| Plane | Default path | Contents | Recovery posture |
+| Plane | Default file in `<state-root>/repositories/<repository-id>/` | Contents | Recovery posture |
 |---|---|---|---|
-| Memory | `.mindleak/graph.db` | code structure, executions, commits, optional embeddings, tool telemetry | Regenerable, decay-weighted |
-| Intent | `.lodestar/spec.db` | constitution, tasks/leases, code bindings, conformance audit, learned knowledge | Durable; back up before upgrade |
+| Memory | `graph.db` | code structure, executions, commits, optional embeddings, tool telemetry | Regenerable, decay-weighted |
+| Intent | `spec.db` | constitution, tasks/leases, code bindings, conformance audit, learned knowledge | Durable; back up before upgrade |
+
+The platform-local, non-roaming state root is `%LOCALAPPDATA%/MindLeak` on
+Windows, `$XDG_STATE_HOME/mindleak` (or `~/.local/state/mindleak`) on Linux, and
+`~/Library/Application Support/MindLeak` on macOS. `MINDLEAK_HOME` overrides the
+root. Linked worktrees share the id stored as `mindleak.repositoryId` in local
+Git config; independent clones receive independent ids. Call `storage_status`
+on both planes to inspect the resolved values.
 
 Both files can contain workspace-sensitive source excerpts, commands, terminal
 output, commit messages, goals, and audit events. Store backups with the same
@@ -30,10 +37,14 @@ Back up both planes for a complete workspace recovery point.
 ## Upgrade and rollback
 
 1. While the current servers are running, create and retain both backups.
-2. Stop every client that has either MCP server open.
+2. Stop every client and worktree session that has either MCP server open.
 3. Install the new binaries and restart the client. Schema migrations run when
-   each server opens its database.
-4. Verify `graph_stats`, `lodestar_stats`, and `get_constitution` before deleting
+  each server opens its database. On the first ADR-0038 start, an existing
+  repository-root `.mindleak/graph.db` or `.lodestar/spec.db` is copied by
+  verified SQLite online backup into the repository-id store; the source is
+  deliberately left untouched.
+4. Verify `storage_status`, `graph_stats`, `lodestar_stats`, and
+  `get_constitution` before deleting
    old binaries or backups.
 
 For rollback, stop every client first. Preserve the post-upgrade databases for

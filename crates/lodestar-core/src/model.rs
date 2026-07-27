@@ -419,7 +419,7 @@ pub struct ConstitutionProposal {
 /// enforcement fields (`scope`, `evidence_contract`, `consequence`) stay absent
 /// until explicitly completed; an incomplete clause is review-only and can
 /// never drive a hard verdict.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Goal {
     pub id: String,
     pub slug: String,

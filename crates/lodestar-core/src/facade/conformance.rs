@@ -4,6 +4,9 @@ use std::collections::HashSet;
 use sha2::{Digest, Sha256};
 
 use super::constitution::is_documentation_node;
+use crate::controls::{forbid_change_control, forbid_change_observation, resolve_with_declared};
+use crate::model::Consequence;
+use crate::scope;
 use crate::store::ConformanceAudit;
 use crate::{
     now_unix, CodeBindingMode, ConformanceCheck, ConformanceEvidence, ConformanceResult, Goal,
@@ -13,22 +16,6 @@ use crate::{
 const MAX_EVIDENCE_EVENTS: usize = 200;
 const MAX_EVIDENCE_PROVENANCE: usize = 1_000;
 const MAX_EVIDENCE_SUMMARY_BYTES: usize = 4_096;
-
-/// Scope tokens naming a procedural action rather than a code node (ADR-0034).
-const WORKFLOW_SCOPE_PREFIX: &str = "workflow:";
-
-/// Whether a clause's declared workflow scope governs an intended action.
-///
-/// A parent token governs its children (`workflow:git` covers
-/// `workflow:git.publish`) so a project can write one broad rule, but never the
-/// reverse — otherwise a narrow clause about publishing would silently claim
-/// authority over every git action.
-fn workflow_scope_governs(declared: &str, intended: &str) -> bool {
-    intended == declared
-        || intended
-            .strip_prefix(declared)
-            .is_some_and(|rest| rest.starts_with('.'))
-}
 
 /// The active clauses governing an intended or changed scope, bucketed by how
 /// each relates to a covering task's own goal. Produced by
@@ -245,6 +232,52 @@ impl Lodestar {
                 basis.push(format!("knowledge:{}", serde_json::to_string(&knowledge)?));
             }
         }
+
+        // Policy identity (ADR-0034). A token must not survive a change to the
+        // constitution that authorised it, or to the controls that resolve its
+        // clauses: a check issued under one policy is not evidence about
+        // another. Recording the control *version* matters as much as its id,
+        // because a redefined mechanism can reach a different verdict from the
+        // same observation.
+        if let Some(version) = self.store.active_constitution_version()? {
+            basis.push(format!("constitution:{}:{}", version.id, version.version));
+        }
+        let mut clause_ids: Vec<String> = Vec::new();
+        for node in &nodes {
+            for binding in self.store.active_bindings_for_node(node)? {
+                clause_ids.push(binding.goal.id);
+            }
+        }
+        clause_ids.sort();
+        clause_ids.dedup();
+        for clause_id in &clause_ids {
+            for control in self.store.controls_for_clause(clause_id)? {
+                basis.push(format!(
+                    "control:{}:{}:{}:{}",
+                    control.id,
+                    control.clause_id,
+                    control.version,
+                    control.power.as_str()
+                ));
+            }
+            // Waiver state (SPEC-CONSTITUTION §9). A check made while an
+            // exception was in force is not evidence about a world where it was
+            // revoked, and one made under enforcement is not evidence about a
+            // world where an exception was since granted. Recording `expires_at`
+            // as well as status means a token also stops matching once the
+            // waiver lapses — expiry restores enforcement without anyone
+            // rewriting a row, so nothing else would notice.
+            for waiver in self.store.waivers_for_clause(clause_id)? {
+                basis.push(format!(
+                    "waiver:{}:{}:{}:{}:{}",
+                    waiver.id,
+                    waiver.clause_id,
+                    waiver.scope,
+                    waiver.status.as_str(),
+                    waiver.expires_at
+                ));
+            }
+        }
         basis.sort();
 
         let mut hasher = Sha256::new();
@@ -333,28 +366,66 @@ impl Lodestar {
         let governing = self.resolve_governing_clauses(&evidence.changed_node_ids, task_goal_id)?;
 
         // A hard forbid_change lock overrides everything: any change is a breach.
+        // It resolves through the typed-control machinery (ADR-0034) but supplies
+        // its own declared consequence rather than reading the clause's
+        // (ADR-0036) — a human who placed a lock already chose that power, and an
+        // incomplete enforcement contract must not silently soften it.
+        //
+        // A valid waiver is the one thing that stands it down (§9). Note it does
+        // not make the change invisible: the finding names the waiver and its
+        // approver, so the audit records that an exception was used rather than
+        // that nothing happened.
         if let Some((node, goal)) = governing.forbid.first() {
-            findings.push(format!("{} forbids changes to {node}", goal.id));
-            return Ok(ConformanceResult {
-                verdict: Verdict::Violation,
-                findings,
-            });
+            let now = now_unix();
+            match self.excusing_waiver(goal, node, now)? {
+                Some(waiver) => findings.push(format!(
+                    "{} forbids changes to {node}, waived by {} until {} ({})",
+                    goal.id, waiver.approved_by, waiver.expires_at, waiver.id
+                )),
+                None => {
+                    let control = forbid_change_control(&goal.id);
+                    let observation = forbid_change_observation(&goal.id, node, now);
+                    let resolved =
+                        resolve_with_declared(Some(Consequence::Block), &control, &observation);
+                    findings.push(format!("{} forbids changes to {node}", goal.id));
+                    findings.push(resolved.finding);
+                    return Ok(ConformanceResult {
+                        verdict: if resolved.effective == Consequence::Block {
+                            Verdict::Violation
+                        } else {
+                            Verdict::NeedsHuman
+                        },
+                        findings,
+                    });
+                }
+            }
         }
 
         // Governed code touched by a goal that no covering task serves is drift.
         if !governing.other.is_empty() {
-            let mut wrong_goals: Vec<String> =
-                governing.other.iter().map(|(_, g)| g.id.clone()).collect();
-            wrong_goals.sort();
-            wrong_goals.dedup();
-            findings.push(format!(
-                "governed code changed without a covering task: {}",
-                wrong_goals.join(", ")
-            ));
-            return Ok(ConformanceResult {
-                verdict: Verdict::Drift,
-                findings,
-            });
+            let now = now_unix();
+            let mut unwaived: Vec<String> = Vec::new();
+            for (node, goal) in &governing.other {
+                match self.excusing_waiver(goal, node, now)? {
+                    Some(waiver) => findings.push(format!(
+                        "{} governs {node} without a covering task, waived by {} until {} ({})",
+                        goal.id, waiver.approved_by, waiver.expires_at, waiver.id
+                    )),
+                    None => unwaived.push(goal.id.clone()),
+                }
+            }
+            unwaived.sort();
+            unwaived.dedup();
+            if !unwaived.is_empty() {
+                findings.push(format!(
+                    "governed code changed without a covering task: {}",
+                    unwaived.join(", ")
+                ));
+                return Ok(ConformanceResult {
+                    verdict: Verdict::Drift,
+                    findings,
+                });
+            }
         }
         let touched_task_goal = !governing.in_scope.is_empty();
         let Some(task) = task else {
@@ -469,12 +540,12 @@ impl Lodestar {
             let Some(declared) = goal.scope.as_deref() else {
                 continue;
             };
-            if !declared.starts_with(WORKFLOW_SCOPE_PREFIX) {
+            if !scope::is_workflow(declared) {
                 continue;
             }
             if let Some(intended) = scopes
                 .iter()
-                .find(|intended| workflow_scope_governs(declared, intended))
+                .find(|intended| scope::workflow_governs(declared, intended))
             {
                 resolved.push((intended.clone(), goal));
             }
@@ -615,6 +686,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::controls::{Control, ControlKind, ControlStatus, EnforcementPower};
     use crate::facade::test_support::engine;
     use crate::{EvidenceProvenance, GoalKind};
 
@@ -781,6 +853,258 @@ mod tests {
         let drift_evidence = test_evidence(None, "agent-a", "artifact:src/auth.rs");
         let drift = e.check_conformance(&drift_evidence, None).unwrap();
         assert_eq!(drift.verdict, Verdict::Drift);
+    }
+
+    #[test]
+    fn a_control_version_bump_invalidates_a_previously_issued_token() {
+        // ADR-0034: a check issued under one policy is not evidence about
+        // another. A redefined mechanism can reach a different verdict from the
+        // same observation, so the token must not survive the change.
+        let e = engine();
+        let goal = e
+            .define_goal(
+                GoalKind::Invariant,
+                "Reviewed merge",
+                "A protected branch advances only by reviewed merge.",
+                None,
+            )
+            .unwrap();
+        let node = "artifact:crates/core/src/publish.rs".to_string();
+        e.link_goal_to_code(
+            &goal.id,
+            std::slice::from_ref(&node),
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
+        let control = Control {
+            id: "control:branch-policy".into(),
+            clause_id: goal.id.clone(),
+            kind: ControlKind::Check,
+            power: EnforcementPower::Mechanical,
+            version: 1,
+            configuration: None,
+            status: ControlStatus::Active,
+        };
+        e.register_control(&control).unwrap();
+
+        let evidence = test_evidence(None, "agent-a", &node);
+        let first = e.check_conformance(&evidence, None).unwrap();
+
+        // Redefine what the control does. Same evidence, same clause.
+        e.register_control(&Control {
+            version: 2,
+            ..control
+        })
+        .unwrap();
+        let second = e.check_conformance(&evidence, None).unwrap();
+
+        assert_ne!(
+            first.token, second.token,
+            "a token must not survive a control redefinition"
+        );
+    }
+
+    #[test]
+    fn a_lock_still_blocks_when_its_clause_declares_no_consequence() {
+        // ADR-0036 regression: forbid_change now resolves through the typed
+        // control machinery, but supplies its own declared consequence. Reading
+        // it from the clause instead would let an incomplete enforcement
+        // contract silently soften every existing lock from violation to
+        // needs_human — invisible until a breach failed to block.
+        let e = engine();
+        let goal = e
+            .define_goal(
+                GoalKind::Invariant,
+                "Frozen schema",
+                "The schema file must not change.",
+                None,
+            )
+            .unwrap();
+        assert!(
+            goal.consequence.is_none(),
+            "a freshly defined clause declares no consequence"
+        );
+        let node = "artifact:crates/core/src/schema.sql".to_string();
+        e.link_goal_to_code(
+            &goal.id,
+            std::slice::from_ref(&node),
+            CodeBindingMode::ForbidChange,
+        )
+        .unwrap();
+
+        let evidence = test_evidence(None, "agent-a", &node);
+        let res = e.check_conformance(&evidence, None).unwrap();
+        assert_eq!(res.verdict, Verdict::Violation);
+        assert!(res
+            .findings
+            .iter()
+            .any(|f| f.contains("forbids changes to")));
+        assert!(res
+            .findings
+            .iter()
+            .any(|f| f.contains("control:forbid_change")));
+    }
+
+    /// A locked node under a clause that permits bounded exceptions.
+    fn locked_waivable_clause(e: &Lodestar, node: &str) -> Goal {
+        let goal = e
+            .define_goal(
+                GoalKind::Invariant,
+                "Frozen schema",
+                "The schema file must not change.",
+                None,
+            )
+            .unwrap();
+        let clause = e
+            .store
+            .complete_clause_contract(
+                &goal.id,
+                "artifact:crates/**",
+                "schema diff",
+                Some(Consequence::Block),
+                true,
+                None,
+            )
+            .unwrap();
+        e.link_goal_to_code(
+            &goal.id,
+            std::slice::from_ref(&node.to_string()),
+            CodeBindingMode::ForbidChange,
+        )
+        .unwrap();
+        clause
+    }
+
+    fn waiver_request(
+        clause_id: &str,
+        scope: &str,
+        expires_at: i64,
+    ) -> crate::waiver::WaiverRequest {
+        crate::waiver::WaiverRequest {
+            clause_id: clause_id.to_string(),
+            scope: scope.to_string(),
+            reason: "Release blocker; remediation tracked.".into(),
+            approved_by: "monk-eee".into(),
+            expires_at,
+            remediation_task_id: None,
+        }
+    }
+
+    #[test]
+    fn a_valid_waiver_stands_down_a_lock_without_hiding_that_it_was_used() {
+        // §9: an exception is not a hidden bypass. The verdict changes, but the
+        // record still names the waiver and its approver — otherwise a waived
+        // breach and a change that never touched a locked node would be
+        // indistinguishable in the audit.
+        let e = engine();
+        let node = "artifact:crates/core/src/schema.sql".to_string();
+        let clause = locked_waivable_clause(&e, &node);
+
+        let evidence = test_evidence(None, "agent-a", &node);
+        assert_eq!(
+            e.check_conformance(&evidence, None).unwrap().verdict,
+            Verdict::Violation
+        );
+
+        let waiver = e
+            .grant_waiver(&waiver_request(&clause.id, &node, now_unix() + 3_600))
+            .unwrap();
+        let waived = e.check_conformance(&evidence, None).unwrap();
+        assert_ne!(waived.verdict, Verdict::Violation);
+        assert!(
+            waived
+                .findings
+                .iter()
+                .any(|f| f.contains(&waiver.id) && f.contains("monk-eee")),
+            "{:?}",
+            waived.findings
+        );
+    }
+
+    #[test]
+    fn revocation_restores_enforcement_for_the_next_check() {
+        let e = engine();
+        let node = "artifact:crates/core/src/schema.sql".to_string();
+        let clause = locked_waivable_clause(&e, &node);
+        let evidence = test_evidence(None, "agent-a", &node);
+
+        let waiver = e
+            .grant_waiver(&waiver_request(&clause.id, &node, now_unix() + 3_600))
+            .unwrap();
+        assert_ne!(
+            e.check_conformance(&evidence, None).unwrap().verdict,
+            Verdict::Violation
+        );
+
+        e.revoke_waiver(&waiver.id, "monk-eee", "Fix landed")
+            .unwrap();
+        assert_eq!(
+            e.check_conformance(&evidence, None).unwrap().verdict,
+            Verdict::Violation,
+            "revocation is immediate for future checks"
+        );
+    }
+
+    #[test]
+    fn an_expired_waiver_stops_excusing_without_anything_being_rewritten() {
+        // Expiry is a query bound, not a status transition (§9). Nothing runs
+        // to make this happen, which is exactly why it cannot be forgotten.
+        let e = engine();
+        let node = "artifact:crates/core/src/schema.sql".to_string();
+        let clause = locked_waivable_clause(&e, &node);
+        let now = now_unix();
+
+        // Granted legitimately in the past — its expiry was in the future then —
+        // and lapsed by the time the check runs. Written through the store so
+        // the test can place it in the past without sleeping.
+        let lapsed = e
+            .store
+            .grant_waiver(
+                "waiver:lapsed",
+                &waiver_request(&clause.id, &node, now - 1),
+                now - 10,
+            )
+            .unwrap();
+        assert!(lapsed.applies_to(&node, now - 10), "valid when granted");
+        assert!(!lapsed.applies_to(&node, now), "lapsed by check time");
+
+        let evidence = test_evidence(None, "agent-a", &node);
+        assert_eq!(
+            e.check_conformance(&evidence, None).unwrap().verdict,
+            Verdict::Violation,
+            "expiry restores enforcement with nothing having run"
+        );
+        assert_eq!(
+            e.store.waiver(&lapsed.id).unwrap().unwrap().status,
+            crate::waiver::WaiverStatus::Active,
+            "a lapsed waiver keeps its status; history is not rewritten"
+        );
+    }
+
+    #[test]
+    fn granting_or_revoking_a_waiver_invalidates_a_stale_conformance_token() {
+        // ADR-0025: a token proves a check was made under a specific policy
+        // state. A waiver is part of that state, so a check made while an
+        // exception was in force must not be spendable after it is withdrawn.
+        let e = engine();
+        let node = "artifact:crates/core/src/schema.sql".to_string();
+        let clause = locked_waivable_clause(&e, &node);
+        let evidence = test_evidence(None, "agent-a", &node);
+
+        let before = e.check_conformance(&evidence, None).unwrap();
+        let waiver = e
+            .grant_waiver(&waiver_request(&clause.id, &node, now_unix() + 3_600))
+            .unwrap();
+        let during = e.check_conformance(&evidence, None).unwrap();
+        assert_ne!(
+            before.token, during.token,
+            "granting changed the policy state"
+        );
+
+        e.revoke_waiver(&waiver.id, "monk-eee", "Fix landed")
+            .unwrap();
+        let after = e.check_conformance(&evidence, None).unwrap();
+        assert_ne!(during.token, after.token, "revoking changed it again");
     }
 
     #[test]

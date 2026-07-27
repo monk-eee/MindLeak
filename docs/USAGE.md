@@ -185,8 +185,8 @@ complete_task(task_id, evidence, check, session_id) # owner-guarded; consumes ch
 board()                                      # live who-owns-what
 ```
 
-`claim_task` is a compare-and-swap: parallel agents coordinate through one shared
-`.lodestar/spec.db` with **no duplicate winners**. `complete_task` runs a
+`claim_task` is a compare-and-swap: parallel worktrees coordinate through one
+shared repository-id `spec.db` with **no duplicate winners**. `complete_task` runs a
 conformance check (aligned / drift / violation) and a violation blocks the
 transition.
 
@@ -294,8 +294,9 @@ selecting a default.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MINDLEAK_WORKSPACE` | process working directory | project root used for default database/config paths |
-| `MINDLEAK_DB` | `<workspace>/.mindleak/graph.db` | graph database path |
+| `MINDLEAK_WORKSPACE` | process working directory | worktree used for repository identity and project config |
+| `MINDLEAK_HOME` | platform-local non-roaming state directory | shared per-repository storage root |
+| `MINDLEAK_DB` | repository-id store, or workspace-local outside Git | explicit graph database override |
 | `MINDLEAK_AGENT` | `agent` | human-readable base label used when `open_session` derives `session:v1:<base>:<fingerprint>` (ADR-0030) |
 | `MINDLEAK_WORKING_SET_SIZE` | `7` | hard cap for `working_set` results, bounded 1-32 |
 | `MINDLEAK_CONFIG` | `<workspace>/.mindleak.toml` | explicit config path; relative paths resolve from the workspace |
@@ -322,7 +323,7 @@ selecting a default.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `LODESTAR_DB` | `<cwd>/.lodestar/spec.db` | intent-plane database path (share across worktrees) |
+| `LODESTAR_DB` | repository-id store, or workspace-local outside Git | explicit intent database override |
 | `LODESTAR_AGENT` | `agent` | human-readable base label used when `open_session` derives the same stable session identity as MindLeak (ADR-0030) |
 | `LODESTAR_LLM_URL` | `http://localhost:11434/v1` | OpenAI-compatible server for `decompose_goal` / semantic conformance |
 | `LODESTAR_MODEL` | `glm4:9b` | model |
@@ -346,5 +347,7 @@ selecting a default.
 - **Local & unauthenticated by design.** The servers have no network listener;
   any process with stdio access can write. Do not expose them over a network
   without adding an auth layer.
-- **The databases are regenerable.** `.mindleak/graph.db` and `.lodestar/spec.db`
-  are gitignored and can be deleted and rebuilt from your work.
+- **Inspect storage before operating on it.** `storage_status` reports the
+  repository id and exact database path on either plane. The MindLeak graph is
+  regenerable; Lodestar intent and conformance history are durable and should be
+  backed up before destructive maintenance.

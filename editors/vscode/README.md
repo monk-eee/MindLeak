@@ -132,9 +132,9 @@ Override with `mindleak.serverPath` / `mindleak.lodestarServerPath`.
 | Setting | Default | Description |
 |---|---|---|
 | `mindleak.serverPath` | `mindleak-mcp` | Path to the `mindleak-mcp` binary. |
-| `mindleak.databasePath` | `` | Graph DB path; empty = `<workspace>/.mindleak/graph.db`. |
+| `mindleak.databasePath` | `` | Explicit graph DB override; empty = shared per-repository user-local store. |
 | `mindleak.lodestarServerPath` | `lodestar-mcp` | Path to the Intent Plane server. |
-| `mindleak.lodestarDatabasePath` | `` | Intent DB path; empty = `<workspace>/.lodestar/spec.db`. |
+| `mindleak.lodestarDatabasePath` | `` | Explicit intent DB override; empty = shared per-repository user-local store. |
 | `mindleak.agentId` | `vscode` | Base label for one unique per-activation id shared by both child MCP servers. |
 | `mindleak.autoIngestOnSave` | `true` | Ingest a file's symbols on save. |
 | `mindleak.captureExecutions` | `true` | Capture shell-integrated command metadata and outcomes. |

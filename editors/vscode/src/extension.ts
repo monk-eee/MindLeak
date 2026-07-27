@@ -19,6 +19,7 @@ import { TelemetryViewProvider } from "./telemetryViewProvider";
 import { TerminalCaptureConfig, TerminalSensor } from "./terminalSensor";
 import {
   canRetireTask,
+  configuredPathEnvironment,
   conformanceDiagnostic,
   ConformanceRecord,
   evidenceGroups,
@@ -53,10 +54,12 @@ let readinessView: ReadinessViewProvider | undefined;
 let readinessController: ReadinessController | undefined;
 let output: vscode.OutputChannel;
 let configuredAgentId = "vscode";
-let serverHealth = "memory starting";
-let intentHealth = "intent starting";
-let terminalHealth = "terminal capture starting";
-let gitHealth = "Git capture starting";
+const health: RuntimeHealth = {
+  memory: "memory starting",
+  intent: "intent starting",
+  terminal: "terminal capture starting",
+  git: "Git capture starting",
+};
 
 export interface MindLeakExtensionApi {
   health(): {
@@ -82,8 +85,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
       extensionPath: context.extensionPath,
     }
   );
-  const dbPath =
-    config.get<string>("databasePath", "") || path.join(workspace, ".mindleak", "graph.db");
+  const databasePathOverride = config.get<string>("databasePath", "");
   const agentId = config.get<string>("agentId", "vscode");
   const sessionId = randomBytes(16).toString("hex");
   configuredAgentId = sessionAgentIdentity(agentId, sessionId);
@@ -92,7 +94,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     serverPath,
     workspace,
     {
-      MINDLEAK_DB: dbPath,
+      ...configuredPathEnvironment("MINDLEAK_DB", databasePathOverride),
       MINDLEAK_AGENT: agentId,
       MINDLEAK_WORKSPACE: workspace,
       MINDLEAK_AUTONOMOUS_CONSOLIDATION: String(
@@ -107,6 +109,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     sessionId,
     (m) => output.appendLine(m)
   );
+  followConnection("memory", client);
 
   readinessView = new ReadinessViewProvider();
   context.subscriptions.push(
@@ -158,18 +161,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     "lodestar-mcp",
     { exists: fs.existsSync, extensionPath: context.extensionPath }
   );
-  const lodestarDb =
-    config.get<string>("lodestarDatabasePath", "") || path.join(workspace, ".lodestar", "spec.db");
+  const lodestarDatabasePathOverride = config.get<string>("lodestarDatabasePath", "");
   lodestar = new McpClient(
     lodestarPath,
     workspace,
     {
-      LODESTAR_DB: lodestarDb,
+      ...configuredPathEnvironment("LODESTAR_DB", lodestarDatabasePathOverride),
       LODESTAR_AGENT: agentId,
+      MINDLEAK_WORKSPACE: workspace,
     },
     sessionId,
     (m) => output.appendLine(m)
   );
+  followConnection("intent", lodestar);
   readinessController = new ReadinessController(
     client,
     lodestar,
@@ -208,15 +212,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     if (client.agentIdentity() !== configuredAgentId) {
       throw new Error("MindLeak session identity does not match the client contract");
     }
-    serverHealth = "memory connected";
-    updateHealth();
-    output.appendLine(`Connected to ${serverPath} (db: ${dbPath})`);
+    setHealth("memory", "memory connected");
+    output.appendLine(
+      `Connected to ${serverPath} (db: ${databasePathOverride.trim() || "shared repository state"})`
+    );
     if (config.get<boolean>("autoIngestOnSave", true)) {
       void reconcileWorkspace();
     }
   } catch (err) {
-    serverHealth = `memory unavailable: ${(err as Error).message}`;
-    updateHealth();
+    setHealth("memory", `memory unavailable: ${(err as Error).message}`);
     vscode.window.showWarningMessage(
       `MindLeak: could not start '${serverPath}'. Set 'mindleak.serverPath'. (${(err as Error).message})`
     );
@@ -227,15 +231,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     if (lodestar.agentIdentity() !== configuredAgentId) {
       throw new Error("Lodestar session identity does not match the memory plane");
     }
-    intentHealth = "intent connected";
-    updateHealth();
-    output.appendLine(`Connected to ${lodestarPath} (intent plane: ${lodestarDb})`);
+    setHealth("intent", "intent connected");
+    output.appendLine(
+      `Connected to ${lodestarPath} (intent plane: ${lodestarDatabasePathOverride.trim() || "shared repository state"})`
+    );
     void refreshBoard();
     void refreshEvidence();
     void designController.sync();
   } catch (err) {
-    intentHealth = `intent unavailable: ${(err as Error).message}`;
-    updateHealth();
+    setHealth("intent", `intent unavailable: ${(err as Error).message}`);
     output.appendLine(
       `Lodestar intent plane unavailable ('${lodestarPath}'): ${(err as Error).message}`
     );
@@ -249,17 +253,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     changeDetector,
     terminalCaptureConfig,
     (message) => output.appendLine(message),
-    (status) => setTerminalHealth(status)
+    (status) => setHealth("terminal", status)
   );
   const gitSensor = new GitSensor(
     mindleakClient,
     () => vscode.workspace.getConfiguration("mindleak").get<boolean>("captureCommits", true),
     (message) => output.appendLine(message),
-    (status) => setGitHealth(status)
+    (status) => setHealth("git", status)
   );
   context.subscriptions.push(changeDetector, terminalSensor, gitSensor);
   void gitSensor.start().catch((err) => {
-    setGitHealth("Git capture degraded: startup failed");
+    setHealth("git", "Git capture degraded: startup failed");
     output.appendLine(`Git capture startup error: ${(err as Error).message}`);
   });
 
@@ -427,34 +431,43 @@ function terminalCaptureConfig(): TerminalCaptureConfig {
   };
 }
 
-function setTerminalHealth(status: string): void {
-  if (terminalHealth !== status) {
-    terminalHealth = status;
-    output.appendLine(status);
-    updateHealth();
+function setHealth(plane: keyof RuntimeHealth, status: string): void {
+  if (health[plane] === status) {
+    return;
   }
+  health[plane] = status;
+  output.appendLine(status);
+  updateHealth();
 }
 
-function setGitHealth(status: string): void {
-  if (gitHealth !== status) {
-    gitHealth = status;
-    output.appendLine(status);
-    updateHealth();
-  }
+/**
+ * Keep a plane's health following its server. Without this the line recorded
+ * at activation outlives the connection, so a dead server still reads
+ * "connected" while every pane sits empty.
+ */
+function followConnection(plane: "memory" | "intent", server: McpClient): void {
+  server.onStateChange((state, detail) => {
+    switch (state) {
+      case "connected":
+        setHealth(plane, `${plane} connected`);
+        break;
+      case "reconnecting":
+        setHealth(plane, `${plane} reconnecting (${detail})`);
+        break;
+      case "disconnected":
+        setHealth(plane, `${plane} unavailable: ${detail}`);
+        break;
+    }
+  });
 }
 
 function updateHealth(): void {
-  provider?.status(healthSummary(serverHealth, intentHealth, terminalHealth, gitHealth));
+  provider?.status(healthSummary(health.memory, health.intent, health.terminal, health.git));
   readinessController?.setHealth(currentHealth());
 }
 
 function currentHealth(): RuntimeHealth {
-  return {
-    memory: serverHealth,
-    intent: intentHealth,
-    terminal: terminalHealth,
-    git: gitHealth,
-  };
+  return { ...health };
 }
 
 function artifactId(doc: vscode.TextDocument): string {

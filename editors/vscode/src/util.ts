@@ -120,6 +120,15 @@ export function healthSummary(
   return `${memory} · ${intent} · ${terminal} · ${git}`;
 }
 
+/** Emit one server environment override only when the user configured a path. */
+export function configuredPathEnvironment(
+  variable: string,
+  configured: string | undefined
+): Record<string, string> {
+  const value = configured?.trim();
+  return value ? { [variable]: value } : {};
+}
+
 /**
  * Prefer a workspace-built `mindleak-mcp` binary when the configured path is the
  * bare default. Thin wrapper over {@link resolveBinaryPath}.

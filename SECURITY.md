@@ -10,8 +10,9 @@ and a fix or mitigation plan.
 
 ## Threat model (what MindLeak is)
 
-MindLeak is a **local, single-user developer tool**. The graph database lives on
-your machine (`.mindleak/graph.db`) and the MCP server speaks JSON-RPC over
+MindLeak is a **local, single-user developer tool**. Each clone's two databases
+live under a platform-local, non-roaming user directory keyed by a random
+repository id, and the MCP server speaks JSON-RPC over
 **stdio only** — there is no network listener by default.
 
 - **The deterministic path is local.** Ingestion, graph queries, and SQLite
@@ -23,11 +24,16 @@ your machine (`.mindleak/graph.db`) and the MCP server speaks JSON-RPC over
   `mindleak-mcp` can write nodes and edges. This is acceptable for local use;
   **do not expose the server over a network without adding an auth layer.**
 - **The graph may contain source excerpts, commit messages, and command output.**
-  Treat `.mindleak/graph.db` with the same sensitivity as your workspace. It is
-  gitignored and regenerable — do not commit it.
-- **Intent and backups are sensitive too.** `.lodestar/spec.db` and either
+  Treat the `graph.db` path reported by `storage_status` with the same
+  sensitivity as your workspace. It is local and regenerable — do not copy it
+  into the repository.
+- **Intent and backups are sensitive too.** The user-local `spec.db` and either
   plane's backups may contain goals, task ownership, evidence, source excerpts,
   and audit records. Store them with workspace-equivalent access controls.
+- **The user-local root concentrates repository context.** Databases remain
+  partitioned by random per-clone ids and are never keyed by credential-bearing
+  remote URLs. Do not place `MINDLEAK_HOME` in OneDrive, a roaming profile, a
+  network share, or another multi-user location.
 - **Terminal output retention is opt-in.** Passive command metadata does not
   retain output by default. When enabled, output is stripped of terminal control
   sequences, redacted for common credential forms, and capped before MCP
@@ -48,6 +54,7 @@ MindLeak is pre-1.0; only the latest `main` is supported. Fixes land on `main`.
 
 MindLeak never asks for credentials. If ingestion captures a secret, first
 rotate/revoke it, then call `reset_database(confirm="RESET MINDLEAK")` to erase
-graph, embeddings, and telemetry, or stop all clients and delete the database.
+graph, embeddings, and telemetry, or stop all worktree clients and delete the
+database path reported by `storage_status`.
 Remove any backups containing the value and report the capture pattern so
 redaction can improve. `prune_graph` alone is not a secure-erasure mechanism.
