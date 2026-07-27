@@ -7,12 +7,28 @@ use super::constitution::is_documentation_node;
 use crate::store::ConformanceAudit;
 use crate::{
     now_unix, CodeBindingMode, ConformanceCheck, ConformanceEvidence, ConformanceResult, Goal,
-    GoverningClause, Lodestar, LodestarError, Result, Task, TaskStatus, Verdict,
+    GoalStatus, GoverningClause, Lodestar, LodestarError, Result, Task, TaskStatus, Verdict,
 };
 
 const MAX_EVIDENCE_EVENTS: usize = 200;
 const MAX_EVIDENCE_PROVENANCE: usize = 1_000;
 const MAX_EVIDENCE_SUMMARY_BYTES: usize = 4_096;
+
+/// Scope tokens naming a procedural action rather than a code node (ADR-0034).
+const WORKFLOW_SCOPE_PREFIX: &str = "workflow:";
+
+/// Whether a clause's declared workflow scope governs an intended action.
+///
+/// A parent token governs its children (`workflow:git` covers
+/// `workflow:git.publish`) so a project can write one broad rule, but never the
+/// reverse — otherwise a narrow clause about publishing would silently claim
+/// authority over every git action.
+fn workflow_scope_governs(declared: &str, intended: &str) -> bool {
+    intended == declared
+        || intended
+            .strip_prefix(declared)
+            .is_some_and(|rest| rest.starts_with('.'))
+}
 
 /// The active clauses governing an intended or changed scope, bucketed by how
 /// each relates to a covering task's own goal. Produced by
@@ -26,6 +42,11 @@ pub(crate) struct GoverningClauses {
     pub in_scope: Vec<(String, Goal)>,
     /// `governed` bindings to a different goal — a change here would drift.
     pub other: Vec<(String, Goal)>,
+    /// Clauses governing an intended *procedural* action rather than a changed
+    /// file (ADR-0034). Paired with the `workflow:` token they matched, which
+    /// occupies the `node_id` slot when flattened — a workflow clause governs an
+    /// action, and there is no code node to name.
+    pub workflow: Vec<(String, Goal)>,
 }
 
 impl GoverningClauses {
@@ -44,6 +65,13 @@ impl GoverningClauses {
         for (node, goal) in self.in_scope.iter().chain(self.other.iter()) {
             out.push(GoverningClause {
                 node_id: node.clone(),
+                goal: goal.clone(),
+                mode: CodeBindingMode::Governed,
+            });
+        }
+        for (scope, goal) in &self.workflow {
+            out.push(GoverningClause {
+                node_id: scope.clone(),
                 goal: goal.clone(),
                 mode: CodeBindingMode::Governed,
             });
@@ -414,6 +442,41 @@ impl Lodestar {
                     }
                     _ => resolved.other.push((node.clone(), binding.goal)),
                 }
+            }
+        }
+        Ok(resolved)
+    }
+
+    /// Clauses governing an intended *procedural* action (ADR-0034).
+    ///
+    /// A workflow clause declares a `workflow:` scope instead of binding to code
+    /// nodes, so it resolves by scope match rather than by binding lookup — a
+    /// rule like "a protected branch advances only by reviewed merge" governs an
+    /// action, and there is no artifact to bind it to.
+    ///
+    /// A parent token governs its children, so a clause scoped `workflow:git`
+    /// covers an intent of `workflow:git.publish`. The reverse never holds: a
+    /// clause about publishing does not govern every git action.
+    pub(crate) fn resolve_workflow_clauses(
+        &self,
+        scopes: &[String],
+    ) -> Result<Vec<(String, Goal)>> {
+        if scopes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut resolved = Vec::new();
+        for goal in self.store.goals_by_status(GoalStatus::Active)? {
+            let Some(declared) = goal.scope.as_deref() else {
+                continue;
+            };
+            if !declared.starts_with(WORKFLOW_SCOPE_PREFIX) {
+                continue;
+            }
+            if let Some(intended) = scopes
+                .iter()
+                .find(|intended| workflow_scope_governs(declared, intended))
+            {
+                resolved.push((intended.clone(), goal));
             }
         }
         Ok(resolved)
