@@ -11,6 +11,7 @@ pub mod controls;
 pub mod db;
 pub mod decay;
 pub mod design;
+pub mod dialogue;
 pub mod discovery;
 pub mod error;
 mod facade;
@@ -37,8 +38,8 @@ pub use model::{
     Advice, AdviceDisposition, ClaimOverlap, CodeBinding, CodeBindingMode, ConformanceCheck,
     ConformanceEvidence, ConformanceRecord, ConformanceResult, ConstitutionProposal,
     ConstitutionState, ConstitutionStatus, ConstitutionVersion, EvidenceProvenance, Goal, GoalKind,
-    GoalStatus, GoverningClause, Knowledge, SignalPromotion, Task, TaskQa, TaskScope, TaskStatus,
-    Verdict,
+    GoalStatus, GoverningClause, HumanQuestion, Knowledge, SignalPromotion, Task, TaskQa,
+    TaskScope, TaskStatus, Verdict,
 };
 pub use policy::{
     common_core_pack, fleet_delivery_pack, ConstitutionPack, PackClause, PackClauseDisposition,

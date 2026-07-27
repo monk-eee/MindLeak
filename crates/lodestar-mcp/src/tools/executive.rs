@@ -5,7 +5,7 @@ use super::conformance::parse_evidence;
 use super::{
     bool_arg, i64_arg, ok, opt_str, optional_string_arg, rendered, req_str, str_array, text,
 };
-use lodestar_core::{GoverningClause, Lodestar, TaskScope};
+use lodestar_core::{GoverningClause, HumanQuestion, Lodestar, TaskScope};
 use serde_json::{json, Value};
 
 pub(super) fn definitions() -> Vec<Value> {
@@ -77,6 +77,15 @@ pub(super) fn definitions() -> Vec<Value> {
                     "symbols": { "type": "array", "items": { "type": "string" }, "default": [] },
                     "exclude_task_id": { "type": "string", "description": "Optional current task to omit from results." }
                 }
+            }
+        }),
+        json!({
+            "name": "draft_questions",
+            "description": "Propose the questions this task's owner could put to peers whose live claims collide with its declared scope (ADR-0055). Read-only and evidence-free: it records nothing, parks nothing and addresses nothing; call ask_question with the returned audience to actually send one. The collision is found deterministically from declared scope; only the phrasing is model-assisted, and it falls back to a template when no local model is reachable, so each draft reports whether it was written by 'model' or 'template'. It never decides who should win: that is a question for the two agents or a human, and a model verdict carries no evidence.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "task_id": { "type": "string", "description": "A task whose scope is compared against every other live claim." } },
+                "required": ["task_id"]
             }
         }),
         json!({
@@ -212,6 +221,11 @@ pub(super) fn definitions() -> Vec<Value> {
                     "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." }
                 }
             }
+        }),
+        json!({
+            "name": "questions_for_a_human",
+            "description": "Everything currently waiting on a person, oldest first: each parked task's question, who asked it, and how long it has gone unanswered. The human counterpart of pending_questions, and necessarily a separate call, because a human has no agent id - 'addressed at a human' is the absence of an audience (ADR-0046), so a query matching an id can never return one. Read-only and evidence-free: it records nothing, changes no task state, and reading a question cannot consume it. Reply with 'answer' on the returned task_id, which resumes that agent under its existing owner with a fresh lease. Waiting time is reported, never judged - how long is too long is not a decision this tool is entitled to make for you.",
+            "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
             "name": "answer",
@@ -372,6 +386,12 @@ pub(super) fn dispatch(
                 .map_err(|e| e.to_string())?;
             ok(&json!({ "claims": overlaps }))
         })()),
+        "draft_questions" => Some((|| {
+            let drafts = engine
+                .draft_questions(req_str(args, "task_id")?)
+                .map_err(|e| e.to_string())?;
+            ok(&json!({ "drafts": drafts }))
+        })()),
         "renew_lease" => Some((|| {
             let renewed = engine
                 .renew_lease(
@@ -475,6 +495,10 @@ pub(super) fn dispatch(
                 .pending_questions(opt_str(args, "agent").unwrap_or_default().as_str())
                 .map_err(|e| e.to_string())?)
         })()),
+        "questions_for_a_human" => Some((|| {
+            let questions = engine.questions_for_a_human().map_err(|e| e.to_string())?;
+            rendered(render_human_questions(&questions), &questions)
+        })()),
         "answer" => Some((|| {
             let answered = engine
                 .answer_question(
@@ -564,6 +588,41 @@ fn attach_waiting(engine: &Lodestar, args: &Value, response: &mut Value) -> Resu
         );
     }
     Ok(())
+}
+
+/// The human inbox as readable markdown.
+///
+/// Rendered rather than dumped as JSON because the reader is a person deciding
+/// what to answer, and a wall of objects is not a decision aid. The structured
+/// form still travels in `structuredContent` for programmatic callers.
+fn render_human_questions(questions: &[HumanQuestion]) -> String {
+    if questions.is_empty() {
+        return "## Waiting on you\n\nNothing. No agent is parked on a question from you."
+            .to_string();
+    }
+    let mut out = format!("## Waiting on you ({})\n", questions.len());
+    for question in questions {
+        out.push_str(&format!(
+            "\n### {}\n\n{}\n\n- task: `{}`\n- asked by: `{}`\n- waiting: {}\n- reply: `answer` with this task_id\n",
+            question.task_title,
+            question.question,
+            question.task_id,
+            question.asked_by,
+            humanize_seconds(question.waiting_seconds),
+        ));
+    }
+    out
+}
+
+/// A duration a person can read at a glance. Coarse on purpose: the point is
+/// "this has been sitting for three days", not a stopwatch.
+fn humanize_seconds(seconds: i64) -> String {
+    match seconds {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3_600 => format!("{}m", s / 60),
+        s if s < 86_400 => format!("{}h {}m", s / 3_600, (s % 3_600) / 60),
+        s => format!("{}d {}h", s / 86_400, (s % 86_400) / 3_600),
+    }
 }
 
 /// Render the clauses governing a task's scope as a bounded Markdown section for

@@ -6,6 +6,49 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`questions_for_a_human`: the other half of ADR-0046's dialogue.** Agents
+  could address a question at a peer and list what was addressed to them, but
+  there was no way to list what was waiting on a **person** — `pending_questions`
+  matches an agent id, and a human has no agent id, because "addressed at a
+  human" is the *absence* of an audience. Answering therefore meant walking every
+  parked task and reading its thread by hand, which is why five tasks sat
+  `awaiting_human` for up to seventy-five hours with no surface that could show
+  them. The new call returns each parked task's question, its title, who asked,
+  and how long it has gone unanswered, rendered as a readable inbox with the
+  structured form still in `structuredContent`. Same posture as its agent-side
+  twin: a query, never a queue — reading cannot consume a question, and two
+  people reading see the same rows. Waiting time is reported and never judged,
+  because a staleness threshold invented here would become a policy nobody
+  agreed to.
+- **`draft_questions`: the collision you already have, as a question you can send
+  (ADR-0055).** ADR-0046 built agent-to-agent dialogue properly and nothing ever
+  used it — measured after an eight-hour session, `pending_questions` was empty
+  and all five stalled tasks were `awaiting_human`, one of them for seventy-five
+  hours. The gap was never capability; nothing surfaced that there *was* a
+  question to ask. `draft_questions(task_id)` finds peers whose live claims
+  intersect this task's declared scope and returns an addressed draft for each,
+  ready to hand to `ask_question`. It records nothing, parks nothing and
+  addresses nothing, so a draft nobody sends leaves no trace. The collision is
+  found deterministically; only the phrasing is model-assisted and it falls back
+  to a template when no local model is reachable, with every draft reporting
+  `drafted_by: model | template`. The model is asked to draft, never to
+  arbitrate: it may ask about intent and ordering and is forbidden from deciding
+  who is right, because a model verdict carries no evidence and ADR-0009 makes
+  evidence the basis of every verdict here.
+### Fixed
+- **The server no longer exits at startup when the database path has no
+  directory.** `MINDLEAK_DB=":memory:"` — or a bare `graph.db` — resolves to a
+  path whose `parent()` is `Some("")`, not `None`. `create_dir_all("")`
+  short-circuits to `Ok`, so the happy path hid it, but the Unix branch then
+  called `set_permissions` on that empty path and got `ENOENT`. The process
+  died immediately on Linux and macOS reporting only "No such file or directory
+  (os error 2)", while Windows started fine because it has no permissions call.
+  This is what failed the v0.1.3 release: both platform jobs that actually
+  executed a Unix binary failed their smoke test and publication was skipped.
+  The macOS x64 job passed only because it is cross-compiled and skips
+  execution — a green matrix cell is not always an executed one.
+
 ## [0.1.3] - 2026-07-27
 
 ### Added
