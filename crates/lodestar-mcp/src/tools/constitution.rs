@@ -113,6 +113,18 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "activate_constitution",
+            "description": "Activate a reviewed draft as the governing constitution. One atomic transaction: refuses a draft with any undecided clause proposal, a draft with no clauses, anything that is not a draft, and activation while another version is already active. Adopted clauses are promoted with their version, so nothing governs until this succeeds.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "draft_id": { "type": "string", "description": "The drafted constitution version id, e.g. constitution:v1." },
+                    "session_id": { "type": "string", "pattern": "^[0-9a-f]{32}$", "description": "Session id previously registered with open_session." }
+                },
+                "required": ["draft_id", "session_id"]
+            }
+        }),
+        json!({
             "name": "register_policy_pack",
             "description": "Validate and register one immutable policy-pack version. Same id/version/digest is idempotent; different content under an existing version is refused.",
             "inputSchema": {
@@ -312,6 +324,11 @@ pub(super) fn dispatch(
         "propose_constitution" => Some((|| {
             ok(&engine
                 .propose_constitution(&str_array(args, "paths"), Some(req_str(args, "agent")?))
+                .map_err(|error| error.to_string())?)
+        })()),
+        "activate_constitution" => Some((|| {
+            ok(&engine
+                .activate_constitution(req_str(args, "draft_id")?, req_str(args, "agent")?)
                 .map_err(|error| error.to_string())?)
         })()),
         "pack_clause_provenance" => Some((|| {
