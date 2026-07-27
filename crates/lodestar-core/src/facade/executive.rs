@@ -159,8 +159,18 @@ impl Lodestar {
         self.store.claim_transfer_history(task_id)
     }
 
-    pub fn block_task(&self, id: &str, blocked_by: Option<String>) -> Result<bool> {
-        self.store.block_task(id, blocked_by, now_unix())
+    /// Mark a task blocked, optionally on one validated predecessor. A non-empty
+    /// `reason` lands in the task's durable thread (ADR-0046) so the agent that
+    /// held the work can read why it was taken away.
+    pub fn block_task(
+        &self,
+        id: &str,
+        blocked_by: Option<String>,
+        reason: Option<&str>,
+        actor: &str,
+    ) -> Result<bool> {
+        self.store
+            .block_task(id, blocked_by, reason, actor, now_unix())
     }
 
     /// Return a stranded task (in review, or manually blocked with no live
@@ -224,12 +234,28 @@ impl Lodestar {
         }))
     }
 
-    /// Park a claimed task with a durable question for a human (ADR-0020):
-    /// owner-guarded move to `needs_input` that keeps the owner + evidence window
-    /// but clears the live lease. Answer it with `answer_question`.
-    pub fn ask_question(&self, id: &str, agent: &str, question: &str) -> Result<bool> {
+    /// Park a claimed task with a durable question (ADR-0020): owner-guarded
+    /// move to `needs_input` that keeps the owner + evidence window but clears
+    /// the live lease. `audience` addresses it at a peer agent rather than a
+    /// human (ADR-0046). Answer it with `answer_question`.
+    pub fn ask_question(
+        &self,
+        id: &str,
+        agent: &str,
+        question: &str,
+        audience: Option<&str>,
+    ) -> Result<bool> {
         let agent = self.resolve_agent(agent)?;
-        self.store.ask_question(id, agent, question, now_unix())
+        self.store
+            .ask_question(id, agent, question, audience, now_unix())
+    }
+
+    /// Unanswered questions addressed to one agent, oldest first (ADR-0046). A
+    /// read over the durable thread, not a queue: nothing is delivered or
+    /// consumed, so reading can never lose a question.
+    pub fn pending_questions(&self, agent: &str) -> Result<Vec<TaskQa>> {
+        let agent = self.resolve_agent(agent)?;
+        self.store.pending_questions(agent)
     }
 
     /// Answer a `needs_input` task (ADR-0020): records the durable answer and
@@ -247,9 +273,10 @@ impl Lodestar {
 
     /// Deliberately suspend a claimed task (ADR-0020): owner-guarded move to
     /// `paused`, keeping the owner + evidence window but clearing the live lease.
-    pub fn pause_task(&self, id: &str, agent: &str) -> Result<bool> {
+    /// A non-empty `reason` lands in the durable thread (ADR-0046).
+    pub fn pause_task(&self, id: &str, agent: &str, reason: Option<&str>) -> Result<bool> {
         let agent = self.resolve_agent(agent)?;
-        self.store.pause_task(id, agent, now_unix())
+        self.store.pause_task(id, agent, reason, now_unix())
     }
 
     /// Resume a paused task under the same owner with a fresh lease (ADR-0020).
@@ -258,7 +285,7 @@ impl Lodestar {
         self.store.resume_task(id, agent, lease_secs, now_unix())
     }
 
-    /// The durable, append-only question/answer thread for a task (ADR-0020).
+    /// The durable, append-only dialogue thread for a task (ADR-0020, ADR-0046).
     pub fn task_qa(&self, task_id: &str) -> Result<Vec<TaskQa>> {
         self.store.task_qa(task_id)
     }

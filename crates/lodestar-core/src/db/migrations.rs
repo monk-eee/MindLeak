@@ -46,6 +46,7 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
         ("goals", "waivable", "INTEGER NOT NULL DEFAULT 0"),
         ("goals", "waiver_authority", "TEXT"),
         ("goals", "origin", "TEXT NOT NULL DEFAULT 'local'"),
+        ("task_qa", "audience", "TEXT"),
     ] {
         if !column_exists(connection, table, column)? {
             connection.execute_batch(&format!(

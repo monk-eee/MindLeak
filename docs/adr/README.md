@@ -52,6 +52,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0042](0042-designs-are-retired-by-a-person.md) | A design is retired by a person, never by a missing file | Proposed |
 | [0043](0043-adoption-into-active-constitution-is-an-amendment.md) | Adopting a pack clause into an active constitution is an amendment | Proposed |
 | [0044](0044-declared-context-is-durable.md) | Declared context is durable, and staleness is declared too | Proposed |
+| [0046](0046-agents-talk-through-the-durable-thread.md) | Agents talk through the durable thread, never to each other | Accepted |
 
 ## Writing a new ADR
 

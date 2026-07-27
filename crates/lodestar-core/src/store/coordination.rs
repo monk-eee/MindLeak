@@ -12,7 +12,7 @@ const TASK_COLS: &str = "id, goal_id, parent_task_id, title, acceptance, status,
     claim_started_at, lease_expires_at, blocked_by, parked_at, created_at, updated_at";
 const CONFORMANCE_COLS: &str =
     "id, task_id, evidence_schema_version, evidence, verdict, findings, checked_at";
-const QA_COLS: &str = "id, task_id, kind, body, author, created_at";
+const QA_COLS: &str = "id, task_id, kind, body, author, audience, created_at";
 
 /// How long a parked (needs_input/paused) task stays owned before the pool may
 /// reclaim it (ADR-0020 anti-stranding). Deliberately far longer than an active
@@ -220,7 +220,17 @@ impl LodestarStore {
 
     /// Mark a task blocked, optionally on one validated predecessor. Blocking
     /// clears any live claim so release cannot reopen it around the dependency.
-    pub fn block_task(&self, id: &str, blocked_by: Option<String>, now: i64) -> Result<bool> {
+    /// A non-empty `reason` is appended to the task's durable thread as a note
+    /// (ADR-0046): blocking takes work away from whoever held it, and a verdict
+    /// with no stated cause is the failure mode this system exists to prevent.
+    pub fn block_task(
+        &self,
+        id: &str,
+        blocked_by: Option<String>,
+        reason: Option<&str>,
+        actor: &str,
+        now: i64,
+    ) -> Result<bool> {
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let task = get_task_on(&transaction, id)?
             .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
@@ -269,6 +279,9 @@ impl LodestarStore {
                  VALUES (?1, ?2, ?3)",
                 params![predecessor_id, id, now],
             )?;
+        }
+        if changed == 1 {
+            append_note_on(&transaction, id, reason, actor, now)?;
         }
         transaction.commit()?;
         Ok(changed == 1)
@@ -392,11 +405,30 @@ impl LodestarStore {
         Ok(changed == 1)
     }
 
-    /// Park a claimed task with a durable question for a human (ADR-0020):
-    /// owner-guarded transition to `needs_input` that clears the live lease but
-    /// keeps the owner and `claim_started_at` evidence window, records `parked_at`,
-    /// and appends the question to the task's append-only Q&A thread.
-    pub fn ask_question(&self, id: &str, agent: &str, question: &str, now: i64) -> Result<bool> {
+    /// Park a claimed task with a durable question (ADR-0020): owner-guarded
+    /// transition to `needs_input` that clears the live lease but keeps the owner
+    /// and `claim_started_at` evidence window, records `parked_at`, and appends
+    /// the question to the task's append-only thread.
+    ///
+    /// `audience` addresses the question at a peer agent instead of a human
+    /// (ADR-0046). The transition is identical either way: the owner cannot
+    /// proceed until answered, so it parks and the parking grace still protects
+    /// the task from a peer that never replies. Addressing changes who is
+    /// expected to answer, never what the task does while it waits.
+    pub fn ask_question(
+        &self,
+        id: &str,
+        agent: &str,
+        question: &str,
+        audience: Option<&str>,
+        now: i64,
+    ) -> Result<bool> {
+        let audience = normalize_audience(audience);
+        if audience.as_deref() == Some(agent) {
+            return Err(LodestarError::Invalid(format!(
+                "task {id}: an agent cannot address a question to itself"
+            )));
+        }
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let changed = transaction.execute(
             "UPDATE tasks
@@ -408,12 +440,36 @@ impl LodestarStore {
             return Ok(false);
         }
         transaction.execute(
-            "INSERT INTO task_qa (task_id, kind, body, author, created_at)
-             VALUES (?1, 'question', ?2, ?3, ?4)",
-            params![id, question, agent, now],
+            "INSERT INTO task_qa (task_id, kind, body, author, audience, created_at)
+             VALUES (?1, 'question', ?2, ?3, ?4, ?5)",
+            params![id, question, agent, audience, now],
         )?;
         transaction.commit()?;
         Ok(true)
+    }
+
+    /// Unanswered questions addressed to one agent, oldest first (ADR-0046).
+    ///
+    /// This is a query over the durable thread, not a queue: nothing is
+    /// delivered, reserved, or consumed, so two readers see the same rows and
+    /// neither can lose one by reading it. A question stops appearing once the
+    /// task carries a later answer, whoever wrote it — a human must always be
+    /// able to unstick a pair of agents waiting on each other.
+    pub fn pending_questions(&self, agent: &str) -> Result<Vec<TaskQa>> {
+        let sql = format!(
+            "SELECT {QA_COLS} FROM task_qa AS question
+             WHERE question.kind = 'question' AND question.audience = ?1
+               AND NOT EXISTS (
+                   SELECT 1 FROM task_qa AS reply
+                   WHERE reply.task_id = question.task_id
+                     AND reply.kind = 'answer'
+                     AND reply.id > question.id
+               )
+             ORDER BY question.id ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![agent], row_to_qa)?;
+        collect(rows)
     }
 
     /// Answer a `needs_input` task's question (ADR-0020): records the durable
@@ -438,8 +494,8 @@ impl LodestarStore {
             return Ok(false);
         }
         transaction.execute(
-            "INSERT INTO task_qa (task_id, kind, body, author, created_at)
-             VALUES (?1, 'answer', ?2, ?3, ?4)",
+            "INSERT INTO task_qa (task_id, kind, body, author, audience, created_at)
+             VALUES (?1, 'answer', ?2, ?3, NULL, ?4)",
             params![id, answer, author, now],
         )?;
         transaction.commit()?;
@@ -448,15 +504,28 @@ impl LodestarStore {
 
     /// Deliberately suspend a claimed task (ADR-0020): owner-guarded transition to
     /// `paused` that clears the live lease but keeps the owner and evidence window
-    /// and records `parked_at`. Resume with `resume_task`.
-    pub fn pause_task(&self, id: &str, agent: &str, now: i64) -> Result<bool> {
-        let changed = self.conn.execute(
+    /// and records `parked_at`. A non-empty `reason` is appended to the durable
+    /// thread as a note (ADR-0046). Resume with `resume_task`.
+    pub fn pause_task(
+        &self,
+        id: &str,
+        agent: &str,
+        reason: Option<&str>,
+        now: i64,
+    ) -> Result<bool> {
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
             "UPDATE tasks
              SET status = 'paused', lease_expires_at = NULL, parked_at = ?3, updated_at = ?3
              WHERE id = ?1 AND owner = ?2 AND status = 'claimed'",
             params![id, agent, now],
         )?;
-        Ok(changed == 1)
+        if changed != 1 {
+            return Ok(false);
+        }
+        append_note_on(&transaction, id, reason, agent, now)?;
+        transaction.commit()?;
+        Ok(true)
     }
 
     /// Resume a paused task under the same owner (ADR-0020) with a fresh lease,
@@ -471,7 +540,7 @@ impl LodestarStore {
         Ok(changed == 1)
     }
 
-    /// The durable, append-only question/answer thread for a task, oldest first.
+    /// The durable, append-only dialogue thread for a task, oldest first.
     pub fn task_qa(&self, task_id: &str) -> Result<Vec<TaskQa>> {
         let sql = format!("SELECT {QA_COLS} FROM task_qa WHERE task_id = ?1 ORDER BY id ASC");
         let mut stmt = self.conn.prepare(&sql)?;
@@ -1038,8 +1107,38 @@ fn row_to_qa(row: &Row) -> rusqlite::Result<TaskQa> {
         kind: row.get(2)?,
         body: row.get(3)?,
         author: row.get(4)?,
-        created_at: row.get(5)?,
+        audience: row.get(5)?,
+        created_at: row.get(6)?,
     })
+}
+
+/// Trim an addressee, treating blank as unaddressed (a human).
+fn normalize_audience(audience: Option<&str>) -> Option<String> {
+    audience
+        .map(str::trim)
+        .filter(|addressee| !addressee.is_empty())
+        .map(str::to_string)
+}
+
+/// Append a state-change reason to a task's durable thread (ADR-0046). A blank
+/// or absent reason writes nothing: an empty note is worse than none, because it
+/// looks like an explanation was given.
+fn append_note_on(
+    connection: &Connection,
+    task_id: &str,
+    reason: Option<&str>,
+    author: &str,
+    now: i64,
+) -> Result<()> {
+    let Some(reason) = reason.map(str::trim).filter(|body| !body.is_empty()) else {
+        return Ok(());
+    };
+    connection.execute(
+        "INSERT INTO task_qa (task_id, kind, body, author, audience, created_at)
+         VALUES (?1, 'note', ?2, ?3, NULL, ?4)",
+        params![task_id, reason, author, now],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1402,7 +1501,9 @@ mod tests {
             .claim_task(&second.id, "agent-b", 60, NOW + 3)
             .unwrap();
 
-        assert!(store.block_task(&second.id, None, NOW + 4).unwrap());
+        assert!(store
+            .block_task(&second.id, None, None, "human", NOW + 4)
+            .unwrap());
         let paused = store.get_task(&second.id).unwrap().unwrap();
         assert_eq!(paused.status, TaskStatus::Blocked);
         assert!(paused.owner.is_none());
@@ -1461,10 +1562,10 @@ mod tests {
             )
             .is_err());
         assert!(store
-            .block_task(&first.id, Some(first.id.clone()), NOW + 4)
+            .block_task(&first.id, Some(first.id.clone()), None, "human", NOW + 4)
             .is_err());
         assert!(store
-            .block_task(&first.id, Some(second.id.clone()), NOW + 4)
+            .block_task(&first.id, Some(second.id.clone()), None, "human", NOW + 4)
             .is_err());
     }
 
@@ -1481,7 +1582,7 @@ mod tests {
         assert!(store.claim_task(&task.id, "agent-a", 60, NOW + 1).unwrap());
 
         assert!(store
-            .block_task(&task.id, Some(predecessor.id), NOW + 2)
+            .block_task(&task.id, Some(predecessor.id), None, "human", NOW + 2)
             .unwrap());
 
         let blocked = store.get_task(&task.id).unwrap().unwrap();
@@ -1505,7 +1606,9 @@ mod tests {
         let held = store
             .create_task(&goal.id, "Held", "done", None, NOW)
             .unwrap();
-        assert!(store.block_task(&held.id, None, NOW + 1).unwrap());
+        assert!(store
+            .block_task(&held.id, None, None, "human", NOW + 1)
+            .unwrap());
         assert!(store.reopen_task(&held.id, NOW + 2).unwrap());
         let reopened = store.get_task(&held.id).unwrap().unwrap();
         assert_eq!(reopened.status, TaskStatus::Open);
@@ -1703,7 +1806,9 @@ mod tests {
         let held = store
             .create_task(&goal.id, "Held", "done", None, NOW)
             .unwrap();
-        assert!(store.block_task(&held.id, None, NOW + 1).unwrap());
+        assert!(store
+            .block_task(&held.id, None, None, "human", NOW + 1)
+            .unwrap());
         assert!(store.abandon_task(&held.id, NOW + 2).unwrap());
         assert_eq!(
             store.get_task(&held.id).unwrap().unwrap().status,
@@ -1959,7 +2064,7 @@ mod tests {
         let g = goal(&s);
         let first = s.create_task(&g.id, "first", "", None, NOW).unwrap();
         let second = s.create_task(&g.id, "second", "", None, NOW + 1).unwrap();
-        s.block_task(&second.id, None, NOW).unwrap();
+        s.block_task(&second.id, None, None, "human", NOW).unwrap();
         let next = s.next_task(NOW + 10).unwrap().unwrap();
         assert_eq!(next.id, first.id);
     }
@@ -2004,10 +2109,12 @@ mod tests {
             .unwrap();
 
         // Non-owner cannot park it.
-        assert!(!s.ask_question(&t.id, "bob", "which db?", NOW + 1).unwrap());
+        assert!(!s
+            .ask_question(&t.id, "bob", "which db?", None, NOW + 1)
+            .unwrap());
         // Owner parks with a durable question.
         assert!(s
-            .ask_question(&t.id, "alice", "which db?", NOW + 1)
+            .ask_question(&t.id, "alice", "which db?", None, NOW + 1)
             .unwrap());
         let parked = s.get_task(&t.id).unwrap().unwrap();
         assert_eq!(parked.status, TaskStatus::NeedsInput);
@@ -2038,6 +2145,176 @@ mod tests {
         assert_eq!(thread[1].body, "use sqlite");
     }
 
+    // ADR-0046: a question may be addressed at a peer agent instead of a human,
+    // and the peer discovers it by asking rather than by being pushed at. The
+    // parking transition is deliberately identical to the human case: the owner
+    // cannot proceed until answered either way, so the parking grace must still
+    // protect the task from a peer that never replies.
+    #[test]
+    fn an_addressed_question_is_discoverable_by_its_peer_and_parks_identically() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "task", "", None, NOW).unwrap();
+        assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
+
+        // Nothing is waiting on anyone yet.
+        assert!(s.pending_questions("bob").unwrap().is_empty());
+
+        assert!(s
+            .ask_question(
+                &t.id,
+                "alice",
+                "did you already rename this?",
+                Some("bob"),
+                NOW + 1
+            )
+            .unwrap());
+
+        // Same park as a question to a human: lease cleared, owner and evidence
+        // window kept, reclaimable only after the parking grace.
+        let parked = s.get_task(&t.id).unwrap().unwrap();
+        assert_eq!(parked.status, TaskStatus::NeedsInput);
+        assert_eq!(parked.owner.as_deref(), Some("alice"));
+        assert_eq!(parked.lease_expires_at, None);
+        assert_eq!(parked.parked_at, Some(NOW + 1));
+
+        // Addressed to bob, so bob sees it and nobody else does.
+        let waiting = s.pending_questions("bob").unwrap();
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].task_id, t.id);
+        assert_eq!(waiting[0].body, "did you already rename this?");
+        assert_eq!(waiting[0].author, "alice");
+        assert_eq!(waiting[0].audience.as_deref(), Some("bob"));
+        assert!(s.pending_questions("carol").unwrap().is_empty());
+        assert!(s.pending_questions("alice").unwrap().is_empty());
+
+        // Reading is not consuming: a second reader sees the same row, so a
+        // question can never be lost by being looked at.
+        assert_eq!(s.pending_questions("bob").unwrap().len(), 1);
+
+        // The peer answers; the question stops being pending and the asker resumes.
+        assert!(s
+            .answer_question(&t.id, "yes, yesterday", "bob", 60, NOW + 2)
+            .unwrap());
+        assert!(s.pending_questions("bob").unwrap().is_empty());
+        assert_eq!(
+            s.get_task(&t.id).unwrap().unwrap().status,
+            TaskStatus::Claimed
+        );
+    }
+
+    // ADR-0046: a human must always be able to unstick a pair of agents waiting
+    // on each other, so an answer from anyone clears an addressed question. If
+    // only the addressee could answer, two agents addressing each other would
+    // deadlock until the parking grace elapsed a week later.
+    #[test]
+    fn a_human_can_answer_a_question_addressed_to_another_agent() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "task", "", None, NOW).unwrap();
+        assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
+        assert!(s
+            .ask_question(&t.id, "alice", "which schema?", Some("bob"), NOW + 1)
+            .unwrap());
+
+        assert!(s
+            .answer_question(&t.id, "bob is gone; use v2", "human", 60, NOW + 2)
+            .unwrap());
+        assert!(s.pending_questions("bob").unwrap().is_empty());
+        let thread = s.task_qa(&t.id).unwrap();
+        assert_eq!(thread[1].author, "human");
+        assert_eq!(thread[1].audience, None);
+    }
+
+    // ADR-0046: addressing a question to yourself is refused. It would park the
+    // task waiting on the only agent that cannot act while it is parked — a
+    // self-deadlock that reads as a legitimate wait.
+    #[test]
+    fn a_question_addressed_to_its_own_asker_is_refused() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "task", "", None, NOW).unwrap();
+        assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
+
+        assert!(s
+            .ask_question(&t.id, "alice", "well?", Some("alice"), NOW + 1)
+            .is_err());
+        // Refused means refused: the task is untouched, not parked.
+        assert_eq!(
+            s.get_task(&t.id).unwrap().unwrap().status,
+            TaskStatus::Claimed
+        );
+    }
+
+    // ADR-0046: blocking takes work away from whoever held it, so the reason is
+    // recorded on the task's durable thread where its former owner can read it.
+    // Previously block_task carried only a predecessor id, so an agent could
+    // have its task blocked with no way to discover why — the same "message
+    // points nowhere near the cause" failure the guard exists to prevent.
+    #[test]
+    fn blocking_and_pausing_record_their_reason_on_the_thread() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "task", "", None, NOW).unwrap();
+        assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
+
+        assert!(s
+            .block_task(
+                &t.id,
+                None,
+                Some("superseded by the ADR-0038 worktree model"),
+                "human",
+                NOW + 1
+            )
+            .unwrap());
+        let thread = s.task_qa(&t.id).unwrap();
+        assert_eq!(thread.len(), 1);
+        assert_eq!(thread[0].kind, "note");
+        assert_eq!(thread[0].body, "superseded by the ADR-0038 worktree model");
+        assert_eq!(thread[0].author, "human");
+        // A note is not addressed at anyone, so it never appears as pending work.
+        assert_eq!(thread[0].audience, None);
+        assert!(s.pending_questions("human").unwrap().is_empty());
+
+        // A pause reason lands on the same thread, authored by the owner.
+        assert!(s.reopen_task(&t.id, NOW + 2).unwrap());
+        assert!(s.claim_task(&t.id, "alice", 60, NOW + 3).unwrap());
+        assert!(s
+            .pause_task(
+                &t.id,
+                "alice",
+                Some("waiting on the release build"),
+                NOW + 4
+            )
+            .unwrap());
+        let thread = s.task_qa(&t.id).unwrap();
+        assert_eq!(thread.len(), 2);
+        assert_eq!(thread[1].kind, "note");
+        assert_eq!(thread[1].body, "waiting on the release build");
+        assert_eq!(thread[1].author, "alice");
+    }
+
+    // ADR-0046: a blank reason writes nothing. An empty note is worse than no
+    // note, because a reader sees an entry and believes an explanation was given.
+    #[test]
+    fn a_blank_reason_writes_no_note() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "task", "", None, NOW).unwrap();
+        assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
+
+        assert!(s.pause_task(&t.id, "alice", Some("   "), NOW + 1).unwrap());
+        assert!(s.task_qa(&t.id).unwrap().is_empty());
+
+        // A losing (non-owner) pause must not write a note either: nothing
+        // happened, so nothing is explained.
+        assert!(s.resume_task(&t.id, "alice", 60, NOW + 2).unwrap());
+        assert!(!s
+            .pause_task(&t.id, "bob", Some("not mine to pause"), NOW + 3)
+            .unwrap());
+        assert!(s.task_qa(&t.id).unwrap().is_empty());
+    }
+
     // ADR-0020: pause/resume are owner-guarded, clear the live lease but keep the
     // owner and the claim_started_at evidence window across the whole park.
     #[test]
@@ -2053,8 +2330,8 @@ mod tests {
             .claim_started_at
             .unwrap();
 
-        assert!(!s.pause_task(&t.id, "bob", NOW + 1).unwrap());
-        assert!(s.pause_task(&t.id, "alice", NOW + 1).unwrap());
+        assert!(!s.pause_task(&t.id, "bob", None, NOW + 1).unwrap());
+        assert!(s.pause_task(&t.id, "alice", None, NOW + 1).unwrap());
         let paused = s.get_task(&t.id).unwrap().unwrap();
         assert_eq!(paused.status, TaskStatus::Paused);
         assert_eq!(paused.owner.as_deref(), Some("alice"));
@@ -2081,7 +2358,7 @@ mod tests {
         let g = goal(&s);
         let t = s.create_task(&g.id, "task", "", None, NOW).unwrap();
         assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
-        assert!(s.pause_task(&t.id, "alice", NOW).unwrap());
+        assert!(s.pause_task(&t.id, "alice", None, NOW).unwrap());
 
         // Within grace: owned, not reclaimable, not surfaced by next_task.
         let within = NOW + PARKING_GRACE_SECS - 1;
@@ -2140,7 +2417,7 @@ mod tests {
         let g = goal(&s);
         let t = s.create_task(&g.id, "task", "", None, NOW).unwrap();
         assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
-        assert!(s.pause_task(&t.id, "alice", NOW).unwrap());
+        assert!(s.pause_task(&t.id, "alice", None, NOW).unwrap());
         assert!(s
             .abandon_task(&t.id, NOW + 1)
             .unwrap_err()
