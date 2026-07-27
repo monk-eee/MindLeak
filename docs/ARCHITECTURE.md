@@ -143,7 +143,7 @@ combines both ADR-0024 overlap reads, and shows scoped work as a planning hint;
 warnings remain explicitly overridable. Review-needed rows call the existing
 `resolve_task`, `reopen_task`, and `conformance_history` tools in place; the
 complete Evidence Board remains an advanced, hidden-by-default audit view
-(ADR-0036).
+(ADR-0037).
 
 ## Data model
 

@@ -1,4 +1,4 @@
-# ADR-0036: One Work surface with advanced proof
+# ADR-0037: One Work surface with advanced proof
 
 - Status: Accepted
 - Date: 2026-07-27
