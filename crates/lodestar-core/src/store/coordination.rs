@@ -4,7 +4,9 @@ use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, Transact
 
 use crate::error::{LodestarError, Result};
 use crate::fleet::Wait;
-use crate::model::{ClaimOverlap, ConformanceRecord, Task, TaskQa, TaskScope, TaskStatus, Verdict};
+use crate::model::{
+    ClaimOverlap, ConformanceRecord, HumanQuestion, Task, TaskQa, TaskScope, TaskStatus, Verdict,
+};
 use crate::util::short_hash;
 
 use super::{collect, goals, LodestarStore};
@@ -497,6 +499,54 @@ impl LodestarStore {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![agent], row_to_qa)?;
+        collect(rows)
+    }
+
+    /// Every unanswered question addressed at a **human**, oldest first.
+    ///
+    /// A human has no agent id — `audience IS NULL` *is* the addressing
+    /// (ADR-0046 clause 2) — so `pending_questions`, which matches an id, can
+    /// never return one. Without this there is no way to list what is waiting
+    /// on a person at all: you would have to walk every parked task and read
+    /// its thread. Five tasks sat `awaiting_human` for up to seventy-five hours
+    /// with no surface that could show them.
+    ///
+    /// Same posture as `pending_questions`: a query, never a queue. Nothing is
+    /// delivered, reserved, or consumed, so two people reading cannot lose a
+    /// question between them.
+    ///
+    /// The task must still be `needs_input`, matching `waits`: a question whose
+    /// task has moved on is history, not a live wait, and listing it would
+    /// invite an answer to something already resolved.
+    ///
+    /// The title travels with it because an inbox that forces a lookup per row
+    /// to find out what it is about is not an inbox.
+    pub fn questions_for_a_human(&self, now: i64) -> Result<Vec<HumanQuestion>> {
+        let sql = format!(
+            "SELECT question.id, question.task_id, tasks.title, question.author,
+                    question.body, question.created_at
+             FROM task_qa AS question
+             JOIN tasks ON tasks.id = question.task_id
+             WHERE question.kind = 'question' AND question.audience IS NULL
+               AND tasks.status = 'needs_input'
+               AND {UNANSWERED}
+             ORDER BY question.id ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], |row| {
+            let asked_at: i64 = row.get(5)?;
+            Ok(HumanQuestion {
+                question_id: row.get(0)?,
+                task_id: row.get(1)?,
+                task_title: row.get(2)?,
+                asked_by: row.get(3)?,
+                question: row.get(4)?,
+                asked_at,
+                // Reported, never judged. How long is too long is a decision
+                // nobody here is entitled to make on a reader's behalf.
+                waiting_seconds: (now - asked_at).max(0),
+            })
+        })?;
         collect(rows)
     }
 

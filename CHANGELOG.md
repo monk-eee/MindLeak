@@ -6,6 +6,22 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`questions_for_a_human`: the other half of ADR-0046's dialogue.** Agents
+  could address a question at a peer and list what was addressed to them, but
+  there was no way to list what was waiting on a **person** — `pending_questions`
+  matches an agent id, and a human has no agent id, because "addressed at a
+  human" is the *absence* of an audience. Answering therefore meant walking every
+  parked task and reading its thread by hand, which is why five tasks sat
+  `awaiting_human` for up to seventy-five hours with no surface that could show
+  them. The new call returns each parked task's question, its title, who asked,
+  and how long it has gone unanswered, rendered as a readable inbox with the
+  structured form still in `structuredContent`. Same posture as its agent-side
+  twin: a query, never a queue — reading cannot consume a question, and two
+  people reading see the same rows. Waiting time is reported and never judged,
+  because a staleness threshold invented here would become a policy nobody
+  agreed to.
+
 ## [0.1.3] - 2026-07-27
 
 ### Added
