@@ -15,7 +15,7 @@ use lodestar_core::{
 };
 use mindleak_core::ingest::git::CommitRecord;
 use mindleak_core::MindLeak;
-use mindleak_session::SessionRegistry;
+use mindleak_session::{SessionContext, SessionRegistry};
 use mindleak_storage::{resolve_database_in, DatabaseKind};
 
 /// A unique temp DB path per test (file-backed so multiple connections share it).
@@ -561,11 +561,17 @@ fn isolated_worktrees_share_intent_and_evidence_with_distinct_sessions() {
     let intent_path = intent_a.path.to_string_lossy().into_owned();
     let sessions = SessionRegistry::new("copilot").unwrap();
     let agent_a = sessions
-        .open_session("00112233445566778899aabbccddeeff")
+        .open_session(
+            "00112233445566778899aabbccddeeff",
+            SessionContext::default(),
+        )
         .unwrap()
         .agent_id;
     let agent_b = sessions
-        .open_session("ffeeddccbbaa99887766554433221100")
+        .open_session(
+            "ffeeddccbbaa99887766554433221100",
+            SessionContext::default(),
+        )
         .unwrap()
         .agent_id;
     assert_ne!(agent_a, agent_b);
