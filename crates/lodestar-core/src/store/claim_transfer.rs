@@ -150,7 +150,7 @@ fn load_prior_claim(transaction: &Transaction<'_>, task_id: &str) -> Result<Prio
 
 #[cfg(test)]
 mod tests {
-    use mindleak_session::SessionRegistry;
+    use mindleak_session::{SessionContext, SessionRegistry};
 
     use super::*;
     use crate::model::TaskScope;
@@ -162,7 +162,7 @@ mod tests {
     fn session(token: &str) -> String {
         SessionRegistry::new("copilot")
             .unwrap()
-            .open_session(token)
+            .open_session(token, SessionContext::default())
             .unwrap()
             .agent_id
     }
@@ -226,7 +226,7 @@ mod tests {
                 "copilot",
                 &SessionRegistry::new("claude")
                     .unwrap()
-                    .open_session(SESSION_A)
+                    .open_session(SESSION_A, SessionContext::default())
                     .unwrap()
                     .agent_id,
                 "wrong base",
