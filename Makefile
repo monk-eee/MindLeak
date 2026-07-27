@@ -1,7 +1,7 @@
 # MindLeak developer commands. On Windows, run the underlying commands directly
 # (see DEVELOPERS.md) if `make` is unavailable.
 
-.PHONY: setup build test coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
+.PHONY: setup worktree-setup adr-index build test coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
 
 setup: ## Install pre-commit hooks and extension deps
 	pip install pre-commit
@@ -9,6 +9,16 @@ setup: ## Install pre-commit hooks and extension deps
 	pre-commit install --hook-type pre-push
 	cargo install cargo-llvm-cov --locked
 	npm --prefix editors/vscode install
+
+worktree-setup: ## Prepare a freshly created linked worktree (ADR-0038)
+	# Hooks and cargo tools are shared through the common .git dir and the user's
+	# cargo bin, so a new worktree only needs its own node_modules. Without it the
+	# prettier and eslint hooks cannot run and the first push fails with a module
+	# resolution error that says nothing about the real cause.
+	npm --prefix editors/vscode ci
+
+adr-index: ## Regenerate docs/adr/README.md from the ADR files
+	node scripts/adr-index.mjs
 
 build: ## Build the workspace (debug)
 	cargo build
