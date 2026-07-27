@@ -32,7 +32,7 @@ describe("McpClient disposal", () => {
       name: "mindleak-mcp",
       version: "0.1.1+abc123",
     });
-    expect(client.agentIdentity()).toBe("session:v1:test:0123456789abcdef0123456789abcdef");
+    expect(client.agentIdentity()).toBe("session:v1:0123456789abcdef0123456789abcdef");
 
     await client.dispose(100);
     expect(client.serverIdentity()).toBeUndefined();
@@ -250,7 +250,7 @@ describe("McpClient supervision", () => {
 
     await vi.waitFor(() => expect(client.isReady()).toBe(true));
     expect(mockedSpawn).toHaveBeenCalledTimes(2);
-    expect(client.agentIdentity()).toBe("session:v1:test:0123456789abcdef0123456789abcdef");
+    expect(client.agentIdentity()).toBe("session:v1:0123456789abcdef0123456789abcdef");
     expect(logs.some((message) => message.includes("reconnected"))).toBe(true);
     await client.dispose(100);
   });
@@ -381,7 +381,7 @@ function fakeProcess(options: {
                 content: [
                   {
                     type: "text",
-                    text: '{"agent_id":"session:v1:test:0123456789abcdef0123456789abcdef"}',
+                    text: '{"agent_id":"session:v1:0123456789abcdef0123456789abcdef"}',
                   },
                 ],
               },

@@ -386,7 +386,7 @@ selecting a default.
 | `MINDLEAK_WORKSPACE` | process working directory | worktree used for repository identity and project config |
 | `MINDLEAK_HOME` | platform-local non-roaming state directory | shared per-repository storage root |
 | `MINDLEAK_DB` | repository-id store, or workspace-local outside Git | explicit graph database override |
-| `MINDLEAK_AGENT` | `agent` | human-readable base label used when `open_session` derives `session:v1:<base>:<fingerprint>` (ADR-0030) |
+| `MINDLEAK_AGENT` | `agent` | display name for this process's sessions in reports; never part of the id, which is `session:v1:<fingerprint>` (ADR-0030, amended by ADR-0054) |
 | `MINDLEAK_WORKING_SET_SIZE` | `7` | hard cap for `working_set` results, bounded 1-32 |
 | `MINDLEAK_CONFIG` | `<workspace>/.mindleak.toml` | explicit config path; relative paths resolve from the workspace |
 | `MINDLEAK_PRUNE_THRESHOLD` | file or `0.05` | active-edge/prune threshold override |
@@ -413,7 +413,7 @@ selecting a default.
 | Variable | Default | Meaning |
 |---|---|---|
 | `LODESTAR_DB` | repository-id store, or workspace-local outside Git | explicit intent database override |
-| `LODESTAR_AGENT` | `agent` | human-readable base label used when `open_session` derives the same stable session identity as MindLeak (ADR-0030) |
+| `LODESTAR_AGENT` | `agent` | display name only; both planes derive the same identity from the session token alone (ADR-0030, amended by ADR-0054) |
 | `LODESTAR_LLM_URL` | `http://localhost:11434/v1` | OpenAI-compatible server for `decompose_goal` / semantic conformance |
 | `LODESTAR_MODEL` | `glm4:9b` | model |
 | `LODESTAR_LLM_API_KEY` | *(empty)* | bearer token for hosted servers |

@@ -25,8 +25,11 @@ fn main() -> anyhow::Result<()> {
     database.ensure_parent()?;
     let storage_status = database.status("lodestar", migrated_legacy);
     let db_path = database.path.to_string_lossy().into_owned();
-    let base = std::env::var("LODESTAR_AGENT").unwrap_or_else(|_| "agent".to_string());
-    let sessions = SessionRegistry::new(&base).map_err(anyhow::Error::msg)?;
+    // Display name for this process's sessions in reports. Since ADR-0054 it
+    // is no part of the agent id, so two processes may disagree about it
+    // without forking the identity of a session they both host.
+    let display_name = std::env::var("LODESTAR_AGENT").unwrap_or_else(|_| "agent".to_string());
+    let sessions = SessionRegistry::new(&display_name).map_err(anyhow::Error::msg)?;
     let engine = Lodestar::open(&db_path)?;
     eprintln!(
         "[lodestar-mcp] ready — intent plane at {db_path}; repository_id={}; origin={:?}; migrated_legacy={migrated_legacy}",

@@ -156,31 +156,42 @@ fn declared_string(arguments: &Value, field: &str) -> Result<Option<String>, Str
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionIdentity {
+    /// The identity every stored row is keyed on: `session:v1:{fingerprint}`.
+    ///
+    /// Derived from the session token and nothing else. It deliberately carries
+    /// no human-readable label, because a label is a property of the process
+    /// that happened to host the session and the identity is a property of the
+    /// session. Putting one inside the other forked identity every time an
+    /// agent's server started with a different environment (ADR-0054).
     pub agent_id: String,
+    /// A human-readable label for reports. Display only, never compared.
+    pub name: String,
     pub context: SessionContext,
 }
 
 #[derive(Clone)]
 pub struct SessionRegistry {
-    base: Arc<str>,
+    default_name: Arc<str>,
     registered: Arc<RwLock<HashMap<[u8; 32], SessionContext>>>,
 }
 
 impl SessionRegistry {
-    pub fn new(base: &str) -> Result<Self, String> {
-        let base = base.trim();
-        if base.is_empty()
-            || !base
+    /// `default_name` labels this process's sessions in reports. It does not
+    /// enter the agent id and two processes disagreeing about it is harmless.
+    pub fn new(default_name: &str) -> Result<Self, String> {
+        let default_name = default_name.trim();
+        if default_name.is_empty()
+            || !default_name
                 .chars()
                 .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
         {
             return Err(
-                "session agent base must contain only ASCII letters, digits, '.', '_', or '-'"
+                "session agent name must contain only ASCII letters, digits, '.', '_', or '-'"
                     .to_string(),
             );
         }
         Ok(Self {
-            base: Arc::from(base),
+            default_name: Arc::from(default_name),
             registered: Arc::new(RwLock::new(HashMap::new())),
         })
     }
@@ -235,7 +246,8 @@ impl SessionRegistry {
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
         SessionIdentity {
-            agent_id: format!("session:v1:{}:{fingerprint}", self.base),
+            agent_id: format!("session:v1:{fingerprint}"),
+            name: self.default_name.to_string(),
             context,
         }
     }
@@ -252,11 +264,18 @@ fn token_digest(token: &str) -> Result<[u8; 32], String> {
     Ok(Sha256::digest(token.as_bytes()).into())
 }
 
-pub fn compatible_legacy_owner(expected_owner: &str, target_agent: &str) -> bool {
-    let Some(rest) = target_agent.strip_prefix("session:v1:") else {
-        return false;
-    };
-    let Some((base, fingerprint)) = rest.rsplit_once(':') else {
+/// Whether a session may recover a claim stranded under an older identity
+/// scheme, where the owner was a bare agent name (`copilot`) or a name with a
+/// startup nonce (`copilot-1a2b3c4d`).
+///
+/// `name` is the recovering session's declared label, not a segment parsed out
+/// of its id. Since ADR-0054 the id is `session:v1:{fingerprint}` and carries
+/// no label at all — reading one out of it was only ever possible because the
+/// identity had a display concern baked into it, which is the defect that ADR
+/// removes. The check is otherwise unchanged: the recovering session must be
+/// well-formed, and must claim the name the stranded row was owned by.
+pub fn compatible_legacy_owner(expected_owner: &str, target_agent: &str, name: &str) -> bool {
+    let Some(fingerprint) = target_agent.strip_prefix("session:v1:") else {
         return false;
     };
     if fingerprint.len() != AGENT_DIGEST_BYTES * 2
@@ -266,11 +285,11 @@ pub fn compatible_legacy_owner(expected_owner: &str, target_agent: &str) -> bool
     {
         return false;
     }
-    if expected_owner == base {
+    if expected_owner == name {
         return true;
     }
     expected_owner
-        .strip_prefix(&format!("{base}-"))
+        .strip_prefix(&format!("{name}-"))
         .is_some_and(|nonce| nonce.len() == 8 && nonce.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
@@ -504,15 +523,49 @@ mod tests {
 
     #[test]
     fn only_compatible_legacy_owners_can_transfer() {
-        let agent = SessionRegistry::new("copilot")
+        let identity = SessionRegistry::new("copilot")
             .unwrap()
             .open_session(SESSION_A, SessionContext::default())
+            .unwrap();
+        let agent = identity.agent_id;
+        let name = identity.name.as_str();
+        assert!(compatible_legacy_owner("copilot", &agent, name));
+        assert!(compatible_legacy_owner("copilot-abcd1234", &agent, name));
+        assert!(!compatible_legacy_owner("claude-abcd1234", &agent, name));
+        assert!(!compatible_legacy_owner("copilot-nothex!!", &agent, name));
+        assert!(!compatible_legacy_owner(
+            "copilot-abcd1234",
+            "copilot-new",
+            name
+        ));
+    }
+
+    /// The bug ADR-0054 fixes: one session token hosted by two processes with
+    /// different `LODESTAR_AGENT` values used to resolve to two different
+    /// agent ids. Claims, `pending_questions` and `check_overlap` all compare
+    /// the id as a whole string, so the fleet saw two agents where there was
+    /// one, an addressed question could be delivered to a name its recipient
+    /// did not answer to, and one agent's claims were split across both halves.
+    #[test]
+    fn identity_survives_a_differently_named_host_process() {
+        let under_default = SessionRegistry::new("agent")
             .unwrap()
-            .agent_id;
-        assert!(compatible_legacy_owner("copilot", &agent));
-        assert!(compatible_legacy_owner("copilot-abcd1234", &agent));
-        assert!(!compatible_legacy_owner("claude-abcd1234", &agent));
-        assert!(!compatible_legacy_owner("copilot-nothex!!", &agent));
-        assert!(!compatible_legacy_owner("copilot-abcd1234", "copilot-new"));
+            .open_session(SESSION_A, SessionContext::default())
+            .unwrap();
+        let under_copilot = SessionRegistry::new("copilot")
+            .unwrap()
+            .open_session(SESSION_A, SessionContext::default())
+            .unwrap();
+
+        assert_eq!(under_default.agent_id, under_copilot.agent_id);
+        assert!(!under_default.agent_id.contains("agent:"));
+        assert_eq!(under_default.name, "agent");
+        assert_eq!(under_copilot.name, "copilot");
+
+        let other_token = SessionRegistry::new("copilot")
+            .unwrap()
+            .open_session(SESSION_B, SessionContext::default())
+            .unwrap();
+        assert_ne!(under_copilot.agent_id, other_token.agent_id);
     }
 }

@@ -62,10 +62,15 @@ export interface ReadinessRow {
   action?: ReadinessAction;
 }
 
-export function sessionAgentIdentity(base: string, sessionId: string): string {
-  const label = base.trim() || "vscode";
+/// The agent id a session resolves to, derived from the session token alone
+/// (ADR-0054). The display name a process was launched with is deliberately not
+/// an input: it used to be, and two processes hosting the same session then
+/// disagreed about who that session was — the editor minted
+/// `session:v1:copilot:<fp>` while a shell minted `session:v1:agent:<fp>`, so a
+/// claim made through one was invisible to the other.
+export function sessionAgentIdentity(sessionId: string): string {
   const fingerprint = createHash("sha256").update(sessionId).digest("hex").slice(0, 32);
-  return `session:v1:${label}:${fingerprint}`;
+  return `session:v1:${fingerprint}`;
 }
 
 export function deriveReadiness(input: ReadinessInput): ReadinessSnapshot {

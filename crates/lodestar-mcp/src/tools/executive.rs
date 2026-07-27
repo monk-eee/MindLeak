@@ -437,6 +437,7 @@ pub(super) fn dispatch(
                     req_str(args, "task_id")?,
                     req_str(args, "expected_owner")?,
                     opt_str(args, "agent").unwrap_or_default().as_str(),
+                    opt_str(args, "resolved_name").unwrap_or_default().as_str(),
                     req_str(args, "reason")?,
                     i64_arg(args, "lease_secs", 300),
                 )
@@ -898,6 +899,11 @@ mod tests {
                     "task_id": task.id,
                     "expected_owner": "copilot-abcd1234",
                     "agent": agent,
+                    // Injected by `bind_session` in the running server. Since
+                    // ADR-0054 the id carries no label, so the name the
+                    // recovering session declares is what the legacy owner is
+                    // matched against.
+                    "resolved_name": "copilot",
                     "reason": "legacy process exited",
                     "lease_secs": 300
                 }

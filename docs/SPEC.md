@@ -351,10 +351,10 @@ read/write, and deterministic ids mean concurrent ingests of the same file/run
 **reinforce** the same nodes instead of clobbering them. Attribution is layered
 on *without* breaking that merge.
 
-- **Register the client session.** `MINDLEAK_AGENT` is a base label only. The
+- **Register the client session.** `MINDLEAK_AGENT` is a display name only. The
   client calls `open_session` with one opaque 128-bit token and includes that
   token on identity-bearing operations; every ingest and focus then records a
-  decay-weighted `agent:session:v1:<base>:<fingerprint> --observed--> <node>`
+  decay-weighted `agent:session:v1:<fingerprint> --observed--> <node>`
   edge. Unknown tokens and arbitrary caller-selected ids are rejected.
 - **Attention decays.** Because an observation is an *edge*, an agent's recent
   focus ranks high and fades over days, exactly like every other signal — the

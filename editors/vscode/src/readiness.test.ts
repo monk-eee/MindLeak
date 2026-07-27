@@ -97,15 +97,25 @@ describe("readinessRows", () => {
 });
 
 describe("sessionAgentIdentity", () => {
-  it("derives one bounded fixed identity from the configured base and activation nonce", () => {
-    expect(sessionAgentIdentity(" vscode ", "A1B2-C3D4-E5F6")).toBe(
-      "session:v1:vscode:16308361808fdf63e94ea02e7c0c02c2"
+  it("derives one bounded fixed identity from the session token", () => {
+    expect(sessionAgentIdentity("A1B2-C3D4-E5F6")).toBe(
+      "session:v1:16308361808fdf63e94ea02e7c0c02c2"
     );
-    expect(sessionAgentIdentity("", "not-valid!suffix")).toBe(
-      "session:v1:vscode:089203652151b3043473cabe6ee03f86"
+    expect(sessionAgentIdentity("not-valid!suffix")).toBe(
+      "session:v1:089203652151b3043473cabe6ee03f86"
     );
-    expect(sessionAgentIdentity("agent", "---")).toBe(
-      "session:v1:agent:cb3f91d54eee30e53e35b2b99905f70f"
-    );
+    expect(sessionAgentIdentity("---")).toBe("session:v1:cb3f91d54eee30e53e35b2b99905f70f");
+  });
+
+  // Bug regression (ADR-0054). The launch label used to be part of the id, so
+  // the same session resolved to `session:v1:copilot:<fp>` through the editor
+  // and `session:v1:agent:<fp>` from a shell — a claim made through one was
+  // invisible to the other, and the publication gate refused a claim its caller
+  // genuinely held. The token is the identity; how the process was started is
+  // not.
+  it("does not vary with the process that hosts the session", () => {
+    expect(sessionAgentIdentity("A1B2-C3D4-E5F6")).not.toContain("vscode");
+    expect(sessionAgentIdentity("A1B2-C3D4-E5F6")).not.toContain("copilot");
+    expect(sessionAgentIdentity("A1B2-C3D4-E5F6")).toMatch(/^session:v1:[a-f0-9]{32}$/);
   });
 });
