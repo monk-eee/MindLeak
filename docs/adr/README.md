@@ -54,6 +54,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0044](0044-declared-context-is-durable.md) | Declared context is durable, and staleness is declared too | Proposed |
 | [0045](0045-a-fleet-is-a-distributed-system.md) | An agent fleet is a distributed system, not a team | Accepted |
 | [0046](0046-agents-talk-through-the-durable-thread.md) | Agents talk through the durable thread, never to each other | Accepted |
+| [0047](0047-a-status-is-not-a-decision.md) | A status reflects a decision; only a decision records one | Proposed |
 
 ## Writing a new ADR
 
