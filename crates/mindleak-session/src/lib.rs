@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -21,12 +22,17 @@ const MAX_CONTEXT_FIELD_LEN: usize = 256;
 /// working directory, and a linked worktree's branch differs from the database
 /// root. A session that declares nothing leaves every field `None`, which
 /// callers report as `unknown` rather than guessing.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionContext {
     pub branch: Option<String>,
     pub head_sha: Option<String>,
     pub base: Option<String>,
     pub dirty: Option<bool>,
+    /// Commits this session's head is behind its declared base, as counted by
+    /// the client (ADR-0044). Declared rather than derived: the server is
+    /// forbidden from reading Git, and branch/head/base can only reveal that
+    /// two commits *differ*, never the distance between them.
+    pub behind: Option<i64>,
 }
 
 impl SessionContext {
@@ -47,6 +53,14 @@ impl SessionContext {
                 Some(Value::Bool(flag)) => Some(*flag),
                 Some(_) => return Err("dirty must be a boolean".to_string()),
             },
+            behind: match arguments.get("behind") {
+                None | Some(Value::Null) => None,
+                Some(Value::Number(count)) => match count.as_i64() {
+                    Some(count) if count >= 0 => Some(count),
+                    _ => return Err("behind must be a non-negative integer".to_string()),
+                },
+                Some(_) => return Err("behind must be a non-negative integer".to_string()),
+            },
         })
     }
 
@@ -56,6 +70,7 @@ impl SessionContext {
             || self.head_sha.is_some()
             || self.base.is_some()
             || self.dirty.is_some()
+            || self.behind.is_some()
     }
 
     /// The declared fields as JSON, or `None` when nothing was declared.
@@ -79,6 +94,9 @@ impl SessionContext {
         }
         if let Some(dirty) = self.dirty {
             declared.insert("dirty".to_string(), Value::Bool(dirty));
+        }
+        if let Some(behind) = self.behind {
+            declared.insert("behind".to_string(), Value::Number(behind.into()));
         }
         Some(Value::Object(declared))
     }
@@ -106,6 +124,11 @@ pub fn session_input_schema() -> Value {
             "dirty": {
                 "type": "boolean",
                 "description": "Optional. Whether the working tree had uncommitted changes when declared."
+            },
+            "behind": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Optional. Commits this head is behind the declared base, counted by the client. The server never reads Git, so an undeclared value reports as unknown rather than being guessed (ADR-0044)."
             }
         },
         "required": ["session_id"]
@@ -252,6 +275,7 @@ mod tests {
             head_sha: Some("7723f78".to_string()),
             base: Some("origin/main".to_string()),
             dirty: Some(true),
+            behind: Some(2),
         }
     }
 
@@ -304,6 +328,7 @@ mod tests {
         assert_eq!(identity.context.head_sha, None);
         assert_eq!(identity.context.base, None);
         assert_eq!(identity.context.dirty, None);
+        assert_eq!(identity.context.behind, None);
         assert_eq!(registry.resolve(SESSION_A).unwrap(), identity);
     }
 
@@ -383,12 +408,19 @@ mod tests {
             "head_sha": "7723f78",
             "base": "origin/main",
             "dirty": true,
+            "behind": 3,
         }))
         .unwrap();
         assert_eq!(full.branch.unwrap(), "fleet/typed-controls");
         assert_eq!(full.head_sha.unwrap(), "7723f78");
         assert_eq!(full.base.unwrap(), "origin/main");
         assert_eq!(full.dirty, Some(true));
+        assert_eq!(full.behind, Some(3));
+
+        // Zero is a real answer: "declared, and up to date" is not "unknown".
+        let current = SessionContext::from_arguments(&json!({ "behind": 0 })).unwrap();
+        assert_eq!(current.behind, Some(0));
+        assert!(current.is_declared());
 
         let explicit_null =
             SessionContext::from_arguments(&json!({ "branch": Value::Null })).unwrap();
@@ -397,6 +429,8 @@ mod tests {
         assert!(SessionContext::from_arguments(&json!({ "branch": "   " })).is_err());
         assert!(SessionContext::from_arguments(&json!({ "branch": 7 })).is_err());
         assert!(SessionContext::from_arguments(&json!({ "dirty": "yes" })).is_err());
+        assert!(SessionContext::from_arguments(&json!({ "behind": -1 })).is_err());
+        assert!(SessionContext::from_arguments(&json!({ "behind": "two" })).is_err());
         assert!(SessionContext::from_arguments(&json!({ "head_sha": "a".repeat(257) })).is_err());
     }
 
