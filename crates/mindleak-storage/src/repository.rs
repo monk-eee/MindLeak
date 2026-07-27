@@ -143,9 +143,18 @@ impl ResolvedDatabase {
         result.map_err(RepositoryStorageError::from)
     }
 
+    /// Create the directory the database lives in, if it has one.
+    ///
+    /// A path with no directory component — `:memory:`, or a bare `graph.db` —
+    /// yields `Some("")` from `parent()`, not `None`. `create_dir_all("")`
+    /// short-circuits to `Ok`, but the Unix branch then calls `set_permissions`
+    /// on that empty path and gets `ENOENT`, so the server exited at startup on
+    /// Linux and macOS while Windows, which has no permissions call, started
+    /// fine. Skip the empty parent: there is no directory to create or lock down.
     pub fn ensure_parent(&self) -> Result<(), RepositoryStorageError> {
-        if let Some(parent) = self.path.parent() {
-            create_private_directory(parent)?;
+        match self.path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => create_private_directory(parent)?,
+            _ => {}
         }
         Ok(())
     }
@@ -791,5 +800,62 @@ mod tests {
             error,
             RepositoryStorageError::InvalidRepositoryId(_)
         ));
+    }
+
+    /// The v0.1.3 release failed on this. `MINDLEAK_DB=":memory:"` resolves to a
+    /// path with no directory component, and `Path::parent()` returns
+    /// `Some("")` rather than `None`. `create_dir_all("")` short-circuits to
+    /// `Ok`, so the bug hid behind the happy path — but the Unix branch then
+    /// called `set_permissions("")`, which fails with `ENOENT`. The server
+    /// exited immediately on Linux and macOS, reporting only
+    /// "No such file or directory (os error 2)", while Windows started fine
+    /// because it has no permissions call. Both release builds that actually
+    /// executed a Unix binary failed; the macOS x64 job passed only because it
+    /// is cross-compiled and skips execution.
+    #[test]
+    fn a_database_path_with_no_directory_needs_no_parent_created() {
+        for path in [":memory:", "graph.db"] {
+            let resolved = explicit_database_resolution(path);
+            assert_eq!(
+                resolved.path.parent().map(Path::to_path_buf),
+                Some(PathBuf::new()),
+                "{path} should expose an empty parent, which is the trap"
+            );
+            // Pin the trap itself, or this test passes on Windows for the wrong
+            // reason and would not have caught the regression: the empty path is
+            // only fatal because the Unix branch sets permissions on it.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert!(
+                    fs::create_dir_all("").is_ok(),
+                    "create_dir_all short-circuits"
+                );
+                let error = fs::set_permissions("", fs::Permissions::from_mode(0o700))
+                    .expect_err("set_permissions on an empty path must fail");
+                assert_eq!(error.kind(), io::ErrorKind::NotFound);
+            }
+            resolved
+                .ensure_parent()
+                .unwrap_or_else(|error| panic!("{path} must start cleanly, got {error}"));
+        }
+    }
+
+    /// The fix must not stop real parents being created, or locked down.
+    #[test]
+    fn a_database_path_with_a_directory_still_creates_it() {
+        let sandbox = Sandbox::new("ensure-parent");
+        let nested = sandbox.root.join("deeper").join("still");
+        let resolved = explicit_database_resolution(&nested.join("graph.db").to_string_lossy());
+
+        resolved.ensure_parent().unwrap();
+
+        assert!(nested.is_dir(), "the parent directory should exist");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&nested).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700, "the directory should stay private");
+        }
     }
 }
