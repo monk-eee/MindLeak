@@ -201,12 +201,18 @@ impl Lodestar {
     ) -> Result<String> {
         let mut basis = Vec::new();
         if let Some(task) = task {
+            // `claim_lapses` belongs in the basis because the window start no
+            // longer moves when the same owner re-claims (ADR-0048). Without it
+            // a lease could lapse between a check and its completion and the
+            // token would still match, letting a continuous-window verdict
+            // certify a window that had since acquired a hole.
             basis.push(format!(
-                "claim:{}:{}:{}:{}",
+                "claim:{}:{}:{}:{}:{}",
                 task.id,
                 task.goal_id,
                 task.owner.as_deref().unwrap_or_default(),
-                task.claim_started_at.unwrap_or_default()
+                task.claim_started_at.unwrap_or_default(),
+                task.claim_lapses
             ));
             let goal = self
                 .store
@@ -490,6 +496,28 @@ impl Lodestar {
         }
 
         findings.push(format!("evidence covers task goal {}", task.goal_id));
+
+        // A discontinuous evidence window cannot certify itself (ADR-0048,
+        // ADR-0034 ceiling rule). The window now survives a lapse so earlier
+        // work stays provable, but a lapse means there was a stretch in which
+        // this agent held no lease, and nothing here can tell whether work fell
+        // into it. That is an unknown, not a pass.
+        //
+        // The cap is on the task, not on the submitted interval, and that is
+        // deliberate: if it depended on whether the hole fell inside the
+        // evidence span, an agent could dodge it by submitting a narrower span
+        // — which is exactly the laundering this rule exists to stop.
+        if task.claim_lapses > 0 {
+            findings.push(format!(
+                "evidence window is discontinuous: the lease lapsed {} time(s), \
+                 leaving {}s unleased, which a human confirms",
+                task.claim_lapses, task.unleased_seconds
+            ));
+            return Ok(ConformanceResult {
+                verdict: Verdict::NeedsHuman,
+                findings,
+            });
+        }
 
         // Declared cross-goal coverage informs; it never self-certifies
         // (ADR-0041, ADR-0034 ceiling rule). If the evidence is in scope only
@@ -1433,6 +1461,91 @@ mod tests {
 
         // The binding is untouched — the fix is derived at read time, not a delete.
         assert_eq!(e.governing_goals("artifact:CHANGELOG.md").unwrap().len(), 1);
+    }
+
+    // Bug (ADR-0048): a lapsed lease silently shrank what a task could prove.
+    // Re-claiming reset the evidence window to the moment of the re-claim, so
+    // `validate_claim_evidence` rejected any interval reaching back past it —
+    // and since the verdict is computed over whatever the evidence covers, the
+    // agent's way out was to submit the surviving sliver, which passed as
+    // `aligned` while the work before the lapse was never checked at all. The
+    // fix admits the full interval and caps the verdict at `needs_human`,
+    // because a window with a hole in it cannot certify itself.
+    #[test]
+    fn evidence_survives_a_lapse_but_a_holed_window_cannot_self_certify() {
+        let e = engine();
+        let goal = e
+            .define_goal(
+                GoalKind::Objective,
+                "Clean delivery",
+                "changes use clean design",
+                None,
+            )
+            .unwrap();
+        let node_id = "artifact:src/delivery.rs";
+        e.link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+            .unwrap();
+
+        // A continuous window is the control: it still passes cleanly.
+        let steady = e.create_task(&goal.id, "steady work", "no lapse").unwrap();
+        e.claim_task(&steady.id, "agent-a", 300).unwrap();
+        let claimed = e.store.get_task(&steady.id).unwrap().unwrap();
+        let mut evidence = test_evidence(Some(steady.id.clone()), "agent-a", node_id);
+        evidence.started_at = claimed.claim_started_at.unwrap();
+        evidence.ended_at = now_unix();
+        assert_eq!(
+            e.check_conformance(&evidence, Some(&steady.id))
+                .unwrap()
+                .verdict,
+            Verdict::Aligned
+        );
+
+        // Now the same work, interrupted: agent-b claims an hour ago on a short
+        // lease, lets it lapse, and re-claims now.
+        let lapsed = e
+            .create_task(&goal.id, "interrupted work", "lease lapsed midway")
+            .unwrap();
+        let now = now_unix();
+        let started = now - 3600;
+        assert!(e
+            .store
+            .claim_task(&lapsed.id, "agent-b", 60, started)
+            .unwrap());
+        assert!(e.store.claim_task(&lapsed.id, "agent-b", 300, now).unwrap());
+
+        let reclaimed = e.store.get_task(&lapsed.id).unwrap().unwrap();
+        assert_eq!(reclaimed.claim_started_at, Some(started));
+        assert_eq!(reclaimed.claim_lapses, 1);
+
+        let mut spanning = test_evidence(Some(lapsed.id.clone()), "agent-b", node_id);
+        spanning.started_at = started;
+        spanning.ended_at = now;
+
+        // Before the fix this call failed outright with "evidence interval falls
+        // outside the live claim", which is what pushed agents to narrow the
+        // span until it was accepted.
+        let checked = e.check_conformance(&spanning, Some(&lapsed.id)).unwrap();
+        assert_eq!(checked.verdict, Verdict::NeedsHuman);
+        assert!(
+            checked
+                .findings
+                .iter()
+                .any(|finding| finding.contains("discontinuous")),
+            "the receipt must name the hole, got {:?}",
+            checked.findings
+        );
+
+        // ...and the cap follows the task, not the interval, so narrowing the
+        // evidence no longer buys a clean pass.
+        let mut narrowed = test_evidence(Some(lapsed.id.clone()), "agent-b", node_id);
+        narrowed.started_at = now - 1;
+        narrowed.ended_at = now;
+        assert_eq!(
+            e.check_conformance(&narrowed, Some(&lapsed.id))
+                .unwrap()
+                .verdict,
+            Verdict::NeedsHuman
+        );
     }
 
     fn test_evidence(
