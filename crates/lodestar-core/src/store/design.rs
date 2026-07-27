@@ -8,7 +8,7 @@ use rusqlite::{params, Row, Transaction, TransactionBehavior};
 use crate::design::{
     design_id_from_path, DesignItem, DesignMaterializationMode, DesignMaterializationPlan,
     DesignMaterializationRecord, DesignMetadata, DesignPromotion, DesignPromotionStatus,
-    DesignStatus, Retirement,
+    DesignStatus, Retirement, Supersession,
 };
 use crate::error::{LodestarError, Result};
 use crate::model::{Goal, Task};
@@ -20,7 +20,7 @@ use super::{
 };
 
 const DESIGN_COLS: &str =
-    "id, adr_path, title, summary, status, proposed_by, decided_by, reason, created_at, updated_at, promotion_status, materialization_revision, retired_at, retired_by, retired_reason";
+    "id, adr_path, title, summary, status, proposed_by, decided_by, reason, created_at, updated_at, promotion_status, materialization_revision, retired_at, retired_by, retired_reason, superseded_by, superseded_at, superseded_by_human";
 
 impl LodestarStore {
     /// Reconcile structured repository ADR metadata into the durable design
@@ -241,12 +241,70 @@ impl LodestarStore {
             .ok_or_else(|| LodestarError::NotFound(id.to_string()))
     }
 
+    /// Record that an accepted design has been replaced by another (ADR-0050).
+    ///
+    /// Guarded on `status = 'accepted' AND decided_by IS NOT NULL`: superseding
+    /// is a statement *about a decision that was actually made*. A row carrying
+    /// an imported status with nobody behind it has no decision to supersede —
+    /// it should be reopened and decided (ADR-0047), or retired (ADR-0042).
+    ///
+    /// `status` is deliberately untouched. The design stays `accepted` because
+    /// it was accepted; supersession is a separate fact, and collapsing the two
+    /// would lose both the decision and what replaced it.
+    ///
+    /// Guarded on `superseded_by IS NULL` in a single statement so two
+    /// concurrent supersessions cannot both claim to be the one that did it,
+    /// and the original actor is never overwritten.
+    pub fn supersede_design_item(
+        &self,
+        id: &str,
+        superseded_by: &str,
+        human: &str,
+        now: i64,
+    ) -> Result<DesignItem> {
+        let item = self
+            .get_design_item(id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
+        // A dangling replacement would leave a reader with a withdrawn decision
+        // and nowhere to go, so the successor must already be registered.
+        if self.get_design_item(superseded_by)?.is_none() {
+            return Err(LodestarError::NotFound(superseded_by.to_string()));
+        }
+        if superseded_by == id {
+            return Err(LodestarError::Invalid(format!(
+                "a design cannot supersede itself: {id}"
+            )));
+        }
+        if item.status != DesignStatus::Accepted || item.decided_by.is_none() {
+            return Err(LodestarError::Invalid(format!(
+                "only an accepted design with a recorded decider can be superseded: {id}"
+            )));
+        }
+        let changed = self.conn.execute(
+            "UPDATE design_items
+             SET superseded_by = ?2, superseded_at = ?3, superseded_by_human = ?4,
+                 updated_at = ?3
+             WHERE id = ?1
+               AND superseded_by IS NULL
+               AND retired_at IS NULL",
+            params![id, superseded_by, now, human],
+        )?;
+        if changed == 0 {
+            return Err(LodestarError::Invalid(format!(
+                "design item is already superseded or retired: {id}"
+            )));
+        }
+        self.get_design_item(id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))
+    }
+
     /// Human-actionable Design Board rows: proposed decisions plus accepted
     /// designs whose implementation promotion is pending or retryable.
     pub fn actionable_design_items(&self) -> Result<Vec<DesignItem>> {
         let sql = format!(
             "SELECT {DESIGN_COLS} FROM design_items
              WHERE retired_at IS NULL
+               AND superseded_by IS NULL
                AND (status = 'proposed'
                 OR (status = 'accepted' AND promotion_status = 'pending'))
              ORDER BY created_at ASC, id ASC"
@@ -616,6 +674,17 @@ fn row_to_design(row: &Row) -> rusqlite::Result<DesignItem> {
             row.get::<_, Option<String>>(14)?,
         ) {
             (Some(at), Some(by), Some(reason)) => Some(Retirement { at, by, reason }),
+            _ => None,
+        },
+        // Same rule as retirement: all three move together in
+        // `supersede_design_item`, so a partial row reads as not superseded
+        // rather than half-superseded.
+        superseded: match (
+            row.get::<_, Option<String>>(15)?,
+            row.get::<_, Option<i64>>(16)?,
+            row.get::<_, Option<String>>(17)?,
+        ) {
+            (Some(by_design), Some(at), Some(by)) => Some(Supersession { by_design, at, by }),
             _ => None,
         },
     })

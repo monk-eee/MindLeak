@@ -77,6 +77,19 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "supersede_design",
+            "description": "Record that an accepted design has been replaced by another (ADR-0050). Supersession is not retirement and not rejection: retiring says the record should not have existed, rejecting says the decision was refused, superseding says the decision was made, it held, and something better replaced it. The row therefore stays 'accepted' and gains a link to its successor, exactly as a goal's superseded_by already works — a live design is one with no superseded_by. Guarded: only an accepted design with a recorded decider can be superseded, because superseding is a statement about a decision that was actually made; a row carrying an imported status with nobody behind it should be reopened (ADR-0047) or retired (ADR-0042). The replacement must already be registered. Never inferred from an ADR's 'Superseded by' prose.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "The design being superseded, e.g. design:0018-...." },
+                    "superseded_by": { "type": "string", "description": "The registered design that replaces it, e.g. design:0032-...." },
+                    "human": { "type": "string", "description": "The person recording the supersession." }
+                },
+                "required": ["id", "superseded_by", "human"]
+            }
+        }),
+        json!({
             "name": "reopen_undecided_design",
             "description": "Return a design whose status nobody ever decided to 'proposed', so a human can decide it (ADR-0047). An imported status reflects a decision but records none, leaving decided_by empty, and because deciding is guarded on 'proposed' the row is frozen: it asserts a decision that can never be attributed. This is NOT an undo. A design carrying a decided_by is a recorded human act and is refused; superseding it is a new decision, not the erasure of the old one. Also refused once promotion has materialised work, or after retirement.",
             "inputSchema": {
@@ -171,6 +184,16 @@ pub(super) fn dispatch(
                     req_str(args, "id")?,
                     req_str(args, "human")?,
                     req_str(args, "reason")?,
+                )
+                .map_err(|e| e.to_string())?;
+            ok(&item)
+        })()),
+        "supersede_design" => Some((|| {
+            let item = engine
+                .supersede_design(
+                    req_str(args, "id")?,
+                    req_str(args, "superseded_by")?,
+                    req_str(args, "human")?,
                 )
                 .map_err(|e| e.to_string())?;
             ok(&item)

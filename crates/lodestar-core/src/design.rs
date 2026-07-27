@@ -95,6 +95,30 @@ pub struct Retirement {
     pub reason: String,
 }
 
+/// A decision that was made, held, and has since been replaced (ADR-0050).
+///
+/// One value object rather than three loose fields, for the same reason as
+/// `Retirement`: supersession is a single fact, and parallel `Option`s could
+/// disagree — a replacement with no actor, or an actor with no replacement,
+/// would both be representable.
+///
+/// Deliberately not a `DesignStatus` variant. The design *was* accepted; a
+/// status that erased that would lose the decision and could not say what
+/// replaced it. This mirrors `Goal::superseded_by`, so there is one vocabulary
+/// for supersession rather than two.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Supersession {
+    /// The design that replaces this one. Always a registered design: a
+    /// dangling reference would leave a reader with a withdrawn decision and
+    /// nowhere to go.
+    pub by_design: String,
+    pub at: i64,
+    /// The person who said so. Never inferred from an ADR's prose — deriving it
+    /// would repeat ADR-0047's mistake of a file telling the ledger something
+    /// nobody is recorded as deciding.
+    pub by: String,
+}
+
 /// An ADR under review in the Intent Plane.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DesignItem {
@@ -123,6 +147,12 @@ pub struct DesignItem {
     /// overwrite what a human decided about the design itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retired: Option<Retirement>,
+    /// Set once a person records that this decision has been replaced
+    /// (ADR-0050). Orthogonal to `status` for the same reason as `retired`: the
+    /// design stays `accepted` because it was accepted. A live design is one
+    /// where this is `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded: Option<Supersession>,
 }
 
 /// Structured repository ADR metadata accepted by deterministic reconciliation.

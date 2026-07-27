@@ -22,6 +22,31 @@ to [Semantic Versioning](https://semver.org/).
   between them every undecided row has exactly one route and neither is a softer
   way of doing the other's job. A `decided_by` already recorded is never
   overwritten — attribution fills an empty field and can never change a full one.
+- **`supersede_design` records that an accepted design has been replaced
+  (ADR-0050).** The ledger had `proposed`, `accepted`, `rejected`, and no way to
+  say "this was decided, it held, and something better replaced it". ADR-0018
+  and ADR-0032 declare `Superseded by <ref>` in their files; both sat `accepted`
+  in the ledger, so every ledger-driven view showed a withdrawn decision as
+  live. Rather than a fourth status — which would discard the fact that the
+  design *was* accepted and could not say by what — a design now carries the
+  same `superseded_by` link the goal model already has, so there is one
+  vocabulary for supersession instead of two. `status` is deliberately
+  untouched; a live design is one with no `superseded_by`, and the Design Board
+  filters on it. Guarded on a recorded `decided_by`: superseding is a statement
+  about a decision that was actually made, so a row carrying an imported status
+  with nobody behind it must be reopened (ADR-0047) or retired (ADR-0042)
+  instead. The replacement must already be registered, and the link is never
+  inferred from an ADR's prose — deriving it would repeat exactly the mistake
+  ADR-0047 documents.
+
+### Changed
+- **`make design-audit` now reports a superseded ADR as drift rather than as an
+  unrepresentable note.** It reported those two files as a modelling gap because
+  neither side was stale — they were saying different things, and the ledger
+  could not hold one of them. It can now, so a file claiming supersession the
+  ledger has not been told about is ordinary drift, and so is the reverse. The
+  `unrepresentable` category and the `isDrift` predicate that existed only to
+  exempt it are both gone.
 
 ## [0.1.3] - 2026-07-27
 ### Added
@@ -56,6 +81,17 @@ to [Semantic Versioning](https://semver.org/).
   shared mutable resource is introduced (ADR-0045 clause 2).
 
 ### Fixed
+- **Re-registering a session no longer erases where it said it was working
+  (ADR-0044).** `canonical-push` re-opens the session on every publish purely to
+  learn its own agent id, declaring no context. That overwrote the stored
+  declaration with an empty one, so `fleet_view` reported `branch: null` for
+  agents that had declared a branch minutes earlier — the fleet went blind at
+  exactly the moment it was busiest, and the tool that blinded it was the one
+  added to record where everyone is working. Declaring nothing is not a claim to
+  be nowhere: a call that declares no context now leaves the stored context
+  alone, in both the in-process registry and the durable row. Within a real
+  declaration the replace-wholesale rule is unchanged, because there an omitted
+  field is the client saying that field is no longer known.
 - **A lapsed lease no longer lets an agent launder unchecked work into an
   `aligned` receipt (ADR-0048).** Re-claiming after a lapse reset
   `claim_started_at` to the moment of the re-claim, so everything done before the
