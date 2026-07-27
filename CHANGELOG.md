@@ -339,6 +339,21 @@ to [Semantic Versioning](https://semver.org/).
   with it. `updated_at` moves only when a fact actually changed, so a no-op pass
   remains genuinely idempotent.
 
+### Fixed
+- **Accepting a design no longer guesses which checkout records the decision.**
+  `resolveAdrUri` wrote the ADR's `Status:` line into the first workspace folder
+  containing that path. Under ADR-0038 a fleet routinely has several worktrees
+  of one repository open on different branches, so first-match was close to
+  arbitrary: observed writing `Accepted` into a checkout whose branch had no
+  relationship to the decision, while that checkout's agent was mid-pull-request
+  and had accepted nothing. An ADR's declared status is evidence of a human
+  decision, so recording it on the wrong branch is a falsified receipt, and the
+  stray edit also lands in someone else's working tree. One matching checkout
+  now writes as before; several ask the reviewer which one, and cancelling
+  aborts without writing; none keeps the existing clear error. The fix
+  deliberately does not bind a design record to a worktree — that would put a
+  machine-specific path in a database ADR-0038 shares across checkouts.
+
 ## [0.1.2] - 2026-07-24
 
 ### Added

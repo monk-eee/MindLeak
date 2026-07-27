@@ -180,31 +180,32 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
-- **Accepting a design writes `Accepted` into whichever worktree resolves the ADR
-  path first — OPEN.** — Observed Jul 2026 while ADR-0044 was still an unmerged
+- **Accepting a design wrote `Accepted` into whichever worktree resolved the ADR
+  path first — FIXED.** — Observed Jul 2026 while ADR-0044 was still an unmerged
   proposal on its own branch. Two ADR files in this checkout changed from
   `Status: Proposed` to `Status: Accepted` in the working tree, uncommitted,
   while the agent that owned the checkout was mid-pull-request and had accepted
   nothing. One of the two, ADR-0043, belonged to a different branch entirely —
   which is the tell: the write landed in a checkout that had no relationship to
   the decision being accepted. The write itself is human-triggered (`accept()` /
-  `reject()` prompt for a name before calling `alignAdrStatus`), so this is not a
-  status flipping itself; the defect is *where the write goes*.
+  `reject()` prompt for a name before calling `alignAdrStatus`), so this was
+  never a status flipping itself; the defect was *where the write went*.
   `resolveAdrUri` ([`editors/vscode/src/designBoardController.ts`](editors/vscode/src/designBoardController.ts))
-  walks `workspace.workspaceFolders` and writes to the first folder containing
+  walked `workspace.workspaceFolders` and wrote to the first folder containing
   the path. Under ADR-0038 several worktrees on different branches share one
   `spec.db` and are commonly open together, so "first folder containing this
-  path" is close to arbitrary and is not necessarily the branch the decision
-  belongs to. — Medium impact: no data loss, but an ADR's declared status is
-  evidence of a human decision, and this can plant that evidence on a branch
-  nobody decided anything about — or, as here, drop an uncommitted edit into
-  another agent's tree mid-commit, which is also the pre-commit stash race
-  described below. Caught here only because the owning agent read `git status`
-  before pushing rather than trusting it. — Left for later: the fix is to resolve
-  the ADR against the worktree the design was registered from, or to refuse when
-  more than one attached worktree contains the path rather than silently picking
-  one. Both are decisions about what a design record is bound to, so they want an
-  ADR rather than a quiet patch.
+  path" was close to arbitrary. — Medium impact: no data loss, but an ADR's
+  declared status is evidence of a human decision, and this could plant that
+  evidence on a branch nobody decided anything about — or, as here, drop an
+  uncommitted edit into another agent's tree mid-commit, which is also the
+  pre-commit stash race described below. Caught only because the owning agent
+  read `git status` before pushing rather than trusting it. — Fixed Jul 2026:
+  `chooseAdrTarget` never picks. One matching checkout writes as before; several
+  ask the reviewer which one, and cancelling aborts without writing; none keeps
+  the existing clear error. Deliberately *not* fixed by binding a design record
+  to a worktree — that would put a machine-specific path in a database ADR-0038
+  shares across checkouts, and it answers a question the reviewer is better
+  placed to answer while already standing in the prompt.
 - **The pre-commit stash race reports a failure that names the wrong thing —
   GUARDED, not fixed.** — `pre-commit` stashes every unstaged change before
   running hooks and restores it afterwards. Alone that is invisible; in a fleet

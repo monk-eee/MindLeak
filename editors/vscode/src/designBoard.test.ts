@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  chooseAdrTarget,
   designBoardRows,
   DesignItem,
   DesignMaterializationPlan,
@@ -284,5 +285,43 @@ describe("formatMaterializationPlan", () => {
     expect(formatMaterializationPlan(link, promotion().tasks)).toContain(
       "Link: Implement (task:one)"
     );
+  });
+});
+
+// Regression: resolveAdrUri took the first workspace folder containing the ADR
+// path. Under ADR-0038 a fleet routinely has several worktrees of one
+// repository open on different branches, so first-match is close to arbitrary —
+// it recorded a human decision on whichever checkout happened to sort first,
+// and dropped an uncommitted edit into another agent's tree mid-commit.
+describe("chooseAdrTarget", () => {
+  it("reports no target rather than inventing one", () => {
+    expect(chooseAdrTarget([])).toEqual({ kind: "none" });
+  });
+
+  it("writes straight through when exactly one checkout has the ADR", () => {
+    expect(chooseAdrTarget(["/repos/MindLeak/docs/adr/0044.md"])).toEqual({
+      kind: "one",
+      target: "/repos/MindLeak/docs/adr/0044.md",
+    });
+  });
+
+  it("refuses to pick when several checkouts have it, and keeps every option", () => {
+    const candidates = [
+      "/repos/MindLeak/docs/adr/0044.md",
+      "/repos/MindLeak-design-board/docs/adr/0044.md",
+      "/repos/MindLeak-retire-design/docs/adr/0044.md",
+    ];
+
+    const choice = chooseAdrTarget(candidates);
+
+    expect(choice.kind).toBe("ambiguous");
+    expect(choice).toEqual({ kind: "ambiguous", candidates });
+  });
+
+  it("does not alias the caller's array", () => {
+    const candidates = ["/a/adr.md", "/b/adr.md"];
+    const choice = chooseAdrTarget(candidates);
+    candidates.push("/c/adr.md");
+    expect(choice.kind === "ambiguous" && choice.candidates).toHaveLength(2);
   });
 });
