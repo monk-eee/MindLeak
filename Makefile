@@ -1,7 +1,7 @@
 # MindLeak developer commands. On Windows, run the underlying commands directly
 # (see DEVELOPERS.md) if `make` is unavailable.
 
-.PHONY: setup worktree-setup adr-index build test coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
+.PHONY: setup worktree-setup adr-index merge-audit build test coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
 
 setup: ## Install pre-commit hooks and extension deps
 	pip install pre-commit
@@ -19,6 +19,9 @@ worktree-setup: ## Prepare a freshly created linked worktree (ADR-0038)
 
 adr-index: ## Regenerate docs/adr/README.md from the ADR files
 	node scripts/adr-index.mjs
+
+merge-audit: ## Report merged branches whose commits never reached main
+	node scripts/merge-audit.mjs
 
 build: ## Build the workspace (debug)
 	cargo build
