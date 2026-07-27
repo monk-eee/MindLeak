@@ -7,6 +7,22 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`stalled_work` and the fleet view now read one wait graph, and the parked
+  taxonomy stopped lying (ADR-0046).** These landed as two independent answers
+  to "why is this not moving?" and immediately disagreed: `stalled_work` labelled
+  every `needs_input` task `parked` with the detail "parked awaiting an answer",
+  which after addressed questions was wrong three ways — it called a park on a
+  named peer a park on nobody, it sent a reader looking for a human who owed
+  nothing, and it rendered a mutual deadlock as two ordinary waits, re-opening on
+  a second surface the exact gap the fleet view had just closed. `Parked` is now
+  split into `awaiting_human` (a person owes the answer, whether from `in_review`
+  or an unaddressed question), `awaiting_agent` (a named peer owes it, and the
+  report names them), `deadlocked` (the peer is waiting back, so only an answer
+  from outside breaks it), and `paused` (deliberately suspended — nobody was
+  asked, so nobody owes anything). Both surfaces take the same `waits()` set
+  rather than deriving it twice: `stalled_work` answers per task, `fleet_view`
+  answers per agent, and they are now the same fact seen along two axes instead
+  of two facts that can drift apart.
 - **The fleet view now shows who is waiting on whom, and names the deadlocks
   (ADR-0046).** Addressed questions made a wait cycle reachable: agent A parks
   on B while B parks on A, and both tasks sit in `needs_input` — which every

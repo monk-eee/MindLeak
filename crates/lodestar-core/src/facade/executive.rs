@@ -304,9 +304,15 @@ impl Lodestar {
     ///
     /// Terminal tasks are included in the scan because a block behind a `done`
     /// or `abandoned` task is precisely the stale block worth surfacing.
+    ///
+    /// The wait graph (ADR-0046) is read from the same place the fleet view
+    /// reads it, so a parked task is named by who actually owes the answer — a
+    /// human, a specific peer, or nobody reachable because the peer is waiting
+    /// back. Deriving it twice would let the two surfaces disagree.
     pub fn stalled_work(&self) -> Result<Vec<Stall>> {
         let tasks = self.store.board(true)?;
-        Ok(stalls(&tasks, now_unix()))
+        let waits = self.store.waits()?;
+        Ok(stalls(&tasks, &waits, now_unix()))
     }
 }
 
