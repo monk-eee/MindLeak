@@ -57,11 +57,23 @@ fn declared_arguments(name: &str) -> Option<Vec<String>> {
     })
 }
 
-/// Keys the server injects into `arguments` itself (`bind_session`). They are
-/// never caller-supplied, and tolerating them keeps validation idempotent:
+/// Keys that belong to the call envelope rather than to any tool's contract.
+///
+/// `agent`, `resolved_agent` and `resolved_context` are injected by the server
+/// (`bind_session`); tolerating them keeps validation idempotent, because
 /// binding already-bound params must not report the server's own additions as
 /// the caller's mistake.
-const INJECTED_ARGUMENTS: [&str; 3] = ["agent", "resolved_agent", "resolved_context"];
+///
+/// `session_id` is the mirror case, supplied by the client. Every MCP client
+/// here adds it to *every* call — the VS Code extension does so in one place
+/// (`mcpClient.callTool`) rather than per tool — while `apply_session_contract`
+/// only declares it on tools that `requires_session`. Reading it as an argument
+/// therefore rejects every call to a tool that does not need a session
+/// (`board`, `design_board`, `graph_stats`, …), which is how this first showed
+/// up: the extension reached `disconnected` instead of `ready_empty` because
+/// its whole readiness path is such tools. Who supplies an envelope key is not
+/// what makes it one.
+const ENVELOPE_ARGUMENTS: [&str; 4] = ["agent", "resolved_agent", "resolved_context", "session_id"];
 
 /// Refuse an argument no tool declares.
 ///
@@ -84,7 +96,7 @@ pub fn validate_arguments(name: &str, args: &Value) -> Result<(), String> {
     let mut unknown: Vec<&str> = supplied
         .keys()
         .map(String::as_str)
-        .filter(|key| !INJECTED_ARGUMENTS.contains(key))
+        .filter(|key| !ENVELOPE_ARGUMENTS.contains(key))
         .filter(|key| !declared.iter().any(|allowed| allowed == key))
         .collect();
     if unknown.is_empty() {
@@ -433,6 +445,70 @@ mod tests {
     fn an_unknown_tool_is_not_reported_as_an_argument_problem() {
         validate_arguments("no_such_tool", &json!({ "anything": 1 }))
             .expect("argument validation defers to tool dispatch");
+    }
+
+    /// Bug regression. Argument validation rejected `session_id` on every tool
+    /// outside `requires_session`, because only those tools get it added to
+    /// their schema by `apply_session_contract` — but the client adds it to
+    /// every call, in one place, not per tool. The extension's whole readiness
+    /// path is such tools, so it reported `disconnected` instead of
+    /// `ready_empty` and the Extension Host smoke was the only thing that
+    /// noticed. Validating the envelope as if it were a tool argument breaks
+    /// every caller that speaks the protocol correctly.
+    ///
+    /// Asserted over the readiness tools by name: a whitelist entry is easy to
+    /// drop in a refactor, and the unit that catches it must be the call the
+    /// client actually makes.
+    #[test]
+    fn the_session_envelope_is_accepted_by_tools_that_never_declare_it() {
+        for tool in ["board", "design_board"] {
+            assert!(
+                !requires_session(tool),
+                "{tool} is the case worth testing only while it declares no session"
+            );
+            validate_arguments(
+                tool,
+                &json!({ "session_id": "0123456789abcdef0123456789abcdef" }),
+            )
+            .unwrap_or_else(|error| panic!("{tool} must accept the envelope: {error}"));
+        }
+        // ...and it stays acceptable alongside a real declared argument.
+        validate_arguments(
+            "board",
+            &json!({ "include_terminal": false, "session_id": "0123456789abcdef0123456789abcdef" }),
+        )
+        .expect("the envelope does not invalidate declared arguments");
+    }
+
+    /// The envelope is tolerated; a genuine typo beside it is still caught.
+    /// Widening the whitelist must not become a way to smuggle mistakes past
+    /// the check this change exists to add.
+    #[test]
+    fn tolerating_the_envelope_does_not_excuse_a_misspelt_argument() {
+        let error = validate_arguments(
+            "claim_task",
+            &json!({
+                "task_id": "task:1",
+                "lease_seconds": 3600,
+                "session_id": "0123456789abcdef0123456789abcdef"
+            }),
+        )
+        .expect_err("a misspelt argument is still refused");
+        assert!(
+            error.contains("lease_seconds"),
+            "names the offending key: {error}"
+        );
+        // Only the blamed list matters here. `claim_task` does require a
+        // session, so `session_id` legitimately appears in "Accepted:" —
+        // asserting over the whole message would fail for the wrong reason.
+        let blamed = error
+            .split_once("Accepted:")
+            .map(|(before, _)| before)
+            .unwrap_or(&error);
+        assert!(
+            !blamed.contains("session_id"),
+            "does not blame the envelope: {error}"
+        );
     }
 
     // ADR-0035 decisions 1 and 6, on the Intent Plane. Both planes share one

@@ -16,9 +16,15 @@ to [Semantic Versioning](https://semver.org/).
   contract, and the cheapest moment to say so is immediately — the error now
   names the offending key and lists what the tool accepts. Checked at the tool
   boundary against the schema each tool already advertises, so there is no
-  second list to drift. Only top-level names are validated, and the server's own
-  injected keys are exempt: reporting `agent`, which `bind_session` adds itself,
-  would blame the caller for the server's work and make binding non-idempotent.
+  second list to drift. Only top-level names are validated, and the keys that
+  belong to the call *envelope* rather than to any tool's contract are exempt:
+  `agent`, `resolved_agent` and `resolved_context`, which `bind_session` adds
+  itself, and `session_id`, which every client adds to every call in one place
+  while `apply_session_contract` only declares it on tools that require a
+  session. Treating the envelope as an argument rejected every call to a tool
+  that needs no session — `board`, `design_board`, `graph_stats` — which took
+  the extension's whole readiness path down to `disconnected`. Who supplies an
+  envelope key is not what makes it one.
 - **A wrapped `Status:` line no longer loses its reference.** ADR-0032 writes
   `- Status: Superseded by` and puts `[ADR-0038](...)` on the next line.
   `scripts/adr-files.mjs` read to the end of the line, so the file parsed as a
