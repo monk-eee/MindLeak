@@ -117,6 +117,7 @@ fn requires_session(name: &str) -> bool {
         "register_design"
             | "review_pack_clause"
             | "propose_constitution"
+            | "activate_constitution"
             | "claim_task"
             | "renew_lease"
             | "complete_task"

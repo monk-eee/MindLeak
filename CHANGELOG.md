@@ -29,6 +29,18 @@ to [Semantic Versioning](https://semver.org/).
   always a `draft` with every Common Core clause left undecided; an already
   active constitution is refused as an amendment, and an unresolved draft is
   refused rather than stacked.
+- **`activate_constitution` closes the bootstrap loop (ADR-0026 task 3).** A
+  reviewed draft becomes governing policy through one atomic transaction that
+  validates and promotes together, so a concurrent writer cannot slip an
+  undecided clause or a second activation between the checks and the write. It
+  refuses a draft with any undecided clause proposal (SPEC-CONSTITUTION §7.5
+  forbids silent grandfathering), a draft with no clauses, anything that is not
+  a draft, and activation while another version is already active. Adopted
+  clauses inherit their version's status, so they are drafts that govern nothing
+  until activation promotes them alongside it; a refused activation leaves the
+  draft completely untouched. Activation is attributed and needs no model.
+  Together with `constitution_status` and `propose_constitution`, an ungoverned
+  project can now go from no policy to governing policy deterministically.
 - **Immutable policy packs and the five-principle Common Core (ADR-0026 task
   2).** Lodestar validates a canonical SHA-256 digest and engine compatibility
   before registering a pack version; the same id/version/digest is idempotent,

@@ -2,8 +2,9 @@
 use crate::{
     common_core_pack, discovery::discover_project_facts, discovery::ProjectFact, now_unix,
     CodeBindingMode, ConstitutionPack, ConstitutionProposal, ConstitutionState, ConstitutionStatus,
-    Goal, GoalKind, GoalStatus, Lodestar, LodestarError, PackClause, PackClauseDisposition,
-    PackClauseProposal, PackClauseProvenance, PackProposalBatch, PackReviewOutcome, Result,
+    ConstitutionVersion, Goal, GoalKind, GoalStatus, Lodestar, LodestarError, PackClause,
+    PackClauseDisposition, PackClauseProposal, PackClauseProvenance, PackProposalBatch,
+    PackReviewOutcome, Result,
 };
 
 impl Lodestar {
@@ -154,6 +155,30 @@ impl Lodestar {
     /// The cited facts a drafted or active constitution was grounded in.
     pub fn constitution_facts(&self, constitution_version: &str) -> Result<Vec<ProjectFact>> {
         self.store.project_facts(constitution_version)
+    }
+
+    /// Activate a reviewed draft as the governing constitution
+    /// (SPEC-CONSTITUTION §7.5).
+    ///
+    /// One atomic transaction validates and promotes: it refuses a draft with
+    /// any undecided clause proposal, a draft with no clauses at all, anything
+    /// that is not a draft, and activation while another version is already
+    /// active. Adopted clauses are promoted with their version, so nothing
+    /// governs until this call succeeds. Activation is attributed and requires
+    /// no model.
+    pub fn activate_constitution(
+        &self,
+        draft_id: &str,
+        activated_by: &str,
+    ) -> Result<ConstitutionVersion> {
+        let activated_by = activated_by.trim();
+        if activated_by.is_empty() {
+            return Err(LodestarError::Invalid(
+                "activating a constitution requires an attributed authority".to_string(),
+            ));
+        }
+        self.store
+            .activate_constitution(draft_id, activated_by, now_unix())
     }
 
     pub fn policy_pack_proposals(
@@ -370,6 +395,103 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("awaiting review"), "{error}");
+    }
+
+    /// Drive a fixture project from ungoverned to a fully reviewed draft.
+    fn reviewed_draft(e: &Lodestar) -> String {
+        let proposal = e
+            .propose_constitution(&["README.md".to_string()], Some("maintainer"))
+            .unwrap();
+        for clause in &proposal.common_core.proposals {
+            e.review_pack_clause(
+                &clause.id,
+                PackClauseDisposition::Adopted,
+                None,
+                "maintainer",
+                None,
+            )
+            .unwrap();
+        }
+        proposal.version.id
+    }
+
+    #[test]
+    fn activation_promotes_the_version_and_its_clauses_together() {
+        // Adopted clauses inherit their version's status, so they are drafts
+        // until activation. Nothing governs before this call succeeds.
+        let e = engine();
+        let draft = reviewed_draft(&e);
+        assert!(
+            e.get_constitution().unwrap().is_empty(),
+            "a reviewed draft still governs nothing"
+        );
+
+        let activated = e.activate_constitution(&draft, "monk-eee").unwrap();
+        assert_eq!(activated.status, GoalStatus::Active);
+        assert_eq!(activated.activated_by.as_deref(), Some("monk-eee"));
+        assert!(activated.activated_at.is_some());
+
+        assert_eq!(e.get_constitution().unwrap().len(), 5);
+        let status = e.constitution_status().unwrap();
+        assert_eq!(status.state, ConstitutionState::Active);
+        assert_eq!(status.clause_count, 5);
+    }
+
+    #[test]
+    fn an_undecided_clause_refuses_activation() {
+        // SPEC-CONSTITUTION §7.5: no silent grandfathering. Every clause needs
+        // an explicit disposition before the draft can authorise anything.
+        let e = engine();
+        let proposal = e
+            .propose_constitution(&["README.md".to_string()], None)
+            .unwrap();
+        let error = e
+            .activate_constitution(&proposal.version.id, "monk-eee")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("undecided"), "{error}");
+        assert_eq!(
+            e.constitution_status().unwrap().state,
+            ConstitutionState::Draft,
+            "a refused activation leaves the draft untouched"
+        );
+    }
+
+    #[test]
+    fn a_draft_with_no_clauses_cannot_be_activated() {
+        let e = engine();
+        e.store
+            .create_constitution_version("constitution:empty", 1, GoalStatus::Draft, None, 1)
+            .unwrap();
+        let error = e
+            .activate_constitution("constitution:empty", "monk-eee")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no clauses"), "{error}");
+    }
+
+    #[test]
+    fn only_a_draft_can_be_activated_and_only_once() {
+        let e = engine();
+        let draft = reviewed_draft(&e);
+        e.activate_constitution(&draft, "monk-eee").unwrap();
+
+        let error = e
+            .activate_constitution(&draft, "monk-eee")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not a draft"), "{error}");
+    }
+
+    #[test]
+    fn activation_requires_an_attributed_authority() {
+        let e = engine();
+        let draft = reviewed_draft(&e);
+        let error = e
+            .activate_constitution(&draft, "   ")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("attributed authority"), "{error}");
     }
 
     #[test]
