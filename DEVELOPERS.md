@@ -260,12 +260,20 @@ and footguns, with impact and status:
   can still walk into it, because the stash happens inside `pre-commit` itself
   and no hook can observe the tree as it was before its own framework moved it.
   The real fix is ADR-0038 isolation — one worktree per workstream.
-- **Each worktree needs its own `node_modules` — OPEN.** — `npm ci` in
-  `editors/vscode` costs ~13s and ~449 packages per worktree, and a fresh
-  worktree fails extension tests with a confusing `npx` prompt to install
-  `vitest` rather than a clear "dependencies not installed". — Low impact, real
-  friction: it makes spinning up a worktree for a small docs change feel
-  disproportionate. — Left for later; `make setup` could take a worktree path.
+- **Each worktree needs its own `node_modules` — FIXED.** — `npm ci` in
+  `editors/vscode` costs ~13s and ~449 packages per worktree. Worse than the
+  cost was the symptom: a fresh worktree failed at *push* time with
+  `Cannot find module .../prettier/bin/prettier.cjs`, which says nothing about
+  the real cause, and failed extension tests with an `npx` prompt offering to
+  install `vitest` rather than a clear "dependencies not installed". Hit four
+  times in one session. — Low impact, real friction: it made spinning up a
+  worktree for a small docs change feel disproportionate, which is exactly the
+  pressure that pushes agents back into the shared checkout ADR-0038 moved them
+  out of. — Fixed Jul 2026: `make worktree-setup` installs just the extension
+  deps. Hooks and cargo tools are shared through the common `.git` dir and the
+  user's cargo bin, so a linked worktree needs nothing else, and running the
+  full `make setup` per worktree would re-run `pip install` and
+  `cargo install` for no reason.
 
 - **A lapsed lease silently shrinks the evidence window a task can prove — OPEN.** —
   Observed Jul 2026 closing ADR-0026 task 4. Building three commits took longer

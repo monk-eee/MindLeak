@@ -7,6 +7,20 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **The ADR index is generated, not hand-maintained.** Number, title, and
+  status all already live in each ADR, yet the table in docs/adr/README.md
+  was edited by hand — so every concurrent branch appended a row to the same
+  place and every merge conflicted on it, the same shared-counter shape as ADR
+  numbers themselves. It drifted anyway: **ten of forty-five rows were wrong**
+  when scripts/adr-index.mjs was introduced, including ADR-0026 listed as
+  Proposed while the file said Accepted — the ADR the whole constitution
+  backlog gates on. A pre-commit hook now fails if the index does not match the
+  files, and make adr-index regenerates it.
+- **make worktree-setup prepares a linked worktree.** A fresh worktree failed
+  at push time with a module-resolution error from the prettier hook, which
+  named nothing about the real cause. Hooks and cargo tools are shared through
+  the common .git dir, so a worktree needs only its own extension deps — the
+  full make setup would re-run pip install and cargo install for nothing.
 - **`adr-guard` refuses to let a decision record exist in only one place.** An
   ADR is the reasoning behind the code, and losing one is silent — nothing
   fails, the file is simply not there any more. Three near-misses in a single
