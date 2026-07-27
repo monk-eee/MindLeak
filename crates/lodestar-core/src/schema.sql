@@ -194,7 +194,13 @@ CREATE TABLE IF NOT EXISTS design_items (
     created_at   INTEGER NOT NULL,
     updated_at   INTEGER NOT NULL,
     promotion_status TEXT NOT NULL DEFAULT 'not_required',
-    materialization_revision INTEGER NOT NULL DEFAULT 0
+    materialization_revision INTEGER NOT NULL DEFAULT 0,
+    -- Retirement (ADR-0042): a person, never a missing file. Kept separate from
+    -- status so retiring a record cannot overwrite what a human decided about
+    -- the design. Archived, never deleted (ADR-0019).
+    retired_at     INTEGER,
+    retired_by     TEXT,
+    retired_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_design_items_status ON design_items(status);
 
@@ -355,3 +361,20 @@ CREATE TABLE IF NOT EXISTS knowledge (
     confirmed_at    INTEGER NOT NULL,      -- last reconfirmation (decay clock)
     created_at      INTEGER NOT NULL
 );
+
+-- Where each agent session declared it is working (ADR-0035, amended by
+-- ADR-0044). Durable because the fleet spans processes: linked worktrees share
+-- one spec.db, but each runs its own server with its own in-memory registry, so
+-- an in-process view would report a fraction of the fleet as if it were all of
+-- it. Every value is self-reported and strictly advisory; declared_at is kept so
+-- a reader can discount a stale declaration rather than trust it silently.
+CREATE TABLE IF NOT EXISTS session_context (
+    agent_id    TEXT PRIMARY KEY,
+    branch      TEXT,
+    head_sha    TEXT,
+    base        TEXT,
+    dirty       INTEGER,               -- 0/1, NULL when undeclared
+    behind      INTEGER,               -- commits behind base, counted by the client
+    declared_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_context_base ON session_context(base);

@@ -18,6 +18,41 @@ to [Semantic Versioning](https://semver.org/).
   can be stranded in any of them. A pre-push hook runs the working-tree half
   (`--uncommitted`); the unpublished check is deliberately excluded there,
   because it would fail the very push that publishes the ADR.
+- **A read-only fleet view, and the two corrections it forced (ADR-0044,
+  amending ADR-0035).** `fleet_view` reports who is working where: each live
+  session's declared branch, head, and base, how far behind that base it said it
+  was, and whether live sessions disagree about their base. Building it surfaced
+  two things ADR-0035 asserted but could not deliver. Staleness was defined as
+  "commits behind the declared base" while the server is forbidden from reading
+  Git, and the declared fields can only show that two commits *differ*, never the
+  distance between them — so `open_session` now accepts a client-counted
+  `behind`, keeping the caller-supplies-facts rule intact. And declared context
+  lived in the process-local session registry, while under ADR-0038 every linked
+  worktree shares one `spec.db` and runs its own server: a view built on that
+  registry would have reported the sessions of whichever process answered while
+  presenting itself as the fleet. Context is now persisted with its
+  `declared_at`, so a reader can discount a stale declaration rather than be
+  quietly misled by one. Silence is never read as agreement: a session holding a
+  claim with no declared base is counted and shown, and `unknown` is modelled
+  separately from `current` so the two cannot be collapsed. The view carries its
+  own ceiling in the payload — advisory, capped at `review`, never a gate.
+- **`retire_design` removes an orphaned design record — by a person, never by a
+  missing file (ADR-0042).** `reconcile_designs` keys on the ADR path, so
+  renaming an ADR registers a new record and orphans the old one permanently.
+  Two such rows existed, left by renumbering one decision twice on its way to
+  ADR-0040; their paths exist on no branch, and every Design Board row is
+  clickable, so both threw when opened. There was no retirement path at all.
+  The tempting fix — retire any design whose ADR file is absent — is refused:
+  under ADR-0038 several worktrees on different branches share one `spec.db`, so
+  "missing from this checkout" is routine and retiring on it would silently
+  delete live decisions on someone else's branch. Retirement is therefore an
+  explicit human act carrying an actor and a rationale, guarded so a second
+  caller cannot rewrite who did it, and it is **not** a delete (ADR-0019): the
+  row keeps its id, path, decision, decider, and materialization history.
+  Retirement is also kept orthogonal to `proposed`/`accepted`/`rejected` — a
+  fourth status would overwrite the human decision and make "was this accepted?"
+  unanswerable. Retired records leave the board and stay in the audit view under
+  `list_designs(include_retired: true)`.
 - **The enforcement machinery is now reachable.** `complete_clause_contract` and
   `register_control` close a gap that made every other constitutional feature
   decorative: `complete_clause_contract` existed only on the store, called only
