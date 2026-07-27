@@ -33,12 +33,13 @@ graph engine.
   reviewer promotes them under an active objective. Materialized rows expose
   their persisted objective, tasks, and constraints, and failed promotion stays
   retryable.
-- **Intent Board** — active task ownership and evidence actions remain separate
+- **Work** — active task ownership and evidence actions remain separate
   from design review, so proposed ADRs never appear as claimable implementation
   work. Open and expired-claim rows can be allocated to a stable agent or claimed
   for the configured extension identity; live claims expose explicit renew and
-  release actions. **Next Claimable Task** reveals the scheduler's suggestion but
-  never auto-claims it.
+  release actions. Review-needed rows expose **Accept**, **Retry**, and **Inspect
+  proof**. **Next Claimable Task** reveals the scheduler's suggestion but never
+  auto-claims it.
 - **Controls** — Refresh, Prune decayed edges, Export complete graph JSON, back
   up both planes, and modal reset of regenerable memory only.
 
@@ -53,7 +54,7 @@ yours to click.
 ### Workspace
 
 The first row is the current derived readiness state: connection remediation,
-first ingest, Context Graph, Intent Board, Design Board, or optional-capability
+first ingest, Context Graph, Work, Design Board, or optional-capability
 telemetry. The following rows show both MCP build identities and the configured
 base label's effective per-activation identity. The extension passes that exact
 fixed id to both MCP planes, so attribution and claims agree. A fresh workspace
@@ -74,15 +75,15 @@ Intent** actions here.
 
 ![The Context Graph webview with nodes, edges, and the colour legend](media/screenshots/context-graph.png)
 
-### Intent Board
+### Work
 
-Who owns which task, live. Claiming and completing are **agent** actions over
-MCP; the board shows the resulting ownership and lets you intervene. Hover a task
-for inline actions: **Complete With Evidence** and **Pause** on a claimed task,
-**Resume** on a paused one, **Answer** on one that needs input, **Inspect
-Evidence** on a finished one, and **Retire** on a stale row.
+The daily operating surface: ready work, current ownership, and decisions in one
+tree. Hover a row for inline actions: **Complete With Evidence** and **Pause** on
+in-progress work, **Resume** on paused work, **Answer** when input is needed, and
+**Accept** / **Retry** / **Inspect proof** when review is needed. The complete
+Evidence Board remains available from the Views menu as advanced audit history.
 
-![The Intent Board tree showing a claimed task with inline actions](media/screenshots/intent-board.png)
+![The Work tree showing in-progress work with inline actions](media/screenshots/intent-board.png)
 
 ### Telemetry
 
@@ -166,7 +167,7 @@ From the Design Board:
 - Accepted/pending rows expose **Promote** and remain visible after a failed
   attempt so promotion can be retried safely.
 - Create mode selects one or more active objectives and previews separate task
-  drafts; Link Existing selects authoritative tasks already on the Intent Board;
+  drafts; Link Existing selects authoritative tasks already in Work;
   No New Work records why nothing should be scheduled.
 - Every mode shows a modal review before Lodestar materializes it exactly once.
 - Materialized rows expose objective/task/constraint provenance plus immutable
@@ -177,7 +178,7 @@ agent. ADR discovery never auto-accepts or auto-promotes a design.
 
 ## Task allocation
 
-The Intent Board displays the owner, claim start, lease expiry, and whether a
+Work displays the owner, claim start, lease expiry, and whether a
 claim is live or reclaimable. Allocation remains advisory until Lodestar's atomic
 claim compare-and-swap succeeds.
 

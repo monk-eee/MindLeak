@@ -34,6 +34,11 @@ pub(crate) struct GoverningClauses {
     /// occupies the `node_id` slot when flattened — a workflow clause governs an
     /// action, and there is no code node to name.
     pub workflow: Vec<(String, Goal)>,
+    /// Goals that were in scope only because the task declared coverage for them
+    /// (ADR-0041). Non-empty means the verdict leaned on a declaration, which
+    /// caps it at `needs_human`: an agent's own claim about its own breadth is
+    /// reviewed, never self-certified.
+    pub relied_on_coverage: Vec<String>,
 }
 
 impl GoverningClauses {
@@ -363,7 +368,15 @@ impl Lodestar {
         }
 
         let task_goal_id = task.map(|t| t.goal_id.as_str());
-        let governing = self.resolve_governing_clauses(&evidence.changed_node_ids, task_goal_id)?;
+        let covered = match task {
+            Some(task) => self.store.goal_coverage(&task.id)?,
+            None => Vec::new(),
+        };
+        let governing = self.resolve_governing_clauses_covering(
+            &evidence.changed_node_ids,
+            task_goal_id,
+            &covered,
+        )?;
 
         // A hard forbid_change lock overrides everything: any change is a breach.
         // It resolves through the typed-control machinery (ADR-0034) but supplies
@@ -477,6 +490,23 @@ impl Lodestar {
         }
 
         findings.push(format!("evidence covers task goal {}", task.goal_id));
+
+        // Declared cross-goal coverage informs; it never self-certifies
+        // (ADR-0041, ADR-0034 ceiling rule). If the evidence is in scope only
+        // because the task declared another goal at creation, a human confirms
+        // the breadth — but the audit names which declarations it leaned on, so
+        // this reads as reviewable breadth rather than as drift.
+        if !governing.relied_on_coverage.is_empty() {
+            findings.push(format!(
+                "in scope via declared coverage, which a human confirms: {}",
+                governing.relied_on_coverage.join(", ")
+            ));
+            return Ok(ConformanceResult {
+                verdict: Verdict::NeedsHuman,
+                findings,
+            });
+        }
+
         Ok(ConformanceResult {
             verdict: Verdict::Aligned,
             findings,
@@ -496,6 +526,19 @@ impl Lodestar {
         node_ids: &[String],
         task_goal_id: Option<&str>,
     ) -> Result<GoverningClauses> {
+        self.resolve_governing_clauses_covering(node_ids, task_goal_id, &[])
+    }
+
+    /// As [`Self::resolve_governing_clauses`], but also treating a binding to
+    /// any goal in `covered` as in scope (ADR-0041). `covered` holds the
+    /// additional goals a task declared at creation; the goals actually relied
+    /// on are recorded so the caller can report which declarations mattered.
+    pub(crate) fn resolve_governing_clauses_covering(
+        &self,
+        node_ids: &[String],
+        task_goal_id: Option<&str>,
+        covered: &[String],
+    ) -> Result<GoverningClauses> {
         let mut resolved = GoverningClauses::default();
         for node in node_ids {
             let node_is_doc = is_documentation_node(node);
@@ -511,10 +554,16 @@ impl Lodestar {
                     Some(goal_id) if binding.goal.id == goal_id => {
                         resolved.in_scope.push((node.clone(), binding.goal))
                     }
+                    _ if covered.contains(&binding.goal.id) => {
+                        resolved.relied_on_coverage.push(binding.goal.id.clone());
+                        resolved.in_scope.push((node.clone(), binding.goal))
+                    }
                     _ => resolved.other.push((node.clone(), binding.goal)),
                 }
             }
         }
+        resolved.relied_on_coverage.sort();
+        resolved.relied_on_coverage.dedup();
         Ok(resolved)
     }
 
@@ -853,6 +902,155 @@ mod tests {
         let drift_evidence = test_evidence(None, "agent-a", "artifact:src/auth.rs");
         let drift = e.check_conformance(&drift_evidence, None).unwrap();
         assert_eq!(drift.verdict, Verdict::Drift);
+    }
+
+    // ADR-0041. Cross-cutting work used to be indistinguishable from an
+    // unsanctioned edit: both returned Drift with "governed code changed
+    // without a covering task". Coverage declared at creation separates them —
+    // and, because it is the agent's own claim about its own breadth, it buys a
+    // review rather than a pass (ADR-0034 ceiling rule).
+    #[test]
+    fn declared_coverage_turns_cross_goal_drift_into_reviewable_breadth() {
+        let e = engine();
+        let primary = e
+            .define_goal(GoalKind::Objective, "Intent plane", "intent", None)
+            .unwrap();
+        let other = e
+            .define_goal(GoalKind::Objective, "Context graph", "graph", None)
+            .unwrap();
+        e.link_goal_to_code(
+            &primary.id,
+            &["artifact:src/intent.rs".into()],
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
+        e.link_goal_to_code(
+            &other.id,
+            &["artifact:src/graph.rs".into()],
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
+        let cross_cutting = |task_id: &str| {
+            let claimed = e.store.get_task(task_id).unwrap().unwrap();
+            let mut evidence = test_evidence(
+                Some(task_id.to_string()),
+                "agent-a",
+                "artifact:src/intent.rs",
+            );
+            evidence.started_at = claimed.claim_started_at.unwrap();
+            evidence.ended_at = now_unix();
+            evidence
+                .changed_node_ids
+                .push("artifact:src/graph.rs".into());
+            evidence.provenance.push(EvidenceProvenance {
+                source_id: "execution:proof".into(),
+                target_id: "artifact:src/graph.rs".into(),
+                relation: "modified".into(),
+            });
+            evidence
+        };
+
+        // 1. Undeclared coverage is unchanged: still drift.
+        let bare = e.create_task(&primary.id, "Bare", "done").unwrap();
+        assert!(e.claim_task(&bare.id, "agent-a", 600).unwrap());
+        let drift = e
+            .check_conformance(&cross_cutting(&bare.id), Some(&bare.id))
+            .unwrap();
+        assert_eq!(drift.verdict, Verdict::Drift);
+
+        // 2 + 3. Declared coverage is in scope, caps at needs_human, and the
+        // audit names the declaration the verdict leaned on.
+        let covering = e
+            .create_task_covering(
+                &primary.id,
+                "Cross",
+                "done",
+                None,
+                std::slice::from_ref(&other.id),
+            )
+            .unwrap();
+        assert!(e.claim_task(&covering.id, "agent-a", 600).unwrap());
+        let reviewed = e
+            .check_conformance(&cross_cutting(&covering.id), Some(&covering.id))
+            .unwrap();
+        assert_eq!(reviewed.verdict, Verdict::NeedsHuman);
+        assert!(
+            reviewed.findings.iter().any(|f| f.contains(&other.id)),
+            "findings should name the declared goal: {:?}",
+            reviewed.findings
+        );
+        assert!(
+            !reviewed
+                .findings
+                .iter()
+                .any(|f| f.contains("without a covering task")),
+            "declared breadth must not read as drift: {:?}",
+            reviewed.findings
+        );
+    }
+
+    // ADR-0041 point 4: a declaration the evidence never leaned on changes
+    // nothing. Over-declaring must not quietly demote an otherwise clean task.
+    #[test]
+    fn coverage_the_evidence_never_touched_leaves_the_verdict_alone() {
+        let e = engine();
+        let primary = e
+            .define_goal(GoalKind::Objective, "Intent plane", "intent", None)
+            .unwrap();
+        let unused = e
+            .define_goal(GoalKind::Objective, "Context graph", "graph", None)
+            .unwrap();
+        e.link_goal_to_code(
+            &primary.id,
+            &["artifact:src/intent.rs".into()],
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
+
+        let task = e
+            .create_task_covering(
+                &primary.id,
+                "Narrow",
+                "done",
+                None,
+                std::slice::from_ref(&unused.id),
+            )
+            .unwrap();
+        assert!(e.claim_task(&task.id, "agent-a", 600).unwrap());
+        let claimed = e.store.get_task(&task.id).unwrap().unwrap();
+        let mut evidence =
+            test_evidence(Some(task.id.clone()), "agent-a", "artifact:src/intent.rs");
+        evidence.started_at = claimed.claim_started_at.unwrap();
+        evidence.ended_at = now_unix();
+
+        let result = e.check_conformance(&evidence, Some(&task.id)).unwrap();
+        assert_eq!(result.verdict, Verdict::Aligned);
+    }
+
+    // ADR-0041 point 5: coverage is fixed at creation. Declaring an unknown
+    // goal, or the task's own goal, is refused rather than quietly ignored.
+    #[test]
+    fn coverage_is_validated_at_creation_and_has_no_later_mutator() {
+        let e = engine();
+        let goal = e
+            .define_goal(GoalKind::Objective, "Intent plane", "intent", None)
+            .unwrap();
+
+        assert!(e
+            .create_task_covering(&goal.id, "Unknown", "done", None, &["goal:nope".into()])
+            .is_err());
+        assert!(e
+            .create_task_covering(
+                &goal.id,
+                "Self",
+                "done",
+                None,
+                std::slice::from_ref(&goal.id)
+            )
+            .is_err());
+
+        let plain = e.create_task(&goal.id, "Plain", "done").unwrap();
+        assert!(e.task_goal_coverage(&plain.id).unwrap().is_empty());
     }
 
     #[test]

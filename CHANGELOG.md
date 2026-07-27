@@ -16,6 +16,47 @@ to [Semantic Versioning](https://semver.org/).
   after exactly that. `scripts/adr-number-guard.mjs` reads every ref rather than
   the working tree, because the conflict lives in the branch you cannot see, and
   names the first genuinely free number instead of merely the next one.
+- **The enforcement machinery is now reachable.** `complete_clause_contract` and
+  `register_control` close a gap that made every other constitutional feature
+  decorative: `complete_clause_contract` existed only on the store, called only
+  from tests, and there was no generic way to bind a control to a clause at all.
+  Audited on this repository's own constitution, the result was **0 of 17 active
+  clauses able to drive a hard verdict** — every one with no scope, no evidence
+  contract, and no consequence, which is exactly what SPEC-CONSTITUTION §10
+  prescribes for migrated clauses and exactly what nothing could then change.
+  A constitution that is active, correct, and incapable of reaching a verdict is
+  the worst of the three states, because it reads as governed.
+  `complete_clause_contract` **refuses a clause on an active version**: moving a
+  rule from review-only to `block` changes what governs everyone already working
+  under it, and ADR-0039 already fixed the shape of that act — draft an
+  amendment, complete the contract there, promote it with a rationale and a
+  diff. A direct edit would be precisely the quiet amendment that diff exists to
+  expose.
+  `register_control` makes the ADR-0034 ceiling usable by something other than a
+  ratchet, and asks the caller to declare the power the mechanism honestly has:
+  `mechanical` only where the action was genuinely prevented, `observed` where it
+  is proved after the fact, `advisory` where the hint may be stale. The last two
+  cap at `review` — an advisory that looks like a mutex grants false safety.
+- **Cross-cutting work can be declared instead of read as drift (ADR-0041).**
+  A task serves one goal, so conformance returned `Drift` for any governed node
+  bound to a different one — the same verdict, and the same finding, that an
+  unsanctioned edit produces. Three legitimate cross-plane changes hit it
+  (ADR-0018, ADR-0024, ADR-0035), and the audit could not tell them apart from
+  drift. `create_task` now accepts `also_serves`, declaring at creation the
+  additional goals the work serves; a binding to one of those counts as in
+  scope. Coverage is fixed at creation and has no later mutator, because
+  coverage added once conformance has complained is a rationalisation, not a
+  plan. A verdict that leaned on a declaration caps at `needs_human` and names
+  the goals it relied on, so declared breadth buys a review rather than a pass
+  (ADR-0034 ceiling rule). A task that declares nothing is unchanged, including
+  still returning `Drift`.
+- **Human review now closes inside the default Work view (ADR-0040).** The
+  former Intent Board uses action-oriented labels and puts `Review needed` work
+  first, with inline **Accept**, **Retry**, and **Inspect proof** actions backed
+  by the existing `resolve_task`, `reopen_task`, and `conformance_history` tools.
+  The complete Evidence Board and export flow remain available as advanced
+  history but are hidden by default, reducing the common workflow to one surface
+  without weakening proof or changing MCP semantics.
 - **`scoped-commit` refuses the pre-commit stash race (ADR-0038).** `pre-commit`
   stashes every unstaged change before running hooks and restores it afterwards.
   Alone that is invisible; in a fleet it corrupts. If a second agent writes to
