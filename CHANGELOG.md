@@ -6,6 +6,22 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Documentation
+- **ADR-0053: the graph records events, not conclusions (Proposed).** After an
+  eight-hour session, `recall` was put to the four lessons that session had
+  actually cost time to learn. All four returned noise from a graph of 4,463
+  nodes and 9,572 active edges. Three causes, all confirmed in the code: the
+  zero-token write path can only capture executions and symbols, never a
+  sentence; `recall` is cosine similarity with **no floor**, so it always returns
+  `limit` rows however unrelated — the nonsense query `zzzzqqq wibble flarp`
+  scores 0.54, higher than any of the four real questions; and a recorded node is
+  invisible until the offline `index_nodes` pass embeds it, demonstrated by
+  `record_architectural_decision` writing a node whose own title then recalled
+  `[]`. The ADR proposes a similarity floor that lets `recall` honestly return
+  nothing, indexing on record, recording what was learned as part of finishing
+  work, and a long half-life for conclusions — without touching the zero-token
+  invariant. Proposed only, not accepted, nothing implemented in this build.
+
 ### Fixed
 - **An unknown tool argument is now reported instead of silently dropped.**
   Passing `lease_seconds` where `claim_task` declares `lease_secs` did nothing
