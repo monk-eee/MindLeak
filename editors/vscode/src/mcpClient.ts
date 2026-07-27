@@ -19,6 +19,13 @@ export interface McpSessionIdentity {
 }
 
 /**
+ * Consecutive automatic relaunches allowed after an unexpected server exit.
+ * Not reset on a successful relaunch, so a crash loop stops instead of
+ * respawning forever; a window reload starts a fresh budget.
+ */
+const MAX_RESTARTS = 3;
+
+/**
  * A minimal MCP client speaking newline-delimited JSON-RPC 2.0 to the
  * mindleak-mcp server over stdio.
  */
@@ -29,6 +36,8 @@ export class McpClient {
   private ready = false;
   private identity?: McpServerIdentity;
   private sessionIdentity?: McpSessionIdentity;
+  private disposing = false;
+  private restarts = 0;
 
   constructor(
     private readonly command: string,
@@ -40,6 +49,12 @@ export class McpClient {
   ) {}
 
   async start(): Promise<void> {
+    this.disposing = false;
+    this.restarts = 0;
+    await this.launch();
+  }
+
+  private async launch(): Promise<void> {
     this.proc = spawn(this.command, [], {
       cwd: this.cwd,
       env: { ...process.env, ...this.env },
@@ -54,7 +69,12 @@ export class McpClient {
       this.identity = undefined;
       this.sessionIdentity = undefined;
       this.rejectPending(new Error(`MCP server exited (code ${code ?? "null"})`));
-      this.log(`mindleak-mcp exited (code ${code ?? "null"})`);
+      if (this.disposing) {
+        // The output channel is already gone during extension teardown.
+        return;
+      }
+      this.log(`${this.command} exited (code ${code ?? "null"})`);
+      this.restart();
     });
 
     const rl = readline.createInterface({ input: this.proc.stdout });
@@ -83,6 +103,30 @@ export class McpClient {
     }
     this.sessionIdentity = session;
     this.ready = true;
+  }
+
+  /**
+   * Relaunch the server after it exited on its own (a crash, or an external
+   * `taskkill` while the binary is rebuilt). Without this the panes stay dead
+   * until the window is reloaded.
+   */
+  private restart(): void {
+    if (this.restarts >= MAX_RESTARTS) {
+      this.log(`${this.command} stayed down after ${MAX_RESTARTS} restarts; reload the window`);
+      return;
+    }
+    this.restarts += 1;
+    this.log(`restarting ${this.command} (attempt ${this.restarts}/${MAX_RESTARTS})`);
+    void this.launch().then(
+      () => {
+        if (this.disposing) {
+          void this.dispose(0, 0);
+          return;
+        }
+        this.log(`reconnected to ${this.command}`);
+      },
+      (err) => this.log(`restart failed: ${(err as Error).message}`)
+    );
   }
 
   isReady(): boolean {
@@ -172,6 +216,7 @@ export class McpClient {
 
   async dispose(graceMilliseconds = 2000, forceMilliseconds = 1000): Promise<void> {
     const proc = this.proc;
+    this.disposing = true;
     this.proc = undefined;
     this.ready = false;
     this.identity = undefined;

@@ -82,6 +82,17 @@ to [Semantic Versioning](https://semver.org/).
   review is attributed to a registered session.
 
 ### Fixed
+- **The extension relaunches its MCP server instead of going quietly dead.**
+  The VS Code extension spawns its own `mindleak-mcp` and `lodestar-mcp`
+  children, and nothing restarted them when one exited mid-session — a crash,
+  or an external `taskkill` while the release binaries were rebuilt. Every
+  MindLeak pane then stayed blank until the window was reloaded, with only a
+  line in the output channel to say why. The client now relaunches the server
+  itself, up to three consecutive attempts before it reports that a reload is
+  needed. The exit handler also stays silent when the exit came from disposal,
+  which is what raised `Channel has been closed` in the extension host log
+  during teardown, and the exit message now names the server that actually
+  exited rather than always saying `mindleak-mcp`.
 - **The Design Board no longer fails silently, and an accepted ADR plans real
   work.** Materializing an accepted design aborted with no message, no log
   entry, and no state change whenever a quick pick or input box was dismissed,

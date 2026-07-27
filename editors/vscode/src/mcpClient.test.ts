@@ -233,6 +233,73 @@ describe("McpClient disposal", () => {
   });
 });
 
+// Regression: the extension spawns its own server, and when that child died
+// mid-session (a crash, or an external taskkill during a binary rebuild) the
+// client never relaunched it. Every MindLeak pane went silently dead until the
+// window was reloaded. The client now relaunches the server itself.
+describe("McpClient supervision", () => {
+  it("relaunches the server after an unexpected exit and restores the session", async () => {
+    const logs: string[] = [];
+    const first = fakeProcess({ exitOnEnd: false });
+    const second = fakeProcess({ exitOnEnd: true });
+    mockedSpawn.mockReturnValueOnce(first.process).mockReturnValueOnce(second.process);
+    const client = testClient((message) => logs.push(message));
+    await client.start();
+
+    first.exit(1);
+
+    await vi.waitFor(() => expect(client.isReady()).toBe(true));
+    expect(mockedSpawn).toHaveBeenCalledTimes(2);
+    expect(client.agentIdentity()).toBe("session:v1:test:0123456789abcdef0123456789abcdef");
+    expect(logs.some((message) => message.includes("reconnected"))).toBe(true);
+    await client.dispose(100);
+  });
+
+  // A crash loop must not respawn forever: the budget is three consecutive
+  // relaunches, then the client says so and stays down.
+  it("stops relaunching once the restart budget is spent", async () => {
+    const logs: string[] = [];
+    const spawned: Array<ReturnType<typeof fakeProcess>> = [];
+    mockedSpawn.mockImplementation(() => {
+      const fake = fakeProcess({ exitOnEnd: false });
+      spawned.push(fake);
+      return fake.process;
+    });
+    const client = testClient((message) => logs.push(message));
+    await client.start();
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const current = spawned[spawned.length - 1];
+      await vi.waitFor(() => expect(client.isReady()).toBe(true));
+      current.exit(1);
+      await vi.waitFor(() => expect(client.isReady()).toBe(false));
+    }
+
+    await vi.waitFor(() =>
+      expect(logs.some((message) => message.includes("reload the window"))).toBe(true)
+    );
+    expect(mockedSpawn).toHaveBeenCalledTimes(4);
+    await client.dispose(100);
+  });
+
+  // Regression: the exit handler logged during extension teardown, after the
+  // output channel was disposed, raising "Channel has been closed" in the
+  // extension host log. Disposal-driven exits are expected and stay quiet.
+  it("neither logs nor relaunches when the exit came from disposal", async () => {
+    const logs: string[] = [];
+    const fake = fakeProcess({ exitOnEnd: true });
+    mockedSpawn.mockReturnValue(fake.process);
+    const client = testClient((message) => logs.push(message));
+    await client.start();
+
+    await client.dispose(100);
+
+    expect(mockedSpawn).toHaveBeenCalledOnce();
+    expect(logs.some((message) => message.includes("exited"))).toBe(false);
+    expect(logs.some((message) => message.includes("restarting"))).toBe(false);
+  });
+});
+
 function testClient(
   log: (message: string) => void = () => undefined,
   timeout = 30_000,

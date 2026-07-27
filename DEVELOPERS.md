@@ -201,6 +201,26 @@ and footguns, with impact and status:
   inner-loop cost, but it silently blocks end-to-end verification of anything
   added to the MCP surface within the same session. — Left for later; workaround
   is to reload the window (or restart the servers) before verifying new tools.
+- **A dead extension-side server left every pane blank and the health line
+  lying — PARTLY FIXED.** — Observed Jul 2026: the MindLeak views were all
+  empty while the agent-facing `mcp_*` tools worked normally. The extension
+  spawns its **own** `mindleak-mcp` / `lodestar-mcp` children (`McpClient` in
+  [`editors/vscode/src/mcpClient.ts`](editors/vscode/src/mcpClient.ts), resolved
+  by `resolveBinaryPath` to the *bundled* `bin/`, not `target/release`), and the
+  previous session's `taskkill` — the documented step before rebuilding the
+  release binaries — killed them. Nothing restarted them, so the panes stayed
+  dead for hours until the extension host happened to restart. — Medium impact:
+  no data loss, but the product looks broken and the cause is invisible unless
+  you think to open the output channel. — Fixed this run: the client relaunches
+  the server itself (three consecutive attempts, then it says a reload is
+  needed), and no longer logs from the exit handler during disposal, which was
+  raising `Channel has been closed` in the extension host log. — Still open:
+  `activate()` records `serverHealth` / `intentHealth` once and never revises
+  them, so while the server is down the health line still reads
+  *memory connected*. Wiring a state change from `McpClient` back to the
+  readiness view is the remaining half. Note the fix is TypeScript, so an
+  **installed** extension keeps the old behaviour until it is rebuilt and
+  reloaded.
 - **The Design Board silently swallowed a cancelled materialization, and planned
   from an empty summary — FIXED.** — `promote` / `revisePromotion` returned with
   no message, no log line, and no state change whenever any quick pick or input
