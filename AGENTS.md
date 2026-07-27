@@ -153,6 +153,16 @@ style nit.
   markers — MindLeak ingests those into intent nodes.
 - **Stage explicitly with named paths** and review every diff before committing —
   do not blindly accept generated code. Never `git add -A` a mixed working tree.
+  `node scripts/scoped-commit.mjs -m "<msg>" -- <paths>` enforces both.
+- **Never commit from a working tree another agent is writing to.** `pre-commit`
+  stashes every unstaged change before running hooks and restores it afterwards.
+  That is safe alone and corrupting in a fleet: if the other agent writes inside
+  that window, the restore collides and the hooks report a *fictitious* failure —
+  `files were modified by this hook`, on a hook that modifies nothing, naming a
+  file you never touched. The message points nowhere near the cause, which is
+  what makes it so expensive to unpick. `scoped-commit` refuses this (exit 3)
+  when more than one worktree is attached and unstaged files outside your
+  declared paths are live. If you are the only operator, `--allow-foreign-wip`.
 - **One isolated worktree and branch per concurrent workstream (ADR-0038).** Git
   isolates files, the index, and branch selection; Lodestar coordinates claims
   and proof; MindLeak shares repository learning. Sharing one writable checkout
