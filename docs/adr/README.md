@@ -42,7 +42,8 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0032](0032-single-checkout-fleet-integration.md) | Single-checkout, single-publisher fleet integration | Accepted |
 | [0033](0033-copilot-cli-registration.md) | First-class GitHub Copilot CLI registration for both planes | Proposed |
 | [0034](0034-typed-controls-and-enforcement-ceilings.md) | Typed controls, workflow scope, and enforcement ceilings | Proposed |
-| [0035](0035-fleet-management-heuristics.md) | Fleet management heuristics and feedback | Proposed |
+| [0035](0035-fleet-management-heuristics.md) | Fleet management heuristics and feedback | Accepted |
+| [0036](0036-forbid-change-is-its-own-consequence.md) | A `forbid_change` lock is its own consequence declaration | Accepted |
 
 ## Writing a new ADR
 

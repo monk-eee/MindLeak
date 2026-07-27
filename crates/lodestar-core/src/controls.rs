@@ -175,6 +175,65 @@ pub fn resolve_observation(
     control: &Control,
     observation: &ControlObservation,
 ) -> ControlResolution {
+    let declared = clause
+        .filter(|goal| goal.status == GoalStatus::Active)
+        .map(|goal| goal.consequence.unwrap_or(Consequence::Review));
+    resolve_with_declared(declared, control, observation)
+}
+
+/// The built-in control backing a `forbid_change` binding (ADR-0036).
+pub const FORBID_CHANGE_CONTROL_ID: &str = "control:forbid_change";
+/// Version of the built-in `forbid_change` control.
+pub const FORBID_CHANGE_CONTROL_VERSION: i64 = 1;
+
+/// The built-in control backing a `forbid_change` lock on one clause.
+///
+/// Its power is `mechanical` because, within the Intent Plane's own authority, a
+/// `violation` genuinely refuses a state transition — the task moves to
+/// `blocked` rather than `done`. It prevents; it does not merely observe.
+pub fn forbid_change_control(clause_id: &str) -> Control {
+    Control {
+        id: FORBID_CHANGE_CONTROL_ID.to_string(),
+        clause_id: clause_id.to_string(),
+        kind: ControlKind::Check,
+        power: EnforcementPower::Mechanical,
+        version: FORBID_CHANGE_CONTROL_VERSION,
+        configuration: None,
+        status: ControlStatus::Active,
+    }
+}
+
+/// A failed `forbid_change` observation for one locked node.
+pub fn forbid_change_observation(
+    clause_id: &str,
+    node_id: &str,
+    evaluated_at: i64,
+) -> ControlObservation {
+    ControlObservation {
+        control_id: FORBID_CHANGE_CONTROL_ID.to_string(),
+        clause_id: clause_id.to_string(),
+        control_version: FORBID_CHANGE_CONTROL_VERSION,
+        scope: node_id.to_string(),
+        status: ObservationStatus::Fail,
+        measurements: None,
+        baseline: None,
+        evidence_refs: vec![node_id.to_string()],
+        evaluated_at,
+    }
+}
+
+/// Resolve when the declared consequence is supplied directly rather than read
+/// from the clause. `None` means no active clause authorises the control.
+///
+/// A `forbid_change` lock uses this entry point because its binding mode *is*
+/// the declaration (ADR-0036): a human who placed a lock already chose the
+/// consequence, so reading it from the clause's `consequence` field would let an
+/// incomplete enforcement contract silently soften a deliberate act.
+pub fn resolve_with_declared(
+    declared: Option<Consequence>,
+    control: &Control,
+    observation: &ControlObservation,
+) -> ControlResolution {
     let resolution =
         |status: ObservationStatus, effective: Consequence, finding: String| ControlResolution {
             control_id: control.id.clone(),
@@ -184,7 +243,7 @@ pub fn resolve_observation(
             finding,
         };
 
-    let Some(clause) = clause.filter(|goal| goal.status == GoalStatus::Active) else {
+    let Some(declared) = declared else {
         return resolution(
             observation.status,
             Consequence::Advise,
@@ -221,7 +280,10 @@ pub fn resolve_observation(
         ObservationStatus::Pass => resolution(
             ObservationStatus::Pass,
             Consequence::Advise,
-            format!("control {} satisfied clause {}", control.id, clause.id),
+            format!(
+                "control {} satisfied clause {}",
+                control.id, control.clause_id
+            ),
         ),
         ObservationStatus::Unknown => resolution(
             ObservationStatus::Unknown,
@@ -232,14 +294,13 @@ pub fn resolve_observation(
             ),
         ),
         ObservationStatus::Fail => {
-            let declared = clause.consequence.unwrap_or(Consequence::Review);
             let ceiling = control.power.ceiling();
             let effective = min_consequence(declared, ceiling);
             let finding = if effective < declared {
                 format!(
                     "control {} failed clause {}; clause declares {} but a {} mechanism caps this at {}",
                     control.id,
-                    clause.id,
+                    control.clause_id,
                     declared.as_str(),
                     control.power.as_str(),
                     effective.as_str()
@@ -248,7 +309,7 @@ pub fn resolve_observation(
                 format!(
                     "control {} failed clause {}; resolves {}",
                     control.id,
-                    clause.id,
+                    control.clause_id,
                     effective.as_str()
                 )
             };

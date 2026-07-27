@@ -4,6 +4,8 @@ use std::collections::HashSet;
 use sha2::{Digest, Sha256};
 
 use super::constitution::is_documentation_node;
+use crate::controls::{forbid_change_control, forbid_change_observation, resolve_with_declared};
+use crate::model::Consequence;
 use crate::store::ConformanceAudit;
 use crate::{
     now_unix, CodeBindingMode, ConformanceCheck, ConformanceEvidence, ConformanceResult, Goal,
@@ -333,10 +335,22 @@ impl Lodestar {
         let governing = self.resolve_governing_clauses(&evidence.changed_node_ids, task_goal_id)?;
 
         // A hard forbid_change lock overrides everything: any change is a breach.
+        // It resolves through the typed-control machinery (ADR-0034) but supplies
+        // its own declared consequence rather than reading the clause's
+        // (ADR-0036) — a human who placed a lock already chose that power, and an
+        // incomplete enforcement contract must not silently soften it.
         if let Some((node, goal)) = governing.forbid.first() {
+            let control = forbid_change_control(&goal.id);
+            let observation = forbid_change_observation(&goal.id, node, now_unix());
+            let resolved = resolve_with_declared(Some(Consequence::Block), &control, &observation);
             findings.push(format!("{} forbids changes to {node}", goal.id));
+            findings.push(resolved.finding);
             return Ok(ConformanceResult {
-                verdict: Verdict::Violation,
+                verdict: if resolved.effective == Consequence::Block {
+                    Verdict::Violation
+                } else {
+                    Verdict::NeedsHuman
+                },
                 findings,
             });
         }
@@ -781,6 +795,47 @@ mod tests {
         let drift_evidence = test_evidence(None, "agent-a", "artifact:src/auth.rs");
         let drift = e.check_conformance(&drift_evidence, None).unwrap();
         assert_eq!(drift.verdict, Verdict::Drift);
+    }
+
+    #[test]
+    fn a_lock_still_blocks_when_its_clause_declares_no_consequence() {
+        // ADR-0036 regression: forbid_change now resolves through the typed
+        // control machinery, but supplies its own declared consequence. Reading
+        // it from the clause instead would let an incomplete enforcement
+        // contract silently soften every existing lock from violation to
+        // needs_human — invisible until a breach failed to block.
+        let e = engine();
+        let goal = e
+            .define_goal(
+                GoalKind::Invariant,
+                "Frozen schema",
+                "The schema file must not change.",
+                None,
+            )
+            .unwrap();
+        assert!(
+            goal.consequence.is_none(),
+            "a freshly defined clause declares no consequence"
+        );
+        let node = "artifact:crates/core/src/schema.sql".to_string();
+        e.link_goal_to_code(
+            &goal.id,
+            std::slice::from_ref(&node),
+            CodeBindingMode::ForbidChange,
+        )
+        .unwrap();
+
+        let evidence = test_evidence(None, "agent-a", &node);
+        let res = e.check_conformance(&evidence, None).unwrap();
+        assert_eq!(res.verdict, Verdict::Violation);
+        assert!(res
+            .findings
+            .iter()
+            .any(|f| f.contains("forbids changes to")));
+        assert!(res
+            .findings
+            .iter()
+            .any(|f| f.contains("control:forbid_change")));
     }
 
     #[test]
