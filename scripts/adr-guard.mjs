@@ -139,10 +139,11 @@ export function unpublishedAdrs(root = process.cwd()) {
 
 export function auditAdrs(
   root = process.cwd(),
-  { uncommitted = true, unpublished = true } = {},
+  { uncommitted = true, unpublished = true, thisWorktreeOnly = false } = {},
 ) {
+  const trees = thisWorktreeOnly ? [root] : worktreePaths(root);
   const uncommittedFindings = uncommitted
-    ? worktreePaths(root).flatMap((worktree) => uncommittedAdrs(worktree))
+    ? trees.flatMap((worktree) => uncommittedAdrs(worktree))
     : [];
   const unpublishedFindings = unpublished ? unpublishedAdrs(root) : [];
   return {
@@ -154,9 +155,15 @@ export function auditAdrs(
 
 function main() {
   const root = git(["rev-parse", "--show-toplevel"]) ?? process.cwd();
+  // Pre-push (`--uncommitted`) judges only the worktree doing the pushing.
+  // Under ADR-0038 a linked worktree belongs to one agent, so another agent's
+  // half-finished ADR is their business — blocking this push on it couples
+  // agents that Git deliberately isolated, and the message would name a file
+  // the pusher never touched. The full audit still spans every worktree.
   const report = auditAdrs(root, {
     uncommitted: true,
     unpublished: !uncommittedOnly,
+    thisWorktreeOnly: uncommittedOnly,
   });
 
   if (asJson) {

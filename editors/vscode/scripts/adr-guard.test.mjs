@@ -10,6 +10,9 @@ import { afterEach, describe, expect, it } from "vitest";
 const adrGuard = join(dirname(fileURLToPath(import.meta.url)), "../../../scripts/adr-guard.mjs");
 const temporaryDirectories = [];
 
+/** These spawn real git repositories and worktrees; 5s is not enough. */
+const GIT_TEST_TIMEOUT_MS = 60_000;
+
 // A child git process must not inherit the parent repository's pointers, or a
 // fixture can write into the repository running the tests.
 const gitRepositoryVariables = [
@@ -123,15 +126,48 @@ describe("adr-guard", () => {
     expect(result.stderr).toContain("fleet/local-only");
   });
 
-  it("ignores the unpublished check under --uncommitted so a push can proceed", () => {
-    const repo = repositoryWithPublishedAdr();
-    git(repo, ["checkout", "-b", "fleet/local-only"]);
-    writeAdr(repo, "0005-about-to-be-pushed.md");
-    git(repo, ["add", "docs/adr/0005-about-to-be-pushed.md"]);
-    git(repo, ["commit", "-m", "docs(adr): about to be pushed"]);
-    expect(runGuard(repo).status).toBe(1);
-    expect(runGuard(repo, ["--uncommitted"]).status).toBe(0);
-  });
+  it(
+    "ignores the unpublished check under --uncommitted so a push can proceed",
+    () => {
+      const repo = repositoryWithPublishedAdr();
+      git(repo, ["checkout", "-b", "fleet/local-only"]);
+      writeAdr(repo, "0005-about-to-be-pushed.md");
+      git(repo, ["add", "docs/adr/0005-about-to-be-pushed.md"]);
+      git(repo, ["commit", "-m", "docs(adr): about to be pushed"]);
+      expect(runGuard(repo).status).toBe(1);
+      expect(runGuard(repo, ["--uncommitted"]).status).toBe(0);
+    },
+    GIT_TEST_TIMEOUT_MS
+  );
+
+  /**
+   * Bug this guards: the pre-push check scanned every worktree, so a
+   * half-finished ADR renumber in one checkout blocked an unrelated push from
+   * a different, clean worktree — naming a file the pusher never touched.
+   * Under ADR-0038 a linked worktree belongs to one agent, so pre-push judges
+   * only the tree doing the pushing. The full audit still spans all of them.
+   */
+  it(
+    "does not let another worktree's uncommitted ADR block this push",
+    () => {
+      const repo = repositoryWithPublishedAdr();
+      const linked = mkdtempSync(join(tmpdir(), "mindleak-adr-linked-"));
+      rmSync(linked, { recursive: true, force: true });
+      temporaryDirectories.push(linked);
+      git(repo, ["worktree", "add", "-b", "fleet/other-agent", linked]);
+
+      // The other agent is mid-renumber; this worktree is clean.
+      writeAdr(linked, "0009-their-work-in-progress.md");
+
+      expect(runGuard(repo, ["--uncommitted"]).status).toBe(0);
+
+      // The full audit still reports it, from either worktree.
+      const audit = runGuard(repo);
+      expect(audit.status).toBe(1);
+      expect(audit.stderr).toContain("0009-their-work-in-progress.md");
+    },
+    GIT_TEST_TIMEOUT_MS
+  );
 
   it("ignores non-ADR files under docs/adr so a README cannot fail the guard", () => {
     const repo = repositoryWithPublishedAdr();
