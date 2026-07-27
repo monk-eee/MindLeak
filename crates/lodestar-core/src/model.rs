@@ -368,6 +368,41 @@ pub struct ConstitutionVersion {
     pub activated_at: Option<i64>,
 }
 
+/// Whether a project has adopted a constitution at all
+/// (SPEC-CONSTITUTION §11). Reported rather than inferred, so an agent can tell
+/// "no policy exists" apart from "policy exists and permits this".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConstitutionState {
+    /// No constitutional version exists; conformance can only defer to a human.
+    Absent,
+    /// A version is drafted but not activated, so it authorises nothing yet.
+    Draft,
+    /// An activated version governs work.
+    Active,
+}
+
+impl ConstitutionState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ConstitutionState::Absent => "absent",
+            ConstitutionState::Draft => "draft",
+            ConstitutionState::Active => "active",
+        }
+    }
+}
+
+/// The adoption state of the local constitution: which lifecycle stage it is
+/// in, the version that stage refers to, and how many clauses it carries. A
+/// draft reports its own clause count so bootstrap progress is visible without
+/// implying the clauses are enforceable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstitutionStatus {
+    pub state: ConstitutionState,
+    pub version: Option<ConstitutionVersion>,
+    pub clause_count: i64,
+}
+
 /// A goal row: a clause of the constitution (SPEC-CONSTITUTION §10). The
 /// enforcement fields (`scope`, `evidence_contract`, `consequence`) stay absent
 /// until explicitly completed; an incomplete clause is review-only and can

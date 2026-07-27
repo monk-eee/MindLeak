@@ -298,6 +298,7 @@ coordinate through one plane.
 |---|---|
 | `define_goal` / `supersede_goal` | Write/version the constitution (objective · constraint · invariant). |
 | `get_constitution` | The authoritative intent to read **before acting**. |
+| `constitution_status` | Whether this project has an active constitution, a draft awaiting review, or none at all, with the version and its clause count. |
 | `register_policy_pack` / `propose_policy_pack` | Validate and register one immutable pack version, then create durable clause-review proposals for a draft or active constitution. |
 | `propose_common_core` / `list_pack_proposals` | Propose the five review-first Common Core principles through the same pack path, and inspect undecided or historical dispositions. |
 | `review_pack_clause` / `pack_clause_provenance` | Session-attributed adopt/tailor/reject; adoption copies a self-contained local clause and preserves immutable source pack provenance. |

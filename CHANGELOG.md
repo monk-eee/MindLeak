@@ -7,6 +7,14 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`constitution_status` reports adoption state instead of leaving it inferred
+  (ADR-0026 task 3).** An agent could previously read the active clause set but
+  not tell an ungoverned project apart from a governed one that happens to
+  permit the change — both looked like "nothing stops me". The new read-only,
+  model-free tool reports `absent`, `draft`, or `active` with the version and
+  its clause count. An activated version always wins over a later draft, so a
+  project mid-amendment still reads as governed, and a draft never reads as
+  governing policy (SPEC-CONSTITUTION §7.5).
 - **Immutable policy packs and the five-principle Common Core (ADR-0026 task
   2).** Lodestar validates a canonical SHA-256 digest and engine compatibility
   before registering a pack version; the same id/version/digest is idempotent,
