@@ -181,6 +181,18 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **A stalled wait is only bounded by the seven-day parking grace — SURFACED,
+  not prevented.** — ADR-0046 lets `ask_question` address a peer, so an agent
+  can park on one that never answers. The mutual case (a wait cycle) is now
+  detected and reported by `fleet_view`, and answering any named task breaks it.
+  What is *not* solved: a one-way wait on an agent that has vanished is not a
+  cycle and is not flagged — correctly, since the addressee could still answer,
+  but it means a task can sit parked for a week on someone who is never coming
+  back. Nothing alerts either way: `fleet_view` is a pull, so the finding is only
+  seen if a human or agent looks. Impact: bounded wasted wall-clock, never
+  permanent. Fix would be a staleness threshold on an unanswered wait — an
+  addressee with no live claim and no recent session is a different, weaker
+  signal than a cycle and should read as such.
 - **Accepting a design wrote `Accepted` into whichever worktree resolved the ADR
   path first — FIXED.** — Observed Jul 2026 while ADR-0044 was still an unmerged
   proposal on its own branch. Two ADR files in this checkout changed from
@@ -260,12 +272,20 @@ and footguns, with impact and status:
   can still walk into it, because the stash happens inside `pre-commit` itself
   and no hook can observe the tree as it was before its own framework moved it.
   The real fix is ADR-0038 isolation — one worktree per workstream.
-- **Each worktree needs its own `node_modules` — OPEN.** — `npm ci` in
-  `editors/vscode` costs ~13s and ~449 packages per worktree, and a fresh
-  worktree fails extension tests with a confusing `npx` prompt to install
-  `vitest` rather than a clear "dependencies not installed". — Low impact, real
-  friction: it makes spinning up a worktree for a small docs change feel
-  disproportionate. — Left for later; `make setup` could take a worktree path.
+- **Each worktree needs its own `node_modules` — FIXED.** — `npm ci` in
+  `editors/vscode` costs ~13s and ~449 packages per worktree. Worse than the
+  cost was the symptom: a fresh worktree failed at *push* time with
+  `Cannot find module .../prettier/bin/prettier.cjs`, which says nothing about
+  the real cause, and failed extension tests with an `npx` prompt offering to
+  install `vitest` rather than a clear "dependencies not installed". Hit four
+  times in one session. — Low impact, real friction: it made spinning up a
+  worktree for a small docs change feel disproportionate, which is exactly the
+  pressure that pushes agents back into the shared checkout ADR-0038 moved them
+  out of. — Fixed Jul 2026: `make worktree-setup` installs just the extension
+  deps. Hooks and cargo tools are shared through the common `.git` dir and the
+  user's cargo bin, so a linked worktree needs nothing else, and running the
+  full `make setup` per worktree would re-run `pip install` and
+  `cargo install` for no reason.
 
 - **A lapsed lease silently shrinks the evidence window a task can prove — OPEN.** —
   Observed Jul 2026 closing ADR-0026 task 4. Building three commits took longer
