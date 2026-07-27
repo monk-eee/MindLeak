@@ -31,11 +31,21 @@ const parse = (dir, file) => {
   const heading = /^#\s+(.+?)\s*$/m.exec(text)?.[1];
   const title = heading?.replace(/^ADR-\d{4}\s*[:\u2014-]\s*/, "").trim();
 
-  // "- Status: Accepted" or "- Status: Superseded by [0038](...)"
-  const status = /^\s*-?\s*(?:\*\*)?Status:(?:\*\*)?\s*([^\r\n]+)/im
-    .exec(text)?.[1]
-    ?.replace(/\*/g, "")
-    .trim();
+  // "- Status: Accepted", or a wrapped
+  //   "- Status: Superseded by
+  //      [ADR-0038](0038-....md)"
+  //
+  // The continuation matters. ADR-0032 wraps its reference onto the next line,
+  // and a status regex that stopped at the newline read it as a bare
+  // "Superseded by" — which was then reported as a decision nobody could
+  // attribute, when the answer was one line further down. Continuation lines
+  // are indented and are not the next `- ` bullet or a heading.
+  const status =
+    /^[ \t]*-?[ \t]*(?:\*\*)?Status:(?:\*\*)?[ \t]*([^\r\n]*(?:\r?\n[ \t]+(?![-*#][ \t])[^\r\n]+)*)/im
+      .exec(text)?.[1]
+      ?.replace(/\*/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
 
   if (!number || !title || !status) {
     throw new Error(
