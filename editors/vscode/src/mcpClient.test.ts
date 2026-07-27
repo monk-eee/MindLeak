@@ -298,6 +298,28 @@ describe("McpClient supervision", () => {
     expect(logs.some((message) => message.includes("exited"))).toBe(false);
     expect(logs.some((message) => message.includes("restarting"))).toBe(false);
   });
+
+  // Regression: activate() recorded the health line once, so a dead server
+  // still read "memory connected" while every pane sat empty. Health now
+  // follows the connection.
+  it("reports every connection transition to a state listener", async () => {
+    const states: string[] = [];
+    const spawned: Array<ReturnType<typeof fakeProcess>> = [];
+    mockedSpawn.mockImplementation(() => {
+      const fake = fakeProcess({ exitOnEnd: false });
+      spawned.push(fake);
+      return fake.process;
+    });
+    const client = testClient();
+    client.onStateChange((state) => states.push(state));
+    await client.start();
+
+    spawned[0].exit(1);
+    await vi.waitFor(() => expect(client.isReady()).toBe(true));
+
+    expect(states).toEqual(["connected", "reconnecting", "connected"]);
+    await client.dispose(100);
+  });
 });
 
 function testClient(

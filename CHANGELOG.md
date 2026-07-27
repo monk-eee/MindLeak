@@ -93,6 +93,14 @@ to [Semantic Versioning](https://semver.org/).
   which is what raised `Channel has been closed` in the extension host log
   during teardown, and the exit message now names the server that actually
   exited rather than always saying `mindleak-mcp`.
+- **The health line follows the server instead of the moment it started.**
+  `activate()` recorded `memory connected` / `intent connected` once and never
+  revised it, so a server that died mid-session left the one surface meant to
+  explain the silence confidently wrong. `McpClient` now publishes
+  `connected` / `reconnecting` / `disconnected`, and the extension maps that
+  onto the plane's health line. The four independent health strings collapsed
+  into the `RuntimeHealth` record they already modelled, behind a single
+  change-guarded setter.
 - **The Design Board no longer fails silently, and an accepted ADR plans real
   work.** Materializing an accepted design aborted with no message, no log
   entry, and no state change whenever a quick pick or input box was dismissed,

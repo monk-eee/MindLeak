@@ -18,6 +18,9 @@ export interface McpSessionIdentity {
   agent_id: string;
 }
 
+/** Whether the server is answering, coming back, or gone until a reload. */
+export type McpConnectionState = "connected" | "reconnecting" | "disconnected";
+
 /**
  * Consecutive automatic relaunches allowed after an unexpected server exit.
  * Not reset on a successful relaunch, so a crash loop stops instead of
@@ -38,6 +41,7 @@ export class McpClient {
   private sessionIdentity?: McpSessionIdentity;
   private disposing = false;
   private restarts = 0;
+  private stateListener?: (state: McpConnectionState, detail: string) => void;
 
   constructor(
     private readonly command: string,
@@ -47,6 +51,15 @@ export class McpClient {
     private readonly log: (message: string) => void,
     private readonly requestTimeoutMs = 30_000
   ) {}
+
+  /**
+   * Observe connection state. Register before {@link start} so a caller's
+   * health surface follows the server rather than reporting whatever was true
+   * at activation.
+   */
+  onStateChange(listener: (state: McpConnectionState, detail: string) => void): void {
+    this.stateListener = listener;
+  }
 
   async start(): Promise<void> {
     this.disposing = false;
@@ -103,6 +116,7 @@ export class McpClient {
     }
     this.sessionIdentity = session;
     this.ready = true;
+    this.stateListener?.("connected", this.command);
   }
 
   /**
@@ -112,11 +126,14 @@ export class McpClient {
    */
   private restart(): void {
     if (this.restarts >= MAX_RESTARTS) {
-      this.log(`${this.command} stayed down after ${MAX_RESTARTS} restarts; reload the window`);
+      const detail = `${this.command} stayed down after ${MAX_RESTARTS} restarts; reload the window`;
+      this.log(detail);
+      this.stateListener?.("disconnected", detail);
       return;
     }
     this.restarts += 1;
     this.log(`restarting ${this.command} (attempt ${this.restarts}/${MAX_RESTARTS})`);
+    this.stateListener?.("reconnecting", `restarting ${this.restarts}/${MAX_RESTARTS}`);
     void this.launch().then(
       () => {
         if (this.disposing) {
@@ -125,7 +142,11 @@ export class McpClient {
         }
         this.log(`reconnected to ${this.command}`);
       },
-      (err) => this.log(`restart failed: ${(err as Error).message}`)
+      (err) => {
+        const detail = `restart failed: ${(err as Error).message}`;
+        this.log(detail);
+        this.stateListener?.("disconnected", detail);
+      }
     );
   }
 
