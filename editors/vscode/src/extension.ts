@@ -19,6 +19,7 @@ import { TelemetryViewProvider } from "./telemetryViewProvider";
 import { TerminalCaptureConfig, TerminalSensor } from "./terminalSensor";
 import {
   canRetireTask,
+  configuredPathEnvironment,
   conformanceDiagnostic,
   ConformanceRecord,
   evidenceGroups,
@@ -82,8 +83,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
       extensionPath: context.extensionPath,
     }
   );
-  const dbPath =
-    config.get<string>("databasePath", "") || path.join(workspace, ".mindleak", "graph.db");
+  const databasePathOverride = config.get<string>("databasePath", "");
   const agentId = config.get<string>("agentId", "vscode");
   const sessionId = randomBytes(16).toString("hex");
   configuredAgentId = sessionAgentIdentity(agentId, sessionId);
@@ -92,7 +92,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     serverPath,
     workspace,
     {
-      MINDLEAK_DB: dbPath,
+      ...configuredPathEnvironment("MINDLEAK_DB", databasePathOverride),
       MINDLEAK_AGENT: agentId,
       MINDLEAK_WORKSPACE: workspace,
       MINDLEAK_AUTONOMOUS_CONSOLIDATION: String(
@@ -158,14 +158,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     "lodestar-mcp",
     { exists: fs.existsSync, extensionPath: context.extensionPath }
   );
-  const lodestarDb =
-    config.get<string>("lodestarDatabasePath", "") || path.join(workspace, ".lodestar", "spec.db");
+  const lodestarDatabasePathOverride = config.get<string>("lodestarDatabasePath", "");
   lodestar = new McpClient(
     lodestarPath,
     workspace,
     {
-      LODESTAR_DB: lodestarDb,
+      ...configuredPathEnvironment("LODESTAR_DB", lodestarDatabasePathOverride),
       LODESTAR_AGENT: agentId,
+      MINDLEAK_WORKSPACE: workspace,
     },
     sessionId,
     (m) => output.appendLine(m)
@@ -210,7 +210,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     }
     serverHealth = "memory connected";
     updateHealth();
-    output.appendLine(`Connected to ${serverPath} (db: ${dbPath})`);
+    output.appendLine(
+      `Connected to ${serverPath} (db: ${databasePathOverride.trim() || "shared repository state"})`
+    );
     if (config.get<boolean>("autoIngestOnSave", true)) {
       void reconcileWorkspace();
     }
@@ -229,7 +231,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     }
     intentHealth = "intent connected";
     updateHealth();
-    output.appendLine(`Connected to ${lodestarPath} (intent plane: ${lodestarDb})`);
+    output.appendLine(
+      `Connected to ${lodestarPath} (intent plane: ${lodestarDatabasePathOverride.trim() || "shared repository state"})`
+    );
     void refreshBoard();
     void refreshEvidence();
     void designController.sync();

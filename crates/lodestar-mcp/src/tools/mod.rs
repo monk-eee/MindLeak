@@ -13,12 +13,13 @@ mod lifecycle;
 
 use lodestar_core::Lodestar;
 use mindleak_session::SessionRegistry;
+use mindleak_storage::StorageStatus;
 use serde::Serialize;
 use serde_json::{json, Value};
 
 /// The advertised tool list (`tools/list`).
 pub fn list() -> Vec<Value> {
-    let mut tools = vec![session_definition()];
+    let mut tools = vec![session_definition(), storage_definition()];
     tools.extend(constitution::definitions());
     tools.extend(executive::definitions());
     tools.extend(conformance::definitions());
@@ -62,12 +63,24 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
 }
 
 /// Dispatch a `tools/call`. Returns the MCP `content` object or an error string.
+#[cfg(test)]
 pub fn call(engine: &Lodestar, params: &Value) -> Result<Value, String> {
+    call_with_storage(engine, params, None)
+}
+
+pub fn call_with_storage(
+    engine: &Lodestar,
+    params: &Value,
+    storage: Option<&StorageStatus>,
+) -> Result<Value, String> {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
 
     if name == "open_session" {
         return ok(&json!({ "agent_id": req_str(&args, "resolved_agent")? }));
+    }
+    if name == "storage_status" {
+        return ok(storage.ok_or("storage status is unavailable")?);
     }
 
     if let Some(result) = constitution::dispatch(engine, name, &args) {
@@ -113,6 +126,14 @@ fn session_definition() -> Value {
             },
             "required": ["session_id"]
         }
+    })
+}
+
+fn storage_definition() -> Value {
+    json!({
+        "name": "storage_status",
+        "description": "Report this plane's resolved repository id, database path, storage origin, legacy migration source, and whether migration ran. Read-only; uses the startup snapshot without re-reading Git or SQLite.",
+        "inputSchema": { "type": "object", "properties": {} }
     })
 }
 
@@ -245,6 +266,8 @@ pub(super) fn text(body: String) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mindleak_storage::DatabaseOrigin;
+    use std::path::PathBuf;
 
     #[test]
     fn tool_contract_requires_evidence_and_exposes_binding_mode() {
@@ -299,5 +322,27 @@ mod tests {
                 .iter()
                 .any(|value| value == "agent"));
         }
+    }
+
+    #[test]
+    fn storage_status_returns_the_injected_startup_snapshot() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let status = StorageStatus {
+            plane: "lodestar".into(),
+            repository_id: Some("0123456789abcdef0123456789abcdef".into()),
+            database_path: PathBuf::from("state/spec.db"),
+            origin: DatabaseOrigin::Repository,
+            legacy_path: Some(PathBuf::from("repo/.lodestar/spec.db")),
+            migrated_legacy: false,
+        };
+        let params = json!({ "name": "storage_status", "arguments": {} });
+
+        let result = call_with_storage(&engine, &params, Some(&status)).unwrap();
+        let value: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(value["plane"], "lodestar");
+        assert_eq!(value["repository_id"], status.repository_id.unwrap());
+        assert_eq!(value["origin"], "repository");
+        assert_eq!(value["migrated_legacy"], false);
     }
 }

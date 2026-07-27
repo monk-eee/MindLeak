@@ -2,6 +2,9 @@
 //! End-to-end integration tests over the Lodestar facade, including a real
 //! multi-connection claim race that proves collision-free coordination.
 
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -10,6 +13,10 @@ use lodestar_core::{
     now_unix, CodeBindingMode, ConformanceEvidence, EvidenceProvenance, GoalKind, Lodestar,
     LodestarError, SignalPromotion, TaskStatus, Verdict,
 };
+use mindleak_core::ingest::git::CommitRecord;
+use mindleak_core::MindLeak;
+use mindleak_session::SessionRegistry;
+use mindleak_storage::{resolve_database_in, DatabaseKind};
 
 /// A unique temp DB path per test (file-backed so multiple connections share it).
 fn temp_db(tag: &str) -> String {
@@ -26,6 +33,41 @@ fn cleanup(path: &str) {
     let _ = std::fs::remove_file(path);
     let _ = std::fs::remove_file(format!("{path}-wal"));
     let _ = std::fs::remove_file(format!("{path}-shm"));
+}
+
+fn git(cwd: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn worktree_repository(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
+    let root = PathBuf::from(temp_db(tag)).with_extension("worktrees");
+    let _ = fs::remove_dir_all(&root);
+    let repository = root.join("repo");
+    let linked = root.join("linked");
+    fs::create_dir_all(&repository).unwrap();
+    git(&repository, &["init", "-b", "main"]);
+    git(&repository, &["config", "user.name", "MindLeak Test"]);
+    git(
+        &repository,
+        &["config", "user.email", "mindleak@example.invalid"],
+    );
+    fs::write(repository.join("README.md"), "test\n").unwrap();
+    git(&repository, &["add", "README.md"]);
+    git(&repository, &["commit", "-m", "initial"]);
+    git(
+        &repository,
+        &["worktree", "add", "-b", "agent-b", linked.to_str().unwrap()],
+    );
+    (root, repository, linked)
 }
 
 #[test]
@@ -482,6 +524,88 @@ fn shared_db_is_visible_across_worktree_connections() {
         assert_eq!(next.goal_id, g.id);
     }
     cleanup(&path);
+}
+
+#[test]
+fn isolated_worktrees_share_intent_and_evidence_with_distinct_sessions() {
+    let (root, repository, linked) = worktree_repository("shared-repository-state");
+    let state_root = root.join("state");
+    let graph_a =
+        resolve_database_in(&repository, DatabaseKind::MindLeak, None, &state_root).unwrap();
+    let graph_b = resolve_database_in(&linked, DatabaseKind::MindLeak, None, &state_root).unwrap();
+    let intent_a =
+        resolve_database_in(&repository, DatabaseKind::Lodestar, None, &state_root).unwrap();
+    let intent_b = resolve_database_in(&linked, DatabaseKind::Lodestar, None, &state_root).unwrap();
+
+    assert_eq!(graph_a.repository_id, graph_b.repository_id);
+    assert_eq!(intent_a.repository_id, intent_b.repository_id);
+    assert_eq!(graph_a.repository_id, intent_a.repository_id);
+    assert_eq!(graph_a.path, graph_b.path);
+    assert_eq!(intent_a.path, intent_b.path);
+
+    graph_a.ensure_parent().unwrap();
+    intent_a.ensure_parent().unwrap();
+    let graph_path = graph_a.path.to_string_lossy().into_owned();
+    let intent_path = intent_a.path.to_string_lossy().into_owned();
+    let sessions = SessionRegistry::new("copilot").unwrap();
+    let agent_a = sessions
+        .open_session("00112233445566778899aabbccddeeff")
+        .unwrap()
+        .agent_id;
+    let agent_b = sessions
+        .open_session("ffeeddccbbaa99887766554433221100")
+        .unwrap()
+        .agent_id;
+    assert_ne!(agent_a, agent_b);
+
+    let lodestar_a = Lodestar::open(&intent_path).unwrap();
+    let goal = lodestar_a
+        .define_goal(
+            GoalKind::Objective,
+            "Shared repository state",
+            "isolated agents coordinate",
+            None,
+        )
+        .unwrap();
+    let task = lodestar_a
+        .create_task(&goal.id, "Implement shared state", "visible everywhere")
+        .unwrap();
+    assert!(lodestar_a.claim_task(&task.id, &agent_a, 300).unwrap());
+
+    let lodestar_b = Lodestar::open(&intent_path).unwrap();
+    let observed = lodestar_b.store().get_task(&task.id).unwrap().unwrap();
+    assert_eq!(observed.status, TaskStatus::Claimed);
+    assert_eq!(observed.owner.as_deref(), Some(agent_a.as_str()));
+    assert!(!lodestar_b.claim_task(&task.id, &agent_b, 300).unwrap());
+
+    let memory_a = MindLeak::open(&graph_path).unwrap();
+    memory_a
+        .ingest_commit_for_agent(
+            &agent_a,
+            &CommitRecord {
+                sha: Some("shared-proof".into()),
+                message: "feat: shared evidence".into(),
+                changed_files: vec!["src/shared.rs".into()],
+                timestamp: 100,
+            },
+        )
+        .unwrap();
+    drop(memory_a);
+
+    let memory_b = MindLeak::open(&graph_path).unwrap();
+    let evidence = memory_b.evidence_for(None, &agent_a, 90, 110).unwrap();
+    assert_eq!(evidence.commit_ids, vec!["intent:shared-proof"]);
+    assert_eq!(evidence.changed_node_ids, vec!["artifact:src/shared.rs"]);
+    assert!(memory_b
+        .evidence_for(None, &agent_b, 90, 110)
+        .unwrap()
+        .commit_ids
+        .is_empty());
+
+    drop(memory_b);
+    drop(lodestar_b);
+    drop(lodestar_a);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

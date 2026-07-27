@@ -10,14 +10,20 @@ use std::path::{Path, PathBuf};
 
 use mindleak_core::MindLeak;
 use mindleak_session::SessionRegistry;
+use mindleak_storage::{resolve_database, resolve_workspace_path, DatabaseKind};
 
 fn main() -> anyhow::Result<()> {
     mindleak_core::telemetry::init_tracing();
     let workspace = resolve_workspace();
-    let db_path = resolve_db_path(&workspace);
-    if let Some(parent) = Path::new(&db_path).parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
+    let database = resolve_database(
+        &workspace,
+        DatabaseKind::MindLeak,
+        std::env::var("MINDLEAK_DB").ok().as_deref(),
+    )?;
+    let migrated_legacy = database.migrate_legacy_if_needed()?;
+    database.ensure_parent()?;
+    let storage_status = database.status("mindleak", migrated_legacy);
+    let db_path = database.path.to_string_lossy().into_owned();
     let decay_policy = mindleak_core::config::load_decay_policy(&workspace)?;
     let working_set_size = mindleak_core::config::load_working_set_size();
     tracing::info!(
@@ -39,7 +45,13 @@ fn main() -> anyhow::Result<()> {
         .with_decay_policy(decay_policy)
         .with_working_set_size(working_set_size)
         .with_consolidation_min_interval(maintenance_config.min_interval.as_secs());
-    tracing::info!(%db_path, "mindleak-mcp ready");
+    tracing::info!(
+        %db_path,
+        repository_id = database.repository_id.as_deref().unwrap_or("none"),
+        database_origin = ?database.origin,
+        migrated_legacy,
+        "mindleak-mcp ready"
+    );
     // Non-blocking startup health probe for the optional semantic-recall backend
     // (ADR-0008): a detached thread reports whether recall is reachable, so an
     // operator sees `enabled`/`disabled` every run instead of a mystery 404 later.
@@ -59,7 +71,7 @@ fn main() -> anyhow::Result<()> {
             ),
         }
     });
-    let result = server::run(engine, sessions, maintenance.activity());
+    let result = server::run(engine, sessions, maintenance.activity(), storage_status);
     maintenance.shutdown();
     result
 }
@@ -74,36 +86,14 @@ fn resolve_workspace_with<F>(current: &Path, environment: F) -> PathBuf
 where
     F: Fn(&str) -> Option<String>,
 {
-    let Some(configured) = environment("MINDLEAK_WORKSPACE")
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    else {
-        return current.to_path_buf();
-    };
-    let configured = PathBuf::from(configured);
-    if configured.is_absolute() {
-        configured
-    } else {
-        current.join(configured)
-    }
-}
-
-/// Resolve the graph database path from `MINDLEAK_DB`, else `<cwd>/.mindleak/graph.db`.
-fn resolve_db_path(workspace: &Path) -> String {
-    if let Ok(p) = std::env::var("MINDLEAK_DB") {
-        if !p.trim().is_empty() {
-            return p;
-        }
-    }
-    let mut base = workspace.to_path_buf();
-    base.push(".mindleak");
-    base.push("graph.db");
-    base.to_string_lossy().into_owned()
+    let configured = environment("MINDLEAK_WORKSPACE");
+    resolve_workspace_path(current, configured.as_deref())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mindleak_storage::{resolve_database_in, DatabaseOrigin};
 
     #[test]
     fn workspace_defaults_to_process_directory() {
@@ -138,11 +128,20 @@ mod tests {
     }
 
     #[test]
-    fn default_database_follows_the_resolved_workspace() {
-        let workspace = Path::new("project");
-        assert_eq!(
-            PathBuf::from(resolve_db_path(workspace)),
-            workspace.join(".mindleak").join("graph.db")
-        );
+    fn default_database_follows_the_resolved_workspace_outside_git() {
+        let workspace =
+            std::env::temp_dir().join(format!("mindleak-mcp-scratch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&workspace);
+        std::fs::create_dir_all(&workspace).unwrap();
+        let resolved = resolve_database_in(
+            &workspace,
+            DatabaseKind::MindLeak,
+            None,
+            &workspace.join("state"),
+        )
+        .unwrap();
+        assert_eq!(resolved.path, workspace.join(".mindleak").join("graph.db"));
+        assert_eq!(resolved.origin, DatabaseOrigin::Workspace);
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 }
