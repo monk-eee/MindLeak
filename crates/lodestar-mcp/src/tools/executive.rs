@@ -80,6 +80,15 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "draft_questions",
+            "description": "Propose the questions this task's owner could put to peers whose live claims collide with its declared scope (ADR-0055). Read-only and evidence-free: it records nothing, parks nothing and addresses nothing; call ask_question with the returned audience to actually send one. The collision is found deterministically from declared scope; only the phrasing is model-assisted, and it falls back to a template when no local model is reachable, so each draft reports whether it was written by 'model' or 'template'. It never decides who should win: that is a question for the two agents or a human, and a model verdict carries no evidence.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "task_id": { "type": "string", "description": "A task whose scope is compared against every other live claim." } },
+                "required": ["task_id"]
+            }
+        }),
+        json!({
             "name": "renew_lease",
             "description": "Heartbeat: extend a still-live lease owned by this agent. After expiry, call claim_task to open a fresh evidence window.",
             "inputSchema": {
@@ -376,6 +385,12 @@ pub(super) fn dispatch(
                 .check_claim_overlap(&scope, opt_str(args, "exclude_task_id").as_deref())
                 .map_err(|e| e.to_string())?;
             ok(&json!({ "claims": overlaps }))
+        })()),
+        "draft_questions" => Some((|| {
+            let drafts = engine
+                .draft_questions(req_str(args, "task_id")?)
+                .map_err(|e| e.to_string())?;
+            ok(&json!({ "drafts": drafts }))
         })()),
         "renew_lease" => Some((|| {
             let renewed = engine

@@ -11,6 +11,7 @@ pub mod controls;
 pub mod db;
 pub mod decay;
 pub mod design;
+pub mod dialogue;
 pub mod discovery;
 pub mod error;
 mod facade;
