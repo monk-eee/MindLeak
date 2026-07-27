@@ -1,4 +1,4 @@
-//! Durable storage for declared session context (ADR-0035, ADR-0043).
+//! Durable storage for declared session context (ADR-0035, ADR-0044).
 
 use mindleak_session::SessionContext;
 use rusqlite::{params, OptionalExtension, Row};

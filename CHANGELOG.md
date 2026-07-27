@@ -7,7 +7,7 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **A read-only fleet view, and the two corrections it forced (ADR-0043,
+- **A read-only fleet view, and the two corrections it forced (ADR-0044,
   amending ADR-0035).** `fleet_view` reports who is working where: each live
   session's declared branch, head, and base, how far behind that base it said it
   was, and whether live sessions disagree about their base. Building it surfaced

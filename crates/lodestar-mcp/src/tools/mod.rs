@@ -91,7 +91,7 @@ pub fn call_with_storage(
         // Persist here rather than in bind_session: the fleet spans processes,
         // so a view backed by the in-memory registry would report only the
         // sessions of whichever server answered while looking like the whole
-        // fleet (ADR-0043). bind_session has no engine; this is the first point
+        // fleet (ADR-0044). bind_session has no engine; this is the first point
         // that does.
         engine
             .declare_session_context(agent_id, &SessionContext::from_arguments(&args)?)

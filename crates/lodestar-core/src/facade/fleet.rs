@@ -121,7 +121,7 @@ mod tests {
         }
     }
 
-    // ADR-0035 decision 6 / ADR-0043: an undeclared session reports unknown
+    // ADR-0035 decision 6 / ADR-0044: an undeclared session reports unknown
     // rather than zero. "Up to date" and "never measured" are different facts,
     // and collapsing them is what makes an advisory signal untrustworthy.
     #[test]

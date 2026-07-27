@@ -1,4 +1,4 @@
-# ADR-0043: Declared context is durable, and staleness is declared too
+# ADR-0044: Declared context is durable, and staleness is declared too
 
 - Status: Proposed
 - Date: 2026-07-27

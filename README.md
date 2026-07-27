@@ -345,7 +345,7 @@ one intent plane and one memory graph by default.
 | `pause_task` / `resume_task` | Owner deliberately parks (`paused`) and resumes work, keeping the claim and evidence window. |
 | `task_qa` | The durable, append-only question/answer thread for a task. |
 | `board` | Who-owns-what-and-where snapshot including advisory scope; the VS Code Work view defaults to live/actionable work, while `include_terminal=true` returns durable history. |
-| `fleet_view` | Read-only: who is working where, from the context sessions declared on `open_session` — branch, head, base, how far behind that base each said it was, and whether live sessions disagree about their base. Advisory and capped at `review`; undeclared values report `unknown` rather than being guessed (ADR-0035, ADR-0043). |
+| `fleet_view` | Read-only: who is working where, from the context sessions declared on `open_session` — branch, head, base, how far behind that base each said it was, and whether live sessions disagree about their base. Advisory and capped at `review`; undeclared values report `unknown` rather than being guessed (ADR-0035, ADR-0044). |
 | `register_design` / `reconcile_designs` / `design_board` | Register one ADR or idempotently import structured repository ADR metadata; list proposed decisions and accepted designs awaiting promotion, without creating tasks during reconciliation. |
 | `accept_design` / `reject_design` | Attributed human decision with no code conformance or self-acceptance; the Design Board aligns the ADR file's declared status. |
 | `plan_design_promotion` / `promote_design` | Preview task drafts without writes, then atomically materialize one reviewed create/link/no-work plan across the named objectives. |

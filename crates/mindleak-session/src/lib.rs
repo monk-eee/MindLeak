@@ -29,7 +29,7 @@ pub struct SessionContext {
     pub base: Option<String>,
     pub dirty: Option<bool>,
     /// Commits this session's head is behind its declared base, as counted by
-    /// the client (ADR-0043). Declared rather than derived: the server is
+    /// the client (ADR-0044). Declared rather than derived: the server is
     /// forbidden from reading Git, and branch/head/base can only reveal that
     /// two commits *differ*, never the distance between them.
     pub behind: Option<i64>,
@@ -128,7 +128,7 @@ pub fn session_input_schema() -> Value {
             "behind": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Optional. Commits this head is behind the declared base, counted by the client. The server never reads Git, so an undeclared value reports as unknown rather than being guessed (ADR-0043)."
+                "description": "Optional. Commits this head is behind the declared base, counted by the client. The server never reads Git, so an undeclared value reports as unknown rather than being guessed (ADR-0044)."
             }
         },
         "required": ["session_id"]

@@ -357,7 +357,7 @@ CREATE TABLE IF NOT EXISTS knowledge (
 );
 
 -- Where each agent session declared it is working (ADR-0035, amended by
--- ADR-0043). Durable because the fleet spans processes: linked worktrees share
+-- ADR-0044). Durable because the fleet spans processes: linked worktrees share
 -- one spec.db, but each runs its own server with its own in-memory registry, so
 -- an in-process view would report a fraction of the fleet as if it were all of
 -- it. Every value is self-reported and strictly advisory; declared_at is kept so
