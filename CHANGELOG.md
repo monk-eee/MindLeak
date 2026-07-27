@@ -21,6 +21,17 @@ to [Semantic Versioning](https://semver.org/).
   and produces no verdict, so it can never be mistaken for conformance. Waiting
   behind live work is deliberately not reported — a report that flags ordinary
   sequencing trains people to ignore it.
+- **`adr-guard` refuses to let a decision record exist in only one place.** An
+  ADR is the reasoning behind the code, and losing one is silent — nothing
+  fails, the file is simply not there any more. Three near-misses in a single
+  session motivated it: one ADR staged but never committed, one committed only
+  to a branch that was never pushed, and one never added to Git at all. Each was
+  found by chance. `node scripts/adr-guard.mjs` (`make adr-guard`) now reports
+  both failure modes across **every attached worktree and every local branch**,
+  because under ADR-0038 concurrent work is spread across worktrees and an ADR
+  can be stranded in any of them. A pre-push hook runs the working-tree half
+  (`--uncommitted`); the unpublished check is deliberately excluded there,
+  because it would fail the very push that publishes the ADR.
 - **A pre-commit hook refuses an ADR number another branch already claimed.**
   ADR numbers are a shared counter with no coordination: every concurrent agent
   reads "the next number" from its own branch, which cannot see a sibling's

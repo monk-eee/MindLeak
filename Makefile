@@ -61,4 +61,7 @@ ext-lint: ## Lint the VS Code extension
 ext-test: ## Run the VS Code extension unit tests (vitest)
 	npm --prefix editors/vscode test
 
+adr-guard: ## Fail if any ADR is uncommitted or reachable from no remote ref
+	node scripts/adr-guard.mjs
+
 ci: fmt-check clippy test ext-compile ext-lint ext-test ## Everything CI runs
