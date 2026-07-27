@@ -199,13 +199,19 @@ and footguns, with impact and status:
   only observable signature (one agent cannot publish two branches at once). It
   is a suspicion, not a verdict: switching branch with work still claimed is
   legitimate. **Mint the token per session and never write it down.**
-- **The Vitest run occasionally dies with `Timeout calling "onTaskUpdate"` —
-  OPEN, infrastructure only.** — Seen once Jul 2026 on a full
-  `npm --prefix editors/vscode test`; the same suites passed immediately after,
-  individually and together. It is a worker/reporter timeout rather than an
-  assertion, so it reports as a run failure with no failing test named. Impact:
-  a red CI run that is not a real regression. Re-run before investigating; if it
-  becomes frequent, raise the pool timeout rather than chasing a test.
+- **The Vitest run intermittently dies with `Timeout calling "onTaskUpdate"` —
+  OPEN, infrastructure only.** — Hit twice on Windows during one session on a
+  full `npm --prefix editors/vscode test`. It is a worker/reporter RPC timeout,
+  not an assertion, so it reports as a run failure naming no failing test.
+  `npx vitest run --no-file-parallelism` passes **201/201** on the same tree, so
+  the tests are sound and the cause is contention: the script suites each build
+  real Git repositories in temp directories, which is slow enough on Windows
+  that a busy worker misses the reporter's heartbeat. Impact: a red run that is
+  not a regression, and worse, one that trains people to re-run rather than
+  read. Re-run serially to confirm before investigating. A real fix means
+  either making the Git fixtures cheaper or bounding parallelism for those files
+  specifically — not a blanket `fileParallelism: false`, which more than doubles
+  the wall clock (114s against ~48s).
 
 - **A stalled wait is only bounded by the seven-day parking grace — SURFACED,
   not prevented.** — ADR-0046 lets `ask_question` address a peer, so an agent
