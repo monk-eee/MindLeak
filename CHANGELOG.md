@@ -7,6 +7,15 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **A pre-commit hook refuses an ADR number another branch already claimed.**
+  ADR numbers are a shared counter with no coordination: every concurrent agent
+  reads "the next number" from its own branch, which cannot see a sibling's
+  in-flight ADR. Two agents pick the same number and the collision only surfaces
+  at merge, by which point both ADRs are written, cross-linked, and cited in
+  commit messages — this repository has already spent two commits renumbering
+  after exactly that. `scripts/adr-number-guard.mjs` reads every ref rather than
+  the working tree, because the conflict lives in the branch you cannot see, and
+  names the first genuinely free number instead of merely the next one.
 - **`scoped-commit` refuses the pre-commit stash race (ADR-0038).** `pre-commit`
   stashes every unstaged change before running hooks and restores it afterwards.
   Alone that is invisible; in a fleet it corrupts. If a second agent writes to
