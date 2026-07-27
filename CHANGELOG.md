@@ -17,6 +17,21 @@ to [Semantic Versioning](https://semver.org/).
   continuation lines, and the ADR index row for 0032 names its successor again.
 
 ### Added
+- **`attribute_design_decision`: a decision already made can still be signed
+  (ADR-0051).** ADR-0047 named this failure exactly — a row that "asserts a
+  decision that can never be attributed" — and then repaired it only for designs
+  whose promotion had not materialised work, because reopening one that had would
+  leave tasks descending from a decision the ledger no longer shows. Auditing the
+  board found the hole that left: of 25 unattributed designs, **18 had already
+  materialised work** and were beyond both verbs — unreopenable and undecidable.
+  Those 18 are ADR-0001 through ADR-0032, so the repository's founding decisions
+  were the only ones permanently attributable to nobody, and the fix for exactly
+  that complaint had shipped four ADRs earlier. The new verb records the person
+  behind a decision that already stands, writing `decided_by` and nothing else.
+  Its guard is the deliberate complement of `reopen_undecided_design`'s, so
+  between them every undecided row has exactly one route and neither is a softer
+  way of doing the other's job. A `decided_by` already recorded is never
+  overwritten — attribution fills an empty field and can never change a full one.
 - **`supersede_design` records that an accepted design has been replaced
   (ADR-0050).** The ledger had `proposed`, `accepted`, `rejected`, and no way to
   say "this was decided, it held, and something better replaced it". ADR-0018
@@ -45,6 +60,19 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [0.1.3] - 2026-07-27
 ### Added
+- **Publishing declares where it is working, and warns when one identity is in
+  two places (ADR-0044, ADR-0049).** The claim gate re-opened the session on
+  every push and declared nothing, so it replaced a real declaration with
+  silence — `fleet_view` reported `branch: null` for agents that had declared a
+  branch minutes earlier. It now declares branch, head, base, a counted
+  `behind`, and a clean tree, at the one moment those are certainly true. It
+  also warns when an identity publishes a branch it did not declare while
+  holding live claims: one agent cannot publish two branches at once, so that is
+  the observable signature of several agents sharing a session token and
+  resolving to one identity — a failure that ran unnoticed for a whole session
+  and silently voided every claim, overlap check and wait cycle keyed on it.
+  Advisory, because switching branch with work still claimed is legitimate; it
+  names a suspicion nobody could previously have formed at all.
 - **`make design-audit` reports where the ADR files and the design ledger stop
   agreeing.** Every drift found so far was found by hand, one ad-hoc query at a
   time, and each was invisible until someone thought to look: an ADR merged
@@ -118,6 +146,25 @@ to [Semantic Versioning](https://semver.org/).
   structural rather than something each new migration has to remember.
 
 ### Added
+- **Publication requires a live claim; the ledger is no longer optional
+  (ADR-0049).** The Intent Plane had one real arbiter (`claim_task`) and **zero
+  automatic integration points** — nothing in the hooks, the scripts, or CI ever
+  consulted it. That is not a plane being bypassed, it is one that is optional by
+  construction, and a single night of concurrent work measured the cost: 9 pull
+  requests merged with **0 conformance receipts**, 61 done tasks against **61
+  abandoned** ones, **2 claim owners across 23 agent identities**, and two agents
+  independently building overlapping answers to the same question, discovered
+  only when both pull requests were open. `canonical-push` now refuses to publish
+  without a live claim owned by `LODESTAR_AGENT`, naming `claim_task` and
+  `create_task` as the actions that satisfy it. The gate is at **push, not
+  commit**: a commit is a draft, and gating commits makes people invent tasks to
+  get past the check — a lying ledger, which is worse than an empty one because
+  it reads as governed. An unreachable ledger **refuses**, deliberately unlike
+  the auto-merge guard: `gh` being absent is an ordinary condition, but Lodestar
+  is local SQLite behind a local binary, so unreachable means broken, and failing
+  open would make "the ledger was down" the universal bypass. Overlapping live
+  claims on the branch's paths are **reported, never enforced** (ADR-0024) — the
+  collision is named at the one moment it is still cheap to act on.
 
 - **Arming auto-merge now means finished, and a merged branch is checked for
   what it left behind (ADR-0045 clause 2).** A pull request's merge decision has

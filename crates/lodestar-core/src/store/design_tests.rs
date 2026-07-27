@@ -627,3 +627,129 @@ fn superseding_twice_keeps_the_first_actor() {
     assert_eq!(link.by_design, first);
     assert_eq!(link.by, "monk-eee");
 }
+
+// Bug (ADR-0051). ADR-0047 named the failure exactly — a row that "asserts a
+// decision that can never be attributed" — and then fixed it only for rows
+// promotion had not touched. Every other undecided row stayed frozen: reopening
+// is refused because work descends from the acceptance, and deciding is guarded
+// on `proposed`, so no verb could write the decider. Observed on the eighteen
+// foundational designs (0001-0032), which left the repository's founding
+// decisions as the least attributed ones in the ledger.
+#[test]
+fn a_materialized_decision_nobody_signed_can_still_be_attributed() {
+    let store = store();
+    let item = store
+        .reconcile_design_item(
+            &DesignMetadata {
+                adr_path: "docs/adr/0009-evidence.md".into(),
+                title: "Evidence-backed conformance".into(),
+                summary: "conformance is backed by evidence".into(),
+                status: DesignStatus::Proposed,
+                proposed_by: None,
+            },
+            NOW,
+        )
+        .unwrap();
+    assert!(store
+        .decide_design_item(&item.id, DesignStatus::Accepted, "monk-eee", None, NOW)
+        .unwrap());
+    // The shape an over-trusting import left behind: promotion armed, nobody
+    // recorded as having decided it.
+    store
+        .conn
+        .execute(
+            "UPDATE design_items SET decided_by = NULL, promotion_status = 'materialized'
+             WHERE id = ?1",
+            rusqlite::params![item.id],
+        )
+        .unwrap();
+    assert!(!store.reopen_undecided_design(&item.id, NOW).unwrap());
+
+    assert!(store
+        .attribute_design_decision(&item.id, "monk-eee", NOW + 1)
+        .unwrap());
+    let attributed = store.get_design_item(&item.id).unwrap().unwrap();
+    assert_eq!(attributed.decided_by.as_deref(), Some("monk-eee"));
+    // Attribution records the actor and nothing else: the decision, its
+    // rationale, and the work resting on it are all untouched.
+    assert_eq!(attributed.status, DesignStatus::Accepted);
+    assert_eq!(
+        attributed.promotion_status,
+        DesignPromotionStatus::Materialized
+    );
+}
+
+// The guard that makes attribution safe: it can fill an empty field, never
+// change a full one. Without this a wrong name could be quietly corrected into
+// a different one, which is the erasure of a recorded human act.
+#[test]
+fn attribution_never_overwrites_a_name_already_recorded() {
+    let store = store();
+    let item = store
+        .reconcile_design_item(
+            &DesignMetadata {
+                adr_path: "docs/adr/0009-evidence.md".into(),
+                title: "Evidence-backed conformance".into(),
+                summary: "conformance is backed by evidence".into(),
+                status: DesignStatus::Proposed,
+                proposed_by: None,
+            },
+            NOW,
+        )
+        .unwrap();
+    assert!(store
+        .decide_design_item(&item.id, DesignStatus::Accepted, "monk-eee", None, NOW)
+        .unwrap());
+    store
+        .conn
+        .execute(
+            "UPDATE design_items SET promotion_status = 'materialized' WHERE id = ?1",
+            rusqlite::params![item.id],
+        )
+        .unwrap();
+
+    assert!(!store
+        .attribute_design_decision(&item.id, "somebody-else", NOW + 1)
+        .unwrap());
+    assert_eq!(
+        store
+            .get_design_item(&item.id)
+            .unwrap()
+            .unwrap()
+            .decided_by
+            .as_deref(),
+        Some("monk-eee")
+    );
+}
+
+// The two repair verbs partition the undecided rows rather than overlapping: a
+// row promotion has not touched is still worth deciding properly, so attribution
+// refuses it and points at the better route.
+#[test]
+fn attribution_defers_to_reopening_while_nothing_has_materialized() {
+    let store = store();
+    let item = store
+        .reconcile_design_item(
+            &DesignMetadata {
+                adr_path: "docs/adr/0045-fleet.md".into(),
+                title: "A fleet is a distributed system".into(),
+                summary: "treat agents as a distributed system".into(),
+                status: DesignStatus::Accepted,
+                proposed_by: None,
+            },
+            NOW,
+        )
+        .unwrap();
+    assert_eq!(item.decided_by, None);
+    assert_eq!(item.promotion_status, DesignPromotionStatus::NotRequired);
+
+    // Reopenable, therefore not attributable.
+    assert!(!store
+        .attribute_design_decision(&item.id, "monk-eee", NOW)
+        .unwrap());
+    assert!(store.reopen_undecided_design(&item.id, NOW).unwrap());
+    // ...and once proposed it asserts no decision to attribute either.
+    assert!(!store
+        .attribute_design_decision(&item.id, "monk-eee", NOW)
+        .unwrap());
+}

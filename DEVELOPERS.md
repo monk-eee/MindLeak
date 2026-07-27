@@ -160,6 +160,9 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 | `MINDLEAK_HOME` | platform-local non-roaming state directory | shared per-repository storage root |
 | `MINDLEAK_DB` | repository-id store, or workspace-local outside Git | explicit server graph override |
 | `MINDLEAK_AGENT` | *(empty)* | agent id for attribution (`observed` edges); empty = off |
+| `LODESTAR_SESSION_ID` | *(empty)* | 32-hex session id resolved to this agent's identity; **required to publish** (ADR-0049) |
+| `LODESTAR_AGENT` | `agent` | identity base; the resolved agent id is `session:v1:<base>:<hash>`, so publishing must use the same base that claimed |
+| `LODESTAR_MCP_BIN` | `target/release`, then `target/debug` | Lodestar server the claim gate drives; set it when publishing from a worktree with no local build |
 | `MINDLEAK_CONFIG` | `<workspace>/.mindleak.toml` | per-project decay policy |
 | `MINDLEAK_WORKING_SET_SIZE` | `7` | hard cap for the current agent's derived working set (1-32) |
 | `MINDLEAK_AUTONOMOUS_CONSOLIDATION` | `false` | explicit opt-in to idle model-backed consolidation |
@@ -183,24 +186,64 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
-- **18 designs are `accepted` with nobody named as the decider, and
-  `reopen_undecided_design` cannot repair them — SURFACED, not fixed.** — Found
-  Jul 2026 by `make design-audit`. `reconcile_designs` imports the status out of
-  the ADR file, so a large part of the ADR history landed as `accepted` with
+- **A shared session token collapses every agent into one identity — GUARDED,
+  not prevented.** — `LODESTAR_SESSION_ID` is minted by the client, so a token
+  written anywhere several agents read (repository memory, a dotfile, a prompt)
+  makes all of them resolve to the same `session:v1:<base>:<fingerprint>`.
+  Nothing errors. Claims, `check_overlap` and wait-cycle detection are all keyed
+  on that identity and silently stop meaning anything: `fleet_view` shows one
+  busy agent instead of three colliding ones, and a cycle needs two distinct
+  nodes so it can never be seen. Observed Jul 2026 — it ran for a whole session
+  before anyone noticed, and only because someone asked who owned a branch and
+  the ledger could not answer. `canonical-push` now warns when one identity
+  publishes a branch it did not declare while holding live claims, which is the
+  only observable signature (one agent cannot publish two branches at once). It
+  is a suspicion, not a verdict: switching branch with work still claimed is
+  legitimate. **Mint the token per session and never write it down.**
+- **The Vitest run intermittently dies with `Timeout calling "onTaskUpdate"` —
+  OPEN, local-only, two fixes attempted and reverted.** — Hit repeatedly on
+  Windows during one session on a full `npm --prefix editors/vscode test`. It is
+  a worker→reporter RPC timeout, not an assertion, so it reports as a run
+  failure naming no failing test while **209/209 tests pass**. Cause: the
+  `scripts/**` suites drive Git and Node through `execFileSync` / `spawnSync`,
+  which block the worker's event loop for the whole child process, so the worker
+  cannot answer the reporter's heartbeat.
+  Tried and reverted, both still timing out: bounding that project to two worker
+  threads, and moving it to `pool: "forks"` (which was also *slower* — 92s
+  against 70s). A blanket `fileParallelism: false` does pass 209/209 but more
+  than doubles the wall clock (114s against ~48s) to fix a problem only one
+  group of files has. **CI on ubuntu does not hit this**, so it is a local
+  annoyance rather than a pipeline risk — which is exactly why it must stay
+  written down: it trains people to re-run instead of read, and one day it will
+  mask something real.
+  A real fix means making the Git fixtures cheaper (a template repository copied
+  per test instead of `git init` plus commits), not more pool tuning.
+
+- **Imported ADR statuses landed `accepted` with nobody named as the decider —
+  FIXED (ADR-0051); 18 rows still need signing.** — Found Jul 2026 by the first
+  run of `make design-audit`. `reconcile_designs` imports the status out of the
+  ADR file, so a large part of the ADR history landed as `accepted` with
   `decided_by` null. They read as decided and are not: nobody approved them
   through Lodestar.
-  **An earlier version of this entry said the repair was mechanical — reopen,
-  then accept. That is wrong, and attempting it on all of them is how we found
-  out.** Every one of the 18 is `promotion_status = materialized` at revision 1,
-  and `reopen_undecided_design` refuses a row whose promotion has left
-  `not_required` (ADR-0047), because materialized work rests on that acceptance.
-  So the state is worse than an overstated review count: **tasks were already
-  created from decisions nobody is recorded as making**, and the verb built to
-  repair unattributed decisions is deliberately blind to exactly these. The
-  remaining ADRs are 0001-0014, 0016, 0019, 0025 and 0032.
-  Signing an existing decision without reopening it is the missing verb; it is
-  being added as ADR-0051 on `fleet/attribute-decision`. Until that lands there
-  is no supported way to attribute these rows.
+  **Two earlier versions of this entry were wrong, in opposite directions, and
+  both are worth keeping written down.** The first said the repair was
+  mechanical — reopen, then accept — and attempting it on all of them is how we
+  found out otherwise: every remaining row is `promotion_status = materialized`,
+  and `reopen_undecided_design` deliberately refuses a row whose promotion has
+  left `not_required` (ADR-0047), because materialized work rests on that
+  acceptance. The second concluded from that the rows were unrepairable, which
+  only held while the missing verb did not exist.
+  [ADR-0051](docs/adr/0051-a-decision-already-made-can-still-be-signed.md) adds
+  it: `attribute_design_decision` records who made a decision the ledger already
+  asserts, changing status, reason and promotion state not at all. It takes
+  precisely the rows `reopen_undecided_design` refuses, so the two verbs
+  partition the undecided rows rather than overlapping, and no guard had to be
+  softened to let the repair through.
+  Seven rows that had materialized nothing were reopened and decided properly
+  (0015, 0017, 0036, 0037, 0039, 0040, 0046). The remaining **18 are
+  ADR-0001..0014, 0016, 0019, 0025 and 0032**, and are a data task now rather
+  than a design gap — they are the repository's founding decisions, so until
+  they are signed the ledger attributes its most load-bearing choices to nobody.
   This is not only inherited history. `DesignBoardController.sync()` calls
   `reconcile_designs` over the whole ADR directory, so **every ADR merged with
   `Status: Accepted` already written in its file becomes another undecided row
