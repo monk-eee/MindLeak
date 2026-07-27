@@ -1,6 +1,6 @@
 # ADR-0047: A status reflects a decision; only a decision records one
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-27
 - Related: [ADR-0019](0019-task-retention-and-board-hygiene.md) (archive, not
   delete), [ADR-0023](0023-design-items-and-the-accept-bridge.md) (design items

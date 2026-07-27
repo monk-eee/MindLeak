@@ -21,6 +21,22 @@ to [Semantic Versioning](https://semver.org/).
   and silently voided every claim, overlap check and wait cycle keyed on it.
   Advisory, because switching branch with work still claimed is legitimate; it
   names a suspicion nobody could previously have formed at all.
+- **`make design-audit` reports where the ADR files and the design ledger stop
+  agreeing.** Every drift found so far was found by hand, one ad-hoc query at a
+  time, and each was invisible until someone thought to look: an ADR merged
+  without ever being registered, a file still saying `Proposed` after the
+  decision was recorded, and a row imported as `accepted` with `decided_by`
+  empty — a decision nobody made, which `accept_design` then refuses because
+  deciding twice is not an undo (ADR-0047). The audit names all four shapes. Its
+  first run found 23 undecided rows and one unregistered ADR. It reads the ledger
+  through `list_designs` on the release `lodestar-mcp` rather than opening
+  `spec.db`: the server already resolves its own per-repository database
+  (ADR-0038), so the path rule is not forked, and `list_designs` already omits
+  retired records, so a retired row cannot masquerade as an orphan. It is a local
+  diagnostic, not a hook — CI has no ledger to read, which is exactly why the
+  ADR-index guard can gate and this cannot. `Superseded by <ref>` is reported as
+  a note rather than drift: the ledger has no such status, so neither side is
+  stale and forcing agreement would throw information away.
 - **A question addressed to you now arrives on a call you already make
   (ADR-0046).** `ask_question` could address a peer and `pending_questions` could
   find it, but only if the peer thought to look — and a capability that depends
