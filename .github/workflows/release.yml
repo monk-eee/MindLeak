@@ -104,7 +104,11 @@ jobs:
             asset: linux-x64
             vscode_target: linux-x64
             extension: ""
-          - os: macos-14
+          # macos-14 is arm64. The x64 build therefore needs an Intel runner of
+          # its own: built on macos-14 it is cross-compiled, cannot be executed,
+          # and its smoke test silently did not run while the job still reported
+          # success — v0.1.3 shipped two of four platforms unverified that way.
+          - os: macos-13
             target: x86_64-apple-darwin
             architecture: x64
             asset: macos-x64
@@ -150,7 +154,10 @@ jobs:
             const { spawn } = require("child_process");
             const readline = require("readline");
             if (process.arch !== process.env.TARGET_ARCHITECTURE) {
-              core.notice(`Skipping execution of cross-compiled ${process.env.TARGET} binaries on ${process.arch}`);
+              core.setFailed(
+                `Cannot smoke test ${process.env.TARGET} on ${process.arch}: the runner must match the target architecture. ` +
+                  `This used to skip and report success, so a platform nobody could execute shipped as verified.`
+              );
               return;
             }
             const directory = path.join("target", process.env.TARGET, "release");

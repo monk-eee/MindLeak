@@ -1,6 +1,8 @@
 # ADR-0030: Discrete per-agent identity for concurrent coordination
 
 - Status: Accepted
+- Amended by: [ADR-0054](0054-identity-is-the-session-not-the-process.md) — the
+  `<base>` segment is removed from the id; the label survives as a display name
 - Date: 2026-07-24
 - Deciders: MindLeak maintainers
 - Related: [ADR-0003](0003-agent-attribution-as-observed-edges.md) (attribution as
@@ -49,10 +51,17 @@ one long-lived stdio process, so a process nonce still aliases those chats.
 1. A client mints one opaque 128-bit lowercase-hex `session_id` and calls
   `open_session(session_id)` on both planes.
 2. Each server validates and registers the token in process memory, then derives
-  `session:v1:<base>:<first 16 SHA-256 bytes as 32 lowercase hex characters>`.
-  `MINDLEAK_AGENT` and
-  `LODESTAR_AGENT` are human-readable base labels only; they default to `agent`.
+  `session:v1:<first 16 SHA-256 bytes as 32 lowercase hex characters>`.
+  `MINDLEAK_AGENT` and `LODESTAR_AGENT` name this process's sessions in reports
+  and are no part of the id; they default to `agent`.
   Raw tokens are never persisted or logged.
+
+  > Amended by [ADR-0054](0054-identity-is-the-session-not-the-process.md).
+  > This clause originally derived `session:v1:<base>:<fingerprint>`, putting a
+  > label read from the *server process* environment inside a key compared by
+  > whole-string equality. One session hosted by two differently configured
+  > processes therefore resolved to two identities, splitting an agent's claims
+  > and making an addressed question undeliverable.
 3. Every identity-bearing call carries the registered `session_id`. The server
   resolves it and overwrites internal owner/evidence arguments, so an arbitrary
   per-call `agent` value cannot impersonate another session. Unknown or malformed

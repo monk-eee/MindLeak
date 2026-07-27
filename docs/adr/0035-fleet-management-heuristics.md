@@ -21,7 +21,7 @@ invisible to the Intent Plane.
 Three consequences follow.
 
 **Ownership is half-reported.** The board shows that
-`session:v1:copilot:3ca2ce9f…` holds a claim, but not the branch that work is
+`session:v1:3ca2ce9f…` holds a claim, but not the branch that work is
 landing on. In a fleet sharing one checkout that is tolerable; the moment two
 agents sit on different branches it is not.
 

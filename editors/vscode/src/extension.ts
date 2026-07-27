@@ -86,9 +86,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     }
   );
   const databasePathOverride = config.get<string>("databasePath", "");
+  // Passed to both servers as their display name only. Since ADR-0054 it is no
+  // part of the agent id, so the identity below is derived from the session
+  // token alone and does not change with how the process was launched.
   const agentId = config.get<string>("agentId", "vscode");
   const sessionId = randomBytes(16).toString("hex");
-  configuredAgentId = sessionAgentIdentity(agentId, sessionId);
+  configuredAgentId = sessionAgentIdentity(sessionId);
 
   client = new McpClient(
     serverPath,

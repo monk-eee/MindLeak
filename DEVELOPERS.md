@@ -162,7 +162,7 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 | `MINDLEAK_DB` | repository-id store, or workspace-local outside Git | explicit server graph override |
 | `MINDLEAK_AGENT` | *(empty)* | agent id for attribution (`observed` edges); empty = off |
 | `LODESTAR_SESSION_ID` | *(empty)* | 32-hex session id resolved to this agent's identity; **required to publish** (ADR-0049) |
-| `LODESTAR_AGENT` | `agent` | identity base; the resolved agent id is `session:v1:<base>:<hash>`, so publishing must use the same base that claimed |
+| `LODESTAR_AGENT` | `agent` | display name for this process's sessions in reports; not part of the agent id (ADR-0054) |
 | `LODESTAR_MCP_BIN` | `target/release`, then `target/debug` | Lodestar server the claim gate drives; set it when publishing from a worktree with no local build |
 | `MINDLEAK_CONFIG` | `<workspace>/.mindleak.toml` | per-project decay policy |
 | `MINDLEAK_WORKING_SET_SIZE` | `7` | hard cap for the current agent's derived working set (1-32) |
@@ -186,6 +186,22 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
+
+- **The release smoke reported success on platforms it never executed —
+  FIXED.** — Found Jul 2026 diagnosing why v0.1.3 tagged but published nothing.
+  The smoke compared `process.arch` against the target architecture and, on a
+  mismatch, printed a notice and returned — so the job went green having tested
+  nothing. `macos-x64` builds `x86_64-apple-darwin` on `macos-14`, which is
+  arm64, so **two of the four platforms in every release since the step was
+  added were never smoke-tested**. That is how a startup crash on
+  `MINDLEAK_DB=":memory:"` — which killed the server outright on Linux and
+  macOS — reached a tagged release with green ticks beside it. — High impact:
+  the check most trusted to prove a binary runs was the one not running, and it
+  said so only in a notice nobody reads. — Fixed this run: the x64 macOS build
+  moved to `macos-13` so every target is native, and an architecture mismatch is
+  now `core.setFailed` rather than a skip. A binary the workflow cannot execute
+  is one it must not ship, and a green tick that means "not checked" is worse
+  than a red one.
 
 - **`recall` cannot say "I do not know", and never returns a conclusion because
   none is ever recorded — OPEN, recorded as [ADR-0053](docs/adr/0053-the-graph-records-events-not-conclusions.md)
@@ -212,7 +228,7 @@ and footguns, with impact and status:
 - **A shared session token collapses every agent into one identity — GUARDED,
   not prevented.** — `LODESTAR_SESSION_ID` is minted by the client, so a token
   written anywhere several agents read (repository memory, a dotfile, a prompt)
-  makes all of them resolve to the same `session:v1:<base>:<fingerprint>`.
+  makes all of them resolve to the same `session:v1:<fingerprint>`.
   Nothing errors. Claims, `check_overlap` and wait-cycle detection are all keyed
   on that identity and silently stop meaning anything: `fleet_view` shows one
   busy agent instead of three colliding ones, and a cycle needs two distinct

@@ -99,6 +99,96 @@ mod tests {
         assert_eq!(indexes, 1, "the index is created after the migration");
     }
 
+    /// Bug: the agent id was `session:v1:{name}:{fingerprint}`, where the name
+    /// came from the *hosting process* (`LODESTAR_AGENT`) and the fingerprint
+    /// from the session token. One agent whose server started twice with
+    /// different environments therefore held two identities. Every comparison
+    /// is whole-string equality, so the fleet counted one agent as two, its
+    /// claims were split across both halves, and a question addressed to one
+    /// half was invisible to the other — which is the bug that made
+    /// agent-to-agent dialogue (ADR-0046) undeliverable in practice.
+    ///
+    /// Observed live on 2026-07-27: `fleet_view` listed
+    /// `session:v1:agent:bff9…` holding one claim and
+    /// `session:v1:copilot:bff9…` holding two. Same session, same fingerprint,
+    /// two rows.
+    ///
+    /// The fix drops the name from the id, so the migration heals the split:
+    /// both halves share the fingerprint and collapse onto one identity that
+    /// holds all three claims.
+    #[test]
+    fn migration_merges_identities_that_forked_on_the_host_process_name() {
+        let path = temporary_database("forked-identity");
+        let fingerprint = "bff9bbe3968f16636cbc5522086114e3";
+        {
+            let connection = open(path.to_str().unwrap()).unwrap();
+            connection
+                .execute_batch(
+                    "INSERT INTO goals (id, slug, kind, title, statement, status, created_at)
+                     VALUES ('goal:g', 'ship', 'objective', 'Ship', 'Ship it', 'active', 1);",
+                )
+                .unwrap();
+            for (task, half) in [
+                ("task:a", "session:v1:agent:"),
+                ("task:b", "session:v1:copilot:"),
+                ("task:c", "session:v1:copilot:"),
+            ] {
+                connection
+                    .execute(
+                        "INSERT INTO tasks (id, goal_id, title, acceptance, status, owner, created_at, updated_at)
+                         VALUES (?1, 'goal:g', 'T', 'A', 'claimed', ?2, 1, 1)",
+                        rusqlite::params![task, format!("{half}{fingerprint}")],
+                    )
+                    .unwrap();
+            }
+            // A question one half addressed to the other: undeliverable before
+            // the fix, because neither side answers to the other's id.
+            connection
+                .execute(
+                    "INSERT INTO task_qa (task_id, kind, body, author, audience, created_at)
+                     VALUES ('task:a', 'question', 'is your migration landing first?', ?1, ?2, 1)",
+                    rusqlite::params![
+                        format!("session:v1:agent:{fingerprint}"),
+                        format!("session:v1:copilot:{fingerprint}")
+                    ],
+                )
+                .unwrap();
+        }
+
+        // Re-opening runs the migration.
+        let connection = open(path.to_str().unwrap()).unwrap();
+
+        let collapsed = format!("session:v1:{fingerprint}");
+        let owned: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM tasks WHERE owner = ?1",
+                rusqlite::params![collapsed],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(owned, 3, "the split agent's claims merge onto one identity");
+
+        let forked: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM tasks WHERE owner GLOB 'session:v1:*:*'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(forked, 0, "no labelled identity survives");
+
+        // The question now names the same agent that answers to it.
+        let (author, audience): (String, String) = connection
+            .query_row(
+                "SELECT author, audience FROM task_qa WHERE kind = 'question'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(author, collapsed);
+        assert_eq!(audience, collapsed);
+    }
+
     #[test]
     fn migration_backfills_legacy_handoff_and_completion_opens_successor() {
         let path = temporary_database("legacy-handoff");

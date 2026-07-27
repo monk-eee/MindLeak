@@ -28,6 +28,7 @@ mod policy_packs;
 mod test_support;
 mod waivers;
 
+pub(crate) use claim_transfer::RecoveringSession;
 pub(crate) use coordination::ConformanceAudit;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

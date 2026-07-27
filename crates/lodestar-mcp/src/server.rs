@@ -240,7 +240,7 @@ mod tests {
         assert!(opened["result"]["content"][0]["text"]
             .as_str()
             .unwrap()
-            .contains("session:v1:test:"));
+            .contains("session:v1:"));
         let after = handle(
             &engine,
             &sessions,
@@ -309,7 +309,11 @@ mod tests {
             .owner
             .as_ref();
         assert_ne!(first_owner, second_owner);
-        assert!(first_owner.unwrap().starts_with("session:v1:test:"));
-        assert!(second_owner.unwrap().starts_with("session:v1:test:"));
+        // ADR-0054: the id is `session:v1:{fingerprint}` and carries no label,
+        // so it has exactly two colons however the host process was named.
+        for owner in [first_owner.unwrap(), second_owner.unwrap()] {
+            assert!(owner.starts_with("session:v1:"));
+            assert_eq!(owner.matches(':').count(), 2);
+        }
     }
 }

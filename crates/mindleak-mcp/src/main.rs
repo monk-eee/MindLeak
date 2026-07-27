@@ -33,8 +33,11 @@ fn main() -> anyhow::Result<()> {
         "resolved decay policy"
     );
     let maintenance_config = maintenance::MaintenanceConfig::from_environment();
-    let base = std::env::var("MINDLEAK_AGENT").unwrap_or_else(|_| "agent".to_string());
-    let sessions = SessionRegistry::new(&base).map_err(anyhow::Error::msg)?;
+    // Display name for this process's sessions in reports. Since ADR-0054 it
+    // is no part of the agent id, so two processes may disagree about it
+    // without forking the identity of a session they both host.
+    let display_name = std::env::var("MINDLEAK_AGENT").unwrap_or_else(|_| "agent".to_string());
+    let sessions = SessionRegistry::new(&display_name).map_err(anyhow::Error::msg)?;
     let maintenance = maintenance::MaintenanceRuntime::start(
         maintenance_config,
         db_path.clone(),

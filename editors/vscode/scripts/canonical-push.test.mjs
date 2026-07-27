@@ -73,7 +73,7 @@ const runPublisher = (repo, args = [], env = process.env) =>
   });
 
 const SESSION = "0123456789abcdef0123456789abcdef";
-const AGENT = "session:v1:test:0123456789abcdef0123456789abcdef";
+const AGENT = "session:v1:0123456789abcdef0123456789abcdef";
 
 /**
  * A stub ledger speaking the server's newline-delimited JSON-RPC.
