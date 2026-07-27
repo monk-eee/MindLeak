@@ -6,6 +6,21 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **A question addressed to you now arrives on a call you already make
+  (ADR-0046).** `ask_question` could address a peer and `pending_questions` could
+  find it, but only if the peer thought to look — and a capability that depends
+  on remembering is adopted at the rate the whole intent plane measured while
+  participation was optional: zero. `claim_task` and `renew_lease` now carry
+  `waiting_on_you` when a peer is waiting on this agent. The heartbeat is the
+  one that matters: a question usually arrives *during* the work, long after the
+  claim. It is absent when nothing is waiting — no key, no empty array — because
+  "no questions" and "this server does not report questions" must not look the
+  same to a reader, and it stops arriving once answered, or the delivery becomes
+  noise an agent learns to skip past. Nothing is reserved or consumed: it stays a
+  read over the durable thread, so two readers still see the same rows and no new
+  shared mutable resource is introduced (ADR-0045 clause 2).
+
 ### Fixed
 - **A current build could not open an existing database.** Indexes lived in
   `schema.sql` and therefore ran *before* migrations. On an existing database
