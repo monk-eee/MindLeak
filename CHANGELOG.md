@@ -36,7 +36,8 @@ to [Semantic Versioning](https://semver.org/).
   only protected PR merge advances `main`. Fleet-delivery v2 proposes isolated
   worktrees and branch-owned publication without mutating immutable pack v1.
 - **Bounded waivers: the reviewable form of `--no-verify` (ADR-0026 task 5,
-  SPEC-CONSTITUTION §9).** `grant_waiver` records a scoped, expiring, attributed
+  SPEC-CONSTITUTION §9, [ADR-0039](docs/adr/0039-waivers-end-amendments-change.md)).**
+  `grant_waiver` records a scoped, expiring, attributed
   exception to one clause, and `revoke_waiver` withdraws it. An exception was
   always possible — `--no-verify` and a commented-out check are exceptions too,
   just unattributed, unbounded, and invisible. A waiver is the same act made
