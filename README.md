@@ -313,6 +313,9 @@ coordinate through one plane.
 | `observe_ratchet` / `clause_controls` | Report a measurement and resolve it through its clause, capped at `review` by the ratchet's observed power (ADR-0034); and list the mechanisms behind a clause with the force each actually has. |
 | `grant_waiver` / `revoke_waiver` | The reviewable form of `--no-verify`: a scoped, expiring, attributed exception to one clause. Refuses an unwaivable clause, the wrong approver, and any expiry not in the future — a permanent exception is an amendment. Revocation is immediate for future checks and never retroactive. |
 | `clause_waivers` / `active_waivers` | Every exception ever granted against a clause (a rule waived repeatedly is a rule that wants amending), and everything not being enforced right now, soonest to expire first. |
+| `propose_amendment` / `amend_constitution` | Change adopted policy explicitly: draft the next version carrying every active clause forward, then promote it with an attributed rationale and a clause diff. The old version is superseded, never deleted, so prior conformance records keep naming the policy they were judged under. |
+| `constitution_diff` / `amendments` | What an amendment would do, and how policy got to where it is. Clauses match on slug, so a restated rule reads as `changed` — and a clause that only hardens its scope or consequence still shows up. |
+| `plan_pack_upgrade` | Compare a newer pack version against what this project adopted from it. A proposal, never an upgrade — upstream can never alter active local policy. Locally tailored clauses are flagged, because accepting an upstream change to one would silently discard a deliberate decision. |
 | `export_constitution` | Render the constitution to committed-friendly markdown. |
 | `create_task` / `decompose_goal` | Add claimable work; `create_task(blocked_by=...)` creates a progressive handoff. |
 | `next_task` | Suggest the next unblocked, claimable task. |

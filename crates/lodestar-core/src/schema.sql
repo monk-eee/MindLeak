@@ -75,6 +75,22 @@ CREATE TABLE IF NOT EXISTS waivers (
 CREATE INDEX IF NOT EXISTS idx_waivers_clause ON waivers(clause_id);
 CREATE INDEX IF NOT EXISTS idx_waivers_expiry ON waivers(expires_at);
 
+-- Amendments: the attributed record of adopted policy changing
+-- (SPEC-CONSTITUTION §9). A waiver bends a rule once; an amendment changes it.
+-- The diff is stored rather than recomputed because it is the reviewed artifact:
+-- recomputing it later from the two versions would show what the clauses say
+-- now, not what the amender was looking at when they decided.
+CREATE TABLE IF NOT EXISTS constitution_amendments (
+    id            TEXT PRIMARY KEY,
+    from_version  TEXT NOT NULL,
+    to_version    TEXT NOT NULL,
+    rationale     TEXT NOT NULL,
+    amended_by    TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    diff          TEXT NOT NULL          -- JSON array of ClauseDiff
+);
+CREATE INDEX IF NOT EXISTS idx_amendments_to ON constitution_amendments(to_version);
+
 -- Goals: the clauses of the constitution. Durable and versioned. Superseding
 -- creates a new row and marks the old one 'superseded' (never edited in place).
 -- The enforcement fields (scope, evidence_contract, consequence) stay NULL until

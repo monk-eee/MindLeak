@@ -11,6 +11,7 @@ use serde::Serialize;
 
 use crate::error::Result;
 
+mod amendments;
 mod claim_transfer;
 mod controls;
 mod coordination;

@@ -38,6 +38,34 @@ to [Semantic Versioning](https://semver.org/).
   rule has been excepted is usually the more useful question than what is
   excepted right now: a clause waived repeatedly is a clause that wants
   amending.
+- **Amendments: changing adopted policy explicitly (ADR-0026 task 5,
+  SPEC-CONSTITUTION §9).** `propose_amendment` drafts the next constitutional
+  version **carrying every active clause forward**, so the draft starts as the
+  current policy and the eventual diff shows only what the author actually
+  changed — an empty draft would make every amendment a re-adoption of the whole
+  constitution and report every untouched rule as removed and re-added.
+  `amend_constitution` then promotes it with an attributed rationale and a
+  stored clause diff, superseding the outgoing version and its clauses rather
+  than deleting them, so a prior conformance record keeps naming the policy it
+  was judged under.
+  It is deliberately a **different call** from `activate_constitution`: adopting
+  a first constitution and changing an adopted one are different acts, and only
+  the second retires rules people are currently working under. It refuses an
+  amendment that changes nothing (a no-op version bump would retire and re-issue
+  every clause identically, invalidating live conformance tokens for no reason),
+  one that leaves no clauses at all, and one carrying an undecided proposal.
+- **`constitution_diff` matches clauses on `slug` and compares the enforcement
+  contract, not just the words.** A restated rule reads as `changed` rather than
+  a removal plus an addition; and a clause whose consequence moves from `review`
+  to `block`, or whose scope widens, is reported even when its statement is
+  identical — the quiet amendment a statement-only diff would miss entirely.
+- **`plan_pack_upgrade` compares a newer pack against what was actually
+  adopted.** A proposal, never an upgrade: upstream can never alter active local
+  policy, so planning is a pure read. It compares against the recorded
+  provenance rather than the local clause, so a tailored clause does not read as
+  an upstream change — and clauses that *were* tailored are flagged, because
+  accepting an upstream change to one is the single way a pack upgrade can
+  silently discard a deliberate local decision.
 
 ### Changed
 - **Scope matching moved to one shared `scope` module.** Clauses and waivers

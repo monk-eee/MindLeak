@@ -54,6 +54,24 @@ impl LodestarStore {
         insert_goal_on(&self.conn, goal)
     }
 
+    /// Every clause belonging to one constitutional version, superseded ones
+    /// excluded — the clause set that version actually asserts.
+    pub fn clauses_for_version(&self, version_id: &str) -> Result<Vec<Goal>> {
+        let sql = format!(
+            "SELECT {GOAL_COLS} FROM goals
+              WHERE constitution_version = ?1 AND status <> 'superseded'
+              ORDER BY slug"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![version_id], row_to_goal)?;
+        collect(rows)
+    }
+
+    /// Write a clause carried forward into an amendment draft.
+    pub(super) fn insert_clause_copy(&self, goal: &Goal) -> Result<()> {
+        self.insert_goal(goal)
+    }
+
     /// Supersede a goal: write a new active version and mark the old one
     /// superseded. Intent changes only through this explicit, attributed step.
     pub fn supersede_goal(
