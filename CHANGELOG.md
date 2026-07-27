@@ -6,6 +6,20 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **An unknown tool argument is now reported instead of silently dropped.**
+  Passing `lease_seconds` where `claim_task` declares `lease_secs` did nothing
+  visible: the key was ignored, the 300-second default applied, and the claim
+  lapsed mid-work. The only symptom was an expired lease, so the typo read as a
+  server bug and cost twenty minutes of wrong diagnosis before the real cause
+  surfaced. A caller naming an argument a tool does not have is wrong about the
+  contract, and the cheapest moment to say so is immediately — the error now
+  names the offending key and lists what the tool accepts. Checked at the tool
+  boundary against the schema each tool already advertises, so there is no
+  second list to drift. Only top-level names are validated, and the server's own
+  injected keys are exempt: reporting `agent`, which `bind_session` adds itself,
+  would blame the caller for the server's work and make binding non-idempotent.
+
 ### Added
 - **`supersede_design` records that an accepted design has been replaced
   (ADR-0050).** The ledger had `proposed`, `accepted`, `rejected`, and no way to

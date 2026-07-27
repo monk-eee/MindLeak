@@ -38,6 +38,74 @@ pub fn list() -> Vec<Value> {
     tools.into_iter().map(apply_session_contract).collect()
 }
 
+/// The argument names a tool declares, from the schema it already advertises.
+///
+/// Returns `None` for a name no tool declares, so dispatch keeps reporting the
+/// unknown *tool* rather than complaining about its arguments.
+fn declared_arguments(name: &str) -> Option<Vec<String>> {
+    list().into_iter().find_map(|tool| {
+        if tool.get("name").and_then(Value::as_str) != Some(name) {
+            return None;
+        }
+        Some(
+            tool.get("inputSchema")
+                .and_then(|schema| schema.get("properties"))
+                .and_then(Value::as_object)
+                .map(|properties| properties.keys().cloned().collect())
+                .unwrap_or_default(),
+        )
+    })
+}
+
+/// Keys the server injects into `arguments` itself (`bind_session`). They are
+/// never caller-supplied, and tolerating them keeps validation idempotent:
+/// binding already-bound params must not report the server's own additions as
+/// the caller's mistake.
+const INJECTED_ARGUMENTS: [&str; 3] = ["agent", "resolved_agent", "resolved_context"];
+
+/// Refuse an argument no tool declares.
+///
+/// A misspelt optional argument used to be dropped in silence and the default
+/// applied: `lease_seconds` instead of `lease_secs` produced a 300-second lease
+/// that lapsed mid-work, and the only symptom was a claim that had quietly
+/// expired. Nothing pointed at the typo. A caller that names something the tool
+/// does not have is wrong about the contract, and the cheapest moment to say so
+/// is immediately.
+///
+/// Only top-level names are checked, and only against tools that declare a
+/// schema — this validates the call, not the shape of every nested payload.
+pub fn validate_arguments(name: &str, args: &Value) -> Result<(), String> {
+    let Some(declared) = declared_arguments(name) else {
+        return Ok(());
+    };
+    let Some(supplied) = args.as_object() else {
+        return Ok(());
+    };
+    let mut unknown: Vec<&str> = supplied
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !INJECTED_ARGUMENTS.contains(key))
+        .filter(|key| !declared.iter().any(|allowed| allowed == key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    let mut accepted = declared;
+    accepted.sort();
+    let accepted = if accepted.is_empty() {
+        "none".to_string()
+    } else {
+        accepted.join(", ")
+    };
+    Err(format!(
+        "unknown argument(s) for {name}: {}. Accepted: {accepted}. \
+         A misspelt argument is dropped, not defaulted deliberately \u{2014} \
+         check the spelling rather than the value.",
+        unknown.join(", ")
+    ))
+}
+
 pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value, String> {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let mut bound = params.clone();
@@ -45,6 +113,9 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
         .get_mut("arguments")
         .and_then(Value::as_object_mut)
         .ok_or_else(|| "tool arguments must be an object".to_string())?;
+    // Checked before anything is injected, so the caller is judged on exactly
+    // what the caller sent.
+    validate_arguments(name, &Value::Object(args.clone()))?;
     if name == "open_session" {
         let token = args
             .get("session_id")
@@ -310,6 +381,59 @@ mod tests {
     use super::*;
     use mindleak_storage::DatabaseOrigin;
     use std::path::PathBuf;
+
+    /// The incident: `lease_seconds` was passed where the tool declares
+    /// `lease_secs`. The key was dropped, the 300-second default applied, and
+    /// the claim lapsed mid-work. Nothing named the typo, so the lease looked
+    /// like a server bug for twenty minutes. A caller naming an argument the
+    /// tool does not have is wrong about the contract, and silence is the
+    /// expensive answer.
+    #[test]
+    fn an_unknown_argument_is_reported_instead_of_silently_dropped() {
+        let error = validate_arguments(
+            "claim_task",
+            &json!({ "task_id": "task:1", "lease_seconds": 3600 }),
+        )
+        .expect_err("a misspelt argument is refused");
+
+        assert!(
+            error.contains("lease_seconds"),
+            "names the offending key: {error}"
+        );
+        assert!(
+            error.contains("lease_secs"),
+            "names what was accepted: {error}"
+        );
+    }
+
+    #[test]
+    fn a_correctly_named_argument_still_passes() {
+        validate_arguments(
+            "claim_task",
+            &json!({ "task_id": "task:1", "lease_secs": 3600 }),
+        )
+        .expect("declared arguments are accepted");
+    }
+
+    /// The server injects `agent` into arguments for session-bearing tools.
+    /// Reporting its own addition as the caller's mistake would make binding
+    /// non-idempotent and blame the wrong party.
+    #[test]
+    fn the_servers_own_injected_arguments_are_not_the_callers_mistake() {
+        validate_arguments(
+            "claim_task",
+            &json!({ "task_id": "task:1", "agent": "session:v1:copilot:abc" }),
+        )
+        .expect("injected keys are tolerated");
+    }
+
+    /// An unknown tool must keep reporting the unknown *tool*; complaining
+    /// about its arguments would bury the actual problem.
+    #[test]
+    fn an_unknown_tool_is_not_reported_as_an_argument_problem() {
+        validate_arguments("no_such_tool", &json!({ "anything": 1 }))
+            .expect("argument validation defers to tool dispatch");
+    }
 
     // ADR-0035 decisions 1 and 6, on the Intent Plane. Both planes share one
     // registry and one input schema, so the risk is that only one of them is
