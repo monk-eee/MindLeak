@@ -528,6 +528,26 @@ pub struct TaskQa {
     pub created_at: i64,
 }
 
+/// One unanswered question addressed at a human, with enough context to answer
+/// it without another lookup.
+///
+/// A human has no agent id, so this cannot be a `TaskQa` from
+/// `pending_questions` — `audience IS NULL` *is* the addressing (ADR-0046
+/// clause 2), and a query that matches an id can never return one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HumanQuestion {
+    pub question_id: i64,
+    pub task_id: String,
+    pub task_title: String,
+    /// The agent that parked the task asking.
+    pub asked_by: String,
+    pub question: String,
+    pub asked_at: i64,
+    /// How long it has gone unanswered. Reported, never judged: a staleness
+    /// threshold invented here would become a policy nobody agreed to.
+    pub waiting_seconds: i64,
+}
+
 /// A learned-knowledge row: a consolidated regularity with provenance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Knowledge {
