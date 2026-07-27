@@ -72,6 +72,30 @@ const nextFreeNumber = (claimed, wanted) => {
   return String(candidate).padStart(4, "0");
 };
 
+/**
+ * Whether this exact ADR already exists on the integration branch.
+ *
+ * If it does, it won the number by landing, and the other claimant is the one
+ * that has to move. Blocking here would punish the winner — and worse, it would
+ * fire on every merge commit that carries the landed ADR back into a branch,
+ * making the guard impossible to satisfy without bypassing it. Asked in
+ * anger, that is exactly what a guard must not do.
+ */
+const alreadyOnMain = (adr) => {
+  for (const ref of ["origin/main", "main"]) {
+    const listing = capture([
+      "ls-tree",
+      "-r",
+      "--name-only",
+      ref,
+      "--",
+      `docs/adr/${adr.number}-${adr.slug}.md`,
+    ]);
+    if (listing.trim()) return true;
+  }
+  return false;
+};
+
 const targets = process.argv.slice(2).length
   ? process.argv.slice(2)
   : capture(["diff", "--cached", "--name-only", "--diff-filter=A"]).split("\n");
@@ -87,6 +111,18 @@ for (const adr of candidates) {
   if (!bySlug) continue;
   const others = [...bySlug.keys()].filter((slug) => slug !== adr.slug);
   if (others.length === 0) continue;
+
+  if (alreadyOnMain(adr)) {
+    console.warn(
+      `adr-number-guard: ADR-${adr.number} is contested, but ${adr.number}-${adr.slug}.md ` +
+        `is already on main, so the other claimant must renumber:`,
+    );
+    for (const slug of others) {
+      const refs = [...bySlug.get(slug)].sort().join(", ");
+      console.warn(`  ${adr.number}-${slug}.md  on ${refs}`);
+    }
+    continue;
+  }
 
   conflicted = true;
   console.error(

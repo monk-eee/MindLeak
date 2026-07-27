@@ -127,4 +127,20 @@ describe("adr-number-guard", () => {
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
   }, 30_000);
+
+  it("does not block the claimant that already landed on main", () => {
+    // Regression: the guard fired on a merge commit carrying a *landed* ADR
+    // back into a branch, so the winner could not push and the only way out was
+    // to bypass the hook. A guard that cannot be satisfied is worse than none.
+    const repo = repoWithRivalAdr();
+    const mine = writeAdr(repo, "0042-my-decision.md");
+    git(repo, ["add", mine]);
+    git(repo, ["commit", "-m", "mine landed first"]);
+
+    const result = runGuard(repo, [mine]);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stderr).toMatch(/other claimant must renumber/);
+    expect(result.stderr).toMatch(/0042-their-decision\.md/);
+  }, 30_000);
 });
