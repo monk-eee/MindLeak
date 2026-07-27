@@ -12,6 +12,7 @@ use serde::Serialize;
 use crate::error::Result;
 
 mod claim_transfer;
+mod controls;
 mod coordination;
 mod design;
 mod design_materialization;

@@ -33,6 +33,23 @@ CREATE TABLE IF NOT EXISTS constitution_facts (
     PRIMARY KEY (constitution_version, kind, source_path)
 );
 
+-- Typed controls: the mechanism that reports whether a clause was met
+-- (ADR-0034). A control declares the enforcement power it actually has, and
+-- conformance can never resolve harder than that power supports. Retired
+-- controls are kept, not deleted, so historical observations stay resolvable
+-- against the mechanism that produced them.
+CREATE TABLE IF NOT EXISTS controls (
+    id            TEXT PRIMARY KEY,
+    clause_id     TEXT NOT NULL,        -- the goal/clause this serves
+    kind          TEXT NOT NULL,        -- check | threshold | ratchet | procedure | judgment
+    power         TEXT NOT NULL,        -- mechanical | observed | advisory
+    version       INTEGER NOT NULL,
+    configuration TEXT,
+    status        TEXT NOT NULL,        -- active | retired
+    created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_controls_clause ON controls(clause_id);
+
 -- Goals: the clauses of the constitution. Durable and versioned. Superseding
 -- creates a new row and marks the old one 'superseded' (never edited in place).
 -- The enforcement fields (scope, evidence_contract, consequence) stay NULL until
