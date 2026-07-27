@@ -6,6 +6,16 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A wrapped `Status:` line no longer loses its reference.** ADR-0032 writes
+  `- Status: Superseded by` and puts `[ADR-0038](...)` on the next line.
+  `scripts/adr-files.mjs` read to the end of the line, so the file parsed as a
+  bare `Superseded by` — and that value reached the ADR index table, the
+  `make design-audit` report, and a question put to a human as "nobody can tell
+  what replaced it". The answer was one line further down, and the superseding
+  commit names ADR-0038 in its `DECISION:` line. The parser now reads indented
+  continuation lines, and the ADR index row for 0032 names its successor again.
+
 ### Added
 - **`supersede_design` records that an accepted design has been replaced
   (ADR-0050).** The ledger had `proposed`, `accepted`, `rejected`, and no way to

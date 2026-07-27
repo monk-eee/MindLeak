@@ -210,18 +210,30 @@ and footguns, with impact and status:
   Earlier this session the ledger was described as "fully remediated" after the
   `proposed` rows were cleared; that was wrong, and only checking a second
   property caught it.
-- **The design ledger could not say `Superseded` — FIXED, but two rows still
-  need a person.** — ADR-0018 and ADR-0032 declare `Superseded by <ref>` while
+- **The design ledger could not say `Superseded` — FIXED; one row still needs a
+  decider first.** — ADR-0018 and ADR-0032 declare `Superseded by <ref>` while
   the ledger had only `proposed`, `accepted`, `rejected`, so both sat `accepted`
   and every ledger-driven view showed a withdrawn decision as live.
   [ADR-0050](docs/adr/0050-a-superseded-decision-is-not-a-stale-one.md) gives a
   design the `superseded_by` link the goal model already has, and
-  `make design-audit` now reports the two files as drift instead of as an
-  unrepresentable note. The remaining work is not code: someone has to run
-  `supersede_design`, because the link is deliberately never inferred from the
-  file. ADR-0018 → ADR-0032 is unambiguous; **ADR-0032's own file says
-  `Superseded by` with no reference at all**, so nobody can tell what replaced
-  it without asking.
+  `make design-audit` now reports an unrecorded supersession as drift instead of
+  as an unrepresentable note. ADR-0018 → ADR-0032 is recorded.
+  ADR-0032 → ADR-0038 cannot be: `supersede_design` requires a recorded
+  `decided_by` and ADR-0032 is one of the unattributed rows above, so it needs
+  the signing verb first. **Its successor was never actually unknown** — see the
+  parser gap below.
+- **A wrapped `Status:` line silently lost its reference — FIXED.** — ADR-0032
+  writes `- Status: Superseded by` and puts `[ADR-0038](...)` on the next line.
+  `scripts/adr-files.mjs` read to the end of the line, so the file parsed as a
+  bare `Superseded by`. That value went into the ADR index table, into
+  `make design-audit`, and into a question put to a human as "nobody can tell
+  what replaced it" — when the answer was one line further down, and the
+  superseding commit (`8c6f0a1`, authored by the maintainer) names ADR-0038 in
+  its `DECISION:` line. Impact: a tool's blind spot was escalated as a knowledge
+  gap. Fixed by reading indented continuation lines, with a regression test in
+  `editors/vscode/scripts/adr-files.test.mjs`. Worth remembering as a class:
+  **check whether the tool can see it before concluding the information is not
+  there.**
 - **A stalled wait is only bounded by the seven-day parking grace — SURFACED,
   not prevented.** — ADR-0046 lets `ask_question` address a peer, so an agent
   can park on one that never answers. The mutual case (a wait cycle) is now
