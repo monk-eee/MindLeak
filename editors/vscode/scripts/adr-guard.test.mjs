@@ -74,6 +74,11 @@ const repositoryWithPublishedAdr = () => {
   return repo;
 };
 
+// Every case here spawns real git repositories, and several spawn worktrees.
+// The timeout is set on the suite rather than per test: two of these were timed
+// out individually and the rest still flaked under full-suite load, because the
+// slow part is git, which every case uses. One place cannot be forgotten by the
+// next test added.
 describe("adr-guard", () => {
   it("passes when every ADR is committed and reachable from a remote ref", () => {
     const repo = repositoryWithPublishedAdr();
@@ -187,4 +192,4 @@ describe("adr-guard", () => {
       "docs/adr/0006-untracked.md"
     );
   });
-});
+}, GIT_TEST_TIMEOUT_MS);

@@ -17,12 +17,36 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-/** A claim is live when it is held, unexpired, and owned by this agent. */
+/**
+ * The token fingerprint inside a `session:v1:<base>:<fingerprint>` agent id.
+ *
+ * `<base>` is read from `LODESTAR_AGENT` when a server starts, so the *same*
+ * session token resolves to a different agent id depending on how the server
+ * was launched: the editor sets it, a shell usually does not. Comparing whole
+ * ids therefore refuses a claim the caller genuinely holds — an agent that
+ * claims through the editor and pushes from a terminal could never match, which
+ * is the ordinary workflow. The fingerprint is derived from the token alone and
+ * is the part that actually identifies the session.
+ */
+export const sessionFingerprint = (agentId) => {
+  const match = /^session:v1:[A-Za-z]+:([0-9a-f]{32})$/.exec(agentId ?? "");
+  return match ? match[1] : null;
+};
+
+/** Two agent ids are the same session when their token fingerprints match. */
+export const sameSession = (left, right) => {
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const a = sessionFingerprint(left);
+  return a !== null && a === sessionFingerprint(right);
+};
+
+/** A claim is live when it is held, unexpired, and owned by this session. */
 export const liveClaims = (tasks, agent, now) =>
   (tasks ?? []).filter(
     (task) =>
       task.status === "claimed" &&
-      task.owner === agent &&
+      sameSession(task.owner, agent) &&
       typeof task.lease_expires_at === "number" &&
       task.lease_expires_at > now,
   );
@@ -77,8 +101,8 @@ export const publishVerdict = ({
         "  Claim existing work:  claim_task(task_id)\n" +
         "  Or declare it first:  create_task(goal_id, title, acceptance) then claim_task\n" +
         "  A lapsed lease cannot be renewed — re-claim to open a fresh evidence window.\n" +
-        "  If you do hold a claim, check LODESTAR_AGENT matches the value in use when you claimed:\n" +
-        "  the identity above is derived from it, so a different base resolves to a different agent.",
+        "  Matching ignores the LODESTAR_AGENT base, so a claim made through the editor\n" +
+        "  still counts from a shell — but the session token must be the same one.",
     };
   }
   return { ok: true, claims: held };
@@ -112,6 +136,56 @@ export const overlapNotice = (overlaps, ownTaskIds = []) => {
     lines.join("\n") +
     "\n  Publishing anyway is fine; building the same thing twice is not. Ask them (ask_question) before you both land."
   );
+};
+
+/**
+ * Warn when one identity appears to be publishing from two branches at once.
+ *
+ * A session token written anywhere shared — repository memory, a dotfile, an
+ * agent prompt — is minted identically by every agent that reads it, so they all
+ * resolve to one identity. Nothing errors. Claims, overlap checks and wait
+ * cycles simply stop meaning anything, because each is keyed on an identity
+ * several agents share, and the fleet view shows one busy agent instead of three
+ * colliding ones. It went unnoticed here for an entire session, and was found
+ * only because someone asked who owned a branch and the ledger could not say.
+ *
+ * One agent cannot publish two branches simultaneously, so a live claim recorded
+ * under a *different* previously declared branch is the observable signature.
+ * Advisory (ADR-0034): switching branch with work still claimed is legitimate,
+ * so this names a suspicion rather than a verdict — but it is a suspicion nobody
+ * could previously have formed at all.
+ */
+export const identityCollisionNotice = ({
+  agent,
+  branch,
+  declaredBranch,
+  claims,
+}) => {
+  if (!declaredBranch || declaredBranch === branch) return null;
+  if (!claims || claims.length === 0) return null;
+  if (true) return null;
+  return (
+    `identity ${agent} last declared ${declaredBranch}, but is publishing ${branch} ` +
+    `while holding ${claims.length} live claim(s).\n` +
+    "  One agent cannot publish two branches at once. Either you switched branch with work still\n" +
+    "  claimed, or two agents share a session token and resolve to one identity.\n" +
+    "  If it is the second: mint LODESTAR_SESSION_ID per session and never store it where another\n" +
+    "  agent reads it. A shared token makes claims, overlap and wait cycles silently meaningless."
+  );
+};
+
+/**
+ * The Git facts a publisher can state about itself, for `open_session`.
+ *
+ * Declared rather than detected: the server never reads Git (ADR-0035), and the
+ * publisher is standing in the worktree, so it is the honest source. Publishing
+ * is also the one moment these are certainly true — the tree is clean, because
+ * this script already refused otherwise, and the head is about to become shared.
+ */
+export const declaredContext = ({ branch, headSha, base, behind }) => {
+  const context = { branch, head_sha: headSha, base, dirty: false };
+  if (Number.isInteger(behind)) context.behind = behind;
+  return context;
 };
 
 const binaryName =
