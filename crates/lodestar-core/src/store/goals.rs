@@ -72,6 +72,17 @@ impl LodestarStore {
         self.insert_goal(goal)
     }
 
+    /// Move a clause's lifecycle status directly. Test-only seam: production
+    /// status changes go through activation, amendment, or supersede.
+    #[cfg(test)]
+    pub fn set_goal_status_for_test(&self, goal_id: &str, status: GoalStatus) -> Result<()> {
+        self.conn.execute(
+            "UPDATE goals SET status = ?2 WHERE id = ?1",
+            params![goal_id, status.as_str()],
+        )?;
+        Ok(())
+    }
+
     /// Supersede a goal: write a new active version and mark the old one
     /// superseded. Intent changes only through this explicit, attributed step.
     pub fn supersede_goal(

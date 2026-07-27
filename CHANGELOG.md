@@ -18,6 +18,27 @@ to [Semantic Versioning](https://semver.org/).
   can be stranded in any of them. A pre-push hook runs the working-tree half
   (`--uncommitted`); the unpublished check is deliberately excluded there,
   because it would fail the very push that publishes the ADR.
+- **The enforcement machinery is now reachable.** `complete_clause_contract` and
+  `register_control` close a gap that made every other constitutional feature
+  decorative: `complete_clause_contract` existed only on the store, called only
+  from tests, and there was no generic way to bind a control to a clause at all.
+  Audited on this repository's own constitution, the result was **0 of 17 active
+  clauses able to drive a hard verdict** — every one with no scope, no evidence
+  contract, and no consequence, which is exactly what SPEC-CONSTITUTION §10
+  prescribes for migrated clauses and exactly what nothing could then change.
+  A constitution that is active, correct, and incapable of reaching a verdict is
+  the worst of the three states, because it reads as governed.
+  `complete_clause_contract` **refuses a clause on an active version**: moving a
+  rule from review-only to `block` changes what governs everyone already working
+  under it, and ADR-0039 already fixed the shape of that act — draft an
+  amendment, complete the contract there, promote it with a rationale and a
+  diff. A direct edit would be precisely the quiet amendment that diff exists to
+  expose.
+  `register_control` makes the ADR-0034 ceiling usable by something other than a
+  ratchet, and asks the caller to declare the power the mechanism honestly has:
+  `mechanical` only where the action was genuinely prevented, `observed` where it
+  is proved after the fact, `advisory` where the hint may be stale. The last two
+  cap at `review` — an advisory that looks like a mutex grants false safety.
 - **Cross-cutting work can be declared instead of read as drift (ADR-0041).**
   A task serves one goal, so conformance returned `Drift` for any governed node
   bound to a different one — the same verdict, and the same finding, that an
