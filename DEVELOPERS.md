@@ -180,6 +180,31 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **The pre-commit stash race reports a failure that names the wrong thing —
+  GUARDED, not fixed.** — `pre-commit` stashes every unstaged change before
+  running hooks and restores it afterwards. Alone that is invisible; in a fleet
+  it corrupts. If a second agent writes to the same working tree inside that
+  window, the restore collides and hooks report `files were modified by this
+  hook` — from `check-added-large-files` and `check-merge-conflict`, which modify
+  nothing, about files the committer never touched. Observed Jul 2026: three
+  consecutive commit attempts failed this way, each blamed a different innocent
+  hook, and the real cause (two agents in one checkout) appeared nowhere in the
+  output. The natural response is to retry, which widens the window. — Medium
+  impact, high cost to diagnose: no data is lost, but the diagnosis is
+  actively misleading and can consume an entire session. — `scoped-commit.mjs`
+  now refuses (exit 3) when more than one worktree is attached and unstaged
+  files outside the declared paths are live, naming them and pointing at
+  `git worktree add`. That closes the sanctioned path only: a bare `git commit`
+  can still walk into it, because the stash happens inside `pre-commit` itself
+  and no hook can observe the tree as it was before its own framework moved it.
+  The real fix is ADR-0038 isolation — one worktree per workstream.
+- **Each worktree needs its own `node_modules` — OPEN.** — `npm ci` in
+  `editors/vscode` costs ~13s and ~449 packages per worktree, and a fresh
+  worktree fails extension tests with a confusing `npx` prompt to install
+  `vitest` rather than a clear "dependencies not installed". — Low impact, real
+  friction: it makes spinning up a worktree for a small docs change feel
+  disproportionate. — Left for later; `make setup` could take a worktree path.
+
 - **A lapsed lease silently shrinks the evidence window a task can prove — OPEN.** —
   Observed Jul 2026 closing ADR-0026 task 4. Building three commits took longer
   than the lease, and the only route back to a live claim is `claim_task`, which
@@ -519,6 +544,16 @@ and footguns, with impact and status:
   `resolve_task_accepts_an_in_review_task_to_done`,
   `resolve_task_refuses_self_resolution_by_the_reviewed_agent`,
   `resolve_in_review_opens_a_blocked_successor`.
+- **Human task-review attribution is checked but not persisted.** —
+  `facade::executive::resolve_task` requires a non-empty human identity and
+  refuses the worker recorded in the latest conformance evidence, but
+  `store::coordination::resolve_in_review` records only the transition to
+  `done`; the supplied reviewer and decision timestamp are not written to an
+  append-only review record. — Medium audit impact: the ledger proves that a
+  task required review and later became done, but cannot answer who accepted
+  it. The Work view asks for identity only to enforce independent review and
+  does not claim durable attribution. — **Left for later:** add a task-resolution
+  audit record and expose it in task proof without rewriting conformance history.
 - **`next_task` surfaces non-actionable policy tasks.** — A `constraint` goal was
   decomposed into four tasks that merely restate the constraint and can never
   accrue completion evidence; `next_task` (oldest-first) hands one out on every

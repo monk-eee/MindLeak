@@ -20,6 +20,30 @@ to [Semantic Versioning](https://semver.org/).
   the goals it relied on, so declared breadth buys a review rather than a pass
   (ADR-0034 ceiling rule). A task that declares nothing is unchanged, including
   still returning `Drift`.
+- **Human review now closes inside the default Work view (ADR-0040).** The
+  former Intent Board uses action-oriented labels and puts `Review needed` work
+  first, with inline **Accept**, **Retry**, and **Inspect proof** actions backed
+  by the existing `resolve_task`, `reopen_task`, and `conformance_history` tools.
+  The complete Evidence Board and export flow remain available as advanced
+  history but are hidden by default, reducing the common workflow to one surface
+  without weakening proof or changing MCP semantics.
+- **`scoped-commit` refuses the pre-commit stash race (ADR-0038).** `pre-commit`
+  stashes every unstaged change before running hooks and restores it afterwards.
+  Alone that is invisible; in a fleet it corrupts. If a second agent writes to
+  the same working tree inside that window, the restore collides and the hooks
+  report a *fictitious* failure — `files were modified by this hook`, from
+  `check-added-large-files` and `check-merge-conflict`, which modify nothing,
+  about files the committer never touched. The message points nowhere near the
+  cause, so the natural response is to retry, which widens the window.
+  `node scripts/scoped-commit.mjs` now exits 3 when the **primary checkout** has
+  other worktrees attached and unstaged files outside the declared paths are
+  live, names them, and points at `git worktree add`. The trigger is the shared
+  checkout rather than the mere existence of a fleet: a linked worktree belongs
+  to one agent, so unrelated work in it is that agent's own and the stash is
+  harmless. `--allow-foreign-wip` overrides for a single operator. This guards
+  the sanctioned path only — a bare `git commit` can still hit it, because the
+  stash happens inside `pre-commit` itself and no hook can observe the tree
+  before its own framework moved it.
 - **A session can declare where it is working (ADR-0035).** `open_session` now
   accepts optional `branch`, `head_sha`, `base`, and `dirty` on both planes, and
   the shared session registry records them against the registered token so a

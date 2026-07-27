@@ -345,6 +345,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     vscode.commands.registerCommand("mindleak.task.recover", (item?: BoardItem) => {
       void allocationController?.recover(item);
     }),
+    vscode.commands.registerCommand("mindleak.task.acceptReview", (item?: BoardItem) => {
+      void allocationController?.accept(item);
+    }),
+    vscode.commands.registerCommand("mindleak.task.retryReview", (item?: BoardItem) => {
+      void allocationController?.retry(item);
+    }),
     vscode.commands.registerCommand("mindleak.design.refresh", () => designController?.refresh()),
     vscode.commands.registerCommand("mindleak.design.sync", () => designController?.sync()),
     vscode.commands.registerCommand("mindleak.design.accept", (item?: DesignBoardItem) => {
