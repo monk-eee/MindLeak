@@ -15,14 +15,28 @@ to [Semantic Versioning](https://semver.org/).
   `check-added-large-files` and `check-merge-conflict`, which modify nothing,
   about files the committer never touched. The message points nowhere near the
   cause, so the natural response is to retry, which widens the window.
-  `node scripts/scoped-commit.mjs` now exits 3 when more than one worktree is
-  attached and unstaged files outside the declared paths are live, names them,
-  and points at `git worktree add`. It stays silent for a single operator with
-  one working tree, where unrelated WIP is normal and harmless, and
-  `--allow-foreign-wip` overrides deliberately. This guards the sanctioned path
-  only — a bare `git commit` can still hit it, because the stash happens inside
-  `pre-commit` itself and no hook can observe the tree before its own framework
-  moved it.
+  `node scripts/scoped-commit.mjs` now exits 3 when the **primary checkout** has
+  other worktrees attached and unstaged files outside the declared paths are
+  live, names them, and points at `git worktree add`. The trigger is the shared
+  checkout rather than the mere existence of a fleet: a linked worktree belongs
+  to one agent, so unrelated work in it is that agent's own and the stash is
+  harmless. `--allow-foreign-wip` overrides for a single operator. This guards
+  the sanctioned path only — a bare `git commit` can still hit it, because the
+  stash happens inside `pre-commit` itself and no hook can observe the tree
+  before its own framework moved it.
+- **A session can declare where it is working (ADR-0035).** `open_session` now
+  accepts optional `branch`, `head_sha`, `base`, and `dirty` on both planes, and
+  the shared session registry records them against the registered token so a
+  later call resolves them. The client supplies the facts; the server performs
+  no Git or filesystem inspection of its own, which is the only correct answer
+  for a stdio server that may not share the agent's working directory and for a
+  linked worktree whose branch differs from the database root. Declared context
+  round-trips under the same token, including across a server restart, because
+  identity is derived from the token rather than process state. A session that
+  declares nothing is unchanged: no `context` in the response, no nulls, and
+  nothing for a caller to guess at. A malformed declaration is refused rather
+  than silently dropped. This is the substrate the staleness, divergence, and
+  overlap-precision heuristics read from; it derives nothing on its own yet.
 - **Isolated agent worktrees now share one repository brain and converge only
   through reviewed pull requests (ADR-0038, superseding ADR-0032).** Each clone
   bootstraps a random 128-bit `mindleak.repositoryId` in shared local Git config;
