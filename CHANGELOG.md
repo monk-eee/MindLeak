@@ -7,6 +7,22 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`scoped-commit` refuses the pre-commit stash race (ADR-0038).** `pre-commit`
+  stashes every unstaged change before running hooks and restores it afterwards.
+  Alone that is invisible; in a fleet it corrupts. If a second agent writes to
+  the same working tree inside that window, the restore collides and the hooks
+  report a *fictitious* failure — `files were modified by this hook`, from
+  `check-added-large-files` and `check-merge-conflict`, which modify nothing,
+  about files the committer never touched. The message points nowhere near the
+  cause, so the natural response is to retry, which widens the window.
+  `node scripts/scoped-commit.mjs` now exits 3 when more than one worktree is
+  attached and unstaged files outside the declared paths are live, names them,
+  and points at `git worktree add`. It stays silent for a single operator with
+  one working tree, where unrelated WIP is normal and harmless, and
+  `--allow-foreign-wip` overrides deliberately. This guards the sanctioned path
+  only — a bare `git commit` can still hit it, because the stash happens inside
+  `pre-commit` itself and no hook can observe the tree before its own framework
+  moved it.
 - **Isolated agent worktrees now share one repository brain and converge only
   through reviewed pull requests (ADR-0038, superseding ADR-0032).** Each clone
   bootstraps a random 128-bit `mindleak.repositoryId` in shared local Git config;
