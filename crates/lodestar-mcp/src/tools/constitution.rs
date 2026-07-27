@@ -1,6 +1,7 @@
 //! Constitution tool definitions and dispatch.
 
 use super::{bool_arg, ok, opt_str, req_str, str_array, text};
+use lodestar_core::model::Consequence;
 use lodestar_core::{
     CodeBindingMode, ConstitutionPack, GoalKind, Lodestar, PackClause, PackClauseDisposition,
 };
@@ -196,6 +197,22 @@ pub(super) fn definitions() -> Vec<Value> {
                 "required": ["goal_id"]
             }
         }),
+        json!({
+            "name": "complete_clause_contract",
+            "description": "Give a clause the enforcement contract it needs to drive a verdict: scope, evidence contract, consequence, and waiver policy. Until this is done a clause is review-only — migration deliberately invents none of these fields, so a rule never silently acquires the power to block, but the default is sticky and a project can run for a long time unable to reach a hard verdict about anything. Refuses a clause on an active version: hardening what governs people mid-flight is an amendment (propose_amendment, complete the contract on the draft, then amend_constitution).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "clause_id": { "type": "string" },
+                    "scope": { "type": "string", "description": "What the clause governs: an artifact:/symbol: id or prefix**, or a workflow: token for a procedural rule." },
+                    "evidence_contract": { "type": "string", "description": "What evidence a check must supply to decide this clause." },
+                    "consequence": { "type": "string", "enum": ["advise", "review", "block"], "description": "What the clause asks for. Bounded at resolution by the power of whatever control backs it (ADR-0034)." },
+                    "waivable": { "type": "boolean", "default": false, "description": "Whether a bounded exception may be granted (SPEC-CONSTITUTION §9)." },
+                    "waiver_authority": { "type": "string", "description": "Who may approve an exception. An unwaivable clause cannot name one." }
+                },
+                "required": ["clause_id", "scope", "evidence_contract"]
+            }
+        }),
     ]
 }
 
@@ -345,6 +362,36 @@ pub(super) fn dispatch(
             ok(&engine
                 .pack_clause_provenance(req_str(args, "goal_id")?)
                 .map_err(|error| error.to_string())?)
+        })()),
+        "complete_clause_contract" => Some((|| {
+            let consequence = match opt_str(args, "consequence").as_deref() {
+                None => None,
+                Some(tag) => Some(
+                    Consequence::from_tag(tag)
+                        .ok_or_else(|| format!("unknown consequence: {tag}"))?,
+                ),
+            };
+            let authority = opt_str(args, "waiver_authority");
+            let clause = engine
+                .complete_clause_contract(
+                    req_str(args, "clause_id")?,
+                    req_str(args, "scope")?,
+                    req_str(args, "evidence_contract")?,
+                    consequence,
+                    bool_arg(args, "waivable", false),
+                    authority.as_deref(),
+                )
+                .map_err(|error| error.to_string())?;
+            ok(&json!({
+                "clause_id": clause.id,
+                "scope": clause.scope,
+                "evidence_contract": clause.evidence_contract,
+                "consequence": clause.consequence.map(|c| c.as_str()),
+                "waivable": clause.waivable,
+                "waiver_authority": clause.waiver_authority,
+                "status": clause.status.as_str(),
+                "note": "a clause resolves at min(consequence, control ceiling); register a control or it stays advisory (ADR-0034)",
+            }))
         })()),
         _ => None,
     }
