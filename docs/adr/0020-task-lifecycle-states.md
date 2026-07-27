@@ -1,6 +1,6 @@
 # ADR-0020: Task lifecycle state machine — `needs_input` and `paused`
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-23
 - Deciders: MindLeak maintainers
 - Related: [ADR-0004](0004-intent-plane-spec-brain.md) (intent plane is durable,

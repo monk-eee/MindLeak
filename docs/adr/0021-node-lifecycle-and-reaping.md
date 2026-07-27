@@ -1,6 +1,6 @@
 # ADR-0021: Node lifecycle and maintenance reaping semantics
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-23
 - Deciders: MindLeak maintainers
 - Related: [ADR-0002](0002-sqlite-decay-over-vector-llm.md) (decay is the point),

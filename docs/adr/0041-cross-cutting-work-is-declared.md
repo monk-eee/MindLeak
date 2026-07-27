@@ -1,6 +1,6 @@
 # ADR-0041: Cross-cutting work is declared, not waived
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-27
 - Deciders: MindLeak maintainers
 - Related: [ADR-0009](0009-evidence-backed-conformance.md) (conformance),

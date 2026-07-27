@@ -1,6 +1,6 @@
 # ADR-0029 - Proactive constitutional advice (ask-before-act)
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-24
 - **Related:** [ADR-0004](0004-intent-plane-spec-brain.md) (Intent Plane),
   [ADR-0009](0009-evidence-backed-conformance.md) (evidence-backed conformance),

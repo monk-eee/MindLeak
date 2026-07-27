@@ -1,6 +1,6 @@
 # ADR-0022: The learned-knowledge loop — promotion, revalidation, and advisory conformance
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-23
 - Deciders: MindLeak maintainers
 - Related: [ADR-0004](0004-intent-plane-spec-brain.md) (intent plane; durable but

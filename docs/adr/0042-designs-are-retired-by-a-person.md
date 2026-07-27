@@ -1,6 +1,6 @@
 # ADR-0042: A design is retired by a person, never by a missing file
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-27
 - Deciders: MindLeak maintainers
 - Related: [ADR-0019](0019-task-retention-and-board-hygiene.md) (archive, not

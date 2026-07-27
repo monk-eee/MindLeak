@@ -1,6 +1,6 @@
 # ADR-0044: Declared context is durable, and staleness is declared too
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-27
 - Amends: [ADR-0035](0035-fleet-management-heuristics.md) (fleet heuristics)
 - Related: [ADR-0015](0015-advisory-symbol-leases.md) (false safety),
