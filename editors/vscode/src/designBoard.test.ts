@@ -9,7 +9,9 @@ import {
   extractAdrSummary,
   formatDesignPromotion,
   formatMaterializationPlan,
+  normalizeAdrStatus,
   parseAdrMetadata,
+  rawAdrStatus,
   replaceAdrStatus,
 } from "./designBoard";
 
@@ -91,6 +93,53 @@ describe("parseAdrMetadata", () => {
       "# ADR-0099\n\n- Status: Proposed\n\n## Context\n\nThe old way broke.\n\n## Decision\n\nDo the new thing.\n"
     );
     expect(parsed?.summary).toBe("Do the new thing.\n\nThe old way broke.");
+  });
+
+  /**
+   * Bug: requiring an exact status match dropped every ADR whose status carried
+   * a parenthetical note, e.g. `Accepted (implemented)`. ADR-0015 and ADR-0017
+   * were therefore never registered in the design ledger at all, and the sync
+   * still reported success, so the loss was invisible. A parenthetical is
+   * commentary on a decision, not a different lifecycle state.
+   */
+  it("accepts a status carrying a parenthetical qualifier", () => {
+    expect(
+      parseAdrMetadata(
+        "docs/adr/0017-working-memory.md",
+        "# Working memory\n- Status: Accepted (implemented)\n"
+      )?.status
+    ).toBe("accepted");
+    expect(
+      parseAdrMetadata(
+        "docs/adr/0015-advisory-symbol-leases.md",
+        "# Advisory symbol leases\n- Status: Accepted (no symbol-lease primitive)\n"
+      )?.status
+    ).toBe("accepted");
+  });
+
+  it("still refuses a status that names a different lifecycle state", () => {
+    expect(
+      parseAdrMetadata(
+        "docs/adr/0032-single-checkout.md",
+        "# Single checkout\n- Status: Superseded by\n"
+      )
+    ).toBeNull();
+  });
+});
+
+describe("rawAdrStatus / normalizeAdrStatus", () => {
+  it("reports the declared status so a skipped ADR can say why it was skipped", () => {
+    expect(rawAdrStatus("# T\n- **Status:** Superseded by [ADR-0038](x.md)\n")).toBe(
+      "superseded by [adr-0038](x.md)"
+    );
+    expect(rawAdrStatus("# T\nno status line")).toBeUndefined();
+  });
+
+  it("maps a qualified status to its lifecycle state and refuses an unknown one", () => {
+    expect(normalizeAdrStatus("accepted (implemented)")).toBe("accepted");
+    expect(normalizeAdrStatus("proposed")).toBe("proposed");
+    expect(normalizeAdrStatus("superseded by [adr-0038](x.md)")).toBeUndefined();
+    expect(normalizeAdrStatus(undefined)).toBeUndefined();
   });
 });
 

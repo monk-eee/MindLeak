@@ -223,6 +223,44 @@ and footguns, with impact and status:
   decisions about how much an expired lease should forfeit, so they want an ADR
   rather than a quiet patch. Mitigation today: renew the lease before long
   builds.
+- **A renamed ADR leaves an unreachable Design Board row forever — OPEN.** —
+  Observed Jul 2026 while investigating "the Design Board seems to have errors".
+  `list_designs` returned two rows, `design:0036-one-work-surface` and
+  `design:0037-one-work-surface`, whose `adr_path` matches no file on any branch:
+  both are residue from renumbering the same ADR (0036 → 0037 → finally 0040).
+  Every tree row is wired to `mindleak.design.openAdr`, so clicking either throws
+  and surfaces an error toast — the reported symptom. The cause is that
+  `reconcile_designs`
+  ([`facade/design.rs`](crates/lodestar-core/src/facade/design.rs)) is
+  upsert-only and keys on ADR path, so a rename registers a new id and orphans
+  the old one; there is no `retire_design`. — Medium impact: no decision is lost
+  and no state is wrong, but the board accumulates unclickable rows that erode
+  trust in it. — Left for later, and deliberately **not** fixed by auto-retiring
+  designs whose file is absent: under ADR-0038 several worktrees on different
+  branches share one `spec.db`, so "file missing from this checkout" is a normal
+  branch-local condition, and retiring on it would delete live decisions. The fix
+  is an explicit, attributed `retire_design` plus a rule about whether
+  branch-local ADRs should register at all — that wants an ADR.
+- **ADRs with a qualified status were dropped from the ledger in silence —
+  FIXED.** — Observed Jul 2026. `parseAdrMetadata`
+  ([`editors/vscode/src/designBoard.ts`](editors/vscode/src/designBoard.ts))
+  required the status line to equal `proposed`/`accepted`/`rejected` exactly, so
+  `Accepted (implemented)` and `Accepted (no symbol-lease primitive)` failed the
+  check and returned `null`. ADR-0015 and ADR-0017 were therefore never
+  registered at all, while `sync()` kept logging success with a lower count, so
+  nothing reported the loss. — High impact: an accepted decision invisible to the
+  design ledger is exactly the failure this ledger exists to prevent. — Fixed
+  this run: `normalizeAdrStatus` strips a parenthetical qualifier, and
+  `readWorkspaceAdrMetadata` now returns the skipped paths with a reason which
+  `sync()` logs and warns on. Regression test: "accepts a status carrying a
+  parenthetical qualifier".
+- **One unreadable materialization blanked the whole Design Board — FIXED.** —
+  `DesignBoardController.refresh()` fanned `design_promotion` out over every
+  materialized design with `Promise.all`, so a single rejection rejected the
+  batch, `provider.update` never ran, and the view silently kept stale contents
+  behind one error toast. — Medium impact: the board looked merely out of date
+  rather than broken. — Fixed this run: `Promise.allSettled`, with each failed
+  lookup logged against its design id and the remaining rows still rendered.
 - **New MCP tools are invisible until VS Code reloads, and the binaries cannot be
   rebuilt while it runs — OPEN.** — `cargo build --release` fails with `Access is
   denied (os error 5)` on `lodestar-mcp.exe` / `mindleak-mcp.exe` because the
