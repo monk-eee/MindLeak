@@ -180,6 +180,19 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **Two agents can now wait on each other, and nothing surfaces it — KNOWN, left
+  for later.** — ADR-0046 lets `ask_question` address a peer agent, so agent A
+  can park on B while B parks on A. Both tasks sit in `needs_input` looking like
+  legitimate waits. It is recoverable — any author may answer, so a human can
+  break either side — and the ADR-0020 parking grace releases both after seven
+  days, so it cannot deadlock forever. But nothing detects or reports it:
+  `fleet_view` shows claims and staleness, not who is waiting on whom, and a
+  cycle among addressed questions is exactly the shape it cannot see. Impact: two
+  agents can burn up to a week of wall-clock doing nothing while the board reads
+  healthy. Introduced knowingly with the feature rather than discovered.
+  Fix would be a cycle check over unanswered `task_qa.audience` edges, surfaced
+  in `fleet_view` as an advisory finding.
+
 - **The pre-commit stash race reports a failure that names the wrong thing —
   GUARDED, not fixed.** — `pre-commit` stashes every unstaged change before
   running hooks and restores it afterwards. Alone that is invisible; in a fleet
