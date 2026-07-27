@@ -27,18 +27,18 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0017](0017-working-memory-and-autonomous-consolidation.md) | Working-memory tier and autonomous consolidation cycle | Accepted (implemented) |
 | [0018](0018-conflict-safe-concurrent-editing.md) | Conflict-safe concurrent editing in a shared working tree (worktrees optional) | Superseded by [ADR-0032](0032-single-checkout-fleet-integration.md) |
 | [0019](0019-task-retention-and-board-hygiene.md) | Task retention and board hygiene - hide, never delete | Accepted |
-| [0020](0020-task-lifecycle-states.md) | Task lifecycle state machine — `needs_input` and `paused` | Proposed |
-| [0021](0021-node-lifecycle-and-reaping.md) | Node lifecycle and maintenance reaping semantics | Proposed |
-| [0022](0022-learned-knowledge-loop.md) | The learned-knowledge loop — promotion, revalidation, and advisory conformance | Proposed |
+| [0020](0020-task-lifecycle-states.md) | Task lifecycle state machine — `needs_input` and `paused` | Accepted |
+| [0021](0021-node-lifecycle-and-reaping.md) | Node lifecycle and maintenance reaping semantics | Accepted |
+| [0022](0022-learned-knowledge-loop.md) | The learned-knowledge loop — promotion, revalidation, and advisory conformance | Accepted |
 | [0023](0023-design-board-accept-bridge.md) | Design items, the Design Board, and reviewed materialization | Accepted |
 | [0024](0024-preflight-overlap-detection.md) | Pre-flight work-overlap detection across both planes | Accepted |
 | [0025](0025-authoritative-checked-conformance.md) | Authoritative checked conformance | Accepted |
 | [0026](0026-constitutional-policy-over-mechanistic-ratchets.md) | Constitutional policy over mechanistic ratchets | Accepted |
 | [0027](0027-extension-led-progressive-disclosure.md) | Extension-led progressive disclosure over MCP primitives | Accepted |
 | [0028](0028-external-adoption-evidence-gate.md) | External adoption evidence before broad product claims | Accepted |
-| [0029](0029-proactive-constitutional-advice.md) | Proactive constitutional advice (ask-before-act) | Proposed |
+| [0029](0029-proactive-constitutional-advice.md) | Proactive constitutional advice (ask-before-act) | Accepted |
 | [0030](0030-discrete-per-agent-identity.md) | Discrete per-agent identity for concurrent coordination | Accepted |
-| [0031](0031-exportable-conformance-evidence.md) | Exportable conformance evidence, the Evidence Board, and a CI conformance gate | Proposed |
+| [0031](0031-exportable-conformance-evidence.md) | Exportable conformance evidence, the Evidence Board, and a CI conformance gate | Accepted |
 | [0032](0032-single-checkout-fleet-integration.md) | Single-checkout, single-publisher fleet integration | Superseded by |
 | [0033](0033-copilot-cli-registration.md) | First-class GitHub Copilot CLI registration for both planes | Accepted |
 | [0034](0034-typed-controls-and-enforcement-ceilings.md) | Typed controls, workflow scope, and enforcement ceilings | Accepted |
@@ -48,14 +48,15 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0038](0038-isolated-worktrees-shared-repository-state.md) | Isolated worktrees, shared repository state, reviewed convergence | Accepted |
 | [0039](0039-waivers-end-amendments-change.md) | Every waiver ends; changing the rule is an amendment | Accepted |
 | [0040](0040-one-work-surface.md) | One Work surface with advanced proof | Accepted |
-| [0041](0041-cross-cutting-work-is-declared.md) | Cross-cutting work is declared, not waived | Proposed |
-| [0042](0042-designs-are-retired-by-a-person.md) | A design is retired by a person, never by a missing file | Proposed |
-| [0043](0043-adoption-into-active-constitution-is-an-amendment.md) | Adopting a pack clause into an active constitution is an amendment | Proposed |
-| [0044](0044-declared-context-is-durable.md) | Declared context is durable, and staleness is declared too | Proposed |
+| [0041](0041-cross-cutting-work-is-declared.md) | Cross-cutting work is declared, not waived | Accepted |
+| [0042](0042-designs-are-retired-by-a-person.md) | A design is retired by a person, never by a missing file | Accepted |
+| [0043](0043-adoption-into-active-constitution-is-an-amendment.md) | Adopting a pack clause into an active constitution is an amendment | Accepted |
+| [0044](0044-declared-context-is-durable.md) | Declared context is durable, and staleness is declared too | Accepted |
 | [0045](0045-a-fleet-is-a-distributed-system.md) | An agent fleet is a distributed system, not a team | Accepted |
 | [0046](0046-agents-talk-through-the-durable-thread.md) | Agents talk through the durable thread, never to each other | Accepted |
-| [0047](0047-a-status-is-not-a-decision.md) | A status reflects a decision; only a decision records one | Proposed |
+| [0047](0047-a-status-is-not-a-decision.md) | A status reflects a decision; only a decision records one | Accepted |
 | [0048](0048-a-lapsed-lease-holes-the-window-it-does-not-move-it.md) | A lapsed lease holes the evidence window, it does not move it | Accepted |
+| [0050](0050-a-superseded-decision-is-not-a-stale-one.md) | A superseded decision is not a stale one | Accepted |
 
 ## Writing a new ADR
 

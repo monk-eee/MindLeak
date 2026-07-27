@@ -70,6 +70,7 @@ crate, and `target/debug/mindleak-mcp` starts and prints
 | Compile extension | `make ext-compile` | `npm --prefix editors/vscode run compile` |
 | ADR safety | `make adr-guard` | `node scripts/adr-guard.mjs` — fails if any ADR is uncommitted or on no remote ref |
 | Merge audit | `make merge-audit` | `node scripts/merge-audit.mjs` — fails if a merged branch has commits that never reached `main` |
+| Design audit | `make design-audit` | `node scripts/design-audit.mjs` — reports drift between the ADR files and the design ledger. Local only: it reads the ledger through a release `lodestar-mcp`, which CI has no database for |
 | Everything CI runs | `make ci` | see [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
 
 > **`make` is optional.** Every target maps to the direct command in the
@@ -182,6 +183,36 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **23 designs are `accepted` in the ledger with nobody named as the decider,
+  and the count grows on its own — SURFACED, not fixed.** — Found Jul 2026 by
+  the first run of `make design-audit`. `reconcile_designs` imports the status
+  out of the ADR file, so ADR-0001..0019, 0025, 0036, 0037, 0039, 0040 and 0046
+  landed as `accepted` with `decided_by` null. They read as decided and are not:
+  nobody approved them through Lodestar. Because deciding twice is not an undo,
+  `accept_design` refuses them, so they are also *stuck* — the ADR-0047 shape,
+  and the reason `reopen_undecided_design` exists.
+  This is not only inherited history. `DesignBoardController.sync()` calls
+  `reconcile_designs` over the whole ADR directory, so **every ADR merged with
+  `Status: Accepted` already written in its file becomes another undecided row
+  on the next sync.** ADR-0039, ADR-0040 and ADR-0046 are recent, authored here,
+  and already in the list; ADR-0048 is unregistered today and will be number 24.
+  Impact: the ledger overstates how much has actually been reviewed, which is
+  the one thing it exists to be trusted about, and the overstatement compounds.
+  The repair is mechanical — reopen, then accept with a real decider — but it is
+  23 attributed decisions and should be the human's, not an agent's. Stopping
+  the inflow is a convention question: an ADR authored here would land as
+  `Status: Proposed` and be accepted through the Design Board, so the file
+  follows the decision instead of asserting it.
+  Earlier this session the ledger was described as "fully remediated" after the
+  `proposed` rows were cleared; that was wrong, and only checking a second
+  property caught it.
+- **The design ledger cannot say `Superseded`.** — ADR-0018 and ADR-0032 declare
+  `Superseded by <ref>`; the ledger has `proposed`, `accepted`, `rejected`.
+  `make design-audit` reports these as a note rather than drift, because neither
+  side is stale — they are saying different things. Impact: a superseded decision
+  is indistinguishable from a live one in any ledger-driven view. Proposed fix in
+  [ADR-0050](docs/adr/0050-a-superseded-decision-is-not-a-stale-one.md) — give a
+  design the `superseded_by` link the goal model already has. Not yet decided.
 - **A stalled wait is only bounded by the seven-day parking grace — SURFACED,
   not prevented.** — ADR-0046 lets `ask_question` address a peer, so an agent
   can park on one that never answers. The mutual case (a wait cycle) is now
