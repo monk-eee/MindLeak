@@ -6,59 +6,8 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Fixed
-- **A wrapped `Status:` line no longer loses its reference.** ADR-0032 writes
-  `- Status: Superseded by` and puts `[ADR-0038](...)` on the next line.
-  `scripts/adr-files.mjs` read to the end of the line, so the file parsed as a
-  bare `Superseded by` — and that value reached the ADR index table, the
-  `make design-audit` report, and a question put to a human as "nobody can tell
-  what replaced it". The answer was one line further down, and the superseding
-  commit names ADR-0038 in its `DECISION:` line. The parser now reads indented
-  continuation lines, and the ADR index row for 0032 names its successor again.
-
-### Added
-- **`attribute_design_decision`: a decision already made can still be signed
-  (ADR-0051).** ADR-0047 named this failure exactly — a row that "asserts a
-  decision that can never be attributed" — and then repaired it only for designs
-  whose promotion had not materialised work, because reopening one that had would
-  leave tasks descending from a decision the ledger no longer shows. Auditing the
-  board found the hole that left: of 25 unattributed designs, **18 had already
-  materialised work** and were beyond both verbs — unreopenable and undecidable.
-  Those 18 are ADR-0001 through ADR-0032, so the repository's founding decisions
-  were the only ones permanently attributable to nobody, and the fix for exactly
-  that complaint had shipped four ADRs earlier. The new verb records the person
-  behind a decision that already stands, writing `decided_by` and nothing else.
-  Its guard is the deliberate complement of `reopen_undecided_design`'s, so
-  between them every undecided row has exactly one route and neither is a softer
-  way of doing the other's job. A `decided_by` already recorded is never
-  overwritten — attribution fills an empty field and can never change a full one.
-- **`supersede_design` records that an accepted design has been replaced
-  (ADR-0050).** The ledger had `proposed`, `accepted`, `rejected`, and no way to
-  say "this was decided, it held, and something better replaced it". ADR-0018
-  and ADR-0032 declare `Superseded by <ref>` in their files; both sat `accepted`
-  in the ledger, so every ledger-driven view showed a withdrawn decision as
-  live. Rather than a fourth status — which would discard the fact that the
-  design *was* accepted and could not say by what — a design now carries the
-  same `superseded_by` link the goal model already has, so there is one
-  vocabulary for supersession instead of two. `status` is deliberately
-  untouched; a live design is one with no `superseded_by`, and the Design Board
-  filters on it. Guarded on a recorded `decided_by`: superseding is a statement
-  about a decision that was actually made, so a row carrying an imported status
-  with nobody behind it must be reopened (ADR-0047) or retired (ADR-0042)
-  instead. The replacement must already be registered, and the link is never
-  inferred from an ADR's prose — deriving it would repeat exactly the mistake
-  ADR-0047 documents.
-
-### Changed
-- **`make design-audit` now reports a superseded ADR as drift rather than as an
-  unrepresentable note.** It reported those two files as a modelling gap because
-  neither side was stale — they were saying different things, and the ledger
-  could not hold one of them. It can now, so a file claiming supersession the
-  ledger has not been told about is ordinary drift, and so is the reverse. The
-  `unrepresentable` category and the `isDrift` predicate that existed only to
-  exempt it are both gone.
-
 ## [0.1.3] - 2026-07-27
+
 ### Added
 - **Publishing declares where it is working, and warns when one identity is in
   two places (ADR-0044, ADR-0049).** The claim gate re-opened the session on
@@ -102,50 +51,6 @@ to [Semantic Versioning](https://semver.org/).
   noise an agent learns to skip past. Nothing is reserved or consumed: it stays a
   read over the durable thread, so two readers still see the same rows and no new
   shared mutable resource is introduced (ADR-0045 clause 2).
-
-### Fixed
-- **Re-registering a session no longer erases where it said it was working
-  (ADR-0044).** `canonical-push` re-opens the session on every publish purely to
-  learn its own agent id, declaring no context. That overwrote the stored
-  declaration with an empty one, so `fleet_view` reported `branch: null` for
-  agents that had declared a branch minutes earlier — the fleet went blind at
-  exactly the moment it was busiest, and the tool that blinded it was the one
-  added to record where everyone is working. Declaring nothing is not a claim to
-  be nowhere: a call that declares no context now leaves the stored context
-  alone, in both the in-process registry and the durable row. Within a real
-  declaration the replace-wholesale rule is unchanged, because there an omitted
-  field is the client saying that field is no longer known.
-- **A lapsed lease no longer lets an agent launder unchecked work into an
-  `aligned` receipt (ADR-0048).** Re-claiming after a lapse reset
-  `claim_started_at` to the moment of the re-claim, so everything done before the
-  lapse fell outside the interval the agent was allowed to submit and
-  `check_conformance` rejected it with "evidence interval falls outside the live
-  claim". That read like under-reporting, but the verdict is computed over
-  whatever the evidence covers: the only way forward was to narrow the interval
-  until it was admitted, and the narrowed interval passed on the surviving sliver
-  and returned `aligned`, which sends the task straight to `done` with every
-  governed change made before the lapse never examined by anything. A lapse now
-  punches a hole in the window instead of moving it — a same-owner re-claim keeps
-  `claim_started_at`, so the earlier work stays provable, while new
-  `claim_lapses` and `unleased_seconds` columns record the discontinuity and cap
-  the verdict at `needs_human` with a finding naming it. The cap follows the
-  task rather than the submitted interval, so shrinking the evidence no longer
-  buys a clean pass. A claim by a *different* owner still opens a fresh window,
-  so reach-back can never cross a period somebody else owned the task. Both
-  columns are additive with defaults; existing databases migrate without
-  backfill and windows already open are treated as continuous.
-- **A current build could not open an existing database.** Indexes lived in
-  `schema.sql` and therefore ran *before* migrations. On an existing database
-  `CREATE TABLE IF NOT EXISTS` is a no-op, so the pre-migration table shape was
-  still in place when `idx_task_qa_audience` tried to index
-  `task_qa(audience, kind)`. The batch failed with `no such column: audience`,
-  the migration that would have added the column never ran, and every
-  pre-existing database became unopenable — a hard upgrade failure rather than a
-  degradation, and silent until someone ran a fresh binary. Indexes now live in
-  `indexes.sql` and are applied *after* migrations, so the ordering is
-  structural rather than something each new migration has to remember.
-
-### Added
 - **Publication requires a live claim; the ledger is no longer optional
   (ADR-0049).** The Intent Plane had one real arbiter (`claim_task`) and **zero
   automatic integration points** — nothing in the hooks, the scripts, or CI ever
@@ -165,7 +70,6 @@ to [Semantic Versioning](https://semver.org/).
   open would make "the ledger was down" the universal bypass. Overlapping live
   claims on the branch's paths are **reported, never enforced** (ADR-0024) — the
   collision is named at the one moment it is still cheap to act on.
-
 - **Arming auto-merge now means finished, and a merged branch is checked for
   what it left behind (ADR-0045 clause 2).** A pull request's merge decision has
   two writers — the agent pushing commits and whoever arms auto-merge — and
@@ -496,9 +400,39 @@ to [Semantic Versioning](https://semver.org/).
   an upstream change — and clauses that *were* tailored are flagged, because
   accepting an upstream change to one is the single way a pack upgrade can
   silently discard a deliberate local decision.
+- **`attribute_design_decision`: a decision already made can still be signed
+  (ADR-0051).** ADR-0047 named this failure exactly — a row that "asserts a
+  decision that can never be attributed" — and then repaired it only for designs
+  whose promotion had not materialised work, because reopening one that had would
+  leave tasks descending from a decision the ledger no longer shows. Auditing the
+  board found the hole that left: of 25 unattributed designs, **18 had already
+  materialised work** and were beyond both verbs — unreopenable and undecidable.
+  Those 18 are ADR-0001 through ADR-0032, so the repository's founding decisions
+  were the only ones permanently attributable to nobody, and the fix for exactly
+  that complaint had shipped four ADRs earlier. The new verb records the person
+  behind a decision that already stands, writing `decided_by` and nothing else.
+  Its guard is the deliberate complement of `reopen_undecided_design`'s, so
+  between them every undecided row has exactly one route and neither is a softer
+  way of doing the other's job. A `decided_by` already recorded is never
+  overwritten — attribution fills an empty field and can never change a full one.
+- **`supersede_design` records that an accepted design has been replaced
+  (ADR-0050).** The ledger had `proposed`, `accepted`, `rejected`, and no way to
+  say "this was decided, it held, and something better replaced it". ADR-0018
+  and ADR-0032 declare `Superseded by <ref>` in their files; both sat `accepted`
+  in the ledger, so every ledger-driven view showed a withdrawn decision as
+  live. Rather than a fourth status — which would discard the fact that the
+  design *was* accepted and could not say by what — a design now carries the
+  same `superseded_by` link the goal model already has, so there is one
+  vocabulary for supersession instead of two. `status` is deliberately
+  untouched; a live design is one with no `superseded_by`, and the Design Board
+  filters on it. Guarded on a recorded `decided_by`: superseding is a statement
+  about a decision that was actually made, so a row carrying an imported status
+  with nobody behind it must be reopened (ADR-0047) or retired (ADR-0042)
+  instead. The replacement must already be registered, and the link is never
+  inferred from an ADR's prose — deriving it would repeat exactly the mistake
+  ADR-0047 documents.
 
 ### Changed
-
 - **Scope matching moved to one shared `scope` module.** Clauses and waivers
   both declare scope, and forking the matcher would let the two disagree about
   what a scope reaches. It stays deliberately not a glob engine — exact match,
@@ -581,9 +515,45 @@ to [Semantic Versioning](https://semver.org/).
   the later amendment workflow). `propose_common_core` uses this same path for
   evidence, intent, safety, proportionality, and evolution principles; MCP
   review is attributed to a registered session.
+- **`make design-audit` now reports a superseded ADR as drift rather than as an
+  unrepresentable note.** It reported those two files as a modelling gap because
+  neither side was stale — they were saying different things, and the ledger
+  could not hold one of them. It can now, so a file claiming supersession the
+  ledger has not been told about is ordinary drift, and so is the reverse. The
+  `unrepresentable` category and the `isDrift` predicate that existed only to
+  exempt it are both gone.
 
 ### Fixed
-
+- **Re-registering a session no longer erases where it said it was working
+  (ADR-0044).** `canonical-push` re-opens the session on every publish purely to
+  learn its own agent id, declaring no context. That overwrote the stored
+  declaration with an empty one, so `fleet_view` reported `branch: null` for
+  agents that had declared a branch minutes earlier — the fleet went blind at
+  exactly the moment it was busiest, and the tool that blinded it was the one
+  added to record where everyone is working. Declaring nothing is not a claim to
+  be nowhere: a call that declares no context now leaves the stored context
+  alone, in both the in-process registry and the durable row. Within a real
+  declaration the replace-wholesale rule is unchanged, because there an omitted
+  field is the client saying that field is no longer known.
+- **A lapsed lease no longer lets an agent launder unchecked work into an
+  `aligned` receipt (ADR-0048).** Re-claiming after a lapse reset
+  `claim_started_at` to the moment of the re-claim, so everything done before the
+  lapse fell outside the interval the agent was allowed to submit and
+  `check_conformance` rejected it with "evidence interval falls outside the live
+  claim". That read like under-reporting, but the verdict is computed over
+  whatever the evidence covers: the only way forward was to narrow the interval
+  until it was admitted, and the narrowed interval passed on the surviving sliver
+  and returned `aligned`, which sends the task straight to `done` with every
+  governed change made before the lapse never examined by anything. A lapse now
+  punches a hole in the window instead of moving it — a same-owner re-claim keeps
+  `claim_started_at`, so the earlier work stays provable, while new
+  `claim_lapses` and `unleased_seconds` columns record the discontinuity and cap
+  the verdict at `needs_human` with a finding naming it. The cap follows the
+  task rather than the submitted interval, so shrinking the evidence no longer
+  buys a clean pass. A claim by a *different* owner still opens a fresh window,
+  so reach-back can never cross a period somebody else owned the task. Both
+  columns are additive with defaults; existing databases migrate without
+  backfill and windows already open are treated as continuous.
 - **A current build could not open an existing database.** Indexes lived in
   `schema.sql` and therefore ran *before* migrations. On an existing database
   `CREATE TABLE IF NOT EXISTS` is a no-op, so the pre-migration table shape was
@@ -594,7 +564,16 @@ to [Semantic Versioning](https://semver.org/).
   degradation, and silent until someone ran a fresh binary. Indexes now live in
   `indexes.sql` and are applied *after* migrations, so the ordering is
   structural rather than something each new migration has to remember.
-
+- **A current build could not open an existing database.** Indexes lived in
+  `schema.sql` and therefore ran *before* migrations. On an existing database
+  `CREATE TABLE IF NOT EXISTS` is a no-op, so the pre-migration table shape was
+  still in place when `idx_task_qa_audience` tried to index
+  `task_qa(audience, kind)`. The batch failed with `no such column: audience`,
+  the migration that would have added the column never ran, and every
+  pre-existing database became unopenable — a hard upgrade failure rather than a
+  degradation, and silent until someone ran a fresh binary. Indexes now live in
+  `indexes.sql` and are applied *after* migrations, so the ordering is
+  structural rather than something each new migration has to remember.
 - **An ADR whose status carries a parenthetical is no longer dropped from the
   design ledger in silence.** `Accepted (implemented)` is still accepted — a
   parenthetical is commentary on a decision, not a different lifecycle state.
@@ -650,7 +629,6 @@ to [Semantic Versioning](https://semver.org/).
   proposer, and promotion state) still survives a repository pass that disagrees
   with it. `updated_at` moves only when a fact actually changed, so a no-op pass
   remains genuinely idempotent.
-
 - **Accepting a design no longer guesses which checkout records the decision.**
   `resolveAdrUri` wrote the ADR's `Status:` line into the first workspace folder
   containing that path. Under ADR-0038 a fleet routinely has several worktrees
@@ -664,6 +642,14 @@ to [Semantic Versioning](https://semver.org/).
   aborts without writing; none keeps the existing clear error. The fix
   deliberately does not bind a design record to a worktree — that would put a
   machine-specific path in a database ADR-0038 shares across checkouts.
+- **A wrapped `Status:` line no longer loses its reference.** ADR-0032 writes
+  `- Status: Superseded by` and puts `[ADR-0038](...)` on the next line.
+  `scripts/adr-files.mjs` read to the end of the line, so the file parsed as a
+  bare `Superseded by` — and that value reached the ADR index table, the
+  `make design-audit` report, and a question put to a human as "nobody can tell
+  what replaced it". The answer was one line further down, and the superseding
+  commit names ADR-0038 in its `DECISION:` line. The parser now reads indented
+  continuation lines, and the ADR index row for 0032 names its successor again.
 
 ## [0.1.2] - 2026-07-24
 
