@@ -116,3 +116,27 @@ error, and it produced exactly the failure ADR-0035 exists to prevent.
 - `scripts/claim-gate.mjs`'s fingerprint comparison becomes redundant rather
   than wrong — whole-string equality now means what it says. It is left in
   place, since it still correctly handles rows written before the migration ran.
+
+## The Memory Plane has the same defect, and worse
+
+MindLeak stores attribution as `agent:{id}` nodes with `observed` edges
+(ADR-0003), so the fork reached the graph too: one session observed under two
+process environments produced two agent nodes. This was first assessed as
+cosmetic — a double row in `list_agents` — and that assessment was wrong.
+
+`check_overlap` skips the calling agent by **exact id**. An agent's other half is
+therefore not excluded, and the tool reports a collision **with itself**: a false
+positive indistinguishable from a real one, telling an agent to back off work
+that nobody else is doing. `working_set` matches `source_id` exactly and so
+returns half of an agent's own attention. Both are worse failure modes than the
+Intent Plane's miscount, because both produce confident wrong answers rather than
+missing ones.
+
+The same migration principle applies, with one difference: agent nodes are
+primary keys with observation edges hanging off them, so the halves are **folded,
+not overwritten**. The canonical node takes the earliest creation and latest
+activity; a shared observation takes the strongest weight, the latest touch, the
+earliest first sighting, and the **summed** reinforcement count — because a node
+observed under both names really was observed twice. Retired halves are deleted,
+their FTS rows with them by trigger, and their rows in the optional `embeddings`
+table cleared explicitly since that table has no foreign key.
