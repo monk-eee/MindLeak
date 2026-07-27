@@ -210,8 +210,9 @@ and footguns, with impact and status:
   `Superseded by <ref>`; the ledger has `proposed`, `accepted`, `rejected`.
   `make design-audit` reports these as a note rather than drift, because neither
   side is stale — they are saying different things. Impact: a superseded decision
-  is indistinguishable from a live one in any ledger-driven view. Left open; it
-  wants a status, which is an ADR-sized change.
+  is indistinguishable from a live one in any ledger-driven view. Proposed fix in
+  [ADR-0050](docs/adr/0050-a-superseded-decision-is-not-a-stale-one.md) — give a
+  design the `superseded_by` link the goal model already has. Not yet decided.
 - **A stalled wait is only bounded by the seven-day parking grace — SURFACED,
   not prevented.** — ADR-0046 lets `ask_question` address a peer, so an agent
   can park on one that never answers. The mutual case (a wait cycle) is now
