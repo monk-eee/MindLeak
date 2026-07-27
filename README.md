@@ -337,15 +337,16 @@ one intent plane and one memory graph by default.
 | `recover_claim` / `claim_transfer_history` | Guardedly recover an expired compatible legacy claim into the registered session and inspect the append-only prior-owner/window audit. |
 | `task_scope` / `check_overlap` | Read one claim declaration or find live claims intersecting concrete paths / symbol ids; advisory only, and combined by the caller with MindLeak's footprint result (ADR-0024). |
 | `complete_task` | Consume the exact authoritative `check_conformance` result (owner-guarded); aligned completes, uncertainty reviews, violation blocks. |
-| `release_task` / `block_task` | Return or block work. |
+| `release_task` / `block_task` | Return or block work. Blocking takes a task off whoever held it, so it records a `reason` they can read. |
 | `reopen_task` | Return a stranded task (in review, or a manual hold) to claimable `open`. |
 | `abandon_task` | Retire open/review/blocked or expired-claim work to durable `abandoned`; live and parked ownership stays protected. |
 | `resolve_task` | Human-accept an `in_review` task (a `drift`/`needs_human` completion) to `done` with no code-conformance re-run — the task-level mirror of `accept_design`. Requires a reviewer identity and refuses self-resolution by the reviewed agent. |
-| `ask_question` / `answer` | Park a claimed task in `needs_input` with a durable question; a human `answer` resumes it under the same owner with a fresh lease. |
-| `pause_task` / `resume_task` | Owner deliberately parks (`paused`) and resumes work, keeping the claim and evidence window. |
-| `task_qa` | The durable, append-only question/answer thread for a task. |
+| `ask_question` / `answer` | Park a claimed task in `needs_input` with a durable question; an `answer` resumes it under the same owner with a fresh lease. Set `audience` to address a peer agent instead of a human. |
+| `pending_questions` | Unanswered questions addressed to you. A read over the durable threads, not a queue — nothing is delivered or consumed, so reading cannot lose one. |
+| `pause_task` / `resume_task` | Owner deliberately parks (`paused`) and resumes work, keeping the claim and evidence window. Pausing records an optional `reason`. |
+| `task_qa` | The durable, append-only dialogue thread for a task: questions, answers, and notes explaining why a state change parked or blocked it. |
 | `board` | Who-owns-what-and-where snapshot including advisory scope; the VS Code Work view defaults to live/actionable work, while `include_terminal=true` returns durable history. |
-| `fleet_view` | Read-only: who is working where, from the context sessions declared on `open_session` — branch, head, base, how far behind that base each said it was, and whether live sessions disagree about their base. Advisory and capped at `review`; undeclared values report `unknown` rather than being guessed (ADR-0035, ADR-0044). |
+| `fleet_view` | Read-only: who is working where, from the context sessions declared on `open_session` — branch, head, base, how far behind that base each said it was, and whether live sessions disagree about their base. Also who is waiting on whom, and any wait cycle where agents can only be unstuck from outside (ADR-0046). Advisory and capped at `review`; undeclared values report `unknown` rather than being guessed (ADR-0035, ADR-0044). |
 | `register_design` / `reconcile_designs` / `design_board` | Register one ADR or idempotently import structured repository ADR metadata; list proposed decisions and accepted designs awaiting promotion, without creating tasks during reconciliation. |
 | `accept_design` / `reject_design` | Attributed human decision with no code conformance or self-acceptance; the Design Board aligns the ADR file's declared status. |
 | `retire_design` | Retire an orphaned design record left by a renamed ADR — an explicit, attributed human act (ADR-0042). Retiring is not deleting: the row keeps its id, path, decision, and materialization history, and simply leaves the working board. Nothing retires a design automatically, because a file missing from one worktree is alive on another branch. |

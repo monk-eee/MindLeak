@@ -53,6 +53,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0043](0043-adoption-into-active-constitution-is-an-amendment.md) | Adopting a pack clause into an active constitution is an amendment | Proposed |
 | [0044](0044-declared-context-is-durable.md) | Declared context is durable, and staleness is declared too | Proposed |
 | [0045](0045-a-fleet-is-a-distributed-system.md) | An agent fleet is a distributed system, not a team | Accepted |
+| [0046](0046-agents-talk-through-the-durable-thread.md) | Agents talk through the durable thread, never to each other | Accepted |
 
 ## Writing a new ADR
 

@@ -291,18 +291,23 @@ CREATE TABLE IF NOT EXISTS task_scopes (
 );
 CREATE INDEX IF NOT EXISTS idx_task_scopes_value ON task_scopes(kind, value);
 
--- Durable, append-only question/answer thread for needs_input tasks (ADR-0020):
--- an agent's question awaiting a human answer. Never edited or deleted.
+-- Durable, append-only dialogue thread for a task (ADR-0020, ADR-0046). Holds
+-- the agent's question and its answer, plus a `note` recording why a state
+-- change parked or blocked the work. Never edited or deleted: this thread is
+-- the answer to "why is this task in this state?", and it is the only medium
+-- through which two agents exchange anything directed at each other.
 CREATE TABLE IF NOT EXISTS task_qa (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id    TEXT NOT NULL,
-    kind       TEXT NOT NULL,             -- question | answer
+    kind       TEXT NOT NULL,             -- question | answer | note
     body       TEXT NOT NULL,
-    author     TEXT NOT NULL,             -- agent id (question) or answerer (answer)
+    author     TEXT NOT NULL,             -- agent id (question/note) or answerer (answer)
+    audience   TEXT,                      -- addressed agent id; NULL means a human (ADR-0046)
     created_at INTEGER NOT NULL,
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_task_qa_task ON task_qa(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_qa_audience ON task_qa(audience, kind);
 
 -- Additional goals a task declares it serves (ADR-0041). Written once at
 -- creation and never updated: coverage declared before the work is a prediction

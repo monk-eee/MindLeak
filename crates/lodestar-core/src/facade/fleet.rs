@@ -1,6 +1,6 @@
 use mindleak_session::SessionContext;
 
-use crate::fleet::{Divergence, FleetSession, FleetView, Staleness, ADVISORY_NOTE};
+use crate::fleet::{wait_cycles, Divergence, FleetSession, FleetView, Staleness, ADVISORY_NOTE};
 use crate::model::TaskStatus;
 use crate::{now_unix, Lodestar, Result};
 
@@ -24,6 +24,12 @@ impl Lodestar {
     /// what declared data actually supports — which bases disagree, and how far
     /// behind each session said it was — and reports `unknown` for the rest
     /// rather than guessing.
+    ///
+    /// Waits and wait cycles (ADR-0046) are the exception to "self-reported":
+    /// they are read from the ledger's own unanswered addressed questions, not
+    /// declared by anyone. They stay advisory anyway, because the remedy is a
+    /// human answering a question, and a view that blocked on its own
+    /// observation would be a control nobody asked for.
     pub fn fleet_view(&self) -> Result<FleetView> {
         let live: Vec<_> = self
             .store
@@ -71,8 +77,11 @@ impl Lodestar {
         }
         sessions.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
 
+        let waits = self.store.waits()?;
         Ok(FleetView {
             divergence: divergence_of(&sessions),
+            wait_cycles: wait_cycles(&waits),
+            waits,
             sessions,
             enforcement: ADVISORY_NOTE,
         })
@@ -213,5 +222,80 @@ mod tests {
     fn the_view_states_that_it_never_gates() {
         let e = engine();
         assert!(e.fleet_view().unwrap().enforcement.contains("advisory"));
+    }
+
+    // ADR-0046 gap closure: two agents addressing each other both sit in
+    // needs_input, which the board renders as ordinary parked work. Before this
+    // the fleet view showed claims and staleness but not who was waiting on
+    // whom, so a pair could burn the whole seven-day parking grace doing nothing
+    // while every surface read healthy. The view now derives the wait graph from
+    // the ledger's own unanswered addressed questions.
+    #[test]
+    fn the_view_surfaces_a_wait_cycle_and_names_the_tasks_that_break_it() {
+        let e = engine();
+        let goal = e
+            .define_goal(GoalKind::Objective, "Fleet", "coordinate", None)
+            .unwrap();
+        let first = e.create_task(&goal.id, "First", "done").unwrap();
+        let second = e.create_task(&goal.id, "Second", "done").unwrap();
+        assert!(e.claim_task(&first.id, "agent-a", 600).unwrap());
+        assert!(e.claim_task(&second.id, "agent-b", 600).unwrap());
+
+        // Healthy work: claimed, nobody waiting.
+        let working = e.fleet_view().unwrap();
+        assert!(working.waits.is_empty());
+        assert!(working.wait_cycles.is_empty());
+
+        // Each asks the other and parks. Both look like legitimate waits.
+        assert!(e
+            .ask_question(&first.id, "agent-a", "did you rename it?", Some("agent-b"))
+            .unwrap());
+        let one_sided = e.fleet_view().unwrap();
+        assert_eq!(one_sided.waits.len(), 1);
+        assert!(
+            one_sided.wait_cycles.is_empty(),
+            "agent-b can still answer, so a one-way wait is not a deadlock"
+        );
+
+        assert!(e
+            .ask_question(&second.id, "agent-b", "did you?", Some("agent-a"))
+            .unwrap());
+        let stuck = e.fleet_view().unwrap();
+        assert_eq!(stuck.wait_cycles.len(), 1);
+        assert_eq!(
+            stuck.wait_cycles[0].agents,
+            vec!["agent-a".to_string(), "agent-b".to_string()]
+        );
+        let mut expected = vec![first.id.clone(), second.id.clone()];
+        expected.sort();
+        assert_eq!(stuck.wait_cycles[0].task_ids, expected);
+
+        // Answering either question breaks it — the remedy the finding implies
+        // must actually work, or the report is just an alarm.
+        assert!(e
+            .answer_question(&first.id, "yes, yesterday", "human", 600)
+            .unwrap());
+        let freed = e.fleet_view().unwrap();
+        assert!(freed.wait_cycles.is_empty());
+        assert_eq!(freed.waits.len(), 1, "agent-b is still waiting on agent-a");
+    }
+
+    // A question whose task has moved on is history, not a live wait. Counting
+    // it would manufacture a stall that no longer exists.
+    #[test]
+    fn a_wait_ends_when_its_task_leaves_needs_input() {
+        let e = engine();
+        let goal = e
+            .define_goal(GoalKind::Objective, "Fleet", "coordinate", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "First", "done").unwrap();
+        assert!(e.claim_task(&task.id, "agent-a", 600).unwrap());
+        assert!(e
+            .ask_question(&task.id, "agent-a", "which schema?", Some("agent-b"))
+            .unwrap());
+        assert_eq!(e.fleet_view().unwrap().waits.len(), 1);
+
+        assert!(e.answer_question(&task.id, "v2", "agent-b", 600).unwrap());
+        assert!(e.fleet_view().unwrap().waits.is_empty());
     }
 }

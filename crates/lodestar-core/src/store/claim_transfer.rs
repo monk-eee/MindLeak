@@ -262,7 +262,9 @@ mod tests {
             .create_task(&goal(&store).id, "Parked", "done", None, NOW)
             .unwrap();
         assert!(store.claim_task(&task.id, "copilot", 60, NOW).unwrap());
-        assert!(store.pause_task(&task.id, "copilot", NOW + 1).unwrap());
+        assert!(store
+            .pause_task(&task.id, "copilot", None, NOW + 1)
+            .unwrap());
         let target = session(SESSION_A);
         assert!(store
             .recover_claim(
