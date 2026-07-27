@@ -61,9 +61,9 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0051](0051-a-decision-already-made-can-still-be-signed.md) | A decision already made can still be signed | Accepted |
 | [0052](0052-a-lease-is-a-heartbeat-not-a-deadline.md) | A lease is a heartbeat, not a deadline | Accepted |
 | [0053](0053-the-graph-records-events-not-conclusions.md) | The graph records events, not conclusions | Proposed |
-| [0056](0056-the-changelog-is-assembled-not-edited.md) | The changelog is assembled, not edited | Accepted |
 | [0054](0054-identity-is-the-session-not-the-process.md) | Identity is the session, not the process that hosts it | Accepted |
 | [0055](0055-draft-the-question-decide-nothing.md) | Draft the question, decide nothing | Accepted |
+| [0056](0056-the-changelog-is-assembled-not-edited.md) | The changelog is assembled, not edited | Accepted |
 
 ## Writing a new ADR
 
