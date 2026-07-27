@@ -143,12 +143,14 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "block_task",
-            "description": "Mark a nonterminal task blocked and clear any live claim. An optional blocked_by predecessor must be same-goal, acyclic, and part of a one-to-one handoff chain; release/claim cannot bypass it.",
+            "description": "Mark a nonterminal task blocked and clear any live claim. An optional blocked_by predecessor must be same-goal, acyclic, and part of a one-to-one handoff chain; release/claim cannot bypass it. Pass a reason: blocking takes work away from whoever held it, and the reason is the only way they can find out why.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "task_id": { "type": "string" },
-                    "blocked_by": { "type": "string" }
+                    "blocked_by": { "type": "string" },
+                    "reason": { "type": "string", "description": "Why the work was blocked. Recorded as a durable note on the task's thread, readable by its former owner." },
+                    "actor": { "type": "string", "default": "human", "description": "Who blocked it." }
                 },
                 "required": ["task_id"]
             }
@@ -189,20 +191,31 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "ask_question",
-            "description": "Park a claimed task with a durable question for a human (ADR-0020). Owner-guarded: moves the task to needs_input, clearing the live lease but keeping the owner and evidence window. Answer it with 'answer'.",
+            "description": "Park a claimed task with a durable question (ADR-0020). Owner-guarded: moves the task to needs_input, clearing the live lease but keeping the owner and evidence window. Address it at a peer with 'audience' (an agent id) instead of a human; the peer finds it via 'pending_questions'. Answer it with 'answer'.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "task_id": { "type": "string" },
                     "question": { "type": "string" },
+                    "audience": { "type": "string", "description": "Agent id to address the question to. Omit to ask a human." },
                     "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." }
                 },
                 "required": ["task_id", "question"]
             }
         }),
         json!({
+            "name": "pending_questions",
+            "description": "Unanswered questions addressed to you (ADR-0046), oldest first. A read over the durable task threads, not a queue: nothing is delivered, reserved, or consumed, so reading can never lose a question and two readers see the same rows. Reply with 'answer' on the returned task_id.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." }
+                }
+            }
+        }),
+        json!({
             "name": "answer",
-            "description": "Answer a needs_input task's question (ADR-0020). Records the durable answer and returns the task to claimed under the same owner with a fresh lease.",
+            "description": "Answer a needs_input task's question (ADR-0020). Records the durable answer and returns the task to claimed under the same owner with a fresh lease. Any author may answer, including a human answering one agent's question to another — a pair of agents waiting on each other must always be unstickable.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -221,6 +234,7 @@ pub(super) fn definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "task_id": { "type": "string" },
+                    "reason": { "type": "string", "description": "Why the work was suspended. Recorded as a durable note on the task's thread." },
                     "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." }
                 },
                 "required": ["task_id"]
@@ -241,7 +255,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "task_qa",
-            "description": "The durable, append-only question/answer thread for a task (ADR-0020), oldest first.",
+            "description": "The durable, append-only dialogue thread for a task (ADR-0020, ADR-0046), oldest first: questions, answers, and notes recording why a state change parked or blocked the work.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "task_id": { "type": "string" } },
@@ -257,6 +271,11 @@ pub(super) fn definitions() -> Vec<Value> {
                     "include_terminal": { "type": "boolean", "default": true, "description": "Include terminal done/abandoned tasks (default true)." }
                 }
             }
+        }),
+        json!({
+            "name": "stalled_work",
+            "description": "Every task that is not progressing, and the fact that stalled it: lapsed leases, work awaiting a human decision, tasks blocked behind something no agent will advance, blocks naming a task that is not on the board, and parked work. Read-only and evidence-free — it records nothing, changes no task state, and produces no verdict. It reports how long each stall has been true and deliberately does not decide whether that is too long, because a staleness threshold invented here would become policy nobody agreed to.",
+            "inputSchema": { "type": "object", "properties": {} }
         }),
     ]
 }
@@ -410,6 +429,10 @@ pub(super) fn dispatch(
                 .block_task(
                     req_str(args, "task_id")?,
                     optional_string_arg(args, "blocked_by")?,
+                    opt_str(args, "reason").as_deref(),
+                    opt_str(args, "actor")
+                        .unwrap_or_else(|| "human".to_string())
+                        .as_str(),
                 )
                 .map_err(|e| e.to_string())?;
             ok(&json!({ "blocked": blocked }))
@@ -438,9 +461,15 @@ pub(super) fn dispatch(
                     req_str(args, "task_id")?,
                     opt_str(args, "agent").unwrap_or_default().as_str(),
                     req_str(args, "question")?,
+                    opt_str(args, "audience").as_deref(),
                 )
                 .map_err(|e| e.to_string())?;
             ok(&json!({ "needs_input": parked }))
+        })()),
+        "pending_questions" => Some((|| {
+            ok(&engine
+                .pending_questions(opt_str(args, "agent").unwrap_or_default().as_str())
+                .map_err(|e| e.to_string())?)
         })()),
         "answer" => Some((|| {
             let answered = engine
@@ -460,6 +489,7 @@ pub(super) fn dispatch(
                 .pause_task(
                     req_str(args, "task_id")?,
                     opt_str(args, "agent").unwrap_or_default().as_str(),
+                    opt_str(args, "reason").as_deref(),
                 )
                 .map_err(|e| e.to_string())?;
             ok(&json!({ "paused": paused }))
@@ -478,6 +508,9 @@ pub(super) fn dispatch(
             ok(&engine
                 .task_qa(req_str(args, "task_id")?)
                 .map_err(|e| e.to_string())?)
+        })()),
+        "stalled_work" => Some((|| {
+            ok(&engine.stalled_work().map_err(|e| e.to_string())?)
         })()),
         "board" => Some((|| {
             let tasks = engine
@@ -730,7 +763,7 @@ mod tests {
         let task = engine.create_task(&goal.id, "Held", "done").unwrap();
         // A manual hold with no predecessor was previously unrecoverable via the
         // tool surface; reopen_task must return it to a claimable state.
-        engine.block_task(&task.id, None).unwrap();
+        engine.block_task(&task.id, None, None, "human").unwrap();
 
         let result = call(
             &engine,

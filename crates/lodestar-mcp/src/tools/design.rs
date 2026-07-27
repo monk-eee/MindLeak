@@ -6,7 +6,7 @@ use lodestar_core::design::DesignMetadata;
 use lodestar_core::{DesignStatus, Lodestar};
 use serde_json::{json, Value};
 
-use super::{ok, opt_str, req_str};
+use super::{bool_arg, ok, opt_str, req_str};
 
 pub(super) fn definitions() -> Vec<Value> {
     vec![
@@ -54,12 +54,37 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "list_designs",
-            "description": "Read the durable design-item ledger, optionally filtered by proposed, accepted, or rejected status. Includes historical and materialized items; read-only.",
+            "description": "Read the durable design-item ledger, optionally filtered by proposed, accepted, or rejected status. Includes historical and materialized items; read-only. Retired records (ADR-0042) are omitted unless include_retired is true.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "status": { "type": "string", "enum": ["proposed", "accepted", "rejected"] }
+                    "status": { "type": "string", "enum": ["proposed", "accepted", "rejected"] },
+                    "include_retired": { "type": "boolean", "description": "Include retired records in the audit view. Defaults to false." }
                 }
+            }
+        }),
+        json!({
+            "name": "retire_design",
+            "description": "Retire a design record: an explicit, attributed human act (ADR-0042). Use when an ADR was renamed or renumbered and left an orphan row whose path no longer exists. Retiring is NOT deleting — the row keeps its id, path, decision, decider, and materialization history, and simply leaves the working board. Nothing retires a design automatically: a missing ADR file is never evidence, because worktrees on different branches share one database and a file absent from one checkout is alive on another.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Design item id, e.g. design:0036-one-work-surface" },
+                    "human": { "type": "string", "description": "The person retiring the record." },
+                    "reason": { "type": "string", "description": "Why this record is no longer a live entry." }
+                },
+                "required": ["id", "human", "reason"]
+            }
+        }),
+        json!({
+            "name": "reopen_undecided_design",
+            "description": "Return a design whose status nobody ever decided to 'proposed', so a human can decide it (ADR-0047). An imported status reflects a decision but records none, leaving decided_by empty, and because deciding is guarded on 'proposed' the row is frozen: it asserts a decision that can never be attributed. This is NOT an undo. A design carrying a decided_by is a recorded human act and is refused; superseding it is a new decision, not the erasure of the old one. Also refused once promotion has materialised work, or after retirement.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Design item id, e.g. design:0045-...." }
+                },
+                "required": ["id"]
             }
         }),
         json!({
@@ -125,8 +150,24 @@ pub(super) fn dispatch(
                 None => None,
             };
             ok(&engine
-                .list_design_items(status)
+                .list_design_items(status, bool_arg(args, "include_retired", false))
                 .map_err(|e| e.to_string())?)
+        })()),
+        "retire_design" => Some((|| {
+            let item = engine
+                .retire_design(
+                    req_str(args, "id")?,
+                    req_str(args, "human")?,
+                    req_str(args, "reason")?,
+                )
+                .map_err(|e| e.to_string())?;
+            ok(&item)
+        })()),
+        "reopen_undecided_design" => Some((|| {
+            let item = engine
+                .reopen_undecided_design(req_str(args, "id")?)
+                .map_err(|e| e.to_string())?;
+            ok(&item)
         })()),
         "accept_design" => Some((|| {
             let item = engine

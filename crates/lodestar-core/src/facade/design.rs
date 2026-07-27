@@ -55,9 +55,41 @@ impl Lodestar {
         self.store.actionable_design_items()
     }
 
-    /// Every design item (durable audit view), or those in one status.
-    pub fn list_design_items(&self, status: Option<DesignStatus>) -> Result<Vec<DesignItem>> {
-        self.store.list_design_items(status)
+    /// Every design item (durable audit view), or those in one status. Retired
+    /// records are omitted unless `include_retired` (ADR-0042).
+    pub fn list_design_items(
+        &self,
+        status: Option<DesignStatus>,
+        include_retired: bool,
+    ) -> Result<Vec<DesignItem>> {
+        self.store.list_design_items(status, include_retired)
+    }
+
+    /// Retire a design record: an explicit, attributed human act (ADR-0042).
+    ///
+    /// This exists because `reconcile_designs` keys on the ADR path, so renaming
+    /// an ADR registers a new record and orphans the old one permanently. The
+    /// tempting alternative — retiring any design whose file is missing — is
+    /// refused by design: several worktrees on different branches share one
+    /// database, so a missing file is routine and retiring on it would delete
+    /// live decisions on someone else's branch.
+    ///
+    /// Retiring is not deleting (ADR-0019): the row keeps its id, path,
+    /// decision, decider, and materialization history.
+    pub fn retire_design(&self, id: &str, human: &str, reason: &str) -> Result<DesignItem> {
+        let human = human.trim();
+        if human.is_empty() {
+            return Err(LodestarError::Invalid(
+                "retiring a design requires the person doing it".to_string(),
+            ));
+        }
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err(LodestarError::Invalid(
+                "retiring a design requires a reason".to_string(),
+            ));
+        }
+        self.store.retire_design_item(id, human, reason, now_unix())
     }
 
     /// Human acceptance — the attributed, guarded human decision *only*
@@ -75,6 +107,43 @@ impl Lodestar {
         if !won {
             return Err(LodestarError::Invalid(format!(
                 "design item {id} was decided concurrently"
+            )));
+        }
+        self.store
+            .get_design_item(id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))
+    }
+
+    /// Return a design whose status nobody ever decided to `proposed`, so it can
+    /// be decided properly (ADR-0047).
+    ///
+    /// This repairs one specific injury: a reconciliation that copied a status
+    /// out of an ADR file, leaving `decided_by` empty. Because deciding is
+    /// guarded on `proposed`, such a row is otherwise frozen — it asserts a
+    /// decision and can never name who made it.
+    ///
+    /// It is deliberately not an undo. A design with a `decided_by` is a
+    /// recorded human act and stays that way; rejecting or superseding it is a
+    /// new decision, not the erasure of the old one (ADR-0019).
+    pub fn reopen_undecided_design(&self, id: &str) -> Result<DesignItem> {
+        let item = self
+            .store
+            .get_design_item(id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
+        if item.status == DesignStatus::Proposed {
+            return Err(LodestarError::Invalid(format!(
+                "design item {id} is already proposed"
+            )));
+        }
+        if item.decided_by.is_some() {
+            return Err(LodestarError::Invalid(format!(
+                "design item {id} was decided by {}; a recorded decision is not undone here",
+                item.decided_by.unwrap_or_default()
+            )));
+        }
+        if !self.store.reopen_undecided_design(id, now_unix())? {
+            return Err(LodestarError::Invalid(format!(
+                "design item {id} cannot be reopened: it is retired, or its promotion has already materialised work"
             )));
         }
         self.store
@@ -445,7 +514,7 @@ mod tests {
         assert_eq!(rejected.reason.as_deref(), Some("superseded by 0102"));
         // Archive-not-delete: off the board but still present.
         assert!(e.design_board().unwrap().is_empty());
-        assert_eq!(e.list_design_items(None).unwrap().len(), 1);
+        assert_eq!(e.list_design_items(None, false).unwrap().len(), 1);
     }
 
     #[test]

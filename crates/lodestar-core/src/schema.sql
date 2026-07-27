@@ -18,7 +18,6 @@ CREATE TABLE IF NOT EXISTS constitution_versions (
     activated_by     TEXT,
     activated_at     INTEGER
 );
-CREATE INDEX IF NOT EXISTS idx_constitution_status ON constitution_versions(status);
 
 -- Cited project facts discovered during bootstrap (SPEC-CONSTITUTION 7.2).
 -- Facts ground a draft in what the repository actually does. They are evidence,
@@ -48,7 +47,6 @@ CREATE TABLE IF NOT EXISTS controls (
     status        TEXT NOT NULL,        -- active | retired
     created_at    INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_controls_clause ON controls(clause_id);
 
 -- Waivers: bounded, attributed exceptions to one clause (SPEC-CONSTITUTION §9).
 -- expires_at is NOT NULL by design: there is no open-ended waiver, because an
@@ -72,8 +70,6 @@ CREATE TABLE IF NOT EXISTS waivers (
     revoked_at            INTEGER,
     revocation_reason     TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_waivers_clause ON waivers(clause_id);
-CREATE INDEX IF NOT EXISTS idx_waivers_expiry ON waivers(expires_at);
 
 -- Amendments: the attributed record of adopted policy changing
 -- (SPEC-CONSTITUTION §9). A waiver bends a rule once; an amendment changes it.
@@ -89,7 +85,6 @@ CREATE TABLE IF NOT EXISTS constitution_amendments (
     created_at    INTEGER NOT NULL,
     diff          TEXT NOT NULL          -- JSON array of ClauseDiff
 );
-CREATE INDEX IF NOT EXISTS idx_amendments_to ON constitution_amendments(to_version);
 
 -- Goals: the clauses of the constitution. Durable and versioned. Superseding
 -- creates a new row and marks the old one 'superseded' (never edited in place).
@@ -116,8 +111,6 @@ CREATE TABLE IF NOT EXISTS goals (
     waiver_authority     TEXT,             -- authority required to waive
     origin               TEXT NOT NULL DEFAULT 'local'  -- local | pack | discovered
 );
-CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
-CREATE INDEX IF NOT EXISTS idx_goals_slug   ON goals(slug);
 
 -- Policy packs are immutable, versioned inputs to constitutional drafting
 -- (SPEC-CONSTITUTION section 6). Adoption copies a clause into goals and records
@@ -194,9 +187,14 @@ CREATE TABLE IF NOT EXISTS design_items (
     created_at   INTEGER NOT NULL,
     updated_at   INTEGER NOT NULL,
     promotion_status TEXT NOT NULL DEFAULT 'not_required',
-    materialization_revision INTEGER NOT NULL DEFAULT 0
+    materialization_revision INTEGER NOT NULL DEFAULT 0,
+    -- Retirement (ADR-0042): a person, never a missing file. Kept separate from
+    -- status so retiring a record cannot overwrite what a human decided about
+    -- the design. Archived, never deleted (ADR-0019).
+    retired_at     INTEGER,
+    retired_by     TEXT,
+    retired_reason TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_design_items_status ON design_items(status);
 
 -- Append-only record of every reviewed materialization. The current link tables
 -- below are a projection of the latest revision; earlier reviewed plans remain
@@ -249,9 +247,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at       INTEGER NOT NULL,
     updated_at       INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
-CREATE INDEX IF NOT EXISTS idx_tasks_goal   ON tasks(goal_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_blocked_by ON tasks(blocked_by);
 
 -- Append-only ownership recovery audit (ADR-0030). Recovery never rewrites
 -- history: it records the full prior claim window before assigning a fresh one.
@@ -270,8 +265,6 @@ CREATE TABLE IF NOT EXISTS task_claim_transfers (
     transferred_at        INTEGER NOT NULL,
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS idx_task_claim_transfers_task
-    ON task_claim_transfers(task_id, id);
 
 -- Optional advisory scope declared atomically with a task claim (ADR-0024).
 -- Values are workspace-relative path globs or opaque MindLeak symbol ids. They
@@ -283,20 +276,22 @@ CREATE TABLE IF NOT EXISTS task_scopes (
     PRIMARY KEY (task_id, kind, value),
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS idx_task_scopes_value ON task_scopes(kind, value);
 
--- Durable, append-only question/answer thread for needs_input tasks (ADR-0020):
--- an agent's question awaiting a human answer. Never edited or deleted.
+-- Durable, append-only dialogue thread for a task (ADR-0020, ADR-0046). Holds
+-- the agent's question and its answer, plus a `note` recording why a state
+-- change parked or blocked the work. Never edited or deleted: this thread is
+-- the answer to "why is this task in this state?", and it is the only medium
+-- through which two agents exchange anything directed at each other.
 CREATE TABLE IF NOT EXISTS task_qa (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id    TEXT NOT NULL,
-    kind       TEXT NOT NULL,             -- question | answer
+    kind       TEXT NOT NULL,             -- question | answer | note
     body       TEXT NOT NULL,
-    author     TEXT NOT NULL,             -- agent id (question) or answerer (answer)
+    author     TEXT NOT NULL,             -- agent id (question/note) or answerer (answer)
+    audience   TEXT,                      -- addressed agent id; NULL means a human (ADR-0046)
     created_at INTEGER NOT NULL,
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS idx_task_qa_task ON task_qa(task_id);
 
 -- Additional goals a task declares it serves (ADR-0041). Written once at
 -- creation and never updated: coverage declared before the work is a prediction
@@ -311,7 +306,6 @@ CREATE TABLE IF NOT EXISTS task_goal_coverage (
     PRIMARY KEY (task_id, goal_id),
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS idx_task_goal_coverage_goal ON task_goal_coverage(goal_id);
 
 -- Durable progressive-handoff lineage. `tasks.blocked_by` is cleared when the
 -- successor opens; this table retains the one-to-one chain invariant.
@@ -331,7 +325,6 @@ CREATE TABLE IF NOT EXISTS goal_code (
     mode    TEXT NOT NULL DEFAULT 'governed', -- governed | forbid_change
     PRIMARY KEY (goal_id, node_id)
 );
-CREATE INDEX IF NOT EXISTS idx_goal_code_node ON goal_code(node_id);
 
 -- Conformance audit trail.
 CREATE TABLE IF NOT EXISTS conformance (
@@ -354,4 +347,20 @@ CREATE TABLE IF NOT EXISTS knowledge (
     half_life_hours REAL NOT NULL DEFAULT 720.0, -- ~30 days
     confirmed_at    INTEGER NOT NULL,      -- last reconfirmation (decay clock)
     created_at      INTEGER NOT NULL
+);
+
+-- Where each agent session declared it is working (ADR-0035, amended by
+-- ADR-0044). Durable because the fleet spans processes: linked worktrees share
+-- one spec.db, but each runs its own server with its own in-memory registry, so
+-- an in-process view would report a fraction of the fleet as if it were all of
+-- it. Every value is self-reported and strictly advisory; declared_at is kept so
+-- a reader can discount a stale declaration rather than trust it silently.
+CREATE TABLE IF NOT EXISTS session_context (
+    agent_id    TEXT PRIMARY KEY,
+    branch      TEXT,
+    head_sha    TEXT,
+    base        TEXT,
+    dirty       INTEGER,               -- 0/1, NULL when undeclared
+    behind      INTEGER,               -- commits behind base, counted by the client
+    declared_at INTEGER NOT NULL
 );

@@ -68,6 +68,8 @@ crate, and `target/debug/mindleak-mcp` starts and prints
 | Lint (extension) | `make ext-lint` | `npm --prefix editors/vscode run lint` |
 | Test (extension) | `make ext-test` | `npm --prefix editors/vscode test` |
 | Compile extension | `make ext-compile` | `npm --prefix editors/vscode run compile` |
+| ADR safety | `make adr-guard` | `node scripts/adr-guard.mjs` — fails if any ADR is uncommitted or on no remote ref |
+| Merge audit | `make merge-audit` | `node scripts/merge-audit.mjs` — fails if a merged branch has commits that never reached `main` |
 | Everything CI runs | `make ci` | see [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
 
 > **`make` is optional.** Every target maps to the direct command in the
@@ -180,6 +182,79 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **A stalled wait is only bounded by the seven-day parking grace — SURFACED,
+  not prevented.** — ADR-0046 lets `ask_question` address a peer, so an agent
+  can park on one that never answers. The mutual case (a wait cycle) is now
+  detected and reported by `fleet_view`, and answering any named task breaks it.
+  What is *not* solved: a one-way wait on an agent that has vanished is not a
+  cycle and is not flagged — correctly, since the addressee could still answer,
+  but it means a task can sit parked for a week on someone who is never coming
+  back. Nothing alerts either way: `fleet_view` is a pull, so the finding is only
+  seen if a human or agent looks. Impact: bounded wasted wall-clock, never
+  permanent. Fix would be a staleness threshold on an unanswered wait — an
+  addressee with no live claim and no recent session is a different, weaker
+  signal than a cycle and should read as such.
+- **Accepting a design wrote `Accepted` into whichever worktree resolved the ADR
+  path first — FIXED.** — Observed Jul 2026 while ADR-0044 was still an unmerged
+  proposal on its own branch. Two ADR files in this checkout changed from
+  `Status: Proposed` to `Status: Accepted` in the working tree, uncommitted,
+  while the agent that owned the checkout was mid-pull-request and had accepted
+  nothing. One of the two, ADR-0043, belonged to a different branch entirely —
+  which is the tell: the write landed in a checkout that had no relationship to
+  the decision being accepted. The write itself is human-triggered (`accept()` /
+  `reject()` prompt for a name before calling `alignAdrStatus`), so this was
+  never a status flipping itself; the defect was *where the write went*.
+  `resolveAdrUri` ([`editors/vscode/src/designBoardController.ts`](editors/vscode/src/designBoardController.ts))
+  walked `workspace.workspaceFolders` and wrote to the first folder containing
+  the path. Under ADR-0038 several worktrees on different branches share one
+  `spec.db` and are commonly open together, so "first folder containing this
+  path" was close to arbitrary. — Medium impact: no data loss, but an ADR's
+  declared status is evidence of a human decision, and this could plant that
+  evidence on a branch nobody decided anything about — or, as here, drop an
+  uncommitted edit into another agent's tree mid-commit, which is also the
+  pre-commit stash race described below. Caught only because the owning agent
+  read `git status` before pushing rather than trusting it. — Fixed Jul 2026:
+  `chooseAdrTarget` never picks. One matching checkout writes as before; several
+  ask the reviewer which one, and cancelling aborts without writing; none keeps
+  the existing clear error. Deliberately *not* fixed by binding a design record
+  to a worktree — that would put a machine-specific path in a database ADR-0038
+  shares across checkouts, and it answers a question the reviewer is better
+  placed to answer while already standing in the prompt.
+- **Stalled ledger work is invisible: nothing notices a lapsed lease or a
+  shipped change with no receipt — OPEN.** — Found Jul 2026 auditing why three
+  tasks sat unfinished. They stalled for three *different* reasons and the board
+  reported none of them:
+  1. **A lapsed lease produces no signal.** `task:c3ef672e0ae3` (fleet view) was
+     built and opened as a pull request, but `check_conformance` was never
+     called and the lease simply expired. Its only conformance record is the one
+     written during a later audit. The work exists in Git and does not exist in
+     the ledger, and nothing anywhere says so.
+  2. **Work that ships outside a claim window can never be certified.**
+     `task:92778f8ad0f5` was delivered under an earlier pull request, so every
+     honest evidence window for it is empty and the verdict is necessarily
+     `needs_human`. This is the evidence contract behaving correctly — it
+     refuses to certify what it cannot bound — but the task then waits on a
+     human with nothing prompting one.
+  3. **Cross-cutting work reads as `drift`, and by design cannot be repaired
+     afterwards.** `task:05dade200195` ran the full loop with real evidence (2
+     commits, 11 artifacts, complete provenance) and still resolved `drift`:
+     *"governed code changed without a covering task"*, naming two goals other
+     than its own. ADR-0041's `also_serves` is the answer, but it is fixed at
+     creation with no later mutator — deliberately, because coverage added once
+     conformance has complained is a rationalisation. So the only exit is human
+     judgement.
+  Blocked work then queues behind these silently: `task:0bcbb4220bcc` waited 78
+  hours on (2), with zero conformance records of its own, and the fleet-overlap
+  chain waited on (1). — Medium-to-high impact: no state is wrong and nothing is
+  lost, but the board looks idle while three finished pieces of work sit
+  uncertified, and the only way to find out is to go looking. It is the same
+  shape as the ADR-loss problem — silent, and caught by accident. — Left for
+  later; the fix is a read-only stall report (lapsed leases, `in_review` older
+  than a threshold, tasks blocked by something already terminal or `in_review`)
+  rather than any change to the evidence contract, which is behaving correctly
+  in all three cases. Note that (1) is the only one that is purely mechanical;
+  (2) and (3) are rules working as intended and want a human, not a fix.
+
 - **The pre-commit stash race reports a failure that names the wrong thing —
   GUARDED, not fixed.** — `pre-commit` stashes every unstaged change before
   running hooks and restores it afterwards. Alone that is invisible; in a fleet
@@ -198,12 +273,20 @@ and footguns, with impact and status:
   can still walk into it, because the stash happens inside `pre-commit` itself
   and no hook can observe the tree as it was before its own framework moved it.
   The real fix is ADR-0038 isolation — one worktree per workstream.
-- **Each worktree needs its own `node_modules` — OPEN.** — `npm ci` in
-  `editors/vscode` costs ~13s and ~449 packages per worktree, and a fresh
-  worktree fails extension tests with a confusing `npx` prompt to install
-  `vitest` rather than a clear "dependencies not installed". — Low impact, real
-  friction: it makes spinning up a worktree for a small docs change feel
-  disproportionate. — Left for later; `make setup` could take a worktree path.
+- **Each worktree needs its own `node_modules` — FIXED.** — `npm ci` in
+  `editors/vscode` costs ~13s and ~449 packages per worktree. Worse than the
+  cost was the symptom: a fresh worktree failed at *push* time with
+  `Cannot find module .../prettier/bin/prettier.cjs`, which says nothing about
+  the real cause, and failed extension tests with an `npx` prompt offering to
+  install `vitest` rather than a clear "dependencies not installed". Hit four
+  times in one session. — Low impact, real friction: it made spinning up a
+  worktree for a small docs change feel disproportionate, which is exactly the
+  pressure that pushes agents back into the shared checkout ADR-0038 moved them
+  out of. — Fixed Jul 2026: `make worktree-setup` installs just the extension
+  deps. Hooks and cargo tools are shared through the common `.git` dir and the
+  user's cargo bin, so a linked worktree needs nothing else, and running the
+  full `make setup` per worktree would re-run `pip install` and
+  `cargo install` for no reason.
 
 - **A lapsed lease silently shrinks the evidence window a task can prove — OPEN.** —
   Observed Jul 2026 closing ADR-0026 task 4. Building three commits took longer

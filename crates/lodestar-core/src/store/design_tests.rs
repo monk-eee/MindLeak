@@ -52,7 +52,10 @@ fn reconciliation_refreshes_repository_facts_but_never_review_state() {
     assert_eq!(retry.decided_by, first.decided_by);
     assert_eq!(retry.proposed_by, first.proposed_by);
     assert_eq!(retry.promotion_status, first.promotion_status);
-    assert_eq!(store.list_design_items(None).unwrap(), vec![retry.clone()]);
+    assert_eq!(
+        store.list_design_items(None, false).unwrap(),
+        vec![retry.clone()]
+    );
     assert!(store.next_task(NOW + 1).unwrap().is_none());
 
     // A pass that changes nothing must not churn the row.
@@ -266,5 +269,171 @@ fn design_promotion_is_read_only_and_resolves_materialized_provenance() {
             .map(|goal| &goal.id)
             .collect::<Vec<_>>()
     );
-    assert_eq!(store.list_design_items(None).unwrap().len(), 1);
+    assert_eq!(store.list_design_items(None, false).unwrap().len(), 1);
+}
+
+/// The ghost-row scenario ADR-0042 exists for: renaming an ADR registers a new
+/// design and orphans the old one, because reconciliation keys on the ADR path.
+/// The orphan is unreachable — its path exists on no branch — but nothing could
+/// remove it, so the Design Board kept offering rows that throw when opened.
+#[test]
+fn retiring_removes_an_orphaned_record_from_the_board_without_deleting_it() {
+    let store = store();
+    let orphan = store
+        .reconcile_design_item(
+            &DesignMetadata {
+                adr_path: "docs/adr/0036-one-work-surface.md".into(),
+                title: "One Work surface".into(),
+                summary: "renumbered away".into(),
+                status: DesignStatus::Proposed,
+                proposed_by: Some("workspace-sensor".into()),
+            },
+            NOW,
+        )
+        .unwrap();
+    assert!(orphan.retired.is_none());
+    assert_eq!(store.actionable_design_items().unwrap().len(), 1);
+
+    let retired = store
+        .retire_design_item(&orphan.id, "Lyndon Swan", "renumbered to ADR-0040", NOW + 1)
+        .unwrap();
+
+    // Attributed and reasoned, so the audit says who and why.
+    let record = retired.retired.as_ref().expect("retirement recorded");
+    assert_eq!(record.by, "Lyndon Swan");
+    assert_eq!(record.reason, "renumbered to ADR-0040");
+    assert_eq!(record.at, NOW + 1);
+
+    // Off the working board, still in the durable audit view (ADR-0019).
+    assert!(store.actionable_design_items().unwrap().is_empty());
+    assert!(store.list_design_items(None, false).unwrap().is_empty());
+    let audited = store.list_design_items(None, true).unwrap();
+    assert_eq!(audited.len(), 1);
+    assert_eq!(audited[0].id, orphan.id);
+    assert_eq!(audited[0].adr_path, orphan.adr_path);
+    assert_eq!(audited[0].status, orphan.status);
+    assert!(store.get_design_item(&orphan.id).unwrap().is_some());
+}
+
+/// Retiring twice must not overwrite the first actor and reason: the guarded
+/// update is what stops a second caller rewriting who retired the record.
+#[test]
+fn retiring_is_refused_twice_and_preserves_the_original_attribution() {
+    let store = store();
+    let item = store
+        .reconcile_design_item(
+            &DesignMetadata {
+                adr_path: "docs/adr/0037-one-work-surface.md".into(),
+                title: "One Work surface".into(),
+                summary: "renumbered away".into(),
+                status: DesignStatus::Proposed,
+                proposed_by: None,
+            },
+            NOW,
+        )
+        .unwrap();
+    store
+        .retire_design_item(&item.id, "first", "original reason", NOW + 1)
+        .unwrap();
+
+    let again = store.retire_design_item(&item.id, "second", "later reason", NOW + 2);
+    assert!(again.is_err(), "a retired record must not be retired again");
+
+    let record = store
+        .get_design_item(&item.id)
+        .unwrap()
+        .unwrap()
+        .retired
+        .expect("still retired");
+    assert_eq!(record.by, "first");
+    assert_eq!(record.reason, "original reason");
+}
+
+#[test]
+fn retiring_an_unknown_design_is_not_found() {
+    let store = store();
+    assert!(store
+        .retire_design_item("design:does-not-exist", "someone", "why", NOW)
+        .is_err());
+}
+
+// ADR-0047. An imported status reflects a decision; it does not record one, so
+// `decided_by` stays empty. Because deciding is guarded on `proposed`, such a
+// row is frozen: it asserts a decision that can never be attributed to anyone.
+// Observed live on ADR-0045, where a reviewer said "I agree with it" and there
+// was no way to write that down.
+#[test]
+fn an_imported_status_can_be_reopened_but_a_real_decision_cannot() {
+    let store = store();
+    let item = store
+        .reconcile_design_item(
+            &DesignMetadata {
+                adr_path: "docs/adr/0045-fleet.md".into(),
+                title: "A fleet is a distributed system".into(),
+                summary: "treat agents as a distributed system".into(),
+                status: DesignStatus::Accepted,
+                proposed_by: None,
+            },
+            NOW,
+        )
+        .unwrap();
+
+    // Imported at face value, and therefore unattributable and undecidable.
+    assert_eq!(item.status, DesignStatus::Accepted);
+    assert_eq!(item.decided_by, None);
+    assert!(!store
+        .decide_design_item(&item.id, DesignStatus::Accepted, "monk-eee", None, NOW)
+        .unwrap());
+
+    assert!(store.reopen_undecided_design(&item.id, NOW).unwrap());
+    assert_eq!(
+        store.get_design_item(&item.id).unwrap().unwrap().status,
+        DesignStatus::Proposed
+    );
+
+    // Now decidable by a person — and that decision is not reopenable.
+    assert!(store
+        .decide_design_item(&item.id, DesignStatus::Accepted, "monk-eee", None, NOW)
+        .unwrap());
+    assert!(!store.reopen_undecided_design(&item.id, NOW).unwrap());
+    let decided = store.get_design_item(&item.id).unwrap().unwrap();
+    assert_eq!(decided.status, DesignStatus::Accepted);
+    assert_eq!(decided.decided_by.as_deref(), Some("monk-eee"));
+}
+
+// Reopening is scoped to the damage it repairs: a design whose promotion has
+// already materialised work rests on that acceptance, so it stays put.
+#[test]
+fn reopening_is_refused_once_promotion_has_left_not_required() {
+    let store = store();
+    let item = store
+        .reconcile_design_item(
+            &DesignMetadata {
+                adr_path: "docs/adr/0045-fleet.md".into(),
+                title: "A fleet is a distributed system".into(),
+                summary: "treat agents as a distributed system".into(),
+                status: DesignStatus::Proposed,
+                proposed_by: None,
+            },
+            NOW,
+        )
+        .unwrap();
+    assert!(store
+        .decide_design_item(&item.id, DesignStatus::Accepted, "monk-eee", None, NOW)
+        .unwrap());
+    // Strip the decider but keep promotion armed: the residual guard, not the
+    // decided_by one, is what must refuse here.
+    store
+        .conn
+        .execute(
+            "UPDATE design_items SET decided_by = NULL WHERE id = ?1",
+            rusqlite::params![item.id],
+        )
+        .unwrap();
+
+    assert!(!store.reopen_undecided_design(&item.id, NOW).unwrap());
+    assert_eq!(
+        store.get_design_item(&item.id).unwrap().unwrap().status,
+        DesignStatus::Accepted
+    );
 }

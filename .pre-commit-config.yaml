@@ -51,9 +51,45 @@ repos:
         language: system
         files: ^(editors/vscode/(src|media)/.*\.(ts|js)|scripts/.*\.mjs)$
         pass_filenames: true
+
+      - id: adr-number-guard
+        name: ADR number not already claimed on another ref
+        # ADR numbers are a shared counter with no coordination: each branch
+        # reads "the next number" from a view that cannot see a sibling's
+        # in-flight ADR. Catching the collision here costs seconds; catching it
+        # at merge costs a renumber across the file, its cross-links, and every
+        # commit message citing it.
+        entry: node scripts/adr-number-guard.mjs
+        language: system
+        files: ^docs/adr/\d{4}-.*\.md$
+        pass_filenames: true
+
+      - id: adr-index
+        name: ADR index matches the ADR files
+        # The index is derived data: number, title, and status all live in the
+        # ADR itself. Hand-maintaining it meant every concurrent branch appended
+        # a row to the same table, so every merge conflicted on it — and the
+        # table drifted anyway. Ten of forty-five rows were wrong when this was
+        # added, including an ADR the whole constitution backlog gates on.
+        entry: node scripts/adr-index.mjs --check
+        language: system
+        files: ^docs/adr/.*\.md$
+        pass_filenames: false
+
       - id: canonical-push
         name: canonical fleet publisher
         entry: node scripts/canonical-push.mjs --verify-pre-push
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
+      # An ADR left in the working tree is one `git clean -fd` from gone, and
+      # nothing else reports it. Only the working-tree check runs here: the
+      # unpublished check would fail the very push that publishes the ADR.
+      - id: adr-guard
+        name: no ADR left uncommitted
+        entry: node scripts/adr-guard.mjs --uncommitted
         language: system
         pass_filenames: false
         always_run: true

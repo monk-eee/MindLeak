@@ -360,6 +360,7 @@ dependencies = [
 name = "mindleak-session"
 version = "0.1.3"
 dependencies = [
+ "serde",
  "serde_json",
  "sha2",
 ]

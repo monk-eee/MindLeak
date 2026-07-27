@@ -35,6 +35,9 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
             "materialization_revision",
             "INTEGER NOT NULL DEFAULT 0",
         ),
+        ("design_items", "retired_at", "INTEGER"),
+        ("design_items", "retired_by", "TEXT"),
+        ("design_items", "retired_reason", "TEXT"),
         ("goals", "constitution_version", "TEXT"),
         ("goals", "rationale", "TEXT"),
         ("goals", "scope", "TEXT"),
@@ -43,6 +46,7 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
         ("goals", "waivable", "INTEGER NOT NULL DEFAULT 0"),
         ("goals", "waiver_authority", "TEXT"),
         ("goals", "origin", "TEXT NOT NULL DEFAULT 'local'"),
+        ("task_qa", "audience", "TEXT"),
     ] {
         if !column_exists(connection, table, column)? {
             connection.execute_batch(&format!(

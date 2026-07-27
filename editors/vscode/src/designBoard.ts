@@ -214,6 +214,30 @@ export function replaceAdrStatus(content: string, status: DesignStatus): string 
   return content.replace(pattern, (_match, prefix: string) => `${prefix}${label}`);
 }
 
+/** Which checkout should receive an accepted design's ADR status write. */
+export type AdrTargetChoice =
+  { kind: "none" } | { kind: "one"; target: string } | { kind: "ambiguous"; candidates: string[] };
+
+/**
+ * Decide where an ADR status write goes, given every attached workspace folder
+ * that actually contains the path.
+ *
+ * Deliberately refuses to pick for you when several match. An ADR's declared
+ * status is evidence of a human decision, and under ADR-0038 a fleet routinely
+ * has several worktrees of one repository open on different branches — so
+ * "the first folder containing this path" is close to arbitrary, and getting it
+ * wrong records that decision on a branch nobody made it on.
+ */
+export function chooseAdrTarget(candidates: string[]): AdrTargetChoice {
+  if (candidates.length === 0) {
+    return { kind: "none" };
+  }
+  if (candidates.length === 1) {
+    return { kind: "one", target: candidates[0] };
+  }
+  return { kind: "ambiguous", candidates: [...candidates] };
+}
+
 export function formatMaterializationPlan(
   plan: DesignMaterializationPlan,
   linkedTasks: DesignTask[] = []

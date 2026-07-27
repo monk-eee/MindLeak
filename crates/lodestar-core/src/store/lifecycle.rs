@@ -65,6 +65,9 @@ impl LodestarStore {
         let tasks_removed = transaction.execute("DELETE FROM tasks", [])?;
         let knowledge_removed = transaction.execute("DELETE FROM knowledge", [])?;
         transaction.execute("DELETE FROM policy_packs", [])?;
+        // Declared context describes sessions of a fleet that no longer has any
+        // work; leaving it would outlive everything it referred to.
+        transaction.execute("DELETE FROM session_context", [])?;
         let goals_removed = transaction.execute("DELETE FROM goals", [])?;
         transaction.commit()?;
 
@@ -179,7 +182,7 @@ mod tests {
         assert_eq!(outcome.conformance_records_removed, 1);
         assert_eq!(outcome.knowledge_removed, 1);
         assert_eq!(store.stats(NOW).unwrap().active_goals, 0);
-        assert!(store.list_design_items(None).unwrap().is_empty());
+        assert!(store.list_design_items(None, false).unwrap().is_empty());
         assert!(store
             .define_goal(GoalKind::Objective, "New goal", "usable", None, NOW)
             .is_ok());

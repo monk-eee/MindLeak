@@ -8,7 +8,7 @@ use rusqlite::{params, Row, Transaction, TransactionBehavior};
 use crate::design::{
     design_id_from_path, DesignItem, DesignMaterializationMode, DesignMaterializationPlan,
     DesignMaterializationRecord, DesignMetadata, DesignPromotion, DesignPromotionStatus,
-    DesignStatus,
+    DesignStatus, Retirement,
 };
 use crate::error::{LodestarError, Result};
 use crate::model::{Goal, Task};
@@ -20,7 +20,7 @@ use super::{
 };
 
 const DESIGN_COLS: &str =
-    "id, adr_path, title, summary, status, proposed_by, decided_by, reason, created_at, updated_at, promotion_status, materialization_revision";
+    "id, adr_path, title, summary, status, proposed_by, decided_by, reason, created_at, updated_at, promotion_status, materialization_revision, retired_at, retired_by, retired_reason";
 
 impl LodestarStore {
     /// Reconcile structured repository ADR metadata into the durable design
@@ -36,6 +36,12 @@ impl LodestarStore {
     /// stays genuinely idempotent.
     pub fn reconcile_design_item(&self, metadata: &DesignMetadata, now: i64) -> Result<DesignItem> {
         let id = design_id_from_path(&metadata.adr_path);
+        // The declared status is imported as-is, so a repository's ADR history
+        // arrives as the record it already is rather than as 35 decisions
+        // pretending to be pending. The cost is that an imported status has no
+        // `decided_by`: it reflects a decision, it does not record one. That is
+        // visible in the row, and `reopen_undecided_design` is the way to turn
+        // one into an attributed decision (ADR-0047).
         self.conn.execute(
             "INSERT INTO design_items
                 (id, adr_path, title, summary, status, proposed_by, decided_by,
@@ -63,6 +69,31 @@ impl LodestarStore {
         )?;
         self.get_design_item(&id)?
             .ok_or_else(|| LodestarError::NotFound(id))
+    }
+
+    /// Return a design whose status was never actually decided to `proposed`,
+    /// so a human can decide it (ADR-0047).
+    ///
+    /// Guarded on `decided_by IS NULL`: a real decision carries an actor, and
+    /// this verb must never be able to erase one. It also refuses once
+    /// promotion has moved off `not_required`, because materialized work rests
+    /// on that acceptance. What remains is exactly the damage an over-trusting
+    /// reconciliation caused — a status with nobody behind it.
+    pub fn reopen_undecided_design(&self, id: &str, now: i64) -> Result<bool> {
+        if self.get_design_item(id)?.is_none() {
+            return Err(LodestarError::NotFound(id.to_string()));
+        }
+        let changed = self.conn.execute(
+            "UPDATE design_items
+             SET status = 'proposed', reason = NULL, updated_at = ?2
+             WHERE id = ?1
+               AND decided_by IS NULL
+               AND status <> 'proposed'
+               AND promotion_status = 'not_required'
+               AND retired_at IS NULL",
+            params![id, now],
+        )?;
+        Ok(changed == 1)
     }
 
     /// Register a new proposed design item. Fails if the ADR is already
@@ -104,11 +135,23 @@ impl LodestarStore {
 
     /// List design items, oldest first. `status = None` returns every item
     /// (durable audit view); `Some(Proposed)` is the Design Board.
-    pub fn list_design_items(&self, status: Option<DesignStatus>) -> Result<Vec<DesignItem>> {
+    ///
+    /// Retired records are omitted unless `include_retired`: the board shows
+    /// live decisions, while the audit trail stays complete (ADR-0042).
+    pub fn list_design_items(
+        &self,
+        status: Option<DesignStatus>,
+        include_retired: bool,
+    ) -> Result<Vec<DesignItem>> {
+        let retired_filter = if include_retired {
+            ""
+        } else {
+            " AND retired_at IS NULL"
+        };
         match status {
             Some(status) => {
                 let sql = format!(
-                    "SELECT {DESIGN_COLS} FROM design_items WHERE status = ?1 \
+                    "SELECT {DESIGN_COLS} FROM design_items WHERE status = ?1{retired_filter} \
                      ORDER BY created_at ASC, id ASC"
                 );
                 let mut stmt = self.conn.prepare(&sql)?;
@@ -116,8 +159,14 @@ impl LodestarStore {
                 collect(rows)
             }
             None => {
+                let where_clause = if include_retired {
+                    String::new()
+                } else {
+                    " WHERE retired_at IS NULL".to_string()
+                };
                 let sql = format!(
-                    "SELECT {DESIGN_COLS} FROM design_items ORDER BY created_at ASC, id ASC"
+                    "SELECT {DESIGN_COLS} FROM design_items{where_clause} \
+                     ORDER BY created_at ASC, id ASC"
                 );
                 let mut stmt = self.conn.prepare(&sql)?;
                 let rows = stmt.query_map([], row_to_design)?;
@@ -126,13 +175,48 @@ impl LodestarStore {
         }
     }
 
+    /// Retire one design record, attributed to a person (ADR-0042).
+    ///
+    /// Never inferred: nothing retires a design because its ADR file is absent,
+    /// because several worktrees on different branches share one database and a
+    /// missing file is a routine branch-local condition, not evidence.
+    ///
+    /// Guarded on `retired_at IS NULL` in a single statement so two concurrent
+    /// retirements cannot both claim to be the one that did it, and so the
+    /// original actor and reason are never overwritten.
+    pub fn retire_design_item(
+        &self,
+        id: &str,
+        human: &str,
+        reason: &str,
+        now: i64,
+    ) -> Result<DesignItem> {
+        if self.get_design_item(id)?.is_none() {
+            return Err(LodestarError::NotFound(id.to_string()));
+        }
+        let changed = self.conn.execute(
+            "UPDATE design_items
+             SET retired_at = ?2, retired_by = ?3, retired_reason = ?4, updated_at = ?2
+             WHERE id = ?1 AND retired_at IS NULL",
+            params![id, now, human, reason],
+        )?;
+        if changed == 0 {
+            return Err(LodestarError::Invalid(format!(
+                "design item already retired: {id}"
+            )));
+        }
+        self.get_design_item(id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))
+    }
+
     /// Human-actionable Design Board rows: proposed decisions plus accepted
     /// designs whose implementation promotion is pending or retryable.
     pub fn actionable_design_items(&self) -> Result<Vec<DesignItem>> {
         let sql = format!(
             "SELECT {DESIGN_COLS} FROM design_items
-             WHERE status = 'proposed'
-                OR (status = 'accepted' AND promotion_status = 'pending')
+             WHERE retired_at IS NULL
+               AND (status = 'proposed'
+                OR (status = 'accepted' AND promotion_status = 'pending'))
              ORDER BY created_at ASC, id ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
@@ -491,5 +575,16 @@ fn row_to_design(row: &Row) -> rusqlite::Result<DesignItem> {
         promotion_status: DesignPromotionStatus::from_tag(&row.get::<_, String>(10)?)
             .unwrap_or(DesignPromotionStatus::NotRequired),
         materialization_revision: row.get(11)?,
+        // All three columns move together in `retire_design_item`, so a row is
+        // retired only when the full record is present. A partial row is
+        // treated as not retired rather than half-retired.
+        retired: match (
+            row.get::<_, Option<i64>>(12)?,
+            row.get::<_, Option<String>>(13)?,
+            row.get::<_, Option<String>>(14)?,
+        ) {
+            (Some(at), Some(by), Some(reason)) => Some(Retirement { at, by, reason }),
+            _ => None,
+        },
     })
 }

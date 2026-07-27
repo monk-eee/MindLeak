@@ -9,6 +9,191 @@ to [Semantic Versioning](https://semver.org/).
 ## [0.1.3] - 2026-07-27
 
 ### Added
+
+- **Arming auto-merge now means finished, and a merged branch is checked for
+  what it left behind (ADR-0045 clause 2).** A pull request's merge decision has
+  two writers — the agent pushing commits and whoever arms auto-merge — and
+  nothing arbitrated between them. Observed in production: PR #37 was armed at
+  07:51:12Z, merged at 08:09:21Z, and the next commit landed **13 seconds
+  later**; four commits, including the one that stopped two surfaces
+  disagreeing, never reached `main`. Nothing failed. The pull request read
+  merged, the branch read ahead, and CI was green on both — the only signal was
+  an ancestry check nobody was running. `canonical-push` now refuses to publish
+  onto a branch whose open pull request has auto-merge armed, naming the pull
+  request and the exact `gh pr merge <n> --disable-auto` that satisfies it: the
+  promise to merge is a promise the branch is done, so more work means disarm
+  first. When `gh` is absent or unauthenticated the guard permits the push — a
+  guard that blocks on its own blindness is unsatisfiable, and an unsatisfiable
+  guard teaches bypass. `make merge-audit` is the backstop, reporting any merged
+  branch whose commits never reached the base regardless of how it happened; a
+  deleted branch reports as *unverifiable* rather than clean, because "we cannot
+  tell" and "nothing was lost" are different answers.
+- **`reopen_undecided_design` lets an imported status become a real decision
+  (ADR-0047).** `reconcile_designs` imports each ADR's declared `Status:`
+  faithfully — importing thirty-five settled decisions as `proposed` would
+  misrepresent the repository's own record — but reconciliation observes a
+  file, it does not witness a decision, so the row lands with `decided_by`
+  empty. Deciding is guarded on `proposed`, so that row was then frozen:
+  permanently asserting a decision nobody could be named for. Hit on ADR-0045,
+  where a reviewer said "I agree with it" and `accept_design` answered
+  *already accepted; only a proposed item can be decided*. The new verb returns
+  such a row to `proposed`. It is not an undo: a design carrying a `decided_by`
+  is refused, because superseding a recorded human act is a new decision rather
+  than the erasure of the old one, and so is one whose promotion has already
+  materialized work.
+- **`stalled_work` and the fleet view now read one wait graph, and the parked
+  taxonomy stopped lying (ADR-0046).** These landed as two independent answers
+  to "why is this not moving?" and immediately disagreed: `stalled_work` labelled
+  every `needs_input` task `parked` with the detail "parked awaiting an answer",
+  which after addressed questions was wrong three ways — it called a park on a
+  named peer a park on nobody, it sent a reader looking for a human who owed
+  nothing, and it rendered a mutual deadlock as two ordinary waits, re-opening on
+  a second surface the exact gap the fleet view had just closed. `Parked` is now
+  split into `awaiting_human` (a person owes the answer, whether from `in_review`
+  or an unaddressed question), `awaiting_agent` (a named peer owes it, and the
+  report names them), `deadlocked` (the peer is waiting back, so only an answer
+  from outside breaks it), and `paused` (deliberately suspended — nobody was
+  asked, so nobody owes anything). Both surfaces take the same `waits()` set
+  rather than deriving it twice: `stalled_work` answers per task, `fleet_view`
+  answers per agent, and they are now the same fact seen along two axes instead
+  of two facts that can drift apart.
+- **Append-only lists merge instead of colliding.** In one session seven merges
+  of `main` into feature branches produced conflicts, and **every one** was in
+  `CHANGELOG.md` or `docs/adr/README.md` — never in source. Concurrent branches
+  all append an entry at the same place, so the collision is structural and the
+  resolution was "keep both" every single time. Both files now declare git's
+  built-in `merge=union` driver, which takes both sides of a conflicting hunk
+  rather than writing markers. `DEVELOPERS.md` is deliberately **excluded**
+  despite colliding just as often: its prose is revised in place, and union
+  never reports a conflict, so two branches rewording the same paragraph would
+  silently keep both copies. A file whose lines only accumulate can merge
+  itself; a file whose lines change needs a human to look. Union removes the
+  mechanical conflict, not the reading — it can still reorder entries or leave a
+  duplicate if two branches added the same one.
+- **The ADR index is generated, not hand-maintained.** Number, title, and
+  status all already live in each ADR, yet the table in docs/adr/README.md
+  was edited by hand — so every concurrent branch appended a row to the same
+  place and every merge conflicted on it, the same shared-counter shape as ADR
+  numbers themselves. It drifted anyway: **ten of forty-five rows were wrong**
+  when scripts/adr-index.mjs was introduced, including ADR-0026 listed as
+  Proposed while the file said Accepted — the ADR the whole constitution
+  backlog gates on. A pre-commit hook now fails if the index does not match the
+  files, and make adr-index regenerates it.
+- **make worktree-setup prepares a linked worktree.** A fresh worktree failed
+  at push time with a module-resolution error from the prettier hook, which
+  named nothing about the real cause. Hooks and cargo tools are shared through
+  the common .git dir, so a worktree needs only its own extension deps — the
+  full make setup would re-run pip install and cargo install for nothing.
+- **The fleet view now shows who is waiting on whom, and names the deadlocks
+  (ADR-0046).** Addressed questions made a wait cycle reachable: agent A parks
+  on B while B parks on A, and both tasks sit in `needs_input` — which every
+  surface renders as ordinary parked work. A pair could burn the whole seven-day
+  parking grace doing nothing while the board read healthy. `fleet_view` now
+  carries `waits` (who is parked on whom, derived from the ledger's own
+  unanswered addressed questions rather than declared by anyone) and
+  `wait_cycles` (sets of agents each transitively waiting on the others, so no
+  member can unblock any other). Each cycle names the tasks that form it:
+  answering any one of them breaks it, and the test asserts that it does — a
+  finding whose implied remedy does not work is just an alarm. A one-way wait is
+  deliberately *not* a cycle, because the addressee can still answer, and
+  reporting a legitimate wait as a deadlock is the fastest way to make an
+  advisory signal ignored. Longer rings are found by the same rule rather than a
+  special case for pairs. Still advisory and capped at `review` (ADR-0034): the
+  remedy is a human answering a question, and a view that blocked on its own
+  observation would be a control nobody asked for.
+- **Agents can now say something to each other, through the durable thread
+  rather than to each other (ADR-0046).** Two agents shared a blackboard but
+  could address nothing at one another, and two specific things were missing
+  rather than merely absent. `block_task` took a predecessor id and no reason,
+  so an agent could have work taken off it — blocking clears a live claim — with
+  no way to discover why; `pause_task` was the same. That is precisely the
+  failure ADR-0045 names, produced by the system that exists to make verdicts
+  explicable. And `ask_question` could only reach a human, so an agent needing
+  something only a peer knew had to park for a person who would go and ask that
+  peer. Both are now answered on the existing append-only thread: `task_qa`
+  gains a `note` kind carrying an optional `reason` on `block_task` and
+  `pause_task`, and `ask_question` gains an optional `audience` addressing the
+  question at a peer agent. `pending_questions` returns what is addressed to
+  you. It is a query, never a delivery: nothing is reserved or consumed, so two
+  readers see the same rows and reading can never lose a question, and it needs
+  no arbiter because it mutates nothing. A mailbox or queue was rejected — it
+  would put decisions somewhere the evidence bundle cannot see, add a shared
+  mutable resource requiring an arbiter, and introduce a way to lose a message
+  that a table read does not have. The park is deliberately identical for a
+  human and a peer, so the ADR-0020 parking grace still protects a task from an
+  addressee that never replies; anyone may answer, so a human can always unstick
+  two agents waiting on each other; and addressing a question to yourself is
+  refused, because it parks the task on the only agent that cannot act while it
+  is parked.
+- **`stalled_work` shows why the board is not moving.** Three tasks once sat
+  unfinished for three different reasons and nothing reported any of them: a
+  lease lapsed after the work had already shipped, a change landed outside its
+  claim window, and a legitimate cross-plane edit resolved as drift. All were
+  found by accident, and one blocked task had queued behind them for 78 hours.
+  The new read-only tool names each stall — lapsed leases, work awaiting a
+  human, blocks behind something no agent will advance, blocks naming a task
+  that is not on the board, and parked work — with how long it has been true.
+  It **does not decide** whether that is too long: a staleness threshold
+  invented in the engine would become policy nobody agreed to, and the honest
+  report is the fact plus its age. It records nothing, changes no task state,
+  and produces no verdict, so it can never be mistaken for conformance. Waiting
+  behind live work is deliberately not reported — a report that flags ordinary
+  sequencing trains people to ignore it.
+- **`adr-guard` refuses to let a decision record exist in only one place.** An
+  ADR is the reasoning behind the code, and losing one is silent — nothing
+  fails, the file is simply not there any more. Three near-misses in a single
+  session motivated it: one ADR staged but never committed, one committed only
+  to a branch that was never pushed, and one never added to Git at all. Each was
+  found by chance. `node scripts/adr-guard.mjs` (`make adr-guard`) now reports
+  both failure modes across **every attached worktree and every local branch**,
+  because under ADR-0038 concurrent work is spread across worktrees and an ADR
+  can be stranded in any of them. A pre-push hook runs the working-tree half
+  (`--uncommitted`); the unpublished check is deliberately excluded there,
+  because it would fail the very push that publishes the ADR.
+- **A pre-commit hook refuses an ADR number another branch already claimed.**
+  ADR numbers are a shared counter with no coordination: every concurrent agent
+  reads "the next number" from its own branch, which cannot see a sibling's
+  in-flight ADR. Two agents pick the same number and the collision only surfaces
+  at merge, by which point both ADRs are written, cross-linked, and cited in
+  commit messages — this repository has already spent two commits renumbering
+  after exactly that. `scripts/adr-number-guard.mjs` reads every ref rather than
+  the working tree, because the conflict lives in the branch you cannot see, and
+  names the first genuinely free number instead of merely the next one.
+- **A read-only fleet view, and the two corrections it forced (ADR-0044,
+  amending ADR-0035).** `fleet_view` reports who is working where: each live
+  session's declared branch, head, and base, how far behind that base it said it
+  was, and whether live sessions disagree about their base. Building it surfaced
+  two things ADR-0035 asserted but could not deliver. Staleness was defined as
+  "commits behind the declared base" while the server is forbidden from reading
+  Git, and the declared fields can only show that two commits *differ*, never the
+  distance between them — so `open_session` now accepts a client-counted
+  `behind`, keeping the caller-supplies-facts rule intact. And declared context
+  lived in the process-local session registry, while under ADR-0038 every linked
+  worktree shares one `spec.db` and runs its own server: a view built on that
+  registry would have reported the sessions of whichever process answered while
+  presenting itself as the fleet. Context is now persisted with its
+  `declared_at`, so a reader can discount a stale declaration rather than be
+  quietly misled by one. Silence is never read as agreement: a session holding a
+  claim with no declared base is counted and shown, and `unknown` is modelled
+  separately from `current` so the two cannot be collapsed. The view carries its
+  own ceiling in the payload — advisory, capped at `review`, never a gate.
+- **`retire_design` removes an orphaned design record — by a person, never by a
+  missing file (ADR-0042).** `reconcile_designs` keys on the ADR path, so
+  renaming an ADR registers a new record and orphans the old one permanently.
+  Two such rows existed, left by renumbering one decision twice on its way to
+  ADR-0040; their paths exist on no branch, and every Design Board row is
+  clickable, so both threw when opened. There was no retirement path at all.
+  The tempting fix — retire any design whose ADR file is absent — is refused:
+  under ADR-0038 several worktrees on different branches share one `spec.db`, so
+  "missing from this checkout" is routine and retiring on it would silently
+  delete live decisions on someone else's branch. Retirement is therefore an
+  explicit human act carrying an actor and a rationale, guarded so a second
+  caller cannot rewrite who did it, and it is **not** a delete (ADR-0019): the
+  row keeps its id, path, decision, decider, and materialization history.
+  Retirement is also kept orthogonal to `proposed`/`accepted`/`rejected` — a
+  fourth status would overwrite the human decision and make "was this accepted?"
+  unanswerable. Retired records leave the board and stay in the audit view under
+  `list_designs(include_retired: true)`.
 - **The enforcement machinery is now reachable.** `complete_clause_contract` and
   `register_control` close a gap that made every other constitutional feature
   decorative: `complete_clause_contract` existed only on the store, called only
@@ -157,6 +342,7 @@ to [Semantic Versioning](https://semver.org/).
   silently discard a deliberate local decision.
 
 ### Changed
+
 - **Scope matching moved to one shared `scope` module.** Clauses and waivers
   both declare scope, and forking the matcher would let the two disagree about
   what a scope reaches. It stays deliberately not a glob engine — exact match,
@@ -241,6 +427,18 @@ to [Semantic Versioning](https://semver.org/).
   review is attributed to a registered session.
 
 ### Fixed
+
+- **A current build could not open an existing database.** Indexes lived in
+  `schema.sql` and therefore ran *before* migrations. On an existing database
+  `CREATE TABLE IF NOT EXISTS` is a no-op, so the pre-migration table shape was
+  still in place when `idx_task_qa_audience` tried to index
+  `task_qa(audience, kind)`. The batch failed with `no such column: audience`,
+  the migration that would have added the column never ran, and every
+  pre-existing database became unopenable — a hard upgrade failure rather than a
+  degradation, and silent until someone ran a fresh binary. Indexes now live in
+  `indexes.sql` and are applied *after* migrations, so the ordering is
+  structural rather than something each new migration has to remember.
+
 - **An ADR whose status carries a parenthetical is no longer dropped from the
   design ledger in silence.** `Accepted (implemented)` is still accepted — a
   parenthetical is commentary on a decision, not a different lifecycle state.
@@ -296,6 +494,20 @@ to [Semantic Versioning](https://semver.org/).
   proposer, and promotion state) still survives a repository pass that disagrees
   with it. `updated_at` moves only when a fact actually changed, so a no-op pass
   remains genuinely idempotent.
+
+- **Accepting a design no longer guesses which checkout records the decision.**
+  `resolveAdrUri` wrote the ADR's `Status:` line into the first workspace folder
+  containing that path. Under ADR-0038 a fleet routinely has several worktrees
+  of one repository open on different branches, so first-match was close to
+  arbitrary: observed writing `Accepted` into a checkout whose branch had no
+  relationship to the decision, while that checkout's agent was mid-pull-request
+  and had accepted nothing. An ADR's declared status is evidence of a human
+  decision, so recording it on the wrong branch is a falsified receipt, and the
+  stray edit also lands in someone else's working tree. One matching checkout
+  now writes as before; several ask the reviewer which one, and cancelling
+  aborts without writing; none keeps the existing clear error. The fix
+  deliberately does not bind a design record to a worktree — that would put a
+  machine-specific path in a database ADR-0038 shares across checkouts.
 
 ## [0.1.2] - 2026-07-24
 

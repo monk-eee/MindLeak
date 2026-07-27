@@ -19,6 +19,7 @@ mod design;
 mod design_materialization;
 #[cfg(test)]
 mod design_tests;
+mod fleet;
 mod goals;
 mod knowledge;
 mod lifecycle;
