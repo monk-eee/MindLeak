@@ -55,7 +55,6 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0045](0045-a-fleet-is-a-distributed-system.md) | An agent fleet is a distributed system, not a team | Accepted |
 | [0046](0046-agents-talk-through-the-durable-thread.md) | Agents talk through the durable thread, never to each other | Accepted |
 | [0047](0047-a-status-is-not-a-decision.md) | A status reflects a decision; only a decision records one | Accepted |
-| [0047](0047-a-status-is-not-a-decision.md) | A status reflects a decision; only a decision records one | Proposed |
 | [0048](0048-a-lapsed-lease-holes-the-window-it-does-not-move-it.md) | A lapsed lease holes the evidence window, it does not move it | Accepted |
 
 ## Writing a new ADR
