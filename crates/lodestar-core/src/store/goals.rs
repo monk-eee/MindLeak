@@ -321,6 +321,42 @@ impl LodestarStore {
         collect(rows)
     }
 
+    /// Complete a clause's enforcement contract (SPEC-CONSTITUTION §10).
+    ///
+    /// A clause can drive a hard verdict only once it declares a scope, an
+    /// evidence contract, and a consequence; until then it is review-only.
+    /// Completing that contract is therefore explicit and attributable, never a
+    /// side effect of defining the clause — a rule should not silently acquire
+    /// the power to block.
+    pub fn complete_clause_contract(
+        &self,
+        goal_id: &str,
+        scope: &str,
+        evidence_contract: &str,
+        consequence: Option<Consequence>,
+    ) -> Result<Goal> {
+        if scope.trim().is_empty() || evidence_contract.trim().is_empty() {
+            return Err(LodestarError::Invalid(
+                "an enforcement contract requires a scope and an evidence contract".to_string(),
+            ));
+        }
+        let changed = self.conn.execute(
+            "UPDATE goals SET scope = ?2, evidence_contract = ?3, consequence = ?4
+             WHERE id = ?1 AND status <> 'superseded'",
+            params![
+                goal_id,
+                scope.trim(),
+                evidence_contract.trim(),
+                consequence.map(|value| value.as_str())
+            ],
+        )?;
+        if changed == 0 {
+            return Err(LodestarError::NotFound(goal_id.to_string()));
+        }
+        self.get_goal(goal_id)?
+            .ok_or_else(|| LodestarError::NotFound(goal_id.to_string()))
+    }
+
     pub fn link_goal_to_code(
         &self,
         goal_id: &str,

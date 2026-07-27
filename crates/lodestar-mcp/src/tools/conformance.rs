@@ -21,11 +21,12 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "advise",
-            "description": "Ask what governs an intended change BEFORE acting (ADR-0029). Given the node ids (artifact:/symbol:) you are about to change and an optional covering task, returns the active constitutional clauses governing that scope plus one proportional disposition: advise (proceed, honour any in-scope clauses) / review (would drift outside a covering task) / block (a forbid_change lock) / needs_human (no constitution adopted, or ambiguous). Evidence-free and state-free: it records no verdict and never gates a claim. Consult it at claim time and before editing governed code; retrospective check_conformance at complete_task remains the backstop.",
+            "description": "Ask what governs an intended change BEFORE acting (ADR-0029). Given the node ids (artifact:/symbol:) you are about to change, any workflow: scopes for a procedural action you are about to take, and an optional covering task, returns the active constitutional clauses governing that scope plus one proportional disposition: advise (proceed, honour any in-scope clauses) / review (would drift outside a covering task, or the action is governed by a clause that can hard-block) / block (a forbid_change lock) / needs_human (no constitution adopted, or ambiguous). Evidence-free and state-free: it records no verdict and never gates a claim. Consult it at claim time and before editing governed code; retrospective check_conformance at complete_task remains the backstop.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "node_ids": { "type": "array", "items": { "type": "string" }, "description": "The artifact:/symbol: ids you intend to change." },
+                    "workflow": { "type": "array", "items": { "type": "string" }, "description": "Optional workflow: scopes for a procedural action, e.g. workflow:git.publish or workflow:review.pull_request. A parent token is governed by clauses declaring it or any ancestor." },
                     "task_id": { "type": "string", "description": "Optional covering task whose goal defines your scope." }
                 },
                 "required": ["node_ids"]
@@ -60,8 +61,9 @@ pub(super) fn dispatch(
         })()),
         "advise" => Some((|| {
             let node_ids = str_array(args, "node_ids");
+            let workflow = str_array(args, "workflow");
             let advice = engine
-                .advise(opt_str(args, "task_id").as_deref(), &node_ids)
+                .advise(opt_str(args, "task_id").as_deref(), &node_ids, &workflow)
                 .map_err(|e| e.to_string())?;
             rendered(render_advice(&advice), &advice)
         })()),
