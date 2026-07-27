@@ -21,6 +21,14 @@ const REPOSITORY_ID_HEX_LEN: usize = 32;
 const BOOTSTRAP_ATTEMPTS: usize = 200;
 const MIGRATION_ATTEMPTS: usize = 500;
 const RETRY_DELAY: Duration = Duration::from_millis(10);
+const GIT_REPOSITORY_ENV: [&str; 6] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+];
 
 #[derive(Debug, Error)]
 pub enum RepositoryStorageError {
@@ -242,7 +250,7 @@ fn nonblank_path(value: Option<&str>) -> Option<&str> {
 }
 
 fn git_common_dir(workspace: &Path) -> Result<Option<PathBuf>, RepositoryStorageError> {
-    let output = match Command::new("git")
+    let output = match git_command()
         .args(["rev-parse", "--git-common-dir"])
         .current_dir(workspace)
         .output()
@@ -307,7 +315,7 @@ fn repository_id(workspace: &Path, common_dir: &Path) -> Result<String, Reposito
 }
 
 fn read_repository_id(workspace: &Path) -> Result<Option<String>, RepositoryStorageError> {
-    let output = Command::new("git")
+    let output = git_command()
         .args(["config", "--local", "--get", REPOSITORY_ID_KEY])
         .current_dir(workspace)
         .output()?;
@@ -322,7 +330,7 @@ fn write_repository_id(
     workspace: &Path,
     repository_id: &str,
 ) -> Result<(), RepositoryStorageError> {
-    let output = Command::new("git")
+    let output = git_command()
         .args(["config", "--local", REPOSITORY_ID_KEY, repository_id])
         .current_dir(workspace)
         .output()?;
@@ -333,6 +341,14 @@ fn write_repository_id(
             String::from_utf8_lossy(&output.stderr).trim().to_string(),
         ))
     }
+}
+
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    for variable in GIT_REPOSITORY_ENV {
+        command.env_remove(variable);
+    }
+    command
 }
 
 fn read_repository_id_marker(path: &Path) -> Result<String, RepositoryStorageError> {
@@ -556,11 +572,7 @@ mod tests {
     }
 
     fn git(cwd: &Path, args: &[&str]) -> String {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(cwd)
-            .output()
-            .unwrap();
+        let output = git_command().args(args).current_dir(cwd).output().unwrap();
         assert!(
             output.status.success(),
             "git {args:?}: {}",

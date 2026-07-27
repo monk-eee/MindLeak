@@ -12,6 +12,22 @@ const publisher = join(
   "../../../scripts/canonical-push.mjs"
 );
 const temporaryDirectories = [];
+const gitRepositoryVariables = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+];
+
+const isolatedGitEnvironment = (environment = process.env) => {
+  const isolated = { ...environment };
+  for (const variable of gitRepositoryVariables) {
+    delete isolated[variable];
+  }
+  return isolated;
+};
 
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
@@ -20,7 +36,12 @@ afterEach(() => {
 });
 
 const git = (cwd, args) =>
-  execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
+  execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: "pipe",
+    env: isolatedGitEnvironment(),
+  }).trim();
 
 const commitFile = (repo, name, content, message) => {
   writeFileSync(join(repo, name), content);
@@ -48,7 +69,7 @@ const runPublisher = (repo, args = [], env = process.env) =>
   spawnSync(process.execPath, [publisher, ...args], {
     cwd: repo,
     encoding: "utf8",
-    env,
+    env: isolatedGitEnvironment(env),
   });
 
 describe("canonical-push", () => {

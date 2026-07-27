@@ -12,6 +12,22 @@ const scopedCommit = join(
   "../../../scripts/scoped-commit.mjs"
 );
 const temporaryDirectories = [];
+const gitRepositoryVariables = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+];
+
+const isolatedGitEnvironment = () => {
+  const isolated = { ...process.env, PRE_COMMIT_ALLOW_NO_CONFIG: "1" };
+  for (const variable of gitRepositoryVariables) {
+    delete isolated[variable];
+  }
+  return isolated;
+};
 
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
@@ -20,7 +36,12 @@ afterEach(() => {
 });
 
 const git = (cwd, args) =>
-  execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
+  execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: "pipe",
+    env: isolatedGitEnvironment(),
+  }).trim();
 
 describe("scoped-commit", () => {
   it("commits only declared paths and preserves another agent's staged work", () => {
@@ -40,6 +61,7 @@ describe("scoped-commit", () => {
     const result = spawnSync(process.execPath, [scopedCommit, "-m", "scoped", "--", "mine.txt"], {
       cwd: repo,
       encoding: "utf8",
+      env: isolatedGitEnvironment(),
     });
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);

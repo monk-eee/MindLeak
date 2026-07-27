@@ -36,7 +36,18 @@ fn cleanup(path: &str) {
 }
 
 fn git(cwd: &Path, args: &[&str]) {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    for variable in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ] {
+        command.env_remove(variable);
+    }
+    let output = command
         .args(args)
         .current_dir(cwd)
         .env("PRE_COMMIT_ALLOW_NO_CONFIG", "1")
