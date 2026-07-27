@@ -69,6 +69,14 @@ discovered by reading. There is no channel, and nothing is ever delivered.**
 6. **An agent may not address a question to itself.** Refused, because it parks
    the task waiting on the only agent that cannot act while it is parked — a
    self-deadlock that reads as a legitimate wait.
+7. **One wait graph, read along two axes.** `store.waits()` is the single
+   derivation of who is waiting on whom. `fleet_view` reads it per agent;
+   `stalled_work` reads it per task, so a parked task is labelled by who
+   actually owes the answer — `awaiting_human`, `awaiting_agent`, or
+   `deadlocked`. Deriving it twice would let two surfaces disagree about the
+   same fact, which is how a report starts being argued with instead of read.
+   A deliberate `paused` task is a fourth, separate kind: nobody was asked, so
+   nobody owes anything.
 
 ## Consequences
 
