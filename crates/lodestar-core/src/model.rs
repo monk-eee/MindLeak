@@ -471,6 +471,15 @@ pub struct Task {
     pub owner: Option<String>,
     pub claim_started_at: Option<i64>,
     pub lease_expires_at: Option<i64>,
+    /// How many times the lease lapsed inside the current evidence window
+    /// (ADR-0048). The window survives a lapse so earlier work stays provable,
+    /// but a non-zero count means the window has holes, which caps conformance
+    /// at `needs_human`. Reset when a fresh window opens, so it describes the
+    /// current window rather than the task's whole history.
+    pub claim_lapses: i64,
+    /// Seconds inside the current evidence window during which no lease was
+    /// held — the size of the holes counted by `claim_lapses`.
+    pub unleased_seconds: i64,
     pub blocked_by: Option<String>,
     /// When the task was parked (needs_input/paused); after a bounded grace it
     /// becomes reclaimable by the pool so a vanished owner cannot strand it.

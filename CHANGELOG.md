@@ -6,7 +6,41 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **A question addressed to you now arrives on a call you already make
+  (ADR-0046).** `ask_question` could address a peer and `pending_questions` could
+  find it, but only if the peer thought to look — and a capability that depends
+  on remembering is adopted at the rate the whole intent plane measured while
+  participation was optional: zero. `claim_task` and `renew_lease` now carry
+  `waiting_on_you` when a peer is waiting on this agent. The heartbeat is the
+  one that matters: a question usually arrives *during* the work, long after the
+  claim. It is absent when nothing is waiting — no key, no empty array — because
+  "no questions" and "this server does not report questions" must not look the
+  same to a reader, and it stops arriving once answered, or the delivery becomes
+  noise an agent learns to skip past. Nothing is reserved or consumed: it stays a
+  read over the durable thread, so two readers still see the same rows and no new
+  shared mutable resource is introduced (ADR-0045 clause 2).
+
 ### Fixed
+- **A lapsed lease no longer lets an agent launder unchecked work into an
+  `aligned` receipt (ADR-0048).** Re-claiming after a lapse reset
+  `claim_started_at` to the moment of the re-claim, so everything done before the
+  lapse fell outside the interval the agent was allowed to submit and
+  `check_conformance` rejected it with "evidence interval falls outside the live
+  claim". That read like under-reporting, but the verdict is computed over
+  whatever the evidence covers: the only way forward was to narrow the interval
+  until it was admitted, and the narrowed interval passed on the surviving sliver
+  and returned `aligned`, which sends the task straight to `done` with every
+  governed change made before the lapse never examined by anything. A lapse now
+  punches a hole in the window instead of moving it — a same-owner re-claim keeps
+  `claim_started_at`, so the earlier work stays provable, while new
+  `claim_lapses` and `unleased_seconds` columns record the discontinuity and cap
+  the verdict at `needs_human` with a finding naming it. The cap follows the
+  task rather than the submitted interval, so shrinking the evidence no longer
+  buys a clean pass. A claim by a *different* owner still opens a fresh window,
+  so reach-back can never cross a period somebody else owned the task. Both
+  columns are additive with defaults; existing databases migrate without
+  backfill and windows already open are treated as continuous.
 - **A current build could not open an existing database.** Indexes lived in
   `schema.sql` and therefore ran *before* migrations. On an existing database
   `CREATE TABLE IF NOT EXISTS` is a no-op, so the pre-migration table shape was
