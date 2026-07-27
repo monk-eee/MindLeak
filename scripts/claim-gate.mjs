@@ -41,8 +41,9 @@ export const publishVerdict = ({ reachable, agent, tasks, branch, now }) => {
     return {
       ok: false,
       message:
-        "no agent identity: set LODESTAR_AGENT so the claim can be attributed (ADR-0030).\n" +
-        "  Publication is recorded against an agent; an unattributed push is a receipt for nobody.",
+        "no agent identity: set LODESTAR_SESSION_ID to a 32-character hex session id (ADR-0030).\n" +
+        "  It is registered with open_session and resolves to this agent's stable identity, the same\n" +
+        "  one a claim is recorded against. An unattributed push is a receipt for nobody.",
     };
   }
   if (!reachable) {
@@ -78,7 +79,10 @@ export const publishVerdict = ({ reachable, agent, tasks, branch, now }) => {
  * work is published and two agents have built the same thing twice.
  */
 export const overlapNotice = (overlaps, ownTaskIds = []) => {
-  const foreign = (overlaps ?? []).filter(
+  // `check_overlap` answers `{ claims: [...] }`; accept a bare array too so the
+  // notice does not silently vanish if that shape ever changes.
+  const claims = Array.isArray(overlaps) ? overlaps : (overlaps?.claims ?? []);
+  const foreign = claims.filter(
     (overlap) => !ownTaskIds.includes(overlap.task_id),
   );
   if (foreign.length === 0) return null;

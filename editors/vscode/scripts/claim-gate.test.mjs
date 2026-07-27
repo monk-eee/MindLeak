@@ -73,7 +73,7 @@ describe("claim-gate", () => {
     });
 
     expect(verdict.ok).toBe(false);
-    expect(verdict.message).toContain("LODESTAR_AGENT");
+    expect(verdict.message).toContain("LODESTAR_SESSION_ID");
   });
 
   // Another agent's claim is not this agent's licence to publish.
@@ -119,9 +119,30 @@ describe("claim-gate", () => {
       expect(notice).toBeNull();
     });
 
+    // `check_overlap` answers `{ claims: [...] }`, not a bare array. Getting
+    // this wrong made the notice silently never fire, which is the worst
+    // outcome for an advisory signal: it looks like "no collisions".
+    it("reads the wrapped shape the tool actually returns", () => {
+      const notice = overlapNotice(
+        {
+          claims: [
+            {
+              task_id: "task:other",
+              owner: "agent-b",
+              matching_paths: ["scripts/claim-gate.mjs"],
+            },
+          ],
+        },
+        []
+      );
+
+      expect(notice).toContain("agent-b");
+    });
+
     it("says nothing when there is no overlap at all", () => {
       expect(overlapNotice([], ["task:mine"])).toBeNull();
       expect(overlapNotice(undefined, [])).toBeNull();
+      expect(overlapNotice({ claims: [] }, [])).toBeNull();
     });
   });
 });

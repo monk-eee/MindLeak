@@ -158,7 +158,7 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 | `MINDLEAK_HOME` | platform-local non-roaming state directory | shared per-repository storage root |
 | `MINDLEAK_DB` | repository-id store, or workspace-local outside Git | explicit server graph override |
 | `MINDLEAK_AGENT` | *(empty)* | agent id for attribution (`observed` edges); empty = off |
-| `LODESTAR_AGENT` | *(empty)* | agent id for Lodestar claims; **required to publish** (ADR-0048) |
+| `LODESTAR_SESSION_ID` | *(empty)* | 32-hex session id resolved to this agent's identity; **required to publish** (ADR-0049) |
 | `LODESTAR_MCP_BIN` | `target/release`, then `target/debug` | Lodestar server the claim gate drives; set it when publishing from a worktree with no local build |
 | `MINDLEAK_CONFIG` | `<workspace>/.mindleak.toml` | per-project decay policy |
 | `MINDLEAK_WORKING_SET_SIZE` | `7` | hard cap for the current agent's derived working set (1-32) |

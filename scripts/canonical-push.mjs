@@ -80,13 +80,14 @@ if (remoteBranchExists) {
 // rest of the fleet, so it is where the ledger has to already know what the
 // work was for. Commits stay ungated - a commit is a draft, a push is a claim
 // about the world.
-const agent = process.env.LODESTAR_AGENT || "";
+const sessionId = process.env.LODESTAR_SESSION_ID || "";
 const server = resolveServer(repoRoot);
+let agent = "";
 let reachable = false;
 let tasks = [];
 let overlaps = [];
 
-if (server) {
+if (server && /^[0-9a-f]{32}$/.test(sessionId)) {
   let changed = [];
   try {
     changed = git(["diff", "--name-only", `${remote}/main...HEAD`])
@@ -98,13 +99,18 @@ if (server) {
     // advisory and must never be the reason a push fails.
   }
   try {
-    const [board, overlapResult] = callTools(server, repoRoot, [
+    const [session, board, overlapResult] = callTools(server, repoRoot, [
+      { name: "open_session", arguments: { session_id: sessionId } },
       { name: "board", arguments: { include_terminal: false } },
       { name: "check_overlap", arguments: { paths: changed } },
     ]);
-    reachable = Array.isArray(board);
+    // Identity is whatever the ledger says this session is, never what the
+    // caller asserts: a claim is recorded against the resolved agent id, so
+    // matching on anything else would compare two different things.
+    agent = session?.agent_id ?? "";
+    reachable = Boolean(agent) && Array.isArray(board);
     tasks = Array.isArray(board) ? board : [];
-    overlaps = Array.isArray(overlapResult) ? overlapResult : [];
+    overlaps = overlapResult ?? [];
   } catch {
     reachable = false;
   }
@@ -112,7 +118,7 @@ if (server) {
 
 const verdict = publishVerdict({
   reachable,
-  agent,
+  agent: sessionId ? agent : "",
   tasks,
   branch,
   now: Math.floor(Date.now() / 1000),

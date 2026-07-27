@@ -54,8 +54,12 @@ becomes visible to another agent already passes through one script.
    `claim_task` and `create_task` as the actions that satisfy it. A lapsed lease
    is not a claim: re-claiming opens the fresh evidence window that is the whole
    point of the record.
-3. **Identity is required first.** No `LODESTAR_AGENT`, no publication
-   (ADR-0030). An unattributed push is a receipt for nobody.
+3. **Identity is required first, and is resolved rather than asserted.** The
+   publisher registers `LODESTAR_SESSION_ID` with `open_session` and uses the
+   `agent_id` the ledger hands back (ADR-0030). A claim is recorded against that
+   resolved identity, so matching on a caller-supplied string would compare two
+   different things. No session, no publication: an unattributed push is a
+   receipt for nobody.
 4. **An unreachable ledger refuses.** This deliberately contradicts the
    auto-merge guard, which permits when `gh` cannot answer. The distinction is
    real: `gh` being absent is an ordinary condition, while Lodestar is local
