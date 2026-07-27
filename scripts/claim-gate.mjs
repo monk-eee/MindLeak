@@ -108,13 +108,23 @@ export const publishVerdict = ({
  * gate that refused would be wrong far more often than right; the value is that
  * a human sees the collision at the one moment it is still cheap — before the
  * work is published and two agents have built the same thing twice.
+ *
+ * Ownership is decided by comparing the claim's owner to this session, not only
+ * by whether the task appears in a list the caller derived. Observed: an agent's
+ * own claim was reported as "another agent has a live claim" because identity
+ * resolution had drifted, so the derived list came back empty while the claim
+ * itself was plainly its own. A warning that names the wrong party is worse than
+ * none — it sends someone to ask a question of themselves, and it trains readers
+ * to discount the next one.
  */
-export const overlapNotice = (overlaps, ownTaskIds = []) => {
+export const overlapNotice = (overlaps, ownTaskIds = [], agent = "") => {
   // `check_overlap` answers `{ claims: [...] }`; accept a bare array too so the
   // notice does not silently vanish if that shape ever changes.
   const claims = Array.isArray(overlaps) ? overlaps : (overlaps?.claims ?? []);
   const foreign = claims.filter(
-    (overlap) => !ownTaskIds.includes(overlap.task_id),
+    (overlap) =>
+      !ownTaskIds.includes(overlap.task_id) &&
+      !sameSession(overlap.owner, agent),
   );
   if (foreign.length === 0) return null;
   const lines = foreign.map((overlap) => {
@@ -124,8 +134,15 @@ export const overlapNotice = (overlaps, ownTaskIds = []) => {
     ];
     return `    ${overlap.owner} holds ${overlap.task_id} over ${matched.join(", ")}`;
   });
+  // Only claim it is someone else when this session is actually known. With no
+  // identity in hand the honest statement is that a claim exists and whose it is
+  // cannot be determined here.
+  const headline = agent
+    ? "another agent has a live claim over paths this branch touches:"
+    : "a live claim covers paths this branch touches, and this session has no identity to compare it against:";
   return (
-    "another agent has a live claim over paths this branch touches:\n" +
+    headline +
+    "\n" +
     lines.join("\n") +
     "\n  Publishing anyway is fine; building the same thing twice is not. Ask them (ask_question) before you both land."
   );
