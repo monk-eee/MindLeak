@@ -92,6 +92,34 @@ impl Lodestar {
         self.store.retire_design_item(id, human, reason, now_unix())
     }
 
+    /// Record that an accepted design has been replaced by another (ADR-0050).
+    ///
+    /// Supersession is not retirement and not rejection. Retiring says the
+    /// record should not have existed; rejecting says the decision was refused.
+    /// Superseding says the decision was made, it held, and something better
+    /// replaced it — so the row stays `accepted` and gains a link to its
+    /// successor, exactly as `Goal::superseded_by` already works.
+    ///
+    /// Never inferred from an ADR's `Superseded by <ref>` prose. Deriving the
+    /// link from the file would repeat ADR-0047's mistake of a file telling the
+    /// ledger something nobody is recorded as deciding; `make design-audit`
+    /// reports the mismatch until a person runs this.
+    pub fn supersede_design(
+        &self,
+        id: &str,
+        superseded_by: &str,
+        human: &str,
+    ) -> Result<DesignItem> {
+        let human = human.trim();
+        if human.is_empty() {
+            return Err(LodestarError::Invalid(
+                "superseding a design requires the person doing it".to_string(),
+            ));
+        }
+        self.store
+            .supersede_design_item(id, superseded_by.trim(), human, now_unix())
+    }
+
     /// Human acceptance — the attributed, guarded human decision *only*
     /// (ADR-0023). The design becomes `accepted` with promotion `pending`; it
     /// does **not** run ADR-0009 code conformance and does **not** invoke a

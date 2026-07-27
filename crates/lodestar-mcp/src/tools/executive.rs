@@ -353,7 +353,9 @@ pub(super) fn dispatch(
             } else {
                 Vec::new()
             };
-            ok(&json!({ "won": won, "governing": governing }))
+            let mut response = json!({ "won": won, "governing": governing });
+            attach_waiting(engine, args, &mut response)?;
+            ok(&response)
         })()),
         "task_scope" => Some((|| {
             ok(&engine
@@ -378,7 +380,9 @@ pub(super) fn dispatch(
                     i64_arg(args, "lease_secs", 300),
                 )
                 .map_err(|e| e.to_string())?;
-            ok(&json!({ "renewed": renewed }))
+            let mut response = json!({ "renewed": renewed });
+            attach_waiting(engine, args, &mut response)?;
+            ok(&response)
         })()),
         "complete_task" => Some((|| {
             let evidence = parse_evidence(args)?;
@@ -529,6 +533,37 @@ pub(super) fn dispatch(
         })()),
         _ => None,
     }
+}
+
+/// Attach any questions addressed to this agent to a response (ADR-0046).
+///
+/// Delivered through calls the agent already makes — `claim_task` at pickup and
+/// `renew_lease` as the heartbeat — rather than by a new obligation to poll.
+/// A capability nobody remembers to call is adopted at the rate we measured for
+/// the whole intent plane: zero. The heartbeat is the important one, because a
+/// question usually arrives *during* the work rather than before it.
+///
+/// Absent when nothing is waiting: no key, no empty array, nothing for a caller
+/// to interpret. A reader must never have to tell "no questions" apart from
+/// "this server does not report questions".
+fn attach_waiting(engine: &Lodestar, args: &Value, response: &mut Value) -> Result<(), String> {
+    let agent = opt_str(args, "agent").unwrap_or_default();
+    if agent.is_empty() {
+        return Ok(());
+    }
+    let waiting = engine
+        .pending_questions(&agent)
+        .map_err(|e| e.to_string())?;
+    if waiting.is_empty() {
+        return Ok(());
+    }
+    if let Some(object) = response.as_object_mut() {
+        object.insert(
+            "waiting_on_you".to_string(),
+            serde_json::to_value(&waiting).map_err(|e| e.to_string())?,
+        );
+    }
+    Ok(())
 }
 
 /// Render the clauses governing a task's scope as a bounded Markdown section for
@@ -961,6 +996,78 @@ mod tests {
             serde_json::from_str(legacy["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(task["status"], "open");
         assert!(task["blocked_by"].is_null());
+    }
+
+    // ADR-0046: an addressed question is a durable row a peer must ask for, so
+    // a peer who never asks never learns. Delivering it on the calls an agent
+    // already makes - pickup and heartbeat - is the difference between a
+    // capability and an adopted one; the whole intent plane measured zero
+    // adoption while participation was a separate thing to remember.
+    #[test]
+    fn a_question_addressed_to_you_arrives_on_pickup_and_on_the_heartbeat() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship it", "ship", None)
+            .unwrap();
+        let theirs = engine.create_task(&goal.id, "their work", "done").unwrap();
+        let mine = engine.create_task(&goal.id, "my work", "done").unwrap();
+
+        // agent-b parks its own task on a question addressed to agent-a.
+        assert!(engine.claim_task(&theirs.id, "agent-b", 600).unwrap());
+        assert!(engine
+            .ask_question(&theirs.id, "agent-b", "did you rename it?", Some("agent-a"))
+            .unwrap());
+
+        // agent-a picks up unrelated work and is told, without asking.
+        let claimed = call(
+            &engine,
+            &json!({ "name": "claim_task", "arguments": { "task_id": mine.id, "agent": "agent-a" } }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(claimed["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["won"], true);
+        assert_eq!(body["waiting_on_you"][0]["task_id"], theirs.id);
+        assert_eq!(body["waiting_on_you"][0]["body"], "did you rename it?");
+
+        // The heartbeat matters more than pickup: a question usually arrives
+        // during the work, long after the claim.
+        let renewed = call(
+            &engine,
+            &json!({ "name": "renew_lease", "arguments": { "task_id": mine.id, "agent": "agent-a" } }),
+        )
+        .unwrap();
+        let beat: Value =
+            serde_json::from_str(renewed["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(beat["renewed"], true);
+        assert_eq!(beat["waiting_on_you"][0]["task_id"], theirs.id);
+
+        // Nobody asked agent-c anything, so agent-c is told nothing at all -
+        // no key, no empty array. "No questions" and "this server does not
+        // report questions" must not look the same to a reader.
+        let other = engine.create_task(&goal.id, "other work", "done").unwrap();
+        let quiet = call(
+            &engine,
+            &json!({ "name": "claim_task", "arguments": { "task_id": other.id, "agent": "agent-c" } }),
+        )
+        .unwrap();
+        let quiet_body: Value =
+            serde_json::from_str(quiet["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(quiet_body.get("waiting_on_you").is_none());
+
+        // Once answered it stops arriving, or the delivery becomes noise the
+        // agent learns to skip past.
+        assert!(engine
+            .answer_question(&theirs.id, "yes, yesterday", "agent-a", 600)
+            .unwrap());
+        let after = call(
+            &engine,
+            &json!({ "name": "renew_lease", "arguments": { "task_id": mine.id, "agent": "agent-a" } }),
+        )
+        .unwrap();
+        let after_body: Value =
+            serde_json::from_str(after["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(after_body.get("waiting_on_you").is_none());
     }
 
     #[test]

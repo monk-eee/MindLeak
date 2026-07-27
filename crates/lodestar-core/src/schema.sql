@@ -193,7 +193,14 @@ CREATE TABLE IF NOT EXISTS design_items (
     -- the design. Archived, never deleted (ADR-0019).
     retired_at     INTEGER,
     retired_by     TEXT,
-    retired_reason TEXT
+    retired_reason TEXT,
+    -- Supersession (ADR-0050): this decision was made, it held, and it has since
+    -- been replaced. `status` deliberately stays `accepted` — supersession is a
+    -- fact about a decision, not a different decision — so a live design is
+    -- `superseded_by IS NULL`, mirroring goals.superseded_by.
+    superseded_by  TEXT REFERENCES design_items(id),
+    superseded_at  INTEGER,
+    superseded_by_human TEXT
 );
 
 -- Append-only record of every reviewed materialization. The current link tables
@@ -242,6 +249,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     owner            TEXT,                 -- agent id holding the claim
     claim_started_at INTEGER,              -- start of the current owner's evidence window
     lease_expires_at INTEGER,              -- unix seconds; past this is reclaimable
+    -- Continuity of the current evidence window (ADR-0048). A window survives a
+    -- lapse so earlier work stays provable, but the holes are counted here: a
+    -- discontinuous window can never certify itself as aligned.
+    claim_lapses     INTEGER NOT NULL DEFAULT 0,  -- times the lease lapsed inside this window
+    unleased_seconds INTEGER NOT NULL DEFAULT 0,  -- seconds of this window held under no lease
     blocked_by       TEXT,                 -- optional task id
     parked_at        INTEGER,              -- when parked (needs_input/paused); reclaimable after a grace
     created_at       INTEGER NOT NULL,

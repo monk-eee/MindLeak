@@ -22,6 +22,8 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
     for (table, column, definition) in [
         ("tasks", "claim_started_at", "INTEGER"),
         ("tasks", "parked_at", "INTEGER"),
+        ("tasks", "claim_lapses", "INTEGER NOT NULL DEFAULT 0"),
+        ("tasks", "unleased_seconds", "INTEGER NOT NULL DEFAULT 0"),
         ("goal_code", "mode", "TEXT NOT NULL DEFAULT 'governed'"),
         ("conformance", "evidence_schema_version", "INTEGER"),
         ("conformance", "evidence", "TEXT"),
@@ -38,6 +40,9 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
         ("design_items", "retired_at", "INTEGER"),
         ("design_items", "retired_by", "TEXT"),
         ("design_items", "retired_reason", "TEXT"),
+        ("design_items", "superseded_by", "TEXT"),
+        ("design_items", "superseded_at", "INTEGER"),
+        ("design_items", "superseded_by_human", "TEXT"),
         ("goals", "constitution_version", "TEXT"),
         ("goals", "rationale", "TEXT"),
         ("goals", "scope", "TEXT"),

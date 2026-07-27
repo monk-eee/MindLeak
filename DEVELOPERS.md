@@ -70,6 +70,7 @@ crate, and `target/debug/mindleak-mcp` starts and prints
 | Compile extension | `make ext-compile` | `npm --prefix editors/vscode run compile` |
 | ADR safety | `make adr-guard` | `node scripts/adr-guard.mjs` — fails if any ADR is uncommitted or on no remote ref |
 | Merge audit | `make merge-audit` | `node scripts/merge-audit.mjs` — fails if a merged branch has commits that never reached `main` |
+| Design audit | `make design-audit` | `node scripts/design-audit.mjs` — reports drift between the ADR files and the design ledger. Local only: it reads the ledger through a release `lodestar-mcp`, which CI has no database for |
 | Everything CI runs | `make ci` | see [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
 
 > **`make` is optional.** Every target maps to the direct command in the
@@ -182,6 +183,41 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **23 designs are `accepted` in the ledger with nobody named as the decider,
+  and the count grows on its own — SURFACED, not fixed.** — Found Jul 2026 by
+  the first run of `make design-audit`. `reconcile_designs` imports the status
+  out of the ADR file, so ADR-0001..0019, 0025, 0036, 0037, 0039, 0040 and 0046
+  landed as `accepted` with `decided_by` null. They read as decided and are not:
+  nobody approved them through Lodestar. Because deciding twice is not an undo,
+  `accept_design` refuses them, so they are also *stuck* — the ADR-0047 shape,
+  and the reason `reopen_undecided_design` exists.
+  This is not only inherited history. `DesignBoardController.sync()` calls
+  `reconcile_designs` over the whole ADR directory, so **every ADR merged with
+  `Status: Accepted` already written in its file becomes another undecided row
+  on the next sync.** ADR-0039, ADR-0040 and ADR-0046 are recent, authored here,
+  and already in the list; ADR-0048 is unregistered today and will be number 24.
+  Impact: the ledger overstates how much has actually been reviewed, which is
+  the one thing it exists to be trusted about, and the overstatement compounds.
+  The repair is mechanical — reopen, then accept with a real decider — but it is
+  23 attributed decisions and should be the human's, not an agent's. Stopping
+  the inflow is a convention question: an ADR authored here would land as
+  `Status: Proposed` and be accepted through the Design Board, so the file
+  follows the decision instead of asserting it.
+  Earlier this session the ledger was described as "fully remediated" after the
+  `proposed` rows were cleared; that was wrong, and only checking a second
+  property caught it.
+- **The design ledger could not say `Superseded` — FIXED, but two rows still
+  need a person.** — ADR-0018 and ADR-0032 declare `Superseded by <ref>` while
+  the ledger had only `proposed`, `accepted`, `rejected`, so both sat `accepted`
+  and every ledger-driven view showed a withdrawn decision as live.
+  [ADR-0050](docs/adr/0050-a-superseded-decision-is-not-a-stale-one.md) gives a
+  design the `superseded_by` link the goal model already has, and
+  `make design-audit` now reports the two files as drift instead of as an
+  unrepresentable note. The remaining work is not code: someone has to run
+  `supersede_design`, because the link is deliberately never inferred from the
+  file. ADR-0018 → ADR-0032 is unambiguous; **ADR-0032's own file says
+  `Superseded by` with no reference at all**, so nobody can tell what replaced
+  it without asking.
 - **A stalled wait is only bounded by the seven-day parking grace — SURFACED,
   not prevented.** — ADR-0046 lets `ask_question` address a peer, so an agent
   can park on one that never answers. The mutual case (a wait cycle) is now
@@ -288,24 +324,28 @@ and footguns, with impact and status:
   full `make setup` per worktree would re-run `pip install` and
   `cargo install` for no reason.
 
-- **A lapsed lease silently shrinks the evidence window a task can prove — OPEN.** —
-  Observed Jul 2026 closing ADR-0026 task 4. Building three commits took longer
-  than the lease, and the only route back to a live claim is `claim_task`, which
-  opens a **fresh** `claim_started_at`. `evidence_for` is bounded by that window,
-  so the three implementation commits sat outside it and the receipt covers only
-  the final ADR commit plus its validation run. Nothing was lost and nothing was
-  falsified — this is the evidence contract correctly refusing to certify work it
-  cannot bound — but the durable proof under-reports the work, which is a
-  different kind of wrong than over-reporting. `recover_claim` does not help: it
-  is deliberately restricted to *legacy* pre-ADR-0030 owners and refuses a
-  same-session expired claim with "requires a compatible legacy owner". — Medium
-  impact: no incorrect completion, but proof-of-work is thinner than reality and
-  the operator has no honest way to reattach. — Left for later: the fix is either
-  a same-owner reattach that preserves the original window, or renewal semantics
-  that survive a lapse when nobody else claimed the task. Both are policy
-  decisions about how much an expired lease should forfeit, so they want an ADR
-  rather than a quiet patch. Mitigation today: renew the lease before long
-  builds.
+- **A lapsed lease silently shrank the evidence window a task can prove —
+  FIXED (ADR-0048).** — Observed Jul 2026 closing ADR-0026 task 4. Building
+  three commits took longer than the lease, and the only route back to a live
+  claim is `claim_task`, which opened a **fresh** `claim_started_at`. The three
+  implementation commits sat outside the new window and the receipt covered only
+  the final ADR commit plus its validation run. Filed as "the proof
+  under-reports", which undersold it: because the verdict is computed over
+  whatever the evidence covers, the only way to get a lapsed task accepted was to
+  narrow the interval until it was admitted — and the narrowed interval passed on
+  the surviving sliver, returned `aligned`, and sent the task to `done` with
+  every governed change made before the lapse never examined at all. Being slow
+  could therefore stand down the drift check and produce a clean receipt over
+  work nothing had read (the ADR-0015 false-safety shape). — High impact once
+  understood: not a wrong verdict, but a confident verdict on a question never
+  asked. — Fixed this run. A lapse now holes the window instead of moving it: a
+  same-owner re-claim keeps `claim_started_at`, so earlier work stays provable,
+  while `tasks.claim_lapses` and `tasks.unleased_seconds` record the
+  discontinuity and cap conformance at `needs_human`. The cap follows the task,
+  not the submitted interval, so shrinking the evidence no longer buys a pass. A
+  different owner still opens a fresh window, so reach-back never crosses a
+  period somebody else owned the task. `recover_claim` remains restricted to
+  *legacy* pre-ADR-0030 owners; it was never the answer here.
 - **A renamed ADR leaves an unreachable Design Board row forever — OPEN.** —
   Observed Jul 2026 while investigating "the Design Board seems to have errors".
   `list_designs` returned two rows, `design:0036-one-work-surface` and
