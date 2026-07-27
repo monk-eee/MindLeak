@@ -19,8 +19,10 @@ async function run() {
   assert.match(api.readiness().memory, /mindleak-mcp .+\+/);
   assert.match(api.readiness().intent, /lodestar-mcp .+\+/);
   // Regression: the live smoke still asserted the removed per-process nonce,
-  // so correct session-scoped builds failed only at the release gate.
-  assert.match(api.readiness().agent, /^session:v1:vscode:[a-f0-9]{32}$/);
+  // so correct session-scoped builds failed only at the release gate. Since
+  // ADR-0054 the launch label is no part of the id either — asserting it here
+  // would re-create exactly the coupling that ADR removed.
+  assert.match(api.readiness().agent, /^session:v1:[a-f0-9]{32}$/);
   assert.equal(api.readiness().graph.nodes, 0);
 
   const commands = await vscode.commands.getCommands(true);

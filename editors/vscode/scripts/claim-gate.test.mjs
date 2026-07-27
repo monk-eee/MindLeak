@@ -115,21 +115,23 @@ describe("claim-gate", () => {
     expect(liveClaims([claimed("task:1", "agent-a", NOW - 1)], "agent-a", NOW)).toEqual([]);
   });
 
-  // The bug this guards, found the first time the gate met a real workflow:
-  // an agent id is `session:v1:<base>:<fingerprint>`, and `<base>` comes from
-  // LODESTAR_AGENT read when a *server* starts. The editor sets it; a shell
-  // usually does not. So claiming through the editor and pushing from a
-  // terminal produced `copilot` and `agent` bases for one session token, and
-  // whole-id matching refused a claim the caller genuinely held. That is the
-  // ordinary workflow, so the gate would have blocked almost every real push
-  // while passing its own tests, which set one base consistently.
-  it("accepts a claim made under a different LODESTAR_AGENT base", () => {
-    const fingerprint = "bff9bbe3968f16636cbc5522086114e3";
+  // The gate's first real workflow found that an agent id was
+  // `session:v1:<base>:<fingerprint>` with `<base>` read from LODESTAR_AGENT
+  // when a *server* started — the editor sets it, a shell usually does not — so
+  // claiming through the editor and pushing from a terminal produced two ids
+  // for one session and whole-id matching refused a claim the caller genuinely
+  // held. That was patched here by comparing only the fingerprint.
+  //
+  // ADR-0054 removed the label from the id and migrated every stored identity,
+  // so the patch is gone and equality is the whole comparison again. These
+  // pin that identity did not get quietly loosened on the way through.
+  it("accepts a claim held by this exact session", () => {
+    const agent = "session:v1:bff9bbe3968f16636cbc5522086114e3";
     const verdict = publishVerdict({
       reachable: true,
       sessionDeclared: true,
-      agent: `session:v1:agent:${fingerprint}`,
-      tasks: [claimed("task:1", `session:v1:copilot:${fingerprint}`, NOW + 300)],
+      agent,
+      tasks: [claimed("task:1", agent, NOW + 300)],
       branch: "fleet/thing",
       now: NOW,
     });
@@ -138,12 +140,25 @@ describe("claim-gate", () => {
     expect(verdict.claims.map((task) => task.id)).toEqual(["task:1"]);
   });
 
-  // The fingerprint is the session; relaxing the base must not relax identity.
-  it("still refuses a different session wearing the same base", () => {
+  // A shared fingerprint is no longer a shared identity, because it *is* the
+  // identity: a legacy labelled id and a current one are different agents, and
+  // the gate must not treat them as the same caller.
+  it("does not match a legacy labelled id against a current one", () => {
+    const fingerprint = "bff9bbe3968f16636cbc5522086114e3";
     expect(
       liveClaims(
-        [claimed("task:1", "session:v1:agent:11111111111111111111111111111111", NOW + 300)],
-        "session:v1:agent:22222222222222222222222222222222",
+        [claimed("task:1", `session:v1:copilot:${fingerprint}`, NOW + 300)],
+        `session:v1:${fingerprint}`,
+        NOW
+      )
+    ).toEqual([]);
+  });
+
+  it("still refuses a different session", () => {
+    expect(
+      liveClaims(
+        [claimed("task:1", "session:v1:11111111111111111111111111111111", NOW + 300)],
+        "session:v1:22222222222222222222222222222222",
         NOW
       )
     ).toEqual([]);
@@ -163,7 +178,7 @@ describe("claim-gate", () => {
   describe("identity collision", () => {
     it("warns when one identity publishes a branch it did not declare", () => {
       const notice = identityCollisionNotice({
-        agent: "session:v1:copilot:3ca2ce9f",
+        agent: "session:v1:3ca2ce9f5c07d2d1c4c54f94b56c6db8",
         branch: "fleet/claim-gate",
         declaredBranch: "fleet/lease-evidence-window",
         claims: [{ id: "task:one" }],

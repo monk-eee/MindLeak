@@ -18,28 +18,21 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 /**
- * The token fingerprint inside a `session:v1:<base>:<fingerprint>` agent id.
+ * Two agent ids are the same session when they are the same string.
  *
- * `<base>` is read from `LODESTAR_AGENT` when a server starts, so the *same*
- * session token resolves to a different agent id depending on how the server
- * was launched: the editor sets it, a shell usually does not. Comparing whole
- * ids therefore refuses a claim the caller genuinely holds — an agent that
- * claims through the editor and pushes from a terminal could never match, which
- * is the ordinary workflow. The fingerprint is derived from the token alone and
- * is the part that actually identifies the session.
+ * This used to compare only the trailing token fingerprint, because the id was
+ * `session:v1:<base>:<fingerprint>` and `<base>` came from `LODESTAR_AGENT` read
+ * when a *server* started — so one session token resolved to two ids depending
+ * on whether the editor or a shell hosted it, and whole-id matching refused a
+ * claim the caller genuinely held.
+ *
+ * ADR-0054 removed the label from the id and migrated every stored identity, so
+ * the id is the fingerprint and equality is the whole comparison. Keeping the
+ * looser match would be a shim for a bug that no longer exists, and a loose
+ * identity comparison is not something to leave lying around: it is the one
+ * check standing between an agent and someone else's claim.
  */
-export const sessionFingerprint = (agentId) => {
-  const match = /^session:v1:[A-Za-z]+:([0-9a-f]{32})$/.exec(agentId ?? "");
-  return match ? match[1] : null;
-};
-
-/** Two agent ids are the same session when their token fingerprints match. */
-export const sameSession = (left, right) => {
-  if (!left || !right) return false;
-  if (left === right) return true;
-  const a = sessionFingerprint(left);
-  return a !== null && a === sessionFingerprint(right);
-};
+export const sameSession = (left, right) => Boolean(left) && left === right;
 
 /** A claim is live when it is held, unexpired, and owned by this session. */
 export const liveClaims = (tasks, agent, now) =>
