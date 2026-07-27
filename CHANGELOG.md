@@ -7,6 +7,24 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **A read-only fleet view, and the two corrections it forced (ADR-0044,
+  amending ADR-0035).** `fleet_view` reports who is working where: each live
+  session's declared branch, head, and base, how far behind that base it said it
+  was, and whether live sessions disagree about their base. Building it surfaced
+  two things ADR-0035 asserted but could not deliver. Staleness was defined as
+  "commits behind the declared base" while the server is forbidden from reading
+  Git, and the declared fields can only show that two commits *differ*, never the
+  distance between them — so `open_session` now accepts a client-counted
+  `behind`, keeping the caller-supplies-facts rule intact. And declared context
+  lived in the process-local session registry, while under ADR-0038 every linked
+  worktree shares one `spec.db` and runs its own server: a view built on that
+  registry would have reported the sessions of whichever process answered while
+  presenting itself as the fleet. Context is now persisted with its
+  `declared_at`, so a reader can discount a stale declaration rather than be
+  quietly misled by one. Silence is never read as agreement: a session holding a
+  claim with no declared base is counted and shown, and `unknown` is modelled
+  separately from `current` so the two cannot be collapsed. The view carries its
+  own ceiling in the payload — advisory, capped at `review`, never a gate.
 - **`retire_design` removes an orphaned design record — by a person, never by a
   missing file (ADR-0042).** `reconcile_designs` keys on the ADR path, so
   renaming an ADR registers a new record and orphans the old one permanently.

@@ -14,6 +14,7 @@ pub mod design;
 pub mod discovery;
 pub mod error;
 mod facade;
+pub mod fleet;
 pub mod llm;
 pub mod model;
 pub mod policy;
