@@ -201,18 +201,23 @@ and footguns, with impact and status:
   is a suspicion, not a verdict: switching branch with work still claimed is
   legitimate. **Mint the token per session and never write it down.**
 - **The Vitest run intermittently dies with `Timeout calling "onTaskUpdate"` —
-  OPEN, infrastructure only.** — Hit twice on Windows during one session on a
-  full `npm --prefix editors/vscode test`. It is a worker/reporter RPC timeout,
-  not an assertion, so it reports as a run failure naming no failing test.
-  `npx vitest run --no-file-parallelism` passes **201/201** on the same tree, so
-  the tests are sound and the cause is contention: the script suites each build
-  real Git repositories in temp directories, which is slow enough on Windows
-  that a busy worker misses the reporter's heartbeat. Impact: a red run that is
-  not a regression, and worse, one that trains people to re-run rather than
-  read. Re-run serially to confirm before investigating. A real fix means
-  either making the Git fixtures cheaper or bounding parallelism for those files
-  specifically — not a blanket `fileParallelism: false`, which more than doubles
-  the wall clock (114s against ~48s).
+  OPEN, local-only, two fixes attempted and reverted.** — Hit repeatedly on
+  Windows during one session on a full `npm --prefix editors/vscode test`. It is
+  a worker→reporter RPC timeout, not an assertion, so it reports as a run
+  failure naming no failing test while **209/209 tests pass**. Cause: the
+  `scripts/**` suites drive Git and Node through `execFileSync` / `spawnSync`,
+  which block the worker's event loop for the whole child process, so the worker
+  cannot answer the reporter's heartbeat.
+  Tried and reverted, both still timing out: bounding that project to two worker
+  threads, and moving it to `pool: "forks"` (which was also *slower* — 92s
+  against 70s). A blanket `fileParallelism: false` does pass 209/209 but more
+  than doubles the wall clock (114s against ~48s) to fix a problem only one
+  group of files has. **CI on ubuntu does not hit this**, so it is a local
+  annoyance rather than a pipeline risk — which is exactly why it must stay
+  written down: it trains people to re-run instead of read, and one day it will
+  mask something real.
+  A real fix means making the Git fixtures cheaper (a template repository copied
+  per test instead of `git init` plus commits), not more pool tuning.
 
 - **23 designs are `accepted` in the ledger with nobody named as the decider,
   and the count grows on its own — SURFACED, not fixed.** — Found Jul 2026 by
