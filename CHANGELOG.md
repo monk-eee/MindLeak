@@ -7,6 +7,21 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`attribute_design_decision`: a decision already made can still be signed
+  (ADR-0051).** ADR-0047 named this failure exactly — a row that "asserts a
+  decision that can never be attributed" — and then repaired it only for designs
+  whose promotion had not materialised work, because reopening one that had would
+  leave tasks descending from a decision the ledger no longer shows. Auditing the
+  board found the hole that left: of 25 unattributed designs, **18 had already
+  materialised work** and were beyond both verbs — unreopenable and undecidable.
+  Those 18 are ADR-0001 through ADR-0032, so the repository's founding decisions
+  were the only ones permanently attributable to nobody, and the fix for exactly
+  that complaint had shipped four ADRs earlier. The new verb records the person
+  behind a decision that already stands, writing `decided_by` and nothing else.
+  Its guard is the deliberate complement of `reopen_undecided_design`'s, so
+  between them every undecided row has exactly one route and neither is a softer
+  way of doing the other's job. A `decided_by` already recorded is never
+  overwritten — attribution fills an empty field and can never change a full one.
 - **`supersede_design` records that an accepted design has been replaced
   (ADR-0050).** The ledger had `proposed`, `accepted`, `rejected`, and no way to
   say "this was decided, it held, and something better replaced it". ADR-0018

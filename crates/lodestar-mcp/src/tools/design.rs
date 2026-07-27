@@ -101,6 +101,18 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "attribute_design_decision",
+            "description": "Record who made a decision the ledger already asserts but attributes to nobody (ADR-0051). Not a decision: the status, reason, and promotion state are untouched, and work already descends from the acceptance. This is the counterpart to reopen_undecided_design and takes exactly the rows that verb refuses — those whose promotion has materialised work, which would otherwise assert a decision that could never be attributed. Refused if decided_by is already set (a recorded human act is not rewritten), if the item is still proposed (accept or reject it instead), or if nothing has materialised (reopen and decide it properly).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Design item id, e.g. design:0009-...." },
+                    "human": { "type": "string", "description": "The person who made the decision." }
+                },
+                "required": ["id", "human"]
+            }
+        }),
+        json!({
             "name": "accept_design",
             "description": "Human acceptance of a design item (ADR-0023): the attributed, guarded human decision only. The design becomes accepted with promotion state 'pending' — it does NOT run code conformance and does NOT create tasks. Materialise the work with promote_design. No agent may accept its own design.",
             "inputSchema": {
@@ -189,6 +201,12 @@ pub(super) fn dispatch(
         "reopen_undecided_design" => Some((|| {
             let item = engine
                 .reopen_undecided_design(req_str(args, "id")?)
+                .map_err(|e| e.to_string())?;
+            ok(&item)
+        })()),
+        "attribute_design_decision" => Some((|| {
+            let item = engine
+                .attribute_design_decision(req_str(args, "id")?, req_str(args, "human")?)
                 .map_err(|e| e.to_string())?;
             ok(&item)
         })()),
