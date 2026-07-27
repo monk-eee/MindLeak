@@ -19,6 +19,7 @@ pub mod llm;
 pub mod model;
 pub mod policy;
 pub mod scope;
+pub mod stalls;
 pub mod store;
 mod util;
 pub mod waiver;

@@ -48,6 +48,20 @@ to [Semantic Versioning](https://semver.org/).
   two agents waiting on each other; and addressing a question to yourself is
   refused, because it parks the task on the only agent that cannot act while it
   is parked.
+- **`stalled_work` shows why the board is not moving.** Three tasks once sat
+  unfinished for three different reasons and nothing reported any of them: a
+  lease lapsed after the work had already shipped, a change landed outside its
+  claim window, and a legitimate cross-plane edit resolved as drift. All were
+  found by accident, and one blocked task had queued behind them for 78 hours.
+  The new read-only tool names each stall — lapsed leases, work awaiting a
+  human, blocks behind something no agent will advance, blocks naming a task
+  that is not on the board, and parked work — with how long it has been true.
+  It **does not decide** whether that is too long: a staleness threshold
+  invented in the engine would become policy nobody agreed to, and the honest
+  report is the fact plus its age. It records nothing, changes no task state,
+  and produces no verdict, so it can never be mistaken for conformance. Waiting
+  behind live work is deliberately not reported — a report that flags ordinary
+  sequencing trains people to ignore it.
 - **`adr-guard` refuses to let a decision record exist in only one place.** An
   ADR is the reasoning behind the code, and losing one is silent — nothing
   fails, the file is simply not there any more. Three near-misses in a single
