@@ -187,20 +187,34 @@ impl SessionRegistry {
 
     /// Register a token and record the context it declares.
     ///
-    /// Re-declaring replaces the stored context, which is how a session
-    /// refreshes after switching branch or committing: the client is the source
-    /// of truth, so declaring nothing clears what was declared before.
+    /// A call that declares something replaces the stored context wholesale,
+    /// which is how a session refreshes after switching branch or committing:
+    /// within a real declaration the client is the source of truth, so an
+    /// omitted field means that field is no longer known.
+    ///
+    /// A call that declares *nothing* leaves the stored context alone.
+    /// Re-registering for identity alone is not a claim that the session has
+    /// stopped being anywhere, and treating it as one made the fleet view go
+    /// blind exactly when the fleet was busiest: every publish re-opens the
+    /// session, so branch and head were erased on each push by the very tool
+    /// meant to record them.
     pub fn open_session(
         &self,
         token: &str,
         context: SessionContext,
     ) -> Result<SessionIdentity, String> {
         let digest = token_digest(token)?;
-        self.registered
+        let mut registered = self
+            .registered
             .write()
-            .map_err(|_| "session registry lock poisoned".to_string())?
-            .insert(digest, context.clone());
-        Ok(self.identity_for(digest, context))
+            .map_err(|_| "session registry lock poisoned".to_string())?;
+        let stored = match registered.get(&digest) {
+            Some(existing) if !context.is_declared() => existing.clone(),
+            _ => context,
+        };
+        registered.insert(digest, stored.clone());
+        drop(registered);
+        Ok(self.identity_for(digest, stored))
     }
 
     pub fn resolve(&self, token: &str) -> Result<SessionIdentity, String> {
@@ -371,10 +385,49 @@ mod tests {
             registry.resolve(SESSION_A).unwrap().context.branch.unwrap(),
             "main"
         );
+    }
 
+    // Regression (ADR-0044). Re-registering a token to obtain identity, with no
+    // context declared, used to erase the context already on record. Every
+    // publish re-opens the session, so branch and head were wiped on each push
+    // by the tool meant to record them: `fleet_view` reported `branch: null` for
+    // agents that had declared a branch minutes earlier, and the fleet went
+    // blind exactly when it was busiest. Declaring nothing is not a claim to be
+    // nowhere.
+    #[test]
+    fn re_registering_without_a_declaration_keeps_the_declared_context() {
+        let registry = SessionRegistry::new("copilot").unwrap();
         registry
+            .open_session(SESSION_A, on_branch("fleet/claim-gate"))
+            .unwrap();
+
+        let identity = registry
             .open_session(SESSION_A, SessionContext::default())
             .unwrap();
+
+        assert_eq!(identity.context.branch.as_deref(), Some("fleet/claim-gate"));
+        assert_eq!(
+            registry
+                .resolve(SESSION_A)
+                .unwrap()
+                .context
+                .branch
+                .as_deref(),
+            Some("fleet/claim-gate"),
+        );
+    }
+
+    // A first registration that declares nothing still declares nothing: there
+    // is no earlier context to keep, and inventing one would be worse.
+    #[test]
+    fn a_first_registration_without_a_declaration_stays_undeclared() {
+        let registry = SessionRegistry::new("copilot").unwrap();
+
+        let identity = registry
+            .open_session(SESSION_A, SessionContext::default())
+            .unwrap();
+
+        assert!(!identity.context.is_declared());
         assert!(!registry.resolve(SESSION_A).unwrap().context.is_declared());
     }
 

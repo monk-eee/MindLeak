@@ -39,6 +39,17 @@ to [Semantic Versioning](https://semver.org/).
   shared mutable resource is introduced (ADR-0045 clause 2).
 
 ### Fixed
+- **Re-registering a session no longer erases where it said it was working
+  (ADR-0044).** `canonical-push` re-opens the session on every publish purely to
+  learn its own agent id, declaring no context. That overwrote the stored
+  declaration with an empty one, so `fleet_view` reported `branch: null` for
+  agents that had declared a branch minutes earlier — the fleet went blind at
+  exactly the moment it was busiest, and the tool that blinded it was the one
+  added to record where everyone is working. Declaring nothing is not a claim to
+  be nowhere: a call that declares no context now leaves the stored context
+  alone, in both the in-process registry and the durable row. Within a real
+  declaration the replace-wholesale rule is unchanged, because there an omitted
+  field is the client saying that field is no longer known.
 - **A lapsed lease no longer lets an agent launder unchecked work into an
   `aligned` receipt (ADR-0048).** Re-claiming after a lapse reset
   `claim_started_at` to the moment of the re-claim, so everything done before the
