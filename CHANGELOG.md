@@ -6,19 +6,6 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Fixed
-- **The server no longer exits at startup when the database path has no
-  directory.** `MINDLEAK_DB=":memory:"` — or a bare `graph.db` — resolves to a
-  path whose `parent()` is `Some("")`, not `None`. `create_dir_all("")`
-  short-circuits to `Ok`, so the happy path hid it, but the Unix branch then
-  called `set_permissions` on that empty path and got `ENOENT`. The process
-  died immediately on Linux and macOS reporting only "No such file or directory
-  (os error 2)", while Windows started fine because it has no permissions call.
-  This is what failed the v0.1.3 release: both platform jobs that actually
-  executed a Unix binary failed their smoke test and publication was skipped.
-  The macOS x64 job passed only because it is cross-compiled and skips
-  execution — a green matrix cell is not always an executed one.
-
 ## [0.1.3] - 2026-07-27
 
 ### Added
@@ -544,6 +531,32 @@ to [Semantic Versioning](https://semver.org/).
   review is attributed to a registered session.
 
 ### Fixed
+
+- **A release platform nobody could execute no longer reports itself as
+  verified.** The release smoke ran the freshly built servers only when the
+  runner's architecture matched the target, and otherwise printed a notice and
+  returned — so the job went green having tested nothing. `macos-x64` builds
+  `x86_64-apple-darwin` on `macos-14`, which is arm64, so **two of the four
+  v0.1.3 platforms were never smoke-tested** and a startup crash reached a
+  tagged release with green ticks beside it. The x64 macOS build now runs on
+  `macos-13` so every target is native, and a mismatch is a hard failure rather
+  than a skip: a binary this workflow cannot execute is one it must not ship.
+  A check that reports success on a question it never asked is worth less than
+  no check, because it is trusted.
+
+- **The server no longer exits at startup when the database path has no
+  directory.** `MINDLEAK_DB=":memory:"` — or a bare `graph.db` — resolves to a
+  path whose `parent()` is `Some("")`, not `None`. `create_dir_all("")`
+  short-circuits to `Ok`, so the happy path hid it, but the Unix branch then
+  called `set_permissions` on that empty path and got `ENOENT`. The process
+  died immediately on Linux and macOS reporting only "No such file or directory
+  (os error 2)", while Windows started fine because it has no permissions call.
+  This is what failed the v0.1.3 release: both platform jobs that actually
+  executed a Unix binary failed their smoke test and publication was skipped.
+  The macOS x64 job passed only because it is cross-compiled and skips
+  execution — a green matrix cell is not always an executed one.
+
+
 
 - **An unknown tool argument is now reported instead of silently dropped.**
   Passing `lease_seconds` where `claim_task` declares `lease_secs` did nothing
