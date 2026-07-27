@@ -12,14 +12,19 @@ pub(super) fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "create_task",
-            "description": "Create work serving a goal. With blocked_by, the task remains unclaimable until the predecessor completes aligned, enabling progressive same-file handoffs without pretending to lock symbols or text.",
+            "description": "Create work serving a goal. With blocked_by, the task remains unclaimable until the predecessor completes aligned, enabling progressive same-file handoffs without pretending to lock symbols or text. With also_serves, the task declares up front the additional goals it serves, so genuinely cross-cutting work is reviewable breadth rather than drift (ADR-0041).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "goal_id": { "type": "string" },
                     "title": { "type": "string" },
                     "acceptance": { "type": "string", "description": "What 'done' means." },
-                    "blocked_by": { "type": "string", "description": "Optional predecessor task. The new task opens automatically only after that task completes aligned." }
+                    "blocked_by": { "type": "string", "description": "Optional predecessor task. The new task opens automatically only after that task completes aligned." },
+                    "also_serves": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional additional goal ids this work legitimately serves. Declared here and fixed for the task's life; there is no verb that adds coverage later. A verdict that relied on one caps at needs_human, so declaring breadth buys a review, not a pass (ADR-0041)."
+                    }
                 },
                 "required": ["goal_id", "title"]
             }
@@ -264,11 +269,12 @@ pub(super) fn dispatch(
     match name {
         "create_task" => Some((|| {
             let task = engine
-                .create_task_after(
+                .create_task_covering(
                     req_str(args, "goal_id")?,
                     req_str(args, "title")?,
                     opt_str(args, "acceptance").unwrap_or_default().as_str(),
                     optional_string_arg(args, "blocked_by")?,
+                    &str_array(args, "also_serves"),
                 )
                 .map_err(|e| e.to_string())?;
             ok(&task)
