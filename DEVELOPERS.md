@@ -70,6 +70,7 @@ crate, and `target/debug/mindleak-mcp` starts and prints
 | Compile extension | `make ext-compile` | `npm --prefix editors/vscode run compile` |
 | ADR safety | `make adr-guard` | `node scripts/adr-guard.mjs` — fails if any ADR is uncommitted or on no remote ref |
 | Merge audit | `make merge-audit` | `node scripts/merge-audit.mjs` — fails if a merged branch has commits that never reached `main` |
+| Delivery queue | `make queue` | `node scripts/delivery-queue.mjs` — show the queue and update the branch whose turn it is (ADR-0062). `make queue-watch` runs it as an agent |
 | Design audit | `make design-audit` | `node scripts/design-audit.mjs` — reports drift between the ADR files and the design ledger. Local only: it reads the ledger through a release `lodestar-mcp`, which CI has no database for |
 | Changelog | `make changelog` | `node scripts/changelog.mjs` — show what the next release contains. A change adds `changelog.d/<section>-<slug>.md`; **do not edit `CHANGELOG.md` in a pull request** (ADR-0056) |
 | Everything CI runs | `make ci` | see [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
@@ -117,6 +118,38 @@ npm --prefix editors/vscode test
 npm --prefix editors/vscode run compile
 make coverage
 ```
+
+## The delivery queue
+
+`main` requires branches to be up to date before merging. With several armed
+pull requests that becomes a traffic jam: every merge makes all the others
+stale, and each one that updates itself burns a full check run against a `main`
+that the next merge invalidates again.
+
+The queue takes those turns in order (ADR-0062):
+
+```bash
+make queue          # show the queue, update whichever branch's turn it is
+make queue-watch    # run it as an agent until you stop it
+node scripts/delivery-queue.mjs --dry-run   # decide, change nothing
+```
+
+It reads the queue from GitHub — **a pull request with auto-merge armed is a
+queued one** (ADR-0045), ordered by when it was armed. Exactly one branch is
+updated at a time; that is the entire mechanism.
+
+**It never merges.** Merging stays with GitHub's auto-merge and the same five
+required checks, so the queue cannot become a second way into `main` that branch
+protection does not govern. Nothing depends on it running: an unattended queue
+just means branches go stale the way they did before.
+
+Branches it will not touch, and reports instead:
+
+- **a real conflict** — reconcile it in its own worktree (ADR-0038); it must not
+  hold up everything behind it
+- **failing checks** — updating would only burn CI to fail again
+- **checks still running** — waiting is the point; a second update now would
+  invalidate the first before it lands
 
 ## Publishing a binary release
 
