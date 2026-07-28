@@ -52,6 +52,10 @@ pub struct MindLeak {
     consolidation_min_interval_secs: u64,
     embedder: Box<dyn embed::TextEmbedder>,
     recall_floor: f64,
+    /// The checkout this process serves, used to make incoming absolute paths
+    /// repo-relative. Injected rather than reached for: the core has no business
+    /// knowing where on disk it is, and tests must be able to set it.
+    workspace_root: Option<String>,
 }
 
 // The async maintenance worker (`mindleak-mcp`) moves a `MindLeak` into
@@ -71,6 +75,7 @@ impl MindLeak {
             consolidation_min_interval_secs: DEFAULT_CONSOLIDATION_MIN_INTERVAL_SECS,
             embedder: Box::new(embed::Embedder::default()),
             recall_floor: config::DEFAULT_RECALL_FLOOR,
+            workspace_root: None,
         })
     }
 
@@ -81,7 +86,30 @@ impl MindLeak {
             consolidation_min_interval_secs: DEFAULT_CONSOLIDATION_MIN_INTERVAL_SECS,
             embedder: Box::new(embed::Embedder::default()),
             recall_floor: config::DEFAULT_RECALL_FLOOR,
+            workspace_root: None,
         })
+    }
+
+    /// Declare the checkout this process serves, so absolute paths from editor
+    /// sensors collapse onto the same repo-relative node ids the rest of the
+    /// fleet writes.
+    ///
+    /// Every worktree of one repository shares a single graph (ADR-0038), so a
+    /// path left absolute splits one file across as many identities as there are
+    /// checkouts. Measured before this existed: **871 of 6,144 nodes carried
+    /// absolute ids across 7 worktrees, and 590 files existed under two
+    /// identities at once** -- including `AGENTS.md`. That splits reinforcement
+    /// (so real signal decays like a one-off), hides collisions from
+    /// `check_overlap`, and leaves governed bindings covering only one spelling.
+    pub fn with_workspace_root(mut self, root: impl Into<String>) -> Self {
+        let root = root.into();
+        self.workspace_root = (!root.trim().is_empty()).then_some(root);
+        self
+    }
+
+    /// Make a caller-supplied path repo-relative for stable node ids.
+    pub(crate) fn repo_relative(&self, path: &str) -> String {
+        ingest::repo_relative(path, self.workspace_root.as_deref())
     }
 
     /// Override the immutable decay policy resolved by the hosting process.

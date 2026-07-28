@@ -3,7 +3,7 @@
 
 use crate::error::Result;
 use crate::graph::GraphStore;
-use crate::ingest::{clamp, is_ignored_path, normalize_path, short_hash};
+use crate::ingest::{clamp, is_ignored_path, repo_relative, short_hash};
 use crate::model::{Edge, Node, NodeType, RelationType};
 
 /// A commit captured from git telemetry.
@@ -38,10 +38,14 @@ pub fn extract_rationale(message: &str) -> Vec<String> {
 }
 
 /// Ingest one commit. Creates an intent node and `refactored` edges to files.
+///
+/// `root` is the checkout this process serves; changed files inside it become
+/// repo-relative so every worktree writes the same node ids (ADR-0038).
 pub fn ingest_commit(
     store: &GraphStore,
     rec: &CommitRecord,
     now: i64,
+    root: Option<&str>,
 ) -> Result<crate::graph::WriteOutcome> {
     let key = rec
         .sha
@@ -66,7 +70,7 @@ pub fn ingest_commit(
     let mut changed_files: Vec<String> = rec
         .changed_files
         .iter()
-        .map(|file| normalize_path(file))
+        .map(|file| repo_relative(file, root))
         .collect();
     changed_files.sort();
     changed_files.dedup();
@@ -110,7 +114,7 @@ mod tests {
             changed_files: vec!["src/lib.rs".to_string()],
             timestamp: 123,
         };
-        ingest_commit(&store, &record, 999).unwrap();
+        ingest_commit(&store, &record, 999, None).unwrap();
 
         let graph = store
             .traverse(

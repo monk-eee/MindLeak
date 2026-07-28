@@ -158,6 +158,26 @@ pub(super) fn dispatch(
                     ended_at,
                 )
                 .map_err(|e| e.to_string())?;
+            // An empty bundle is not evidence, and handing one back invites
+            // submitting it. Conformance then reports "no provenance-bearing
+            // mutation" and parks the task at needs_human, awaiting a human who
+            // cannot do anything about it -- the cause is always that nothing
+            // was ingested into this window, and the remedy is knowable here.
+            // Refusing at the point of construction is the same rule the
+            // argument guard applies: a call that cannot produce a useful
+            // result says so, rather than succeeding emptily.
+            if evidence.changed_node_ids.is_empty()
+                && evidence.commit_ids.is_empty()
+                && evidence.execution_ids.is_empty()
+            {
+                return Err(format!(
+                    "no evidence in {started_at}..{ended_at} for {agent}: nothing was ingested \
+                     into this window, so there is nothing to complete a task with. Ingest the \
+                     work first -- `ingest_commit` with `changed_files` for a commit, \
+                     `ingest_execution` for a command -- then ask again. Submitting an empty \
+                     bundle records a needs_human verdict no human can resolve."
+                ));
+            }
             Ok(text_result(&json!(evidence)))
         })()),
         _ => None,
@@ -170,6 +190,68 @@ mod tests {
     use super::super::{call, list};
     use mindleak_core::MindLeak;
     use serde_json::{json, Value};
+
+    /// Measured on the live board: forty audits carried "evidence contains no
+    /// provenance-bearing mutation", sixteen of them raised *after* the
+    /// argument guard shipped, by two different agents. Every one of those
+    /// bundles was completely empty -- commits=0 changed=0 execs=0
+    /// provenance=0 -- so the misspelt-argument defect was a cause and not the
+    /// cause. The dominant one is an agent asking for evidence over a window
+    /// nothing was ingested into, getting a well-formed envelope containing
+    /// nothing, and submitting it. Conformance then parks the task at
+    /// needs_human, which reads as "a human must judge this" when in fact
+    /// nobody can: the work was never recorded.
+    #[test]
+    fn an_empty_window_is_refused_rather_than_returned_as_evidence() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        let error = call(
+            &engine,
+            &json!({
+                "name": "evidence_for",
+                "arguments": { "agent_id": "agent-a", "started_at": 1, "ended_at": 2 }
+            }),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("no evidence"), "says there is none: {error}");
+        assert!(
+            error.contains("ingest_commit"),
+            "names the remedy rather than only the symptom: {error}"
+        );
+        assert!(
+            error.contains("needs_human"),
+            "explains why submitting it anyway is worse than stopping: {error}"
+        );
+    }
+
+    /// The refusal must be narrow. A window that caught real work still returns
+    /// it, or the guard would block the path it exists to protect.
+    #[test]
+    fn a_window_containing_work_still_returns_evidence() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        call_ok(
+            &engine,
+            "ingest_execution",
+            json!({
+                "command": "cargo test",
+                "exit_code": 0,
+                "changed_files": ["src/lib.rs"],
+                "timestamp": 100,
+                "agent": "agent-a"
+            }),
+        );
+
+        let result = call_ok(
+            &engine,
+            "evidence_for",
+            json!({ "agent_id": "agent-a", "started_at": 90, "ended_at": 110 }),
+        );
+        let value: Value = serde_json::from_str(&content_text(&result)).unwrap();
+        assert!(
+            !value["changed_node_ids"].as_array().unwrap().is_empty(),
+            "real work in the window is still returned: {value}"
+        );
+    }
 
     #[test]
     fn graph_stats_returns_counts() {

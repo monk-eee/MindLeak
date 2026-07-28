@@ -47,6 +47,7 @@ fn main() -> anyhow::Result<()> {
     let engine = MindLeak::open(&db_path)?
         .with_decay_policy(decay_policy)
         .with_working_set_size(working_set_size)
+        .with_workspace_root(workspace.to_string_lossy().into_owned())
         .with_recall_floor(mindleak_core::config::load_recall_floor())
         .with_consolidation_min_interval(maintenance_config.min_interval.as_secs());
     tracing::info!(
