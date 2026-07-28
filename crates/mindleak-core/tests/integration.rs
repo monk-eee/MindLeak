@@ -1204,3 +1204,48 @@ fn recall_returns_empty_not_error_when_the_index_is_unpopulated() {
     let hits = engine.recall("auth session", 5).unwrap();
     assert!(hits.is_empty());
 }
+
+/// Bug, recorded in the Known gaps of DEVELOPERS.md on 2026-07-28: a commit
+/// that was ingested, attributed to the calling agent, and created inside the
+/// work window did not appear in that window's evidence bundle. Conformance
+/// then answered `needs_human` with "evidence contains no provenance-bearing
+/// mutation" — which is indistinguishable from an honest refusal, so five tasks
+/// were closed on that verdict and it was read as the contract working.
+///
+/// This is the red test the gap entry asked for: ingest, attribute, bound the
+/// window, and assert the commit comes back.
+#[test]
+fn evidence_for_returns_a_commit_the_agent_ingested_inside_the_window() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    let agent = "session:v1:bff9bbe3968f16636cbc5522086114e3";
+    let started_at = now_unix();
+
+    let outcome = engine
+        .ingest_commit_for_agent(
+            agent,
+            &CommitRecord {
+                message: "fix(identity): restore the Memory Plane merge".to_string(),
+                sha: Some("e0585eb".to_string()),
+                changed_files: vec!["crates/mindleak-core/src/db.rs".to_string()],
+                timestamp: started_at,
+            },
+        )
+        .unwrap();
+    let intent_id = outcome
+        .node_ids
+        .iter()
+        .find(|id| id.starts_with("intent:"))
+        .expect("a commit is ingested as an intent node")
+        .clone();
+
+    let evidence = engine
+        .evidence_for(Some("task:1"), agent, started_at, now_unix() + 1)
+        .unwrap();
+
+    assert_eq!(evidence.agent_id, agent);
+    assert!(
+        evidence.commit_ids.contains(&intent_id),
+        "the ingested commit must appear in its own window; got {:?}",
+        evidence.commit_ids
+    );
+}

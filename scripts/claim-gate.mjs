@@ -34,6 +34,64 @@ import { join } from "node:path";
  */
 export const sameSession = (left, right) => Boolean(left) && left === right;
 
+/** The token fingerprint of an agent id, whichever id shape it is written in. */
+const fingerprintOf = (id) => /([0-9a-f]{32})$/.exec(id ?? "")?.[1] ?? null;
+
+/**
+ * A claim held by *this* session under a different id shape.
+ *
+ * Not a fallback, and deliberately not fed into `liveClaims`: this never lets a
+ * publication proceed. It exists so the refusal can name its real cause.
+ *
+ * ADR-0054 collapsed `session:v1:<label>:<fingerprint>` to
+ * `session:v1:<fingerprint>` and migrated every stored owner. A server binary
+ * built before that still resolves the labelled form, so it asks the ledger
+ * about an identity the ledger no longer holds. Every guard downstream is then
+ * correct and useless: the claim gate says "no live claim", `claim_task` returns
+ * `won: false` on a task this session already owns, and the overlap notice
+ * blames a peer for the caller's own work. Three different lies, one stale
+ * binary — and nothing in any of those messages points at it.
+ *
+ * Matching on the fingerprint identifies that case precisely, because the
+ * fingerprint is derived from the session token and is the one part both id
+ * shapes share.
+ */
+export const claimsUnderAnotherIdShape = (tasks, agent, now) => {
+  const mine = fingerprintOf(agent);
+  if (!mine) return [];
+  return (tasks ?? []).filter(
+    (task) =>
+      task.status === "claimed" &&
+      !sameSession(task.owner, agent) &&
+      fingerprintOf(task.owner) === mine &&
+      typeof task.lease_expires_at === "number" &&
+      task.lease_expires_at > now,
+  );
+};
+
+/**
+ * The advice to print when this session holds no claim.
+ *
+ * Says "update your MCP binary" only when the ledger actually shows this
+ * session's fingerprint under a different id shape. Guessing at a stale binary
+ * every time a claim is missing would teach readers to ignore the line, which
+ * is how a diagnostic becomes noise.
+ */
+export const missingClaimAdvice = (tasks, agent, now) => {
+  const shifted = claimsUnderAnotherIdShape(tasks, agent, now);
+  if (shifted.length === 0) {
+    return "claim a task before publishing.";
+  }
+  return (
+    `this session resolves as ${agent}, but the ledger holds ` +
+    `${shifted.length} live claim(s) for the same session token under ` +
+    `${shifted[0].owner}. Same session, older id shape: your MCP binary ` +
+    "predates ADR-0054, which collapsed the label out of the agent id. " +
+    "Rebuild and reinstall the MCP binaries; re-claiming will not help, and " +
+    "the claim you already hold is intact."
+  );
+};
+
 /** A claim is live when it is held, unexpired, and owned by this session. */
 export const liveClaims = (tasks, agent, now) =>
   (tasks ?? []).filter(
@@ -94,8 +152,8 @@ export const publishVerdict = ({
         "  Claim existing work:  claim_task(task_id)\n" +
         "  Or declare it first:  create_task(goal_id, title, acceptance) then claim_task\n" +
         "  A lapsed lease cannot be renewed — re-claim to open a fresh evidence window.\n" +
-        "  Matching ignores the LODESTAR_AGENT base, so a claim made through the editor\n" +
-        "  still counts from a shell — but the session token must be the same one.",
+        "  " +
+        missingClaimAdvice(tasks, agent, now),
     };
   }
   return { ok: true, claims: held };
