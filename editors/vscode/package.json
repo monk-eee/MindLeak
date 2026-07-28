@@ -392,6 +392,112 @@
           "when": "view == mindleak.evidenceView && viewItem == evidence.group",
           "group": "inline@2"
         }
+      ],
+      "commandPalette": [
+        {
+          "command": "mindleak.readiness.refresh",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.refresh",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.board.refresh",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.claimForMe",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.renew",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.release",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.acceptReview",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.retryReview",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.design.refresh",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.design.accept",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.design.reject",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.design.promote",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.design.revisePromotion",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.design.openAdr",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.design.inspectPromotion",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.telemetry.refresh",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.evidence.refresh",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.evidence.inspect",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.evidence.export",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.recover",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.completeWithEvidence",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.inspectEvidence",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.answer",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.retire",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.pause",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.resume",
+          "when": "false"
+        }
       ]
     },
     "viewsWelcome": [
