@@ -161,7 +161,7 @@ as `mindleak-mcp`; schemas and handlers are grouped under `tools/` by
 constitution, executive, conformance, knowledge, lifecycle, controls,
 amendments, waivers, design, design materialization, evidence, and fleet
 responsibility. See [`USAGE.md`](USAGE.md) for the workflows those verbs
-compose into — the tool tables in [`README.md`](../README.md) describe each verb,
+compose into — the tool tables in [`TOOLS.md`](TOOLS.md) describe each verb,
 not the order to call them in.
 
 ### `editors/vscode` (extension)
