@@ -23,20 +23,33 @@ or a one-line addition to an existing function instead of a new sibling.
 
 Run these checks before writing any helper, method, or "small" function:
 
-1. **Grep the crate for the behaviour.** `grep -rn "fn <verb>" crates/` — if
+1. **Check who else is already in there.** `check_overlap(paths, session_id)` —
+   it names the agents whose recent, decay-weighted footprints touch the files
+   you are about to edit. Use it before editing any shared file (`AGENTS.md`,
+   `DEVELOPERS.md`, `CHANGELOG.md`, `docs/ARCHITECTURE.md`, anything in
+   `scripts/`), and before claiming work that spans them. Measured: the dominant
+   collision in this fleet is two agents editing neighbouring lines of the same
+   file, and `check_overlap` names them correctly *before* the merge conflict
+   rather than after.
+   This is the only graph read the checklist mandates. `recall` and
+   `get_impact_radius` are deliberately **not** here — see Known gaps in
+   [`DEVELOPERS.md`](DEVELOPERS.md); neither can currently answer a
+   before-you-write question about Rust, and mandating a tool that returns
+   plausible strangers would only teach you to ignore this list.
+2. **Grep the crate for the behaviour.** `grep -rn "fn <verb>" crates/` — if
    something already does this, call it. If a near-miss exists, extend it — do
    not fork a parallel helper.
-2. **Check the facade and the shared modules.** The `MindLeak` facade in
+3. **Check the facade and the shared modules.** The `MindLeak` facade in
    [`lib.rs`](crates/mindleak-core/src/lib.rs) is the public surface; graph reads
    /writes belong on `GraphStore` ([`graph.rs`](crates/mindleak-core/src/graph.rs));
    deterministic ingestion helpers (`short_hash`, `normalize_path`, `clamp`) live
    in [`ingest/mod.rs`](crates/mindleak-core/src/ingest/mod.rs). Add there and
    call it — don't paste the same three lines into a fourth module.
-3. **Check the red-flag shapes.** A new free function taking the same first two
+4. **Check the red-flag shapes.** A new free function taking the same first two
    or three arguments at every call site is a method in disguise. A `static mut`
    is a class without the class. A second `*_or_default` / `*_safe` / `*_retry` /
    `*_v2` beside an existing one is a fork waiting to happen. Look again, harder.
-4. **Write it twice → extract immediately.** If you find yourself writing the
+5. **Write it twice → extract immediately.** If you find yourself writing the
    same helper a second time in one session, that second occurrence is the signal
    to extract it now. "Once more and clean up later" — later does not arrive.
 
@@ -188,6 +201,21 @@ style nit.
   `HEAD`, stop work on that branch, reach a clean checkpoint, and reconcile in
   its own worktree. Never move refs underneath dirty files or repair routine
   divergence by manufacturing replacement commits.
+- **Arm it and leave it alone — the queue takes the turns (ADR-0062).** `main`
+  requires branches to be up to date, so with several armed pull requests every
+  merge makes all the others stale. If each agent refreshes its own branch the
+  moment that happens, they collide continuously: N branches each burn a full
+  check run against a `main` that the next merge invalidates again, and nothing
+  drains. Eleven armed, green pull requests once sat unmerged for two hours that
+  way.
+  So **do not run `gh pr update-branch`, and do not merge `main` into a branch
+  just because it went behind.** Enabling auto-merge is how you join the queue —
+  armed means finished (ADR-0045) — and `scripts/delivery-queue.mjs` brings
+  exactly one branch up to date at a time, in the order branches were armed. It
+  never merges; merging stays with GitHub behind the same required checks.
+  Merge `main` in yourself **only** when the queue reports a real conflict on
+  your branch, which it cannot resolve for you — that is the one case it hands
+  back, and it needs your worktree (see the divergence rule above).
 
 ### Doc discipline (NON-NEGOTIABLE)
 Doc drift is treated like a failing test. A shipped change updates the relevant
