@@ -6,28 +6,9 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Fixed
-
-- **`check_overlap` no longer reports an agent colliding with itself
-  (ADR-0054).** The Memory Plane carried the same forked identity the Intent
-  Plane did: attribution nodes are `agent:{id}` (ADR-0003), so one session
-  observed under two process environments produced two agent nodes. This was
-  first assessed as cosmetic and it was not — `check_overlap` skips the caller
-  by exact id, so an agent's other half was never excluded and the tool reported
-  a collision with itself, a false positive indistinguishable from a real one
-  that would tell an agent to back off work nobody else was doing.
-  `working_set` likewise returned half of an agent's own attention. The
-  migration folds the halves rather than picking one: the canonical node takes
-  the earliest creation and latest activity, and a shared observation takes the
-  strongest weight, the latest touch, the earliest first sighting, and the
-  **summed** reinforcement count — a node observed under both names really was
-  observed twice. Verified against the live graph, where 17 agent nodes still
-  carried a label segment after the Intent Plane migration had already run.
-
-## [0.1.3] - 2026-07-27
+## [0.1.3] - 2026-07-28
 
 ### Added
-
 - **`questions_for_a_human`: the other half of ADR-0046's dialogue.** Agents
   could address a question at a peer and list what was addressed to them, but
   there was no way to list what was waiting on a **person** — `pending_questions`
@@ -57,7 +38,6 @@ to [Semantic Versioning](https://semver.org/).
   arbitrate: it may ask about intent and ordering and is forbidden from deciding
   who is right, because a model verdict carries no evidence and ADR-0009 makes
   evidence the basis of every verdict here.
-
 - **`attribute_design_decision`: a decision already made can still be signed
   (ADR-0051).** ADR-0047 named this failure exactly — a row that "asserts a
   decision that can never be attributed" — and then repaired it only for designs
@@ -89,7 +69,6 @@ to [Semantic Versioning](https://semver.org/).
   instead. The replacement must already be registered, and the link is never
   inferred from an ADR's prose — deriving it would repeat exactly the mistake
   ADR-0047 documents.
-
 - **Publishing declares where it is working, and warns when one identity is in
   two places (ADR-0044, ADR-0049).** The claim gate re-opened the session on
   every push and declared nothing, so it replaced a real declaration with
@@ -132,7 +111,6 @@ to [Semantic Versioning](https://semver.org/).
   noise an agent learns to skip past. Nothing is reserved or consumed: it stays a
   read over the durable thread, so two readers still see the same rows and no new
   shared mutable resource is introduced (ADR-0045 clause 2).
-
 - **Publication requires a live claim; the ledger is no longer optional
   (ADR-0049).** The Intent Plane had one real arbiter (`claim_task`) and **zero
   automatic integration points** — nothing in the hooks, the scripts, or CI ever
@@ -152,7 +130,6 @@ to [Semantic Versioning](https://semver.org/).
   open would make "the ledger was down" the universal bypass. Overlapping live
   claims on the branch's paths are **reported, never enforced** (ADR-0024) — the
   collision is named at the one moment it is still cheap to act on.
-
 - **Arming auto-merge now means finished, and a merged branch is checked for
   what it left behind (ADR-0045 clause 2).** A pull request's merge decision has
   two writers — the agent pushing commits and whoever arms auto-merge — and
@@ -485,7 +462,6 @@ to [Semantic Versioning](https://semver.org/).
   silently discard a deliberate local decision.
 
 ### Changed
-
 - **`make design-audit` now reports a superseded ADR as drift rather than as an
   unrepresentable note.** It reported those two files as a modelling gap because
   neither side was stale — they were saying different things, and the ledger
@@ -493,8 +469,6 @@ to [Semantic Versioning](https://semver.org/).
   ledger has not been told about is ordinary drift, and so is the reverse. The
   `unrepresentable` category and the `isDrift` predicate that existed only to
   exempt it are both gone.
-
-
 - **Scope matching moved to one shared `scope` module.** Clauses and waivers
   both declare scope, and forking the matcher would let the two disagree about
   what a scope reaches. It stays deliberately not a glob engine — exact match,
@@ -577,9 +551,60 @@ to [Semantic Versioning](https://semver.org/).
   the later amendment workflow). `propose_common_core` uses this same path for
   evidence, intent, safety, proportionality, and evolution principles; MCP
   review is attributed to a registered session.
+- **`CHANGELOG.md` is assembled from per-change fragments (ADR-0056).** A pull
+  request now adds `changelog.d/<section>-<slug>.md` and does not touch the
+  changelog. The shared file was a serialisation point: `.gitattributes` marks
+  it `merge=union`, git honours that in a checkout, and GitHub's merge machinery
+  does not — so five pull requests in one day reported a conflict that did not
+  exist, `gh pr update-branch` could not clear it because that is a server-side
+  merge too, and each one had to be reconciled by hand. The real cost was not the
+  conflict but that **auto-merge silently stopped working**: armed work went
+  stale the moment anything else landed, which is precisely what "armed means
+  finished" was supposed to rule out. Two branches never write the same fragment
+  path, so there is nothing to merge. `node scripts/changelog.mjs --release
+  <version>` folds the fragments, and anything already under `## [Unreleased]`,
+  into a dated section once, in the release commit. This is the same shape as ADR
+  numbers and the ADR index table, and the same fix both of those already got:
+  stop hand-maintaining what can be computed.
+- **Recall can now say "I don't know", and conclusions get recorded (ADR-0053).**
+  Measured on this repository's own index: asking `recall` the five questions an
+  agent actually had during a day's work returned code locations, never
+  experience — "canonical-push auto-merge armed refuses" came back with
+  `merge_import`, a symbol matched on the word "merge", with nothing to mark it
+  as noise. A caller handed a plausible stranger cannot tell it is wrong, so it
+  stops asking, and that is the whole adoption problem. `recall` now applies a
+  cosine floor (`MINDLEAK_RECALL_FLOOR`, default 0.5) and returns **nothing**
+  when nothing clears it. An honest empty answer is usable: fall back to
+  `multi_hop_query`, `graph_snapshot`, or the repository.
+  The other half is that there was nothing worth recalling. A 500-node sample of
+  the graph held 196 executions, 159 symbols, 120 artifacts — and no conclusions,
+  because nothing ever asked for one. `complete_task` now takes `learned` and
+  records it as durable knowledge at the moment the agent holds it; omitting it
+  never blocks completion, because most tasks teach nothing and a gate would only
+  produce a column of `n/a`, but the response names the omission so the gap is
+  measurable instead of invisible. `record_architectural_decision` embeds the
+  node it writes, so a recorded conclusion is recallable immediately rather than
+  queued until someone remembers to run `index_nodes`; when no embedding server
+  is reachable the node is still written and `embedded: false` says so. The
+  zero-token write path is untouched: a conclusion is supplied, never inferred
+  from an execution log.
 
 ### Fixed
-
+- **`check_overlap` no longer reports an agent colliding with itself
+  (ADR-0054).** The Memory Plane carried the same forked identity the Intent
+  Plane did: attribution nodes are `agent:{id}` (ADR-0003), so one session
+  observed under two process environments produced two agent nodes. This was
+  first assessed as cosmetic and it was not — `check_overlap` skips the caller
+  by exact id, so an agent's other half was never excluded and the tool reported
+  a collision with itself, a false positive indistinguishable from a real one
+  that would tell an agent to back off work nobody else was doing.
+  `working_set` likewise returned half of an agent's own attention. The
+  migration folds the halves rather than picking one: the canonical node takes
+  the earliest creation and latest activity, and a shared observation takes the
+  strongest weight, the latest touch, the earliest first sighting, and the
+  **summed** reinforcement count — a node observed under both names really was
+  observed twice. Verified against the live graph, where 17 agent nodes still
+  carried a label segment after the Intent Plane migration had already run.
 - **One agent is one identity again (ADR-0054).** The agent id was
   `session:v1:{base}:{fingerprint}`, where the fingerprint came from the session
   token but `base` came from `LODESTAR_AGENT` / `MINDLEAK_AGENT` **in the hosting
@@ -599,7 +624,6 @@ to [Semantic Versioning](https://semver.org/).
   agent. `DEVELOPERS.md`'s "publishing must use the same base that claimed"
   instruction is deleted rather than amended — it was advice for working around
   this bug.
-
 - **An unknown tool argument is now reported instead of silently dropped.**
   Passing `lease_seconds` where `claim_task` declares `lease_secs` did nothing
   visible: the key was ignored, the 300-second default applied, and the claim
@@ -637,23 +661,6 @@ to [Semantic Versioning](https://semver.org/).
   executed a Unix binary failed their smoke test and publication was skipped.
   The macOS x64 job passed only because it is cross-compiled and skips
   execution — a green matrix cell is not always an executed one.
-
-
-
-- **The server no longer exits at startup when the database path has no
-  directory.** `MINDLEAK_DB=":memory:"` — or a bare `graph.db` — resolves to a
-  path whose `parent()` is `Some("")`, not `None`. `create_dir_all("")`
-  short-circuits to `Ok`, so the happy path hid it, but the Unix branch then
-  called `set_permissions` on that empty path and got `ENOENT`. The process
-  died immediately on Linux and macOS reporting only "No such file or directory
-  (os error 2)", while Windows started fine because it has no permissions call.
-  This is what failed the v0.1.3 release: both platform jobs that actually
-  executed a Unix binary failed their smoke test and publication was skipped.
-  The macOS x64 job passed only because it is cross-compiled and skips
-  execution — a green matrix cell is not always an executed one.
-
-
-
 - **A release platform nobody could execute no longer reports itself as
   verified.** The release smoke ran the freshly built servers only when the
   runner's architecture matched the target, and otherwise printed a notice and
@@ -665,48 +672,6 @@ to [Semantic Versioning](https://semver.org/).
   than a skip: a binary this workflow cannot execute is one it must not ship.
   A check that reports success on a question it never asked is worth less than
   no check, because it is trusted.
-
-- **The server no longer exits at startup when the database path has no
-  directory.** `MINDLEAK_DB=":memory:"` — or a bare `graph.db` — resolves to a
-  path whose `parent()` is `Some("")`, not `None`. `create_dir_all("")`
-  short-circuits to `Ok`, so the happy path hid it, but the Unix branch then
-  called `set_permissions` on that empty path and got `ENOENT`. The process
-  died immediately on Linux and macOS reporting only "No such file or directory
-  (os error 2)", while Windows started fine because it has no permissions call.
-  This is what failed the v0.1.3 release: both platform jobs that actually
-  executed a Unix binary failed their smoke test and publication was skipped.
-  The macOS x64 job passed only because it is cross-compiled and skips
-  execution — a green matrix cell is not always an executed one.
-
-
-
-- **An unknown tool argument is now reported instead of silently dropped.**
-  Passing `lease_seconds` where `claim_task` declares `lease_secs` did nothing
-  visible: the key was ignored, the 300-second default applied, and the claim
-  lapsed mid-work. The only symptom was an expired lease, so the typo read as a
-  server bug and cost twenty minutes of wrong diagnosis before the real cause
-  surfaced. A caller naming an argument a tool does not have is wrong about the
-  contract, and the cheapest moment to say so is immediately — the error now
-  names the offending key and lists what the tool accepts. Checked at the tool
-  boundary against the schema each tool already advertises, so there is no
-  second list to drift. Only top-level names are validated, and the keys that
-  belong to the call *envelope* rather than to any tool's contract are exempt:
-  `agent`, `resolved_agent` and `resolved_context`, which `bind_session` adds
-  itself, and `session_id`, which every client adds to every call in one place
-  while `apply_session_contract` only declares it on tools that require a
-  session. Treating the envelope as an argument rejected every call to a tool
-  that needs no session — `board`, `design_board`, `graph_stats` — which took
-  the extension's whole readiness path down to `disconnected`. Who supplies an
-  envelope key is not what makes it one.
-- **A wrapped `Status:` line no longer loses its reference.** ADR-0032 writes
-  `- Status: Superseded by` and puts `[ADR-0038](...)` on the next line.
-  `scripts/adr-files.mjs` read to the end of the line, so the file parsed as a
-  bare `Superseded by` — and that value reached the ADR index table, the
-  `make design-audit` report, and a question put to a human as "nobody can tell
-  what replaced it". The answer was one line further down, and the superseding
-  commit names ADR-0038 in its `DECISION:` line. The parser now reads indented
-  continuation lines, and the ADR index row for 0032 names its successor again.
-
 - **Re-registering a session no longer erases where it said it was working
   (ADR-0044).** `canonical-push` re-opens the session on every publish purely to
   learn its own agent id, declaring no context. That overwrote the stored
@@ -747,19 +712,6 @@ to [Semantic Versioning](https://semver.org/).
   degradation, and silent until someone ran a fresh binary. Indexes now live in
   `indexes.sql` and are applied *after* migrations, so the ordering is
   structural rather than something each new migration has to remember.
-
-
-- **A current build could not open an existing database.** Indexes lived in
-  `schema.sql` and therefore ran *before* migrations. On an existing database
-  `CREATE TABLE IF NOT EXISTS` is a no-op, so the pre-migration table shape was
-  still in place when `idx_task_qa_audience` tried to index
-  `task_qa(audience, kind)`. The batch failed with `no such column: audience`,
-  the migration that would have added the column never ran, and every
-  pre-existing database became unopenable — a hard upgrade failure rather than a
-  degradation, and silent until someone ran a fresh binary. Indexes now live in
-  `indexes.sql` and are applied *after* migrations, so the ordering is
-  structural rather than something each new migration has to remember.
-
 - **An ADR whose status carries a parenthetical is no longer dropped from the
   design ledger in silence.** `Accepted (implemented)` is still accepted — a
   parenthetical is commentary on a decision, not a different lifecycle state.
@@ -815,7 +767,6 @@ to [Semantic Versioning](https://semver.org/).
   proposer, and promotion state) still survives a repository pass that disagrees
   with it. `updated_at` moves only when a fact actually changed, so a no-op pass
   remains genuinely idempotent.
-
 - **Accepting a design no longer guesses which checkout records the decision.**
   `resolveAdrUri` wrote the ADR's `Status:` line into the first workspace folder
   containing that path. Under ADR-0038 a fleet routinely has several worktrees
@@ -829,23 +780,65 @@ to [Semantic Versioning](https://semver.org/).
   aborts without writing; none keeps the existing clear error. The fix
   deliberately does not bind a design record to a worktree — that would put a
   machine-specific path in a database ADR-0038 shares across checkouts.
-
-### Documentation
-
-- **ADR-0053: the graph records events, not conclusions (Proposed).** After an
-  eight-hour session, `recall` was put to the four lessons that session had
-  actually cost time to learn. All four returned noise from a graph of 4,463
-  nodes and 9,572 active edges. Three causes, all confirmed in the code: the
-  zero-token write path can only capture executions and symbols, never a
-  sentence; `recall` is cosine similarity with **no floor**, so it always returns
-  `limit` rows however unrelated — the nonsense query `zzzzqqq wibble flarp`
-  scores 0.54, higher than any of the four real questions; and a recorded node is
-  invisible until the offline `index_nodes` pass embeds it, demonstrated by
-  `record_architectural_decision` writing a node whose own title then recalled
-  `[]`. The ADR proposes a similarity floor that lets `recall` honestly return
-  nothing, indexing on record, recording what was learned as part of finishing
-  work, and a long half-life for conclusions — without touching the zero-token
-  invariant. Proposed only, not accepted, nothing implemented in this build.
+- **A lease is now a heartbeat, not a deadline (ADR-0052).** Any authenticated
+  call that names a task — `task_scope`, `ask_question`, `answer`,
+  `conformance_history`, `advise`, `check_conformance` — renews its lease as a
+  side effect. Observed repeatedly in one session: a claim taken with a 3600s
+  lease lapsed during `cargo test --all`, and the push that followed was refused
+  for having no live claim, three times, while the agent was working throughout.
+  Making the heartbeat free is the same shape that made question delivery
+  actually adopted in ADR-0046 — a capability that depends on remembering is
+  adopted at a rate of zero, so it rides on calls already being made.
+  The short default lease is unchanged, because that is what frees a vanished
+  agent's work quickly; renewal-on-activity keeps that property instead of
+  trading it away by raising the default. A heartbeat can only extend a lease,
+  never shorten one an owner deliberately took long, and it leaves
+  `claim_started_at` alone so the evidence window still bounds exactly what the
+  claim covered (ADR-0048 is unaffected). It is owner-only and silent: a peer
+  reading the task renews nothing, an already-lapsed lease is not resurrected by
+  a passing call, and neither case errors — the call it rides on has its own job
+  to do, and a lapse must still require a deliberate re-claim rather than
+  undoing a claim someone else has taken.
+- **A test now blocks any merge driver returning to `.gitattributes`, in any
+  directory.** Removing the last `merge=union` declaration stopped the phantom
+  conflicts, but nothing stopped one being added back. The guard was widened
+  from "the root file declares no union driver" to "no tracked `.gitattributes`
+  declares any `merge=` driver": git honours a nested `.gitattributes` exactly
+  as hard as the root one, and GitHub's merge machinery honours none of them, so
+  `ours` and `theirs` diverge from the local result the same way union did. The
+  failure names the offending file and line.
+- **Nothing declares `merge=union` any more, so phantom conflicts stop.**
+  ADR-0056 took the driver off `CHANGELOG.md` but kept it on
+  `docs/adr/README.md`, on the grounds that the index is generated and
+  hook-guarded so union was "a convenience, not the mechanism". That was right
+  about correctness and wrong about cost. **The convenience exists only in a
+  checkout; the phantom conflict is what everyone else sees.** Within hours a
+  pull request whose *only* both-sides file was the ADR index reported
+  `CONFLICTING`, merged clean locally, and could not be repaired with
+  `gh pr update-branch` — because that is a server-side merge too. Its
+  auto-merge sat armed and silently stopped working, which is exactly the
+  failure "armed means finished" (ADR-0045) exists to rule out. Six hand
+  reconciliations in one day, and one duplicated `## [0.1.3]` heading that union
+  merged happily into a release changelog.
+  There is also a defect specific to a *generated* file: union merging a
+  generated table can produce a duplicated or misordered one, and the hook then
+  regenerates it anyway — so the wrong resolution was being computed and thrown
+  away. A generated file is regenerated, never merged. The test asserts the
+  declared set is now empty rather than being deleted, because the failure it
+  guards is invisible locally: any file added back here merges cleanly in every
+  checkout and blocks its pull request on GitHub with no way to clear it.
+- **The overlap warning no longer blames a peer for your own claim.**
+  `canonical-push` reported "another agent has a live claim over paths this
+  branch touches" and named a task that was the publishing agent's own.
+  Ownership was decided only by whether the task appeared in a list the caller
+  derived from its own live claims — and when identity resolution drifted during
+  the ADR-0054 migration, that list came back empty while the claim was plainly
+  its own. The notice now compares the claim's owner against this session
+  directly, so it is right even when the derived list is wrong. When the session
+  has no identity to compare against it says so, rather than asserting the claim
+  belongs to someone else. A warning that names the wrong party is worse than no
+  warning: it sends someone to ask a question of themselves, and it trains
+  readers to discount the next one.
 
 ## [0.1.2] - 2026-07-24
 
