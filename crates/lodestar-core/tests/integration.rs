@@ -325,6 +325,84 @@ fn unlink_goal_from_code_prunes_stale_binding_and_clears_drift() {
     );
 }
 
+// Regression, ADR-0060: work whose product was not code could never conform.
+//
+// What went wrong: evidence touching no goal-bound code was `aligned` when no
+// task was attached, but `needs_human` when one was — the presence of a task
+// made the verdict worse. Since `link_goal_to_code` binds code and nothing
+// else, a task delivering an ADR, documentation, a benchmark or a changelog
+// fragment could never reach `aligned` no matter how well it was done.
+//
+// Impact: measured on this repository, 11 of the board's decidable
+// `needs_human` verdicts carried this one finding and no other. Correct work
+// parked in `in_review` awaiting a human who had no queue to watch, and agents
+// whose work could not be marked done abandoned the task or walked away with it
+// still claimed.
+//
+// The fix: record the fact as a finding and let the verdict fall through to
+// `aligned`. Only a positive signal of a problem may downgrade.
+#[test]
+fn work_whose_product_is_not_code_conforms_with_the_finding_recorded() {
+    let engine = Lodestar::open_in_memory().unwrap();
+    let goal = engine
+        .define_goal(
+            GoalKind::Objective,
+            "Documented delivery",
+            "the design record is part of shipping the change",
+            None,
+        )
+        .unwrap();
+
+    // The goal binds code, as `link_goal_to_code` is the only verb available.
+    let code = "artifact:crates/lodestar-core/src/engine.rs".to_string();
+    engine
+        .link_goal_to_code(
+            &goal.id,
+            std::slice::from_ref(&code),
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
+
+    let task = engine
+        .create_task(&goal.id, "write the ADR", "ADR committed")
+        .unwrap();
+    assert!(engine.claim_task(&task.id, "agent-docs", 300).unwrap());
+    let claim = engine.store().get_task(&task.id).unwrap().unwrap();
+
+    // The work is done correctly and its only artefact is documentation, which
+    // no goal binds. Provenance is complete; nothing here is a problem signal.
+    let ev = evidence(
+        &task.id,
+        "agent-docs",
+        "artifact:DEVELOPERS.md",
+        claim.claim_started_at.unwrap(),
+    );
+    let result = engine.check_conformance(&ev, Some(&task.id)).unwrap();
+
+    assert_eq!(
+        result.verdict,
+        Verdict::Aligned,
+        "non-code work must be able to conform: {:?}",
+        result.findings
+    );
+    assert!(
+        result
+            .findings
+            .iter()
+            .any(|f| f.contains("does not touch code bound to the task goal")),
+        "the mis-scoping smell must still be recorded: {:?}",
+        result.findings
+    );
+    assert!(
+        !result
+            .findings
+            .iter()
+            .any(|f| f.contains("evidence covers task goal")),
+        "must not claim coverage that did not happen: {:?}",
+        result.findings
+    );
+}
+
 #[test]
 fn missing_evidence_stays_in_review() {
     let engine = Lodestar::open_in_memory().unwrap();
