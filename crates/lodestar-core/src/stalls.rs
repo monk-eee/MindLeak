@@ -218,6 +218,9 @@ mod tests {
             unleased_seconds: 0,
             blocked_by: None,
             parked_at: None,
+            resolved_by: None,
+            resolved_at: None,
+            resolved_conformance_id: None,
             created_at: NOW - 10_000,
             updated_at: NOW - 10_000,
         }

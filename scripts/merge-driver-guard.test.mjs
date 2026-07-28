@@ -1,4 +1,4 @@
-// Tests for the merge-driver guard. Run with: node --test scripts/
+// Tests for the merge-driver guard. Run with: make script-test
 //
 // The regression: `merge=union` on CHANGELOG.md produced conflicts on GitHub in
 // the one file the attribute promised to make conflict-free, because drivers

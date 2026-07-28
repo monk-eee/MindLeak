@@ -1,7 +1,7 @@
 # MindLeak developer commands. On Windows, run the underlying commands directly
 # (see DEVELOPERS.md) if `make` is unavailable.
 
-.PHONY: setup worktree-setup adr-index changelog design-audit merge-audit queue queue-watch build test coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
+.PHONY: setup worktree-setup adr-index changelog design-audit merge-audit queue queue-watch board-health build test script-test coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
 
 setup: ## Install pre-commit hooks and extension deps
 	pip install pre-commit
@@ -32,6 +32,9 @@ merge-audit: ## Report merged branches whose commits never reached main
 queue: ## Show the delivery queue and update the branch whose turn it is (ADR-0062)
 	node scripts/delivery-queue.mjs
 
+board-health: ## Separate work a human must decide from work nobody can (ADR-0058)
+	node scripts/board-health.mjs
+
 queue-watch: ## Run the delivery queue as an agent until stopped (ADR-0062)
 	node scripts/delivery-queue.mjs --watch
 
@@ -40,6 +43,9 @@ build: ## Build the workspace (debug)
 
 test: ## Run the Rust test suite
 	cargo test --all
+
+script-test: ## Run the repository's own script tests
+	node scripts/script-tests.mjs
 
 coverage: ## Run Rust + extension tests with coverage reports
 	cargo llvm-cov --workspace --all-features --lcov --output-path coverage.lcov
@@ -89,4 +95,4 @@ ext-test: ## Run the VS Code extension unit tests (vitest)
 adr-guard: ## Fail if any ADR is uncommitted or reachable from no remote ref
 	node scripts/adr-guard.mjs
 
-ci: fmt-check clippy test ext-compile ext-lint ext-test ## Everything CI runs
+ci: fmt-check clippy test script-test ext-compile ext-lint ext-test ## Everything CI runs

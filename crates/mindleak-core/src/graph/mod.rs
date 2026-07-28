@@ -10,6 +10,7 @@ use crate::config::{
 mod evidence;
 mod lifecycle;
 mod query;
+mod repair;
 mod signal;
 #[cfg(test)]
 mod test_support;
@@ -19,8 +20,8 @@ mod writes;
 pub use types::{
     AgentActivity, AgentFootprintOverlap, ArtifactStub, ConformanceEvidence, Direction,
     EvidenceProvenance, ForgetOutcome, GraphExport, PromotionCandidate, PruneOutcome,
-    ReconcileOutcome, ResetOutcome, ScoredNode, SignalCandidate, SignalConsolidationOutcome,
-    Subgraph, WeightedEdge, WorkingSetItem, WriteOutcome,
+    ReconcileOutcome, RepairOutcome, ResetOutcome, ScoredNode, SignalCandidate,
+    SignalConsolidationOutcome, Subgraph, WeightedEdge, WorkingSetItem, WriteOutcome,
 };
 
 /// The persistent graph store.

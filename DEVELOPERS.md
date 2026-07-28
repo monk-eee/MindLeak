@@ -71,6 +71,7 @@ crate, and `target/debug/mindleak-mcp` starts and prints
 | ADR safety | `make adr-guard` | `node scripts/adr-guard.mjs` — fails if any ADR is uncommitted or on no remote ref |
 | Merge audit | `make merge-audit` | `node scripts/merge-audit.mjs` — fails if a merged branch has commits that never reached `main` |
 | Delivery queue | `make queue` | `node scripts/delivery-queue.mjs` — show the queue and update the branch whose turn it is (ADR-0062). `make queue-watch` runs it as an agent |
+| Board health | `make board-health` | `node scripts/board-health.mjs` — separates parked work a human must decide from work nobody can resolve, and lists stranded claims (ADR-0058). Needs `LODESTAR_SESSION_ID` and a release `lodestar-mcp` |
 | Design audit | `make design-audit` | `node scripts/design-audit.mjs` — reports drift between the ADR files and the design ledger. Local only: it reads the ledger through a release `lodestar-mcp`, which CI has no database for |
 | Changelog | `make changelog` | `node scripts/changelog.mjs` — show what the next release contains. A change adds `changelog.d/<section>-<slug>.md`; **do not edit `CHANGELOG.md` in a pull request** (ADR-0056) |
 | Everything CI runs | `make ci` | see [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
@@ -282,6 +283,32 @@ and footguns, with impact and status:
   Workaround: have the test write its result to a file under `target/tmp/` and
   read that file, then delete the write before committing. Left for later — the
   adapter needs to surface harness stdout on failure.
+
+- **Amending the constitution orphans every control bound to the amended clause
+  — REPRODUCED, OPEN.** A draft clause is copied as `goal:{slug}@{version}`
+  (`copy_clauses_to_version`), so a clause's id changes each time the
+  constitution is amended. Controls store the clause id they were registered
+  against, and nothing re-points them: after `amend_constitution` the old id is
+  superseded and every control bound to it answers `control ... serves no
+  active clause; an orphan control reports but cannot escalate`. Reproduced
+  while giving `source-files-stay-small-and-cohesive` its enforcement contract:
+  a ratchet registered before the amendment still evaluated its measurements —
+  it even returned `status: fail` for a regression — but the effective
+  consequence silently dropped from `review` to `advise`, and
+  `clause_controls` for the live clause returned `[]`. — Impact: the failure
+  is quiet and the wrong way round. A control that stopped enforcing keeps
+  answering, so a green-looking `pass` and a real `fail` are equally toothless,
+  and the moment it happens is precisely when someone has just taken the
+  trouble to strengthen a rule. Any project that amends its constitution
+  disarms its own enforcement, and nothing reports it. `register_ratchet`
+  cannot repair it either — re-registering the same `control_id` is refused
+  because a control version never moves backwards, so the id is spent. —
+  Status: not fixed. Worked around by binding `control:rust-module-length` to
+  the post-amendment clause; the earlier `control:module-length` remains in the
+  store as a dead orphan and should be treated as a repair case, not a second
+  control. The fix is to re-point controls onto the successor clause inside the
+  `amend_constitution` transaction, which also needs a story for controls
+  orphaned before the fix lands.
 
 - **An agent can work all day, certify nothing, and only discover it at
   `complete_task` — MEASURED, OPEN.** Evidence-backed conformance (ADR-0009)
