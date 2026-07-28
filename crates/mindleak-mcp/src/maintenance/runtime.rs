@@ -99,7 +99,7 @@ impl MaintenanceRuntime {
         decay_policy: DecayPolicy,
         working_set_size: usize,
     ) -> anyhow::Result<Self> {
-        if !config.enabled && !config.prune_enabled {
+        if !config.enabled && !config.prune_enabled && !config.index_enabled {
             return Ok(Self::disabled());
         }
         if is_unsupported_maintenance_database(&database_path) {
@@ -160,6 +160,7 @@ fn run_worker(engine: MindLeak, activity: ActivitySignal, config: MaintenanceCon
     // gated on genuine request idle plus a rate-limiting interval because it is
     // expensive and spends local-model tokens.
     let mut last_prune: Option<Instant> = None;
+    let mut last_index: Option<Instant> = None;
     let mut last_consolidation: Option<Instant> = None;
     // Cap each sleep so the loop re-evaluates periodically even when the next
     // deadline is far off or a tier is disabled. Shutdown wakes the worker
@@ -187,6 +188,21 @@ fn run_worker(engine: MindLeak, activity: ActivitySignal, config: MaintenanceCon
             MAX_WAIT
         };
 
+        // The index pass shares the prune's activity-independent cadence rather
+        // than the consolidation idle gate. Recall answers from whatever the
+        // index last covered, so letting request traffic defer it is what makes
+        // the answers quietly stale instead of merely absent.
+        let index_wait = if config.index_enabled {
+            match last_index {
+                Some(last) => config
+                    .index_interval
+                    .saturating_sub(now.saturating_duration_since(last)),
+                None => Duration::ZERO,
+            }
+        } else {
+            MAX_WAIT
+        };
+
         // Consolidation waits for the process to be genuinely idle (no active
         // request for `idle`) and is rate-limited by `min_interval`.
         let consolidation_wait = if config.enabled && state.active_requests == 0 {
@@ -205,7 +221,10 @@ fn run_worker(engine: MindLeak, activity: ActivitySignal, config: MaintenanceCon
             MAX_WAIT
         };
 
-        let wait = prune_wait.min(consolidation_wait).min(MAX_WAIT);
+        let wait = prune_wait
+            .min(index_wait)
+            .min(consolidation_wait)
+            .min(MAX_WAIT);
         if !wait.is_zero() {
             let result = condition
                 .wait_timeout(state, wait)
@@ -218,6 +237,7 @@ fn run_worker(engine: MindLeak, activity: ActivitySignal, config: MaintenanceCon
         }
 
         let prune_due = config.prune_enabled && prune_wait.is_zero();
+        let index_due = config.index_enabled && index_wait.is_zero();
         let consolidate_due =
             config.enabled && state.active_requests == 0 && consolidation_wait.is_zero();
         drop(state);
@@ -225,6 +245,10 @@ fn run_worker(engine: MindLeak, activity: ActivitySignal, config: MaintenanceCon
         if prune_due {
             run_prune(&engine);
             last_prune = Some(Instant::now());
+        }
+        if index_due && !activity.is_shutdown() {
+            run_index(&engine, config.index_batch);
+            last_index = Some(Instant::now());
         }
         if consolidate_due && !activity.is_shutdown() {
             run_consolidation(
@@ -272,6 +296,40 @@ fn run_prune(engine: &MindLeak) {
                 Some(json!({ "category": error_category(&error) })),
             );
             tracing::warn!(%error, "autonomous prune failed");
+        }
+    }
+}
+
+/// Embed nodes that have no current vector (ADR-0008), so `recall` answers from
+/// the graph as it is rather than as it was at the last manual `index`.
+///
+/// Bounded per pass: a large backlog is worked off over several passes instead
+/// of one long stall on a local model. An unreachable embedding server is
+/// recorded and otherwise ignored -- recall already errors cleanly without one,
+/// and failing the whole maintenance loop over an optional feature would take
+/// the zero-token prune down with it.
+fn run_index(engine: &MindLeak, batch: usize) {
+    let started = Instant::now();
+    match engine.index_nodes(batch) {
+        Ok(indexed) => {
+            engine.record_maintenance(
+                "autonomous_index",
+                "ok",
+                started.elapsed().as_millis() as i64,
+                Some(json!({ "indexed": indexed })),
+            );
+            if indexed > 0 {
+                tracing::info!(nodes = indexed, "autonomous index embedded new nodes");
+            }
+        }
+        Err(error) => {
+            engine.record_maintenance(
+                "autonomous_index",
+                "error",
+                started.elapsed().as_millis() as i64,
+                Some(json!({ "category": error_category(&error) })),
+            );
+            tracing::debug!(%error, "autonomous index skipped; no embedding server");
         }
     }
 }
@@ -415,6 +473,9 @@ mod tests {
         let config = MaintenanceConfig {
             enabled: false,
             prune_enabled: false,
+            index_enabled: false,
+            index_interval: Duration::from_secs(3600),
+            index_batch: 128,
             prune_interval: Duration::from_secs(3600),
             idle: Duration::from_secs(30),
             min_interval: Duration::from_secs(60),
@@ -435,6 +496,9 @@ mod tests {
         let config = MaintenanceConfig {
             enabled: true,
             prune_enabled: false,
+            index_enabled: false,
+            index_interval: Duration::from_secs(3600),
+            index_batch: 128,
             prune_interval: Duration::from_secs(3600),
             idle: Duration::from_secs(30),
             min_interval: Duration::from_secs(60),
@@ -511,6 +575,9 @@ mod tests {
             MaintenanceConfig {
                 enabled: true,
                 prune_enabled: false,
+                index_enabled: false,
+                index_interval: Duration::from_secs(3600),
+                index_batch: 128,
                 prune_interval: Duration::from_secs(3600),
                 idle: Duration::from_millis(10),
                 min_interval: Duration::from_secs(60),
@@ -555,6 +622,9 @@ mod tests {
                 MaintenanceConfig {
                     enabled: true,
                     prune_enabled: false,
+                    index_enabled: false,
+                    index_interval: Duration::from_secs(3600),
+                    index_batch: 128,
                     prune_interval: Duration::from_secs(3600),
                     idle: Duration::from_millis(10),
                     min_interval: Duration::from_secs(60),
@@ -612,6 +682,9 @@ mod tests {
                 MaintenanceConfig {
                     enabled: false,
                     prune_enabled: true,
+                    index_enabled: false,
+                    index_interval: Duration::from_secs(3600),
+                    index_batch: 128,
                     prune_interval: Duration::from_millis(10),
                     idle: Duration::from_secs(3600),
                     min_interval: Duration::from_secs(3600),

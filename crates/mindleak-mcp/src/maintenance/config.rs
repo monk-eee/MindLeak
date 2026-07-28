@@ -7,11 +7,13 @@ const DEFAULT_IDLE_SECS: u64 = 300;
 const DEFAULT_MIN_INTERVAL_SECS: u64 = 3_600;
 const DEFAULT_MAX_NODES: usize = 20;
 const DEFAULT_PRUNE_INTERVAL_SECS: u64 = 300;
+const DEFAULT_INDEX_INTERVAL_SECS: u64 = 300;
+const DEFAULT_INDEX_BATCH: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MaintenanceConfig {
-    /// Model-dependent maintenance (signal consolidation + embedding index).
-    /// Off by default: it spends local-model tokens.
+    /// Generative consolidation. Off by default: it spends local-model tokens
+    /// writing new content, so it must be opted into.
     pub enabled: bool,
     /// Deterministic, zero-token graph hygiene (prune decayed edges + reap
     /// orphaned nodes, ADR-0021). On by default: it costs nothing and keeps the
@@ -21,6 +23,25 @@ pub(crate) struct MaintenanceConfig {
     /// is independent of request activity, so UI polling cannot starve it the way
     /// it can starve the consolidation idle gate.
     pub prune_interval: Duration,
+    /// Keep the semantic recall index current (ADR-0008). On by default, and
+    /// deliberately separate from `enabled`.
+    ///
+    /// These two were one flag, which conflated two very different costs:
+    /// consolidation *generates* text and is expensive, while indexing embeds
+    /// existing node text locally and is cheap. Sharing a default-off flag meant
+    /// the index pass never ran, and the failure was silent rather than absent —
+    /// `recall` kept answering, confidently, from whatever the last manual
+    /// `index` had covered. Measured on this repository: **5,443 nodes carried
+    /// no vector at all**, and every recall result predated the single manual
+    /// index run three days earlier. A stale index is worse than none, because
+    /// nothing in the answer says so.
+    pub index_enabled: bool,
+    /// How often the index pass runs, on the same activity-independent cadence
+    /// as the prune.
+    pub index_interval: Duration,
+    /// Nodes embedded per pass. Bounded so a large backlog is worked off over
+    /// several passes instead of one long stall on a local model.
+    pub index_batch: usize,
     pub idle: Duration,
     pub min_interval: Duration,
     pub max_nodes: usize,
@@ -43,9 +64,18 @@ impl MaintenanceConfig {
         let prune_enabled = environment("MINDLEAK_AUTONOMOUS_PRUNE")
             .map(|value| !value.trim().eq_ignore_ascii_case("false"))
             .unwrap_or(true);
+        // Indexing is cheap and local, and recall is wrong without it, so it
+        // defaults ON; set MINDLEAK_AUTONOMOUS_INDEX=false to opt out. With no
+        // embedding server reachable the pass fails cleanly and records the
+        // failure, which is the honest state -- unlike a stale index, which
+        // answers anyway.
+        let index_enabled = environment("MINDLEAK_AUTONOMOUS_INDEX")
+            .map(|value| !value.trim().eq_ignore_ascii_case("false"))
+            .unwrap_or(true);
         Self {
             enabled,
             prune_enabled,
+            index_enabled,
             prune_interval: Duration::from_secs(bounded_u64(
                 &environment,
                 "MINDLEAK_PRUNE_INTERVAL_SECS",
@@ -53,6 +83,20 @@ impl MaintenanceConfig {
                 30,
                 86_400,
             )),
+            index_interval: Duration::from_secs(bounded_u64(
+                &environment,
+                "MINDLEAK_INDEX_INTERVAL_SECS",
+                DEFAULT_INDEX_INTERVAL_SECS,
+                30,
+                86_400,
+            )),
+            index_batch: bounded_usize(
+                &environment,
+                "MINDLEAK_INDEX_BATCH",
+                DEFAULT_INDEX_BATCH,
+                1,
+                1_000,
+            ),
             idle: Duration::from_secs(bounded_u64(
                 &environment,
                 "MINDLEAK_CONSOLIDATE_IDLE_SECS",
@@ -153,6 +197,45 @@ mod tests {
         });
         assert!(!no_prune.prune_enabled);
         assert!(!no_prune.enabled);
+    }
+
+    #[test]
+    fn indexing_defaults_on_and_is_independent_of_generative_consolidation() {
+        // The regression: these shared one default-off flag, so the index pass
+        // never ran and `recall` answered from a three-day-old snapshot instead
+        // of saying it could not answer. Cheap local embedding and expensive
+        // generation do not belong behind the same switch.
+        let defaults = MaintenanceConfig::resolve(|_| None);
+
+        assert!(defaults.index_enabled);
+        assert!(!defaults.enabled);
+        assert_eq!(
+            defaults.index_interval,
+            Duration::from_secs(DEFAULT_INDEX_INTERVAL_SECS)
+        );
+        assert_eq!(defaults.index_batch, DEFAULT_INDEX_BATCH);
+    }
+
+    #[test]
+    fn indexing_can_be_opted_out_without_disabling_prune() {
+        let no_index = MaintenanceConfig::resolve(|name| {
+            (name == "MINDLEAK_AUTONOMOUS_INDEX").then(|| "FALSE".to_string())
+        });
+
+        assert!(!no_index.index_enabled);
+        assert!(no_index.prune_enabled);
+    }
+
+    #[test]
+    fn index_cadence_and_batch_are_bounded() {
+        let values = HashMap::from([
+            ("MINDLEAK_INDEX_INTERVAL_SECS", "1".to_string()),
+            ("MINDLEAK_INDEX_BATCH", "99999".to_string()),
+        ]);
+        let config = MaintenanceConfig::resolve(|name| values.get(name).cloned());
+
+        assert_eq!(config.index_interval, Duration::from_secs(30));
+        assert_eq!(config.index_batch, 1_000);
     }
 
     #[test]
