@@ -104,13 +104,23 @@ live pinned VS Code 1.93.1 Extension Host smoke on Windows.
 
 1. Update `[workspace.package].version` in [`Cargo.toml`](Cargo.toml), the VS Code
   package version, and the corresponding changelog/release notes.
-2. Merge the release commit to `main` and confirm CI is green.
-3. Create and push a matching tag:
+2. Assemble the changelog: `node scripts/changelog.mjs --release <version>` folds
+  the `changelog.d/` fragments, and anything under `## [Unreleased]`, into one
+  dated section (ADR-0056). Commit that; do not hand-edit `CHANGELOG.md`.
+3. Merge the release commit to `main` and confirm CI is green.
+4. Create and push a matching tag:
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
 ```
+
+The pre-push hook checks a tag differently from a branch: it confirms the tag
+names a commit already on `origin/main`, and nothing else. Tagging is how a
+release is chosen, so choosing an unmerged commit would ship code that never
+passed review. The branch rules — a live claim, an attached non-protected
+branch, a clean worktree — do not apply and are not enforced; tagging from a
+detached HEAD is fine.
 
 Prerelease tags such as `v0.1.0-preview.1` may share the base workspace version
 `0.1.0`. A mismatched or malformed tag fails before any binaries are built.
