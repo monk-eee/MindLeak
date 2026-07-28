@@ -259,9 +259,10 @@ and footguns, with impact and status:
 
 - **One session's agent id changed under a running server, silently resetting
   its claim's evidence window and locking it out of its own task — OBSERVED,
-  OPEN, and it makes `complete_task` unreachable.** Across a single session
-  holding one client-minted token, `open_session` (both planes) returns
-  `session:v1:copilot:b4baf280…`, while `board` reports the task's owner as
+  FIXED by [ADR-0063](docs/adr/0063-a-migration-may-tidy-the-past-never-the-present.md);
+  one residual gap noted at the end.** Across a single session
+  holding one client-minted token, `open_session` (both planes) returned
+  `session:v1:copilot:b4baf280…`, while `board` reported the task's owner as
   `session:v1:b4baf280…` — the same hash, with and without the label
   (ADR-0054 removed it).
   The owner string **flipped between two consecutive `board` reads with no
@@ -296,6 +297,13 @@ and footguns, with impact and status:
   identical to a first claim). Do not "fix" this by re-committing work into a
   fresh window, or by completing on an empty in-window bundle — both assert
   proof the ledger never saw.
+  **Fixed:** ADR-0063 stops the collapse rewriting the owner of a live claim and
+  records identity migrations once per database, and `ask_question` now says why
+  it refused instead of returning `needs_input: false` for every reason at once.
+  **Still open:** a window reset remains invisible — a fresh window opened
+  because the owner id changed still reports `claim_lapses: 0`, identical to a
+  first claim. Whether identity should be pinned per session against the *token*
+  rather than whatever the running process formats is also undecided.
 - **Unit Test MCP with `framework=custom` run from `editors/vscode` silently
   runs Cargo, not Vitest, and reports PASSED — CONFIRMED, config footgun.**
   Cargo walks up from `editors/vscode` and finds the workspace `Cargo.toml`, so
@@ -306,6 +314,59 @@ and footguns, with impact and status:
   diff. Any extension change validated through the custom adapter has a
   meaningless green behind it. Use `framework=vitest` for
   `editors/vscode`, and treat a suspiciously fast/slow duration as the tell.
+- **A restored file with an older timestamp is silently not rebuilt — OBSERVED,
+  FIXED BY HABIT.** Cargo decides what to recompile by mtime, and PowerShell's
+  `Copy-Item` gives the destination the *source's* timestamp. Backing a file up
+  before a red/green probe and copying it back therefore restores the content
+  with an mtime older than the compiled artifact, so cargo keeps the previous
+  object and the test runs against the code you thought you had just restored.
+  Impact: cost most of a session on ADR-0060. The same fix, restored two
+  different ways, gave `aligned` once and `needs_human` twice, which read as a
+  flaky test and is not one — and cargo still prints `Compiling <crate>` for the
+  *other* files you touched, so the log looks like a real rebuild. Use
+  `git checkout -- <path>` and `git stash pop` (both write fresh timestamps) for
+  probes, or touch the file after any `Copy-Item` restore.
+
+- **The Unit Test MCP cargo adapter hides the assertion, so a red test cannot be
+  diagnosed — OBSERVED, OPEN.** `run_tests` with `framework=custom` returns
+  `status: FAILED` with `passed/failed/total` all zero and a message containing
+  only cargo's stderr (`error: test failed, to rerun pass -p <crate> --test
+  <target>`). The failing test's name and its assertion output go to the
+  harness's stdout, which the adapter drops, and `compact_output=false` does not
+  bring them back. Impact: a genuine red is indistinguishable from a compile
+  error, and there is no way to tell *which* test failed or why, while the repo
+  instructions correctly forbid running `cargo test` in a terminal. This is what
+  turned the mtime bug above into a long hunt instead of a one-line read.
+  Workaround: have the test write its result to a file under `target/tmp/` and
+  read that file, then delete the write before committing. Left for later — the
+  adapter needs to surface harness stdout on failure.
+
+- **Amending the constitution orphans every control bound to the amended clause
+  — REPRODUCED, OPEN.** A draft clause is copied as `goal:{slug}@{version}`
+  (`copy_clauses_to_version`), so a clause's id changes each time the
+  constitution is amended. Controls store the clause id they were registered
+  against, and nothing re-points them: after `amend_constitution` the old id is
+  superseded and every control bound to it answers `control ... serves no
+  active clause; an orphan control reports but cannot escalate`. Reproduced
+  while giving `source-files-stay-small-and-cohesive` its enforcement contract:
+  a ratchet registered before the amendment still evaluated its measurements —
+  it even returned `status: fail` for a regression — but the effective
+  consequence silently dropped from `review` to `advise`, and
+  `clause_controls` for the live clause returned `[]`. — Impact: the failure
+  is quiet and the wrong way round. A control that stopped enforcing keeps
+  answering, so a green-looking `pass` and a real `fail` are equally toothless,
+  and the moment it happens is precisely when someone has just taken the
+  trouble to strengthen a rule. Any project that amends its constitution
+  disarms its own enforcement, and nothing reports it. `register_ratchet`
+  cannot repair it either — re-registering the same `control_id` is refused
+  because a control version never moves backwards, so the id is spent. —
+  Status: not fixed. Worked around by binding `control:rust-module-length` to
+  the post-amendment clause; the earlier `control:module-length` remains in the
+  store as a dead orphan and should be treated as a repair case, not a second
+  control. The fix is to re-point controls onto the successor clause inside the
+  `amend_constitution` transaction, which also needs a story for controls
+  orphaned before the fix lands.
+
 - **An agent can work all day, certify nothing, and only discover it at
   `complete_task` — MEASURED, OPEN.** Evidence-backed conformance (ADR-0009)
   reads what the *Memory Plane* holds for the calling agent. An agent that never

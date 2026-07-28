@@ -66,7 +66,9 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
         }
     }
     migrate_constitution_versions(connection)?;
-    collapse_session_identities(connection)?;
+    run_once(connection, "collapse_session_identities", || {
+        collapse_session_identities(connection)
+    })?;
     connection.execute(
         "UPDATE tasks
          SET claim_started_at = updated_at
@@ -221,6 +223,38 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Run a migration at most once per database, recorded by name (ADR-0063).
+///
+/// Pattern-idempotence — "rewrite every row that still looks unmigrated" — is
+/// only idempotent while nothing else creates such rows. A rewrite that races a
+/// live writer re-fires on every open, forever, and each firing looks exactly
+/// like the first. That is not a theoretical hazard: it re-owned a live claim
+/// out from under its holder every time any process opened the database, which
+/// is how a task ended up provable by nobody. Anything touching identity or
+/// ownership belongs here rather than in the pattern-guarded loop above.
+fn run_once(
+    connection: &Connection,
+    name: &str,
+    migration: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    let applied: Option<i64> = connection
+        .query_row(
+            "SELECT 1 FROM schema_migrations WHERE name = ?1",
+            [name],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if applied.is_some() {
+        return Ok(());
+    }
+    migration()?;
+    connection.execute(
+        "INSERT INTO schema_migrations (name, applied_at) VALUES (?1, ?2)",
+        rusqlite::params![name, crate::now_unix()],
+    )?;
+    Ok(())
+}
+
 /// Collapse `session:v1:{name}:{fingerprint}` identities to `session:v1:{fingerprint}` (ADR-0054).
 ///
 /// The old id embedded a label read from the *hosting process* environment
@@ -269,7 +303,6 @@ fn collapse_session_identities(connection: &Connection) -> Result<()> {
         ("design_items", "decided_by"),
         ("design_items", "retired_by"),
         ("design_materializations", "actor"),
-        ("tasks", "owner"),
         ("task_claim_transfers", "from_owner"),
         ("task_claim_transfers", "to_owner"),
         ("task_claim_transfers", "recovered_by"),
@@ -287,6 +320,26 @@ fn collapse_session_identities(connection: &Connection) -> Result<()> {
                  WHERE {column} GLOB 'session:v1:*:*'"
             ),
             [],
+        )?;
+    }
+    // `tasks.owner` is deliberately not in that list. Every other column above
+    // is a historical record, and rewriting one changes only how the past reads.
+    // `owner` is *live state*: it is what `check_conformance`, `ask_question`,
+    // `renew_lease` and `complete_task` compare the caller against, so editing
+    // it mid-claim does not adjust a record, it transfers ownership. An agent
+    // whose id no longer matches cannot prove its work, cannot park the task to
+    // explain, and reads as a different owner on re-claim — which opens a fresh
+    // evidence window and orphans everything it had already committed.
+    //
+    // A claim that is over is safe to tidy; a claim that is live is not ours to
+    // touch. Ownership only changes by claim, release, or an audited transfer.
+    if column_exists(connection, "tasks", "owner")? {
+        connection.execute(
+            "UPDATE tasks
+             SET owner = 'session:v1:' || substr(owner, -32)
+             WHERE owner GLOB 'session:v1:*:*'
+               AND NOT (status = 'claimed' AND COALESCE(lease_expires_at, 0) >= ?1)",
+            [crate::now_unix()],
         )?;
     }
     Ok(())

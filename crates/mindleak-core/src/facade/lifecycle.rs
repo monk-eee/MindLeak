@@ -24,6 +24,13 @@ impl MindLeak {
         self.store.counts(now_unix())
     }
 
+    /// Nodes `recall` cannot see, and nodes still carrying a split identity.
+    /// Reported alongside the counts so a silent regression in either has to
+    /// announce itself on a call the fleet already makes.
+    pub fn health(&self) -> Result<(i64, i64)> {
+        self.store.health(self.embedder.model())
+    }
+
     /// Export the complete active graph as a human-readable, JSON-friendly
     /// structure. This is intentionally distinct from a restorable backup.
     pub fn export_graph(&self) -> Result<GraphExport> {
