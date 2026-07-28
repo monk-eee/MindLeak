@@ -63,7 +63,9 @@ The **durable** counterpart to the decay graph (ADR-0004): a separate crate and
 store so the zero-token decay engine stays uncontaminated. Modules: `model`
 (goals/tasks/knowledge), `design` (design items and materialization plans),
 `policy` (immutable pack schema/digest validation and the five-clause Common
-Core), `controls` (typed enforcement mechanisms and their ceilings, ADR-0034),
+Core), `controls/` (typed enforcement mechanisms and their ceilings, ADR-0034;
+`mod` carries the control kinds, powers and the ceiling rule, `ratchet` the
+reviewed baselines and the direction a measure may move from one),
 `amendment` and `waiver` (changing adopted policy, and bounded exceptions to it,
 ADR-0039), `scope` (the one matcher both clauses and waivers use, so the two
 cannot disagree about how far a scope reaches), `fleet` (staleness and
