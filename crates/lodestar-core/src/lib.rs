@@ -35,11 +35,11 @@ pub use design::{
 };
 pub use error::{LodestarError, Result};
 pub use model::{
-    Advice, AdviceDisposition, ClaimOverlap, CodeBinding, CodeBindingMode, ConformanceCheck,
-    ConformanceEvidence, ConformanceRecord, ConformanceResult, ConstitutionProposal,
-    ConstitutionState, ConstitutionStatus, ConstitutionVersion, EvidenceProvenance, Goal, GoalKind,
-    GoalStatus, GoverningClause, HumanQuestion, Knowledge, SignalPromotion, Task, TaskQa,
-    TaskScope, TaskStatus, Verdict,
+    Advice, AdviceDisposition, ClaimOverlap, ClaimOverlapReport, CodeBinding, CodeBindingMode,
+    ConformanceCheck, ConformanceEvidence, ConformanceRecord, ConformanceResult,
+    ConstitutionProposal, ConstitutionState, ConstitutionStatus, ConstitutionVersion,
+    EvidenceProvenance, Goal, GoalKind, GoalStatus, GoverningClause, HumanQuestion, Knowledge,
+    OverlapSignal, SignalPromotion, Task, TaskQa, TaskScope, TaskStatus, Verdict,
 };
 pub use policy::{
     common_core_pack, fleet_delivery_pack, ConstitutionPack, PackClause, PackClauseDisposition,

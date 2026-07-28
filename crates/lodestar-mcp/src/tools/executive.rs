@@ -69,13 +69,14 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "check_overlap",
-            "description": "Read-only pre-flight check for live Lodestar claims whose declared scope intersects these concrete workspace-relative paths or symbol ids (ADR-0024). Advisory only; combine with MindLeak's check_overlap footprint result for cross-plane awareness.",
+            "description": "Read-only pre-flight check for live Lodestar claims whose declared scope intersects these concrete workspace-relative paths or symbol ids (ADR-0024). Each intersection is classified from the branches the two sessions declared at open_session (ADR-0035): same_branch_collision (edits land in one history, colliding now), cross_branch_merge_risk (divergence, paid at merge), or undeclared when either side declared no branch. Advisory only, and never blocks a claim; combine with MindLeak's check_overlap footprint result for cross-plane awareness.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "paths": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Concrete workspace-relative paths about to be touched; claim scopes are the glob side of the comparison." },
                     "symbols": { "type": "array", "items": { "type": "string" }, "default": [] },
-                    "exclude_task_id": { "type": "string", "description": "Optional current task to omit from results." }
+                    "exclude_task_id": { "type": "string", "description": "Optional current task to omit from results." },
+                    "session_id": { "type": "string", "pattern": "^[0-9a-f]{32}$", "description": "Optional session id from open_session. Supplying it classifies each overlap against the branch that session already declared; without it every signal is 'undeclared'. No branch argument is accepted: the branch is declared once per session, and a second place to state it could disagree with the first." }
                 }
             }
         }),
@@ -382,10 +383,14 @@ pub(super) fn dispatch(
                 paths: str_array(args, "paths"),
                 symbols: str_array(args, "symbols"),
             };
-            let overlaps = engine
-                .check_claim_overlap(&scope, opt_str(args, "exclude_task_id").as_deref())
+            let report = engine
+                .check_claim_overlap(
+                    &scope,
+                    opt_str(args, "exclude_task_id").as_deref(),
+                    opt_str(args, "agent").as_deref(),
+                )
                 .map_err(|e| e.to_string())?;
-            ok(&json!({ "claims": overlaps }))
+            ok(&report)
         })()),
         "draft_questions" => Some((|| {
             let drafts = engine
@@ -716,6 +721,10 @@ mod tests {
             serde_json::from_str(overlap["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(body["claims"].as_array().unwrap().len(), 1);
         assert_eq!(body["claims"][0]["owner"], "alice");
+        // Nobody declared a branch, so the answer is exactly the one this tool
+        // has always given, and it says so rather than implying a verdict.
+        assert!(body["requester_branch"].is_null());
+        assert_eq!(body["claims"][0]["signal"], "undeclared");
 
         let board = call(
             &engine,
@@ -892,6 +901,71 @@ mod tests {
         let board = engine.board(true).unwrap();
         let reopened = board.iter().find(|t| t.id == task.id).unwrap();
         assert_eq!(reopened.status.as_str(), "open");
+    }
+
+    /// ADR-0035 heuristic 4 over the wire: the same intersection, reported
+    /// differently depending on where the two sessions said they are working.
+    #[test]
+    fn check_overlap_dispatch_grades_the_collision_by_declared_branch() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Graded", "grade the overlap", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Edit graph", "done").unwrap();
+        assert!(engine
+            .claim_task_with_scope(
+                &task.id,
+                "alice",
+                300,
+                &lodestar_core::TaskScope {
+                    paths: vec!["crates/mindleak-core/src/**".to_string()],
+                    symbols: vec![],
+                },
+            )
+            .unwrap());
+        let on_branch = |branch: &str| mindleak_session::SessionContext {
+            branch: Some(branch.to_string()),
+            ..mindleak_session::SessionContext::default()
+        };
+        engine
+            .declare_session_context("alice", &on_branch("fleet/a"))
+            .unwrap();
+
+        let signal = |agent: &str| {
+            let result = call(
+                &engine,
+                &json!({
+                    "name": "check_overlap",
+                    "arguments": {
+                        "paths": ["crates/mindleak-core/src/lib.rs"],
+                        // Injected by `bind_session` from the offered session.
+                        "agent": agent
+                    }
+                }),
+            )
+            .unwrap();
+            serde_json::from_str::<Value>(result["content"][0]["text"].as_str().unwrap()).unwrap()
+        };
+
+        engine
+            .declare_session_context("bob", &on_branch("fleet/a"))
+            .unwrap();
+        let same = signal("bob");
+        assert_eq!(same["requester_branch"], "fleet/a");
+        assert_eq!(same["claims"][0]["owner_branch"], "fleet/a");
+        assert_eq!(same["claims"][0]["signal"], "same_branch_collision");
+
+        engine
+            .declare_session_context("bob", &on_branch("fleet/b"))
+            .unwrap();
+        let different = signal("bob");
+        assert_eq!(different["claims"][0]["signal"], "cross_branch_merge_risk");
+
+        // Still advisory: the graded answer changed nothing about the claim.
+        assert_eq!(
+            engine.board(false).unwrap()[0].owner.as_deref(),
+            Some("alice")
+        );
     }
 
     #[test]

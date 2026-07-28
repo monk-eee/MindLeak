@@ -159,6 +159,22 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
         if let Some(evidence) = args.get_mut("evidence").and_then(Value::as_object_mut) {
             evidence.insert("agent_id".to_string(), json!(identity.agent_id));
         }
+    } else if OPTIONAL_SESSION_TOOLS.contains(&name) {
+        // A session sharpens the answer but is not the price of asking. An
+        // unresolvable token binds nothing and the tool still answers, because
+        // this is a read-only advisory that must degrade rather than refuse:
+        // the registry is per-process, so requiring resolution would turn a
+        // server restart into a hard failure on a call that worked a moment
+        // earlier. The degraded result says so — every signal reads
+        // `undeclared` and `requester_branch` is null.
+        if let Some(identity) = args
+            .get("session_id")
+            .and_then(Value::as_str)
+            .and_then(|token| sessions.resolve(token).ok())
+        {
+            args.insert("agent".to_string(), json!(identity.agent_id));
+            args.insert("resolved_name".to_string(), json!(identity.name));
+        }
     }
     Ok(bound)
 }
@@ -317,6 +333,16 @@ fn storage_definition() -> Value {
         "inputSchema": { "type": "object", "properties": {} }
     })
 }
+
+/// Tools that use a session when one is offered but never require one.
+///
+/// `check_overlap` is a read-only advisory: with a session it can classify each
+/// intersection against the branch that session declared (ADR-0035), and
+/// without one it must still give the answer it always gave. Requiring a
+/// session would be the cheap way to get the branch and the wrong one — it
+/// would make an advisory check refusable, which is exactly the property
+/// ADR-0024 says overlap detection must not have.
+const OPTIONAL_SESSION_TOOLS: [&str; 1] = ["check_overlap"];
 
 fn requires_session(name: &str) -> bool {
     matches!(
@@ -694,12 +720,53 @@ mod tests {
                 && tool["name"] != "open_session"
         }) {
             assert!(tool["inputSchema"]["properties"]["agent"].is_null());
-            assert!(!tool["inputSchema"]["required"]
+            // A tool may declare `session_id` without requiring anything at all
+            // (`check_overlap` offers one to sharpen its answer), so an absent
+            // `required` list is a legitimate shape here, not a missing key. It
+            // trivially satisfies the rule this loop exists to enforce: the
+            // caller is never asked for `agent`.
+            let required = tool["inputSchema"]["required"]
                 .as_array()
-                .unwrap()
-                .iter()
-                .any(|value| value == "agent"));
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            assert!(!required.iter().any(|value| value == "agent"));
         }
+    }
+
+    /// `check_overlap` takes a session when offered and answers without one.
+    ///
+    /// Both halves matter. Binding is what lets the branch signal exist at all;
+    /// tolerating an unresolvable token is what keeps a read-only advisory from
+    /// becoming refusable, which is the property ADR-0024 requires of overlap
+    /// detection. The registry is per-process, so a server restart leaves a
+    /// perfectly well-behaved client holding a token this process never saw.
+    #[test]
+    fn an_offered_session_sharpens_check_overlap_and_its_absence_never_refuses() {
+        const TOKEN: &str = "00112233445566778899aabbccddeeff";
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        let agent_id = sessions
+            .open_session(TOKEN, SessionContext::default())
+            .unwrap()
+            .agent_id;
+        let params = |arguments: Value| json!({ "name": "check_overlap", "arguments": arguments });
+
+        let bound = bind_session(
+            &params(json!({ "paths": ["src/lib.rs"], "session_id": TOKEN })),
+            &sessions,
+        )
+        .expect("an offered session binds");
+        assert_eq!(bound["arguments"]["agent"], agent_id);
+
+        let unknown = bind_session(
+            &params(json!({ "paths": ["src/lib.rs"], "session_id": "f".repeat(32) })),
+            &sessions,
+        )
+        .expect("an unresolvable token still answers");
+        assert!(unknown["arguments"]["agent"].is_null());
+
+        let none = bind_session(&params(json!({ "paths": ["src/lib.rs"] })), &sessions)
+            .expect("no session at all still answers");
+        assert!(none["arguments"]["agent"].is_null());
     }
 
     #[test]

@@ -6,6 +6,25 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **`check_overlap` grades the collision instead of just reporting one
+  (ADR-0035 heuristic 4).** Every intersecting claim came back as the same
+  undifferentiated "overlap", so the caller had to guess which kind it had —
+  and advice you have to guess at is advice you learn to skip. Each claim now
+  carries the branch its owner declared at `open_session` and one of three
+  signals: `same_branch_collision` (both sessions on one branch, the edits
+  collide now), `cross_branch_merge_risk` (different branches, paid at merge),
+  or `undeclared`. The result also echoes `requester_branch`, because an
+  `undeclared` signal is ambiguous without knowing which side went quiet. The
+  branch is never a call argument: it is declared once per session, and a
+  second place to state it could disagree with the first — pass the optional
+  `session_id` and the server reads the branch that session already declared.
+  Still advisory and still never blocks a claim: no session, an unregistered
+  token, or a session that declared no branch all fall back to exactly the
+  answer this tool gave before, and say so rather than implying a verdict. The
+  VS Code pre-flight warning names the cost in the same terms, and adds nothing
+  when the context is undeclared.
+
 ## [0.1.3] - 2026-07-28
 
 ### Added
