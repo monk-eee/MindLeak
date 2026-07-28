@@ -220,7 +220,36 @@ export function readQueue() {
   );
 }
 
+const USAGE = `delivery-queue -- take branch-update turns in order (ADR-0062)
+
+  node scripts/delivery-queue.mjs [--watch] [--dry-run]
+
+  (no flags)  one tick: show the queue, update whichever branch's turn it is
+  --watch     keep ticking every 60s until stopped
+  --dry-run   decide and explain, change nothing
+
+A pull request with auto-merge armed is a queued one (ADR-0045), ordered by
+when it was armed. Exactly one branch is brought up to date at a time, because
+'main' requires branches to be current and every merge makes the others stale --
+refreshing them all at once burns a check run per branch per merge and never
+drains.
+
+It never merges. Merging stays with GitHub's auto-merge behind the same required
+checks, so this cannot become a second way into 'main'.
+
+It reports and steps over, rather than waiting on:
+  a real conflict   reconcile it in its own worktree (ADR-0038)
+  failing checks    updating would only burn CI to fail again
+  a wedged check    stops being waited on after 45 minutes
+
+Nothing depends on it running: an unattended queue just means branches go stale
+the way they did before.`;
+
 function main() {
+  if (process.argv.includes("--help") || process.argv.includes("-h")) {
+    console.log(USAGE);
+    return;
+  }
   const apply = !process.argv.includes("--dry-run");
   const watch = process.argv.includes("--watch");
   const tick = () => {

@@ -1,6 +1,6 @@
 # ADR-0058: Work that shipped must be able to leave the board
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-28
 - Related: [ADR-0009](0009-evidence-backed-conformance.md) (evidence-backed
   conformance), [ADR-0019](0019-task-retention-and-board-hygiene.md) (task

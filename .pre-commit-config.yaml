@@ -68,6 +68,19 @@ repos:
         files: ^docs/adr/\d{4}-.*\.md$
         pass_filenames: true
 
+      - id: merge-driver-guard
+        name: no merge driver in any .gitattributes
+        # A merge driver runs only in a local checkout. GitHub's update-branch,
+        # the merge queue, and the merge itself run server-side with no driver
+        # configured, so the attribute silently does not apply and the branch
+        # reports a conflict in the very file it promised to keep clean.
+        # `merge=union` on CHANGELOG.md cost an evening to diagnose; use
+        # per-change fragment files, which never write the same path twice.
+        entry: node scripts/merge-driver-guard.mjs
+        language: system
+        files: (^|/)\.gitattributes$
+        pass_filenames: true
+
       - id: adr-index
         name: ADR index matches the ADR files
         # The index is derived data: number, title, and status all live in the

@@ -67,6 +67,7 @@ architecture and development guides.
 | **See a normal workflow (scenarios)** | **[docs/WALKTHROUGH.md](docs/WALKTHROUGH.md)** |
 | **Learn how to use the tools** | **[docs/USAGE.md](docs/USAGE.md)** |
 | Look up a specific tool | [docs/TOOLS.md](docs/TOOLS.md) |
+| Author or upgrade a policy pack | [docs/POLICY-PACKS.md](docs/POLICY-PACKS.md) |
 | Use the VS Code extension | [editors/vscode/README.md](editors/vscode/README.md) |
 | **Use it from the Copilot CLI (no editor)** | **[docs/QUICKSTART.md](docs/QUICKSTART.md#github-copilot-cli--no-editor-required)** |
 | Understand the design | [docs/SPEC.md](docs/SPEC.md) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
