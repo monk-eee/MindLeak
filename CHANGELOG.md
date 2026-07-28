@@ -668,10 +668,12 @@ to [Semantic Versioning](https://semver.org/).
   `x86_64-apple-darwin` on `macos-14`, which is arm64, so **two of the four
   v0.1.3 platforms were never smoke-tested** and a startup crash reached a
   tagged release with green ticks beside it. The x64 macOS build now runs on
-  `macos-13` so every target is native, and a mismatch is a hard failure rather
-  than a skip: a binary this workflow cannot execute is one it must not ship.
-  A check that reports success on a question it never asked is worth less than
-  no check, because it is trusted.
+  `macos-15-intel` so every target is native, and a mismatch is a hard failure
+  rather than a skip: a binary this workflow cannot execute is one it must not
+  ship. A check that reports success on a question it never asked is worth less
+  than no check, because it is trusted. The Intel label had to be a currently
+  hosted one — `macos-13` was tried first and is retired, and an unknown
+  `runs-on` label does not fail the job, it leaves it queued forever.
 - **Re-registering a session no longer erases where it said it was working
   (ADR-0044).** `canonical-push` re-opens the session on every publish purely to
   learn its own agent id, declaring no context. That overwrote the stored
