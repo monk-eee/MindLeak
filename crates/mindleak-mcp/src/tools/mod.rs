@@ -29,6 +29,86 @@ pub fn list() -> Vec<Value> {
         .collect()
 }
 
+/// Keys that belong to the call envelope rather than to any tool's contract.
+///
+/// `agent`, `agent_id`, `exclude_agent` and `resolved_agent` are injected by
+/// this server in `bind_session`, so tolerating them keeps validation
+/// idempotent: binding already-bound params must not report the server's own
+/// additions as the caller's mistake. `session_id` is the mirror case — every
+/// client adds it to every call, while only tools that `requires_session`
+/// declare it.
+const ENVELOPE_ARGUMENTS: [&str; 6] = [
+    "agent",
+    "agent_id",
+    "exclude_agent",
+    "resolved_agent",
+    "resolved_context",
+    "session_id",
+];
+
+/// The argument names a tool declares, from the schema it already advertises.
+///
+/// Returns `None` for a name no tool declares, so dispatch keeps reporting the
+/// unknown *tool* rather than complaining about its arguments.
+fn declared_arguments(name: &str) -> Option<Vec<String>> {
+    list().into_iter().find_map(|tool| {
+        if tool.get("name").and_then(Value::as_str) != Some(name) {
+            return None;
+        }
+        Some(
+            tool.get("inputSchema")
+                .and_then(|schema| schema.get("properties"))
+                .and_then(Value::as_object)
+                .map(|properties| properties.keys().cloned().collect())
+                .unwrap_or_default(),
+        )
+    })
+}
+
+/// Refuse an argument no tool declares (the Lodestar guard, applied here too).
+///
+/// This plane went without it for one release, and the cost was concrete:
+/// `ingest_commit` takes `changed_files`, an agent passed `files`, and the
+/// argument was dropped in silence. No edges were written, so `evidence_for`
+/// counted zero commits, so conformance reported "no provenance-bearing
+/// mutation", so `complete_task` returned `needs_human` and the task never
+/// reached done. Thirteen claims sat lapsed-but-held on the board and the
+/// symptom pointed nowhere near the typo.
+///
+/// A caller that names something the tool does not have is wrong about the
+/// contract, and the cheapest moment to say so is immediately.
+pub fn validate_arguments(name: &str, args: &Value) -> Result<(), String> {
+    let Some(declared) = declared_arguments(name) else {
+        return Ok(());
+    };
+    let Some(supplied) = args.as_object() else {
+        return Ok(());
+    };
+    let mut unknown: Vec<&str> = supplied
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !ENVELOPE_ARGUMENTS.contains(key))
+        .filter(|key| !declared.iter().any(|allowed| allowed == key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    let mut accepted = declared;
+    accepted.sort();
+    let accepted = if accepted.is_empty() {
+        "none".to_string()
+    } else {
+        accepted.join(", ")
+    };
+    Err(format!(
+        "unknown argument(s) for {name}: {}. Accepted: {accepted}. \
+         A misspelt argument is dropped, not defaulted deliberately \u{2014} \
+         check the spelling rather than the value.",
+        unknown.join(", ")
+    ))
+}
+
 pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value, String> {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let mut bound = params.clone();
@@ -36,6 +116,9 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
         .get_mut("arguments")
         .and_then(Value::as_object_mut)
         .ok_or_else(|| "tool arguments must be an object".to_string())?;
+    // Checked before anything is injected, so the caller is judged on exactly
+    // what the caller sent.
+    validate_arguments(name, &Value::Object(args.clone()))?;
     if name == "open_session" {
         let token = args
             .get("session_id")
@@ -429,5 +512,60 @@ mod tests {
         assert_eq!(value["repository_id"], status.repository_id.unwrap());
         assert_eq!(value["origin"], "repository");
         assert_eq!(value["migrated_legacy"], true);
+    }
+
+    /// The bug this exists for, end to end. `ingest_commit` takes
+    /// `changed_files`; an agent passed `files`; the argument was dropped in
+    /// silence. No `refactored` edges were written, so `evidence_for` counted
+    /// zero commits, so conformance reported "no provenance-bearing mutation",
+    /// so `complete_task` returned `needs_human` and the task never reached
+    /// done. Thirteen claims sat lapsed-but-held on the board, and nothing in
+    /// the symptom pointed at the typo.
+    #[test]
+    fn a_misspelt_argument_is_refused_rather_than_dropped() {
+        let error = validate_arguments(
+            "ingest_commit",
+            &json!({ "sha": "abc", "message": "m", "files": ["a.rs"] }),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("files"), "names the offending argument");
+        assert!(error.contains("changed_files"), "names what it should be");
+    }
+
+    #[test]
+    fn a_tool_with_no_arguments_still_refuses_an_invented_one() {
+        let error = validate_arguments("graph_stats", &json!({ "invented": 1 })).unwrap_err();
+        assert!(error.contains("invented"));
+        assert!(error.contains("Accepted: none"));
+    }
+
+    /// Envelope keys are the server's own additions, or supplied by every client
+    /// on every call. Reporting them as the caller's mistake would reject
+    /// ordinary traffic — which is how the equivalent guard first misfired on
+    /// the other plane.
+    #[test]
+    fn envelope_keys_are_not_the_callers_mistake() {
+        validate_arguments(
+            "graph_stats",
+            &json!({ "session_id": "x", "agent": "a", "agent_id": "a", "exclude_agent": "a" }),
+        )
+        .unwrap();
+    }
+
+    /// An unknown *tool* must keep reporting as an unknown tool, not as a
+    /// complaint about the arguments it was given.
+    #[test]
+    fn an_unknown_tool_is_not_reported_as_an_argument_problem() {
+        validate_arguments("no_such_tool", &json!({ "anything": 1 })).unwrap();
+    }
+
+    #[test]
+    fn a_correctly_named_argument_passes() {
+        validate_arguments(
+            "ingest_commit",
+            &json!({ "sha": "abc", "message": "m", "changed_files": ["a.rs"] }),
+        )
+        .unwrap();
     }
 }
