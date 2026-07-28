@@ -498,7 +498,21 @@ impl LodestarStore {
             params![id, agent, now],
         )?;
         if changed != 1 {
-            return Ok(false);
+            // Say why. This used to return `Ok(false)`, which the MCP surface
+            // reported as `needs_input: false` — indistinguishable from a
+            // successful no-op, and returned for every reason at once: wrong
+            // owner, wrong status, no such task. An agent whose identity had
+            // drifted was told nothing while its only route to explaining
+            // itself silently did nothing, which is how a task ended up neither
+            // provable nor parkable. A rejected park names the holder.
+            let task = get_task_on(&transaction, id)?
+                .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
+            return Err(LodestarError::Invalid(format!(
+                "task {id} was not parked: {agent} asked, but it is {} and held by {}. \
+                 Only the agent holding a claimed task can park it with a question.",
+                task.status.as_str(),
+                task.owner.as_deref().unwrap_or("nobody"),
+            )));
         }
         transaction.execute(
             "INSERT INTO task_qa (task_id, kind, body, author, audience, created_at)
@@ -2348,10 +2362,13 @@ mod tests {
             .claim_started_at
             .unwrap();
 
-        // Non-owner cannot park it.
-        assert!(!s
+        // Non-owner cannot park it, and is told so rather than left guessing.
+        let refused = s
             .ask_question(&t.id, "bob", "which db?", None, NOW + 1)
-            .unwrap());
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("bob"), "{refused}");
+        assert!(refused.contains("alice"), "{refused}");
         // Owner parks with a durable question.
         assert!(s
             .ask_question(&t.id, "alice", "which db?", None, NOW + 1)

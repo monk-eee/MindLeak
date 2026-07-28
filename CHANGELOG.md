@@ -6,6 +6,27 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A migration no longer re-owns a live claim (ADR-0063).** The ADR-0054
+  identity collapse rewrote `tasks.owner` for every labelled row and re-fired on
+  every database open, because its idempotence was by *pattern* — "rewrite
+  whatever still looks unmigrated" — which holds only while nothing else creates
+  such rows. In a fleet sharing one `spec.db`, a pre-ADR-0054 binary in another
+  worktree was doing exactly that, so each open by a newer binary re-owned
+  whatever the older one had just claimed. Observed on `task:f6daad456855`: one
+  session, one token, `open_session` returning `session:v1:copilot:b4baf280…`
+  while the board reported `session:v1:b4baf280…`, flipping between consecutive
+  reads with no claim in between. The holder could not prove its work
+  (`check_conformance` → "evidence agent does not own the task"), could not park
+  the task to explain, and read as a different owner on re-claim — opening a
+  fresh evidence window and orphaning the commit it had already made. Three
+  changes: `tasks.owner` is treated as live state and never rewritten while a
+  claim is held; identity migrations are recorded once per database in a new
+  `schema_migrations` table so they cannot fire twice; and `ask_question` now
+  reports *why* a park was refused instead of returning `needs_input: false` for
+  every reason at once — the silent rejection that left an agent with no way to
+  explain itself.
+
 ## [0.1.3] - 2026-07-28
 
 ### Added
