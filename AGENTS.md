@@ -128,6 +128,17 @@ style nit.
   `complete_task` (ADR-0009/0025) is still the backstop that lands drift or a
   violation in review or blocked. The point is to catch it *before* you do the
   work, not after.
+- **Hold the claim you took — a lease is a heartbeat, not a deadline
+  (ADR-0048).** A claim expires while you are still working; the default lease
+  is minutes and real work is longer. Call `renew_lease(task_id, session_id)`
+  whenever you finish a step and are about to start another — after a build,
+  between files, before a long test run. Measured on this board: **27 lapses
+  across 24 tasks, and roughly 100 hours of work sitting under a dead lease.**
+  A lapsed claim is not a lost cause: a same-owner re-claim keeps your evidence
+  window and records the lapse rather than hiding it, so `claim_lapses` goes up
+  and `unleased_seconds` measures the gap. But it *does* free the task for
+  anyone else mid-flight, which is how two agents end up on one task. Renewing
+  costs one call; lapsing costs a collision.
 
 ### Test-driven workflow (NON-NEGOTIABLE)
 - **Tests are the only way we ship.** Every new tool, parser, or facade method

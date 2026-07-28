@@ -512,6 +512,31 @@ traceable on the Executive board.
 - Learned knowledge can propose policy but cannot become policy automatically.
 - The complete active constitution is exportable, diffable, and self-contained.
 
+### 13.1 Where each property is proved
+
+A property nobody can locate the proof of is an aspiration. Each row names the
+tests that fail if the property stops holding, so acceptance is re-checked by
+`cargo test -p lodestar-core` on every change rather than by re-reading this
+list.
+
+| Property | Proved by |
+|---|---|
+| Ungoverned is reported, never silently judged | `status_reports_absent_before_any_constitution_exists`, `absent_constitution_defers_to_a_human_never_blocks`, `conformance_flags_ungoverned_as_aligned_and_governed_as_drift`, `an_ungoverned_repository_exports_as_ungoverned` |
+| Bootstrap cites facts and creates only a draft | `an_ungoverned_project_reaches_a_cited_draft_without_activating`, `status_reports_a_draft_without_treating_it_as_governing` |
+| Every proposal has a disposition before activation | `an_undecided_clause_refuses_activation`, `a_draft_with_no_clauses_cannot_be_activated`, `activation_requires_an_attributed_authority` |
+| Pack upgrades need an attributed amendment | `upstream_version_cannot_change_an_adopted_local_clause`, `a_pack_upgrade_is_a_proposal_that_changes_nothing_by_itself`, `a_tailored_clause_is_flagged_so_an_upgrade_cannot_silently_undo_it`, `amending_records_an_attributed_diff_and_moves_which_version_governs` |
+| Hard verdicts resolve to clause + evidence + observation | `a_forbid_change_lock_blocks_and_only_a_specific_active_clause_can`, `a_registered_mechanical_control_resolves_through_its_clause`, `a_mechanical_control_can_drive_the_block_its_clause_declares` |
+| A clauseless ratchet cannot hard-block | `a_ratchet_serving_no_clause_cannot_be_registered`, `an_orphan_control_reports_but_cannot_escalate`, `a_failed_ratchet_resolves_at_review_even_under_an_invariant` |
+| Broad principles route to review | `an_incomplete_clause_defaults_to_review_not_block`, `governed_by_another_goal_without_a_covering_task_advises_review` |
+| Waivers are scoped, attributed, expiring, audited | `a_waiver_needs_an_approver_a_reason_and_a_scope`, `a_waiver_must_expire_in_the_future`, `a_granted_waiver_excuses_only_what_its_scope_reaches`, `a_valid_waiver_stands_down_a_lock_without_hiding_that_it_was_used`, `a_live_waiver_appears_in_the_export_so_exceptions_are_auditable` |
+| Learned knowledge cannot become policy automatically | `proven_signal_becomes_knowledge_and_never_a_clause` |
+| The constitution is exportable, diffable, self-contained | `an_export_carries_the_policy_a_reviewer_would_need_to_audit_it`, `an_absent_preamble_is_reported_rather_than_quietly_omitted`, `an_unchanged_clause_produces_no_diff_entry`, `a_restated_clause_reads_as_changed_not_as_a_removal_and_an_addition` |
+
+Mapping the properties this way found the one with no proof at all: learned
+knowledge staying out of the constitution held only because the two stores are
+unconnected, and "true because nothing links them" is precisely what a later
+convenience removes without anyone noticing it was load-bearing.
+
 ## 14. Non-goals
 
 - A universal constitution imposed by MindLeak or Lodestar.

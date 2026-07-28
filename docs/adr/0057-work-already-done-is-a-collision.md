@@ -1,6 +1,6 @@
 # ADR-0057: Work already done is a collision the fleet cannot see
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-28
 - Related: [ADR-0015](0015-advisory-symbol-leases.md) (false safety is worse
   than none), [ADR-0038](0038-isolated-worktrees-shared-repository-state.md)
