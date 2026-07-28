@@ -46,6 +46,38 @@ assemble it correctly is indistinguishable from work that was never done.**
 Meanwhile the actual proof was sitting in plain view: a merged pull request with
 green checks, referenced by the branch the task was claimed on.
 
+## What testing the fix changed about this decision
+
+The first draft of this ADR proposed the mechanism below as necessary. Testing
+the argument fix first showed it is not, and the record should say so rather
+than quietly ship a feature whose justification had evaporated.
+
+With the argument named correctly, a commit ingested inside the claim window
+produces exactly what conformance wanted:
+
+```
+ingest_commit -> { "edges_created": 1, "nodes_created": 1 }
+evidence: commits=1; changed=1
+  commit_ids: ["intent:210a06ed…"]
+  changed:    ["artifact:crates/mindleak-storage/src/repository.rs"]
+verdict: needs_human — evidence does not touch code bound to the task goal
+```
+
+The "no provenance-bearing mutation" failure is gone, and the verdict that
+replaces it is a *correct* one about that probe task's goal binding. **The
+silent argument drop was the whole disease.** Tasks can close today.
+
+One real limitation survives, and it is narrower than the first draft claimed:
+re-ingesting an already-known commit upserts it without moving its timestamp, so
+a commit made *before* the claim cannot be pulled into the window afterwards.
+That is correct behaviour — it is the ADR-0048 property that stops an agent
+back-dating evidence — but it means work whose commits were never ingested at
+the time cannot be retro-proved. Thirteen claims are in that position now.
+
+So this decision is **not** proposed as a fix for closure, which works. It is
+proposed, if at all, as a way to prove work whose commits were never ingested —
+a smaller claim, and one that may not be worth a mechanism.
+
 ## Decision
 
 **A merge is evidence, and the ledger should be able to consume it.**
