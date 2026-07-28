@@ -108,7 +108,14 @@ jobs:
           # its own: built on macos-14 it is cross-compiled, cannot be executed,
           # and its smoke test silently did not run while the job still reported
           # success — v0.1.3 shipped two of four platforms unverified that way.
-          - os: macos-13
+          #
+          # The Intel label must be one GitHub still hosts. `macos-13` was the
+          # obvious choice and is retired: the job does not fail, it queues
+          # forever, because an unknown `runs-on` label has no runner to claim
+          # it. The first v0.1.3 attempt sat 25 minutes with the other three
+          # platforms already green. Current Intel labels are `macos-15-intel`
+          # and `macos-26-intel`; arm64 is macos-14/15/26.
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             architecture: x64
             asset: macos-x64

@@ -234,10 +234,12 @@ and footguns, with impact and status:
   macOS — reached a tagged release with green ticks beside it. — High impact:
   the check most trusted to prove a binary runs was the one not running, and it
   said so only in a notice nobody reads. — Fixed this run: the x64 macOS build
-  moved to `macos-13` so every target is native, and an architecture mismatch is
-  now `core.setFailed` rather than a skip. A binary the workflow cannot execute
-  is one it must not ship, and a green tick that means "not checked" is worse
-  than a red one.
+  moved to `macos-15-intel` so every target is native, and an architecture
+  mismatch is now `core.setFailed` rather than a skip. A binary the workflow
+  cannot execute is one it must not ship, and a green tick that means "not
+  checked" is worse than a red one. Note the Intel label matters: `macos-13` was
+  tried first and is retired, and an unknown `runs-on` label does not fail — the
+  job queues forever with no runner able to claim it.
 
 - **`recall` cannot say "I do not know", and never returns a conclusion because
   none is ever recorded — OPEN, recorded as [ADR-0053](docs/adr/0053-the-graph-records-events-not-conclusions.md)
