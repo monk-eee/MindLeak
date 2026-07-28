@@ -143,6 +143,44 @@ impl LodestarStore {
              WHERE constitution_version = ?1 AND status = 'draft'",
             params![draft_id],
         )?;
+        // Carry the controls across with the clause they enforce.
+        //
+        // A clause copy takes a new id (`goal:{slug}@{version}`), so a control
+        // registered before the amendment would otherwise still name the row
+        // that was just superseded. Nothing refuses that: the orphan keeps
+        // accepting observations and keeps returning pass and fail, but it
+        // serves no active clause, so its consequence silently collapses to
+        // `advise` and `clause_controls` reports the live clause as unguarded.
+        // A disarmed control reads exactly like a working one, and it happens
+        // at the moment someone strengthens a rule — the worst possible time to
+        // quietly stop enforcing it.
+        //
+        // Matched on slug rather than on the outgoing version's ids, so a
+        // control stranded by an earlier amendment is recovered by the next one
+        // instead of staying orphaned forever. Retired controls are left alone:
+        // they are history, and history should keep naming what it served.
+        transaction.execute(
+            "UPDATE controls
+                SET clause_id = (
+                    SELECT successor.id FROM goals AS successor
+                     WHERE successor.constitution_version = ?1
+                       AND successor.status = 'active'
+                       AND successor.slug = (
+                           SELECT slug FROM goals WHERE id = controls.clause_id
+                       )
+                )
+              WHERE status = 'active'
+                AND EXISTS (
+                    SELECT 1 FROM goals AS successor
+                     WHERE successor.constitution_version = ?1
+                       AND successor.status = 'active'
+                       AND successor.id <> controls.clause_id
+                       AND successor.slug = (
+                           SELECT slug FROM goals WHERE id = controls.clause_id
+                       )
+                )",
+            params![draft_id],
+        )?;
         transaction.execute(
             "INSERT INTO constitution_amendments
                  (id, from_version, to_version, rationale, amended_by, created_at, diff)
