@@ -79,6 +79,32 @@ crate, and `target/debug/mindleak-mcp` starts and prints
 > right-hand column — `cargo`, `npm`, and `git` are identical on Linux, macOS,
 > and Windows, so run those directly if `make` is unavailable.
 
+## When a generated file conflicts, regenerate it
+
+`docs/adr/README.md` is derived entirely from the ADR files. Every branch that
+adds an ADR appends a row at the same place, so merging `main` into a branch
+that added one conflicts every time. This is expected and it is not a merge to
+reason about:
+
+```bash
+git checkout --ours docs/adr/README.md
+make adr-index          # or: node scripts/adr-index.mjs
+git add docs/adr/README.md
+git commit --no-edit
+```
+
+**Do not hand-resolve it.** Keeping "both sides" of a generated table produces a
+duplicated or misordered index that the pre-commit check then rejects, so the
+hand-resolution is discarded work. `.gitattributes` explains at length why a
+`merge=union` driver is not the answer either — GitHub does not honour merge
+drivers, so the union resolution exists only in your checkout while every
+reviewer sees a phantom conflict. A generated file is regenerated, never merged.
+
+The same rule covers anything else under a generator: regenerate, then stage.
+`CHANGELOG.md` avoids the problem entirely by not being edited in a pull request
+at all — changes land as `changelog.d/` fragments and are assembled at release
+(ADR-0056).
+
 ## Local gate before a PR
 
 Do your laundry locally — CI is the safety net, not the first line of defence:
@@ -229,6 +255,22 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
+
+- **A maintenance test asserts against a two-second wall clock and will flake on
+  a loaded machine — OPEN.** `enabled_worker_runs_after_idle_and_joins_cleanly`
+  in [`maintenance/runtime.rs`](crates/mindleak-mcp/src/maintenance/runtime.rs)
+  polls `telemetry_snapshot` until `total_events > 0`, bounded by
+  `Instant::now() + Duration::from_secs(2)`. The worker's idle is 10 ms, so two
+  seconds is generous in isolation and meaningless under contention: this
+  repository is routinely worked by a fleet of worktrees running concurrent
+  `cargo` builds that hold the package-cache lock, and a shared CI runner is no
+  calmer. — Impact: a spurious red on a pull request that changed nothing
+  related, which is the kind of failure that teaches people to re-run CI instead
+  of reading it, and that habit is what makes a real failure cheap to ignore. —
+  Not fixed this run: the honest repair is to wait on a signal from the worker
+  rather than on elapsed time, and that means giving `MaintenanceRuntime` a test
+  seam it does not currently have. Raising the timeout would only lengthen the
+  odds, not remove them.
 
 - **The recall floor cannot rank, and raising it makes recall worse — MEASURED,
   do not "fix" it.** The obvious response to `recall` returning a plausible
