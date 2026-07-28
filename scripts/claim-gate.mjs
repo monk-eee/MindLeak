@@ -255,15 +255,23 @@ export const declaredContext = ({ branch, headSha, base, behind }) => {
   return context;
 };
 
-const binaryName =
-  process.platform === "win32" ? "lodestar-mcp.exe" : "lodestar-mcp";
+const serverBinaries = {
+  lodestar: { override: "LODESTAR_MCP_BIN", name: "lodestar-mcp" },
+  mindleak: { override: "MINDLEAK_MCP_BIN", name: "mindleak-mcp" },
+};
 
-/** Locate a Lodestar server binary, or `null` when none is built. */
-export const resolveServer = (repoRoot) => {
-  if (process.env.LODESTAR_MCP_BIN) {
-    return existsSync(process.env.LODESTAR_MCP_BIN)
-      ? process.env.LODESTAR_MCP_BIN
-      : null;
+/**
+ * Locate a plane's server binary, or `null` when none is built.
+ *
+ * Both planes resolve the same way deliberately: a caller that can reach the
+ * ledger but not the graph would record intent and drop the evidence for it,
+ * which is the exact asymmetry that leaves published work uncertifiable.
+ */
+export const resolveServer = (repoRoot, plane = "lodestar") => {
+  const { override, name } = serverBinaries[plane];
+  const binaryName = process.platform === "win32" ? `${name}.exe` : name;
+  if (process.env[override]) {
+    return existsSync(process.env[override]) ? process.env[override] : null;
   }
   for (const profile of ["release", "debug"]) {
     const candidate = join(repoRoot, "target", profile, binaryName);
