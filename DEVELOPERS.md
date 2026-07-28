@@ -72,6 +72,7 @@ crate, and `target/debug/mindleak-mcp` starts and prints
 | Merge audit | `make merge-audit` | `node scripts/merge-audit.mjs` — fails if a merged branch has commits that never reached `main` |
 | Delivery queue | `make queue` | `node scripts/delivery-queue.mjs` — show the queue and update the branch whose turn it is (ADR-0062). `make queue-watch` runs it as an agent |
 | Board health | `make board-health` | `node scripts/board-health.mjs` — separates parked work a human must decide from work nobody can resolve, and lists stranded claims (ADR-0058). Needs `LODESTAR_SESSION_ID` and a release `lodestar-mcp` |
+| Stranded report | `make stranded-report` | `node scripts/stranded-report.mjs` — for each lapsed claim, names the commit that most likely shipped it, with a confidence. An agent cannot close these (ADR-0048); this makes confirming them a judgement rather than an investigation |
 | Design audit | `make design-audit` | `node scripts/design-audit.mjs` — reports drift between the ADR files and the design ledger. Local only: it reads the ledger through a release `lodestar-mcp`, which CI has no database for |
 | Changelog | `make changelog` | `node scripts/changelog.mjs` — show what the next release contains. A change adds `changelog.d/<section>-<slug>.md`; **do not edit `CHANGELOG.md` in a pull request** (ADR-0056) |
 | Everything CI runs | `make ci` | see [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
@@ -256,6 +257,68 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
+
+- **Closing a stranded claim after the fact: four traps, all hit in one
+  sitting — OPEN.** Most stranded claims are work that already shipped and was
+  never closed, so reaching for the receipt afterwards is a natural move. It is
+  also full of holes, and two live tasks were transitioned to `in_review`
+  learning them.
+  1. **`check_conformance` is not a dry run.** It records an audit and can
+     transition the task. A bundle that turns out wrong does not merely fail —
+     it moves the task, and re-claiming then fails with
+     `status in_review does not accept a claim right now`. Inspect the evidence
+     bundle *before* submitting it; `evidence_for` is the read-only part.
+  2. **The whole claim window is far too wide.** A claim that lapsed eighteen
+     hours ago has had a day of unrelated commits land inside it. Ask for that
+     span and the bundle sweeps them all in, and conformance correctly reports
+     `drift` because the evidence covers governed code no covering task serves.
+     Bound the window to the commit, not to the claim.
+  3. **`ingest_commit` takes a `timestamp`, and you must pass it.** It defaults
+     to now, so a historical commit is recorded as having happened today and no
+     truthful window will ever contain it. Worse, the node is upserted: once
+     created at the wrong time, ingesting again *with* the timestamp does not
+     move `created_at`. The first careless call poisons that commit for good.
+     `evidence_for` filters on the node's `created_at`, not on when the agent
+     observed it.
+  4. **The intent node is keyed by the sha string you pass.** Ingest `9ae2072`
+     and the node is `intent:9ae2072`, not the resolved 40-character hash — so
+     comparing against `git rev-parse` output reads a perfectly clean window as
+     contaminated.
+
+  And after all four are handled, **most of the list still cannot be closed.**
+  A correctly bounded bundle for a documentation commit — one commit, two
+  changed nodes, exactly right — still returns `needs_human`, because the
+  evidence touches no code bound to the task's goal. Most stranded work is
+  ADRs, Known-gaps entries and docs. Until ADR-0060 is implemented the list
+  cannot be worked to completion, and attempting it converts `claimed` into
+  `in_review` rather than into `done`.
+
+- **A restored file with an older timestamp is silently not rebuilt — OBSERVED,
+  FIXED BY HABIT.** Cargo decides what to recompile by mtime, and PowerShell's
+  `Copy-Item` gives the destination the *source's* timestamp. Backing a file up
+  before a red/green probe and copying it back therefore restores the content
+  with an mtime older than the compiled artifact, so cargo keeps the previous
+  object and the test runs against the code you thought you had just restored.
+  Impact: cost most of a session on ADR-0060. The same fix, restored two
+  different ways, gave `aligned` once and `needs_human` twice, which read as a
+  flaky test and is not one — and cargo still prints `Compiling <crate>` for the
+  *other* files you touched, so the log looks like a real rebuild. Use
+  `git checkout -- <path>` and `git stash pop` (both write fresh timestamps) for
+  probes, or touch the file after any `Copy-Item` restore.
+
+- **The Unit Test MCP cargo adapter hides the assertion, so a red test cannot be
+  diagnosed — OBSERVED, OPEN.** `run_tests` with `framework=custom` returns
+  `status: FAILED` with `passed/failed/total` all zero and a message containing
+  only cargo's stderr (`error: test failed, to rerun pass -p <crate> --test
+  <target>`). The failing test's name and its assertion output go to the
+  harness's stdout, which the adapter drops, and `compact_output=false` does not
+  bring them back. Impact: a genuine red is indistinguishable from a compile
+  error, and there is no way to tell *which* test failed or why, while the repo
+  instructions correctly forbid running `cargo test` in a terminal. This is what
+  turned the mtime bug above into a long hunt instead of a one-line read.
+  Workaround: have the test write its result to a file under `target/tmp/` and
+  read that file, then delete the write before committing. Left for later — the
+  adapter needs to surface harness stdout on failure.
 
 - **Amending the constitution orphaned every control bound to the amended clause
   — REPRODUCED, FIXED.** A draft clause is copied as `goal:{slug}@{version}`

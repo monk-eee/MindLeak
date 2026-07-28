@@ -267,9 +267,23 @@ const HEARTBEAT_TOOLS: &[&str] = &[
     "ask_question",
     "answer",
     "conformance_history",
-    "advise",
     "check_conformance",
 ];
+
+// `advise` is deliberately absent, answering the question ADR-0052 left open.
+//
+// ADR-0052 listed it as proof of life, then said in the same breath that
+// "`advise` should be excluded, or ADR-0029 amended — this decision does not get
+// to quietly redefine another one." ADR-0029 still documents `advise` as
+// evidence-free and state-free: it "records no conformance verdict, and changes
+// no task state". A lease renewal *is* task state, so including it here would
+// have made one ADR quietly contradict another, which is the specific outcome
+// ADR-0052 asked us to avoid.
+//
+// Excluding it costs almost nothing: an agent calling `advise` before it edits
+// is about to call something task-bearing anyway. If the fleet decides `advise`
+// should renew, that is an amendment to ADR-0029 with its own reasoning — not a
+// line added back to this array.
 
 /// Seconds a heartbeat extends a lease to. Deliberately the same as the default
 /// claim, so activity keeps a claim alive exactly as long as claiming it would —
@@ -455,6 +469,32 @@ mod tests {
     use super::*;
     use mindleak_storage::DatabaseOrigin;
     use std::path::PathBuf;
+
+    /// `advise` must not renew a lease, because ADR-0029 says it changes no
+    /// task state.
+    ///
+    /// ADR-0052 raised this and deliberately did not settle it: "`advise` should
+    /// be excluded, or ADR-0029 amended — this decision does not get to quietly
+    /// redefine another one." The first implementation included it, which made
+    /// the two ADRs contradict each other in code while both still read as
+    /// authoritative. This test is the guard: re-adding `advise` to
+    /// `HEARTBEAT_TOOLS` without first amending ADR-0029 fails here.
+    #[test]
+    fn advise_is_not_a_heartbeat_while_adr_0029_calls_it_state_free() {
+        assert!(
+            !HEARTBEAT_TOOLS.contains(&"advise"),
+            "advise renews a lease, which is task state; ADR-0029 documents it \
+             as state-free. Amend ADR-0029 before adding it back."
+        );
+        // The tools that *are* heartbeats stay heartbeats: this must not be
+        // read as "renewal-on-activity was reverted".
+        for expected in ["task_scope", "conformance_history", "check_conformance"] {
+            assert!(
+                HEARTBEAT_TOOLS.contains(&expected),
+                "{expected} is proof the owner is still working (ADR-0052)"
+            );
+        }
+    }
 
     /// Every argument a handler requires is either declared or injected.
     ///
