@@ -153,6 +153,15 @@ mod tests {
                     ],
                 )
                 .unwrap();
+            // Creating the file through `open` records the collapse as applied
+            // before any legacy row exists. Clear the marker so this is a
+            // database that has genuinely never had the migration run.
+            connection
+                .execute(
+                    "DELETE FROM schema_migrations WHERE name = 'collapse_session_identities'",
+                    [],
+                )
+                .unwrap();
         }
 
         // Re-opening runs the migration.
@@ -187,6 +196,117 @@ mod tests {
             .unwrap();
         assert_eq!(author, collapsed);
         assert_eq!(audience, collapsed);
+    }
+
+    /// Bug: the ADR-0054 collapse rewrote `tasks.owner` for every labelled row,
+    /// live claims included, and re-fired on every database open because its
+    /// idempotence was by *pattern* ("rewrite whatever still looks unmigrated")
+    /// rather than by record. A pre-ADR-0054 binary still running against the
+    /// same `spec.db` kept minting labelled ids, so each open by a newer binary
+    /// re-owned whatever the older one had just claimed.
+    ///
+    /// Observed live on 2026-07-28 (task:f6daad456855): one session, one token,
+    /// `open_session` returning `session:v1:copilot:b4baf280…` while the board
+    /// reported the owner as `session:v1:b4baf280…`, flipping between two
+    /// consecutive reads with no claim in between. Impact: the holder could not
+    /// prove its work (`check_conformance` → "evidence agent does not own the
+    /// task"), could not park the task to explain (the owner guard rejected it),
+    /// and read as a different owner on re-claim, which opened a fresh evidence
+    /// window and orphaned the commit it had already made. A task provable by
+    /// nobody is the one outcome the ledger exists to prevent.
+    ///
+    /// Fix, both halves: ownership of a *live* claim is never rewritten, and the
+    /// collapse is recorded in `schema_migrations` so it cannot fire twice.
+    #[test]
+    fn the_identity_collapse_never_re_owns_a_live_claim_and_cannot_fire_twice() {
+        let path = temporary_database("live-claim-ownership");
+        let fingerprint = "b4baf2807ebecbd3f43821b330426544";
+        let labelled = format!("session:v1:copilot:{fingerprint}");
+        let collapsed = format!("session:v1:{fingerprint}");
+        let live_until = crate::now_unix() + 3_600;
+        {
+            let connection = open(path.to_str().unwrap()).unwrap();
+            connection
+                .execute_batch(
+                    "INSERT INTO goals (id, slug, kind, title, statement, status, created_at)
+                     VALUES ('goal:g', 'ship', 'objective', 'Ship', 'Ship it', 'active', 1);",
+                )
+                .unwrap();
+            // One claim still held, one whose lease has long since lapsed.
+            for (task, lease) in [
+                ("task:live", Some(live_until)),
+                ("task:lapsed", Some(1_i64)),
+            ] {
+                connection
+                    .execute(
+                        "INSERT INTO tasks (id, goal_id, title, acceptance, status, owner, lease_expires_at, created_at, updated_at)
+                         VALUES (?1, 'goal:g', 'T', 'A', 'claimed', ?2, ?3, 1, 1)",
+                        rusqlite::params![task, labelled, lease],
+                    )
+                    .unwrap();
+            }
+            // As above: this database predates the collapse, so it carries no
+            // record of it having run.
+            connection
+                .execute(
+                    "DELETE FROM schema_migrations WHERE name = 'collapse_session_identities'",
+                    [],
+                )
+                .unwrap();
+        }
+
+        // Re-opening runs the migration.
+        let connection = open(path.to_str().unwrap()).unwrap();
+        let owner = |connection: &Connection, id: &str| -> String {
+            connection
+                .query_row(
+                    "SELECT owner FROM tasks WHERE id = ?1",
+                    rusqlite::params![id],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(
+            owner(&connection, "task:live"),
+            labelled,
+            "a live claim keeps the owner its holder answers to"
+        );
+        assert_eq!(
+            owner(&connection, "task:lapsed"),
+            collapsed,
+            "a claim nobody is holding is safe to tidy"
+        );
+        drop(connection);
+
+        // The legacy writer takes a fresh claim under its labelled id, exactly
+        // as it did while this was happening.
+        {
+            let connection = open(path.to_str().unwrap()).unwrap();
+            connection
+                .execute(
+                    "UPDATE tasks SET owner = ?1, lease_expires_at = ?2 WHERE id = 'task:lapsed'",
+                    rusqlite::params![labelled, live_until],
+                )
+                .unwrap();
+        }
+
+        // ...and a later open does not reach in and take it away again. Before
+        // the fix this rewrite re-fired on every single open, forever.
+        let connection = open(path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            owner(&connection, "task:lapsed"),
+            labelled,
+            "the collapse is recorded as done and cannot fire a second time"
+        );
+
+        let applied: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM schema_migrations WHERE name = 'collapse_session_identities'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied, 1, "recorded once, by name");
     }
 
     #[test]

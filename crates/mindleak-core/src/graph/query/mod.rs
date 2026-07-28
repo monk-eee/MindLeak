@@ -58,6 +58,45 @@ impl GraphStore {
         }
         Ok((nodes, edges))
     }
+
+    /// The two invariants that broke silently and stayed broken for days: how
+    /// much of the graph `recall` cannot see, and how many nodes still spell
+    /// their path absolutely.
+    ///
+    /// Both were true, measurable, and invisible — the embedding index covered
+    /// 700 of 6,144 nodes for three days while `recall` answered confidently
+    /// from the rest, and 871 ids carried a checkout prefix that split one file
+    /// across eight identities. Neither was hard to detect; nothing looked.
+    /// They are reported by `graph_stats` because that is the call the fleet
+    /// already makes constantly, so a regression becomes visible without anyone
+    /// having to think to check.
+    pub fn health(&self, model: &str) -> Result<(i64, i64)> {
+        let unembedded: i64 = match self.conn.query_row(
+            "SELECT COUNT(1) FROM nodes
+             WHERE id NOT IN (SELECT node_id FROM embeddings WHERE model = ?1)",
+            [model],
+            |row| row.get(0),
+        ) {
+            Ok(count) => count,
+            // The index is created lazily, so its absence is not an error: it
+            // means nothing is recallable, which is precisely what a caller
+            // needs to hear. Failing here would take `graph_stats` down with
+            // it, and that call is the fleet's only constant health signal.
+            Err(_) => self
+                .conn
+                .query_row("SELECT COUNT(1) FROM nodes", [], |row| row.get(0))?,
+        };
+        // A repo-relative id never contains a drive letter or a leading slash
+        // after its `artifact:`/`symbol:` prefix.
+        let split_identity: i64 = self.conn.query_row(
+            "SELECT COUNT(1) FROM nodes
+             WHERE id GLOB 'artifact:[A-Za-z]:/*' OR id GLOB 'symbol:[A-Za-z]:/*'
+                OR id GLOB 'artifact:/*' OR id GLOB 'symbol:/*'",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok((unembedded, split_identity))
+    }
 }
 
 fn retain_best_overlap(
