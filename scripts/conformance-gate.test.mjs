@@ -1,4 +1,4 @@
-// Tests for the ADR-0031 conformance gate. Run with: node --test scripts/
+// Tests for the ADR-0031 conformance gate. Run with: make script-test
 import assert from "node:assert/strict";
 import { test } from "node:test";
 

@@ -1,4 +1,4 @@
-// Tests for the ADR-0054 stale-binary diagnostic. Run with: node --test scripts/
+// Tests for the ADR-0054 stale-binary diagnostic. Run with: make script-test
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
