@@ -208,6 +208,10 @@ pub fn call_with_storage(
         return ok(storage.ok_or("storage status is unavailable")?);
     }
 
+    // Proof of life before the call runs, so a slow tool cannot lapse the very
+    // lease its caller is demonstrating (ADR-0052).
+    touch_named_task(engine, name, &args);
+
     if let Some(result) = constitution::dispatch(engine, name, &args) {
         return result;
     }
@@ -247,6 +251,55 @@ pub fn call_with_storage(
     }
 
     Err(format!("unknown tool: {name}"))
+}
+
+/// Calls that prove their caller is still working on the task they name
+/// (ADR-0052). Reading a task's scope, asking or answering a question about it,
+/// reviewing its conformance history, or checking its evidence are all things
+/// only an agent mid-task does.
+///
+/// `claim_task` and `renew_lease` are absent deliberately: they set the lease
+/// themselves, and a heartbeat afterwards would silently widen what the caller
+/// asked for. `complete_task` and `release_task` are absent because the claim is
+/// ending, not continuing.
+const HEARTBEAT_TOOLS: &[&str] = &[
+    "task_scope",
+    "ask_question",
+    "answer",
+    "conformance_history",
+    "advise",
+    "check_conformance",
+];
+
+/// Seconds a heartbeat extends a lease to. Deliberately the same as the default
+/// claim, so activity keeps a claim alive exactly as long as claiming it would —
+/// the short default is what frees a vanished agent's work quickly, and
+/// renewal-on-activity keeps that property instead of trading it away by raising
+/// the default.
+const HEARTBEAT_LEASE_SECS: i64 = 300;
+
+/// Renew the lease on the task a call names, if the caller owns it (ADR-0052).
+///
+/// Failure is ignored on purpose: a non-owner, a lapsed lease, or a call naming
+/// no task all renew nothing, and none of them is an error in the call that was
+/// actually made. A lapse still requires a deliberate re-claim, so this cannot
+/// resurrect a claim someone else has taken.
+fn touch_named_task(engine: &Lodestar, name: &str, args: &Value) {
+    if !HEARTBEAT_TOOLS.contains(&name) {
+        return;
+    }
+    let Some(task_id) = args.get("task_id").and_then(Value::as_str) else {
+        return;
+    };
+    let agent = args
+        .get("resolved_agent")
+        .or_else(|| args.get("agent"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if agent.is_empty() {
+        return;
+    }
+    let _ = engine.touch_lease(task_id, agent, HEARTBEAT_LEASE_SECS);
 }
 
 fn session_definition() -> Value {

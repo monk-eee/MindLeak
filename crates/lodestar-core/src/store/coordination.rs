@@ -253,6 +253,32 @@ impl LodestarStore {
         Ok(changed == 1)
     }
 
+    /// Renew a lease because the owner is demonstrably still working (ADR-0052).
+    ///
+    /// A lease is a heartbeat, not a deadline, and an agent doing its job should
+    /// not lose its claim to a long `cargo test`. Any authenticated call naming
+    /// the task is proof of life, so renewal rides on calls already being made
+    /// rather than on the owner remembering `renew_lease` — the same shape that
+    /// made question delivery adopted in ADR-0046, because a capability that
+    /// depends on remembering is adopted at a rate of zero.
+    ///
+    /// `MAX` so a heartbeat can only ever extend a lease, never shorten one an
+    /// owner deliberately took long. `claim_started_at` is untouched, so the
+    /// evidence window still bounds exactly what the claim covered (ADR-0048 is
+    /// unaffected). Owner-only and silent: a call from a non-owner, or against
+    /// an already-lapsed lease, renews nothing and does not error, because the
+    /// call has its own job to do and a lapse must still require a deliberate
+    /// re-claim rather than being resurrected by a passing read.
+    pub fn touch_lease(&self, id: &str, agent: &str, lease_secs: i64, now: i64) -> Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE tasks SET lease_expires_at = MAX(lease_expires_at, ?3), updated_at = ?4
+                            WHERE id = ?1 AND owner = ?2 AND status = 'claimed'
+                                AND lease_expires_at >= ?4 AND blocked_by IS NULL",
+            params![id, agent, now + lease_secs, now],
+        )?;
+        Ok(changed == 1)
+    }
+
     /// Mark a task blocked, optionally on one validated predecessor. Blocking
     /// clears any live claim so release cannot reopen it around the dependency.
     /// A non-empty `reason` is appended to the task's durable thread as a note
@@ -2106,6 +2132,63 @@ mod tests {
         assert_eq!(
             s.get_task(&t.id).unwrap().unwrap().owner.as_deref(),
             Some("bob")
+        );
+    }
+
+    // ADR-0052. Observed repeatedly in one session: a claim taken with a 3600s
+    // lease lapsed during `cargo test --all`, and the push that followed was
+    // refused for having no live claim. The agent was working the whole time.
+    #[test]
+    fn activity_extends_the_lease_of_the_owner() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "task", "", None, NOW).unwrap();
+        assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
+        let before = s.get_task(&t.id).unwrap().unwrap();
+
+        // 30s in, still inside the lease: a call naming the task is proof of life.
+        assert!(s.touch_lease(&t.id, "alice", 300, NOW + 30).unwrap());
+
+        let after = s.get_task(&t.id).unwrap().unwrap();
+        assert_eq!(after.lease_expires_at, Some(NOW + 30 + 300));
+        assert!(after.lease_expires_at > before.lease_expires_at);
+        // ADR-0048 is unaffected: the window still starts where the claim did.
+        assert_eq!(after.claim_started_at, before.claim_started_at);
+    }
+
+    // A heartbeat may only extend. An owner who deliberately took a long lease
+    // must not have it cut short by a passing read.
+    #[test]
+    fn activity_never_shortens_a_longer_lease() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "task", "", None, NOW).unwrap();
+        assert!(s.claim_task(&t.id, "alice", 4 * HOUR, NOW).unwrap());
+
+        assert!(s.touch_lease(&t.id, "alice", 300, NOW + 30).unwrap());
+
+        assert_eq!(
+            s.get_task(&t.id).unwrap().unwrap().lease_expires_at,
+            Some(NOW + 4 * HOUR)
+        );
+    }
+
+    // Owner-only and silent. A peer reading the task renews nothing, and a
+    // lapsed lease is not resurrected by a passing call — it still requires a
+    // deliberate re-claim, or the claim someone else took could be undone.
+    #[test]
+    fn activity_by_a_non_owner_or_after_a_lapse_renews_nothing() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "task", "", None, NOW).unwrap();
+        assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
+
+        assert!(!s.touch_lease(&t.id, "bob", 300, NOW + 30).unwrap());
+        assert!(!s.touch_lease(&t.id, "alice", 300, NOW + 2 * HOUR).unwrap());
+
+        assert_eq!(
+            s.get_task(&t.id).unwrap().unwrap().lease_expires_at,
+            Some(NOW + 60)
         );
     }
 
