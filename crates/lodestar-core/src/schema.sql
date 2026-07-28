@@ -345,6 +345,16 @@ CREATE TABLE IF NOT EXISTS goal_code (
 );
 
 -- Conformance audit trail.
+-- Migrations that must run exactly once per database, recorded by name
+-- (ADR-0063). Most migrations here are idempotent by *pattern* — "rewrite every
+-- row that still looks unmigrated" — which is safe only while nothing else is
+-- producing such rows. A rewrite that races a live writer re-fires forever, so
+-- anything that rewrites identity or ownership records itself here instead.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    name       TEXT PRIMARY KEY,
+    applied_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS conformance (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id    TEXT,
