@@ -257,31 +257,41 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
-- **Amending the constitution orphans every control bound to the amended clause
-  — REPRODUCED, OPEN.** A draft clause is copied as `goal:{slug}@{version}`
+- **Amending the constitution orphaned every control bound to the amended clause
+  — REPRODUCED, FIXED.** A draft clause is copied as `goal:{slug}@{version}`
   (`copy_clauses_to_version`), so a clause's id changes each time the
   constitution is amended. Controls store the clause id they were registered
-  against, and nothing re-points them: after `amend_constitution` the old id is
-  superseded and every control bound to it answers `control ... serves no
+  against, and nothing re-pointed them: after `amend_constitution` the old id was
+  superseded and every control bound to it answered `control ... serves no
   active clause; an orphan control reports but cannot escalate`. Reproduced
   while giving `source-files-stay-small-and-cohesive` its enforcement contract:
   a ratchet registered before the amendment still evaluated its measurements —
   it even returned `status: fail` for a regression — but the effective
   consequence silently dropped from `review` to `advise`, and
   `clause_controls` for the live clause returned `[]`. — Impact: the failure
-  is quiet and the wrong way round. A control that stopped enforcing keeps
-  answering, so a green-looking `pass` and a real `fail` are equally toothless,
-  and the moment it happens is precisely when someone has just taken the
-  trouble to strengthen a rule. Any project that amends its constitution
-  disarms its own enforcement, and nothing reports it. `register_ratchet`
-  cannot repair it either — re-registering the same `control_id` is refused
-  because a control version never moves backwards, so the id is spent. —
-  Status: not fixed. Worked around by binding `control:rust-module-length` to
-  the post-amendment clause; the earlier `control:module-length` remains in the
-  store as a dead orphan and should be treated as a repair case, not a second
-  control. The fix is to re-point controls onto the successor clause inside the
-  `amend_constitution` transaction, which also needs a story for controls
-  orphaned before the fix lands.
+  was quiet and the wrong way round. A control that stopped enforcing kept
+  answering, so a green-looking `pass` and a real `fail` were equally toothless,
+  and the moment it happened was precisely when someone had just taken the
+  trouble to strengthen a rule. — Status: fixed. `amend_constitution` now
+  carries active controls onto the successor clause inside the same transaction
+  that supersedes the old version, so there is no window where a clause is
+  active and unguarded. Matched on slug rather than on the outgoing version's
+  ids, because an orphan cannot repair itself — re-registering a `control_id` is
+  refused once its version has moved forward, so the id is spent — which means
+  a control stranded by an earlier amendment is adopted by the next one instead
+  of staying orphaned permanently. Retired controls are deliberately left
+  naming what they served.
+
+- **A control can be created through the MCP surface but never stood down —
+  OPEN.** `register_control` and `register_ratchet` are exposed;
+  `retire_control` exists on the core facade and is not. An operator who
+  registers a control under the wrong id, or whose control has been superseded
+  by a better one, has no way to retire it without linking against the library.
+  — Impact: dead and duplicate controls accumulate against live clauses and
+  keep reporting. Concretely, `control:module-length` — orphaned while finding
+  the amendment bug above — is now recovered by the slug-matched re-point and
+  will sit alongside `control:rust-module-length` measuring the same metric, and
+  there is no supported way to stand the older one down. — Status: not fixed.
 
 - **An agent can work all day, certify nothing, and only discover it at
   `complete_task` — MEASURED, OPEN.** Evidence-backed conformance (ADR-0009)
