@@ -741,9 +741,10 @@ mod tests {
         };
         let checked = e.check_conformance(&evidence, Some(&task.id)).unwrap();
         assert_eq!(checked.verdict, crate::Verdict::NeedsHuman);
-        let (completed, _) = e
-            .complete_task(&task.id, agent, &evidence, &checked)
+        let completion = e
+            .complete_task(&task.id, agent, &evidence, &checked, None)
             .unwrap();
+        let completed = completion.completed;
         assert!(!completed);
         assert_eq!(
             e.store.get_task(&task.id).unwrap().unwrap().status,

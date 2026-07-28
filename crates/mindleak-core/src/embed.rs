@@ -222,12 +222,22 @@ pub fn upsert(
     Ok(())
 }
 
-/// Rank stored nodes for `model` by cosine similarity to `query`, best first.
+/// Rank stored nodes for `model` by cosine similarity to `query`, best first,
+/// discarding anything below `floor`.
+///
+/// The floor is the point of this function, not a refinement of it (ADR-0053).
+/// Without one, recall always answers: asking this repository's own index for
+/// "canonical-push auto-merge armed refuses" returned `merge_import`, matched on
+/// the word "merge", with nothing to signal that it was noise. A caller handed a
+/// plausible stranger cannot tell it is wrong, and stops asking. An empty result
+/// is a usable answer — fall back to `multi_hop_query`, `graph_snapshot`, or the
+/// repository itself.
 pub fn recall(
     conn: &Connection,
     query: &[f32],
     model: &str,
     limit: usize,
+    floor: f32,
 ) -> Result<Vec<(String, f32)>> {
     ensure_table(conn)?;
     let mut stmt = conn.prepare("SELECT node_id, vector FROM embeddings WHERE model = ?1")?;
@@ -237,7 +247,10 @@ pub fn recall(
     let mut scored = Vec::new();
     for row in rows {
         let (id, blob) = row?;
-        scored.push((id, cosine(query, &from_blob(&blob))));
+        let score = cosine(query, &from_blob(&blob));
+        if score >= floor {
+            scored.push((id, score));
+        }
     }
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(limit);
@@ -323,9 +336,35 @@ mod tests {
         upsert(&conn, "artifact:a", "m", &[1.0, 0.0, 0.0], 1).unwrap();
         upsert(&conn, "artifact:b", "m", &[0.0, 1.0, 0.0], 1).unwrap();
         upsert(&conn, "artifact:c", "m", &[0.9, 0.1, 0.0], 1).unwrap();
-        let hits = recall(&conn, &[1.0, 0.0, 0.0], "m", 2).unwrap();
+        let hits = recall(&conn, &[1.0, 0.0, 0.0], "m", 2, 0.0).unwrap();
         assert_eq!(hits[0].0, "artifact:a");
         assert_eq!(hits[1].0, "artifact:c"); // closer than b
+    }
+
+    /// ADR-0053. Without a floor, recall always answers: this repository's own
+    /// index returned `merge_import` for "canonical-push auto-merge armed
+    /// refuses", matched on the word "merge". The caller cannot tell a stranger
+    /// from a hit, so it learns to stop asking.
+    #[test]
+    fn recall_returns_nothing_when_nothing_clears_the_floor() {
+        let conn = db::open_in_memory().unwrap();
+        upsert(&conn, "artifact:unrelated", "m", &[0.0, 1.0], 1).unwrap();
+
+        let hits = recall(&conn, &[1.0, 0.0], "m", 5, 0.5).unwrap();
+
+        assert!(hits.is_empty(), "an orthogonal neighbour is not an answer");
+    }
+
+    #[test]
+    fn recall_keeps_only_what_clears_the_floor() {
+        let conn = db::open_in_memory().unwrap();
+        upsert(&conn, "artifact:near", "m", &[1.0, 0.05], 1).unwrap();
+        upsert(&conn, "artifact:far", "m", &[0.2, 1.0], 1).unwrap();
+
+        let hits = recall(&conn, &[1.0, 0.0], "m", 5, 0.9).unwrap();
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, "artifact:near");
     }
 
     #[test]
@@ -333,7 +372,7 @@ mod tests {
         let conn = db::open_in_memory().unwrap();
         upsert(&conn, "n", "m", &[1.0, 0.0], 1).unwrap();
         upsert(&conn, "n", "m", &[0.0, 1.0], 2).unwrap();
-        let hits = recall(&conn, &[0.0, 1.0], "m", 5).unwrap();
+        let hits = recall(&conn, &[0.0, 1.0], "m", 5, 0.0).unwrap();
         assert_eq!(hits.len(), 1);
         assert!((hits[0].1 - 1.0).abs() < 1e-6);
     }

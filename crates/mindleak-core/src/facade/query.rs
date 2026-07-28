@@ -12,9 +12,27 @@ impl MindLeak {
     /// `query`, via the optional local embedding index (ADR-0008). Complements
     /// FTS/graph search — seed the results into `multi_hop_query`. Errors
     /// cleanly when no embedding model is reachable.
+    ///
+    /// Returns nothing when nothing clears the similarity floor (ADR-0053).
+    /// Before the floor existed this always answered, and the answer was often a
+    /// stranger matched on one shared word — which the caller had no way to
+    /// distinguish from a real hit. An empty result is the honest one.
     pub fn recall(&self, query: &str, limit: usize) -> Result<Vec<ScoredNode>> {
         let query_vec = self.embedder.embed(query)?;
-        let hits = embed::recall(&self.store.conn, &query_vec, self.embedder.model(), limit)?;
+        let hits = embed::recall(
+            &self.store.conn,
+            &query_vec,
+            self.embedder.model(),
+            limit,
+            self.recall_floor as f32,
+        )?;
+        if hits.is_empty() {
+            tracing::debug!(
+                %query,
+                floor = self.recall_floor,
+                "recall found nothing above the similarity floor"
+            );
+        }
         let mut out = Vec::new();
         for (id, score) in hits {
             if let Some(node) = self.store.get_node(&id)? {
@@ -128,7 +146,22 @@ impl MindLeak {
                 }
             }
         }
+        // A conclusion that cannot be read back until someone remembers to run
+        // `index_nodes` is not recorded, it is queued (ADR-0053). Embed it now.
+        //
+        // This does not breach the zero-token write path: this verb is already
+        // the explicit, agent-supplied route, not deterministic `ingest_*`. When
+        // no embedding server is reachable the node is still written, and the
+        // fact that it is unembedded is reported rather than swallowed.
+        outcome.embedded = self.embed_node_now(&intent_id, decision_text, now).is_ok();
         Ok((intent_id, outcome))
+    }
+
+    /// Embed one just-written node so it is immediately recallable (ADR-0053).
+    fn embed_node_now(&self, id: &str, text: &str, now: i64) -> Result<()> {
+        let vector = self.embedder.embed(text)?;
+        embed::upsert(&self.store.conn, id, self.embedder.model(), &vector, now)?;
+        Ok(())
     }
 
     pub fn record_decision_for_agent(
