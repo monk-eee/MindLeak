@@ -133,24 +133,30 @@ queue exists before dropping `strict`, not after.**
 
 The measurement stands — 65% of CI in twenty-four hours spent re-running
 unchanged code, and throughput of one pull request per CI cycle regardless of
-how many are armed. Only the remedy is out of reach. Three options, none of
-which is a settings tick:
+how many are armed. Only the remedy is out of reach.
 
-1. **Move the repository to an organisation.** Unlocks the queue exactly as
-   described above. It is a decision about where the project lives, not a CI
-   tweak, and it belongs to a human.
-2. **Accept the churn.** Defensible while the fleet is small; the cost scales
-   with the number of simultaneously-armed pull requests, not with the size of
-   the repository.
-3. **Reduce contention instead of serialising it.** Fewer branches armed at
-   once, or work batched so that fewer pull requests are in flight
-   simultaneously. This is a process change and cannot be enforced, so it
-   degrades silently under load — the same objection this ADR raises against
-   "arm fewer pull requests at once" in the alternatives below.
+**Decided: accept the churn (monk-eee, 2026-07-28).**
+
+The cost is real and is being paid knowingly. It scales with the number of
+simultaneously-armed pull requests rather than with the size of the repository,
+so it is tolerable at the current fleet size and becomes the trigger to revisit
+when it is not.
+
+**Moving the repository to an organisation remains the exit** and unlocks the
+queue exactly as described above. It is a decision about where the project
+lives, not a CI tweak, so it is not taken here.
+
+A third option — reducing contention by arming fewer branches at once — was
+considered and rejected. It asks the fleet to be smaller to suit the merge
+policy, which inverts the goal (ADR-0038), and it cannot be enforced, so it
+degrades silently under exactly the load that makes it matter. That is the same
+objection this ADR already raises against "arm fewer pull requests at once" in
+the alternatives below; listing it as an available option contradicted the
+document's own reasoning.
 
 `merge_group` in `ci.yml` stays. It is inert without a queue, costs nothing, and
-means option 1 is a single settings change on the day it is taken rather than a
-prerequisite to rediscover.
+means the organisation route is a single settings change on the day it is taken
+rather than a prerequisite to rediscover.
 
 ## Consequences
 
