@@ -198,28 +198,37 @@ Be honest — an empty Known Gaps section is almost always a lie. The rough edge
 and footguns, with impact and status:
 
 - **One session's agent id changed under a running server, silently resetting
-  its claim's evidence window — OBSERVED, OPEN.** Across a single session
-  holding one client-minted token, `open_session` resolved first to
-  `session:v1:copilot:b4baf280…` and later, on the board, to
-  `session:v1:b4baf280…` — the same hash, with and without the label. Other
-  agents were rebuilding and deploying the MCP binaries throughout, so the most
-  likely cause is a server swap between two builds that disagree about whether
-  the id carries a label (ADR-0054 removed it).
-  Impact is not cosmetic: a re-claim after a lapse only preserves
-  `claim_started_at` for the *same* owner (ADR-0048), so a changed id reads as a
-  different agent, opens a **fresh** evidence window, and reports
-  `claim_lapses: 0` as if nothing happened. Measured on
-  `task:f6daad456855`: work committed at `1785223462` under a claim started at
-  `1785223449`; a later re-claim moved the window start to `1785234086`, and
-  `check_conformance` then refused the real evidence with *"evidence interval
-  falls outside the live claim"*. The work is real, attributed, and ingested,
-  and there is no honest way to bind it to the claim — the commit exists, the
-  proof does not.
+  its claim's evidence window and locking it out of its own task — OBSERVED,
+  OPEN, and it makes `complete_task` unreachable.** Across a single session
+  holding one client-minted token, `open_session` (both planes) returns
+  `session:v1:copilot:b4baf280…`, while `board` reports the task's owner as
+  `session:v1:b4baf280…` — the same hash, with and without the label
+  (ADR-0054 removed it).
+  The owner string **flipped between two consecutive `board` reads with no
+  intervening claim** (labelled at `1785234086`, unlabelled at `1785234449`),
+  which points at more than one `lodestar-mcp` build attached to the same
+  `spec.db` rather than at anything the task did. Other agents were rebuilding
+  and deploying the MCP binaries throughout.
+  Impact, measured on `task:f6daad456855`, is that the whole closing loop is
+  unreachable for such a session:
+  - `check_conformance` refuses with *"evidence agent does not own the task"*;
+  - `ask_question` returns `needs_input: false` — the owner guard rejects it, so
+    the task cannot even be **parked** with an explanation;
+  - the task stays `claimed` until the lease lapses, with no receipt and no
+    durable note, which is the one outcome the ledger exists to prevent.
+  A second, independent effect compounds it: a re-claim after a lapse only
+  preserves `claim_started_at` for the *same* owner (ADR-0048), so a changed id
+  reads as a different agent, opens a **fresh** window, and reports
+  `claim_lapses: 0` as if nothing happened. Work committed at `1785223462` under
+  a window started at `1785223449` fell outside a window later moved to
+  `1785234086`, and `check_conformance` refused the real evidence with
+  *"evidence interval falls outside the live claim"*.
   Two things worth deciding rather than patching: whether identity should be
   pinned per session against the *token* rather than whatever the current binary
   formats, and whether a window reset should be visible (it currently looks
   identical to a first claim). Do not "fix" this by re-committing work into a
-  fresh window — that manufactures a receipt for work the ledger did not see.
+  fresh window, or by completing on an empty in-window bundle — both assert
+  proof the ledger never saw.
 - **Unit Test MCP with `framework=custom` run from `editors/vscode` silently
   runs Cargo, not Vitest, and reports PASSED — CONFIRMED, config footgun.**
   Cargo walks up from `editors/vscode` and finds the workspace `Cargo.toml`, so
