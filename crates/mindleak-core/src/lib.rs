@@ -112,6 +112,21 @@ impl MindLeak {
         ingest::repo_relative(path, self.workspace_root.as_deref())
     }
 
+    /// Collapse node ids that spell their path absolutely under this checkout
+    /// onto the repo-relative id the rest of the fleet writes, merging the two
+    /// halves' history rather than choosing between them.
+    ///
+    /// A no-op when no workspace root was declared, and idempotent: a second
+    /// pass finds nothing left to collapse. Cheap enough to run at startup,
+    /// which is what keeps the graph healing itself if any producer ever writes
+    /// an absolute id again.
+    pub fn repair_workspace_paths(&self) -> Result<graph::RepairOutcome> {
+        match self.workspace_root.as_deref() {
+            Some(root) => self.store.repair_workspace_paths(root),
+            None => Ok(graph::RepairOutcome::default()),
+        }
+    }
+
     /// Override the immutable decay policy resolved by the hosting process.
     pub fn with_decay_policy(mut self, decay_policy: config::DecayPolicy) -> Self {
         self.store = self.store.with_decay_policy(decay_policy);
