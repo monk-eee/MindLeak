@@ -106,6 +106,13 @@ pub struct WriteOutcome {
     pub nodes_created: usize,
     pub edges_created: usize,
     pub node_ids: Vec<String>,
+    /// Whether a recorded conclusion was embedded, and so is recallable now
+    /// (ADR-0053). `false` means the node was written but no embedding server
+    /// was reachable — it will be picked up by the next `index_nodes` pass. The
+    /// distinction is reported rather than swallowed, because "recorded" and
+    /// "findable" are not the same claim.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub embedded: bool,
 }
 
 /// Counts removed when forgetting a deleted file: its artifact node, the symbols

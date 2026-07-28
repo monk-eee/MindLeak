@@ -20,6 +20,19 @@ pub const DEFAULT_WORKING_SET_SIZE: usize = 7;
 pub const MIN_WORKING_SET_SIZE: usize = 1;
 pub const MAX_WORKING_SET_SIZE: usize = 32;
 
+/// Cosine similarity below which `recall` returns nothing rather than its
+/// nearest neighbours (ADR-0053).
+///
+/// Measured against this repository's own index: asking
+/// "canonical-push auto-merge armed refuses" returned `merge_import`, a symbol
+/// matched on the word "merge". A confident wrong answer is worse than an empty
+/// one, because the caller cannot tell it is wrong and stops asking. 0.5 is the
+/// midpoint of cosine's useful range — deliberately conservative, and tunable,
+/// because the right value depends on the embedding model.
+pub const DEFAULT_RECALL_FLOOR: f64 = 0.5;
+pub const MIN_RECALL_FLOOR: f64 = 0.0;
+pub const MAX_RECALL_FLOOR: f64 = 0.999;
+
 const HALF_LIFE_ENV_VARS: [(RelationType, &str); 11] = [
     (RelationType::Modified, "MINDLEAK_HALFLIFE_MODIFIED_HOURS"),
     (RelationType::FailedOn, "MINDLEAK_HALFLIFE_FAILED_ON_HOURS"),
@@ -135,6 +148,37 @@ pub fn load_decay_policy(workspace: &Path) -> Result<DecayPolicy> {
 
 pub fn load_working_set_size() -> usize {
     resolve_working_set_size(|name| std::env::var(name).ok())
+}
+
+/// Resolve the recall similarity floor from the environment (ADR-0053).
+pub fn load_recall_floor() -> f64 {
+    resolve_recall_floor(|name| std::env::var(name).ok())
+}
+
+fn resolve_recall_floor<F>(environment: F) -> f64
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let Some(raw) = environment("MINDLEAK_RECALL_FLOOR") else {
+        return DEFAULT_RECALL_FLOOR;
+    };
+    match raw.trim().parse::<f64>() {
+        Ok(value) if value.is_finite() => {
+            let clamped = value.clamp(MIN_RECALL_FLOOR, MAX_RECALL_FLOOR);
+            if (clamped - value).abs() > f64::EPSILON {
+                tracing::warn!(%value, %clamped, "clamping recall floor");
+            }
+            clamped
+        }
+        Ok(value) => {
+            tracing::warn!(%value, "ignoring non-finite recall floor");
+            DEFAULT_RECALL_FLOOR
+        }
+        Err(error) => {
+            tracing::warn!(value = raw, %error, "ignoring invalid recall floor");
+            DEFAULT_RECALL_FLOOR
+        }
+    }
 }
 
 fn resolve_working_set_size<F>(environment: F) -> usize

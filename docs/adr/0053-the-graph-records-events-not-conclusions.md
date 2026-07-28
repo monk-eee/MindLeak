@@ -1,6 +1,6 @@
 # ADR-0053: The graph records events, not conclusions
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-27
 - Deciders: MindLeak maintainers
 - Related: [ADR-0002](0002-sqlite-decay-over-vector-llm.md) (SQLite decay over

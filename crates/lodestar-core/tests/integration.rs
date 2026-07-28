@@ -189,9 +189,11 @@ fn goal_task_claim_complete_flow() {
         claim.claim_started_at.unwrap(),
     );
     let check = engine.check_conformance(&evidence, Some(&t.id)).unwrap();
-    let (completed, conformance) = engine
-        .complete_task(&t.id, "agent-a", &evidence, &check)
+    let completion = engine
+        .complete_task(&t.id, "agent-a", &evidence, &check, None)
         .unwrap();
+    let completed = completion.completed;
+    let conformance = completion.conformance;
     assert!(completed);
     assert_eq!(conformance.verdict, Verdict::Aligned);
     assert_eq!(
@@ -355,9 +357,11 @@ fn missing_evidence_stays_in_review() {
     };
 
     let check = engine.check_conformance(&empty, Some(&task.id)).unwrap();
-    let (completed, result) = engine
-        .complete_task(&task.id, "agent-a", &empty, &check)
+    let completion = engine
+        .complete_task(&task.id, "agent-a", &empty, &check, None)
         .unwrap();
+    let completed = completion.completed;
+    let result = completion.conformance;
     assert!(!completed);
     assert_eq!(result.verdict, Verdict::NeedsHuman);
     assert_eq!(
@@ -395,9 +399,11 @@ fn wrong_goal_drift_stays_in_review() {
     );
 
     let check = engine.check_conformance(&evidence, Some(&task.id)).unwrap();
-    let (completed, result) = engine
-        .complete_task(&task.id, "agent-a", &evidence, &check)
+    let completion = engine
+        .complete_task(&task.id, "agent-a", &evidence, &check, None)
         .unwrap();
+    let completed = completion.completed;
+    let result = completion.conformance;
     assert!(!completed);
     assert_eq!(result.verdict, Verdict::Drift);
     assert_eq!(
@@ -435,9 +441,11 @@ fn forbidden_change_blocks_completion() {
     );
 
     let check = engine.check_conformance(&evidence, Some(&task.id)).unwrap();
-    let (completed, result) = engine
-        .complete_task(&task.id, "agent-a", &evidence, &check)
+    let completion = engine
+        .complete_task(&task.id, "agent-a", &evidence, &check, None)
         .unwrap();
+    let completed = completion.completed;
+    let result = completion.conformance;
     assert!(!completed);
     assert_eq!(result.verdict, Verdict::Violation);
     assert_eq!(
