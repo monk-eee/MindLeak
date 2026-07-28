@@ -796,6 +796,84 @@ mod tests {
         }
     }
 
+    /// A control registered under the wrong id used to be permanent: its
+    /// version can never move backwards, so re-registering is refused, and
+    /// `retire_control` lived on the facade without ever reaching the tool
+    /// surface. Dead and duplicate mechanisms accumulated against live clauses
+    /// and went on reporting.
+    #[test]
+    fn a_control_can_be_stood_down_through_the_tool_surface() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let clause = engine
+            .define_goal(
+                lodestar_core::GoalKind::Constraint,
+                "Modules stay small",
+                "Split a module that outgrows its responsibility.",
+                None,
+            )
+            .unwrap();
+
+        let registered = call(
+            &engine,
+            &json!({
+                "name": "register_control",
+                "arguments": {
+                    "control_id": "control:misnamed",
+                    "clause_id": clause.id,
+                    "kind": "check",
+                    "power": "mechanical"
+                }
+            }),
+        );
+        assert!(registered.is_ok(), "the control registers: {registered:?}");
+
+        let retired = call(
+            &engine,
+            &json!({
+                "name": "retire_control",
+                "arguments": { "control_id": "control:misnamed" }
+            }),
+        )
+        .expect("the control is stood down");
+        let body: Value =
+            serde_json::from_str(retired["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["status"], "retired");
+
+        // Retirement is not deletion: the control still records what it served,
+        // which is why observations naming it resolve as unknown rather than
+        // vanishing.
+        let listed = call(
+            &engine,
+            &json!({
+                "name": "clause_controls",
+                "arguments": { "clause_id": clause.id }
+            }),
+        )
+        .unwrap();
+        let listed: Value =
+            serde_json::from_str(listed["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(listed["controls"][0]["status"], "retired");
+    }
+
+    /// Reporting success for a control that was never there would let a typo
+    /// read as a completed stand-down.
+    #[test]
+    fn retiring_a_control_that_was_never_registered_is_refused() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let error = call(
+            &engine,
+            &json!({
+                "name": "retire_control",
+                "arguments": { "control_id": "control:never-existed" }
+            }),
+        )
+        .expect_err("an unknown control cannot be stood down");
+        assert!(
+            error.contains("control:never-existed"),
+            "names the control it could not find: {error}"
+        );
+    }
+
     #[test]
     fn storage_status_returns_the_injected_startup_snapshot() {
         let engine = Lodestar::open_in_memory().unwrap();

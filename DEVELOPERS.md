@@ -283,15 +283,18 @@ and footguns, with impact and status:
   naming what they served.
 
 - **A control can be created through the MCP surface but never stood down —
-  OPEN.** `register_control` and `register_ratchet` are exposed;
-  `retire_control` exists on the core facade and is not. An operator who
-  registers a control under the wrong id, or whose control has been superseded
-  by a better one, has no way to retire it without linking against the library.
-  — Impact: dead and duplicate controls accumulate against live clauses and
-  keep reporting. Concretely, `control:module-length` — orphaned while finding
-  the amendment bug above — is now recovered by the slug-matched re-point and
-  will sit alongside `control:rust-module-length` measuring the same metric, and
-  there is no supported way to stand the older one down. — Status: not fixed.
+  FIXED.** `register_control` and `register_ratchet` were exposed;
+  `retire_control` existed on the core facade and was not. An operator who
+  registered a control under the wrong id, or whose control had been superseded
+  by a better one, had no way to retire it without linking against the library,
+  and re-registering the id is refused because a control version never moves
+  backwards — so the id was spent and the dead control kept reporting against a
+  live clause. — Status: fixed. `retire_control` is on the tool surface.
+  Retirement is deliberately not deletion: the control keeps recording what it
+  enforced, so observations naming it resolve as `unknown` rather than
+  disappearing. Still unattributed — the store records that a control was
+  retired, not who retired it, which is worth revisiting given that standing a
+  mechanism down weakens enforcement.
 
 - **An agent can work all day, certify nothing, and only discover it at
   `complete_task` — MEASURED, OPEN.** Evidence-backed conformance (ADR-0009)

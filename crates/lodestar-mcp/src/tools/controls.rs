@@ -79,6 +79,15 @@ pub(super) fn definitions() -> Vec<Value> {
                 "required": ["control_id", "clause_id", "kind", "power"]
             }
         }),
+        json!({
+            "name": "retire_control",
+            "description": "Stand a control down when it is superseded, misregistered, or no longer the mechanism behind its clause. Retirement is not deletion: the control stays, so observations naming it resolve as unknown rather than silently disappearing, and it keeps recording what it once enforced. Without this a control registered under the wrong id cannot be withdrawn at all - its id is spent, because a control version never moves backwards - so dead and duplicate mechanisms accumulate against live clauses and go on reporting.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "control_id": { "type": "string" } },
+                "required": ["control_id"]
+            }
+        }),
     ]
 }
 
@@ -93,6 +102,7 @@ pub(super) fn dispatch(
         "observe_ratchet" => Some(observe_ratchet(engine, args)),
         "clause_controls" => Some(clause_controls(engine, args)),
         "register_control" => Some(register_control(engine, args)),
+        "retire_control" => Some(retire_control(engine, args)),
         _ => None,
     }
 }
@@ -127,6 +137,19 @@ fn register_control(engine: &Lodestar, args: &Value) -> Result<Value, String> {
         "ceiling": control.power.ceiling().as_str(),
         "version": control.version,
     }))
+}
+
+fn retire_control(engine: &Lodestar, args: &Value) -> Result<Value, String> {
+    let control_id = req_str(args, "control_id")?;
+    let retired = engine
+        .retire_control(control_id)
+        .map_err(|e| e.to_string())?;
+    if !retired {
+        return Err(format!(
+            "no control {control_id} to retire; a control that was never registered cannot be stood down"
+        ));
+    }
+    ok(&json!({ "control_id": control_id, "status": "retired" }))
 }
 
 fn register_ratchet(engine: &Lodestar, args: &Value) -> Result<Value, String> {
