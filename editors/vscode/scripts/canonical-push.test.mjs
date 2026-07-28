@@ -183,6 +183,62 @@ describe("canonical-push", () => {
     expect(canonical.status, canonical.stderr).toBe(0);
   }, 30_000);
 
+  /**
+   * Publishing `vX.Y.Z` is the documented release step, and the branch guard
+   * used to reject it three ways at once: `symbolic-ref` fails on a detached
+   * HEAD, a tag has no claim, and the publisher flag is only set when this
+   * script pushes a branch. Cutting a release therefore required an
+   * undocumented environment variable. These assert the tag path on its own
+   * terms rather than re-testing the branch path.
+   *
+   * `PRE_COMMIT_REMOTE_BRANCH` is how the destination arrives: pre-commit
+   * consumes the pre-push stdin before the hook runs, so the refs cannot be
+   * read from there.
+   */
+  it("lets a release tag through the pre-push hook without the publisher flag", () => {
+    const { repo } = sandbox();
+    git(repo, ["tag", "-a", "v9.9.9", "-m", "release"]);
+
+    const result = runPublisher(repo, ["--verify-pre-push"], {
+      ...process.env,
+      PRE_COMMIT_REMOTE_BRANCH: "refs/tags/v9.9.9",
+      MINDLEAK_CANONICAL_PUBLISH: undefined,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/v9\.9\.9 -> [0-9a-f]{7}, contained in origin\/main/);
+  }, 30_000);
+
+  it("refuses a release tag naming a commit that never landed on main", () => {
+    const { repo } = sandbox();
+    git(repo, ["checkout", "-b", "fleet/unmerged"]);
+    commitFile(repo, "unmerged.txt", "not on main\n", "unmerged work");
+    git(repo, ["tag", "-a", "v9.9.9", "-m", "premature release"]);
+
+    const result = runPublisher(repo, ["--verify-pre-push"], {
+      ...process.env,
+      PRE_COMMIT_REMOTE_BRANCH: "refs/tags/v9.9.9",
+    });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/not on origin\/main/);
+    expect(result.stderr).toMatch(/must name a commit that has landed/);
+  }, 30_000);
+
+  it("still guards branch pushes when a tag ref is not what is being pushed", () => {
+    const { repo } = sandbox();
+    git(repo, ["checkout", "-b", "fleet/still-guarded"]);
+
+    const result = runPublisher(repo, ["--verify-pre-push"], {
+      ...process.env,
+      PRE_COMMIT_REMOTE_BRANCH: "refs/heads/fleet/still-guarded",
+      MINDLEAK_CANONICAL_PUBLISH: undefined,
+    });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/pushes must run through/);
+  }, 30_000);
+
   it("refuses publication when the remote branch is not an ancestor", () => {
     const { root, remote, repo } = sandbox();
     const peer = join(root, "peer");
