@@ -5,8 +5,10 @@
 
 setup: ## Install pre-commit hooks and extension deps
 	pip install pre-commit
-	pre-commit install
-	pre-commit install --hook-type pre-push
+	# Installs pre-commit, pre-push and post-commit together — the config
+	# declares default_install_hook_types, so no hook depends on someone
+	# remembering an extra flag. post-commit is the one that records evidence.
+	pre-commit install --install-hooks
 	cargo install cargo-llvm-cov --locked
 	npm --prefix editors/vscode install
 
