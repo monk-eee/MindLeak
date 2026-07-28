@@ -77,8 +77,12 @@ materialization plus validation, `amendments` and `waivers`, learned
 `knowledge`, and `lifecycle` operations), `llm` (optional local model), and
 `lib` (the `Lodestar` facade wiring). Facade behavior is grouped under
 `facade/`: `constitution`, `executive`, `design`, `design_materialization`,
-`conformance`, `controls`, `amendments`, `waivers`, `advice`, `fleet`,
-`evidence`, and `knowledge`.
+`conformance/`, `controls`, `amendments`, `waivers`, `advice`, `fleet`,
+`evidence`, and `knowledge`. `conformance/` is itself split by responsibility:
+`mod` (the `complete_task` / `check_conformance` surface), `clauses` (which
+constitutional clauses govern a check), `verdict` (bounded evidence to a
+verdict), `token` (what a check was issued against), and `evidence` (shape and
+window validation of a submitted bundle).
 Each design materialization writes an immutable plan revision; task/goal link
 tables are the current projection and can be repaired without deleting history.
 
