@@ -1,6 +1,6 @@
 # ADR-0061: Delivery is queued, not raced
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-28
 - Related: [ADR-0038](0038-isolated-worktrees-shared-repository-state.md)
   (isolated worktrees, shared repository state),
@@ -74,6 +74,35 @@ testing each branch against a `main` that has already moved on.
 Dropping `strict` without the queue would be a regression, not a simplification:
 it is what stops two individually-green branches merging into a broken `main`.
 The two halves are one change.
+
+### The order is load-bearing
+
+A merge queue runs the required checks against a temporary `merge_group` ref
+holding the prospective merged result. **A required check that does not trigger
+on `merge_group` never reports**, so the queue waits for it forever and nothing
+merges at all — a strictly worse outcome than the problem being solved, and one
+that presents as the queue being "slow" rather than as a misconfiguration.
+
+All five required checks come from `ci.yml`, which triggered only on `push` to
+`main` and on `pull_request`. So:
+
+1. `merge_group:` is added to `ci.yml` **first**, and merged. It is inert until
+   a queue exists, so it is safe to land on its own.
+2. Only then is the queue enabled and `strict` dropped.
+
+This ADR ships step 1. Step 2 is a settings change on `main`.
+
+### It cannot be scripted
+
+Classic branch protection does not expose the merge queue through either REST or
+GraphQL: `UpdateBranchProtectionRuleInput` has no `requiresMergeQueue`, and
+`BranchProtectionRule` has no such field to read back. The setting is reachable
+only through the repository settings UI, or by migrating `main` from classic
+protection to a ruleset with a `merge_queue` rule.
+
+That is worth recording rather than discovering twice. It also means the change
+cannot be captured in this repository the way the rest of its policy is, which
+is the strongest argument for the ADR: the reasoning has nowhere else to live.
 
 ## Consequences
 
