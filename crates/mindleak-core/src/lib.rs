@@ -51,6 +51,7 @@ pub struct MindLeak {
     store: GraphStore,
     consolidation_min_interval_secs: u64,
     embedder: Box<dyn embed::TextEmbedder>,
+    recall_floor: f64,
 }
 
 // The async maintenance worker (`mindleak-mcp`) moves a `MindLeak` into
@@ -69,6 +70,7 @@ impl MindLeak {
             store: GraphStore::new(db::open(path)?),
             consolidation_min_interval_secs: DEFAULT_CONSOLIDATION_MIN_INTERVAL_SECS,
             embedder: Box::new(embed::Embedder::default()),
+            recall_floor: config::DEFAULT_RECALL_FLOOR,
         })
     }
 
@@ -78,6 +80,7 @@ impl MindLeak {
             store: GraphStore::new(db::open_in_memory()?),
             consolidation_min_interval_secs: DEFAULT_CONSOLIDATION_MIN_INTERVAL_SECS,
             embedder: Box::new(embed::Embedder::default()),
+            recall_floor: config::DEFAULT_RECALL_FLOOR,
         })
     }
 
@@ -89,6 +92,12 @@ impl MindLeak {
 
     pub fn with_working_set_size(mut self, size: usize) -> Self {
         self.store = self.store.with_working_set_size(size);
+        self
+    }
+
+    /// Override the cosine floor below which `recall` returns nothing (ADR-0053).
+    pub fn with_recall_floor(mut self, floor: f64) -> Self {
+        self.recall_floor = floor.clamp(config::MIN_RECALL_FLOOR, config::MAX_RECALL_FLOOR);
         self
     }
 

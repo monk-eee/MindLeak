@@ -17,6 +17,22 @@ const MAX_EVIDENCE_EVENTS: usize = 200;
 const MAX_EVIDENCE_PROVENANCE: usize = 1_000;
 const MAX_EVIDENCE_SUMMARY_BYTES: usize = 4_096;
 
+/// What finishing a task produced: the verdict, and whether the agent said what
+/// it learned (ADR-0053).
+///
+/// A struct rather than a wider tuple because the third value is not a detail of
+/// the first two — it answers a different question, and callers that only want
+/// the verdict should not have to destructure past it.
+#[derive(Debug, Clone)]
+pub struct Completion {
+    /// True only for an `aligned` verdict, which is the one that reaches `done`.
+    pub completed: bool,
+    pub conformance: ConformanceResult,
+    /// Knowledge id when the agent recorded a conclusion; `None` is the
+    /// measurable omission, not an error.
+    pub learned: Option<String>,
+}
+
 /// The active clauses governing an intended or changed scope, bucketed by how
 /// each relates to a covering task's own goal. Produced by
 /// [`Lodestar::resolve_governing_clauses`] and consumed by both conformance and
@@ -75,13 +91,21 @@ impl GoverningClauses {
 impl Lodestar {
     /// Complete a task using one authoritative, claim-bounded conformance check
     /// (ADR-0009). The optional semantic judge is not invoked again here.
+    ///
+    /// `learned` is what the agent concluded, recorded as durable knowledge at
+    /// the moment it holds it (ADR-0053). It is deliberately not inferred: the
+    /// zero-token write path stands, and an execution log is not a lesson.
+    /// Completion is never blocked by omitting it — most tasks teach nothing,
+    /// and a gate would only produce a column of `n/a`. The omission is reported
+    /// instead, which is what turns it from invisible into measurable.
     pub fn complete_task(
         &self,
         id: &str,
         agent: &str,
         evidence: &ConformanceEvidence,
         check: &ConformanceCheck,
-    ) -> Result<(bool, ConformanceResult)> {
+        learned: Option<&str>,
+    ) -> Result<Completion> {
         let now = now_unix();
         let agent = self.resolve_agent(agent)?;
         let task = self
@@ -137,7 +161,17 @@ impl Lodestar {
                 "task {id} claim changed before conformance could be recorded"
             )));
         }
-        Ok((conformance.verdict == Verdict::Aligned, conformance))
+        // Recorded after the transition succeeds: a lesson attached to a
+        // completion that did not happen would be worse than none.
+        let learned = match learned.map(str::trim).filter(|text| !text.is_empty()) {
+            Some(text) => Some(self.record_knowledge(text, &format!("task:{id}"), None)?.id),
+            None => None,
+        };
+        Ok(Completion {
+            completed: conformance.verdict == Verdict::Aligned,
+            conformance,
+            learned,
+        })
     }
 
     /// Check evidence without changing task state; uses the completion evaluator.
@@ -807,9 +841,11 @@ mod tests {
         let checked = e.check_conformance(&evidence, Some(&task.id)).unwrap();
         assert_eq!(checked.verdict, Verdict::Aligned);
 
-        let (completed, completion) = e
-            .complete_task(&task.id, "agent-a", &evidence, &checked)
+        let completion = e
+            .complete_task(&task.id, "agent-a", &evidence, &checked, None)
             .unwrap();
+        let completed = completion.completed;
+        let completion = completion.conformance;
         assert!(completed);
         assert_eq!(completion.verdict, checked.verdict);
         assert_eq!(completion.findings, checked.findings);
@@ -821,6 +857,89 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].id, checked.id);
         assert_eq!(judge_calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// ADR-0053. The graph recorded 196 executions and not one conclusion,
+    /// because nothing ever asked for one. Finishing work is the moment the
+    /// agent holds the lesson, so that is where it is collected — supplied,
+    /// never inferred from an execution log.
+    #[test]
+    fn what_a_task_taught_is_recorded_as_durable_knowledge() {
+        let e = engine();
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship search", "add search", None)
+            .unwrap();
+        let node_id = "artifact:src/search.rs";
+        e.link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+            .unwrap();
+        let task = e
+            .create_task(&goal.id, "fix delivery", "learns something")
+            .unwrap();
+        e.claim_task(&task.id, "agent-a", 300).unwrap();
+        let claimed = e.store.get_task(&task.id).unwrap().unwrap();
+        let mut evidence = test_evidence(Some(task.id.clone()), "agent-a", node_id);
+        evidence.started_at = claimed.claim_started_at.unwrap();
+        evidence.ended_at = now_unix();
+        let checked = e.check_conformance(&evidence, Some(&task.id)).unwrap();
+
+        let completion = e
+            .complete_task(
+                &task.id,
+                "agent-a",
+                &evidence,
+                &checked,
+                Some("GitHub does not apply .gitattributes merge drivers"),
+            )
+            .unwrap();
+
+        let id = completion
+            .learned
+            .expect("a supplied conclusion is recorded");
+        let known = e.active_knowledge().unwrap();
+        let recorded = known.iter().find(|k| k.id == id).expect("readable back");
+        assert_eq!(
+            recorded.statement,
+            "GitHub does not apply .gitattributes merge drivers"
+        );
+        assert_eq!(recorded.evidence, format!("task:{}", task.id));
+    }
+
+    /// Completion is never blocked by an omission: most tasks teach nothing, and
+    /// a gate would only produce a column of "n/a". The gap is reported instead,
+    /// which is what makes it measurable rather than invisible.
+    #[test]
+    fn a_task_that_taught_nothing_still_completes() {
+        let e = engine();
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship search", "add search", None)
+            .unwrap();
+        let node_id = "artifact:src/search.rs";
+        e.link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+            .unwrap();
+
+        for (index, learned) in [None, Some("   ")].into_iter().enumerate() {
+            // Task ids derive from the title, so each iteration needs its own.
+            let task = e
+                .create_task(&goal.id, &format!("another {index}"), "teaches nothing")
+                .unwrap();
+            e.claim_task(&task.id, "agent-a", 300).unwrap();
+            let claimed = e.store.get_task(&task.id).unwrap().unwrap();
+            let mut evidence = test_evidence(Some(task.id.clone()), "agent-a", node_id);
+            evidence.started_at = claimed.claim_started_at.unwrap();
+            evidence.ended_at = now_unix();
+            let checked = e.check_conformance(&evidence, Some(&task.id)).unwrap();
+
+            let completion = e
+                .complete_task(&task.id, "agent-a", &evidence, &checked, learned)
+                .unwrap();
+
+            assert!(
+                completion.completed,
+                "an omission must not block completion"
+            );
+            assert!(completion.learned.is_none(), "blank is not a conclusion");
+        }
+        assert!(e.active_knowledge().unwrap().is_empty());
     }
 
     #[test]
@@ -843,7 +962,7 @@ mod tests {
         let mut changed_evidence = evidence.clone();
         changed_evidence.summary.push_str(" after preflight");
         assert!(e
-            .complete_task(&task.id, "agent-a", &changed_evidence, &checked)
+            .complete_task(&task.id, "agent-a", &changed_evidence, &checked, None)
             .unwrap_err()
             .to_string()
             .contains("does not match"));
@@ -854,7 +973,7 @@ mod tests {
         e.link_goal_to_code(&other_goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
         assert!(e
-            .complete_task(&task.id, "agent-a", &evidence, &checked)
+            .complete_task(&task.id, "agent-a", &evidence, &checked, None)
             .unwrap_err()
             .to_string()
             .contains("is stale"));
@@ -890,9 +1009,11 @@ mod tests {
         let checked = e.check_conformance(&evidence, Some(&task.id)).unwrap();
         assert_eq!(checked.verdict, Verdict::NeedsHuman);
 
-        let (completed, result) = e
-            .complete_task(&task.id, "agent-a", &evidence, &checked)
+        let completion = e
+            .complete_task(&task.id, "agent-a", &evidence, &checked, None)
             .unwrap();
+        let completed = completion.completed;
+        let result = completion.conformance;
         assert!(!completed);
         assert_eq!(result.verdict, Verdict::NeedsHuman);
         assert!(e.reopen_task(&task.id).unwrap());
