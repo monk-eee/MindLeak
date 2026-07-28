@@ -140,6 +140,18 @@ impl Lodestar {
         self.store.renew_lease(id, agent, lease_secs, now_unix())
     }
 
+    /// Renew a lease because the owner is demonstrably still working (ADR-0052).
+    ///
+    /// Called as a side effect of any authenticated call that names a task, so
+    /// the heartbeat is free and an agent doing its job cannot lose its claim.
+    /// Silent by design: it reports whether it renewed, and every caller ignores
+    /// that, because the call it rides on has its own job and must not fail
+    /// because a heartbeat did not apply.
+    pub fn touch_lease(&self, id: &str, agent: &str, lease_secs: i64) -> Result<bool> {
+        let agent = self.resolve_agent(agent)?;
+        self.store.touch_lease(id, agent, lease_secs, now_unix())
+    }
+
     /// Propose the questions this task's owner could put to peers whose live
     /// claims collide with it (ADR-0055).
     ///
