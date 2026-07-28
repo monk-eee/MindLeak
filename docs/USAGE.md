@@ -276,7 +276,7 @@ Lodestar exposes 85 tools. Almost none are needed on day one:
 - **When auditing:** `conformance_history`, `export_evidence`,
   `export_conformance_manifest`, `claim_transfer_history`.
 
-The [`README.md`](../README.md) tool tables describe every verb individually;
+The [`TOOLS.md`](TOOLS.md) tool tables describe every verb individually;
 this page is the order to call them in.
 
 ### Pre-flight overlap awareness
