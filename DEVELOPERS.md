@@ -70,6 +70,7 @@ crate, and `target/debug/mindleak-mcp` starts and prints
 | Compile extension | `make ext-compile` | `npm --prefix editors/vscode run compile` |
 | ADR safety | `make adr-guard` | `node scripts/adr-guard.mjs` — fails if any ADR is uncommitted or on no remote ref |
 | Merge audit | `make merge-audit` | `node scripts/merge-audit.mjs` — fails if a merged branch has commits that never reached `main` |
+| Delivery queue | `make queue` | `node scripts/delivery-queue.mjs` — show the queue and update the branch whose turn it is (ADR-0062). `make queue-watch` runs it as an agent |
 | Design audit | `make design-audit` | `node scripts/design-audit.mjs` — reports drift between the ADR files and the design ledger. Local only: it reads the ledger through a release `lodestar-mcp`, which CI has no database for |
 | Changelog | `make changelog` | `node scripts/changelog.mjs` — show what the next release contains. A change adds `changelog.d/<section>-<slug>.md`; **do not edit `CHANGELOG.md` in a pull request** (ADR-0056) |
 | Everything CI runs | `make ci` | see [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
@@ -117,6 +118,38 @@ npm --prefix editors/vscode test
 npm --prefix editors/vscode run compile
 make coverage
 ```
+
+## The delivery queue
+
+`main` requires branches to be up to date before merging. With several armed
+pull requests that becomes a traffic jam: every merge makes all the others
+stale, and each one that updates itself burns a full check run against a `main`
+that the next merge invalidates again.
+
+The queue takes those turns in order (ADR-0062):
+
+```bash
+make queue          # show the queue, update whichever branch's turn it is
+make queue-watch    # run it as an agent until you stop it
+node scripts/delivery-queue.mjs --dry-run   # decide, change nothing
+```
+
+It reads the queue from GitHub — **a pull request with auto-merge armed is a
+queued one** (ADR-0045), ordered by when it was armed. Exactly one branch is
+updated at a time; that is the entire mechanism.
+
+**It never merges.** Merging stays with GitHub's auto-merge and the same five
+required checks, so the queue cannot become a second way into `main` that branch
+protection does not govern. Nothing depends on it running: an unattended queue
+just means branches go stale the way they did before.
+
+Branches it will not touch, and reports instead:
+
+- **a real conflict** — reconcile it in its own worktree (ADR-0038); it must not
+  hold up everything behind it
+- **failing checks** — updating would only burn CI to fail again
+- **checks still running** — waiting is the point; a second update now would
+  invalidate the first before it lands
 
 ## Publishing a binary release
 
@@ -222,6 +255,46 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
+
+- **An agent can work all day, certify nothing, and only discover it at
+  `complete_task` — MEASURED, OPEN.** Evidence-backed conformance (ADR-0009)
+  reads what the *Memory Plane* holds for the calling agent. An agent that never
+  calls MindLeak's ingestion tools accumulates nothing, so `evidence_for`
+  returns an empty bundle, `check_conformance` answers `needs_human` with
+  `evidence contains no provenance-bearing mutation`, and `complete_task`
+  refuses. Measured on this repository: one session held 15 claims and landed
+  roughly a dozen merged pull requests in a day, and `evidence_for` over the
+  same 24 hours returned `executions=0; successful=0; commits=0; changed=0;
+  failed=0` — while other agents in the same graph held 358, 38, 23, 16 and 7
+  observations. The graph was healthy (4901 nodes, 9445 active edges); the work
+  simply left no trace attributable to the agent that did it. — Impact: the
+  conformance model silently degrades to "a human must look" for exactly the
+  agents it exists to hold to account, and the degradation is invisible until
+  the work is finished, at which point the task needs a `resolve_task` from a
+  human who is not the author. The guard is behaving correctly on absent
+  evidence; the gap is that nothing says so at claim time, when it could still
+  be acted on. `stalled_work` reports the resulting lapsed claims accurately, so
+  the symptom is visible while the cause is not. — Not fixed this run. The cheap
+  repair is for `claim_task` to report the claiming agent's current observation
+  count, so an agent with none is told before it starts rather than after it
+  finishes; naming the ingestion tools in the `complete_task` refusal would help
+  the reader who is already stuck. Whether ingestion should instead be automatic
+  for shell-driven agents is a design question, not a bug fix — the VS Code
+  sensors attribute to the editor's own session, which is a different identity
+  from the one holding the claim.
+  Reproduced from a second angle, which narrows where the repair belongs:
+  `canonical-push` already refuses to publish without a live claim (ADR-0048),
+  so the one path in this repository that *does* enforce the ledger runs on
+  every publication — and it still writes nothing to the Memory Plane. A task
+  claimed, validated (613 tests and clippy clean), and published through that
+  gate answered `needs_human` minutes later. So this is not only agents that
+  forget to ingest; the instrumented path does not close the loop either. That
+  makes `canonical-push` the cheapest place to ingest the commit it just
+  pushed, which would make evidence a by-product of publishing rather than a
+  separate discipline nobody remembers. Deliberately *not* worked around by
+  hand-ingesting after the verdict: ingesting in order to satisfy a gate that
+  has just reported no evidence produces a receipt that proves nothing, and a
+  green conformance chain that means less than the refusal it replaced.
 
 - **A maintenance test asserts against a two-second wall clock and will flake on
   a loaded machine — OPEN.** `enabled_worker_runs_after_idle_and_joins_cleanly`
