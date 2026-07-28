@@ -197,6 +197,22 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **A maintenance test asserts against a two-second wall clock and will flake on
+  a loaded machine — OPEN.** `enabled_worker_runs_after_idle_and_joins_cleanly`
+  in [`maintenance/runtime.rs`](crates/mindleak-mcp/src/maintenance/runtime.rs)
+  polls `telemetry_snapshot` until `total_events > 0`, bounded by
+  `Instant::now() + Duration::from_secs(2)`. The worker's idle is 10 ms, so two
+  seconds is generous in isolation and meaningless under contention: this
+  repository is routinely worked by a fleet of worktrees running concurrent
+  `cargo` builds that hold the package-cache lock, and a shared CI runner is no
+  calmer. — Impact: a spurious red on a pull request that changed nothing
+  related, which is the kind of failure that teaches people to re-run CI instead
+  of reading it, and that habit is what makes a real failure cheap to ignore. —
+  Not fixed this run: the honest repair is to wait on a signal from the worker
+  rather than on elapsed time, and that means giving `MaintenanceRuntime` a test
+  seam it does not currently have. Raising the timeout would only lengthen the
+  odds, not remove them.
+
 - **The recall floor cannot rank, and raising it makes recall worse — MEASURED,
   do not "fix" it.** The obvious response to `recall` returning a plausible
   stranger is to raise `MINDLEAK_RECALL_FLOOR`. Measured against this
