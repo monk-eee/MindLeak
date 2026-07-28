@@ -18,6 +18,7 @@ import {
   resolveServer,
   sameSession,
 } from "./claim-gate.mjs";
+import { recordPublication } from "./publication-record.mjs";
 
 const args = process.argv.slice(2);
 const verifyPrePush = args.includes("--verify-pre-push");
@@ -170,9 +171,12 @@ let reachable = false;
 let tasks = [];
 let overlaps = [];
 let declaredBranch = null;
+// Shared with the post-push record: the files this push makes visible to the
+// fleet are the same ones the overlap notice reasons about, and recomputing
+// them afterwards would let the two disagree.
+let changed = [];
 
 if (server && /^[0-9a-f]{32}$/.test(sessionId)) {
-  let changed = [];
   try {
     changed = git(["diff", "--name-only", `${remote}/main...HEAD`])
       .split("\n")
@@ -265,3 +269,16 @@ run(["push", remote, `HEAD:refs/heads/${branch}`], {
   env: { ...process.env, MINDLEAK_CANONICAL_PUBLISH: "1" },
 });
 console.log(`canonical-push: published HEAD -> ${remote}/${branch}`);
+
+// Recorded after the push, never before: this is evidence that a publication
+// happened, and writing it first would assert something that might not.
+const unrecorded = recordPublication({
+  repoRoot,
+  sessionId,
+  sha: git(["rev-parse", "HEAD"]),
+  message: git(["log", "-1", "--pretty=%B"]),
+  changedFiles: changed,
+});
+if (unrecorded) {
+  console.warn(`canonical-push: ${unrecorded}`);
+}
