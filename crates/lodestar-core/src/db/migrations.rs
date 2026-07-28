@@ -24,6 +24,12 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
         ("tasks", "parked_at", "INTEGER"),
         ("tasks", "claim_lapses", "INTEGER NOT NULL DEFAULT 0"),
         ("tasks", "unleased_seconds", "INTEGER NOT NULL DEFAULT 0"),
+        // Who overrode a non-affirming verdict, when, and which verdict
+        // (ADR-0009). NULL on every pre-existing row is the honest answer:
+        // those acceptances were not recorded and cannot be reconstructed.
+        ("tasks", "resolved_by", "TEXT"),
+        ("tasks", "resolved_at", "INTEGER"),
+        ("tasks", "resolved_conformance_id", "INTEGER"),
         ("goal_code", "mode", "TEXT NOT NULL DEFAULT 'governed'"),
         ("conformance", "evidence_schema_version", "INTEGER"),
         ("conformance", "evidence", "TEXT"),
