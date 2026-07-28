@@ -1,6 +1,6 @@
 # ADR-0061: Delivery is queued, not raced
 
-- Status: Accepted
+- Status: Accepted (remedy blocked)
 - Date: 2026-07-28
 - Related: [ADR-0038](0038-isolated-worktrees-shared-repository-state.md)
   (isolated worktrees, shared repository state),
@@ -103,6 +103,60 @@ protection to a ruleset with a `merge_queue` rule.
 That is worth recording rather than discovering twice. It also means the change
 cannot be captured in this repository the way the rest of its policy is, which
 is the strongest argument for the ADR: the reasoning has nowhere else to live.
+
+### The remedy is unavailable here, and finding out cost protection
+
+The absent API turned out not to be an API gap. **GitHub's merge queue requires
+an organization-owned repository.** This one is owned by a user account:
+
+```
+owner type : User
+visibility : public
+```
+
+So there is no "Require merge queue" checkbox on the branch protection page at
+all — absent, not disabled — and no field behind REST or GraphQL to set. Nothing
+was misconfigured and nothing was missed.
+
+Attempting it did real harm for about twenty minutes. `strict` was unticked and
+the queue could not be ticked, leaving exactly the half-state this ADR names as
+a regression: two individually-green branches able to merge into a broken
+`main`. It was restored by `PATCH .../required_status_checks {"strict": true}`,
+required checks unchanged.
+
+That is the part worth carrying forward. The ADR already said the two halves are
+one change; the failure mode when they separate is not theoretical, and the
+half that is *easy* to apply is the half that removes protection. **Verify the
+queue exists before dropping `strict`, not after.**
+
+### What remains available
+
+The measurement stands — 65% of CI in twenty-four hours spent re-running
+unchanged code, and throughput of one pull request per CI cycle regardless of
+how many are armed. Only the remedy is out of reach.
+
+**Decided: accept the churn (monk-eee, 2026-07-28).**
+
+The cost is real and is being paid knowingly. It scales with the number of
+simultaneously-armed pull requests rather than with the size of the repository,
+so it is tolerable at the current fleet size and becomes the trigger to revisit
+when it is not.
+
+**Moving the repository to an organisation remains the exit** and unlocks the
+queue exactly as described above. It is a decision about where the project
+lives, not a CI tweak, so it is not taken here.
+
+A third option — reducing contention by arming fewer branches at once — was
+considered and rejected. It asks the fleet to be smaller to suit the merge
+policy, which inverts the goal (ADR-0038), and it cannot be enforced, so it
+degrades silently under exactly the load that makes it matter. That is the same
+objection this ADR already raises against "arm fewer pull requests at once" in
+the alternatives below; listing it as an available option contradicted the
+document's own reasoning.
+
+`merge_group` in `ci.yml` stays. It is inert without a queue, costs nothing, and
+means the organisation route is a single settings change on the day it is taken
+rather than a prerequisite to rediscover.
 
 ## Consequences
 
