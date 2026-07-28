@@ -2,7 +2,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { evaluateGate, isDocumentationNode } from "./conformance-gate.mjs";
+import {
+  danglingBindings,
+  evaluateGate,
+  isDocumentationNode,
+} from "./conformance-gate.mjs";
 
 const artifact = {
   governed_nodes: [
@@ -61,4 +65,40 @@ test("ungoverned code change is not a violation", () => {
     "crates/mindleak-core/src/whatever.rs",
   ]);
   assert.equal(result.ok, true);
+});
+
+test("a governed binding naming no file is reported", () => {
+  // The refactor case: graph/query.rs was split into graph/query/, and the
+  // binding stayed on the file that no longer exists.
+  const split = {
+    governed_nodes: ["artifact:crates/mindleak-core/src/graph/query.rs"],
+  };
+  const onDisk = (path) => path !== "crates/mindleak-core/src/graph/query.rs";
+
+  assert.deepEqual(danglingBindings(split, onDisk), [
+    "crates/mindleak-core/src/graph/query.rs",
+  ]);
+});
+
+test("a binding whose file still exists is not dangling", () => {
+  assert.deepEqual(
+    danglingBindings(artifact, () => true),
+    [],
+  );
+});
+
+test("documentation bindings are exempt from the file check", () => {
+  // Docs never drive a verdict, so an absent one is not lost governance.
+  const docs = { governed_nodes: ["artifact:docs/GONE.md"] };
+  assert.deepEqual(
+    danglingBindings(docs, () => false),
+    [],
+  );
+});
+
+test("a manifest with no governed nodes dangles nothing", () => {
+  assert.deepEqual(
+    danglingBindings({}, () => false),
+    [],
+  );
 });
