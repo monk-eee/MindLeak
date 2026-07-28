@@ -78,6 +78,32 @@ crate, and `target/debug/mindleak-mcp` starts and prints
 > right-hand column — `cargo`, `npm`, and `git` are identical on Linux, macOS,
 > and Windows, so run those directly if `make` is unavailable.
 
+## When a generated file conflicts, regenerate it
+
+`docs/adr/README.md` is derived entirely from the ADR files. Every branch that
+adds an ADR appends a row at the same place, so merging `main` into a branch
+that added one conflicts every time. This is expected and it is not a merge to
+reason about:
+
+```bash
+git checkout --ours docs/adr/README.md
+make adr-index          # or: node scripts/adr-index.mjs
+git add docs/adr/README.md
+git commit --no-edit
+```
+
+**Do not hand-resolve it.** Keeping "both sides" of a generated table produces a
+duplicated or misordered index that the pre-commit check then rejects, so the
+hand-resolution is discarded work. `.gitattributes` explains at length why a
+`merge=union` driver is not the answer either — GitHub does not honour merge
+drivers, so the union resolution exists only in your checkout while every
+reviewer sees a phantom conflict. A generated file is regenerated, never merged.
+
+The same rule covers anything else under a generator: regenerate, then stage.
+`CHANGELOG.md` avoids the problem entirely by not being edited in a pull request
+at all — changes land as `changelog.d/` fragments and are assembled at release
+(ADR-0056).
+
 ## Local gate before a PR
 
 Do your laundry locally — CI is the safety net, not the first line of defence:

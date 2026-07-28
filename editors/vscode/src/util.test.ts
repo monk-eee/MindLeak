@@ -229,6 +229,41 @@ describe("boardRows", () => {
     expect(rows[1].status).toBe("done");
   });
 
+  /**
+   * An expired claim is claimable — the store's compare-and-swap admits
+   * `status = 'claimed' AND lease_expires_at < now`, and the row already says
+   * "Claim expired · Ready". Ranking it as `claimed` put abandoned work among
+   * work in progress: one session left fifteen such rows in a day, which buried
+   * the three tasks anyone was actually holding and made the board unreadable.
+   */
+  it("does not let lapsed claims bury the work someone is holding", () => {
+    const rows = boardRows(
+      [
+        { id: "lapsed1", goal_id: "g", title: "lapsed1", status: "claimed", lease_expires_at: 50 },
+        { id: "lapsed2", goal_id: "g", title: "lapsed2", status: "claimed", lease_expires_at: 60 },
+        { id: "live", goal_id: "g", title: "live", status: "claimed", lease_expires_at: 900 },
+      ],
+      false,
+      100
+    );
+
+    expect(rows[0].id).toBe("live");
+  });
+
+  it("ranks a lapsed claim as ready, below work nobody has started", () => {
+    const rows = boardRows(
+      [
+        { id: "lapsed", goal_id: "g", title: "lapsed", status: "claimed", lease_expires_at: 50 },
+        { id: "untouched", goal_id: "g", title: "untouched", status: "open" },
+      ],
+      false,
+      100
+    );
+
+    // Both are claimable; work nobody has started outranks work someone dropped.
+    expect(rows.map((row) => row.id)).toEqual(["untouched", "lapsed"]);
+  });
+
   it("hides terminal history by default and retains an explicit history view", () => {
     const tasks = [
       { id: "open", goal_id: "g", title: "open", status: "open" },
