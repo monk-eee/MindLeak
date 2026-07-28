@@ -38,6 +38,71 @@ const repoRoot = capture(["rev-parse", "--show-toplevel"]);
 const git = (gitArgs, options = {}) =>
   capture(gitArgs, { cwd: repoRoot, ...options });
 
+// A release tag is not a branch publication and must not be judged as one.
+// Publishing `vX.Y.Z` is the documented release step (DEVELOPERS.md), but the
+// branch guard below rejected it three ways at once: `symbolic-ref` fails when
+// tagging from a detached HEAD, a tag has no claim to check, and the publisher
+// flag is only set when this script pushes a branch. The documented command was
+// therefore impossible to run, and the only way to ship a release was an
+// undocumented environment variable — folklore, one retirement away from a
+// release nobody can cut.
+//
+// The refs being pushed cannot be read from stdin: pre-commit consumes it
+// before the hook runs (verified — the fd is unreadable). It exposes the
+// destination as PRE_COMMIT_REMOTE_BRANCH instead.
+const pushedRef = process.env.PRE_COMMIT_REMOTE_BRANCH ?? "";
+const TAG_PREFIX = "refs/tags/";
+
+/**
+ * A tag may only name a commit that has already landed on the protected branch.
+ * That is the whole invariant: tagging is how a release is chosen, and choosing
+ * an unmerged commit ships code that never passed review.
+ */
+const verifyTagPublication = (ref) => {
+  const tag = ref.slice(TAG_PREFIX.length);
+
+  let commit;
+  try {
+    commit = git(["rev-list", "-n", "1", ref]);
+  } catch {
+    return fail(`${tag} does not resolve to a commit`);
+  }
+
+  // Judge against the remote's current main, not a possibly stale local copy:
+  // a false rejection here blocks a release and sends the next person looking
+  // for a bypass, which is the failure this whole change exists to remove.
+  try {
+    run(["fetch", "--quiet", "origin", "main"], { cwd: repoRoot });
+  } catch {
+    return fail("cannot reach origin to confirm the tag is on main");
+  }
+
+  try {
+    execFileSync(
+      "git",
+      ["merge-base", "--is-ancestor", commit, "origin/main"],
+      {
+        cwd: repoRoot,
+        stdio: "ignore",
+      },
+    );
+  } catch {
+    return fail(
+      `${tag} names ${commit.slice(0, 7)}, which is not on origin/main; ` +
+        "a release tag must name a commit that has landed",
+    );
+  }
+
+  console.log(
+    `canonical-push: ${tag} -> ${commit.slice(0, 7)}, contained in origin/main`,
+  );
+};
+
+if (verifyPrePush && pushedRef.startsWith(TAG_PREFIX)) {
+  verifyTagPublication(pushedRef);
+  process.exit(0);
+}
+
 let branch;
 try {
   branch = git(["symbolic-ref", "--quiet", "--short", "HEAD"]);
