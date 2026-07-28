@@ -267,8 +267,15 @@ and footguns, with impact and status:
   The owner string **flipped between two consecutive `board` reads with no
   intervening claim** (labelled at `1785234086`, unlabelled at `1785234449`),
   which points at more than one `lodestar-mcp` build attached to the same
-  `spec.db` rather than at anything the task did. Other agents were rebuilding
-  and deploying the MCP binaries throughout.
+  `spec.db` rather than at anything the task did. **Not a stale deployment** —
+  that was the first diagnosis and it was wrong. Driving the same session token
+  through each binary on disk, both repository release builds *and* the
+  installed extension binary returned the collapsed id. Only the **live**
+  extension-hosted processes returned the labelled one: they had been started
+  from an earlier build and the file underneath them was replaced while they
+  kept running. Restarting the server was the whole remedy; rebuilding and
+  reinstalling would have changed nothing. The tell is a live process whose
+  start time predates the mtime of its own binary (ADR-0063).
   Impact, measured on `task:f6daad456855`, is that the whole closing loop is
   unreachable for such a session:
   - `check_conformance` refuses with *"evidence agent does not own the task"*;
