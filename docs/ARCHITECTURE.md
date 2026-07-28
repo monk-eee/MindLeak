@@ -72,10 +72,15 @@ moving — a pure function over the board), `discovery`, `schema.sql` +
 `indexes.sql`, `db` (+ a knowledge `effective_weight` scalar), `decay`
 (long-horizon revalidation), `store` (`LodestarStore`: the `goals` and goal↔code
 seam, `coordination` task/handoff/conformance ledger, transactional
-`policy_packs` proposal/disposition/provenance ledger, reviewed `design`
+`policy_packs` proposal/disposition/provenance ledger, reviewed `design/`
 materialization plus validation, `amendments` and `waivers`, learned
 `knowledge`, and `lifecycle` operations), `llm` (optional local model), and
-`lib` (the `Lodestar` facade wiring). Facade behavior is grouped under
+`lib` (the `Lodestar` facade wiring). `store/design/` is split by
+responsibility: `mod` (register and read), `decision` (the guarded accept/reject
+transition and repairing one after the fact), `retirement` (retire and
+supersede), `promotion` (promotion into work and its immutable materialization
+revisions), and `links` (the current projection of what an item is linked to).
+Facade behavior is grouped under
 `facade/`: `constitution`, `executive`, `design`, `design_materialization`,
 `conformance`, `controls`, `amendments`, `waivers`, `advice`, `fleet`,
 `evidence`, and `knowledge`.
