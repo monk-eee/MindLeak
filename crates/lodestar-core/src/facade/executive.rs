@@ -312,7 +312,7 @@ impl Lodestar {
                 ));
             }
         }
-        self.store.resolve_in_review(id, now_unix())
+        self.store.resolve_in_review(id, human, now_unix())
     }
 
     /// The agent whose most recent conformance check put a task in review, read

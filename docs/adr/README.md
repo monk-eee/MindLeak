@@ -68,7 +68,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0058](0058-work-that-shipped-must-leave-the-board.md) | Work that shipped must be able to leave the board | Accepted |
 | [0059](0059-the-tool-surface-is-a-vocabulary.md) | The tool surface is a vocabulary, not an inventory | Proposed |
 | [0060](0060-work-whose-product-is-not-code-must-still-conform.md) | Work whose product is not code must still be able to conform | Proposed |
-| [0061](0061-delivery-is-queued-not-raced.md) | Delivery is queued, not raced | Accepted |
+| [0061](0061-delivery-is-queued-not-raced.md) | Delivery is queued, not raced | Accepted (remedy blocked) |
 | [0062](0062-the-delivery-queue-is-ours-to-run.md) | The delivery queue is ours to run | Proposed |
 | [0063](0063-a-migration-may-tidy-the-past-never-the-present.md) | A migration may tidy the past, never the present | Accepted |
 

@@ -26,6 +26,21 @@ to [Semantic Versioning](https://semver.org/).
   reports *why* a park was refused instead of returning `needs_input: false` for
   every reason at once — the silent rejection that left an agent with no way to
   explain itself.
+- **Accepting an `in_review` task now records who accepted it.** `resolve_task`
+  validated the `human` identity and then threw it away — the store call was
+  `resolve_in_review(id, now)` — so the one act in the system that can overrule
+  an evidence-backed verdict was the only act leaving no trace. Measured over
+  this repository before the fix: **57 of 101 `done` tasks rested on a
+  `drift`/`needs_human`/zero-node receipt**, and who accepted any of them was
+  unrecoverable from the ledger. ARCHITECTURE.md calls the conformance chain
+  "the only trustworthy proof that the agents did the sanctioned work — every
+  other signal is narration an agent can fabricate"; the override that outranks
+  it was narration. Resolution now writes `resolved_by`, `resolved_at`, and
+  `resolved_conformance_id` (the verdict being overruled, pinned by id so a
+  later check cannot make it ambiguous), and appends a note naming what was
+  overruled to the task's append-only thread. Existing rows keep `NULL`: those
+  acceptances were not recorded and inventing a resolver for them would be the
+  same defect in a new coat.
 
 ## [0.1.3] - 2026-07-28
 
