@@ -1,7 +1,7 @@
 # MindLeak developer commands. On Windows, run the underlying commands directly
 # (see DEVELOPERS.md) if `make` is unavailable.
 
-.PHONY: setup worktree-setup adr-index changelog design-audit merge-audit queue queue-watch board-health build test script-test coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
+.PHONY: setup worktree-setup adr-index changelog design-audit merge-audit queue queue-watch board-health stranded-report build test script-test coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
 
 setup: ## Install pre-commit hooks and extension deps
 	pip install pre-commit
@@ -34,6 +34,9 @@ queue: ## Show the delivery queue and update the branch whose turn it is (ADR-00
 
 board-health: ## Separate work a human must decide from work nobody can (ADR-0058)
 	node scripts/board-health.mjs
+
+stranded-report: ## Name the likely shipping commit for each lapsed claim (ADR-0048)
+	node scripts/stranded-report.mjs
 
 queue-watch: ## Run the delivery queue as an agent until stopped (ADR-0062)
 	node scripts/delivery-queue.mjs --watch
