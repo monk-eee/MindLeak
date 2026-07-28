@@ -495,13 +495,39 @@ export function boardRows(
   includeTerminal = false,
   nowUnix = Math.floor(Date.now() / 1000)
 ): BoardRow[] {
-  const rank = (s: string): number => {
+  const statusRank = (s: string): number => {
     const i = BOARD_STATUS_ORDER.indexOf(s);
     return i === -1 ? BOARD_STATUS_ORDER.length : i;
   };
+
+  /**
+   * Rank a row by what it means, not by the column it is stored in.
+   *
+   * A claim whose lease has expired is claimable by anyone — the store's
+   * compare-and-swap admits `status = 'claimed' AND lease_expires_at < now`,
+   * and the row already describes itself as "Claim expired · Ready". Sorting it
+   * as `claimed` therefore puts abandoned work among work in progress. One
+   * session left fifteen such rows behind in a day, which buried the three
+   * tasks anybody was actually holding and made the board unreadable.
+   *
+   * Nothing is reaped or rewritten to achieve this: expiry is a function of
+   * `lease_expires_at` and the clock, so it is derived at render time, the same
+   * way effective edge weight is derived at query time.
+   */
+  const rank = (task: LodestarTask): [number, number] => {
+    const state = taskLeaseState(task, nowUnix);
+    const lapsed = task.status === "claimed" && state === "expired";
+    // Genuinely untouched work sorts above work someone started and dropped.
+    return [statusRank(lapsed ? "open" : task.status), lapsed ? 1 : 0];
+  };
+
   return [...tasks]
     .filter((task) => includeTerminal || !TERMINAL_TASK_STATUSES.has(task.status))
-    .sort((a, b) => rank(a.status) - rank(b.status))
+    .sort((a, b) => {
+      const [statusA, lapsedA] = rank(a);
+      const [statusB, lapsedB] = rank(b);
+      return statusA - statusB || lapsedA - lapsedB;
+    })
     .map((t) => ({
       id: t.id,
       label: t.title,
