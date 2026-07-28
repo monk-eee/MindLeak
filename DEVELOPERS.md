@@ -223,6 +223,19 @@ and footguns, with impact and status:
   for shell-driven agents is a design question, not a bug fix — the VS Code
   sensors attribute to the editor's own session, which is a different identity
   from the one holding the claim.
+  Reproduced from a second angle, which narrows where the repair belongs:
+  `canonical-push` already refuses to publish without a live claim (ADR-0048),
+  so the one path in this repository that *does* enforce the ledger runs on
+  every publication — and it still writes nothing to the Memory Plane. A task
+  claimed, validated (613 tests and clippy clean), and published through that
+  gate answered `needs_human` minutes later. So this is not only agents that
+  forget to ingest; the instrumented path does not close the loop either. That
+  makes `canonical-push` the cheapest place to ingest the commit it just
+  pushed, which would make evidence a by-product of publishing rather than a
+  separate discipline nobody remembers. Deliberately *not* worked around by
+  hand-ingesting after the verdict: ingesting in order to satisfy a gate that
+  has just reported no evidence produces a receipt that proves nothing, and a
+  green conformance chain that means less than the refusal it replaced.
 
 - **The recall floor cannot rank, and raising it makes recall worse — MEASURED,
   do not "fix" it.** The obvious response to `recall` returning a plausible
