@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Required for a merge queue (ADR-0061). The queue runs the required checks
+  # against a temporary `merge_group` ref holding the prospective merged result,
+  # and a required check that does not trigger on that event never reports — so
+  # the queue waits for it forever and nothing merges at all. This trigger must
+  # therefore land *before* the queue is switched on, not with it.
+  merge_group:
 
 permissions:
   contents: read
