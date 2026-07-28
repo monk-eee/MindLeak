@@ -80,6 +80,18 @@ repos:
         files: ^docs/adr/.*\.md$
         pass_filenames: false
 
+      - id: changelog-fragments
+        name: changelog fragments are usable
+        # A fragment that cannot be placed is silently lost at release, which is
+        # the one failure this convention must not have: the change describes
+        # itself, so losing the description loses the record (ADR-0056). An
+        # unrecognised section prefix or an entry that is not a bullet fails
+        # here, where it costs seconds.
+        entry: node scripts/changelog.mjs --check
+        language: system
+        files: ^changelog\.d/.*\.md$
+        pass_filenames: false
+
       - id: canonical-push
         name: canonical fleet publisher
         entry: node scripts/canonical-push.mjs --verify-pre-push

@@ -181,8 +181,10 @@ style nit.
 ### Doc discipline (NON-NEGOTIABLE)
 Doc drift is treated like a failing test. A shipped change updates the relevant
 surface in the same commit:
-- [`CHANGELOG.md`](CHANGELOG.md) — any user- or operator-visible change (Keep a
-  Changelog format, under `## [Unreleased]`).
+- [`changelog.d/`](changelog.d/) — any user- or operator-visible change adds
+  `changelog.d/<section>-<slug>.md`. **Do not edit `CHANGELOG.md` in a pull
+  request**: it is assembled at release, because a shared append-only file made
+  auto-merge go stale on every concurrent branch (ADR-0056).
 - [`docs/SPEC.md`](docs/SPEC.md) — if it changes the design contract.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — if it adds a module/capability.
 - [`README.md`](README.md) tool table — if it adds/removes an MCP tool.
