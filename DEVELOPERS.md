@@ -187,10 +187,10 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 ## Adding an MCP tool
 
 1. Add a method to the `MindLeak` facade in [`lib.rs`](crates/mindleak-core/src/lib.rs).
-2. Add a definition to `list()` and a branch to `call()` in
-   [`tools.rs`](crates/mindleak-mcp/src/tools.rs).
+2. Add a definition to `definitions()` and a branch to `call()` in the matching
+   module under [`tools/`](crates/mindleak-mcp/src/tools/).
 3. Add a test in [`tests/integration.rs`](crates/mindleak-core/tests/integration.rs).
-4. Add a row to the tool table in [`README.md`](README.md).
+4. Add a row to the tool table in [`docs/TOOLS.md`](docs/TOOLS.md).
 
 ## Known gaps
 
@@ -213,6 +213,28 @@ and footguns, with impact and status:
   precision needs improving, the lever is the ranking or the embedding model,
   not the threshold. Reproduce with a `recall` sweep and compare the score
   ranges before changing the default.
+- **`complete_task(learned:)` writes conclusions where `recall` cannot see them
+  — OPEN, and it is half of ADR-0053 undelivered.** ADR-0053 decision 4 says
+  *"`record_knowledge` and `record_architectural_decision` embed the node they
+  write"*. Only the second was implemented — by me, in the same change that
+  quoted the decision. `record_architectural_decision` writes a MindLeak intent
+  node and embeds it, so it is recallable immediately. `record_knowledge` — what
+  `complete_task(learned:)` actually calls — writes to the Lodestar `knowledge`
+  table, which has no embedder and no vector index, and `recall` searches
+  MindLeak.
+  Measured: 12 knowledge entries exist, and querying `recall` with the **exact
+  text** of one returns unrelated execution nodes at 0.666 and 0.650, and the
+  conclusion itself not at all.
+  Impact: the write path most likely to be used is the one that rides on
+  finishing work, and it is precisely the one whose output retrieval cannot
+  reach. Real conclusions from several agents are sitting there — including
+  *"PowerShell 5.1 reports exit code 1 when a native command writes anything to
+  stderr"* — reachable only by listing `active_knowledge` in full, which does
+  not scale and which nobody does.
+  The fix is a design question rather than a patch: either Lodestar gains an
+  embedding index for knowledge, or `learned` also records a MindLeak node, or
+  the two stores are deliberately different things and ADR-0053 decision 4
+  should be narrowed to say so. Recorded rather than guessed at.
 - **`evidence_for` returned no commits for an ingested, attributed, in-window
   commit — OBSERVED ONCE, NOT REPRODUCIBLE. Treat as a false alarm until seen
   again.** — Recorded 2026-07-28 as an open defect, then disproved the same day.
