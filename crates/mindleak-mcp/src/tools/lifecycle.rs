@@ -109,10 +109,28 @@ pub(super) fn dispatch(
         })()),
         "graph_stats" => Some((|| {
             let (nodes, edges) = engine.counts().map_err(|e| e.to_string())?;
-            let data = json!({ "nodes": nodes, "active_edges": edges });
-            let markdown = format!(
+            let (unembedded, split_identity) = engine.health().map_err(|e| e.to_string())?;
+            let data = json!({
+                "nodes": nodes,
+                "active_edges": edges,
+                "unembedded_nodes": unembedded,
+                "split_identity_nodes": split_identity,
+            });
+            let mut markdown = format!(
                 "| MindLeak graph | |\n|---|--:|\n| Nodes | {nodes} |\n| Active edges | {edges} |"
             );
+            // Only shown when true. A health row that is always present is one
+            // readers learn to skip, which is how both of these stayed invisible.
+            if unembedded > 0 {
+                markdown.push_str(&format!(
+                    "\n| Not recallable (no embedding) | {unembedded} |"
+                ));
+            }
+            if split_identity > 0 {
+                markdown.push_str(&format!(
+                    "\n| Split identity (absolute path) | {split_identity} |"
+                ));
+            }
             Ok(rendered_result(markdown, &data))
         })()),
         "export_graph" => Some((|| {
