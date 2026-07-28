@@ -151,17 +151,40 @@ describe("append-only list merge", () => {
   );
 
   /**
-   * Nothing declares the driver any more. Asserted as an empty set rather than
+   * No file declares any merge driver. Asserted as an empty set rather than
    * deleted, because the failure it prevents is invisible locally: a file added
    * here merges cleanly in every checkout and reports a phantom conflict on
-   * GitHub that no `update-branch` can clear.
+   * GitHub that no `update-branch` can clear, while auto-merge goes stale with
+   * no signal.
+   *
+   * Two things this deliberately does NOT narrow:
+   *
+   * 1. Every tracked `.gitattributes`, not just the root one. Git reads the
+   *    file in each directory it descends into, so `docs/.gitattributes` binds
+   *    exactly as hard and would reintroduce the bug somewhere nobody looks.
+   * 2. Any `merge=` driver, not just `merge=union`. GitHub's merge machinery
+   *    honours none of them, so `ours`, `theirs` and custom drivers all diverge
+   *    from the local result the same way. Union is only the one that bit us.
    */
-  it("declares union merge for nothing", () => {
-    const declared = readFileSync(gitattributes, "utf8")
-      .split(/\r?\n/)
-      .filter((line) => /merge=union/.test(line) && !line.trimStart().startsWith("#"))
-      .map((line) => line.split(/\s+/)[0])
-      .sort();
+  it("declares no merge driver in any .gitattributes", () => {
+    const attributeFiles = execFileSync(
+      "git",
+      ["ls-files", "-z", "--", "*.gitattributes", ".gitattributes"],
+      { cwd: repoRoot, encoding: "utf8", env: isolatedGitEnvironment() }
+    )
+      .split("\0")
+      .filter(Boolean);
+
+    // A guard that silently checks nothing is worse than no guard: if the glob
+    // ever stops matching, this fails loudly instead of reporting success.
+    expect(attributeFiles).toContain(".gitattributes");
+
+    const declared = attributeFiles.flatMap((file) =>
+      readFileSync(join(repoRoot, file), "utf8")
+        .split(/\r?\n/)
+        .filter((line) => /\bmerge=/.test(line) && !line.trimStart().startsWith("#"))
+        .map((line) => `${file}: ${line.trim()}`)
+    );
 
     expect(declared).toEqual([]);
   });
