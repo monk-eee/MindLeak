@@ -67,6 +67,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0057](0057-work-already-done-is-a-collision.md) | Work already done is a collision the fleet cannot see | Proposed |
 | [0058](0058-work-that-shipped-must-leave-the-board.md) | Work that shipped must be able to leave the board | Proposed |
 | [0059](0059-the-tool-surface-is-a-vocabulary.md) | The tool surface is a vocabulary, not an inventory | Proposed |
+| [0060](0060-work-whose-product-is-not-code-must-still-conform.md) | Work whose product is not code must still be able to conform | Proposed |
 | [0061](0061-delivery-is-queued-not-raced.md) | Delivery is queued, not raced | Accepted |
 
 ## Writing a new ADR
