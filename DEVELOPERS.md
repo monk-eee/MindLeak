@@ -187,10 +187,10 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 ## Adding an MCP tool
 
 1. Add a method to the `MindLeak` facade in [`lib.rs`](crates/mindleak-core/src/lib.rs).
-2. Add a definition to `list()` and a branch to `call()` in
-   [`tools.rs`](crates/mindleak-mcp/src/tools.rs).
+2. Add a definition to `definitions()` and a branch to `call()` in the matching
+   module under [`tools/`](crates/mindleak-mcp/src/tools/).
 3. Add a test in [`tests/integration.rs`](crates/mindleak-core/tests/integration.rs).
-4. Add a row to the tool table in [`README.md`](README.md).
+4. Add a row to the tool table in [`docs/TOOLS.md`](docs/TOOLS.md).
 
 ## Known gaps
 
