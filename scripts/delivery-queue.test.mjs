@@ -176,6 +176,35 @@ test("an up-to-date branch is left for GitHub to merge", () => {
   assert.match(action.reason, /waiting on GitHub to merge it/);
 });
 
+/// Measured on the live queue: immediately after every merge, GitHub recomputes
+/// mergeability and each entry reads UNKNOWN for a few seconds. That looked
+/// identical to a quiet queue, so the tick did nothing and slept a full minute
+/// -- once per merge, on every delivery. Naming the state is what lets the
+/// watcher come back in seconds instead, and it is safe to come back early
+/// precisely because a settling tick has by construction done nothing.
+test("a queue mid-recompute is settling, not idle", () => {
+  const recomputing = [
+    pr(1, { mergeStateStatus: "UNKNOWN" }),
+    pr(2, { mergeStateStatus: "UNKNOWN" }),
+  ];
+  const action = nextAction(recomputing, NOW);
+  assert.equal(action.kind, "settling");
+  assert.match(action.reason, /recomputing/);
+  assert.match(describe(action), /looking again shortly/);
+});
+
+/// The distinction has to be narrow: one resolved entry means GitHub has an
+/// answer, and the queue must act on it rather than sit in a settling loop.
+test("a single resolved entry is enough to stop settling and take a turn", () => {
+  const mixed = [
+    pr(1, { mergeStateStatus: "UNKNOWN" }),
+    pr(2, { mergeStateStatus: "BEHIND" }),
+  ];
+  const action = nextAction(mixed, NOW);
+  assert.equal(action.kind, "update");
+  assert.equal(action.pr.number, 2);
+});
+
 /// A branch that is current and green is GitHub's to merge, not ours to touch.
 /// Either way there is nothing for the queue to update -- the distinction is
 /// only in what it says it is doing.

@@ -102,6 +102,21 @@ export function nextAction(prs, now, { stalledAfterMs = 45 * 60 * 1000 } = {}) {
     return { kind: "idle", reason: "nothing armed", queued, blocked, failing };
   }
 
+  // Immediately after a merge, GitHub recomputes mergeability and every entry
+  // reads UNKNOWN for a few seconds. That is a transient state, not a quiet
+  // queue, and treating it as quiet costs a whole interval per merge -- with a
+  // full interval between ticks that was up to a minute of dead time on every
+  // single delivery. Naming it lets the caller come back quickly instead.
+  if (queued.every((pr) => pr.mergeStateStatus === "UNKNOWN")) {
+    return {
+      kind: "settling",
+      reason: "GitHub is still recomputing mergeability",
+      queued,
+      blocked,
+      failing,
+    };
+  }
+
   // A branch that is up to date and still resolving is the one that is about to
   // land. Updating anything now would only make it stale behind that merge.
   const landing = queued.find(
@@ -173,6 +188,8 @@ export function describe(action) {
     lines.push(`-> updating #${action.pr.number} from main`);
   if (action.kind === "wait") lines.push(`-> waiting: ${action.reason}`);
   if (action.kind === "idle") lines.push(`-> idle: ${action.reason}`);
+  if (action.kind === "settling")
+    lines.push(`-> settling: ${action.reason}, looking again shortly`);
   for (const pr of action.blocked) {
     lines.push(
       `   #${pr.number} has a real conflict; it needs its own worktree, not the queue`,
@@ -209,10 +226,10 @@ function main() {
   const tick = () => {
     const action = nextAction(readQueue(), Date.now());
     console.log(describe(action));
-    if (action.kind !== "update") return;
+    if (action.kind !== "update") return action.kind;
     if (!apply) {
       console.log("(dry run: no branch was updated)");
-      return;
+      return action.kind;
     }
     try {
       gh(["pr", "update-branch", String(action.pr.number)]);
@@ -227,6 +244,7 @@ function main() {
         .pop();
       console.log(`could not update #${action.pr.number}: ${detail}`);
     }
+    return action.kind;
   };
 
   if (!watch) {
@@ -236,24 +254,36 @@ function main() {
   // Watch mode is the agent: one tick, wait, tick again. The interval is longer
   // than a check run takes to appear so a tick cannot mistake "not started yet"
   // for "nothing in flight" and update a second branch.
+  //
+  // The exception is `settling`: GitHub is mid-recompute and every entry reads
+  // UNKNOWN, which resolves in seconds. Waiting a full interval there wasted up
+  // to a minute on every merge, so that case alone comes back quickly. It is
+  // safe to shorten because a settling tick has, by construction, done nothing.
   const intervalMs = 60_000;
+  const settlingMs = 5_000;
   console.log(
     `delivery queue watching every ${intervalMs / 1000}s -- Ctrl-C to stop\n`,
   );
+  let timer;
+  const schedule = (delay) => {
+    timer = setTimeout(() => {
+      console.log(`\n--- ${new Date().toISOString()} ---`);
+      let kind = "idle";
+      try {
+        kind = tick();
+      } catch (error) {
+        // A transient API failure must not kill the agent; the next tick retries.
+        console.log(
+          `tick failed, retrying next interval: ${error.message.split("\n")[0]}`,
+        );
+      }
+      schedule(kind === "settling" ? settlingMs : intervalMs);
+    }, delay);
+  };
   tick();
-  const timer = setInterval(() => {
-    console.log(`\n--- ${new Date().toISOString()} ---`);
-    try {
-      tick();
-    } catch (error) {
-      // A transient API failure must not kill the agent; the next tick retries.
-      console.log(
-        `tick failed, retrying next interval: ${error.message.split("\n")[0]}`,
-      );
-    }
-  }, intervalMs);
+  schedule(intervalMs);
   process.on("SIGINT", () => {
-    clearInterval(timer);
+    clearTimeout(timer);
     console.log("\ndelivery queue stopped");
     process.exit(0);
   });
