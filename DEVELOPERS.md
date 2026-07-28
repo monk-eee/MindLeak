@@ -197,6 +197,40 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **One session's agent id changed under a running server, silently resetting
+  its claim's evidence window — OBSERVED, OPEN.** Across a single session
+  holding one client-minted token, `open_session` resolved first to
+  `session:v1:copilot:b4baf280…` and later, on the board, to
+  `session:v1:b4baf280…` — the same hash, with and without the label. Other
+  agents were rebuilding and deploying the MCP binaries throughout, so the most
+  likely cause is a server swap between two builds that disagree about whether
+  the id carries a label (ADR-0054 removed it).
+  Impact is not cosmetic: a re-claim after a lapse only preserves
+  `claim_started_at` for the *same* owner (ADR-0048), so a changed id reads as a
+  different agent, opens a **fresh** evidence window, and reports
+  `claim_lapses: 0` as if nothing happened. Measured on
+  `task:f6daad456855`: work committed at `1785223462` under a claim started at
+  `1785223449`; a later re-claim moved the window start to `1785234086`, and
+  `check_conformance` then refused the real evidence with *"evidence interval
+  falls outside the live claim"*. The work is real, attributed, and ingested,
+  and there is no honest way to bind it to the claim — the commit exists, the
+  proof does not.
+  Two things worth deciding rather than patching: whether identity should be
+  pinned per session against the *token* rather than whatever the current binary
+  formats, and whether a window reset should be visible (it currently looks
+  identical to a first claim). Do not "fix" this by re-committing work into a
+  fresh window — that manufactures a receipt for work the ledger did not see.
+- **Unit Test MCP with `framework=custom` run from `editors/vscode` silently
+  runs Cargo, not Vitest, and reports PASSED — CONFIRMED, config footgun.**
+  Cargo walks up from `editors/vscode` and finds the workspace `Cargo.toml`, so
+  the Rust suite runs and goes green while the extension tests never execute.
+  Verified by breaking a `util.test.ts` assertion on purpose: `framework=custom`
+  reported PASSED; `framework=vitest` with
+  `root_dir=<repo>/editors/vscode` reported the real failure and the assertion
+  diff. Any extension change validated through the custom adapter has a
+  meaningless green behind it. Use `framework=vitest` for
+  `editors/vscode`, and treat a suspiciously fast/slow duration as the tell.
+
 - **The recall floor cannot rank, and raising it makes recall worse — MEASURED,
   do not "fix" it.** The obvious response to `recall` returning a plausible
   stranger is to raise `MINDLEAK_RECALL_FLOOR`. Measured against this
