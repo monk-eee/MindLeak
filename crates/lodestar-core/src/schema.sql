@@ -256,6 +256,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     unleased_seconds INTEGER NOT NULL DEFAULT 0,  -- seconds of this window held under no lease
     blocked_by       TEXT,                 -- optional task id
     parked_at        INTEGER,              -- when parked (needs_input/paused); reclaimable after a grace
+    -- Who accepted this task out of in_review, when, and the conformance record
+    -- they overrode (ADR-0009). A resolution outranks an evidence-backed
+    -- verdict, so it must be at least as resolvable as the verdict it replaces.
+    resolved_by      TEXT,
+    resolved_at      INTEGER,
+    resolved_conformance_id INTEGER,
     created_at       INTEGER NOT NULL,
     updated_at       INTEGER NOT NULL
 );
