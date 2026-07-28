@@ -151,8 +151,17 @@ impl MindLeak {
         for sym in &extraction.symbols {
             let sym_id = format!("symbol:{norm}:{}", sym.name);
             let label = format!("{} ({})", sym.name, sym.kind);
-            let node = Node::new(&sym_id, NodeType::Symbol, label, now)
-                .with_content(format!("{}:{}", norm, sym.line));
+            // `path:line` locates the symbol; the declaration and its doc
+            // comment are what give the embedding something to mean. Without
+            // them a symbol embeds as its name alone, and terse implementation
+            // names lose to verbose test names every time (ADR-0008).
+            let context = ingest::ast::symbol_context(content, sym.line);
+            let body = if context.is_empty() {
+                format!("{}:{}", norm, sym.line)
+            } else {
+                format!("{}:{}\n{context}", norm, sym.line)
+            };
+            let node = Node::new(&sym_id, NodeType::Symbol, label, now).with_content(body);
             nodes.push(node);
             edges.push(Edge::new(&art_id, &sym_id, RelationType::Contains, now));
         }
