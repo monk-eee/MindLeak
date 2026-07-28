@@ -179,6 +179,7 @@ if (!verdict.ok) {
 const notice = overlapNotice(
   overlaps,
   verdict.claims.map((claim) => claim.id),
+  agent,
 );
 if (notice) {
   console.warn(`canonical-push: ${notice}`);
