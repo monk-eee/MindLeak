@@ -171,4 +171,50 @@ mod tests {
         );
         assert_eq!(e.active_knowledge().unwrap().len(), 1);
     }
+
+    /// SPEC-CONSTITUTION §13: learned knowledge can *propose* policy but cannot
+    /// *become* policy automatically.
+    ///
+    /// This holds by construction — knowledge and clauses are separate stores,
+    /// and the only route into the constitution is an attributed human
+    /// disposition. That is exactly why it is worth pinning: "true because
+    /// nothing connects them" is the kind of property a later convenience
+    /// (promote straight to a clause, adopt a proven regularity as a
+    /// constraint) removes without anyone noticing it was load-bearing. A
+    /// regularity observed across executions is evidence about what the code
+    /// *does*; a clause states what it *must* do, and only a person may cross
+    /// that line.
+    #[test]
+    fn proven_signal_becomes_knowledge_and_never_a_clause() {
+        let e = engine();
+
+        let promoted = e
+            .promote_signals(&[SignalPromotion {
+                subject: "artifact:src/x.rs".into(),
+                evidence_node_ids: vec![
+                    "execution:1".into(),
+                    "execution:2".into(),
+                    "execution:3".into(),
+                ],
+                first_seen: 0,
+                last_seen: 10 * 24 * 3600,
+                statement: None,
+            }])
+            .unwrap();
+
+        assert_eq!(promoted.len(), 1, "the gate admitted the proven signal");
+        assert_eq!(e.active_knowledge().unwrap().len(), 1);
+
+        // The repository remains ungoverned: promotion created no constitution,
+        // no version, and no clause of any status.
+        assert!(
+            e.get_constitution().unwrap().is_empty(),
+            "promotion must not enrol a clause"
+        );
+        assert_eq!(
+            e.constitution_status().unwrap().state,
+            crate::ConstitutionState::Absent,
+            "promotion must not constitute a project"
+        );
+    }
 }
