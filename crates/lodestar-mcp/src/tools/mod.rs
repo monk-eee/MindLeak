@@ -455,6 +455,100 @@ mod tests {
     use mindleak_storage::DatabaseOrigin;
     use std::path::PathBuf;
 
+    /// Every argument a handler requires is either declared or injected.
+    ///
+    /// Two ways an argument reaches a handler: the caller sends it, having read
+    /// it in the schema, or `bind_session` injects it after resolving the
+    /// session. `agent` is the second kind — `apply_session_contract` strips it
+    /// from every session-requiring tool and puts `session_id` in its place, so
+    /// attribution on the verbs that change law, grant waivers and accept
+    /// ratchet baselines is *resolved*, never asserted by the caller. A tool
+    /// declaring `agent` would let a caller name itself anything it liked.
+    ///
+    /// That leaves a gap a reader falls into: a handler saying
+    /// `req_str(args, "agent")` beside a schema that never mentions `agent`
+    /// reads exactly like the `lease_secs` incident above, and the failure mode
+    /// if it ever *were* one is identical — `missing required string arg`
+    /// naming a field the tool does not advertise. This pins the real rule so
+    /// the two cases stay distinguishable: required, and neither declared nor
+    /// injected, is a broken contract.
+    ///
+    /// Read from the source rather than exercised, because a handler's
+    /// requirements are only observable by calling it with each argument
+    /// missing — which for these verbs means mutating live policy to find out.
+    #[test]
+    fn a_required_argument_is_either_declared_or_session_injected() {
+        /// Inserted by `bind_session` once the session resolves.
+        const INJECTED: [&str; 4] = [
+            "agent",
+            "resolved_agent",
+            "resolved_name",
+            "resolved_context",
+        ];
+
+        const SOURCES: [(&str, &str); 6] = [
+            ("amendments", include_str!("amendments.rs")),
+            ("constitution", include_str!("constitution.rs")),
+            ("controls", include_str!("controls.rs")),
+            ("waivers", include_str!("waivers.rs")),
+            ("executive", include_str!("executive.rs")),
+            ("design", include_str!("design.rs")),
+        ];
+
+        let mut unreachable: Vec<String> = Vec::new();
+        let mut inspected = 0usize;
+
+        for (module, source) in SOURCES {
+            for (offset, _) in source.match_indices("\nfn ") {
+                let after = &source[offset + 4..];
+                let Some(paren) = after.find('(') else {
+                    continue;
+                };
+                let name = after[..paren].trim();
+                let Some(declared) = declared_arguments(name) else {
+                    continue;
+                };
+                let injected = requires_session(name);
+
+                // The handler body ends where the next top-level fn begins.
+                let body_end = after.find("\nfn ").unwrap_or(after.len());
+                let body = &after[..body_end];
+
+                for (at, _) in body.match_indices("req_str(args, \"") {
+                    let rest = &body[at + "req_str(args, \"".len()..];
+                    let Some(end) = rest.find('"') else { continue };
+                    let argument = &rest[..end];
+                    inspected += 1;
+
+                    if declared.iter().any(|d| d == argument) {
+                        continue;
+                    }
+                    if injected && INJECTED.contains(&argument) {
+                        continue;
+                    }
+                    unreachable.push(format!("{module}::{name} requires `{argument}`"));
+                }
+            }
+        }
+
+        // A source scan degrades silently: rename a handler, change how an
+        // argument is read, and the loop inspects nothing while still passing.
+        // The floor makes that show up as a failure instead of a green tick
+        // over an empty set.
+        assert!(
+            inspected >= 25,
+            "the scan found only {inspected} required arguments, so it is no \
+             longer reading the handlers it claims to guard"
+        );
+
+        assert!(
+            unreachable.is_empty(),
+            "no caller can satisfy these — undeclared, and not injected by the \
+             session contract:\n  {}",
+            unreachable.join("\n  ")
+        );
+    }
+
     /// The incident: `lease_seconds` was passed where the tool declares
     /// `lease_secs`. The key was dropped, the 300-second default applied, and
     /// the claim lapsed mid-work. Nothing named the typo, so the lease looked

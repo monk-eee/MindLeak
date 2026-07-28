@@ -111,7 +111,7 @@ impl MindLeak {
     ) -> Result<Vec<AgentFootprintOverlap>> {
         let mut node_ids = paths
             .iter()
-            .map(|path| format!("artifact:{}", ingest::normalize_path(path)))
+            .map(|path| format!("artifact:{}", self.repo_relative(path)))
             .collect::<Vec<_>>();
         node_ids.extend(symbols.iter().cloned());
         node_ids.sort();
