@@ -66,19 +66,50 @@ test("the queue is first-in-first-out by when the author armed it, not when it w
 /// invalidates the first before it can land -- which is precisely the race the
 /// queue exists to remove, reintroduced by the queue itself.
 test("only one branch updates at a time", () => {
-  const building = pr(1, { statusCheckRollup: [check("IN_PROGRESS")] });
+  const landing = pr(1, {
+    mergeStateStatus: "BLOCKED",
+    statusCheckRollup: [check("IN_PROGRESS")],
+  });
   const waiting = pr(2);
 
-  const action = nextAction([building, waiting], NOW);
+  const action = nextAction([landing, waiting], NOW);
   assert.equal(action.kind, "wait");
   assert.equal(action.pr.number, 1);
-  assert.match(action.reason, /in flight/);
+  assert.match(action.reason, /about to land/);
+});
+
+/// Found by watching it run against thirteen real pull requests: it sat waiting
+/// on a branch that was still BEHIND, and a branch that is behind cannot merge
+/// no matter what its checks are doing. Its checks were running because its
+/// author had just pushed, which has nothing to do with the queue. In a fleet
+/// of ten agents pushing all day something is always running, so waiting on
+/// "anything busy" starves the queue completely -- it would never take a single
+/// turn. Only a branch that is already up to date is worth waiting for.
+test("a branch that is still behind does not hold the queue, however busy it looks", () => {
+  const busyButBehind = pr(1, {
+    mergeStateStatus: "BEHIND",
+    statusCheckRollup: [check("IN_PROGRESS")],
+  });
+  const idleAndBehind = pr(2);
+
+  const action = nextAction([busyButBehind, idleAndBehind], NOW);
+  assert.equal(
+    action.kind,
+    "update",
+    "the queue must take a turn rather than starve",
+  );
+  assert.equal(
+    action.pr.number,
+    2,
+    "the busy branch is skipped, not waited on",
+  );
 });
 
 /// Without this the queue deadlocks on a single check that never reports, and
 /// the failure mode is invisible: everything simply stops merging.
 test("a check that never reports stops holding the queue after the stall threshold", () => {
   const wedged = pr(1, {
+    mergeStateStatus: "BLOCKED",
     statusCheckRollup: [check("IN_PROGRESS")],
     updatedAt: ago(90),
   });
@@ -145,10 +176,17 @@ test("an up-to-date branch is left for GitHub to merge", () => {
   assert.match(action.reason, /waiting on GitHub to merge it/);
 });
 
-test("a clean queue with nothing behind is idle rather than busy", () => {
+/// A branch that is current and green is GitHub's to merge, not ours to touch.
+/// Either way there is nothing for the queue to update -- the distinction is
+/// only in what it says it is doing.
+test("a queue with nothing behind has no turn to take", () => {
   const action = nextAction([pr(1, { mergeStateStatus: "CLEAN" })], NOW);
-  assert.equal(action.kind, "idle");
-  assert.match(action.reason, /no armed branch is behind/);
+  assert.notEqual(
+    action.kind,
+    "update",
+    "there is nothing to bring up to date",
+  );
+  assert.match(action.reason, /merge it|no armed branch is behind/);
 });
 
 /// The reason the queue chose what it chose has to be legible, or the first

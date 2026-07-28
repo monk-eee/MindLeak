@@ -69,13 +69,29 @@ export function queueOrder(prs) {
     .sort((a, b) => at(a) - at(b) || a.number - b.number);
 }
 
+/** A branch that is up to date with the base is one that could merge now. */
+export const isUpToDate = (pr) =>
+  pr.mergeStateStatus === "BLOCKED" ||
+  pr.mergeStateStatus === "CLEAN" ||
+  pr.mergeStateStatus === "HAS_HOOKS";
+
 /**
  * Decide the single next thing to do.
  *
- * Exactly one branch may be updating at a time — that invariant is the whole
- * mechanism. `stalledAfterMs` is the escape hatch: a check that never reports
- * would otherwise wedge the queue forever, so after that long we stop waiting
- * on it and let the next branch through.
+ * The invariant: do not update a branch while another branch is *about to
+ * merge*, because that merge is what will make the update stale again.
+ *
+ * "About to merge" is narrower than "busy", and the difference matters. A
+ * branch that is still behind the base cannot merge no matter what its checks
+ * are doing — its checks are running because its author just pushed, which has
+ * nothing to do with us. Waiting on those would starve the queue completely: in
+ * a fleet of ten agents pushing all day, something is always running, so the
+ * queue would never take a turn at all. Only a branch that is already up to
+ * date and still resolving is worth waiting for.
+ *
+ * `stalledAfterMs` is the escape hatch: a check that never reports would
+ * otherwise wedge the queue forever, so after that long we stop waiting on it
+ * and let the next branch through.
  */
 export function nextAction(prs, now, { stalledAfterMs = 45 * 60 * 1000 } = {}) {
   const queued = queueOrder(prs);
@@ -86,17 +102,19 @@ export function nextAction(prs, now, { stalledAfterMs = 45 * 60 * 1000 } = {}) {
     return { kind: "idle", reason: "nothing armed", queued, blocked, failing };
   }
 
-  // Something is already in flight. Waiting is the point: a second update now
-  // would invalidate the first before it lands, which is the race itself.
-  const inFlight = queued.find((pr) => checksRunning(pr));
-  if (inFlight) {
-    const since =
-      Date.parse(inFlight.updatedAt ?? inFlight.createdAt ?? 0) || 0;
+  // A branch that is up to date and still resolving is the one that is about to
+  // land. Updating anything now would only make it stale behind that merge.
+  const landing = queued.find(
+    (pr) =>
+      isUpToDate(pr) && checksRunning(pr) && checksFailing(pr).length === 0,
+  );
+  if (landing) {
+    const since = Date.parse(landing.updatedAt ?? landing.createdAt ?? 0) || 0;
     if (now - since < stalledAfterMs) {
       return {
         kind: "wait",
-        pr: inFlight,
-        reason: `#${inFlight.number} has checks in flight`,
+        pr: landing,
+        reason: `#${landing.number} is up to date and about to land`,
         queued,
         blocked,
         failing,
@@ -114,18 +132,18 @@ export function nextAction(prs, now, { stalledAfterMs = 45 * 60 * 1000 } = {}) {
     (pr) =>
       !checksRunning(pr) &&
       (pr.mergeStateStatus === "BEHIND" ||
-        (pr.mergeStateStatus === "BLOCKED" && checksFailing(pr).length === 0)),
+        (isUpToDate(pr) && checksFailing(pr).length === 0)),
   );
   if (!next) {
     return {
       kind: "idle",
-      reason: "no armed branch is behind",
+      reason: "no armed branch is behind and idle",
       queued,
       blocked,
       failing,
     };
   }
-  if (next.mergeStateStatus === "BLOCKED") {
+  if (isUpToDate(next)) {
     return {
       kind: "wait",
       pr: next,
