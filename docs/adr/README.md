@@ -70,6 +70,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0060](0060-work-whose-product-is-not-code-must-still-conform.md) | Work whose product is not code must still be able to conform | Proposed |
 | [0061](0061-delivery-is-queued-not-raced.md) | Delivery is queued, not raced | Accepted (remedy blocked) |
 | [0062](0062-the-delivery-queue-is-ours-to-run.md) | The delivery queue is ours to run | Proposed |
+| [0063](0063-a-migration-may-tidy-the-past-never-the-present.md) | A migration may tidy the past, never the present | Accepted |
 
 ## Writing a new ADR
 
