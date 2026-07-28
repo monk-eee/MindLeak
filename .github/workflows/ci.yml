@@ -70,6 +70,12 @@ jobs:
       - name: Changelog fragments
         run: node scripts/changelog.mjs --check
         working-directory: .
+      # The guards the fleet trusts to stay honest - conformance gate, merge
+      # driver, claim gate, publication record, delivery queue, board health -
+      # test themselves here. They were written and wired into nothing.
+      - name: Script tests
+        run: node scripts/script-tests.mjs
+        working-directory: .
 
   extension-host:
     name: VS Code 1.93 Extension Host smoke

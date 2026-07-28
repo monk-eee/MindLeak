@@ -8,7 +8,9 @@ mod tools;
 
 use lodestar_core::Lodestar;
 use mindleak_session::SessionRegistry;
-use mindleak_storage::{resolve_database, resolve_workspace_path, DatabaseKind};
+use mindleak_storage::{
+    head_sha, resolve_database, resolve_workspace_path, stale_build_notice, DatabaseKind,
+};
 
 fn main() -> anyhow::Result<()> {
     let current = std::env::current_dir().unwrap_or_else(|_| ".".into());
@@ -16,6 +18,20 @@ fn main() -> anyhow::Result<()> {
         &current,
         std::env::var("MINDLEAK_WORKSPACE").ok().as_deref(),
     );
+    // Say plainly when this binary is a stale build of the checkout it serves.
+    // The version has always been reported at `initialize`; nobody compared it,
+    // and a two-day-old local build cost a night of misdirected debugging.
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(notice) = stale_build_notice(
+            &executable,
+            &workspace,
+            env!("MINDLEAK_BUILD_SHA"),
+            head_sha(&workspace).as_deref(),
+        ) {
+            // stderr, never stdout: stdout is the JSON-RPC channel.
+            eprintln!("lodestar-mcp: {notice}");
+        }
+    }
     let database = resolve_database(
         &workspace,
         DatabaseKind::Lodestar,
