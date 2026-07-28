@@ -289,12 +289,16 @@ and footguns, with impact and status:
   by a better one, had no way to retire it without linking against the library,
   and re-registering the id is refused because a control version never moves
   backwards — so the id was spent and the dead control kept reporting against a
-  live clause. — Status: fixed. `retire_control` is on the tool surface.
-  Retirement is deliberately not deletion: the control keeps recording what it
-  enforced, so observations naming it resolve as `unknown` rather than
-  disappearing. Still unattributed — the store records that a control was
-  retired, not who retired it, which is worth revisiting given that standing a
-  mechanism down weakens enforcement.
+  live clause. — Status: fixed. `retire_control` is on the tool surface,
+  session-bound and attributed: the store records who stood a control down and
+  when, resolved from the calling session rather than supplied by the caller,
+  for the same reason a waiver names an author. Standing a mechanism down is the
+  one act that reduces what a clause can enforce without changing a word of the
+  clause. Retirement is deliberately not deletion: the control keeps recording
+  what it enforced, so observations naming it resolve as `unknown` rather than
+  disappearing. Controls retired before this was recorded carry no author —
+  those retirements cannot be reconstructed, and inventing one would be worse
+  than admitting the gap.
 
 - **An agent can work all day, certify nothing, and only discover it at
   `complete_task` — MEASURED, OPEN.** Evidence-backed conformance (ADR-0009)

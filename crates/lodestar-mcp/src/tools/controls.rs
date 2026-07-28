@@ -81,7 +81,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "retire_control",
-            "description": "Stand a control down when it is superseded, misregistered, or no longer the mechanism behind its clause. Retirement is not deletion: the control stays, so observations naming it resolve as unknown rather than silently disappearing, and it keeps recording what it once enforced. Without this a control registered under the wrong id cannot be withdrawn at all - its id is spent, because a control version never moves backwards - so dead and duplicate mechanisms accumulate against live clauses and go on reporting.",
+            "description": "Stand a control down when it is superseded, misregistered, or no longer the mechanism behind its clause. Attributed to the calling session and permanent: retiring a control is the one act that reduces what a clause can enforce without changing a word of the clause, so it is recorded like a waiver. Retirement is not deletion - the control stays, so observations naming it resolve as unknown rather than silently disappearing, and it keeps recording what it once enforced. Without this a control registered under the wrong id cannot be withdrawn at all, because a control version never moves backwards, so dead and duplicate mechanisms accumulate against live clauses and go on reporting.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "control_id": { "type": "string" } },
@@ -128,6 +128,8 @@ fn register_control(engine: &Lodestar, args: &Value) -> Result<Value, String> {
             version: i64_arg(args, "version", 1),
             configuration: opt_str(args, "configuration"),
             status: ControlStatus::Active,
+            retired_by: None,
+            retired_at: None,
         })
         .map_err(|e| e.to_string())?;
     ok(&json!({
@@ -141,15 +143,20 @@ fn register_control(engine: &Lodestar, args: &Value) -> Result<Value, String> {
 
 fn retire_control(engine: &Lodestar, args: &Value) -> Result<Value, String> {
     let control_id = req_str(args, "control_id")?;
+    let retired_by = req_str(args, "agent")?;
     let retired = engine
-        .retire_control(control_id)
+        .retire_control(control_id, retired_by)
         .map_err(|e| e.to_string())?;
     if !retired {
         return Err(format!(
             "no control {control_id} to retire; a control that was never registered cannot be stood down"
         ));
     }
-    ok(&json!({ "control_id": control_id, "status": "retired" }))
+    ok(&json!({
+        "control_id": control_id,
+        "status": "retired",
+        "retired_by": retired_by
+    }))
 }
 
 fn register_ratchet(engine: &Lodestar, args: &Value) -> Result<Value, String> {

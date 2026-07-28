@@ -45,7 +45,11 @@ CREATE TABLE IF NOT EXISTS controls (
     version       INTEGER NOT NULL,
     configuration TEXT,
     status        TEXT NOT NULL,        -- active | retired
-    created_at    INTEGER NOT NULL
+    created_at    INTEGER NOT NULL,
+    -- Retiring a control is the one act that reduces what a clause can enforce
+    -- without changing a word of the clause, so it is attributed like a waiver.
+    retired_by    TEXT,
+    retired_at    INTEGER
 );
 
 -- Waivers: bounded, attributed exceptions to one clause (SPEC-CONSTITUTION §9).
