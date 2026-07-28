@@ -11,9 +11,13 @@ to [Semantic Versioning](https://semver.org/).
   identity collapse rewrote `tasks.owner` for every labelled row and re-fired on
   every database open, because its idempotence was by *pattern* — "rewrite
   whatever still looks unmigrated" — which holds only while nothing else creates
-  such rows. In a fleet sharing one `spec.db`, a pre-ADR-0054 binary in another
-  worktree was doing exactly that, so each open by a newer binary re-owned
-  whatever the older one had just claimed. Observed on `task:f6daad456855`: one
+  such rows. In a fleet sharing one `spec.db`, a *running server process older
+  than the file it was loaded from* was doing exactly that, so each open by a
+  newer binary re-owned whatever the older one had just claimed. Nothing stale
+  was deployed: every binary on disk returned the collapsed id when driven
+  directly, and only the live extension-hosted processes returned the labelled
+  one. Restarting them was the whole remedy, and nothing in the system could say
+  so. Observed on `task:f6daad456855`: one
   session, one token, `open_session` returning `session:v1:copilot:b4baf280…`
   while the board reported `session:v1:b4baf280…`, flipping between consecutive
   reads with no claim in between. The holder could not prove its work

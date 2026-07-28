@@ -19,9 +19,27 @@ idempotent and a second open rewrites nothing".
 
 That is idempotence **by pattern**: rewrite whatever still looks unmigrated. It
 holds only while nothing else is producing rows that look unmigrated. In a fleet
-sharing one per-repository `spec.db`, something was: a pre-ADR-0054 binary, still
-running in another worktree, still minting labelled ids. Every open by a newer
-binary re-fired the rewrite, and each firing looked exactly like the first.
+sharing one per-repository `spec.db`, something was: a **running server process
+older than the file it was loaded from**, still minting labelled ids. Every open
+by a newer binary re-fired the rewrite, and each firing looked exactly like the
+first.
+
+That cause is worth stating precisely, because the obvious diagnosis is wrong and
+this ADR originally recorded it. Measured after the fact, driving the same
+session token through each binary on disk: both repository release builds **and**
+the installed extension binary returned the collapsed `session:v1:{fp}`. Nothing
+stale was deployed anywhere. Only the *live* extension-hosted processes returned
+the labelled id — they had been started from an earlier build, and the file
+underneath them was replaced while they kept running. Rebuilding and reinstalling
+would have changed nothing; restarting the process was the whole remedy.
+
+So the hazard is not "someone deployed an old build", which sounds like a
+deployment discipline problem and would be fixed by more discipline. It is that a
+process outlives the file it was loaded from, and neither the file's timestamp
+nor its contents can tell you what the running process actually is. In a fleet
+where agents rebuild and redeploy the servers all day against one shared
+database, that is ordinary, not exotic. The tell is a live process whose start
+time predates the mtime of its own binary.
 
 The rewritten set included `tasks.owner`.
 
@@ -80,12 +98,15 @@ ADR-0054 still lands, just never on a task in flight, and never twice.
 
 Two things this deliberately does **not** do:
 
-- **It does not stop a legacy binary from minting labelled ids.** It cannot: the
-  guard would have to live in the old binary. What changes is the failure mode —
-  a split identity is *visible* (the fleet sees two agents) rather than
-  *destructive* (a claim silently changes hands). A version handshake between
-  processes sharing a database is a real option, and it protects only against
-  divergences that start after both sides have it; that is a separate decision.
+- **It does not stop a process running older code from minting labelled ids.** It
+  cannot: the guard would have to live in that process, which by definition
+  predates it. Restarting the server is the remedy, and nothing in the system can
+  tell you it is needed — the binary on disk looks correct because it *is*
+  correct. What changes is the failure mode — a split identity is *visible* (the
+  fleet sees two agents) rather than *destructive* (a claim silently changes
+  hands). A version handshake between processes sharing a database is a real
+  option, and it protects only against divergences that start after both sides
+  have it; that is a separate decision.
 - **It does not repair the task it was found on.** `task:f6daad456855` shipped
   as PR #115 with no conformance receipt, and manufacturing one now — by
   re-committing the work into a fresh window, or completing on an empty in-window
