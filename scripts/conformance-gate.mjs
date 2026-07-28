@@ -72,6 +72,30 @@ export function evaluateGate(artifact, changedPaths) {
   return { ok: violations.length === 0, violations };
 }
 
+/**
+ * Governed ids that name no file in the working tree.
+ *
+ * Splitting, renaming, or deleting a governed file moves the code and leaves
+ * the binding pointing at a path that no longer exists. Nothing fails when that
+ * happens: the constitution simply stops governing the code, `advise` finds no
+ * clauses for the new paths, and the loss is invisible because an orphaned
+ * binding looks exactly like code that was never governed in the first place.
+ *
+ * Measured on this repository after a refactor campaign: 7 governed ids named
+ * files that no longer existed — `graph.rs`, `graph/query.rs`, `graph/signal.rs`
+ * and both `tools.rs` had all been split into directories, and not one of the
+ * resulting modules inherited the binding.
+ *
+ * `exists` is injected so the rule is testable without a working tree.
+ */
+export function danglingBindings(artifact, exists) {
+  return (artifact.governed_nodes ?? [])
+    .filter((node) => !isDocumentationNode(node))
+    .map((node) => node.replace(/^artifact:/, ""))
+    .filter((path) => !exists(path))
+    .sort();
+}
+
 function parseArguments(argv) {
   const options = { artifact: null, base: null, changed: null, strict: false };
   for (let index = 0; index < argv.length; index += 1) {
@@ -127,10 +151,29 @@ function main() {
   const changed = resolveChangedPaths(options);
   const { ok, violations } = evaluateGate(artifact, changed);
 
+  // Reported whatever the gate decides: a binding that names nothing is not a
+  // missing receipt, it is governance that has quietly stopped applying, and
+  // the gate above cannot see it — an orphaned id never appears in a diff.
+  const dangling = danglingBindings(artifact, (path) => fs.existsSync(path));
+  if (dangling.length) {
+    console.error(
+      `conformance-gate: ${dangling.length} governed binding(s) name no file; that code is no longer governed:`,
+    );
+    for (const path of dangling) {
+      console.error(`  - ${path}`);
+    }
+    console.error(
+      "conformance-gate: rebind with link_goal_to_code, or unlink if the code is gone.",
+    );
+  }
+
   if (ok) {
     console.log(
       `conformance-gate: OK — ${changed.length} changed path(s), no governed gaps.`,
     );
+    if (dangling.length && options.strict) {
+      process.exit(1);
+    }
     return;
   }
 
