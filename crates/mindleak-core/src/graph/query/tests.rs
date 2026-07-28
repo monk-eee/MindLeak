@@ -385,6 +385,54 @@ fn counts_reflects_active_edges_only() {
 }
 
 #[test]
+fn health_counts_what_recall_cannot_see() {
+    // The regression: the embedding index covered a fraction of the graph for
+    // three days while `recall` answered confidently from the rest, and no
+    // surface said so.
+    let s = store();
+    add_node(&s, "artifact:a.rs", NodeType::Artifact, "a.rs", NOW);
+    add_node(&s, "artifact:b.rs", NodeType::Artifact, "b.rs", NOW);
+
+    // No index at all: nothing is recallable, and that is the honest answer
+    // rather than an error that would take `graph_stats` down with it.
+    let (unembedded, _) = s.health("test-model").unwrap();
+    assert_eq!(unembedded, 2);
+}
+
+#[test]
+fn health_counts_nodes_that_still_carry_a_split_identity() {
+    // The regression: 871 ids carried a checkout prefix, splitting one file
+    // across eight identities, and nothing reported it.
+    let s = store();
+    add_node(&s, "artifact:src/a.rs", NodeType::Artifact, "src/a.rs", NOW);
+    add_node(
+        &s,
+        "artifact:C:/Users/dev/Repos/MindLeak/src/a.rs",
+        NodeType::Artifact,
+        "src/a.rs",
+        NOW,
+    );
+    add_node(
+        &s,
+        "symbol:/home/dev/repo/src/a.rs:parse",
+        NodeType::Symbol,
+        "parse (fn)",
+        NOW,
+    );
+    // Not a path at all, and must not be miscounted.
+    add_node(
+        &s,
+        "execution:abc123",
+        NodeType::Execution,
+        "cargo test",
+        NOW,
+    );
+
+    let (_, split) = s.health("test-model").unwrap();
+    assert_eq!(split, 2);
+}
+
+#[test]
 fn list_agents_reports_observation_counts() {
     let s = store();
     add_node(&s, "agent:a", NodeType::Agent, "a", NOW);
