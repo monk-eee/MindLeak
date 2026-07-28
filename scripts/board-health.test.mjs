@@ -5,7 +5,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { classify, describe, isStrandedClaim } from "./board-health.mjs";
+import {
+  classify,
+  describe,
+  isLive,
+  isStrandedClaim,
+} from "./board-health.mjs";
 
 const NOW = 1_800_000_000;
 
@@ -17,6 +22,57 @@ const task = (id, over = {}) => ({
 });
 
 const audit = (findings, verdict = "needs_human") => ({ verdict, findings });
+
+/// The first version's bug, caught before it merged and worth keeping honest.
+/// A task keeps its conformance audits after it finishes, so classifying by
+/// "latest audit" alone counted completed work as pending. The first live run
+/// reported 51 parked tasks; every single one was already done or abandoned,
+/// and the true figure was zero. Inflating a backlog sends people looking for
+/// work that does not exist -- the same disease as the verdict this report was
+/// written to untangle.
+test("a finished task is history, not a backlog", () => {
+  const entries = [
+    {
+      task: task("done-one", { status: "done" }),
+      audit: audit("evidence contains no provenance-bearing mutation"),
+    },
+    {
+      task: task("gone", { status: "abandoned" }),
+      audit: audit("governed code changed without a covering task: goal:x"),
+    },
+    {
+      task: task("live"),
+      audit: audit("evidence contains no provenance-bearing mutation"),
+    },
+  ];
+
+  assert.equal(isLive(entries[0].task), false);
+  assert.equal(isLive(entries[2].task), true);
+
+  const { unresolvable, decidable } = classify(entries, NOW);
+  assert.deepEqual(
+    unresolvable.map((e) => e.task.id),
+    ["live"],
+    "only work that is still open counts",
+  );
+  assert.equal(decidable.length, 0, "an abandoned task asks nothing of anyone");
+});
+
+/// A lapsed claim on a finished task is not stranded -- nobody needs to recover
+/// work that already landed.
+test("a terminal task is never reported as a stranded claim", () => {
+  const finished = task("shipped", {
+    status: "done",
+    lease_expires_at: NOW - 60,
+  });
+  const held = task("held", { status: "claimed", lease_expires_at: NOW - 60 });
+
+  const { stranded } = classify([{ task: finished }, { task: held }], NOW);
+  assert.deepEqual(
+    stranded.map((e) => e.task.id),
+    ["held"],
+  );
+});
 
 /// The finding this whole report exists for. An empty evidence bundle means the
 /// work was never ingested, so there is nothing for a person to weigh -- but it

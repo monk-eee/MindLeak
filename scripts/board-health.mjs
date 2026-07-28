@@ -42,6 +42,22 @@ import { createInterface } from "node:readline";
 /** The finding that means "there was nothing to judge", not "judge this". */
 export const EMPTY_EVIDENCE = "no provenance-bearing mutation";
 
+/**
+ * A task that has already reached the end of its life. Its audits are history,
+ * not a queue.
+ *
+ * Leaving these in was the first version's mistake, and it is worth naming
+ * because it is easy to repeat: a task keeps its conformance audits after it
+ * completes, so classifying by "latest audit" alone counts finished work as
+ * pending. The first run reported 51 parked tasks; every one of them was
+ * already `done` or `abandoned`, and the real figure was zero. A report that
+ * inflates the backlog is not a smaller version of a useful report -- it sends
+ * people looking for work that does not exist, which is the same disease as
+ * the verdict it was written to untangle.
+ */
+export const TERMINAL = new Set(["done", "abandoned"]);
+export const isLive = (task) => !TERMINAL.has(task.status);
+
 const findingsOf = (audit) => String(audit?.findings ?? "");
 
 /** A claim that is still held but whose lease has run out (ADR-0048). */
@@ -54,7 +70,9 @@ export const isStrandedClaim = (task, now) =>
  * Split parked work by whether a person can actually act on it.
  *
  * `entries` is `[{ task, audit }]` where `audit` is the task's most recent
- * conformance audit, or undefined when it has never been audited.
+ * conformance audit, or undefined when it has never been audited. Terminal
+ * tasks are excluded: their verdicts are a record of what happened, not a
+ * request for anyone to do anything.
  */
 export function classify(entries, now) {
   const unresolvable = [];
@@ -63,6 +81,7 @@ export function classify(entries, now) {
 
   for (const entry of entries) {
     const { task, audit } = entry;
+    if (!isLive(task)) continue;
     if (isStrandedClaim(task, now)) stranded.push(entry);
     if (audit?.verdict !== "needs_human") continue;
     if (findingsOf(audit).includes(EMPTY_EVIDENCE)) unresolvable.push(entry);
