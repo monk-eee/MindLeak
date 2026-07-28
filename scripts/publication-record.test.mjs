@@ -1,4 +1,4 @@
-// Tests for the post-push evidence record. Run with: node --test scripts/
+// Tests for the post-push evidence record. Run with: make script-test
 //
 // The regression these lock down: a publication that records no changed files
 // is indistinguishable, to `check_conformance`, from never recording anything

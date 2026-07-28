@@ -1,4 +1,4 @@
-// Tests for the board health report. Run with: node --test scripts/
+// Tests for the board health report. Run with: make script-test
 //
 // The behaviour under test is one distinction: work a person can rule on
 // versus work nobody can, both currently wearing the label `needs_human`.

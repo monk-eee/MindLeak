@@ -1,4 +1,4 @@
-// Tests for the delivery queue. Run with: node --test scripts/
+// Tests for the delivery queue. Run with: make script-test
 //
 // The invariant under test is the whole point of the thing: exactly one branch
 // updates at a time. Every other behaviour exists to stop that invariant from
