@@ -190,6 +190,21 @@ style nit.
   `HEAD`, stop work on that branch, reach a clean checkpoint, and reconcile in
   its own worktree. Never move refs underneath dirty files or repair routine
   divergence by manufacturing replacement commits.
+- **Arm it and leave it alone — the queue takes the turns (ADR-0062).** `main`
+  requires branches to be up to date, so with several armed pull requests every
+  merge makes all the others stale. If each agent refreshes its own branch the
+  moment that happens, they collide continuously: N branches each burn a full
+  check run against a `main` that the next merge invalidates again, and nothing
+  drains. Eleven armed, green pull requests once sat unmerged for two hours that
+  way.
+  So **do not run `gh pr update-branch`, and do not merge `main` into a branch
+  just because it went behind.** Enabling auto-merge is how you join the queue —
+  armed means finished (ADR-0045) — and `scripts/delivery-queue.mjs` brings
+  exactly one branch up to date at a time, in the order branches were armed. It
+  never merges; merging stays with GitHub behind the same required checks.
+  Merge `main` in yourself **only** when the queue reports a real conflict on
+  your branch, which it cannot resolve for you — that is the one case it hands
+  back, and it needs your worktree (see the divergence rule above).
 
 ### Doc discipline (NON-NEGOTIABLE)
 Doc drift is treated like a failing test. A shipped change updates the relevant
