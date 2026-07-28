@@ -36,7 +36,11 @@ package-lock.json text eol=lf
 *.db        binary
 *.vsix      binary
 
-# No file declares `merge=union`, and that is deliberate.
+# No file declares a merge driver of any kind, and that is deliberate. A test
+# enforces it — `declares no merge driver in any .gitattributes` in
+# editors/vscode/scripts/append-only-merge.test.mjs — across every tracked
+# .gitattributes, not just this one, because git reads the file in each
+# directory it descends into.
 #
 # The driver looked ideal for append-only lists: every concurrent branch adds an
 # entry at the same place, the conflict is guaranteed, and the resolution is
