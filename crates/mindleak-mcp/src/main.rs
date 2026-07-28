@@ -47,8 +47,23 @@ fn main() -> anyhow::Result<()> {
     let engine = MindLeak::open(&db_path)?
         .with_decay_policy(decay_policy)
         .with_working_set_size(working_set_size)
+        .with_workspace_root(workspace.to_string_lossy().into_owned())
         .with_recall_floor(mindleak_core::config::load_recall_floor())
         .with_consolidation_min_interval(maintenance_config.min_interval.as_secs());
+    // Collapse any absolute node ids this checkout wrote before paths were made
+    // repo-relative (ADR-0038). Idempotent and prefix-scoped, so it costs a scan
+    // on a healthy graph and keeps healing if a producer ever regresses.
+    match engine.repair_workspace_paths() {
+        Ok(outcome) if outcome.nodes_rewritten > 0 => tracing::info!(
+            rewritten = outcome.nodes_rewritten,
+            merged = outcome.nodes_merged,
+            "collapsed absolute node ids onto their repo-relative identity"
+        ),
+        Ok(_) => {}
+        // A repair failure must not stop the server: the graph is still usable
+        // with split ids, and refusing to start would be the larger outage.
+        Err(error) => tracing::warn!(%error, "workspace path repair skipped"),
+    }
     tracing::info!(
         %db_path,
         repository_id = database.repository_id.as_deref().unwrap_or("none"),

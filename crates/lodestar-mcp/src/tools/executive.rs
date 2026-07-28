@@ -370,6 +370,24 @@ pub(super) fn dispatch(
                 Vec::new()
             };
             let mut response = json!({ "won": won, "governing": governing });
+            // The claim opens the window that `complete_task` later validates
+            // evidence against: evidence starting before `claim_started_at` is
+            // refused as "outside the live claim". Returning the window here is
+            // what makes that constructible — without it an agent has to guess a
+            // `started_at`, and a wrong guess reads as a policy refusal rather
+            // than a missing accessor (ADR-0060).
+            if won {
+                if let Some(task) = engine
+                    .store()
+                    .get_task(task_id)
+                    .map_err(|e| e.to_string())?
+                {
+                    if let Some(obj) = response.as_object_mut() {
+                        obj.insert("claim_started_at".to_string(), json!(task.claim_started_at));
+                        obj.insert("lease_expires_at".to_string(), json!(task.lease_expires_at));
+                    }
+                }
+            }
             attach_waiting(engine, args, &mut response)?;
             ok(&response)
         })()),
@@ -1155,6 +1173,68 @@ mod tests {
             serde_json::from_str(legacy["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(task["status"], "open");
         assert!(task["blocked_by"].is_null());
+    }
+
+    // ADR-0060: `complete_task` refuses evidence whose `started_at` precedes
+    // `claim_started_at` with "evidence interval falls outside the live claim",
+    // and no tool returned that value - `claim_task` gave back only `won` and
+    // `governing`, and `task_scope` only `paths` and `symbols`. So the one
+    // number needed to build acceptable evidence was unobtainable, an agent had
+    // to guess it, and a wrong guess read as a policy refusal rather than a
+    // missing accessor. The claim now returns the window it opened.
+    #[test]
+    fn a_won_claim_returns_the_evidence_window_it_opened() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Work", "done").unwrap();
+
+        let claimed = call(
+            &engine,
+            &json!({
+                "name": "claim_task",
+                "arguments": { "task_id": task.id, "agent": "agent-a", "lease_secs": 600 }
+            }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(claimed["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["won"], true);
+
+        let window = body["claim_started_at"]
+            .as_i64()
+            .expect("a won claim reports the start of the window evidence is judged against");
+        assert!(window > 0);
+        assert_eq!(
+            window,
+            engine
+                .store()
+                .get_task(&task.id)
+                .unwrap()
+                .unwrap()
+                .claim_started_at
+                .unwrap(),
+            "the reported window must be the one the store will validate against"
+        );
+        assert!(
+            body["lease_expires_at"].as_i64().unwrap() >= window,
+            "the lease cannot expire before the claim began"
+        );
+
+        // A lost claim has no window to report, so it must not invent one.
+        let lost = call(
+            &engine,
+            &json!({
+                "name": "claim_task",
+                "arguments": { "task_id": task.id, "agent": "agent-b" }
+            }),
+        )
+        .unwrap();
+        let lost_body: Value =
+            serde_json::from_str(lost["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(lost_body["won"], false);
+        assert!(lost_body.get("claim_started_at").is_none());
     }
 
     // ADR-0046: an addressed question is a durable row a peer must ask for, so

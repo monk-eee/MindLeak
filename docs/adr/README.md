@@ -64,9 +64,12 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0054](0054-identity-is-the-session-not-the-process.md) | Identity is the session, not the process that hosts it | Accepted |
 | [0055](0055-draft-the-question-decide-nothing.md) | Draft the question, decide nothing | Accepted |
 | [0056](0056-the-changelog-is-assembled-not-edited.md) | The changelog is assembled, not edited | Accepted |
-| [0057](0057-work-already-done-is-a-collision.md) | Work already done is a collision the fleet cannot see | Proposed |
-| [0058](0058-work-that-shipped-must-leave-the-board.md) | Work that shipped must be able to leave the board | Proposed |
-| [0061](0061-delivery-is-queued-not-raced.md) | Delivery is queued, not raced | Accepted |
+| [0057](0057-work-already-done-is-a-collision.md) | Work already done is a collision the fleet cannot see | Accepted |
+| [0058](0058-work-that-shipped-must-leave-the-board.md) | Work that shipped must be able to leave the board | Accepted |
+| [0059](0059-the-tool-surface-is-a-vocabulary.md) | The tool surface is a vocabulary, not an inventory | Proposed |
+| [0060](0060-work-whose-product-is-not-code-must-still-conform.md) | Work whose product is not code must still be able to conform | Proposed |
+| [0061](0061-delivery-is-queued-not-raced.md) | Delivery is queued, not raced | Accepted (remedy blocked) |
+| [0062](0062-the-delivery-queue-is-ours-to-run.md) | The delivery queue is ours to run | Proposed |
 
 ## Writing a new ADR
 

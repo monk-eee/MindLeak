@@ -9,7 +9,7 @@ use regex::Regex;
 
 use crate::error::Result;
 use crate::graph::GraphStore;
-use crate::ingest::{clamp, is_ignored_path, normalize_path, short_hash};
+use crate::ingest::{clamp, is_ignored_path, normalize_path, repo_relative, short_hash};
 use crate::model::{Edge, Node, NodeType, RelationType};
 
 /// A captured command run from the terminal/telemetry stream.
@@ -56,10 +56,14 @@ pub fn parse_error_locations(output: &str) -> Vec<(String, u32)> {
 }
 
 /// Ingest one execution record. Returns counts + created node ids.
+///
+/// `root` is the checkout this process serves; changed files inside it become
+/// repo-relative so every worktree writes the same node ids (ADR-0038).
 pub fn ingest_execution(
     store: &GraphStore,
     rec: &ExecutionRecord,
     now: i64,
+    root: Option<&str>,
 ) -> Result<crate::graph::WriteOutcome> {
     let exec_id = format!(
         "execution:{}",
@@ -81,7 +85,7 @@ pub fn ingest_execution(
     let mut changed_files: Vec<String> = rec
         .changed_files
         .iter()
-        .map(|file| normalize_path(file))
+        .map(|file| repo_relative(file, root))
         .collect();
     changed_files.sort();
     changed_files.dedup();
@@ -146,7 +150,7 @@ mod tests {
             changed_files: vec!["src/lib.rs".to_string()],
             timestamp: 123,
         };
-        let outcome = ingest_execution(&store, &record, 999).unwrap();
+        let outcome = ingest_execution(&store, &record, 999, None).unwrap();
 
         let graph = store
             .traverse(
