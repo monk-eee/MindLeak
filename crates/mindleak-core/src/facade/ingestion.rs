@@ -43,7 +43,7 @@ impl MindLeak {
 
     pub fn ingest_execution(&self, rec: &ExecutionRecord) -> Result<WriteOutcome> {
         let now = now_unix();
-        ingest::execution::ingest_execution(&self.store, rec, now)
+        ingest::execution::ingest_execution(&self.store, rec, now, self.workspace_root.as_deref())
     }
 
     pub fn ingest_execution_for_agent(
@@ -52,19 +52,25 @@ impl MindLeak {
         rec: &ExecutionRecord,
     ) -> Result<WriteOutcome> {
         let now = now_unix();
-        let outcome = ingest::execution::ingest_execution(&self.store, rec, now)?;
+        let outcome = ingest::execution::ingest_execution(
+            &self.store,
+            rec,
+            now,
+            self.workspace_root.as_deref(),
+        )?;
         self.observe(agent, &outcome.node_ids, now)?;
         Ok(outcome)
     }
 
     pub fn ingest_commit(&self, rec: &CommitRecord) -> Result<WriteOutcome> {
         let now = now_unix();
-        ingest::git::ingest_commit(&self.store, rec, now)
+        ingest::git::ingest_commit(&self.store, rec, now, self.workspace_root.as_deref())
     }
 
     pub fn ingest_commit_for_agent(&self, agent: &str, rec: &CommitRecord) -> Result<WriteOutcome> {
         let now = now_unix();
-        let outcome = ingest::git::ingest_commit(&self.store, rec, now)?;
+        let outcome =
+            ingest::git::ingest_commit(&self.store, rec, now, self.workspace_root.as_deref())?;
         self.observe(agent, &outcome.node_ids, now)?;
         Ok(outcome)
     }
@@ -75,7 +81,7 @@ impl MindLeak {
     /// for a path that no longer exists instead of waiting ~a month for it to
     /// decay. A no-op when the path was never ingested.
     pub fn forget_file(&self, path: &str) -> Result<ForgetOutcome> {
-        let norm = ingest::normalize_path(path);
+        let norm = self.repo_relative(path);
         let artifact_id = format!("artifact:{norm}");
         self.store.forget_artifact(&artifact_id)
     }
@@ -89,7 +95,7 @@ impl MindLeak {
     pub fn reconcile_workspace(&self, current_paths: &[String]) -> Result<ReconcileOutcome> {
         let keep: HashSet<String> = current_paths
             .iter()
-            .map(|p| ingest::normalize_path(p))
+            .map(|p| self.repo_relative(p))
             .collect();
         let mut outcome = ReconcileOutcome::default();
         for artifact_id in self.store.artifact_ids()? {
@@ -129,7 +135,7 @@ impl MindLeak {
         agent: Option<&str>,
     ) -> Result<WriteOutcome> {
         let now = now_unix();
-        let norm = ingest::normalize_path(path);
+        let norm = self.repo_relative(path);
         // VCS internals, dependency caches, and build/test output are not source
         // and only pollute the graph with structure for paths that vanish.
         if ingest::is_ignored_path(&norm) {

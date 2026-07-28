@@ -11,5 +11,13 @@
   deliberately invents neither rationale nor authority, and a document that drops
   its empty fields disguises that as completeness. On this repository the export
   grew from 7,133 to 10,674 bytes and immediately showed something the old one
-  hid: all 25 migrated clauses declare no consequence and bind no control, so
-  they are inert rather than enforcing.
+  hid: the split between what enforces and what does not. Seven clauses carry a
+  complete contract and six bind a mechanical control — all of them adopted
+  workflow rules, scoped `workflow:git.*` and `workflow:topology`. The eighteen
+  that enforce nothing include every locally-migrated clause, which is to say
+  every invariant the project wrote about itself: the zero-token hot path, decay,
+  derived effective weight, the local-only security boundary. Borrowed rules
+  about how work is delivered are enforced; the project's own rules about what it
+  must never do are not. That is correct behaviour — migration invents no
+  authority (§10) and broad principles route to review (§13) — and it was
+  invisible while the export rendered enforcing and inert clauses identically.
