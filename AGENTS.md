@@ -187,7 +187,7 @@ surface in the same commit:
   auto-merge go stale on every concurrent branch (ADR-0056).
 - [`docs/SPEC.md`](docs/SPEC.md) — if it changes the design contract.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — if it adds a module/capability.
-- [`README.md`](README.md) tool table — if it adds/removes an MCP tool.
+- [`docs/TOOLS.md`](docs/TOOLS.md) tool table — if it adds/removes an MCP tool.
 - [`docs/adr/`](docs/adr/) — a decision that is hard to reverse or surprising gets
   an ADR; do not bury architecture decisions in a code comment.
 
@@ -284,10 +284,10 @@ MindLeak/
 ## Adding an MCP tool (worked path)
 
 1. Method on the `MindLeak` facade — [`crates/mindleak-core/src/lib.rs`](crates/mindleak-core/src/lib.rs).
-2. Definition in `list()` + branch in `call()` —
-   [`crates/mindleak-mcp/src/tools.rs`](crates/mindleak-mcp/src/tools.rs).
+2. Definition in `definitions()` + branch in `call()` — the matching module under
+   [`crates/mindleak-mcp/src/tools/`](crates/mindleak-mcp/src/tools/).
 3. Integration test.
-4. README tool-table row + CHANGELOG line.
+4. [`docs/TOOLS.md`](docs/TOOLS.md) tool-table row + a `changelog.d/` fragment.
 
 ## Commands (identical on every OS)
 
