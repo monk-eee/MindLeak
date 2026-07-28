@@ -41,7 +41,7 @@ The engine. Modules:
 | [`schema.sql`](../crates/mindleak-core/src/schema.sql) | SQLite tables, indexes, FTS5 virtual table + sync triggers. |
 | [`db.rs`](../crates/mindleak-core/src/db.rs) | Connection setup (WAL, FKs), migrations, and the `effective_weight()` scalar SQL function. |
 | [`decay.rs`](../crates/mindleak-core/src/decay.rs) | The half-life decay formula and prune threshold. |
-| [`graph/`](../crates/mindleak-core/src/graph/mod.rs) | `GraphStore`: shared `types`, atomic `writes`, decay-aware `query/` (`lookup` node/FTS resolution, `traversal` bounded walks and impact radius, `agents` roster/attention/overlap), derived `signal`, conformance `evidence`, and `lifecycle` operations. |
+| [`graph/`](../crates/mindleak-core/src/graph/mod.rs) | `GraphStore`: shared `types`, atomic `writes`, decay-aware `query/` (`lookup` node/FTS resolution, `traversal` bounded walks and impact radius, `agents` roster/attention/overlap), derived `signal/` (`mod` evidence and weighted edges, `promotion` what has earned consolidation, `prune` reaping faded signal), conformance `evidence`, and `lifecycle` operations. |
 | [`ingest/`](../crates/mindleak-core/src/ingest/mod.rs) | Zero-token deterministic extractors: `execution`, `git`, `ast`, `structure/{imports,hierarchy}` (JS/TS imports and type hierarchy), and `manifest` (direct package dependencies). |
 | [`consolidate.rs`](../crates/mindleak-core/src/consolidate.rs) | Optional Ollama consolidation worker. |
 | [`embed.rs`](../crates/mindleak-core/src/embed.rs) | Optional semantic-recall embedding index (ADR-0008): local `/v1/embeddings` client, derived `embeddings` table, cosine recall. Off the zero-token write path. |
@@ -74,13 +74,22 @@ moving — a pure function over the board), `discovery`, `schema.sql` +
 `indexes.sql`, `db` (+ a knowledge `effective_weight` scalar), `decay`
 (long-horizon revalidation), `store` (`LodestarStore`: the `goals` and goal↔code
 seam, `coordination` task/handoff/conformance ledger, transactional
-`policy_packs` proposal/disposition/provenance ledger, reviewed `design`
+`policy_packs` proposal/disposition/provenance ledger, reviewed `design/`
 materialization plus validation, `amendments` and `waivers`, learned
 `knowledge`, and `lifecycle` operations), `llm` (optional local model), and
-`lib` (the `Lodestar` facade wiring). Facade behavior is grouped under
+`lib` (the `Lodestar` facade wiring). `store/design/` is split by
+responsibility: `mod` (register and read), `decision` (the guarded accept/reject
+transition and repairing one after the fact), `retirement` (retire and
+supersede), `promotion` (promotion into work and its immutable materialization
+revisions), and `links` (the current projection of what an item is linked to).
+Facade behavior is grouped under
 `facade/`: `constitution`, `executive`, `design`, `design_materialization`,
-`conformance`, `controls`, `amendments`, `waivers`, `advice`, `fleet`,
-`evidence`, and `knowledge`.
+`conformance/`, `controls`, `amendments`, `waivers`, `advice`, `fleet`,
+`evidence`, and `knowledge`. `conformance/` is itself split by responsibility:
+`mod` (the `complete_task` / `check_conformance` surface), `clauses` (which
+constitutional clauses govern a check), `verdict` (bounded evidence to a
+verdict), `token` (what a check was issued against), and `evidence` (shape and
+window validation of a submitted bundle).
 Each design materialization writes an immutable plan revision; task/goal link
 tables are the current projection and can be repaired without deleting history.
 
