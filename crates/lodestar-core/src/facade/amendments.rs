@@ -188,6 +188,7 @@ impl Lodestar {
 mod tests {
     use super::*;
     use crate::amendment::ClauseChange;
+    use crate::controls::{Control, ControlKind, ControlStatus, EnforcementPower};
     use crate::facade::test_support::engine;
     use crate::model::Consequence;
     use crate::policy::common_core_pack;
@@ -272,6 +273,160 @@ mod tests {
         governed(&e);
         e.propose_amendment(Some("monk-eee")).unwrap();
         assert!(e.propose_amendment(Some("monk-eee")).is_err());
+    }
+
+    /// Harden the `index`th carried clause on `draft`, returning its slug.
+    fn harden_clause(e: &Lodestar, draft_id: &str, index: usize) -> String {
+        let target = e
+            .store
+            .clauses_for_version(draft_id)
+            .unwrap()
+            .into_iter()
+            .nth(index)
+            .unwrap();
+        e.store
+            .complete_clause_contract(
+                &target.id,
+                "artifact:crates/**",
+                "tests",
+                Some(Consequence::Review),
+                false,
+                None,
+            )
+            .unwrap();
+        target.slug
+    }
+
+    fn active_clause(e: &Lodestar, slug: &str) -> String {
+        let version = e.constitution_status().unwrap().version.unwrap().id;
+        e.store
+            .clauses_for_version(&version)
+            .unwrap()
+            .into_iter()
+            .find(|clause| clause.slug == slug)
+            .expect("the clause is carried forward")
+            .id
+    }
+
+    /// The incident: giving a clause an enforcement contract disarmed the
+    /// control enforcing it. A clause copy takes a new id, controls store the
+    /// id they were registered against, and nothing re-pointed them — so the
+    /// ratchet went on accepting observations and went on answering pass and
+    /// fail while serving no active clause, which collapses its consequence to
+    /// `advise`. Enforcement stops without anything failing, at the exact
+    /// moment someone was strengthening the rule.
+    #[test]
+    fn an_amendment_carries_the_controls_across_with_the_clause() {
+        let e = engine();
+        governed(&e);
+        let draft = e.propose_amendment(Some("monk-eee")).unwrap();
+        let slug = harden_clause(&e, &draft.id, 0);
+        let before = active_clause(&e, &slug);
+
+        e.register_control(&Control {
+            id: "control:pre-push".into(),
+            clause_id: before.clone(),
+            kind: ControlKind::Check,
+            power: EnforcementPower::Mechanical,
+            version: 1,
+            configuration: None,
+            status: ControlStatus::Active,
+        })
+        .unwrap();
+
+        e.amend_constitution(&draft.id, "monk-eee", "Evidence rule needed teeth.")
+            .unwrap();
+
+        let after = active_clause(&e, &slug);
+        assert_ne!(before, after, "the amendment gives the clause a new id");
+
+        let controls = e.clause_controls(&after).unwrap();
+        assert_eq!(
+            controls.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec!["control:pre-push"],
+            "the live clause is still guarded"
+        );
+        assert_eq!(controls[0].clause_id, after);
+    }
+
+    /// A control stranded by an earlier amendment cannot re-register itself:
+    /// `register_ratchet` refuses a control whose version would move backwards,
+    /// so the id is spent. Recovery therefore has to be something the next
+    /// amendment does, or the orphan is permanent.
+    #[test]
+    fn the_next_amendment_recovers_a_control_stranded_by_an_earlier_one() {
+        let e = engine();
+        governed(&e);
+
+        let first = e.propose_amendment(Some("monk-eee")).unwrap();
+        let slug = harden_clause(&e, &first.id, 0);
+        let stranded_against = active_clause(&e, &slug);
+        e.amend_constitution(&first.id, "monk-eee", "First change.")
+            .unwrap();
+
+        // Registered against the clause id that the first amendment retired,
+        // reproducing the state the fix has to clean up.
+        e.register_control(&Control {
+            id: "control:stranded".into(),
+            clause_id: stranded_against.clone(),
+            kind: ControlKind::Check,
+            power: EnforcementPower::Mechanical,
+            version: 1,
+            configuration: None,
+            status: ControlStatus::Active,
+        })
+        .unwrap();
+        assert!(
+            e.clause_controls(&active_clause(&e, &slug))
+                .unwrap()
+                .is_empty(),
+            "the control starts out orphaned"
+        );
+
+        let second = e.propose_amendment(Some("monk-eee")).unwrap();
+        harden_clause(&e, &second.id, 1);
+        e.amend_constitution(&second.id, "monk-eee", "Second change.")
+            .unwrap();
+
+        let controls = e.clause_controls(&active_clause(&e, &slug)).unwrap();
+        assert_eq!(
+            controls.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec!["control:stranded"],
+            "the orphan is adopted by the clause it was always meant to serve"
+        );
+    }
+
+    /// A retired control is a record of what once enforced a rule. Re-pointing
+    /// it would quietly rewrite that record onto a clause it never guarded.
+    #[test]
+    fn an_amendment_leaves_a_retired_control_naming_what_it_served() {
+        let e = engine();
+        governed(&e);
+        let draft = e.propose_amendment(Some("monk-eee")).unwrap();
+        let slug = harden_clause(&e, &draft.id, 0);
+        let before = active_clause(&e, &slug);
+
+        e.register_control(&Control {
+            id: "control:retired".into(),
+            clause_id: before.clone(),
+            kind: ControlKind::Check,
+            power: EnforcementPower::Mechanical,
+            version: 1,
+            configuration: None,
+            status: ControlStatus::Active,
+        })
+        .unwrap();
+        assert!(e.retire_control("control:retired").unwrap());
+
+        e.amend_constitution(&draft.id, "monk-eee", "Evidence rule needed teeth.")
+            .unwrap();
+
+        let after = active_clause(&e, &slug);
+        assert!(
+            e.clause_controls(&after).unwrap().is_empty(),
+            "a retired control does not follow the clause forward"
+        );
+        assert_eq!(e.clause_controls(&before).unwrap()[0].id, "control:retired");
     }
 
     #[test]
