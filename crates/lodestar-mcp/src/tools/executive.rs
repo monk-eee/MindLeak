@@ -5,7 +5,7 @@ use super::conformance::parse_evidence;
 use super::{
     bool_arg, i64_arg, ok, opt_str, optional_string_arg, rendered, req_str, str_array, text,
 };
-use lodestar_core::{GoverningClause, HumanQuestion, Lodestar, TaskScope};
+use lodestar_core::{now_unix, GoverningClause, HumanQuestion, Lodestar, TaskScope, TaskStatus};
 use serde_json::{json, Value};
 
 pub(super) fn definitions() -> Vec<Value> {
@@ -352,10 +352,11 @@ pub(super) fn dispatch(
                 paths: str_array(args, "paths"),
                 symbols: str_array(args, "symbols"),
             };
+            let agent = opt_str(args, "agent").unwrap_or_default();
             let won = engine
                 .claim_task_with_scope(
                     task_id,
-                    opt_str(args, "agent").unwrap_or_default().as_str(),
+                    agent.as_str(),
                     i64_arg(args, "lease_secs", 300),
                     &scope,
                 )
@@ -385,6 +386,31 @@ pub(super) fn dispatch(
                     if let Some(obj) = response.as_object_mut() {
                         obj.insert("claim_started_at".to_string(), json!(task.claim_started_at));
                         obj.insert("lease_expires_at".to_string(), json!(task.lease_expires_at));
+                    }
+                }
+            } else {
+                // A lost claim used to be a bare `won: false`. Every reason it
+                // can fail is knowable from the row the compare-and-swap just
+                // missed, and they call for opposite responses: wait for a live
+                // lease, pick different work if it is finished, unblock a
+                // blocker, rebuild a stale binary. Collapsing them into one
+                // boolean is why `scripts/claim-gate.mjs` exists at all — a
+                // whole diagnostic written to guess, after the fact, at
+                // something the plane knew at the time.
+                let task = engine
+                    .store()
+                    .get_task(task_id)
+                    .map_err(|e| e.to_string())?;
+                if let Some(obj) = response.as_object_mut() {
+                    obj.insert(
+                        "reason".to_string(),
+                        json!(lost_claim_reason(task.as_ref(), &agent, now_unix())),
+                    );
+                    if let Some(task) = task.as_ref() {
+                        obj.insert("status".to_string(), json!(task.status.as_str()));
+                        obj.insert("owner".to_string(), json!(task.owner));
+                        obj.insert("lease_expires_at".to_string(), json!(task.lease_expires_at));
+                        obj.insert("blocked_by".to_string(), json!(task.blocked_by));
                     }
                 }
             }
@@ -606,6 +632,56 @@ pub(super) fn dispatch(
 /// Attach any questions addressed to this agent to a response (ADR-0046).
 ///
 /// Delivered through calls the agent already makes — `claim_task` at pickup and
+/// Why a compare-and-swap claim missed, in words the caller can act on.
+///
+/// Every one of these was already knowable from the row; `claim_task` simply
+/// returned `false` and let the agent guess. They call for opposite responses —
+/// wait, pick different work, unblock a predecessor, rebuild a binary — so one
+/// boolean covering all of them is not terse, it is unusable. `claim-gate.mjs`
+/// is a whole diagnostic written to reconstruct, after the fact, something the
+/// plane knew at the moment it refused.
+fn lost_claim_reason(task: Option<&lodestar_core::Task>, agent: &str, now: i64) -> String {
+    let Some(task) = task else {
+        return "no such task".to_string();
+    };
+    if let Some(blocker) = task.blocked_by.as_deref() {
+        return format!("blocked by {blocker}; it must complete aligned first");
+    }
+    match task.status {
+        TaskStatus::Done | TaskStatus::Abandoned => {
+            format!(
+                "already {}; there is nothing to claim",
+                task.status.as_str()
+            )
+        }
+        _ => match task.owner.as_deref() {
+            // ADR-0054: a server built before session identities resolves a
+            // different id shape than the migrated ledger holds, so an agent is
+            // refused its own claim. Nothing in `won: false` hinted at that, and
+            // re-claiming never helps — it cost a long hunt once already.
+            Some(owner)
+                if !owner.starts_with("session:v1:") && agent.starts_with("session:v1:") =>
+            {
+                format!(
+                    "held under a pre-session identity ({owner}); this is a stale server binary \
+                     (ADR-0054), not a live claim. Rebuild and reinstall — re-claiming will not help"
+                )
+            }
+            Some(owner) if owner != agent => match task.lease_expires_at {
+                Some(expires) if expires > now => format!(
+                    "held by {owner} for another {}s; recover_claim can take it over with a reason",
+                    expires - now
+                ),
+                _ => format!("held by {owner} with a lapsed lease; use recover_claim to take it"),
+            },
+            _ => format!(
+                "status {} does not accept a claim right now",
+                task.status.as_str()
+            ),
+        },
+    }
+}
+
 /// `renew_lease` as the heartbeat — rather than by a new obligation to poll.
 /// A capability nobody remembers to call is adopted at the rate we measured for
 /// the whole intent plane: zero. The heartbeat is the important one, because a
@@ -1173,6 +1249,118 @@ mod tests {
             serde_json::from_str(legacy["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(task["status"], "open");
         assert!(task["blocked_by"].is_null());
+    }
+
+    /// A lost claim used to be a bare `won: false`. The reasons it can fail
+    /// call for opposite responses -- wait for a lease, pick different work,
+    /// unblock a predecessor, rebuild a stale binary -- so one boolean covering
+    /// all of them is not terse, it is unusable. `scripts/claim-gate.mjs` is a
+    /// whole diagnostic written to reconstruct after the fact what the plane
+    /// knew at the moment it refused.
+    #[test]
+    fn a_lost_claim_says_why_and_what_to_do_about_it() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let held = engine.create_task(&goal.id, "Theirs", "done").unwrap();
+        assert!(engine.claim_task(&held.id, "agent-a", 600).unwrap());
+
+        let lost = call(
+            &engine,
+            &json!({
+                "name": "claim_task",
+                "arguments": { "task_id": held.id, "agent": "agent-b" }
+            }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(lost["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["won"], false);
+        let reason = body["reason"]
+            .as_str()
+            .expect("a lost claim reports a reason");
+        assert!(reason.contains("agent-a"), "names the holder: {reason}");
+        assert!(
+            reason.contains("recover_claim"),
+            "names the verb that can take it: {reason}"
+        );
+        assert_eq!(
+            body["owner"], "agent-a",
+            "the holder is machine-readable too"
+        );
+
+        // Finished work and missing work are different refusals, and neither is
+        // "wait for the lease".
+        let finished = engine.create_task(&goal.id, "Shipped", "done").unwrap();
+        engine.abandon_task(&finished.id).unwrap();
+        let on_terminal = call(
+            &engine,
+            &json!({
+                "name": "claim_task",
+                "arguments": { "task_id": finished.id, "agent": "agent-b" }
+            }),
+        )
+        .unwrap();
+        let terminal: Value =
+            serde_json::from_str(on_terminal["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(
+            terminal["reason"]
+                .as_str()
+                .unwrap()
+                .contains("nothing to claim"),
+            "terminal work says so: {terminal}"
+        );
+
+        let missing = call(
+            &engine,
+            &json!({
+                "name": "claim_task",
+                "arguments": { "task_id": "task:nope", "agent": "agent-b" }
+            }),
+        )
+        .unwrap();
+        let absent: Value =
+            serde_json::from_str(missing["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(absent["reason"], "no such task");
+    }
+
+    /// The expensive one. A server built before ADR-0054 resolves a different
+    /// identity shape than the migrated ledger holds, so an agent is refused
+    /// its own claim and re-claiming never helps. Nothing in `won: false`
+    /// hinted at it, and the hunt cost hours.
+    #[test]
+    fn a_claim_refused_by_a_stale_binary_names_the_binary() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Mine", "done").unwrap();
+        assert!(engine.claim_task(&task.id, "copilot", 600).unwrap());
+
+        let lost = call(
+            &engine,
+            &json!({
+                "name": "claim_task",
+                "arguments": {
+                    "task_id": task.id,
+                    "agent": "session:v1:bff9bbe3968f16636cbc5522086114e3"
+                }
+            }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(lost["content"][0]["text"].as_str().unwrap()).unwrap();
+        let reason = body["reason"].as_str().unwrap();
+        assert!(reason.contains("ADR-0054"), "names the decision: {reason}");
+        assert!(
+            reason.contains("re-claiming will not help"),
+            "stops the obvious wrong response: {reason}"
+        );
+        assert!(
+            reason.contains("Rebuild"),
+            "names the actual remedy: {reason}"
+        );
     }
 
     // ADR-0060: `complete_task` refuses evidence whose `started_at` precedes

@@ -484,6 +484,15 @@ pub struct Task {
     /// When the task was parked (needs_input/paused); after a bounded grace it
     /// becomes reclaimable by the pool so a vanished owner cannot strand it.
     pub parked_at: Option<i64>,
+    /// Who accepted this task out of `in_review`, when, and the conformance
+    /// record they overrode. A resolution is a human judgement that outranks an
+    /// evidence-backed verdict, so it has to be at least as resolvable as the
+    /// verdict it replaces — an acceptance nobody can attribute is narration,
+    /// which is what the evidence chain exists to replace. `None` on rows
+    /// resolved before this was recorded; that gap is not reconstructable.
+    pub resolved_by: Option<String>,
+    pub resolved_at: Option<i64>,
+    pub resolved_conformance_id: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
