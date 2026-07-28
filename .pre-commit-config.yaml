@@ -133,3 +133,16 @@ repos:
         types: [rust]
         pass_filenames: false
         stages: [pre-push]
+
+      # The guards themselves. These cover the conformance gate, merge-driver
+      # guard, claim gate, publication record, delivery queue and board health
+      # — the machinery that decides whether work is honest. Cheap enough to
+      # run on every push, and a broken guard is worth catching before it is
+      # trusted rather than after.
+      - id: script-tests
+        name: script tests (guards for the guards)
+        entry: node scripts/script-tests.mjs
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
