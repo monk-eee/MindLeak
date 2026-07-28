@@ -152,6 +152,16 @@ pub struct ResetOutcome {
     pub maintenance_leases_removed: usize,
 }
 
+/// Counts collapsed by a workspace-path repair (ADR-0038): absolute node ids
+/// rewritten onto the repo-relative id the rest of the fleet writes.
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
+pub struct RepairOutcome {
+    /// Nodes whose id was rewritten to its repo-relative form.
+    pub nodes_rewritten: usize,
+    /// Nodes that merged into an id that already existed.
+    pub nodes_merged: usize,
+}
+
 /// An unresolved artifact plus every deterministic path it may reconcile to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactStub {
