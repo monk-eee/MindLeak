@@ -392,6 +392,112 @@
           "when": "view == mindleak.evidenceView && viewItem == evidence.group",
           "group": "inline@2"
         }
+      ],
+      "commandPalette": [
+        {
+          "command": "mindleak.readiness.refresh",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.refresh",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.board.refresh",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.claimForMe",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.renew",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.release",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.acceptReview",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.retryReview",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.design.refresh",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.design.accept",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.design.reject",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.design.promote",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.design.revisePromotion",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.design.openAdr",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.design.inspectPromotion",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.telemetry.refresh",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.evidence.refresh",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.evidence.inspect",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.evidence.export",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.recover",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.completeWithEvidence",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.inspectEvidence",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.answer",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.retire",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.pause",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.task.resume",
+          "when": "false"
+        }
       ]
     },
     "viewsWelcome": [
@@ -400,123 +506,144 @@
         "contents": "No design items are registered.\n[Sync repository ADRs](command:mindleak.design.sync)"
       }
     ],
-    "configuration": {
-      "title": "MindLeak",
-      "properties": {
-        "mindleak.serverPath": {
-          "type": "string",
-          "default": "mindleak-mcp",
-          "description": "Path to the mindleak-mcp executable. Defaults to 'mindleak-mcp' on PATH; the extension also auto-detects a debug/release build in the workspace target/ folder."
-        },
-        "mindleak.databasePath": {
-          "type": "string",
-          "default": "",
-          "description": "Explicit path to the MindLeak graph database (MINDLEAK_DB). Empty uses the shared per-repository user-local store."
-        },
-        "mindleak.autoIngestOnSave": {
-          "type": "boolean",
-          "default": true,
-          "description": "Ingest a file's symbols into the graph whenever it is saved."
-        },
-        "mindleak.captureExecutions": {
-          "type": "boolean",
-          "default": true,
-          "description": "Capture shell-integrated terminal command metadata and exit codes as local execution evidence."
-        },
-        "mindleak.captureTerminalOutput": {
-          "type": "boolean",
-          "default": false,
-          "description": "Retain bounded, redacted terminal output with execution evidence. Disabled by default."
-        },
-        "mindleak.terminalOutputMaxChars": {
-          "type": "integer",
-          "default": 8192,
-          "minimum": 0,
-          "maximum": 65536,
-          "description": "Maximum terminal-output characters retained per execution when output capture is enabled."
-        },
-        "mindleak.captureExcludePathPrefixes": {
-          "type": "array",
-          "items": {
-            "type": "string"
+    "configuration": [
+      {
+        "title": "MindLeak: Servers",
+        "order": 1,
+        "properties": {
+          "mindleak.serverPath": {
+            "type": "string",
+            "default": "mindleak-mcp",
+            "description": "Path to the mindleak-mcp executable. Defaults to 'mindleak-mcp' on PATH; the extension also auto-detects a debug/release build in the workspace target/ folder."
           },
-          "default": [
-            ".git",
-            ".mindleak",
-            ".lodestar",
-            "coverage",
-            "node_modules",
-            "target"
-          ],
-          "description": "Workspace-relative path prefixes excluded from terminal changed-file evidence."
-        },
-        "mindleak.maxChangedFilesPerExecution": {
-          "type": "integer",
-          "default": 200,
-          "minimum": 0,
-          "maximum": 2000,
-          "description": "Maximum workspace paths attached to one captured terminal execution."
-        },
-        "mindleak.captureCommits": {
-          "type": "boolean",
-          "default": true,
-          "description": "Capture new Git commits and changed paths as local intent evidence."
-        },
-        "mindleak.snapshotLimit": {
-          "type": "integer",
-          "default": 60,
-          "description": "Maximum number of nodes to render in the visualizer."
-        },
-        "mindleak.telemetryRefreshSecs": {
-          "type": "integer",
-          "default": 3,
-          "minimum": 1,
-          "maximum": 300,
-          "description": "Seconds between real-time refreshes of the Telemetry pane while it is visible."
-        },
-        "mindleak.agentId": {
-          "type": "string",
-          "default": "vscode",
-          "description": "Base attribution label. Each activation registers one client-minted session token and shares the resulting stable identity across both MCP planes."
-        },
-        "mindleak.autonomousConsolidation": {
-          "type": "boolean",
-          "default": false,
-          "description": "Opt in to idle, model-backed consolidation of expiring proven signal. Disabled by default to prevent autonomous token spend."
-        },
-        "mindleak.consolidateIdleSecs": {
-          "type": "integer",
-          "default": 300,
-          "minimum": 30,
-          "maximum": 86400,
-          "description": "Idle seconds before an enabled autonomous consolidation pass."
-        },
-        "mindleak.consolidateMinIntervalSecs": {
-          "type": "integer",
-          "default": 3600,
-          "minimum": 60,
-          "maximum": 86400,
-          "description": "Minimum seconds between autonomous consolidation attempts."
-        },
-        "mindleak.consolidateMaxNodes": {
-          "type": "integer",
-          "default": 20,
-          "minimum": 1,
-          "maximum": 200,
-          "description": "Maximum signal candidates processed by one autonomous consolidation pass."
-        },
-        "mindleak.lodestarServerPath": {
-          "type": "string",
-          "default": "lodestar-mcp",
-          "description": "Path to the lodestar-mcp executable (the Intent Plane). Defaults to 'lodestar-mcp' on PATH; a workspace target/ build is auto-detected."
-        },
-        "mindleak.lodestarDatabasePath": {
-          "type": "string",
-          "default": "",
-          "description": "Explicit path to the Lodestar intent database (LODESTAR_DB). Empty uses the shared per-repository user-local store."
+          "mindleak.lodestarServerPath": {
+            "type": "string",
+            "default": "lodestar-mcp",
+            "description": "Path to the lodestar-mcp executable (the Intent Plane). Defaults to 'lodestar-mcp' on PATH; a workspace target/ build is auto-detected."
+          },
+          "mindleak.databasePath": {
+            "type": "string",
+            "default": "",
+            "description": "Explicit path to the MindLeak graph database (MINDLEAK_DB). Empty uses the shared per-repository user-local store."
+          },
+          "mindleak.lodestarDatabasePath": {
+            "type": "string",
+            "default": "",
+            "description": "Explicit path to the Lodestar intent database (LODESTAR_DB). Empty uses the shared per-repository user-local store."
+          },
+          "mindleak.agentId": {
+            "type": "string",
+            "default": "vscode",
+            "description": "Base attribution label. Each activation registers one client-minted session token and shares the resulting stable identity across both MCP planes."
+          }
+        }
+      },
+      {
+        "title": "MindLeak: Capture",
+        "order": 2,
+        "properties": {
+          "mindleak.autoIngestOnSave": {
+            "type": "boolean",
+            "default": true,
+            "description": "Ingest a file's symbols into the graph whenever it is saved."
+          },
+          "mindleak.captureExecutions": {
+            "type": "boolean",
+            "default": true,
+            "description": "Capture shell-integrated terminal command metadata and exit codes as local execution evidence."
+          },
+          "mindleak.captureCommits": {
+            "type": "boolean",
+            "default": true,
+            "description": "Capture new Git commits and changed paths as local intent evidence."
+          },
+          "mindleak.captureTerminalOutput": {
+            "type": "boolean",
+            "default": false,
+            "description": "Retain bounded, redacted terminal output with execution evidence. Disabled by default."
+          },
+          "mindleak.terminalOutputMaxChars": {
+            "type": "integer",
+            "default": 8192,
+            "minimum": 0,
+            "maximum": 65536,
+            "description": "Maximum terminal-output characters retained per execution when output capture is enabled."
+          },
+          "mindleak.captureExcludePathPrefixes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [
+              ".git",
+              ".mindleak",
+              ".lodestar",
+              "coverage",
+              "node_modules",
+              "target"
+            ],
+            "description": "Workspace-relative path prefixes excluded from terminal changed-file evidence."
+          },
+          "mindleak.maxChangedFilesPerExecution": {
+            "type": "integer",
+            "default": 200,
+            "minimum": 0,
+            "maximum": 2000,
+            "description": "Maximum workspace paths attached to one captured terminal execution."
+          }
+        }
+      },
+      {
+        "title": "MindLeak: Consolidation",
+        "order": 3,
+        "properties": {
+          "mindleak.autonomousConsolidation": {
+            "type": "boolean",
+            "default": false,
+            "description": "Opt in to idle, model-backed consolidation of expiring proven signal. Disabled by default to prevent autonomous token spend."
+          },
+          "mindleak.consolidateIdleSecs": {
+            "type": "integer",
+            "default": 300,
+            "minimum": 30,
+            "maximum": 86400,
+            "description": "Idle seconds before an enabled autonomous consolidation pass."
+          },
+          "mindleak.consolidateMinIntervalSecs": {
+            "type": "integer",
+            "default": 3600,
+            "minimum": 60,
+            "maximum": 86400,
+            "description": "Minimum seconds between autonomous consolidation attempts."
+          },
+          "mindleak.consolidateMaxNodes": {
+            "type": "integer",
+            "default": 20,
+            "minimum": 1,
+            "maximum": 200,
+            "description": "Maximum signal candidates processed by one autonomous consolidation pass."
+          }
+        }
+      },
+      {
+        "title": "MindLeak: Views",
+        "order": 4,
+        "properties": {
+          "mindleak.snapshotLimit": {
+            "type": "integer",
+            "default": 60,
+            "description": "Maximum number of nodes to render in the visualizer."
+          },
+          "mindleak.telemetryRefreshSecs": {
+            "type": "integer",
+            "default": 3,
+            "minimum": 1,
+            "maximum": 300,
+            "description": "Seconds between real-time refreshes of the Telemetry pane while it is visible."
+          }
         }
       }
-    }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
