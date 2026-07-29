@@ -71,6 +71,28 @@ test("an empty commit has nothing to attribute", () => {
 /// load-bearing enough to check against real git rather than a fake, because if
 /// it were false a clean merge would attribute another agent's whole branch to
 /// whoever ran the merge.
+///
+/// The environment scrubbing below is not decoration. This suite runs from the
+/// pre-push hook, and git exports GIT_DIR, GIT_INDEX_FILE and friends to its
+/// hooks. Inherited, they outrank `cwd`: every git call here then reads the temp
+/// directory's files but writes to the REAL repository. Without this, the test
+/// committed its fixtures onto the branch being pushed and left the worktree
+/// checked out on a branch called `theirs`.
+const isolatedGitEnvironment = () => {
+  const isolated = { ...process.env };
+  for (const variable of [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  ]) {
+    delete isolated[variable];
+  }
+  return isolated;
+};
+
 test("git reports only the conflict resolutions for a merge", () => {
   const repo = mkdtempSync(join(tmpdir(), "mindleak-merge-"));
   try {
@@ -79,6 +101,7 @@ test("git reports only the conflict resolutions for a merge", () => {
         cwd: repo,
         encoding: "utf8",
         stdio: "pipe",
+        env: isolatedGitEnvironment(),
       }).trim();
     const commit = (message) => git(["commit", "-m", message, "--no-verify"]);
 
