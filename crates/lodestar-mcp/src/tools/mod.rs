@@ -782,6 +782,99 @@ mod tests {
         assert_eq!(session.context.behind, Some(0));
     }
 
+    /// Every tool the server will answer to is a tool it advertises.
+    ///
+    /// `active_knowledge` dispatched for months and appeared in no
+    /// `definitions()` list, so the only way to discover that the repository's
+    /// learned knowledge could be read at all was to read the Rust. From the
+    /// tool surface the knowledge base looked write-only: record, promote,
+    /// reconfirm, prune, and no way to see what was already known — which is
+    /// exactly the state that makes an agent rediscover, expensively, what
+    /// somebody already wrote down.
+    ///
+    /// This is the mirror of the undeclared-argument bug above. There the
+    /// contract asked for something it never mentioned; here the server answers
+    /// to something it never mentions. Both fail the same way: the code is
+    /// right, the advertisement is wrong, and nothing breaks loudly enough to
+    /// be found.
+    #[test]
+    fn every_tool_the_server_answers_to_is_advertised() {
+        const SOURCES: [(&str, &str); 13] = [
+            ("amendments", include_str!("amendments.rs")),
+            ("conformance", include_str!("conformance.rs")),
+            ("constitution", include_str!("constitution.rs")),
+            ("controls", include_str!("controls.rs")),
+            ("design", include_str!("design.rs")),
+            (
+                "design_materialization",
+                include_str!("design_materialization.rs"),
+            ),
+            ("evidence", include_str!("evidence.rs")),
+            ("executive", include_str!("executive.rs")),
+            ("fleet", include_str!("fleet.rs")),
+            ("knowledge", include_str!("knowledge.rs")),
+            ("lifecycle", include_str!("lifecycle.rs")),
+            ("waivers", include_str!("waivers.rs")),
+            ("mod", include_str!("mod.rs")),
+        ];
+
+        let advertised: Vec<String> = list()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+            .collect();
+
+        let mut undeclared: Vec<String> = Vec::new();
+        let mut dispatched = 0usize;
+
+        for (module, source) in SOURCES {
+            // Only the tool dispatch itself. Scanning whole files also matches
+            // `"ratchet" => ControlKind::Ratchet` and friends, which are enum
+            // parsing, not tools — a guard that reports those trains people to
+            // ignore it.
+            let mut from = 0usize;
+            while let Some(at) = source[from..].find("match name {") {
+                let start = from + at + "match name {".len();
+                let end = source[start..]
+                    .find("_ => None,")
+                    .map(|e| start + e)
+                    .unwrap_or(source.len());
+                let block = &source[start..end];
+                from = end;
+
+                for (arm, _) in block.match_indices("\" => ") {
+                    let before = &block[..arm];
+                    let Some(open) = before.rfind('"') else {
+                        continue;
+                    };
+                    let name = &before[open + 1..];
+                    if name.is_empty() {
+                        continue;
+                    }
+                    dispatched += 1;
+                    if !advertised.iter().any(|a| a == name) {
+                        undeclared.push(format!("{module}::{name}"));
+                    }
+                }
+            }
+        }
+
+        // A source scan that matches nothing passes silently, which is the
+        // failure this test exists to catch, one level up.
+        assert!(
+            dispatched >= 40,
+            "the scan found only {dispatched} dispatch arms, so it is no longer \
+             reading the dispatch it claims to guard"
+        );
+
+        undeclared.sort();
+        undeclared.dedup();
+        assert!(
+            undeclared.is_empty(),
+            "the server answers to these but advertises none of them:\n  {}",
+            undeclared.join("\n  ")
+        );
+    }
+
     #[test]
     fn tool_contract_requires_evidence_and_exposes_binding_mode() {
         let tools = list();

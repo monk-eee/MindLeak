@@ -17,8 +17,11 @@
 //   node scripts/scoped-commit.mjs -m "<message>" -- <path> [<path> ...]
 //   node scripts/scoped-commit.mjs -F <msgfile>  -- <path> [<path> ...]
 //   ... --allow-foreign-wip   (single-operator escape hatch; see below)
+//   ... --adopt-worktree      (deliberately take over a peer's worktree)
 
 import { execFileSync } from "node:child_process";
+
+import { checkWorktreeOwnership, refusalMessage } from "./worktree-owner.mjs";
 
 const argv = process.argv.slice(2);
 const bail = (message) => {
@@ -107,6 +110,21 @@ if (
       "--allow-foreign-wip.",
   );
   process.exit(3);
+}
+
+// Worktree ownership (ADR-0038). The guard above protects the primary checkout,
+// but it assumed a linked worktree is yours by construction — and that
+// assumption is the hole: nothing stopped an agent committing in a *peer's*
+// worktree. See scripts/worktree-owner.mjs for why that is corrupting.
+const ownership = checkWorktreeOwnership({
+  adopt: opts.includes("--adopt-worktree"),
+});
+
+if (ownership.action === "refuse") {
+  console.error(
+    `scoped-commit: refusing to commit — ${refusalMessage(ownership)}`,
+  );
+  process.exit(4);
 }
 
 // Stage only the declared paths.
