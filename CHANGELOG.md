@@ -6,6 +6,32 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **A worktree now refuses a second writer.** Worktree isolation assumed a
+  linked worktree belonged to whoever was standing in it — git isolates files,
+  the index, and branch selection, but not *who may type*. So nothing stopped an
+  agent committing inside a peer's checkout, which is exactly what happened:
+  a commit landed in a branch its author did not own, mid-merge, corrupting
+  files there. The failure surfaced in the *other* agent's branch, naming files
+  the intruder never touched, which is what made it expensive rather than merely
+  wrong. A linked worktree now records the session that first commits in it, and
+  refuses any other session, both in `scripts/scoped-commit.mjs` and in a new
+  `worktree-owner` pre-commit hook that covers every commit path. The marker
+  lives in the per-worktree git dir, so it is never committed and never collides
+  between worktrees. A deliberate handover is still possible with
+  `--adopt-worktree`; an accidental one is not. Verified in both directions: the
+  previous script let the intruder commit land, the current one exits 4 and
+  leaves the branch untouched.
+- **Five fleet-discipline clauses adopted into the constitution**
+  (`mindleak-fleet-discipline@1`): worktree ownership, claim-before-first-commit,
+  provenance recorded at commit time, a lapsed claim being a human matter, and
+  no shell-specific plumbing in committed instructions. Each is drawn from a
+  measured incident rather than from principle. Two are backed by real
+  mechanisms and reach their declared consequence — `control:worktree-owner`
+  (mechanical, ceiling `block`) and `control:ingest-commit` (observed, ceiling
+  `review`); the other three resolve at advise until a mechanism exists, which
+  is the honest reading of a rule nothing enforces.
+
 ### Changed
 - **A completion now says whether its evidence affirmed anything.** Reaching
   `done` said nothing about whether the conformance receipt behind it proved
