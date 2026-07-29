@@ -44,6 +44,16 @@ function toArtifactId(path) {
  * `{ governed_nodes: string[], receipts: [{ verdict, token, covered_nodes }] }`.
  * `changedPaths` are repo-relative paths from the PR. Returns the violations:
  * changed, governed, non-doc nodes with no covering `aligned` receipt.
+ *
+ * It also returns what it was able to check. `ok` alone cannot distinguish
+ * "every governed change is proven" from "nothing you changed was governed",
+ * and on this repository it is nearly always the second: measured 2026-07-29,
+ * the constitution binds 8 code nodes and none of them are in `crates/`, so a
+ * pull request touching fifty Rust files passes this gate having inspected
+ * none of them. That is the same shape as a conformance receipt that is
+ * `aligned` over an empty bundle — agreement about nothing, reported in the
+ * same words as proof. The caller is given the numbers so it can say which one
+ * it means.
  */
 export function evaluateGate(artifact, changedPaths) {
   const governed = new Set(artifact.governed_nodes ?? []);
@@ -57,19 +67,36 @@ export function evaluateGate(artifact, changedPaths) {
   }
 
   const violations = [];
+  let inScope = 0;
+  let ungoverned = 0;
   for (const path of changedPaths) {
     if (isDocumentationNode(path)) {
       continue;
     }
     const id = toArtifactId(path);
-    if (governed.has(id) && !covered.has(id)) {
+    if (!governed.has(id)) {
+      ungoverned += 1;
+      continue;
+    }
+    inScope += 1;
+    if (!covered.has(id)) {
       violations.push({
         node: id,
         reason: "governed code changed without an aligned conformance receipt",
       });
     }
   }
-  return { ok: violations.length === 0, violations };
+  return {
+    ok: violations.length === 0,
+    violations,
+    // How much of this change the constitution actually had an opinion about.
+    coverage: {
+      inScope,
+      ungoverned,
+      governedNodes: governed.size,
+      checkedAnything: inScope > 0,
+    },
+  };
 }
 
 /**
@@ -149,7 +176,7 @@ function main() {
 
   const artifact = JSON.parse(fs.readFileSync(options.artifact, "utf8"));
   const changed = resolveChangedPaths(options);
-  const { ok, violations } = evaluateGate(artifact, changed);
+  const { ok, violations, coverage } = evaluateGate(artifact, changed);
 
   // Reported whatever the gate decides: a binding that names nothing is not a
   // missing receipt, it is governance that has quietly stopped applying, and
@@ -168,9 +195,21 @@ function main() {
   }
 
   if (ok) {
-    console.log(
-      `conformance-gate: OK — ${changed.length} changed path(s), no governed gaps.`,
-    );
+    // Say what was inspected, not just that nothing failed. "No governed gaps"
+    // over an empty scope is the gate agreeing about nothing, and it used to
+    // print in the same words as a real pass.
+    if (coverage.checkedAnything) {
+      console.log(
+        `conformance-gate: OK — ${coverage.inScope} governed change(s) covered by an aligned receipt, ` +
+          `${coverage.ungoverned} outside the constitution, of ${changed.length} changed path(s).`,
+      );
+    } else {
+      console.log(
+        `conformance-gate: CHECKED NOTHING — none of ${coverage.ungoverned} changed code path(s) ` +
+          `are governed (the constitution binds ${coverage.governedNodes} node(s)). ` +
+          "This is not a pass; there was nothing in scope to verify.",
+      );
+    }
     if (dangling.length && options.strict) {
       process.exit(1);
     }

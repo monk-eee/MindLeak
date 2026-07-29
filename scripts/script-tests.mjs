@@ -36,9 +36,33 @@ if (tests.length === 0) {
 
 console.log(`script-tests: running ${tests.length} test files`);
 
+// Git exports GIT_DIR, GIT_INDEX_FILE and friends to its hooks, and this suite
+// runs from pre-push. Inherited by a test that drives git in a temp directory,
+// those variables outrank `cwd`: git reads the fixture's files and writes to the
+// REAL repository. That is not hypothetical — a test doing exactly this
+// committed its fixtures onto the branch being pushed and left the worktree
+// checked out on a branch called `theirs`, which took a while to understand
+// because every symptom pointed at the fixture rather than at the environment.
+//
+// Scrubbing here rather than in each test is deliberate: remembering to do it
+// per test is precisely the discipline that failed, and a test written next year
+// gets this for free.
+const environment = { ...process.env };
+for (const variable of [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+]) {
+  delete environment[variable];
+}
+
 const child = spawn(process.execPath, ["--test", ...tests], {
   cwd: path.join(here, ".."),
   stdio: "inherit",
+  env: environment,
 });
 
 child.on("exit", (code, signal) => {
