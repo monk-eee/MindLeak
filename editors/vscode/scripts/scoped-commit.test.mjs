@@ -26,6 +26,9 @@ const isolatedGitEnvironment = () => {
   for (const variable of gitRepositoryVariables) {
     delete isolated[variable];
   }
+  // Tests must not inherit the ambient agent identity of whoever runs them, or
+  // the worktree-ownership guard would behave differently in a fleet than in CI.
+  delete isolated.LODESTAR_SESSION_ID;
   return isolated;
 };
 
@@ -171,5 +174,90 @@ describe("scoped-commit", () => {
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     expect(git(repo, ["show", "--name-only", "--format=", "HEAD"])).toBe("mine.txt");
+  }, 30_000);
+
+  // Worktree ownership (ADR-0038). The guard above deliberately does not fire in
+  // a linked worktree because "a linked worktree belongs to one agent" — but
+  // nothing enforced *which* agent. An agent cd-ing into a peer's worktree and
+  // committing there raced that peer's edits and corrupted their in-flight
+  // merge. Ownership is now recorded on first commit and checked on every one.
+  const commitAs = (cwd, session, args) =>
+    spawnSync(process.execPath, [scopedCommit, ...args], {
+      cwd,
+      encoding: "utf8",
+      env: { ...isolatedGitEnvironment(), LODESTAR_SESSION_ID: session },
+    });
+
+  it("refuses to commit in a worktree owned by another agent", () => {
+    const repo = repoWithSecondWorktree();
+    const linked = attachWorktree(repo);
+
+    // The owning agent commits first, which records ownership.
+    writeFileSync(join(linked, "theirs.txt"), "owner's work\n");
+    const owner = commitAs(linked, "session-owner", ["-m", "owner", "--", "theirs.txt"]);
+    expect(owner.status, `${owner.stdout}\n${owner.stderr}`).toBe(0);
+
+    // A different agent wanders in.
+    writeFileSync(join(linked, "mine.txt"), "intruder\n");
+    const intruder = commitAs(linked, "session-intruder", ["-m", "scoped", "--", "mine.txt"]);
+
+    expect(intruder.status).toBe(4);
+    expect(intruder.stderr).toMatch(/belongs to another agent/);
+    expect(intruder.stderr).toMatch(/session-owner/);
+    expect(intruder.stderr).toMatch(/worktree add/);
+    // Their history is untouched and nothing of the intruder's was staged.
+    expect(git(linked, ["log", "--oneline"]).split("\n")).toHaveLength(2);
+    expect(git(linked, ["diff", "--cached", "--name-only"])).toBe("");
+  }, 30_000);
+
+  it("lets the owning agent keep committing in its own worktree", () => {
+    const repo = repoWithSecondWorktree();
+    const linked = attachWorktree(repo);
+
+    writeFileSync(join(linked, "mine.txt"), "first\n");
+    expect(commitAs(linked, "session-owner", ["-m", "one", "--", "mine.txt"]).status).toBe(0);
+    writeFileSync(join(linked, "mine.txt"), "second\n");
+    const again = commitAs(linked, "session-owner", ["-m", "two", "--", "mine.txt"]);
+
+    expect(again.status, `${again.stdout}\n${again.stderr}`).toBe(0);
+    expect(git(linked, ["log", "--oneline"]).split("\n")).toHaveLength(3);
+  }, 30_000);
+
+  it("allows a deliberate handover with --adopt-worktree", () => {
+    const repo = repoWithSecondWorktree();
+    const linked = attachWorktree(repo);
+
+    writeFileSync(join(linked, "theirs.txt"), "owner's work\n");
+    commitAs(linked, "session-owner", ["-m", "owner", "--", "theirs.txt"]);
+
+    writeFileSync(join(linked, "mine.txt"), "handed over\n");
+    const adopted = commitAs(linked, "session-next", [
+      "-m",
+      "scoped",
+      "--adopt-worktree",
+      "--",
+      "mine.txt",
+    ]);
+
+    expect(adopted.status, `${adopted.stdout}\n${adopted.stderr}`).toBe(0);
+    // Ownership transferred, so the original owner is now the one refused.
+    writeFileSync(join(linked, "theirs.txt"), "coming back\n");
+    const rebuffed = commitAs(linked, "session-owner", ["-m", "back", "--", "theirs.txt"]);
+    expect(rebuffed.status).toBe(4);
+  }, 30_000);
+
+  it("stays out of the way when no session identity is set", () => {
+    // A human running the script directly is not an agent in the fleet, and
+    // must not be locked out of their own worktree.
+    const repo = repoWithSecondWorktree();
+    const linked = attachWorktree(repo);
+
+    writeFileSync(join(linked, "theirs.txt"), "owner's work\n");
+    commitAs(linked, "session-owner", ["-m", "owner", "--", "theirs.txt"]);
+
+    writeFileSync(join(linked, "mine.txt"), "human\n");
+    const human = commit(linked, ["-m", "human", "--", "mine.txt"]);
+
+    expect(human.status, `${human.stdout}\n${human.stderr}`).toBe(0);
   }, 30_000);
 });
