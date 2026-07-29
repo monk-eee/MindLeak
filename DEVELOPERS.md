@@ -258,6 +258,64 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **One session's agent id changed under a running server, silently resetting
+  its claim's evidence window and locking it out of its own task — OBSERVED,
+  FIXED by [ADR-0063](docs/adr/0063-a-migration-may-tidy-the-past-never-the-present.md);
+  one residual gap noted at the end.** Across a single session
+  holding one client-minted token, `open_session` (both planes) returned
+  `session:v1:copilot:b4baf280…`, while `board` reported the task's owner as
+  `session:v1:b4baf280…` — the same hash, with and without the label
+  (ADR-0054 removed it).
+  The owner string **flipped between two consecutive `board` reads with no
+  intervening claim** (labelled at `1785234086`, unlabelled at `1785234449`),
+  which points at more than one `lodestar-mcp` build attached to the same
+  `spec.db` rather than at anything the task did. **Not a stale deployment** —
+  that was the first diagnosis and it was wrong. Driving the same session token
+  through each binary on disk, both repository release builds *and* the
+  installed extension binary returned the collapsed id. Only the **live**
+  extension-hosted processes returned the labelled one: they had been started
+  from an earlier build and the file underneath them was replaced while they
+  kept running. Restarting the server was the whole remedy; rebuilding and
+  reinstalling would have changed nothing. The tell is a live process whose
+  start time predates the mtime of its own binary (ADR-0063).
+  Impact, measured on `task:f6daad456855`, is that the whole closing loop is
+  unreachable for such a session:
+  - `check_conformance` refuses with *"evidence agent does not own the task"*;
+  - `ask_question` returns `needs_input: false` — the owner guard rejects it, so
+    the task cannot even be **parked** with an explanation;
+  - the task stays `claimed` until the lease lapses, with no receipt and no
+    durable note, which is the one outcome the ledger exists to prevent.
+  A second, independent effect compounds it: a re-claim after a lapse only
+  preserves `claim_started_at` for the *same* owner (ADR-0048), so a changed id
+  reads as a different agent, opens a **fresh** window, and reports
+  `claim_lapses: 0` as if nothing happened. Work committed at `1785223462` under
+  a window started at `1785223449` fell outside a window later moved to
+  `1785234086`, and `check_conformance` refused the real evidence with
+  *"evidence interval falls outside the live claim"*.
+  Two things worth deciding rather than patching: whether identity should be
+  pinned per session against the *token* rather than whatever the current binary
+  formats, and whether a window reset should be visible (it currently looks
+  identical to a first claim). Do not "fix" this by re-committing work into a
+  fresh window, or by completing on an empty in-window bundle — both assert
+  proof the ledger never saw.
+  **Fixed:** ADR-0063 stops the collapse rewriting the owner of a live claim and
+  records identity migrations once per database, and `ask_question` now says why
+  it refused instead of returning `needs_input: false` for every reason at once.
+  **Still open:** a window reset remains invisible — a fresh window opened
+  because the owner id changed still reports `claim_lapses: 0`, identical to a
+  first claim. Whether identity should be pinned per session against the *token*
+  rather than whatever the running process formats is also undecided.
+- **Unit Test MCP with `framework=custom` run from `editors/vscode` silently
+  runs Cargo, not Vitest, and reports PASSED — CONFIRMED, config footgun.**
+  Cargo walks up from `editors/vscode` and finds the workspace `Cargo.toml`, so
+  the Rust suite runs and goes green while the extension tests never execute.
+  Verified by breaking a `util.test.ts` assertion on purpose: `framework=custom`
+  reported PASSED; `framework=vitest` with
+  `root_dir=<repo>/editors/vscode` reported the real failure and the assertion
+  diff. Any extension change validated through the custom adapter has a
+  meaningless green behind it. Use `framework=vitest` for
+  `editors/vscode`, and treat a suspiciously fast/slow duration as the tell.
+
 - **The conformance chain governs 8 code nodes, none of them Rust, and the gate
   that would enforce it cannot run — MEASURED, partially mitigated.**
   `ARCHITECTURE.md` calls the conformance chain "the only trustworthy proof that
