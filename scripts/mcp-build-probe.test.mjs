@@ -1,4 +1,4 @@
-// Tests for the build probe. Run with: node --test scripts/
+// Tests for the build probe. Run with: node scripts/script-tests.mjs
 //
 // The regression it guards: staleness was diagnosed from file dates and from
 // how far a checkout sat behind `main`, and both were wrong. Two worktrees five

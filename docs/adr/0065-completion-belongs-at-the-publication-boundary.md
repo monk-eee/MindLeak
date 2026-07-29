@@ -1,6 +1,6 @@
 # ADR-0065: Completion belongs at the publication boundary
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-29
 - Related: [ADR-0009](0009-evidence-backed-conformance.md) (evidence-backed
   conformance),
