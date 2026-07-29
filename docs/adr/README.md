@@ -76,6 +76,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0066](0066-retrieval-rides-on-the-question-already-asked.md) | Retrieval rides on the question already asked | Proposed |
 | [0067](0067-a-claim-is-a-statement-that-you-are-working-on-something.md) | A claim is a statement that you are working on something | Accepted |
 | [0068](0068-an-amendment-carries-the-work-it-renames.md) | An amendment carries the work it renames | Proposed |
+| [0069](0069-resolutions-that-predate-attribution-are-accepted-as-historical.md) | Resolutions that predate attribution are accepted as historical | Accepted |
 
 ## Writing a new ADR
 
