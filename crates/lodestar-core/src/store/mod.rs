@@ -19,6 +19,7 @@ mod design;
 mod design_materialization;
 #[cfg(test)]
 mod design_tests;
+mod events;
 mod fleet;
 mod goals;
 mod knowledge;
@@ -30,6 +31,7 @@ mod waivers;
 
 pub(crate) use claim_transfer::RecoveringSession;
 pub(crate) use coordination::ConformanceAudit;
+pub(crate) use events::import_genesis;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ClaimTransfer {

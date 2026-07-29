@@ -59,11 +59,13 @@ that only stores the present.
 
 ## Decision
 
-1. **An append-only `events` table is the authoritative record of the task
+1. **An append-only `task_events` table is the authoritative record of the task
    lifecycle.** One row per transition, typed, carrying the actor, the
    recorded-at timestamp, and the transition's payload. Rows are never updated
    and never deleted. Everything that today overwrites task state instead emits
-   an event.
+   an event. The table is named for its scope rather than `events`, because
+   decision 6 confines this to the task domain and a bare `events` would promise
+   a generality it does not have.
 
 2. **`tasks` becomes a projection of that log — but is never dropped and
    rebuilt.** ADR-0063 is explicit that a live claim is not ours to touch, and

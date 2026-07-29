@@ -11,7 +11,8 @@ use crate::util::short_hash;
 
 use super::{collect, goals, LodestarStore};
 
-const TASK_COLS: &str = "id, goal_id, parent_task_id, title, acceptance, status, owner, \
+pub(super) const TASK_COLS: &str =
+    "id, goal_id, parent_task_id, title, acceptance, status, owner, \
     claim_started_at, lease_expires_at, blocked_by, parked_at, created_at, updated_at, \
     claim_lapses, unleased_seconds, resolved_by, resolved_at, resolved_conformance_id";
 const CONFORMANCE_COLS: &str =
@@ -1177,7 +1178,7 @@ fn validate_dependency_on(
     Ok(false)
 }
 
-fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
+pub(super) fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
     let status: String = row.get(5)?;
     Ok(Task {
         id: row.get(0)?,
