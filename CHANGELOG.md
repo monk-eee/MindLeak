@@ -7,6 +7,20 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Shell-specific plumbing is now refused at the commit.** The project already
+  required platform-agnostic operation, but that rule is stated as an outcome,
+  so it was only ever noticed after something had broken on someone else's
+  machine — and in practice it was broken repeatedly by the agents who had just
+  read it. The `no-shell-plumbing` hook checks the plumbing itself: a
+  documentation fence tagged `powershell`/`pwsh`/`cmd`/`bat` is a command the
+  reader on another OS cannot run, and an inline interpreter one-liner
+  (`node -e`, `python -c`, `powershell -Command`, `cmd /c`) embeds a program
+  inside shell quoting that every shell quotes differently — the same line that
+  works in one mangles its input in another, silently, surfacing only when
+  someone reads the file it wrote. Deliberately narrow so it stays quiet on
+  legitimate usage: ```bash fences and ordinary interpreter invocations pass.
+  It is a ratchet, not a backlog — the tracked tree is already clean, and a test
+  asserts that it stays so.
 - **A worktree now refuses a second writer.** Worktree isolation assumed a
   linked worktree belonged to whoever was standing in it — git isolates files,
   the index, and branch selection, but not *who may type*. So nothing stopped an
