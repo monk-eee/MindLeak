@@ -277,6 +277,21 @@ and footguns, with impact and status:
   whether to redo it. `Task` has no branch field; tracked as its own task rather
   than guessed at in the report.
 
+- **A new constitutional clause can never acquire an enforcement contract —
+  OPEN.** There is no supported route to add a locally authored, enforceable
+  clause to the constitution. `define_goal` writes the clause with
+  `status = active` and `constitution_version = None` (`store/goals.rs`), and
+  `complete_clause_contract` refuses any clause that is active
+  (`facade/constitution.rs`) — correctly, because hardening a live rule
+  mid-flight is an amendment. But `propose_amendment` only copies existing
+  active clauses into the draft; nothing inserts a new one, so the clause that
+  most needs a contract can never be given one. The policy-pack path is not a
+  workaround: it records immutable upstream provenance, which would be false
+  for a locally authored rule. — Measured impact: it blocked the ratchet half
+  of task:3eab606fbaf6. The measurement is independently deliverable in PR
+  #147; the ratchet remains task:8000f45e0dfd, waiting on
+  task:4cef8e361fc7. — Found 2026-07-29; still open.
+
 - **A task claimed across a constitution amendment cannot certify itself, and
   must be human-accepted — MEASURED, OPEN.** Observed 2026-07-29 on
   `task:7b6154f1d69a` (ADR-0064). The task was claimed under
@@ -665,6 +680,23 @@ and footguns, with impact and status:
   read that file, then delete the write before committing. Left for later — the
   adapter needs to surface harness stdout on failure.
 
+  **`test_pattern` is also ignored, and its apparent effect is a trap —
+  MEASURED 2026-07-29.** Passing `test_pattern` does not narrow a cargo run: the
+  whole lib suite executes and aborts at the first failure. Proven by a control
+  experiment while red/green-proving the amendment control tests — with a
+  deliberate break in `amend_constitution`, a run naming
+  `an_amendment_that_changes_nothing_is_refused`, a test that cannot touch that
+  code, still returned `FAILED`.
+  The trap is the timing. A filtered-looking run returns in 6–7 s against ~60 s
+  for a green suite, which reads exactly like a filter working. It is not: that
+  duration is *time to first failure*, so it shrinks as the suite gets redder.
+  Anyone using run duration to infer that a filter took effect will conclude the
+  named test failed when the failure was somewhere else entirely — this note
+  exists because that inference was made and acted on earlier the same day.
+  To attribute a failure to one test, mark the others `#[ignore]` and run the
+  full suite; that does work, and it is how the three control tests were each
+  proven red for their own reason.
+
 - **Amending the constitution orphaned every control bound to the amended clause
   — REPRODUCED, FIXED.** A draft clause is copied as `goal:{slug}@{version}`
   (`copy_clauses_to_version`), so a clause's id changes each time the
@@ -748,17 +780,31 @@ and footguns, with impact and status:
   has just reported no evidence produces a receipt that proves nothing, and a
   green conformance chain that means less than the refusal it replaced.
 
-- **A maintenance test asserts against a two-second wall clock and will flake on
-  a loaded machine — OPEN.** `enabled_worker_runs_after_idle_and_joins_cleanly`
-  in [`maintenance/runtime.rs`](crates/mindleak-mcp/src/maintenance/runtime.rs)
-  polls `telemetry_snapshot` until `total_events > 0`, bounded by
-  `Instant::now() + Duration::from_secs(2)`. The worker's idle is 10 ms, so two
-  seconds is generous in isolation and meaningless under contention: this
-  repository is routinely worked by a fleet of worktrees running concurrent
-  `cargo` builds that hold the package-cache lock, and a shared CI runner is no
-  calmer. — Impact: a spurious red on a pull request that changed nothing
-  related, which is the kind of failure that teaches people to re-run CI instead
-  of reading it, and that habit is what makes a real failure cheap to ignore. —
+- **Three maintenance tests assert against a two-second wall clock and will
+  flake on a loaded machine — OPEN.** All three live in
+  [`maintenance/runtime.rs`](crates/mindleak-mcp/src/maintenance/runtime.rs) and
+  share one shape: do work, then poll until an expected telemetry event appears,
+  bounded by `Instant::now() + Duration::from_secs(2)`.
+
+  | test | what it waits for | configured cadence |
+  |---|---|--:|
+  | `enabled_worker_runs_after_idle_and_joins_cleanly` | `total_events > 0` | idle 10 ms |
+  | `active_request_blocks_idle_pass_until_completion` | the idle pass to be held off, then run | idle 10 ms |
+  | `prune_runs_on_its_cadence_despite_continuous_request_activity` | an `autonomous_prune` event | prune interval 10 ms |
+
+  Two seconds against a 10 ms cadence is generous in isolation and meaningless
+  under contention: this repository is routinely worked by a fleet of worktrees
+  running concurrent `cargo` builds that hold the package-cache lock, and a
+  shared CI runner is no calmer. All three fail *red* rather than passing
+  silently — the third uses the deadline as a loop bound but still asserts
+  `pruned` afterwards, so a timeout is reported rather than swallowed. That is
+  the good case; a wall-clock bound that let a test pass without observing
+  anything would be far worse. — Impact: a spurious red on a pull request that
+  changed nothing related, which is the kind of failure that teaches people to
+  re-run CI instead of reading it, and that habit is what makes a real failure
+  cheap to ignore. Three tests means roughly three times the exposure per run,
+  and they are in the same file, so a loaded machine tends to trip more than one
+  and make the failure look like a real regression in maintenance. —
   Not fixed this run: the honest repair is to wait on a signal from the worker
   rather than on elapsed time, and that means giving `MaintenanceRuntime` a test
   seam it does not currently have. Raising the timeout would only lengthen the
@@ -1379,6 +1425,15 @@ and footguns, with impact and status:
   correct unique-file aggregate (89.19% lines / 84.85% branches). — High impact
   on local proof. — Left open in the external adapter; use a canonical uppercase
   Windows drive root for coverage, while CI's test counts remain authoritative.
+- **Unit Test MCP reports `PASSED` for `scripts/*.test.mjs`, which it never
+  runs — OPEN.** The repository's guard tests are `node:test` files and no
+  adapter covers them. Asked to run one with `framework=custom`, `run_tests`
+  returned `status: PASSED` with `passed`/`failed`/`total` all zero. A red/green
+  probe on 2026-07-29 proved the false green: an assertion that `1 === 2` inside
+  `scripts/measure-tool-surface.test.mjs` still came back `PASSED`. — High
+  impact: a suite that never executed is indistinguishable from a real green
+  result. — Until an adapter exists, validate script tests with
+  `make script-test` (`node scripts/script-tests.mjs`), which is what CI runs.
 - **Disposable Git fixtures inherited the parent hook's alternate index —
   FIXED.** — Committed-snapshot Cargo hooks set `GIT_INDEX_FILE`; child `git`
   commands in repository-state and publisher tests inherited it even when they
