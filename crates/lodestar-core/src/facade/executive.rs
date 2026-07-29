@@ -2,8 +2,8 @@
 use crate::dialogue::{self, DraftedBy, QuestionDraft};
 use crate::stalls::{stalls, Stall};
 use crate::{
-    now_unix, ClaimOverlap, ClaimOverlapReport, ClaimTransfer, HumanQuestion, Lodestar,
-    LodestarError, Result, Task, TaskQa, TaskScope,
+    now_unix, ClaimOverlap, ClaimOverlapReport, ClaimTransfer, ClaimWindow, HumanQuestion,
+    Lodestar, LodestarError, Result, Task, TaskQa, TaskScope,
 };
 
 impl Lodestar {
@@ -137,6 +137,13 @@ impl Lodestar {
     /// wrong more often than it was right (ADR-0015).
     pub fn existing_work(&self, goal_id: Option<&str>, paths: &[String]) -> Result<Vec<Task>> {
         self.store.existing_work(goal_id, paths)
+    }
+
+    /// The continuity of a task's current evidence window, derived from the log
+    /// (ADR-0064 d5/d6). Replaces the `claim_lapses` / `unleased_seconds`
+    /// columns that used to ride on the task row.
+    pub fn claim_window(&self, task_id: &str) -> Result<ClaimWindow> {
+        self.store.claim_window(task_id)
     }
 
     /// Read-only active-claim intersection for concrete requested paths/symbols.

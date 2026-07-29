@@ -24,6 +24,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_goal   ON tasks(goal_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_blocked_by ON tasks(blocked_by);
 CREATE INDEX IF NOT EXISTS idx_task_claim_transfers_task
     ON task_claim_transfers(task_id, id);
+-- The task log is read per task to derive evidence-window continuity
+-- (ADR-0064 d5), so every claim_window call is this lookup.
+CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, seq);
 CREATE INDEX IF NOT EXISTS idx_task_scopes_value ON task_scopes(kind, value);
 CREATE INDEX IF NOT EXISTS idx_task_qa_task ON task_qa(task_id);
 CREATE INDEX IF NOT EXISTS idx_task_qa_audience ON task_qa(audience, kind);

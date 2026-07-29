@@ -19,6 +19,7 @@ mod design;
 mod design_materialization;
 #[cfg(test)]
 mod design_tests;
+mod events;
 mod fleet;
 mod goals;
 mod knowledge;
@@ -30,6 +31,22 @@ mod waivers;
 
 pub(crate) use claim_transfer::RecoveringSession;
 pub(crate) use coordination::ConformanceAudit;
+pub(crate) use events::import_genesis;
+
+/// Where a recorded ownership recovery came from (ADR-0064 d5).
+///
+/// Both are real; they are simply held in different places, and `id` means
+/// something different in each. Saying so beats letting a reader assume one
+/// numbering across both.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferSource {
+    /// A recovery from before the task log existed, held in the closed
+    /// `task_claim_transfers` archive. `id` is that table's row id.
+    Archive,
+    /// A `claim_recovered` event. `id` is its position in the task log.
+    Log,
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ClaimTransfer {
@@ -45,6 +62,7 @@ pub struct ClaimTransfer {
     pub from_parked_at: Option<i64>,
     pub to_claim_started_at: i64,
     pub transferred_at: i64,
+    pub source: TransferSource,
 }
 
 /// Summary counts for status displays.

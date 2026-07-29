@@ -5,9 +5,10 @@ use mindleak_session::compatible_legacy_owner;
 use rusqlite::{params, Transaction, TransactionBehavior};
 
 use crate::error::{LodestarError, Result};
+use crate::model::TaskEventKind;
 
 use super::coordination::PARKING_GRACE_SECS;
-use super::{ClaimTransfer, LodestarStore};
+use super::{events, ClaimTransfer, LodestarStore, TransferSource};
 
 /// The session taking over a stranded claim.
 ///
@@ -84,29 +85,45 @@ impl LodestarStore {
         if changed != 1 {
             return Ok(false);
         }
-        transaction.execute(
-            "INSERT INTO task_claim_transfers
-                 (task_id, from_owner, to_owner, recovered_by, reason, from_status,
-                  from_claim_started_at, from_lease_expires_at, from_parked_at,
-                  to_claim_started_at, transferred_at)
-             VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
-            params![
-                task_id,
-                prior.owner,
-                target_agent,
-                reason.trim(),
-                prior.status,
-                prior.claim_started_at,
-                prior.lease_expires_at,
-                prior.parked_at,
-                now
-            ],
+        // `task_claim_transfers` is deliberately not written here any more
+        // (ADR-0064 d5). The recovery is recorded once, in the log, beside every
+        // other transition it has to be read alongside. The table survives as a
+        // closed archive of the recoveries that predate the log — real records
+        // the log never saw — and `claim_transfer_history` reads both.
+        events::record(
+            &transaction,
+            task_id,
+            TaskEventKind::ClaimRecovered,
+            Some(target_agent),
+            now,
+            &serde_json::json!({
+                "from_owner": prior.owner,
+                "from_status": prior.status,
+                "reason": reason.trim(),
+            })
+            .to_string(),
         )?;
         transaction.commit()?;
         Ok(true)
     }
 
+    /// Every recorded ownership recovery for a task, oldest first.
+    ///
+    /// Two sources, because there are genuinely two (ADR-0064 d5). Recoveries
+    /// from before the log live in `task_claim_transfers`, which is now a closed
+    /// archive: nothing writes to it, and nothing deletes it either, because it
+    /// holds real records the log never saw and cannot reconstruct. Recoveries
+    /// since are `claim_recovered` events. Each row says which it came from, so
+    /// a reader is never left guessing whether an id addresses an archive row or
+    /// a log sequence.
     pub fn claim_transfer_history(&self, task_id: &str) -> Result<Vec<ClaimTransfer>> {
+        let mut history = self.archived_transfers(task_id)?;
+        history.extend(self.logged_transfers(task_id)?);
+        history.sort_by_key(|transfer| transfer.transferred_at);
+        Ok(history)
+    }
+
+    fn archived_transfers(&self, task_id: &str) -> Result<Vec<ClaimTransfer>> {
         let mut statement = self.conn.prepare(
             "SELECT id, task_id, from_owner, to_owner, recovered_by, reason,
                     from_status, from_claim_started_at, from_lease_expires_at,
@@ -127,17 +144,58 @@ impl LodestarStore {
                 from_parked_at: row.get(9)?,
                 to_claim_started_at: row.get(10)?,
                 transferred_at: row.get(11)?,
+                source: TransferSource::Archive,
             })
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
+    }
+
+    /// Recoveries reconstructed from `claim_recovered` events.
+    ///
+    /// The state the claim was taken *from* is the after-image of whatever
+    /// event immediately preceded the recovery — the log already records it, so
+    /// it is read back rather than duplicated into the recovery's own detail.
+    fn logged_transfers(&self, task_id: &str) -> Result<Vec<ClaimTransfer>> {
+        let events = self.task_events(task_id)?;
+        let mut out = Vec::new();
+        for (index, event) in events.iter().enumerate() {
+            if event.kind != TaskEventKind::ClaimRecovered {
+                continue;
+            }
+            let detail: serde_json::Value =
+                serde_json::from_str(&event.detail).unwrap_or(serde_json::Value::Null);
+            let text = |key: &str| {
+                detail
+                    .get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            let previous = index.checked_sub(1).and_then(|i| events.get(i));
+            out.push(ClaimTransfer {
+                id: event.seq,
+                task_id: event.task_id.clone(),
+                from_owner: text("from_owner"),
+                to_owner: event.after.owner.clone().unwrap_or_default(),
+                recovered_by: event.actor.clone().unwrap_or_default(),
+                reason: text("reason"),
+                from_status: text("from_status"),
+                from_claim_started_at: previous.and_then(|e| e.after.claim_started_at),
+                from_lease_expires_at: previous.and_then(|e| e.after.lease_expires_at),
+                from_parked_at: previous.and_then(|e| e.after.parked_at),
+                to_claim_started_at: event.after.claim_started_at.unwrap_or(event.recorded_at),
+                transferred_at: event.recorded_at,
+                source: TransferSource::Log,
+            });
+        }
+        Ok(out)
     }
 }
 
 struct PriorClaim {
     owner: String,
     status: String,
-    claim_started_at: Option<i64>,
     lease_expires_at: Option<i64>,
     parked_at: Option<i64>,
 }
@@ -145,16 +203,15 @@ struct PriorClaim {
 fn load_prior_claim(transaction: &Transaction<'_>, task_id: &str) -> Result<PriorClaim> {
     transaction
         .query_row(
-            "SELECT owner, status, claim_started_at, lease_expires_at, parked_at
+            "SELECT owner, status, lease_expires_at, parked_at
              FROM tasks WHERE id = ?1 AND owner IS NOT NULL",
             params![task_id],
             |row| {
                 Ok(PriorClaim {
                     owner: row.get(0)?,
                     status: row.get(1)?,
-                    claim_started_at: row.get(2)?,
-                    lease_expires_at: row.get(3)?,
-                    parked_at: row.get(4)?,
+                    lease_expires_at: row.get(2)?,
+                    parked_at: row.get(3)?,
                 })
             },
         )
@@ -222,6 +279,102 @@ mod tests {
         assert_eq!(history[0].to_owner, target);
         assert_eq!(history[0].from_claim_started_at, Some(NOW));
         assert_eq!(history[0].from_lease_expires_at, Some(NOW + 10));
+        // Reconstructed from the log, not from the archive: the prior claim's
+        // window is read back from the after-image of the event the recovery
+        // interrupted, rather than copied into a second table (ADR-0064 d5).
+        assert_eq!(history[0].source, TransferSource::Log);
+    }
+
+    /// ADR-0064 d5. The archive is closed: a recovery today is recorded once,
+    /// in the log. Writing both would be two records of one act that could
+    /// disagree, and the disagreement would surface exactly when the ledger was
+    /// being used to settle who held what.
+    #[test]
+    fn a_recovery_no_longer_writes_the_archive() {
+        let store = store();
+        let task = store
+            .create_task(&goal(&store).id, "Recover", "done", None, NOW)
+            .unwrap();
+        assert!(store
+            .claim_task(&task.id, "copilot-abcd1234", 10, NOW)
+            .unwrap());
+        let target = session(SESSION_A);
+        assert!(store
+            .recover_claim(
+                &task.id,
+                "copilot-abcd1234",
+                RecoveringSession {
+                    agent: &target,
+                    name: "copilot"
+                },
+                "server identity changed",
+                60,
+                NOW + 11,
+            )
+            .unwrap());
+
+        let archived: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(1) FROM task_claim_transfers WHERE task_id = ?1",
+                params![task.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(archived, 0, "the archive takes no new writes");
+        assert_eq!(store.claim_transfer_history(&task.id).unwrap().len(), 1);
+    }
+
+    /// The archive is closed, not deleted. It holds recoveries the log never
+    /// saw, so history has to read both and say which is which — deleting it to
+    /// tidy the schema would destroy real records nothing else carries.
+    #[test]
+    fn history_merges_the_closed_archive_with_the_log_in_time_order() {
+        let store = store();
+        let task = store
+            .create_task(&goal(&store).id, "Recover", "done", None, NOW)
+            .unwrap();
+
+        // A recovery from before the log existed, surviving only in the archive.
+        store
+            .conn
+            .execute(
+                "INSERT INTO task_claim_transfers
+                     (task_id, from_owner, to_owner, recovered_by, reason, from_status,
+                      from_claim_started_at, from_lease_expires_at, from_parked_at,
+                      to_claim_started_at, transferred_at)
+                 VALUES (?1, 'ancient', 'older', 'older', 'before the log', 'claimed',
+                         NULL, NULL, NULL, ?2, ?2)",
+                params![task.id, NOW - 5000],
+            )
+            .unwrap();
+
+        assert!(store
+            .claim_task(&task.id, "copilot-abcd1234", 10, NOW)
+            .unwrap());
+        let target = session(SESSION_A);
+        assert!(store
+            .recover_claim(
+                &task.id,
+                "copilot-abcd1234",
+                RecoveringSession {
+                    agent: &target,
+                    name: "copilot"
+                },
+                "server identity changed",
+                60,
+                NOW + 11,
+            )
+            .unwrap());
+
+        let history = store.claim_transfer_history(&task.id).unwrap();
+        assert_eq!(history.len(), 2, "both records, neither dropped");
+        assert_eq!(history[0].source, TransferSource::Archive);
+        assert_eq!(history[0].from_owner, "ancient");
+        assert_eq!(history[0].transferred_at, NOW - 5000);
+        assert_eq!(history[1].source, TransferSource::Log);
+        assert_eq!(history[1].from_owner, "copilot-abcd1234");
+        assert_eq!(history[1].transferred_at, NOW + 11);
     }
 
     #[test]

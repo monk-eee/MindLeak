@@ -184,6 +184,132 @@ impl TaskStatus {
     }
 }
 
+/// What happened to a task (ADR-0064).
+///
+/// One variant per transition the executive can perform. These are the verbs of
+/// the task lifecycle; `TaskStatus` is the noun they leave behind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskEventKind {
+    /// Genesis for a task that existed before the log did. It carries the state
+    /// at migration time and **no history before it** — see ADR-0064. The
+    /// absence of earlier events for such a task is a fact about this database,
+    /// not a gap to be filled in with plausible reconstruction.
+    Imported,
+    Created,
+    Claimed,
+    LeaseRenewed,
+    Released,
+    Blocked,
+    Reopened,
+    Abandoned,
+    /// Parked with a durable question (ADR-0020).
+    Questioned,
+    Answered,
+    Paused,
+    Resumed,
+    /// Ownership moved by audited recovery rather than by claim (ADR-0030).
+    ClaimRecovered,
+    /// A conformance verdict moved the task out of `claimed` (ADR-0009).
+    ConformanceRecorded,
+    /// A human accepted work out of `in_review`, overruling the verdict.
+    Resolved,
+}
+
+impl TaskEventKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TaskEventKind::Imported => "imported",
+            TaskEventKind::Created => "created",
+            TaskEventKind::Claimed => "claimed",
+            TaskEventKind::LeaseRenewed => "lease_renewed",
+            TaskEventKind::Released => "released",
+            TaskEventKind::Blocked => "blocked",
+            TaskEventKind::Reopened => "reopened",
+            TaskEventKind::Abandoned => "abandoned",
+            TaskEventKind::Questioned => "questioned",
+            TaskEventKind::Answered => "answered",
+            TaskEventKind::Paused => "paused",
+            TaskEventKind::Resumed => "resumed",
+            TaskEventKind::ClaimRecovered => "claim_recovered",
+            TaskEventKind::ConformanceRecorded => "conformance_recorded",
+            TaskEventKind::Resolved => "resolved",
+        }
+    }
+
+    pub fn from_tag(s: &str) -> Option<Self> {
+        match s {
+            "imported" => Some(TaskEventKind::Imported),
+            "created" => Some(TaskEventKind::Created),
+            "claimed" => Some(TaskEventKind::Claimed),
+            "lease_renewed" => Some(TaskEventKind::LeaseRenewed),
+            "released" => Some(TaskEventKind::Released),
+            "blocked" => Some(TaskEventKind::Blocked),
+            "reopened" => Some(TaskEventKind::Reopened),
+            "abandoned" => Some(TaskEventKind::Abandoned),
+            "questioned" => Some(TaskEventKind::Questioned),
+            "answered" => Some(TaskEventKind::Answered),
+            "paused" => Some(TaskEventKind::Paused),
+            "resumed" => Some(TaskEventKind::Resumed),
+            "claim_recovered" => Some(TaskEventKind::ClaimRecovered),
+            "conformance_recorded" => Some(TaskEventKind::ConformanceRecorded),
+            "resolved" => Some(TaskEventKind::Resolved),
+            _ => None,
+        }
+    }
+}
+
+/// One appended record in the task lifecycle log (ADR-0064).
+///
+/// `after` is the task as it stood once the transition had been applied.
+/// Replaying the log in `seq` order and assigning each `after` reproduces the
+/// `tasks` table exactly, which is what makes the projection checkable rather
+/// than merely believed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskEvent {
+    /// Total order of application. Assigned by the database, never by a caller.
+    pub seq: i64,
+    pub task_id: String,
+    pub kind: TaskEventKind,
+    /// The agent that caused this, where a transition has an actor. Genesis
+    /// imports and predecessor-driven unblocking do not.
+    pub actor: Option<String>,
+    /// Unix seconds, supplied by the caller. Nothing here reads a clock: a
+    /// projector that did could not replay deterministically (ADR-0064).
+    pub recorded_at: i64,
+    /// The task after the transition.
+    pub after: Task,
+    /// Transition-specific context as JSON: reason, question text, lease
+    /// seconds. Empty when the transition carries none.
+    pub detail: String,
+}
+
+/// The continuity of a task's current evidence window, derived from the log
+/// (ADR-0064 decision 6).
+///
+/// ADR-0048 says a window survives a lapse so earlier work stays provable, but
+/// a discontinuous window cannot certify itself as aligned. This is that
+/// continuity, computed from the recorded transitions rather than carried as a
+/// running total on the task row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaimWindow {
+    /// When the current window opened, if the task is in one.
+    pub started_at: Option<i64>,
+    /// How many times the lease lapsed inside this window.
+    pub lapses: i64,
+    /// Seconds of this window spent under no lease.
+    pub unleased_seconds: i64,
+}
+
+impl ClaimWindow {
+    /// A window with no holes in it. Not the same as "no window": a task that
+    /// was never claimed and a task claimed once without lapsing are both
+    /// continuous, and neither is capped by ADR-0048.
+    pub fn is_continuous(&self) -> bool {
+        self.lapses == 0
+    }
+}
+
 /// The outcome of a conformance check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -496,15 +622,14 @@ pub struct Task {
     pub owner: Option<String>,
     pub claim_started_at: Option<i64>,
     pub lease_expires_at: Option<i64>,
-    /// How many times the lease lapsed inside the current evidence window
-    /// (ADR-0048). The window survives a lapse so earlier work stays provable,
-    /// but a non-zero count means the window has holes, which caps conformance
-    /// at `needs_human`. Reset when a fresh window opens, so it describes the
-    /// current window rather than the task's whole history.
-    pub claim_lapses: i64,
-    /// Seconds inside the current evidence window during which no lease was
-    /// held — the size of the holes counted by `claim_lapses`.
-    pub unleased_seconds: i64,
+    // The continuity of the current evidence window (ADR-0048) used to live
+    // here as `claim_lapses` and `unleased_seconds`. It is derived from the
+    // task log instead (ADR-0064 d5/d6): ask `claim_window`.
+    //
+    // Deliberately not kept as derived fields on this struct. Zero lapses means
+    // "this window may certify itself as aligned", so a field that any read
+    // path could leave unpopulated would fail *open* — quietly handing out a
+    // clean receipt for work with holes in it. There is no field to forget.
     pub blocked_by: Option<String>,
     /// When the task was parked (needs_input/paused); after a bounded grace it
     /// becomes reclaimable by the pool so a vanished owner cannot strand it.

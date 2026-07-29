@@ -8,15 +8,28 @@ use crate::error::{LodestarError, Result};
 use crate::fleet::Wait;
 use crate::model::{
     ClaimOverlap, ClaimOverlapReport, ConformanceRecord, HumanQuestion, OverlapSignal, Task,
-    TaskQa, TaskScope, TaskStatus, Verdict,
+    TaskEventKind, TaskQa, TaskScope, TaskStatus, Verdict,
 };
 use crate::util::short_hash;
 
-use super::{collect, goals, LodestarStore};
+use super::{collect, events, goals, LodestarStore};
 
-const TASK_COLS: &str = "id, goal_id, parent_task_id, title, acceptance, status, owner, \
+/// Render an optional free-text reason as event detail.
+///
+/// The reason already lands on the durable thread as a note; carrying it here
+/// too means the log can explain a transition without a second read, which is
+/// the whole point of a record you can replay.
+fn detail_json(reason: Option<&str>) -> String {
+    match reason.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(reason) => serde_json::json!({ "reason": reason }).to_string(),
+        None => String::new(),
+    }
+}
+
+pub(super) const TASK_COLS: &str =
+    "id, goal_id, parent_task_id, title, acceptance, status, owner, \
     claim_started_at, lease_expires_at, blocked_by, parked_at, created_at, updated_at, \
-    claim_lapses, unleased_seconds, resolved_by, resolved_at, resolved_conformance_id";
+    resolved_by, resolved_at, resolved_conformance_id";
 const CONFORMANCE_COLS: &str =
     "id, task_id, evidence_schema_version, evidence, verdict, findings, checked_at";
 const QA_COLS: &str = "id, task_id, kind, body, author, audience, created_at";
@@ -139,31 +152,22 @@ impl LodestarStore {
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let parked_cutoff = now - PARKING_GRACE_SECS;
         refuse_beyond_claim_limit(&transaction, id, agent)?;
-        // The evidence window survives a lapse, and the lapse is counted
-        // (ADR-0048). Re-claiming used to reset `claim_started_at` to now, which
-        // silently put every commit made before the lapse outside the window the
-        // agent could prove. That did not merely under-report: because the
-        // verdict is computed over the nodes the evidence covers, a lapse let an
-        // agent submit the surviving sliver and collect an `aligned` receipt
-        // while the bulk of the change went unchecked. So a re-claim by the same
-        // owner keeps the window open and records the hole instead; conformance
-        // refuses to certify a discontinuous window on its own authority.
+        // The evidence window survives a lapse (ADR-0048). Re-claiming used to
+        // reset `claim_started_at` to now, which silently put every commit made
+        // before the lapse outside the window the agent could prove. That did
+        // not merely under-report: because the verdict is computed over the
+        // nodes the evidence covers, a lapse let an agent submit the surviving
+        // sliver and collect an `aligned` receipt while the bulk of the change
+        // went unchecked. So a re-claim by the same owner keeps the window open;
+        // the hole it leaves is recorded in the task log and read back by
+        // `claim_window` (ADR-0064 d5), and conformance refuses to certify a
+        // discontinuous window on its own authority.
         let changed = transaction.execute(
             "UPDATE tasks
                 SET status = 'claimed', owner = ?2,
                     claim_started_at = CASE
                         WHEN status = 'claimed' AND owner = ?2
                         THEN claim_started_at ELSE ?4 END,
-                    claim_lapses = CASE
-                        WHEN status = 'claimed' AND owner = ?2 AND lease_expires_at < ?4
-                        THEN claim_lapses + 1
-                        WHEN status = 'claimed' AND owner = ?2 THEN claim_lapses
-                        ELSE 0 END,
-                    unleased_seconds = CASE
-                        WHEN status = 'claimed' AND owner = ?2 AND lease_expires_at < ?4
-                        THEN unleased_seconds + (?4 - lease_expires_at)
-                        WHEN status = 'claimed' AND owner = ?2 THEN unleased_seconds
-                        ELSE 0 END,
                     lease_expires_at = ?3, parked_at = NULL, updated_at = ?4
               WHERE id = ?1
                                 AND blocked_by IS NULL
@@ -193,6 +197,14 @@ impl LodestarStore {
                     params![id, symbol],
                 )?;
             }
+            events::record(
+                &transaction,
+                id,
+                TaskEventKind::Claimed,
+                Some(agent),
+                now,
+                &format!(r#"{{"lease_secs":{lease_secs}}}"#),
+            )?;
         }
         transaction.commit()?;
         Ok(changed == 1)
@@ -292,12 +304,24 @@ impl LodestarStore {
     /// lease lapses it cannot be renewed: the owner must re-claim, which keeps
     /// the evidence window open but records the lapse (ADR-0048).
     pub fn renew_lease(&self, id: &str, agent: &str, lease_secs: i64, now: i64) -> Result<bool> {
-        let changed = self.conn.execute(
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
             "UPDATE tasks SET lease_expires_at = ?3, updated_at = ?4
                             WHERE id = ?1 AND owner = ?2 AND status = 'claimed'
                                 AND lease_expires_at >= ?4 AND blocked_by IS NULL",
             params![id, agent, now + lease_secs, now],
         )?;
+        if changed == 1 {
+            events::record(
+                &transaction,
+                id,
+                TaskEventKind::LeaseRenewed,
+                Some(agent),
+                now,
+                &format!(r#"{{"lease_secs":{lease_secs},"heartbeat":false}}"#),
+            )?;
+        }
+        transaction.commit()?;
         Ok(changed == 1)
     }
 
@@ -318,12 +342,24 @@ impl LodestarStore {
     /// call has its own job to do and a lapse must still require a deliberate
     /// re-claim rather than being resurrected by a passing read.
     pub fn touch_lease(&self, id: &str, agent: &str, lease_secs: i64, now: i64) -> Result<bool> {
-        let changed = self.conn.execute(
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
             "UPDATE tasks SET lease_expires_at = MAX(lease_expires_at, ?3), updated_at = ?4
                             WHERE id = ?1 AND owner = ?2 AND status = 'claimed'
                                 AND lease_expires_at >= ?4 AND blocked_by IS NULL",
             params![id, agent, now + lease_secs, now],
         )?;
+        if changed == 1 {
+            events::record(
+                &transaction,
+                id,
+                TaskEventKind::LeaseRenewed,
+                Some(agent),
+                now,
+                &format!(r#"{{"lease_secs":{lease_secs},"heartbeat":true}}"#),
+            )?;
+        }
+        transaction.commit()?;
         Ok(changed == 1)
     }
 
@@ -391,6 +427,14 @@ impl LodestarStore {
         }
         if changed == 1 {
             append_note_on(&transaction, id, reason, actor, now)?;
+            events::record(
+                &transaction,
+                id,
+                TaskEventKind::Blocked,
+                Some(actor),
+                now,
+                &detail_json(reason),
+            )?;
         }
         transaction.commit()?;
         Ok(changed == 1)
@@ -428,6 +472,9 @@ impl LodestarStore {
              WHERE id = ?1",
             params![id, now],
         )?;
+        if changed == 1 {
+            events::record(&transaction, id, TaskEventKind::Reopened, None, now, "")?;
+        }
         transaction.commit()?;
         Ok(changed == 1)
     }
@@ -477,6 +524,9 @@ impl LodestarStore {
              WHERE id = ?1",
             params![id, now],
         )?;
+        if changed == 1 {
+            events::record(&transaction, id, TaskEventKind::Abandoned, None, now, "")?;
+        }
         open_blocked_successor_on(&transaction, id, now)?;
         transaction.commit()?;
         Ok(changed == 1)
@@ -537,6 +587,19 @@ impl LodestarStore {
                     .to_string(),
             };
             append_note_on(&transaction, id, Some(note.as_str()), resolver, now)?;
+            events::record(
+                &transaction,
+                id,
+                TaskEventKind::Resolved,
+                Some(resolver),
+                now,
+                &match &overruled {
+                    Some((record, verdict)) => format!(
+                        r#"{{"overruled_conformance_id":{record},"overruled_verdict":"{verdict}"}}"#
+                    ),
+                    None => String::new(),
+                },
+            )?;
         }
         open_blocked_successor_on(&transaction, id, now)?;
         transaction.commit()?;
@@ -595,6 +658,17 @@ impl LodestarStore {
             "INSERT INTO task_qa (task_id, kind, body, author, audience, created_at)
              VALUES (?1, 'question', ?2, ?3, ?4, ?5)",
             params![id, question, agent, audience, now],
+        )?;
+        events::record(
+            &transaction,
+            id,
+            TaskEventKind::Questioned,
+            Some(agent),
+            now,
+            &match audience.as_deref() {
+                Some(to) => format!(r#"{{"audience":"{to}"}}"#),
+                None => String::new(),
+            },
         )?;
         transaction.commit()?;
         Ok(true)
@@ -721,6 +795,14 @@ impl LodestarStore {
              VALUES (?1, 'answer', ?2, ?3, NULL, ?4)",
             params![id, answer, author, now],
         )?;
+        events::record(
+            &transaction,
+            id,
+            TaskEventKind::Answered,
+            Some(author),
+            now,
+            &format!(r#"{{"lease_secs":{lease_secs}}}"#),
+        )?;
         transaction.commit()?;
         Ok(true)
     }
@@ -747,6 +829,14 @@ impl LodestarStore {
             return Ok(false);
         }
         append_note_on(&transaction, id, reason, agent, now)?;
+        events::record(
+            &transaction,
+            id,
+            TaskEventKind::Paused,
+            Some(agent),
+            now,
+            &detail_json(reason),
+        )?;
         transaction.commit()?;
         Ok(true)
     }
@@ -754,12 +844,24 @@ impl LodestarStore {
     /// Resume a paused task under the same owner (ADR-0020) with a fresh lease,
     /// preserving the `claim_started_at` evidence window.
     pub fn resume_task(&self, id: &str, agent: &str, lease_secs: i64, now: i64) -> Result<bool> {
-        let changed = self.conn.execute(
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
             "UPDATE tasks
              SET status = 'claimed', lease_expires_at = ?3, parked_at = NULL, updated_at = ?4
              WHERE id = ?1 AND owner = ?2 AND status = 'paused'",
             params![id, agent, now + lease_secs, now],
         )?;
+        if changed == 1 {
+            events::record(
+                &transaction,
+                id,
+                TaskEventKind::Resumed,
+                Some(agent),
+                now,
+                &format!(r#"{{"lease_secs":{lease_secs}}}"#),
+            )?;
+        }
+        transaction.commit()?;
         Ok(changed == 1)
     }
 
@@ -773,13 +875,25 @@ impl LodestarStore {
 
     /// Release a claim back to `open` (owner-guarded).
     pub fn release_task(&self, id: &str, agent: &str, now: i64) -> Result<bool> {
-        let changed = self.conn.execute(
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
             "UPDATE tasks SET status = 'open', owner = NULL, claim_started_at = NULL,
                                                             lease_expires_at = NULL, updated_at = ?3
                             WHERE id = ?1 AND owner = ?2 AND status = 'claimed'
                                 AND blocked_by IS NULL",
             params![id, agent, now],
         )?;
+        if changed == 1 {
+            events::record(
+                &transaction,
+                id,
+                TaskEventKind::Released,
+                Some(agent),
+                now,
+                "",
+            )?;
+        }
+        transaction.commit()?;
         Ok(changed == 1)
     }
 
@@ -972,6 +1086,14 @@ impl LodestarStore {
                 now
             ],
         )?;
+        events::record(
+            &transaction,
+            task_id,
+            TaskEventKind::ConformanceRecorded,
+            Some(agent),
+            now,
+            &serde_json::json!({ "verdict": audit.verdict.as_str() }).to_string(),
+        )?;
         if target_status == TaskStatus::Done {
             open_blocked_successor_on(&transaction, task_id, now)?;
         }
@@ -1044,6 +1166,18 @@ impl LodestarStore {
         if changed != 1 {
             return Ok(false);
         }
+        events::record(
+            &transaction,
+            task_id,
+            TaskEventKind::ConformanceRecorded,
+            Some(agent),
+            now,
+            &serde_json::json!({
+                "verdict": verdict.as_str(),
+                "conformance_id": conformance_id,
+            })
+            .to_string(),
+        )?;
         if target_status == TaskStatus::Done {
             open_blocked_successor_on(&transaction, task_id, now)?;
         }
@@ -1098,8 +1232,6 @@ fn create_task_after_on(
         owner: None,
         claim_started_at: None,
         lease_expires_at: None,
-        claim_lapses: 0,
-        unleased_seconds: 0,
         blocked_by,
         parked_at: None,
         resolved_by: None,
@@ -1146,6 +1278,11 @@ fn create_task_after_on(
             params![task.id, covered, now],
         )?;
     }
+    // Appended last, so a creation that is about to be rejected for a bad
+    // coverage declaration never leaves a birth certificate behind. The whole
+    // call runs inside the caller's transaction, so this either lands with the
+    // row or not at all.
+    events::append(connection, TaskEventKind::Created, None, now, &task, "")?;
     Ok(task)
 }
 
@@ -1175,16 +1312,39 @@ fn open_blocked_successor_on(
     predecessor_id: &str,
     now: i64,
 ) -> Result<()> {
-    connection.execute(
+    // Resolve the successor first rather than updating through a subquery, so
+    // the unblocking can be recorded against the task it actually moved. A
+    // predecessor-driven transition has no actor: nobody asked for it, the gate
+    // simply lifted, and naming a caller here would attribute a decision to an
+    // agent that never made one.
+    let successor: Option<String> = connection
+        .query_row(
+            "SELECT successor_id FROM task_handoffs WHERE predecessor_id = ?1",
+            params![predecessor_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(successor_id) = successor else {
+        return Ok(());
+    };
+    let changed = connection.execute(
         "UPDATE tasks
          SET status = 'open', owner = NULL, claim_started_at = NULL,
              lease_expires_at = NULL, parked_at = NULL, blocked_by = NULL, updated_at = ?2
-         WHERE id = (
-             SELECT successor_id FROM task_handoffs WHERE predecessor_id = ?1
-         )
-           AND blocked_by = ?1 AND status = 'blocked'",
-        params![predecessor_id, now],
+         WHERE id = ?1
+           AND blocked_by = ?3 AND status = 'blocked'",
+        params![successor_id, now, predecessor_id],
     )?;
+    if changed == 1 {
+        events::record(
+            connection,
+            &successor_id,
+            TaskEventKind::Reopened,
+            None,
+            now,
+            &serde_json::json!({ "unblocked_by": predecessor_id }).to_string(),
+        )?;
+    }
     Ok(())
 }
 
@@ -1276,7 +1436,7 @@ fn validate_dependency_on(
     Ok(false)
 }
 
-fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
+pub(super) fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
     let status: String = row.get(5)?;
     Ok(Task {
         id: row.get(0)?,
@@ -1292,11 +1452,9 @@ fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
         parked_at: row.get(10)?,
         created_at: row.get(11)?,
         updated_at: row.get(12)?,
-        claim_lapses: row.get(13)?,
-        unleased_seconds: row.get(14)?,
-        resolved_by: row.get(15)?,
-        resolved_at: row.get(16)?,
-        resolved_conformance_id: row.get(17)?,
+        resolved_by: row.get(13)?,
+        resolved_at: row.get(14)?,
+        resolved_conformance_id: row.get(15)?,
     })
 }
 
@@ -2638,8 +2796,9 @@ mod tests {
         let live = s.get_task(&t.id).unwrap().unwrap();
         assert_eq!(live.claim_started_at, Some(NOW));
         // A renewed, unbroken window has nothing to declare.
-        assert_eq!(live.claim_lapses, 0);
-        assert_eq!(live.unleased_seconds, 0);
+        let clean = s.claim_window(&t.id).unwrap();
+        assert_eq!(clean.lapses, 0);
+        assert_eq!(clean.unleased_seconds, 0);
 
         // The lease lapses at NOW + 90 and alice does not return for 2 hours.
         let after_expiry = NOW + 2 * HOUR;
@@ -2652,8 +2811,9 @@ mod tests {
         assert_eq!(reclaimed.claim_started_at, Some(NOW));
         assert_eq!(reclaimed.lease_expires_at, Some(after_expiry + 60));
         // ...and the hole it now contains is recorded rather than forgotten.
-        assert_eq!(reclaimed.claim_lapses, 1);
-        assert_eq!(reclaimed.unleased_seconds, after_expiry - (NOW + 90));
+        let holed = s.claim_window(&t.id).unwrap();
+        assert_eq!(holed.lapses, 1);
+        assert_eq!(holed.unleased_seconds, after_expiry - (NOW + 90));
     }
 
     #[test]
@@ -2670,9 +2830,10 @@ mod tests {
 
         let twice_lapsed = s.get_task(&t.id).unwrap().unwrap();
         assert_eq!(twice_lapsed.claim_started_at, Some(NOW));
-        assert_eq!(twice_lapsed.claim_lapses, 2);
+        let window = s.claim_window(&t.id).unwrap();
+        assert_eq!(window.lapses, 2);
         assert_eq!(
-            twice_lapsed.unleased_seconds,
+            window.unleased_seconds,
             (first - (NOW + 60)) + (second - (first + 60))
         );
 
@@ -2682,8 +2843,9 @@ mod tests {
         assert!(s.claim_task(&t.id, "bob", 60, third).unwrap());
         let bob = s.get_task(&t.id).unwrap().unwrap();
         assert_eq!(bob.claim_started_at, Some(third));
-        assert_eq!(bob.claim_lapses, 0);
-        assert_eq!(bob.unleased_seconds, 0);
+        let bob_window = s.claim_window(&t.id).unwrap();
+        assert_eq!(bob_window.lapses, 0);
+        assert_eq!(bob_window.unleased_seconds, 0);
     }
 
     #[test]
