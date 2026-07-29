@@ -256,13 +256,17 @@ fn record_decision_creates_intent_linked_to_related_nodes() {
 fn commit_ingestion_extracts_rationale() {
     let engine = MindLeak::open_in_memory().unwrap();
     let rec = CommitRecord {
-        sha: Some("abc123".to_string()),
+        sha: Some("a1b2c3d4e5f60718293a4b5c6d7e8f9012345678".to_string()),
         message: "Fix token crash\n\n// DECISION: null-guard the JWT path".to_string(),
         changed_files: vec!["src/auth.rs".to_string()],
         timestamp: now_unix(),
     };
     engine.ingest_commit(&rec).unwrap();
-    let node = engine.store().get_node("intent:abc123").unwrap().unwrap();
+    let node = engine
+        .store()
+        .get_node("intent:a1b2c3d4e5f60718293a4b5c6d7e8f9012345678")
+        .unwrap()
+        .unwrap();
     assert!(node.content.unwrap().contains("null-guard the JWT path"));
 }
 
@@ -1125,7 +1129,7 @@ fn evidence_bundle_uses_attributed_mutations_within_the_work_window() {
         .ingest_commit_for_agent(
             "agent-a",
             &CommitRecord {
-                sha: Some("proof123".into()),
+                sha: Some("9f8e7d6c5b4a39281706f5e4d3c2b1a098765432".into()),
                 message: "fix auth".into(),
                 changed_files: vec!["src/auth.rs".into()],
                 timestamp: 115,
@@ -1145,7 +1149,10 @@ fn evidence_bundle_uses_attributed_mutations_within_the_work_window() {
     assert_eq!(evidence.agent_id, "agent-a");
     assert_eq!(evidence.execution_ids.len(), 2);
     assert_eq!(evidence.successful_execution_ids.len(), 1);
-    assert_eq!(evidence.commit_ids, vec!["intent:proof123"]);
+    assert_eq!(
+        evidence.commit_ids,
+        vec!["intent:9f8e7d6c5b4a39281706f5e4d3c2b1a098765432"]
+    );
     assert_eq!(evidence.changed_node_ids, vec!["artifact:src/auth.rs"]);
     assert_eq!(evidence.failed_node_ids, vec!["artifact:src/failing.rs"]);
     assert!(!evidence
@@ -1167,8 +1174,16 @@ fn evidence_bundle_uses_attributed_mutations_within_the_work_window() {
 fn evidence_isolated_between_explicit_session_agents() {
     let engine = MindLeak::open_in_memory().unwrap();
     for (agent, sha, path) in [
-        ("session:v1:test:first", "first", "src/first.rs"),
-        ("session:v1:test:second", "second", "src/second.rs"),
+        (
+            "session:v1:test:first",
+            "1111111111111111111111111111111111111111",
+            "src/first.rs",
+        ),
+        (
+            "session:v1:test:second",
+            "2222222222222222222222222222222222222222",
+            "src/second.rs",
+        ),
     ] {
         engine
             .ingest_commit_for_agent(
@@ -1190,9 +1205,15 @@ fn evidence_isolated_between_explicit_session_agents() {
         .evidence_for(None, "session:v1:test:second", 90, 110)
         .unwrap();
 
-    assert_eq!(first.commit_ids, vec!["intent:first"]);
+    assert_eq!(
+        first.commit_ids,
+        vec!["intent:1111111111111111111111111111111111111111"]
+    );
     assert_eq!(first.changed_node_ids, vec!["artifact:src/first.rs"]);
-    assert_eq!(second.commit_ids, vec!["intent:second"]);
+    assert_eq!(
+        second.commit_ids,
+        vec!["intent:2222222222222222222222222222222222222222"]
+    );
     assert_eq!(second.changed_node_ids, vec!["artifact:src/second.rs"]);
 }
 
@@ -1334,7 +1355,7 @@ fn evidence_for_returns_a_commit_the_agent_ingested_inside_the_window() {
             agent,
             &CommitRecord {
                 message: "fix(identity): restore the Memory Plane merge".to_string(),
-                sha: Some("e0585eb".to_string()),
+                sha: Some("e0585eb7c6d5a4b3928170f6e5d4c3b2a1908877".to_string()),
                 changed_files: vec!["crates/mindleak-core/src/db.rs".to_string()],
                 timestamp: started_at,
             },
