@@ -405,6 +405,115 @@ fn relative_import_creates_cross_file_impact_and_call_edges() {
     }));
 }
 
+/// Regression: `impact_radius` could not answer "what breaks if I change this"
+/// for a Rust file, because Rust ingestion emitted no inter-file edges at all.
+/// Measured on this repository, the impact of a real `.rs` file was its own
+/// commits and its own symbols — never another file. An agent reading that
+/// clean result would conclude nothing depended on the file, which the graph
+/// had never actually said.
+#[test]
+fn a_rust_use_creates_a_cross_file_impact_edge() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("crates/c/src/graph/query.rs", "pub fn resolve_seed() {}\n")
+        .unwrap();
+    engine
+        .ingest_file(
+            "crates/c/src/facade/query.rs",
+            "use crate::graph::query::resolve_seed;\n\npub fn preflight() {}\n",
+        )
+        .unwrap();
+
+    let impact = engine
+        .impact_radius("artifact:crates/c/src/graph/query.rs")
+        .unwrap();
+    assert!(
+        impact
+            .nodes
+            .iter()
+            .any(|node| node.node.id == "artifact:crates/c/src/facade/query.rs"),
+        "the importing Rust file must appear in the impact radius; got {:?}",
+        impact
+            .nodes
+            .iter()
+            .map(|node| &node.node.id)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        impact.edges.iter().any(|edge| {
+            edge.relation == mindleak_core::RelationType::Imports
+                && edge.source_id == "artifact:crates/c/src/facade/query.rs"
+                && edge.target_id == "artifact:crates/c/src/graph/query.rs"
+        }),
+        "the edge must point from the importer to the file it depends on"
+    );
+}
+
+/// A `mod` declaration is the most precise dependency statement Rust has: it
+/// names exactly one file. It resolves to the declaring module's directory,
+/// which for a non-root file is a directory named after the file itself.
+#[test]
+fn a_rust_mod_declaration_links_the_parent_to_its_child_file() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("crates/c/src/graph/writes.rs", "pub fn upsert() {}\n")
+        .unwrap();
+    engine
+        .ingest_file("crates/c/src/graph.rs", "mod writes;\n")
+        .unwrap();
+
+    let impact = engine
+        .impact_radius("artifact:crates/c/src/graph/writes.rs")
+        .unwrap();
+    assert!(
+        impact.edges.iter().any(|edge| {
+            edge.relation == mindleak_core::RelationType::Imports
+                && edge.source_id == "artifact:crates/c/src/graph.rs"
+                && edge.target_id == "artifact:crates/c/src/graph/writes.rs"
+        }),
+        "`mod writes;` in graph.rs must reach graph/writes.rs; got {:?}",
+        impact
+            .edges
+            .iter()
+            .map(|edge| format!("{} -> {}", edge.source_id, edge.target_id))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// The pre-flight is the surface agents actually call (ADR-0066), so the new
+/// edges have to arrive there, not just in the traversal underneath it.
+#[test]
+fn the_preflight_now_reports_rust_dependents() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("crates/c/src/graph/query.rs", "pub fn resolve_seed() {}\n")
+        .unwrap();
+    engine
+        .ingest_file(
+            "crates/c/src/facade/query.rs",
+            "use crate::graph::query::resolve_seed;\n",
+        )
+        .unwrap();
+
+    let preflight = engine
+        .preflight(&["crates/c/src/graph/query.rs".to_string()], &[], None)
+        .unwrap();
+    assert!(
+        preflight
+            .impact
+            .nodes
+            .iter()
+            .any(|node| node.node.id == "artifact:crates/c/src/facade/query.rs"),
+        "a Rust dependent must reach the caller through the pre-flight; got {:?}",
+        preflight
+            .impact
+            .nodes
+            .iter()
+            .map(|node| &node.node.id)
+            .collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn hierarchy_edges_resolve_promote_drive_impact_and_retract() {
     let engine = MindLeak::open_in_memory().unwrap();

@@ -258,24 +258,105 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
-- **The impact traversal has no cross-file edges for Rust, so it cannot say what
-  *breaks* — MEASURED, and the pre-flight is worded accordingly.** Run against a
+- **The conformance chain governs 8 code nodes, none of them Rust, and the gate
+  that would enforce it cannot run — MEASURED, partially mitigated.**
+  `ARCHITECTURE.md` calls the conformance chain "the only trustworthy proof that
+  the agents did the sanctioned work". Measured 2026-07-29 from a live
+  `export_conformance_manifest`:
+
+  | | |
+  |---|--:|
+  | governed code nodes in the whole workspace | **8** |
+  | of those, files under `crates/` | **0** |
+  | receipts covering zero governed nodes | **127 of 131** |
+  | verdicts | 52 aligned · 12 drift · 67 needs_human |
+
+  The eight are `.pre-commit-config.yaml` and seven `scripts/` and
+  `editors/vscode/scripts/` files. The entire engine — `mindleak-core`,
+  `lodestar-core`, both MCP servers — is ungoverned, so 97% of receipts prove
+  nothing about any governed code, and a receipt reading `aligned` most often
+  means "there was nothing to check" rather than "the work was proven".
+  **`scripts/conformance-gate.mjs` cannot close this, because it cannot run.**
+  It reads the manifest exported by `export_conformance_manifest`, and
+  `.gitignore` excludes `/.lodestar/*` with a single exception for
+  `CONSTITUTION.md`. The artifact it needs is by policy never committed, so the
+  gate appears in no workflow, no Makefile target, and no hook — not by
+  oversight but by construction. Anyone "wiring it into CI" will find there is
+  nothing for it to read.
+  Mitigated here only in that the gate no longer *reports* a pass it did not
+  earn: it used to print `OK — N changed path(s), no governed gaps` whether it
+  had verified everything or nothing, and it now distinguishes the two, saying
+  `CHECKED NOTHING` when no changed path was in scope. That is the same
+  correction already applied to receipts that were `aligned` over an empty
+  bundle — agreement about nothing reported in the words of proof.
+  Not fixed, because both halves are decisions rather than patches: binding the
+  engine to goals is ~30 goals' worth of attributed judgement, and making the
+  gate runnable means deciding whether a regenerable, agent-produced proof
+  artifact belongs in Git. Either is a reasonable call; neither is an agent's to
+  make quietly.
+
+- **The post-commit ingest hook is not installed, so commits land with no
+  provenance at all — VERIFIED, not yet fixed.** `.pre-commit-config.yaml`
+  declares `default_install_hook_types: [pre-commit, pre-push, post-commit]`,
+  but the shared `.git/hooks` directory contains only `pre-commit` and
+  `pre-push`. `default_install_hook_types` only takes effect when
+  `pre-commit install` is re-run; an environment set up before that line was
+  added keeps working and silently never installs the new type. Observed on
+  `b4a9067` and `543e1c1`: `evidence_for` over the correct window returned
+  nothing, and neither task could be certified until the commit was re-ingested
+  by hand. Impact: an empty evidence bundle that looks exactly like an agent who
+  forgot to ingest — which is the failure the hook was built to eliminate — so
+  the diagnosis lands on the wrong cause. It cost this session two wrong
+  theories before anyone checked whether the hook existed.
+  Fixing it is `pre-commit install --install-hooks`, but note that this is the
+  *shared* hooks directory: every worktree and every agent picks it up at once,
+  and each commit then spawns an MCP server, so it is a fleet-wide load change
+  rather than a local one.
+  The hook now reports when it cannot record, and honours
+  `MINDLEAK_INGEST_TIMEOUT_MS` — worth having, but it reports nothing while it
+  is not installed at all, which is the actual gap.
+  Unexplained: `ce99c35` *does* have provenance, recorded in the same
+  environment with no post-commit hook installed. Do not assume the hook ran.
+- **`Get-Date -UFormat %s` on Windows returns local time as an epoch, not UTC —
+  CONFIRMED, no code change.** Any evidence window built from it is hours in the
+  future, and `check_conformance` then rejects it with *"evidence interval falls
+  outside the live claim"* — an error that reads like a lapsed claim and is not
+  one. Impact: an agent can wrongly conclude a task is stranded and escalate it
+  to a human. Use `git log -1 --format=%ct`, which is true UTC. Confirm a
+  suspected lapse with `renew_lease` (`renewed: false`) rather than inferring it
+  from that message.
+
+- **The impact traversal had no cross-file edges for Rust, so it could not say
+  what *breaks* — FIXED, with two resolution limits that remain.** Run against a
   real file in this repository (`crates/mindleak-core/src/facade/query.rs`) the
-  impact radius returns 15 nodes over 15 edges: 6 commit intents recorded
+  impact radius returned 15 nodes over 15 edges: 6 commit intents recorded
   against the file, the 7 symbols it contains, and `contains`/`refactored`/
-  `modified`/`calls` edges. What it does **not** return is a single other Rust
-  file, because Rust ingestion produces no inter-file `imports` or `depends_on`
-  edges. So it answers "what was decided about this file" well and "what breaks
-  if I change it" not at all for Rust — while `docs/EVALUATION.md` reports 1.00
-  precision on the impact question, measured on a **JS/TS** fixture where those
-  edges exist. Impact: an agent reading a clean impact result on a `.rs` file
-  may conclude nothing depends on it, which the graph never actually said.
-  ADR-0066 puts the traversal on the mandatory checklist with this limit stated
-  rather than leaving the tool unused; closing the gap means emitting `imports`
-  edges from the Rust AST extractor, not rewording the docs.
-  While confirming this: `AGENTS.md` had excluded `get_impact_radius` from the
-  checklist on the grounds that it, like `recall`, "returns plausible
-  strangers", citing this section — which only ever substantiated the `recall`
+  `modified`/`calls` edges — but not a single other Rust file, because Rust
+  ingestion emitted no inter-file `imports` edges at all. An agent reading that
+  clean result would conclude nothing depended on the file, which the graph had
+  never actually said. Meanwhile `docs/EVALUATION.md` reported 1.00 precision on
+  the impact question, measured on a **JS/TS** fixture where those edges exist.
+  Rust files now declare their neighbours: `mod x;` resolves to the declaring
+  module's directory, and `use crate::`/`self::`/`super::` resolve through a
+  longest-first candidate ladder that the store picks a known file from — the
+  same mechanism the JavaScript arm already used, because a `use` path cannot be
+  split into module part and item part by looking at it
+  (`crate::graph::GraphStore` and `crate::graph::query` are the same shape).
+  What still does not resolve, deliberately:
+  1. **Another workspace crate is a package, not a file.** `use
+     mindleak_storage::resolve_database` records `package:mindleak_storage`
+     rather than guessing `crates/mindleak-storage/src/lib.rs`, because the
+     crate-name-to-directory mapping is a convention this code cannot verify.
+     Cross-crate impact therefore stops at the crate boundary.
+  2. **Nested use-groups are read one level deep.** `use a::{b::{c}, d}` binds
+     the outer leaves; the inner group is not recursed. Rare in this codebase
+     and it under-reports rather than inventing an edge.
+  Both under-report, which is the safe direction: a missing edge is a smaller
+  lie than a fabricated one.
+  While confirming the original measurement: `AGENTS.md` had excluded
+  `get_impact_radius` from the checklist on the grounds that it, like `recall`,
+  "returns plausible strangers", citing this section — which only ever
+  substantiated the `recall`
   half. The two were conflated: `recall` answers by embedding similarity and
   genuinely can return a stranger, whereas the impact radius is a deterministic
   traversal over recorded edges. Corrected in ADR-0066.
@@ -326,6 +407,20 @@ and footguns, with impact and status:
   falls inside a *prior* claim by the same agent" becomes a question the store
   can answer, and completing shipped work stops requiring a human. Anyone
   implementing ADR-0064 should treat this as a requirement of it.
+  — **UPDATE, 29 Jul 2026: the absolute claim above is no longer true, and the
+  headline overstates what remains.** ADR-0048 landed after this was written: a
+  re-claim *by the same owner* now keeps `claim_started_at` and records the hole
+  in `claim_lapses` / `unleased_seconds` instead of moving the window
+  ([`store/coordination.rs`](crates/lodestar-core/src/store/coordination.rs),
+  the `claim_started_at = CASE WHEN status = 'claimed' AND owner = ?2 THEN
+  claim_started_at ELSE ?4 END` arm). Verified end to end on
+  `task:219184500419`: its lease lapsed twice mid-task, it was re-claimed by the
+  same owner each time, and evidence beginning at the *original* claim was still
+  accepted by both `check_conformance` and `complete_task`. So a lapse alone no
+  longer strands the work. What remains true is narrower: a **different** owner
+  still opens a fresh window, and commit-then-claim still puts the evidence
+  before the claim that authorises it. Treat the two scalars as the interim
+  mechanism, not the absence of one.
 
 - **Closing a stranded claim after the fact: four traps, all hit in one
   sitting — OPEN.** Most stranded claims are work that already shipped and was
@@ -1219,3 +1314,35 @@ and footguns, with impact and status:
   the enum is a public-API change and renaming the table is a data migration,
   neither of which belongs in a rename that had to migrate every caller
   atomically. Should be its own change, not bolted onto this one.
+- **An agent can work all day and certify nothing, and the board cannot tell the
+  difference between unfinished and unclosed — MEASURED, OPEN.**
+  — *The measurement.* 48 of 101 `done` tasks rest on a `needs_human` receipt
+  rather than an affirmed one (`knowledge:d9ad8b8911d7`). Thirty-three claims sit
+  lapsed on the board. An audit against `origin/main` on 29 Jul 2026 found at
+  least **nine** of those tasks already fully implemented in main — all five
+  module-split tasks, plus PRs #100, #110, #114 and #116 — while still showing as
+  open or free to re-claim (`knowledge:93679dfca687`). This session added a
+  tenth: `task:219184500419` shipped as PR #149, merged, and still completed
+  `needs_human`.
+  — *The impact.* The board is not a statement of what is missing. An agent that
+  trusts it re-implements shipped work, and "done" does not mean "affirmed", so
+  the completion count cannot be read as delivery. Both failure modes are
+  silent: nothing warns you that the task you just claimed is already in main.
+  — *Why the guard is correct.* The temptation is to blame `check_conformance`
+  for refusing, and to loosen it. Do not. It requires evidence to fall inside
+  the claim window and refuses to upgrade a verdict it cannot substantiate;
+  without that, a receipt could be back-dated, or could cover another agent's
+  commits, and would certify nothing at all. The guard is the only reason a
+  receipt means anything. Every failure above is *upstream* of it — an orphaned
+  goal, a stale server binary, commit-then-claim ordering — and each is fixable
+  without touching the guard.
+  — *The candidate repair.* Three, in order of value. (1) Re-bind the 51 goals
+  orphaned when constitution v2 dropped every goal-to-code link, so
+  `touched_task_goal` is answerable at all; ADR-0060 item 3 now lets a goal bind
+  the docs, ADRs and benchmarks it delivers, so this is finally expressible.
+  (2) ADR-0064 (the log is the ledger), so "evidence inside a *prior* claim by
+  the same agent" becomes answerable and shipped work stops needing a human.
+  (3) `existing_work` (`task:b8ca6e0ca5fb`), so a claimant is told the
+  capability is already in main before doing the work twice. Explicitly **not**
+  a repair: raising the 300-second default lease — ADR-0052 considered and
+  rejected that, and a longer lease only widens the window it fails to police.
