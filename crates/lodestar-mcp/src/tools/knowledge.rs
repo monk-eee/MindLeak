@@ -71,6 +71,17 @@ pub(super) fn definitions() -> Vec<Value> {
             "description": "Purge knowledge that decayed below the threshold without reconfirmation.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
+        json!({
+            "name": "active_knowledge",
+            "description": "Read what this repository has learned and not yet forgotten. Knowledge was write-only from this surface: it could be recorded, promoted, reconfirmed and pruned, but never read, so the only consumer was the conformance advisory and an agent could not find out what was already known before rediscovering it. Each entry reports the nodes it references, because that is the sole thing the advisory matches on - a record whose evidence carries no `nodes` array is stored, counted, and can never surface, and `surfaces: false` is how you see that rather than guessing.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node": { "type": "string", "description": "Return only knowledge referencing this node id, e.g. artifact:crates/lodestar-core/src/llm.rs - what is known about the thing you are about to change." },
+                    "contains": { "type": "string", "description": "Return only knowledge whose statement contains this text, matched case-insensitively." }
+                }
+            }
+        }),
     ]
 }
 
@@ -130,7 +141,47 @@ pub(super) fn dispatch(
             ok(&promoted)
         })()),
         "active_knowledge" => Some((|| {
-            ok(&engine.active_knowledge().map_err(|e| e.to_string())?)
+            let node = opt_str(args, "node");
+            let contains = opt_str(args, "contains").map(|c| c.to_lowercase());
+            let known = engine.active_knowledge().map_err(|e| e.to_string())?;
+
+            let rows: Vec<Value> = known
+                .iter()
+                .filter(|k| match node.as_deref() {
+                    Some(wanted) => k.referenced_nodes().iter().any(|n| n == wanted),
+                    None => true,
+                })
+                .filter(|k| match contains.as_deref() {
+                    Some(needle) => k.statement.to_lowercase().contains(needle),
+                    None => true,
+                })
+                .map(|k| {
+                    let nodes = k.referenced_nodes();
+                    json!({
+                        "id": k.id,
+                        "statement": k.statement,
+                        "weight": k.weight,
+                        "half_life_hours": k.half_life_hours,
+                        "confirmed_at": k.confirmed_at,
+                        "nodes": nodes,
+                        // The advisory matches on referenced nodes and nothing
+                        // else, so knowledge naming none can never reach the
+                        // agent it was written for. Said plainly rather than
+                        // left to be inferred from an empty array.
+                        "surfaces": !nodes.is_empty(),
+                    })
+                })
+                .collect();
+
+            let silent = rows
+                .iter()
+                .filter(|r| r["surfaces"] == json!(false))
+                .count();
+            ok(&json!({
+                "count": rows.len(),
+                "never_surfaces": silent,
+                "knowledge": rows,
+            }))
         })()),
         "reconfirm_knowledge" => Some((|| {
             let reconfirmed = engine

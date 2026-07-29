@@ -203,6 +203,14 @@ style nit.
   and proof; MindLeak shares repository learning. Sharing one writable checkout
   is a reviewed exception, not the default. Do not cherry-pick, rebase, or squash
   routine work: those operations replace evidence-bearing commit identities.
+- **Never commit in a worktree you do not own.** Git isolates files, the index,
+  and branch selection — but not *who may type in a checkout*. A linked worktree
+  has exactly one writer: the session that first commits in it. Committing in a
+  peer's worktree races their edits, and `pre-commit`'s stash/restore can land on
+  top of work they are still writing; the failure then appears in *their* branch,
+  naming files you never touched. The `worktree-owner` hook now refuses this
+  (exit 4). If a worktree is genuinely handed to you, take it deliberately with
+  `--adopt-worktree` — never by walking in.
 - **Publish exact commits; converge through review.** Any clean attached worktree
   may publish its current non-protected branch with
   `node scripts/canonical-push.mjs`. The script pushes exact `HEAD` to the same

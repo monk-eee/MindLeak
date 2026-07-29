@@ -163,7 +163,7 @@ function main() {
       console.error(`  - ${path}`);
     }
     console.error(
-      "conformance-gate: rebind with link_goal_to_code, or unlink if the code is gone.",
+      "conformance-gate: rebind with link_goal_to_artifact, or unlink if the code is gone.",
     );
   }
 

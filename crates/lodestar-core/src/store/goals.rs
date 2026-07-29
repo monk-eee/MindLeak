@@ -401,7 +401,7 @@ impl LodestarStore {
             .ok_or_else(|| LodestarError::NotFound(goal_id.to_string()))
     }
 
-    pub fn link_goal_to_code(
+    pub fn link_goal_to_artifact(
         &self,
         goal_id: &str,
         node_ids: &[String],
@@ -429,7 +429,7 @@ impl LodestarStore {
     /// Remove goal↔code bindings for the given node ids. Returns how many rows
     /// were deleted (a node not bound to the goal is a no-op, not an error), so a
     /// stale binding can be pruned without wiping and re-linking the goal.
-    pub fn unlink_goal_from_code(&self, goal_id: &str, node_ids: &[String]) -> Result<usize> {
+    pub fn unlink_goal_from_artifact(&self, goal_id: &str, node_ids: &[String]) -> Result<usize> {
         let mut removed = 0;
         for node in node_ids {
             removed += self.conn.execute(
@@ -746,7 +746,7 @@ mod tests {
     fn goal_code_seam_resolves_active_governors() {
         let s = store();
         let g = goal(&s);
-        s.link_goal_to_code(
+        s.link_goal_to_artifact(
             &g.id,
             &["artifact:src/x.rs".into()],
             CodeBindingMode::Governed,
