@@ -18,6 +18,32 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The backstop for silently stranded work. A merged pull request whose commits
+  # never reached main fails nothing anywhere else: the pull request reads
+  # merged, the branch reads ahead, CI is green on both. This detector existed
+  # and caught PR #37 and PR #134 in hindsight, but ran only when somebody
+  # remembered to type `make merge-audit`, which is to say almost never.
+  #
+  # Only on main, never on pull requests: the question is "did the thing that
+  # just merged leave work behind", which is not a question about a branch that
+  # has not merged yet.
+  merge-audit:
+    name: Merged branches left nothing behind
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+      - name: Audit
+        run: node scripts/merge-audit.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   rust:
     name: Rust (fmt · clippy · test)
     runs-on: ${{ matrix.os }}
@@ -69,6 +95,12 @@ jobs:
       # hooks, and costs nothing when changelog.d is empty.
       - name: Changelog fragments
         run: node scripts/changelog.mjs --check
+        working-directory: .
+      # The guards the fleet trusts to stay honest - conformance gate, merge
+      # driver, claim gate, publication record, delivery queue, board health -
+      # test themselves here. They were written and wired into nothing.
+      - name: Script tests
+        run: node scripts/script-tests.mjs
         working-directory: .
 
   extension-host:

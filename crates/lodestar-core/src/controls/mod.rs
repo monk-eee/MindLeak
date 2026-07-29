@@ -117,6 +117,15 @@ pub struct Control {
     pub version: i64,
     pub configuration: Option<String>,
     pub status: ControlStatus,
+    /// Who stood this control down, and when. Standing a mechanism down
+    /// weakens what its clause can enforce, so it is attributed for the same
+    /// reason a waiver is: an unattributed exception is indistinguishable from
+    /// a rule that was never enforced. `None` on an active control, and on
+    /// every control retired before this was recorded — those retirements
+    /// cannot be reconstructed, and inventing an author would be worse than
+    /// admitting the gap.
+    pub retired_by: Option<String>,
+    pub retired_at: Option<i64>,
 }
 
 /// One reported result from a control. Never a verdict on its own: conformance
@@ -201,6 +210,8 @@ pub fn forbid_change_control(clause_id: &str) -> Control {
         version: FORBID_CHANGE_CONTROL_VERSION,
         configuration: None,
         status: ControlStatus::Active,
+        retired_by: None,
+        retired_at: None,
     }
 }
 
@@ -268,6 +279,8 @@ mod tests {
             version: 2,
             configuration: None,
             status,
+            retired_by: None,
+            retired_at: None,
         }
     }
 

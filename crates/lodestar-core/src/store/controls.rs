@@ -7,7 +7,8 @@ use crate::error::{LodestarError, Result};
 
 use super::{collect, LodestarStore};
 
-const CONTROL_COLS: &str = "id, clause_id, kind, power, version, configuration, status";
+const CONTROL_COLS: &str =
+    "id, clause_id, kind, power, version, configuration, status, retired_by, retired_at";
 
 impl LodestarStore {
     /// Bind one versioned control to a clause.
@@ -100,10 +101,21 @@ impl LodestarStore {
 
     /// Retire a control without deleting it, so historical observations remain
     /// resolvable against the mechanism that produced them.
-    pub fn retire_control(&self, id: &str) -> Result<bool> {
+    ///
+    /// Attributed, because retiring a control is the one operation that reduces
+    /// what a clause can enforce without changing a word of the clause.
+    pub fn retire_control(&self, id: &str, retired_by: &str, now: i64) -> Result<bool> {
+        let retired_by = retired_by.trim();
+        if retired_by.is_empty() {
+            return Err(LodestarError::Invalid(
+                "retiring a control requires an attributed author".to_string(),
+            ));
+        }
         let changed = self.conn.execute(
-            "UPDATE controls SET status = 'retired' WHERE id = ?1 AND status <> 'retired'",
-            params![id],
+            "UPDATE controls
+                SET status = 'retired', retired_by = ?2, retired_at = ?3
+              WHERE id = ?1 AND status <> 'retired'",
+            params![id, retired_by, now],
         )?;
         Ok(changed > 0)
     }
@@ -155,6 +167,8 @@ fn row_to_control(row: &Row) -> rusqlite::Result<Control> {
         } else {
             ControlStatus::Active
         },
+        retired_by: row.get(7)?,
+        retired_at: row.get(8)?,
     })
 }
 
@@ -172,6 +186,8 @@ mod tests {
             version,
             configuration: None,
             status: ControlStatus::Active,
+            retired_by: None,
+            retired_at: None,
         }
     }
 
@@ -222,11 +238,55 @@ mod tests {
         store
             .register_control(&control("control:a", &clause.id, 1), NOW)
             .unwrap();
-        assert!(store.retire_control("control:a").unwrap());
-        assert!(!store.retire_control("control:a").unwrap());
+        assert!(store.retire_control("control:a", "monk-eee", NOW).unwrap());
+        assert!(!store.retire_control("control:a", "monk-eee", NOW).unwrap());
 
         let retired = store.control("control:a").unwrap().unwrap();
         assert_eq!(retired.status, ControlStatus::Retired);
         assert_eq!(store.controls_for_clause(&clause.id).unwrap().len(), 1);
+    }
+
+    /// Standing a control down is the one act that reduces what a clause can
+    /// enforce without touching a word of the clause, so it is attributed for
+    /// the same reason a waiver is.
+    #[test]
+    fn retiring_a_control_records_who_stood_it_down() {
+        let store = store();
+        let clause = goal(&store);
+        store
+            .register_control(&control("control:a", &clause.id, 1), NOW)
+            .unwrap();
+
+        let live = store.control("control:a").unwrap().unwrap();
+        assert_eq!(live.retired_by, None, "an active control has no retirement");
+        assert_eq!(live.retired_at, None);
+
+        store.retire_control("control:a", "monk-eee", NOW).unwrap();
+
+        let retired = store.control("control:a").unwrap().unwrap();
+        assert_eq!(retired.retired_by.as_deref(), Some("monk-eee"));
+        assert_eq!(retired.retired_at, Some(NOW));
+    }
+
+    #[test]
+    fn retiring_a_control_without_an_author_is_refused() {
+        let store = store();
+        let clause = goal(&store);
+        store
+            .register_control(&control("control:a", &clause.id, 1), NOW)
+            .unwrap();
+
+        let error = store
+            .retire_control("control:a", "   ", NOW)
+            .expect_err("an unattributed retirement is refused");
+        assert!(
+            error.to_string().contains("attributed"),
+            "says what is missing: {error}"
+        );
+        assert_eq!(
+            store.control("control:a").unwrap().unwrap().status,
+            ControlStatus::Active,
+            "a refused retirement leaves the control enforcing"
+        );
     }
 }

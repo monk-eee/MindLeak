@@ -155,12 +155,23 @@ impl Lodestar {
                 findings,
             });
         };
+
+        // Not touching goal-bound code is a fact to record, not a verdict to
+        // fail on (ADR-0060). The identical evidence with no task attached
+        // aligns in the branch directly above, so failing here made the
+        // *presence of a task* the thing that worsened the verdict — and made
+        // work whose product is an ADR, a benchmark, a changelog fragment or
+        // documentation impossible to complete, because `link_goal_to_artifact`
+        // binds code and nothing else. `needs_human` must mean "a human needs
+        // to look at this", not "the work product was not Rust".
+        //
+        // The finding stays: a task bound to a code goal that produced no code
+        // may well be mis-scoped, and that is worth recording. It is a smell,
+        // so it is recorded rather than blocking. Only a *positive* signal of a
+        // problem — drift, a forbid_change lock, missing provenance, governed
+        // code changed without a covering task — may downgrade a verdict.
         if !touched_task_goal {
             findings.push("evidence does not touch code bound to the task goal".to_string());
-            return Ok(ConformanceResult {
-                verdict: Verdict::NeedsHuman,
-                findings,
-            });
         }
 
         let goal = self
@@ -196,7 +207,9 @@ impl Lodestar {
             }
         }
 
-        findings.push(format!("evidence covers task goal {}", task.goal_id));
+        if touched_task_goal {
+            findings.push(format!("evidence covers task goal {}", task.goal_id));
+        }
 
         // A discontinuous evidence window cannot certify itself (ADR-0048,
         // ADR-0034 ceiling rule). The window now survives a lapse so earlier

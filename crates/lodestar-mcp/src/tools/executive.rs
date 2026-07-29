@@ -5,7 +5,7 @@ use super::conformance::parse_evidence;
 use super::{
     bool_arg, i64_arg, ok, opt_str, optional_string_arg, rendered, req_str, str_array, text,
 };
-use lodestar_core::{GoverningClause, HumanQuestion, Lodestar, TaskScope};
+use lodestar_core::{now_unix, GoverningClause, HumanQuestion, Lodestar, TaskScope, TaskStatus};
 use serde_json::{json, Value};
 
 pub(super) fn definitions() -> Vec<Value> {
@@ -69,13 +69,14 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "check_overlap",
-            "description": "Read-only pre-flight check for live Lodestar claims whose declared scope intersects these concrete workspace-relative paths or symbol ids (ADR-0024). Advisory only; combine with MindLeak's check_overlap footprint result for cross-plane awareness.",
+            "description": "Read-only pre-flight check for live Lodestar claims whose declared scope intersects these concrete workspace-relative paths or symbol ids (ADR-0024). Each intersection is classified from the branches the two sessions declared at open_session (ADR-0035): same_branch_collision (edits land in one history, colliding now), cross_branch_merge_risk (divergence, paid at merge), or undeclared when either side declared no branch. Advisory only, and never blocks a claim; combine with MindLeak's check_overlap footprint result for cross-plane awareness.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "paths": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Concrete workspace-relative paths about to be touched; claim scopes are the glob side of the comparison." },
                     "symbols": { "type": "array", "items": { "type": "string" }, "default": [] },
-                    "exclude_task_id": { "type": "string", "description": "Optional current task to omit from results." }
+                    "exclude_task_id": { "type": "string", "description": "Optional current task to omit from results." },
+                    "session_id": { "type": "string", "pattern": "^[0-9a-f]{32}$", "description": "Optional session id from open_session. Supplying it classifies each overlap against the branch that session already declared; without it every signal is 'undeclared'. No branch argument is accepted: the branch is declared once per session, and a second place to state it could disagree with the first." }
                 }
             }
         }),
@@ -351,10 +352,11 @@ pub(super) fn dispatch(
                 paths: str_array(args, "paths"),
                 symbols: str_array(args, "symbols"),
             };
+            let agent = opt_str(args, "agent").unwrap_or_default();
             let won = engine
                 .claim_task_with_scope(
                     task_id,
-                    opt_str(args, "agent").unwrap_or_default().as_str(),
+                    agent.as_str(),
                     i64_arg(args, "lease_secs", 300),
                     &scope,
                 )
@@ -386,6 +388,31 @@ pub(super) fn dispatch(
                         obj.insert("lease_expires_at".to_string(), json!(task.lease_expires_at));
                     }
                 }
+            } else {
+                // A lost claim used to be a bare `won: false`. Every reason it
+                // can fail is knowable from the row the compare-and-swap just
+                // missed, and they call for opposite responses: wait for a live
+                // lease, pick different work if it is finished, unblock a
+                // blocker, rebuild a stale binary. Collapsing them into one
+                // boolean is why `scripts/claim-gate.mjs` exists at all — a
+                // whole diagnostic written to guess, after the fact, at
+                // something the plane knew at the time.
+                let task = engine
+                    .store()
+                    .get_task(task_id)
+                    .map_err(|e| e.to_string())?;
+                if let Some(obj) = response.as_object_mut() {
+                    obj.insert(
+                        "reason".to_string(),
+                        json!(lost_claim_reason(task.as_ref(), &agent, now_unix())),
+                    );
+                    if let Some(task) = task.as_ref() {
+                        obj.insert("status".to_string(), json!(task.status.as_str()));
+                        obj.insert("owner".to_string(), json!(task.owner));
+                        obj.insert("lease_expires_at".to_string(), json!(task.lease_expires_at));
+                        obj.insert("blocked_by".to_string(), json!(task.blocked_by));
+                    }
+                }
             }
             attach_waiting(engine, args, &mut response)?;
             ok(&response)
@@ -400,10 +427,14 @@ pub(super) fn dispatch(
                 paths: str_array(args, "paths"),
                 symbols: str_array(args, "symbols"),
             };
-            let overlaps = engine
-                .check_claim_overlap(&scope, opt_str(args, "exclude_task_id").as_deref())
+            let report = engine
+                .check_claim_overlap(
+                    &scope,
+                    opt_str(args, "exclude_task_id").as_deref(),
+                    opt_str(args, "agent").as_deref(),
+                )
                 .map_err(|e| e.to_string())?;
-            ok(&json!({ "claims": overlaps }))
+            ok(&report)
         })()),
         "draft_questions" => Some((|| {
             let drafts = engine
@@ -458,6 +489,11 @@ pub(super) fn dispatch(
                     );
                 }
             }
+            // The one place an agent reliably discovers a dead lease, and until
+            // now it discovered only that completion failed. If any claim of
+            // theirs has lapsed, say so here with what can and cannot be done
+            // about it -- renewing does not repair a holed window.
+            attach_lease_warning(engine, args, &mut response)?;
             ok(&response)
         })()),
         "release_task" => Some((|| {
@@ -586,10 +622,30 @@ pub(super) fn dispatch(
             let mut rows = Vec::with_capacity(tasks.len());
             for task in tasks {
                 let scope = engine.task_scope(&task.id).map_err(|e| e.to_string())?;
+                // The receipt the task closed on, beside the status rather than
+                // one query away. A `done` row says nothing about whether its
+                // evidence ever affirmed the work, and most of them did not.
+                let receipt = engine.task_receipt(&task.id).map_err(|e| e.to_string())?;
+                // Whether the claim is actually being held, beside the status
+                // rather than inferred from a timestamp. `claimed` alone read as
+                // work in progress: measured once at 36 claimed rows of which 4
+                // had a live lease, and finding that out took a bespoke script.
+                let lease_state = match (task.status, task.lease_expires_at) {
+                    (TaskStatus::Claimed, Some(expires)) if expires >= now_unix() => Some("live"),
+                    (TaskStatus::Claimed, _) => Some("lapsed"),
+                    _ => None,
+                };
                 let mut row = serde_json::to_value(task).map_err(|e| e.to_string())?;
-                row.as_object_mut()
-                    .ok_or_else(|| "task did not serialize as an object".to_string())?
-                    .insert("scope".to_string(), json!(scope));
+                let object = row
+                    .as_object_mut()
+                    .ok_or_else(|| "task did not serialize as an object".to_string())?;
+                object.insert("scope".to_string(), json!(scope));
+                if let Some(state) = lease_state {
+                    object.insert("lease_state".to_string(), json!(state));
+                }
+                if let Some(receipt) = receipt {
+                    object.insert("receipt".to_string(), json!(receipt));
+                }
                 rows.push(row);
             }
             ok(&rows)
@@ -601,6 +657,56 @@ pub(super) fn dispatch(
 /// Attach any questions addressed to this agent to a response (ADR-0046).
 ///
 /// Delivered through calls the agent already makes — `claim_task` at pickup and
+/// Why a compare-and-swap claim missed, in words the caller can act on.
+///
+/// Every one of these was already knowable from the row; `claim_task` simply
+/// returned `false` and let the agent guess. They call for opposite responses —
+/// wait, pick different work, unblock a predecessor, rebuild a binary — so one
+/// boolean covering all of them is not terse, it is unusable. `claim-gate.mjs`
+/// is a whole diagnostic written to reconstruct, after the fact, something the
+/// plane knew at the moment it refused.
+fn lost_claim_reason(task: Option<&lodestar_core::Task>, agent: &str, now: i64) -> String {
+    let Some(task) = task else {
+        return "no such task".to_string();
+    };
+    if let Some(blocker) = task.blocked_by.as_deref() {
+        return format!("blocked by {blocker}; it must complete aligned first");
+    }
+    match task.status {
+        TaskStatus::Done | TaskStatus::Abandoned => {
+            format!(
+                "already {}; there is nothing to claim",
+                task.status.as_str()
+            )
+        }
+        _ => match task.owner.as_deref() {
+            // ADR-0054: a server built before session identities resolves a
+            // different id shape than the migrated ledger holds, so an agent is
+            // refused its own claim. Nothing in `won: false` hinted at that, and
+            // re-claiming never helps — it cost a long hunt once already.
+            Some(owner)
+                if !owner.starts_with("session:v1:") && agent.starts_with("session:v1:") =>
+            {
+                format!(
+                    "held under a pre-session identity ({owner}); this is a stale server binary \
+                     (ADR-0054), not a live claim. Rebuild and reinstall — re-claiming will not help"
+                )
+            }
+            Some(owner) if owner != agent => match task.lease_expires_at {
+                Some(expires) if expires > now => format!(
+                    "held by {owner} for another {}s; recover_claim can take it over with a reason",
+                    expires - now
+                ),
+                _ => format!("held by {owner} with a lapsed lease; use recover_claim to take it"),
+            },
+            _ => format!(
+                "status {} does not accept a claim right now",
+                task.status.as_str()
+            ),
+        },
+    }
+}
+
 /// `renew_lease` as the heartbeat — rather than by a new obligation to poll.
 /// A capability nobody remembers to call is adopted at the rate we measured for
 /// the whole intent plane: zero. The heartbeat is the important one, because a
@@ -609,6 +715,105 @@ pub(super) fn dispatch(
 /// Absent when nothing is waiting: no key, no empty array, nothing for a caller
 /// to interpret. A reader must never have to tell "no questions" apart from
 /// "this server does not report questions".
+/// How close a lease may get to expiry before the agent is told.
+///
+/// Five minutes is the default lease and `cargo test --all` alone can outlast
+/// it, so a lapse is not an exceptional event -- it is the normal outcome of
+/// doing a normal thing. Ninety seconds is enough to call `renew_lease` and
+/// short enough not to cry wolf on every call.
+const LEASE_WARNING_SECS: i64 = 90;
+
+/// Tell an agent its lease is about to die, while it can still do something.
+///
+/// A lapse is currently silent. The agent finds out at `complete_task`, which
+/// is far too late: closing a lapsed claim means re-claiming it, re-claiming
+/// records the lapse, and conformance then refuses to certify across the hole
+/// (ADR-0048). The cost of missing the deadline is unrecoverable, and the only
+/// warning arrived after the deadline had passed.
+///
+/// This is the complement to the heartbeat (ADR-0052), which renews the lease
+/// on six tools an agent already calls. Those six cover the common path; this
+/// covers everything else by making the deadline visible rather than assuming
+/// it will be met.
+fn attach_lease_warning(
+    engine: &Lodestar,
+    args: &Value,
+    response: &mut Value,
+) -> Result<(), String> {
+    let agent = opt_str(args, "agent").unwrap_or_default();
+    if agent.is_empty() {
+        return Ok(());
+    }
+    let now = now_unix();
+    let mine: Vec<_> = engine
+        .board(false)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|task| {
+            task.status == TaskStatus::Claimed && task.owner.as_deref() == Some(agent.as_str())
+        })
+        .collect();
+
+    let expiring: Vec<Value> = mine
+        .iter()
+        .filter(|task| {
+            task.lease_expires_at
+                .is_some_and(|at| at > now && at - now <= LEASE_WARNING_SECS)
+        })
+        .map(|task| {
+            json!({
+                "task_id": task.id,
+                "seconds_left": task.lease_expires_at.unwrap_or(now) - now,
+            })
+        })
+        .collect();
+
+    // An already-lapsed lease is the more urgent signal, not a less urgent one.
+    // The damage is done, but the sooner the agent knows, the sooner it stops
+    // producing work it can never certify -- and the alternative is finding out
+    // at `complete_task`, having built a whole change on a dead claim.
+    let lapsed: Vec<Value> = mine
+        .iter()
+        .filter(|task| task.lease_expires_at.is_some_and(|at| at <= now))
+        .map(|task| {
+            json!({
+                "task_id": task.id,
+                "seconds_ago": now - task.lease_expires_at.unwrap_or(now),
+            })
+        })
+        .collect();
+
+    if expiring.is_empty() && lapsed.is_empty() {
+        return Ok(());
+    }
+    if let Some(object) = response.as_object_mut() {
+        if !expiring.is_empty() {
+            object.insert("lease_expiring".to_string(), json!(expiring));
+            object.insert(
+                "lease_advice".to_string(),
+                json!(
+                    "renew_lease now. A lapsed claim cannot be completed afterwards: \
+                     re-claiming records the lapse and conformance refuses to certify \
+                     across the hole (ADR-0048)."
+                ),
+            );
+        }
+        if !lapsed.is_empty() {
+            object.insert("lease_lapsed".to_string(), json!(lapsed));
+            object.insert(
+                "lapsed_advice".to_string(),
+                json!(
+                    "This claim can no longer be completed by an agent. Renewing will not \
+                     repair it -- the evidence window already has a hole, and conformance \
+                     refuses to certify across one (ADR-0048). Stop and get a human to \
+                     confirm it; `make stranded-report` names the likely commit."
+                ),
+            );
+        }
+    }
+    Ok(())
+}
+
 fn attach_waiting(engine: &Lodestar, args: &Value, response: &mut Value) -> Result<(), String> {
     let agent = opt_str(args, "agent").unwrap_or_default();
     if agent.is_empty() {
@@ -734,6 +939,10 @@ mod tests {
             serde_json::from_str(overlap["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(body["claims"].as_array().unwrap().len(), 1);
         assert_eq!(body["claims"][0]["owner"], "alice");
+        // Nobody declared a branch, so the answer is exactly the one this tool
+        // has always given, and it says so rather than implying a verdict.
+        assert!(body["requester_branch"].is_null());
+        assert_eq!(body["claims"][0]["signal"], "undeclared");
 
         let board = call(
             &engine,
@@ -760,7 +969,7 @@ mod tests {
             .unwrap();
         let node_id = "artifact:src/search.rs";
         engine
-            .link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+            .link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
         let task = engine.create_task(&goal.id, "wire search", "done").unwrap();
         engine.claim_task(&task.id, "agent-a", 300).unwrap();
@@ -910,6 +1119,71 @@ mod tests {
         let board = engine.board(true).unwrap();
         let reopened = board.iter().find(|t| t.id == task.id).unwrap();
         assert_eq!(reopened.status.as_str(), "open");
+    }
+
+    /// ADR-0035 heuristic 4 over the wire: the same intersection, reported
+    /// differently depending on where the two sessions said they are working.
+    #[test]
+    fn check_overlap_dispatch_grades_the_collision_by_declared_branch() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Graded", "grade the overlap", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Edit graph", "done").unwrap();
+        assert!(engine
+            .claim_task_with_scope(
+                &task.id,
+                "alice",
+                300,
+                &lodestar_core::TaskScope {
+                    paths: vec!["crates/mindleak-core/src/**".to_string()],
+                    symbols: vec![],
+                },
+            )
+            .unwrap());
+        let on_branch = |branch: &str| mindleak_session::SessionContext {
+            branch: Some(branch.to_string()),
+            ..mindleak_session::SessionContext::default()
+        };
+        engine
+            .declare_session_context("alice", &on_branch("fleet/a"))
+            .unwrap();
+
+        let signal = |agent: &str| {
+            let result = call(
+                &engine,
+                &json!({
+                    "name": "check_overlap",
+                    "arguments": {
+                        "paths": ["crates/mindleak-core/src/lib.rs"],
+                        // Injected by `bind_session` from the offered session.
+                        "agent": agent
+                    }
+                }),
+            )
+            .unwrap();
+            serde_json::from_str::<Value>(result["content"][0]["text"].as_str().unwrap()).unwrap()
+        };
+
+        engine
+            .declare_session_context("bob", &on_branch("fleet/a"))
+            .unwrap();
+        let same = signal("bob");
+        assert_eq!(same["requester_branch"], "fleet/a");
+        assert_eq!(same["claims"][0]["owner_branch"], "fleet/a");
+        assert_eq!(same["claims"][0]["signal"], "same_branch_collision");
+
+        engine
+            .declare_session_context("bob", &on_branch("fleet/b"))
+            .unwrap();
+        let different = signal("bob");
+        assert_eq!(different["claims"][0]["signal"], "cross_branch_merge_risk");
+
+        // Still advisory: the graded answer changed nothing about the claim.
+        assert_eq!(
+            engine.board(false).unwrap()[0].owner.as_deref(),
+            Some("alice")
+        );
     }
 
     #[test]
@@ -1069,6 +1343,41 @@ mod tests {
         assert!(!ids.contains(&retired.id.as_str()));
     }
 
+    /// Bug: `status: claimed` was the only state the board exposed, so a row
+    /// whose lease expired hours ago read exactly like work in progress.
+    /// Measured once at 36 claimed rows with 4 live leases, making every plan
+    /// against the board nine times wrong. The lease state is derived where the
+    /// board is read rather than by rewriting durable task status (ADR-0067).
+    #[test]
+    fn board_tool_distinguishes_a_live_claim_from_a_lapsed_one() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "do it", None)
+            .unwrap();
+        let live = engine.create_task(&goal.id, "Live lease", "").unwrap();
+        let lapsed = engine.create_task(&goal.id, "Lapsed lease", "").unwrap();
+        assert!(engine.claim_task(&live.id, "alice", 600).unwrap());
+        assert!(engine.claim_task(&lapsed.id, "bob", -1).unwrap());
+
+        let board: Value = serde_json::from_str(
+            call(&engine, &json!({ "name": "board", "arguments": {} })).unwrap()["content"][0]
+                ["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let row = |id: &str| {
+            board
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|task| task["id"] == id)
+                .unwrap()
+        };
+        assert_eq!(row(&live.id)["lease_state"], "live");
+        assert_eq!(row(&lapsed.id)["lease_state"], "lapsed");
+    }
+
     #[test]
     fn create_task_rejects_malformed_predecessor_and_preserves_legacy_calls() {
         let engine = Lodestar::open_in_memory().unwrap();
@@ -1099,6 +1408,214 @@ mod tests {
             serde_json::from_str(legacy["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(task["status"], "open");
         assert!(task["blocked_by"].is_null());
+    }
+
+    /// A lapse is silent until `complete_task`, which is far too late: closing
+    /// a lapsed claim means re-claiming it, re-claiming records the lapse, and
+    /// conformance then refuses to certify across the hole (ADR-0048). The only
+    /// warning arrived after the cost had already become unrecoverable.
+    /// Twenty-nine claims on this repository are stuck behind exactly that.
+    #[test]
+    fn a_lease_about_to_expire_says_so_while_there_is_still_time() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Work", "done").unwrap();
+        assert!(engine.claim_task(&task.id, "agent-a", 30).unwrap());
+
+        let mut response = json!({});
+        attach_lease_warning(&engine, &json!({ "agent": "agent-a" }), &mut response).unwrap();
+
+        let expiring = response["lease_expiring"]
+            .as_array()
+            .expect("an imminent deadline is reported");
+        assert_eq!(expiring.len(), 1);
+        assert_eq!(expiring[0]["task_id"], task.id);
+        let advice = response["lease_advice"].as_str().unwrap();
+        assert!(advice.contains("renew_lease"), "names the fix: {advice}");
+        assert!(
+            advice.contains("ADR-0048"),
+            "says why missing it cannot be repaired later: {advice}"
+        );
+    }
+
+    /// The urgent case, and the one originally left out. The damage is done,
+    /// but the sooner an agent knows, the sooner it stops building work it can
+    /// never certify -- and the advice must not be "renew", which cannot repair
+    /// a window that already has a hole in it.
+    #[test]
+    fn an_already_lapsed_lease_says_renewing_will_not_repair_it() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Work", "done").unwrap();
+        assert!(engine.claim_task(&task.id, "agent-a", -10).unwrap());
+
+        let mut response = json!({});
+        attach_lease_warning(&engine, &json!({ "agent": "agent-a" }), &mut response).unwrap();
+
+        assert_eq!(response["lease_lapsed"].as_array().unwrap().len(), 1);
+        let advice = response["lapsed_advice"].as_str().unwrap();
+        assert!(
+            advice.contains("Renewing will not repair it"),
+            "stops the obvious wrong response: {advice}"
+        );
+        assert!(
+            advice.contains("human"),
+            "names who can actually resolve it: {advice}"
+        );
+        assert!(
+            response.get("lease_expiring").is_none(),
+            "a dead lease is not an expiring one: {response}"
+        );
+    }
+
+    /// Warning on every call trains agents to ignore the field, which is how a
+    /// real warning gets missed. A comfortable lease says nothing at all.
+    #[test]
+    fn a_comfortable_lease_stays_quiet() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Work", "done").unwrap();
+        assert!(engine.claim_task(&task.id, "agent-a", 3600).unwrap());
+
+        let mut response = json!({});
+        attach_lease_warning(&engine, &json!({ "agent": "agent-a" }), &mut response).unwrap();
+        assert_eq!(response, json!({}), "silent: {response}");
+    }
+
+    /// Another agent's deadline is not this agent's problem, and reporting it
+    /// would be noise attached to someone else's work.
+    #[test]
+    fn only_your_own_lease_is_reported() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let theirs = engine.create_task(&goal.id, "Theirs", "done").unwrap();
+        let mine = engine.create_task(&goal.id, "Mine", "done").unwrap();
+        assert!(engine.claim_task(&theirs.id, "agent-a", 30).unwrap());
+        assert!(engine.claim_task(&mine.id, "agent-b", 3600).unwrap());
+
+        let mut response = json!({});
+        attach_lease_warning(&engine, &json!({ "agent": "agent-b" }), &mut response).unwrap();
+        assert_eq!(response, json!({}), "not mine: {response}");
+    }
+
+    /// A lost claim used to be a bare `won: false`. The reasons it can fail
+    /// call for opposite responses -- wait for a lease, pick different work,
+    /// unblock a predecessor, rebuild a stale binary -- so one boolean covering
+    /// all of them is not terse, it is unusable. `scripts/claim-gate.mjs` is a
+    /// whole diagnostic written to reconstruct after the fact what the plane
+    /// knew at the moment it refused.
+    #[test]
+    fn a_lost_claim_says_why_and_what_to_do_about_it() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let held = engine.create_task(&goal.id, "Theirs", "done").unwrap();
+        assert!(engine.claim_task(&held.id, "agent-a", 600).unwrap());
+
+        let lost = call(
+            &engine,
+            &json!({
+                "name": "claim_task",
+                "arguments": { "task_id": held.id, "agent": "agent-b" }
+            }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(lost["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["won"], false);
+        let reason = body["reason"]
+            .as_str()
+            .expect("a lost claim reports a reason");
+        assert!(reason.contains("agent-a"), "names the holder: {reason}");
+        assert!(
+            reason.contains("recover_claim"),
+            "names the verb that can take it: {reason}"
+        );
+        assert_eq!(
+            body["owner"], "agent-a",
+            "the holder is machine-readable too"
+        );
+
+        // Finished work and missing work are different refusals, and neither is
+        // "wait for the lease".
+        let finished = engine.create_task(&goal.id, "Shipped", "done").unwrap();
+        engine.abandon_task(&finished.id).unwrap();
+        let on_terminal = call(
+            &engine,
+            &json!({
+                "name": "claim_task",
+                "arguments": { "task_id": finished.id, "agent": "agent-b" }
+            }),
+        )
+        .unwrap();
+        let terminal: Value =
+            serde_json::from_str(on_terminal["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(
+            terminal["reason"]
+                .as_str()
+                .unwrap()
+                .contains("nothing to claim"),
+            "terminal work says so: {terminal}"
+        );
+
+        let missing = call(
+            &engine,
+            &json!({
+                "name": "claim_task",
+                "arguments": { "task_id": "task:nope", "agent": "agent-b" }
+            }),
+        )
+        .unwrap();
+        let absent: Value =
+            serde_json::from_str(missing["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(absent["reason"], "no such task");
+    }
+
+    /// The expensive one. A server built before ADR-0054 resolves a different
+    /// identity shape than the migrated ledger holds, so an agent is refused
+    /// its own claim and re-claiming never helps. Nothing in `won: false`
+    /// hinted at it, and the hunt cost hours.
+    #[test]
+    fn a_claim_refused_by_a_stale_binary_names_the_binary() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Mine", "done").unwrap();
+        assert!(engine.claim_task(&task.id, "copilot", 600).unwrap());
+
+        let lost = call(
+            &engine,
+            &json!({
+                "name": "claim_task",
+                "arguments": {
+                    "task_id": task.id,
+                    "agent": "session:v1:bff9bbe3968f16636cbc5522086114e3"
+                }
+            }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(lost["content"][0]["text"].as_str().unwrap()).unwrap();
+        let reason = body["reason"].as_str().unwrap();
+        assert!(reason.contains("ADR-0054"), "names the decision: {reason}");
+        assert!(
+            reason.contains("re-claiming will not help"),
+            "stops the obvious wrong response: {reason}"
+        );
+        assert!(
+            reason.contains("Rebuild"),
+            "names the actual remedy: {reason}"
+        );
     }
 
     // ADR-0060: `complete_task` refuses evidence whose `started_at` precedes
@@ -1243,7 +1760,7 @@ mod tests {
             .unwrap();
         let node = "artifact:src/search.rs";
         engine
-            .link_goal_to_code(&goal.id, &[node.into()], CodeBindingMode::Governed)
+            .link_goal_to_artifact(&goal.id, &[node.into()], CodeBindingMode::Governed)
             .unwrap();
         let task = engine.create_task(&goal.id, "wire search", "done").unwrap();
         let open_next = engine

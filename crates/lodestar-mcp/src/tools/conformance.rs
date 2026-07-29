@@ -162,7 +162,7 @@ mod tests {
             .unwrap();
         let node = "artifact:crates/pay/src/lib.rs".to_string();
         engine
-            .link_goal_to_code(
+            .link_goal_to_artifact(
                 &goal.id,
                 std::slice::from_ref(&node),
                 CodeBindingMode::Governed,

@@ -168,8 +168,26 @@ impl Lodestar {
         }
         // Recorded after the transition succeeds: a lesson attached to a
         // completion that did not happen would be worse than none.
+        //
+        // The evidence carries the nodes this work changed, because that is the
+        // only thing `apply_knowledge_advisory` matches on. Recorded as the bare
+        // string `task:{id}` — which is not JSON and parses to no nodes at all —
+        // every lesson an agent has ever written was stored, counted in the
+        // stats, and could never reach anybody. Measured on this repository:
+        // 34 of 35 active knowledge records referenced nothing.
+        //
+        // With the changed nodes attached, a lesson learned while changing a
+        // file surfaces to the next agent who changes that file, which is both
+        // the moment it is useful and the moment it was written for.
         let learned = match learned.map(str::trim).filter(|text| !text.is_empty()) {
-            Some(text) => Some(self.record_knowledge(text, &format!("task:{id}"), None)?.id),
+            Some(text) => {
+                let provenance = serde_json::json!({
+                    "task": format!("task:{id}"),
+                    "nodes": evidence.changed_node_ids,
+                })
+                .to_string();
+                Some(self.record_knowledge(text, &provenance, None)?.id)
+            }
             None => None,
         };
         Ok(Completion {
@@ -276,7 +294,7 @@ mod tests {
             )
             .unwrap();
         let node_id = "artifact:src/delivery.rs";
-        e.link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
         let task = e
             .create_task(&goal.id, "fix delivery", "same evidence stays aligned")
@@ -319,7 +337,7 @@ mod tests {
             .define_goal(GoalKind::Objective, "Ship search", "add search", None)
             .unwrap();
         let node_id = "artifact:src/search.rs";
-        e.link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
         let task = e
             .create_task(&goal.id, "fix delivery", "learns something")
@@ -350,7 +368,22 @@ mod tests {
             recorded.statement,
             "GitHub does not apply .gitattributes merge drivers"
         );
-        assert_eq!(recorded.evidence, format!("task:{}", task.id));
+
+        // The lesson has to be reachable, not merely stored. The advisory
+        // matches on referenced nodes and nothing else, so a lesson naming none
+        // is written, counted, and delivered to nobody — which is what every
+        // recorded lesson was, because the provenance was the bare string
+        // `task:{id}` and parsed to no nodes at all.
+        assert_eq!(
+            recorded.referenced_nodes(),
+            vec![node_id.to_string()],
+            "the lesson names the code it was learned on, so it reaches whoever changes it next"
+        );
+        assert!(
+            recorded.evidence.contains(&task.id),
+            "and still says which task taught it: {}",
+            recorded.evidence
+        );
     }
 
     /// Completion is never blocked by an omission: most tasks teach nothing, and
@@ -363,7 +396,7 @@ mod tests {
             .define_goal(GoalKind::Objective, "Ship search", "add search", None)
             .unwrap();
         let node_id = "artifact:src/search.rs";
-        e.link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
 
         for (index, learned) in [None, Some("   ")].into_iter().enumerate() {
@@ -398,7 +431,7 @@ mod tests {
             .define_goal(GoalKind::Objective, "Ship search", "add search", None)
             .unwrap();
         let node_id = "artifact:src/search.rs";
-        e.link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
         let task = e.create_task(&goal.id, "wire search", "done").unwrap();
         e.claim_task(&task.id, "agent-a", 300).unwrap();
@@ -419,7 +452,7 @@ mod tests {
         let other_goal = e
             .define_goal(GoalKind::Objective, "Own search", "separate owner", None)
             .unwrap();
-        e.link_goal_to_code(&other_goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&other_goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
         assert!(e
             .complete_task(&task.id, "agent-a", &evidence, &checked, None)
@@ -486,7 +519,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &g.id,
             &["artifact:src/auth.rs".into()],
             CodeBindingMode::Governed,
@@ -516,13 +549,13 @@ mod tests {
         let other = e
             .define_goal(GoalKind::Objective, "Context graph", "graph", None)
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &primary.id,
             &["artifact:src/intent.rs".into()],
             CodeBindingMode::Governed,
         )
         .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &other.id,
             &["artifact:src/graph.rs".into()],
             CodeBindingMode::Governed,
@@ -598,7 +631,7 @@ mod tests {
         let unused = e
             .define_goal(GoalKind::Objective, "Context graph", "graph", None)
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &primary.id,
             &["artifact:src/intent.rs".into()],
             CodeBindingMode::Governed,
@@ -666,7 +699,7 @@ mod tests {
             )
             .unwrap();
         let node = "artifact:crates/core/src/publish.rs".to_string();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &goal.id,
             std::slice::from_ref(&node),
             CodeBindingMode::Governed,
@@ -680,6 +713,8 @@ mod tests {
             version: 1,
             configuration: None,
             status: ControlStatus::Active,
+            retired_by: None,
+            retired_at: None,
         };
         e.register_control(&control).unwrap();
 
@@ -721,7 +756,7 @@ mod tests {
             "a freshly defined clause declares no consequence"
         );
         let node = "artifact:crates/core/src/schema.sql".to_string();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &goal.id,
             std::slice::from_ref(&node),
             CodeBindingMode::ForbidChange,
@@ -762,7 +797,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &goal.id,
             std::slice::from_ref(&node.to_string()),
             CodeBindingMode::ForbidChange,
@@ -944,7 +979,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &g.id,
             &["artifact:src/parser.rs".into()],
             CodeBindingMode::Governed,
@@ -980,7 +1015,7 @@ mod tests {
         let g = e
             .define_goal(GoalKind::Objective, "Auth typed", "harden auth", None)
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &g.id,
             &["artifact:src/auth.rs".into()],
             CodeBindingMode::Governed,
@@ -1018,7 +1053,7 @@ mod tests {
         let g = e
             .define_goal(GoalKind::Objective, "Docs", "own the changelog", None)
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &g.id,
             &["artifact:CHANGELOG.md".into()],
             CodeBindingMode::Governed,
@@ -1053,7 +1088,7 @@ mod tests {
             )
             .unwrap();
         let node_id = "artifact:src/delivery.rs";
-        e.link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
 
         // A continuous window is the control: it still passes cleanly.

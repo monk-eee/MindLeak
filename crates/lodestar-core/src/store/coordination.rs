@@ -5,7 +5,8 @@ use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, Transact
 use crate::error::{LodestarError, Result};
 use crate::fleet::Wait;
 use crate::model::{
-    ClaimOverlap, ConformanceRecord, HumanQuestion, Task, TaskQa, TaskScope, TaskStatus, Verdict,
+    ClaimOverlap, ClaimOverlapReport, ConformanceRecord, HumanQuestion, OverlapSignal, Task,
+    TaskQa, TaskScope, TaskStatus, Verdict,
 };
 use crate::util::short_hash;
 
@@ -13,7 +14,7 @@ use super::{collect, goals, LodestarStore};
 
 const TASK_COLS: &str = "id, goal_id, parent_task_id, title, acceptance, status, owner, \
     claim_started_at, lease_expires_at, blocked_by, parked_at, created_at, updated_at, \
-    claim_lapses, unleased_seconds";
+    claim_lapses, unleased_seconds, resolved_by, resolved_at, resolved_conformance_id";
 const CONFORMANCE_COLS: &str =
     "id, task_id, evidence_schema_version, evidence, verdict, findings, checked_at";
 const QA_COLS: &str = "id, task_id, kind, body, author, audience, created_at";
@@ -34,6 +35,21 @@ const UNANSWERED: &str = "NOT EXISTS (
 /// lease so a human has time to answer, while guaranteeing a vanished owner can
 /// never deadlock the task forever.
 pub const PARKING_GRACE_SECS: i64 = 7 * 24 * 3600;
+
+/// How many tasks one agent may hold at once (ADR-0067).
+///
+/// Counts every task in `claimed` status, live lease or lapsed. A cap on live
+/// leases alone would have no teeth: letting a claim lapse costs the holder
+/// nothing, so it would be the cheapest way to dodge the limit — which is
+/// exactly the behaviour measured. On the day this was added, 36 tasks were
+/// claimed and 4 had a live lease; two agents held 15 and 14 apiece.
+///
+/// Three, because a claim is a statement that you are working on something and
+/// nobody works on four things at once. The number is deliberately small and
+/// deliberately a constant rather than configuration: a limit you can raise
+/// when it becomes inconvenient is a limit that will be raised the first time
+/// it binds, which is the moment it was doing its job.
+pub const MAX_CONCURRENT_CLAIMS: usize = 3;
 
 pub(crate) struct ConformanceAudit<'a> {
     pub evidence_schema_version: u32,
@@ -120,6 +136,7 @@ impl LodestarStore {
         let scope = normalize_scope(scope)?;
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let parked_cutoff = now - PARKING_GRACE_SECS;
+        refuse_beyond_claim_limit(&transaction, id, agent)?;
         // The evidence window survives a lapse, and the lapse is counted
         // (ADR-0048). Re-claiming used to reset `claim_started_at` to now, which
         // silently put every commit made before the lapse outside the window the
@@ -181,13 +198,21 @@ impl LodestarStore {
 
     /// Active claims whose declared scope intersects a requested pre-flight
     /// scope. Advisory only: no state is changed and no lock is granted.
+    ///
+    /// `requester` is the asking agent id, used only to read the branch that
+    /// agent already declared at `open_session`. The branch is never taken as a
+    /// call argument: it is declared once per session (ADR-0035 decision 2), and
+    /// a second place to state it would let a caller check against a branch it
+    /// is not on, with nothing able to tell which one was true.
     pub fn check_claim_overlap(
         &self,
         requested: &TaskScope,
         exclude_task_id: Option<&str>,
+        requester: Option<&str>,
         now: i64,
-    ) -> Result<Vec<ClaimOverlap>> {
+    ) -> Result<ClaimOverlapReport> {
         let requested = normalize_scope_values(requested);
+        let requester_branch = self.declared_branch(requester)?;
         let mut statement = self.conn.prepare(
             "SELECT id, owner, lease_expires_at
              FROM tasks
@@ -214,6 +239,9 @@ impl LodestarStore {
                 .cloned()
                 .collect::<Vec<_>>();
             if !matching_paths.is_empty() || !matching_symbols.is_empty() {
+                let owner_branch = self.declared_branch(Some(&owner))?;
+                let signal =
+                    OverlapSignal::classify(requester_branch.as_deref(), owner_branch.as_deref());
                 overlaps.push(ClaimOverlap {
                     task_id,
                     owner,
@@ -221,10 +249,28 @@ impl LodestarStore {
                     scope,
                     matching_paths,
                     matching_symbols,
+                    owner_branch,
+                    signal,
                 });
             }
         }
-        Ok(overlaps)
+        Ok(ClaimOverlapReport {
+            requester_branch,
+            claims: overlaps,
+        })
+    }
+
+    /// The branch an agent declared, treating an unregistered agent and a blank
+    /// declaration alike: both are "said nothing", not "said empty".
+    fn declared_branch(&self, agent: Option<&str>) -> Result<Option<String>> {
+        let Some(agent) = agent.map(str::trim).filter(|agent| !agent.is_empty()) else {
+            return Ok(None);
+        };
+        Ok(self
+            .session_context(agent)?
+            .and_then(|(context, _)| context.branch)
+            .map(|branch| branch.trim().to_string())
+            .filter(|branch| !branch.is_empty()))
     }
 
     /// Read one task's declared advisory scope.
@@ -443,7 +489,15 @@ impl LodestarStore {
     /// successor so a docs/needs-human predecessor never strands its chain. The
     /// human-in-the-loop guard (the resolver may not be the agent whose work is
     /// under review) is enforced in the facade.
-    pub fn resolve_in_review(&self, id: &str, now: i64) -> Result<bool> {
+    ///
+    /// The resolver is recorded, both as columns and as a note on the durable
+    /// thread. It used to be validated and then dropped, which made the one act
+    /// that can overrule an evidence-backed verdict the only act in the ledger
+    /// leaving no trace: measured over this repository, 57 of 101 `done` tasks
+    /// rested on a `drift`/`needs_human`/zero-node receipt with no record of who
+    /// accepted them. A judgement that outranks the evidence has to be at least
+    /// as resolvable as the evidence.
+    pub fn resolve_in_review(&self, id: &str, resolver: &str, now: i64) -> Result<bool> {
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let task = get_task_on(&transaction, id)?
             .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
@@ -454,13 +508,34 @@ impl LodestarStore {
                 task.status.as_str()
             )));
         }
+        // The verdict being overruled, pinned by id rather than left implied:
+        // a later check would otherwise make "which verdict did they accept?"
+        // unanswerable from the row.
+        let overruled = transaction
+            .query_row(
+                "SELECT id, verdict FROM conformance WHERE task_id = ?1 ORDER BY id DESC LIMIT 1",
+                params![id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
         let changed = transaction.execute(
             "UPDATE tasks
              SET status = 'done', owner = NULL, claim_started_at = NULL,
-                 lease_expires_at = NULL, blocked_by = NULL, updated_at = ?2
+                 lease_expires_at = NULL, blocked_by = NULL, updated_at = ?2,
+                 resolved_by = ?3, resolved_at = ?2, resolved_conformance_id = ?4
              WHERE id = ?1 AND status = 'in_review'",
-            params![id, now],
+            params![id, now, resolver, overruled.as_ref().map(|(id, _)| *id)],
         )?;
+        if changed == 1 {
+            let note = match &overruled {
+                Some((record, verdict)) => format!(
+                    "accepted out of in_review to done, overruling conformance record {record} ({verdict})"
+                ),
+                None => "accepted out of in_review to done; the task carried no conformance record"
+                    .to_string(),
+            };
+            append_note_on(&transaction, id, Some(note.as_str()), resolver, now)?;
+        }
         open_blocked_successor_on(&transaction, id, now)?;
         transaction.commit()?;
         Ok(changed == 1)
@@ -498,7 +573,21 @@ impl LodestarStore {
             params![id, agent, now],
         )?;
         if changed != 1 {
-            return Ok(false);
+            // Say why. This used to return `Ok(false)`, which the MCP surface
+            // reported as `needs_input: false` — indistinguishable from a
+            // successful no-op, and returned for every reason at once: wrong
+            // owner, wrong status, no such task. An agent whose identity had
+            // drifted was told nothing while its only route to explaining
+            // itself silently did nothing, which is how a task ended up neither
+            // provable nor parkable. A rejected park names the holder.
+            let task = get_task_on(&transaction, id)?
+                .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
+            return Err(LodestarError::Invalid(format!(
+                "task {id} was not parked: {agent} asked, but it is {} and held by {}. \
+                 Only the agent holding a claimed task can park it with a question.",
+                task.status.as_str(),
+                task.owner.as_deref().unwrap_or("nobody"),
+            )));
         }
         transaction.execute(
             "INSERT INTO task_qa (task_id, kind, body, author, audience, created_at)
@@ -960,6 +1049,9 @@ fn create_task_after_on(
         unleased_seconds: 0,
         blocked_by,
         parked_at: None,
+        resolved_by: None,
+        resolved_at: None,
+        resolved_conformance_id: None,
         created_at: now,
         updated_at: now,
     };
@@ -1149,6 +1241,9 @@ fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
         updated_at: row.get(12)?,
         claim_lapses: row.get(13)?,
         unleased_seconds: row.get(14)?,
+        resolved_by: row.get(15)?,
+        resolved_at: row.get(16)?,
+        resolved_conformance_id: row.get(17)?,
     })
 }
 
@@ -1223,6 +1318,53 @@ fn intersect_paths(requested: &[String], declared: &[String]) -> Result<Vec<Stri
     Ok(matches)
 }
 
+/// Refuse a claim that would take an agent past [`MAX_CONCURRENT_CLAIMS`]
+/// (ADR-0067), naming what it already holds.
+///
+/// Re-claiming a task the agent already owns is never a new claim: it is the
+/// heartbeat path, and refusing it would turn renewing a lease into an error at
+/// exactly the wrong moment.
+///
+/// The refusal lists the held tasks and what to do with them. A cap that only
+/// says "no" relocates the confusion rather than removing it \u2014 the holder still
+/// has to go and count, which is the work this exists to stop anyone doing.
+fn refuse_beyond_claim_limit(connection: &Connection, id: &str, agent: &str) -> Result<()> {
+    let already_held = connection.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM tasks
+             WHERE id = ?1 AND status = 'claimed' AND owner = ?2
+         )",
+        params![id, agent],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if already_held {
+        return Ok(());
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT id, title FROM tasks
+         WHERE status = 'claimed' AND owner = ?1
+         ORDER BY updated_at ASC, id ASC",
+    )?;
+    let held = collect(statement.query_map(params![agent], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?)?;
+    if held.len() < MAX_CONCURRENT_CLAIMS {
+        return Ok(());
+    }
+    let listed = held
+        .iter()
+        .map(|(id, title)| format!("\n  {id}  {title}"))
+        .collect::<String>();
+    Err(LodestarError::Invalid(format!(
+        "{agent} already holds {} claims and the limit is {MAX_CONCURRENT_CLAIMS}; \
+         claiming {id} as well would be a statement about work nobody is doing. \
+         Complete one, release it, or leave it for another agent — a lapsed lease \
+         still counts, because letting a claim go stale is not finishing it.{listed}",
+        held.len(),
+    )))
+}
+
 fn row_to_conformance(row: &Row) -> rusqlite::Result<ConformanceRecord> {
     let verdict: String = row.get(4)?;
     Ok(ConformanceRecord {
@@ -1281,6 +1423,7 @@ fn append_note_on(
 mod tests {
     use std::sync::{Arc, Barrier};
 
+    use mindleak_session::SessionContext;
     use rusqlite::params;
 
     use super::*;
@@ -1303,6 +1446,81 @@ mod tests {
         let held = s.get_task(&t.id).unwrap().unwrap();
         assert_eq!(held.owner.as_deref(), Some("alice"));
         assert_eq!(held.status, TaskStatus::Claimed);
+    }
+
+    /// Bug: nothing limited how many tasks one agent could hold, and holding a
+    /// claim it was not working cost it nothing. Measured on the live board: 36
+    /// tasks `claimed`, **4** with a live lease, the rest lapsed a median of 13
+    /// hours earlier — two agents holding 15 and 14 apiece. Impact: the board
+    /// read as a fleet with 36 things in flight when it had 4, so both humans
+    /// and agents planned against a number that was nine times wrong, and
+    /// discovering it took a bespoke script. Fix: refuse the claim that would
+    /// take an agent past the limit, counting lapsed claims too (ADR-0067).
+    #[test]
+    fn an_agent_cannot_hold_more_claims_than_it_can_be_working() {
+        let s = store();
+        let g = goal(&s);
+        let tasks: Vec<_> = (0..MAX_CONCURRENT_CLAIMS + 1)
+            .map(|n| {
+                s.create_task(&g.id, &format!("task {n}"), "", None, NOW + n as i64)
+                    .unwrap()
+            })
+            .collect();
+        for task in tasks.iter().take(MAX_CONCURRENT_CLAIMS) {
+            assert!(s.claim_task(&task.id, "alice", 60, NOW).unwrap());
+        }
+
+        let refused = s
+            .claim_task(&tasks[MAX_CONCURRENT_CLAIMS].id, "alice", 60, NOW)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("already holds"), "{refused}");
+        assert!(
+            refused.contains(&tasks[0].id),
+            "names what is already held: {refused}"
+        );
+
+        // A lapsed lease still counts: letting a claim go stale is not finishing
+        // it, and if it did not count it would be the cheapest way to dodge the
+        // limit — which is precisely the behaviour this exists to stop.
+        let lapsed = NOW + 1_000;
+        let still_refused = s
+            .claim_task(&tasks[MAX_CONCURRENT_CLAIMS].id, "alice", 60, lapsed)
+            .unwrap_err()
+            .to_string();
+        assert!(still_refused.contains("already holds"), "{still_refused}");
+
+        // Re-claiming something already held is a heartbeat, not a new claim.
+        assert!(s.claim_task(&tasks[0].id, "alice", 60, lapsed).unwrap());
+
+        // Existing ledgers may already be over the cap. Re-claiming one of
+        // those tasks still is not a new claim: refusing it would prevent the
+        // holder renewing, recording the lapse, or preserving its ADR-0048
+        // evidence window until it can finish/release the excess.
+        let grandfathered = s
+            .create_task(&g.id, "grandfathered", "", None, NOW)
+            .unwrap();
+        s.conn
+            .execute(
+                "UPDATE tasks
+                 SET status = 'claimed', owner = 'alice', claim_started_at = ?2,
+                     lease_expires_at = ?3, updated_at = ?2
+                 WHERE id = ?1",
+                params![grandfathered.id, NOW, NOW + 60],
+            )
+            .unwrap();
+        assert!(s
+            .claim_task(&grandfathered.id, "alice", 60, lapsed)
+            .unwrap());
+        assert!(s.release_task(&grandfathered.id, "alice", lapsed).unwrap());
+
+        // Another agent is unaffected, and finishing one frees the slot.
+        assert!(s
+            .claim_task(&tasks[MAX_CONCURRENT_CLAIMS].id, "bob", 60, NOW)
+            .unwrap());
+        assert!(s.release_task(&tasks[1].id, "alice", NOW).unwrap());
+        let freed = s.create_task(&g.id, "one more", "", None, NOW).unwrap();
+        assert!(s.claim_task(&freed.id, "alice", 60, NOW).unwrap());
     }
 
     #[test]
@@ -1341,9 +1559,11 @@ mod tests {
                     symbols: vec!["symbol:src/lib.rs:run".into()],
                 },
                 Some(&second.id),
+                None,
                 NOW + 3,
             )
-            .unwrap();
+            .unwrap()
+            .claims;
         assert_eq!(overlaps.len(), 1);
         assert_eq!(overlaps[0].task_id, first.id);
         assert_eq!(overlaps[0].owner, "alice");
@@ -1357,12 +1577,14 @@ mod tests {
             Some("alice")
         );
         assert!(store
-            .check_claim_overlap(&TaskScope::default(), None, NOW + 3)
+            .check_claim_overlap(&TaskScope::default(), None, None, NOW + 3)
             .unwrap()
+            .claims
             .is_empty());
         assert!(store
-            .check_claim_overlap(&scope, None, NOW + 63)
+            .check_claim_overlap(&scope, None, None, NOW + 63)
             .unwrap()
+            .claims
             .is_empty());
 
         // Requested paths are concrete, while claim declarations are globs.
@@ -1385,10 +1607,98 @@ mod tests {
                     symbols: vec![],
                 },
                 None,
+                None,
                 NOW + 3,
             )
             .unwrap()
+            .claims
             .is_empty());
+    }
+
+    /// ADR-0035 heuristic 4: an intersection is not one risk. Two agents on the
+    /// same declared branch collide now; on different branches they are storing
+    /// up a merge. Before this the caller got the same answer for both and had
+    /// to guess, which is how advisory output gets ignored.
+    #[test]
+    fn overlap_signal_separates_same_branch_collision_from_cross_branch_merge_risk() {
+        let store = store();
+        let goal = goal(&store);
+        let scope = TaskScope {
+            paths: vec!["src/lib.rs".into()],
+            symbols: vec![],
+        };
+        let held = store.create_task(&goal.id, "held", "", None, NOW).unwrap();
+        assert!(store
+            .claim_task_with_scope(&held.id, "alice", 60, &scope, NOW)
+            .unwrap());
+        store
+            .declare_session_context("alice", &branch_context("fleet/a"), NOW)
+            .unwrap();
+
+        // Same declared branch: the edits land in one history.
+        store
+            .declare_session_context("bob", &branch_context("fleet/a"), NOW)
+            .unwrap();
+        let report = store
+            .check_claim_overlap(&scope, None, Some("bob"), NOW)
+            .unwrap();
+        assert_eq!(report.requester_branch.as_deref(), Some("fleet/a"));
+        assert_eq!(report.claims.len(), 1);
+        assert_eq!(report.claims[0].owner_branch.as_deref(), Some("fleet/a"));
+        assert_eq!(report.claims[0].signal, OverlapSignal::SameBranchCollision);
+
+        // Different declared branches: divergence, paid at merge.
+        store
+            .declare_session_context("bob", &branch_context("fleet/b"), NOW + 1)
+            .unwrap();
+        let report = store
+            .check_claim_overlap(&scope, None, Some("bob"), NOW + 1)
+            .unwrap();
+        assert_eq!(report.requester_branch.as_deref(), Some("fleet/b"));
+        assert_eq!(report.claims[0].signal, OverlapSignal::CrossBranchMergeRisk);
+
+        // Either side silent degrades to today's behaviour, and says which side.
+        let report = store.check_claim_overlap(&scope, None, None, NOW).unwrap();
+        assert_eq!(report.requester_branch, None);
+        assert_eq!(report.claims[0].owner_branch.as_deref(), Some("fleet/a"));
+        assert_eq!(report.claims[0].signal, OverlapSignal::Undeclared);
+
+        let unregistered = store
+            .check_claim_overlap(&scope, None, Some("nobody"), NOW)
+            .unwrap();
+        assert_eq!(unregistered.claims[0].signal, OverlapSignal::Undeclared);
+
+        // A session that registered without declaring a branch is silent too:
+        // an empty declaration is not a branch nobody else is on.
+        store
+            .declare_session_context("bob", &SessionContext::default(), NOW + 2)
+            .unwrap();
+        let report = store
+            .check_claim_overlap(&scope, None, Some("bob"), NOW + 2)
+            .unwrap();
+        assert_eq!(report.requester_branch, None);
+        assert_eq!(report.claims[0].signal, OverlapSignal::Undeclared);
+
+        // Still advisory: nothing about the classification blocks a claim.
+        assert!(store
+            .claim_task_with_scope(
+                &store
+                    .create_task(&goal.id, "rival", "", None, NOW + 2)
+                    .unwrap()
+                    .id,
+                "bob",
+                60,
+                &scope,
+                NOW + 2
+            )
+            .unwrap());
+    }
+
+    fn branch_context(branch: &str) -> SessionContext {
+        SessionContext {
+            branch: Some(branch.to_string()),
+            ..SessionContext::default()
+        }
     }
 
     #[test]
@@ -1806,7 +2116,9 @@ mod tests {
                 NOW,
             )
             .unwrap());
-        assert!(store.resolve_in_review(&review.id, NOW + 1).unwrap());
+        assert!(store
+            .resolve_in_review(&review.id, "reviewer", NOW + 1)
+            .unwrap());
         assert_eq!(
             store.get_task(&review.id).unwrap().unwrap().status,
             TaskStatus::Done
@@ -1817,10 +2129,69 @@ mod tests {
             .create_task(&goal.id, "Open", "done", None, NOW)
             .unwrap();
         assert!(store
-            .resolve_in_review(&open.id, NOW + 2)
+            .resolve_in_review(&open.id, "reviewer", NOW + 2)
             .unwrap_err()
             .to_string()
             .contains("only an in_review task"));
+    }
+
+    /// Bug: accepting an `in_review` task validated the resolver and then threw
+    /// it away, so the one act that can overrule an evidence-backed verdict was
+    /// the only act in the ledger leaving no trace. Measured over this
+    /// repository before the fix: 57 of 101 `done` tasks rested on a
+    /// drift/needs_human/zero-node receipt, and *who* accepted any of them was
+    /// unrecoverable. Impact: the conformance chain is described as the only
+    /// trustworthy proof the agents did the sanctioned work, and the override
+    /// that outranks it was narration. Fix: record the resolver, the moment, and
+    /// the conformance record being overruled, both as queryable columns and as
+    /// a note on the append-only thread.
+    #[test]
+    fn accepting_an_in_review_task_records_who_accepted_it_and_what_they_overruled() {
+        let store = store();
+        let goal = goal(&store);
+        let task = store
+            .create_task(&goal.id, "Reviewed", "done", None, NOW)
+            .unwrap();
+        assert!(store.claim_task(&task.id, "agent-a", 60, NOW).unwrap());
+        assert!(store
+            .record_conformance_and_transition(
+                &task.id,
+                "agent-a",
+                ConformanceAudit {
+                    evidence_schema_version: 1,
+                    evidence: "{}",
+                    verdict: Verdict::NeedsHuman,
+                    findings: "evidence contains no provenance-bearing mutation",
+                },
+                TaskStatus::InReview,
+                NOW,
+            )
+            .unwrap());
+        let overruled = store.conformance_history(&task.id).unwrap();
+        assert_eq!(overruled.len(), 1, "the verdict under review");
+
+        assert!(store
+            .resolve_in_review(&task.id, "lyndon", NOW + 5)
+            .unwrap());
+
+        let resolved = store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(resolved.status, TaskStatus::Done);
+        assert_eq!(resolved.resolved_by.as_deref(), Some("lyndon"));
+        assert_eq!(resolved.resolved_at, Some(NOW + 5));
+        assert_eq!(resolved.resolved_conformance_id, Some(overruled[0].id));
+
+        // ...and it is legible in the thread, not only queryable in a column.
+        let thread = store.task_qa(&task.id).unwrap();
+        let note = thread
+            .iter()
+            .find(|entry| entry.kind == "note")
+            .expect("the acceptance is on the durable thread");
+        assert_eq!(note.author, "lyndon");
+        assert!(
+            note.body.contains("needs_human") && note.body.contains("in_review"),
+            "the note names what was overruled: {}",
+            note.body
+        );
     }
 
     #[test]
@@ -1853,7 +2224,9 @@ mod tests {
                 NOW,
             )
             .unwrap());
-        assert!(store.resolve_in_review(&pred.id, NOW + 1).unwrap());
+        assert!(store
+            .resolve_in_review(&pred.id, "reviewer", NOW + 1)
+            .unwrap());
         assert_eq!(
             store.get_task(&succ.id).unwrap().unwrap().status,
             TaskStatus::Open
@@ -2348,10 +2721,13 @@ mod tests {
             .claim_started_at
             .unwrap();
 
-        // Non-owner cannot park it.
-        assert!(!s
+        // Non-owner cannot park it, and is told so rather than left guessing.
+        let refused = s
             .ask_question(&t.id, "bob", "which db?", None, NOW + 1)
-            .unwrap());
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("bob"), "{refused}");
+        assert!(refused.contains("alice"), "{refused}");
         // Owner parks with a durable question.
         assert!(s
             .ask_question(&t.id, "alice", "which db?", None, NOW + 1)

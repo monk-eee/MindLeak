@@ -45,7 +45,11 @@ CREATE TABLE IF NOT EXISTS controls (
     version       INTEGER NOT NULL,
     configuration TEXT,
     status        TEXT NOT NULL,        -- active | retired
-    created_at    INTEGER NOT NULL
+    created_at    INTEGER NOT NULL,
+    -- Retiring a control is the one act that reduces what a clause can enforce
+    -- without changing a word of the clause, so it is attributed like a waiver.
+    retired_by    TEXT,
+    retired_at    INTEGER
 );
 
 -- Waivers: bounded, attributed exceptions to one clause (SPEC-CONSTITUTION §9).
@@ -256,6 +260,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     unleased_seconds INTEGER NOT NULL DEFAULT 0,  -- seconds of this window held under no lease
     blocked_by       TEXT,                 -- optional task id
     parked_at        INTEGER,              -- when parked (needs_input/paused); reclaimable after a grace
+    -- Who accepted this task out of in_review, when, and the conformance record
+    -- they overrode (ADR-0009). A resolution outranks an evidence-backed
+    -- verdict, so it must be at least as resolvable as the verdict it replaces.
+    resolved_by      TEXT,
+    resolved_at      INTEGER,
+    resolved_conformance_id INTEGER,
     created_at       INTEGER NOT NULL,
     updated_at       INTEGER NOT NULL
 );
@@ -339,6 +349,16 @@ CREATE TABLE IF NOT EXISTS goal_code (
 );
 
 -- Conformance audit trail.
+-- Migrations that must run exactly once per database, recorded by name
+-- (ADR-0063). Most migrations here are idempotent by *pattern* — "rewrite every
+-- row that still looks unmigrated" — which is safe only while nothing else is
+-- producing such rows. A rewrite that races a live writer re-fires forever, so
+-- anything that rewrites identity or ownership records itself here instead.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    name       TEXT PRIMARY KEY,
+    applied_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS conformance (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id    TEXT,

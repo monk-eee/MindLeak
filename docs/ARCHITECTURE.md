@@ -154,7 +154,9 @@ the engine would become policy nobody agreed to.
 [ADR-0024](adr/0024-preflight-overlap-detection.md) adds the coordination layer
 above the compare-and-swap claim. Lodestar stores optional claim path globs and
 opaque symbol ids in `task_scopes`; its read-only `check_overlap` returns live
-scope intersections. MindLeak's same-named query derives other agents' direct or
+scope intersections, each graded from the branches the two sessions declared
+(ADR-0035 heuristic 4) as a same-branch collision, cross-branch merge risk, or
+undeclared. MindLeak's same-named query derives other agents' direct or
 mutation-linked footprint after decay filtering. The caller combines those two
 results by node id: no shared tables, transactions, or plane dependency. The VS
 Code allocator performs both reads before claiming, displays an overridable

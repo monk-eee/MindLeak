@@ -19,12 +19,16 @@
 //   node scripts/design-audit.mjs           report
 //   node scripts/design-audit.mjs --check   exit non-zero when anything drifts
 
-import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { spawn, execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 
 import { isSuperseded, readAdrFiles } from "./adr-files.mjs";
+import { resolveServer } from "./claim-gate.mjs";
+
+const repoRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+  encoding: "utf8",
+}).trim();
 
 /** File status -> the ledger status that means the same thing. */
 const LEDGER_EQUIVALENT = {
@@ -115,11 +119,14 @@ export const auditDesigns = (files, designs) => {
 };
 
 const serverBinary = () => {
-  const suffix = process.platform === "win32" ? ".exe" : "";
-  const path = `target/release/lodestar-mcp${suffix}`;
-  if (!existsSync(path)) {
+  // Shared resolver rather than a release-only path: a debug build is the
+  // normal state for a developer, and an audit nobody can run audits nothing.
+  const path = resolveServer(repoRoot, "lodestar");
+  if (!path) {
     throw new Error(
-      `design-audit: ${path} is not built.\n  Run: cargo build --release -p lodestar-mcp`,
+      "design-audit: no lodestar-mcp binary found.\n" +
+        "  Build one:  cargo build -p lodestar-mcp\n" +
+        "  Or point at one:  set LODESTAR_MCP_BIN",
     );
   }
   return path;

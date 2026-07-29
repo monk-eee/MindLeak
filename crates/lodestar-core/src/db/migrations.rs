@@ -24,6 +24,12 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
         ("tasks", "parked_at", "INTEGER"),
         ("tasks", "claim_lapses", "INTEGER NOT NULL DEFAULT 0"),
         ("tasks", "unleased_seconds", "INTEGER NOT NULL DEFAULT 0"),
+        // Who overrode a non-affirming verdict, when, and which verdict
+        // (ADR-0009). NULL on every pre-existing row is the honest answer:
+        // those acceptances were not recorded and cannot be reconstructed.
+        ("tasks", "resolved_by", "TEXT"),
+        ("tasks", "resolved_at", "INTEGER"),
+        ("tasks", "resolved_conformance_id", "INTEGER"),
         ("goal_code", "mode", "TEXT NOT NULL DEFAULT 'governed'"),
         ("conformance", "evidence_schema_version", "INTEGER"),
         ("conformance", "evidence", "TEXT"),
@@ -51,6 +57,11 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
         ("goals", "waivable", "INTEGER NOT NULL DEFAULT 0"),
         ("goals", "waiver_authority", "TEXT"),
         ("goals", "origin", "TEXT NOT NULL DEFAULT 'local'"),
+        // Who stood a control down, and when (ADR-0034). NULL on every
+        // pre-existing row is the honest answer: those retirements were not
+        // recorded and cannot be reconstructed.
+        ("controls", "retired_by", "TEXT"),
+        ("controls", "retired_at", "INTEGER"),
         ("task_qa", "audience", "TEXT"),
     ] {
         if !column_exists(connection, table, column)? {
@@ -60,7 +71,12 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
         }
     }
     migrate_constitution_versions(connection)?;
-    collapse_session_identities(connection)?;
+    run_once(connection, "collapse_session_identities", || {
+        collapse_session_identities(connection)
+    })?;
+    run_once(connection, "reconnect_superseded_clauses", || {
+        reconnect_superseded_clauses(connection)
+    })?;
     connection.execute(
         "UPDATE tasks
          SET claim_started_at = updated_at
@@ -215,6 +231,107 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Run a migration at most once per database, recorded by name (ADR-0063).
+///
+/// Pattern-idempotence — "rewrite every row that still looks unmigrated" — is
+/// only idempotent while nothing else creates such rows. A rewrite that races a
+/// live writer re-fires on every open, forever, and each firing looks exactly
+/// like the first. That is not a theoretical hazard: it re-owned a live claim
+/// out from under its holder every time any process opened the database, which
+/// is how a task ended up provable by nobody. Anything touching identity or
+/// ownership belongs here rather than in the pattern-guarded loop above.
+fn run_once(
+    connection: &Connection,
+    name: &str,
+    migration: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    let applied: Option<i64> = connection
+        .query_row(
+            "SELECT 1 FROM schema_migrations WHERE name = ?1",
+            [name],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if applied.is_some() {
+        return Ok(());
+    }
+    migration()?;
+    connection.execute(
+        "INSERT INTO schema_migrations (name, applied_at) VALUES (?1, ?2)",
+        rusqlite::params![name, crate::now_unix()],
+    )?;
+    Ok(())
+}
+
+/// Reconnect clauses stranded by an amendment that did not record where they went.
+///
+/// `amend_constitution` used to supersede the outgoing clauses with a bare
+/// status flip, leaving `superseded_by` NULL. Because an amendment renames
+/// every clause it carries forward (`goal:{slug}@{version}`), nothing could
+/// follow the rename, so code bindings and open tasks kept naming clauses no
+/// active constitution contained.
+///
+/// Measured on this repository after `constitution:v2` was adopted: 25 active
+/// clauses held zero bindings and zero tasks, while all 156 bindings and all
+/// 217 tasks named superseded v1 ids. The symptom was silent and read as
+/// health — `governing_goals` filters to active clauses, so it reported
+/// "nothing governs this" for files that were bound, and `advise` answered
+/// "no active clause governs this change; proceed" for every change.
+///
+/// Repairs that state with the same same-slug rule the fixed amendment uses,
+/// and moves bindings and live work together, because moving either alone is
+/// what turns a silent gap into a fleet-wide drift report.
+///
+/// A task that is `claimed` with an unexpired lease is left alone (ADR-0063).
+/// Its goal is what conformance judges the holder's evidence against, so moving
+/// it mid-claim would change the rule under someone doing the work — the same
+/// class of harm as rewriting `tasks.owner`, and not ours to do as a side
+/// effect of opening a file. Those tasks heal at the next amendment instead,
+/// which is an attributed act. Measured here: 3 of 56.
+fn reconnect_superseded_clauses(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "UPDATE goals AS outgoing
+            SET superseded_by = (
+                SELECT successor.id FROM goals AS successor
+                 WHERE successor.status = 'active'
+                   AND successor.slug = outgoing.slug
+            )
+          WHERE outgoing.status = 'superseded'
+            AND outgoing.superseded_by IS NULL
+            AND (SELECT COUNT(*) FROM goals AS successor
+                  WHERE successor.status = 'active'
+                    AND successor.slug = outgoing.slug) = 1",
+        [],
+    )?;
+    connection.execute(
+        "UPDATE OR REPLACE goal_code
+            SET goal_id = (
+                SELECT outgoing.superseded_by FROM goals AS outgoing
+                 WHERE outgoing.id = goal_code.goal_id
+            )
+          WHERE goal_id IN (
+                SELECT id FROM goals
+                 WHERE status = 'superseded' AND superseded_by IS NOT NULL
+            )",
+        [],
+    )?;
+    connection.execute(
+        "UPDATE tasks
+            SET goal_id = (
+                SELECT outgoing.superseded_by FROM goals AS outgoing
+                 WHERE outgoing.id = tasks.goal_id
+            )
+          WHERE status NOT IN ('done', 'abandoned')
+            AND NOT (status = 'claimed' AND lease_expires_at > ?1)
+            AND goal_id IN (
+                SELECT id FROM goals
+                 WHERE status = 'superseded' AND superseded_by IS NOT NULL
+            )",
+        [crate::now_unix()],
+    )?;
+    Ok(())
+}
+
 /// Collapse `session:v1:{name}:{fingerprint}` identities to `session:v1:{fingerprint}` (ADR-0054).
 ///
 /// The old id embedded a label read from the *hosting process* environment
@@ -263,7 +380,6 @@ fn collapse_session_identities(connection: &Connection) -> Result<()> {
         ("design_items", "decided_by"),
         ("design_items", "retired_by"),
         ("design_materializations", "actor"),
-        ("tasks", "owner"),
         ("task_claim_transfers", "from_owner"),
         ("task_claim_transfers", "to_owner"),
         ("task_claim_transfers", "recovered_by"),
@@ -281,6 +397,26 @@ fn collapse_session_identities(connection: &Connection) -> Result<()> {
                  WHERE {column} GLOB 'session:v1:*:*'"
             ),
             [],
+        )?;
+    }
+    // `tasks.owner` is deliberately not in that list. Every other column above
+    // is a historical record, and rewriting one changes only how the past reads.
+    // `owner` is *live state*: it is what `check_conformance`, `ask_question`,
+    // `renew_lease` and `complete_task` compare the caller against, so editing
+    // it mid-claim does not adjust a record, it transfers ownership. An agent
+    // whose id no longer matches cannot prove its work, cannot park the task to
+    // explain, and reads as a different owner on re-claim — which opens a fresh
+    // evidence window and orphans everything it had already committed.
+    //
+    // A claim that is over is safe to tidy; a claim that is live is not ours to
+    // touch. Ownership only changes by claim, release, or an audited transfer.
+    if column_exists(connection, "tasks", "owner")? {
+        connection.execute(
+            "UPDATE tasks
+             SET owner = 'session:v1:' || substr(owner, -32)
+             WHERE owner GLOB 'session:v1:*:*'
+               AND NOT (status = 'claimed' AND COALESCE(lease_expires_at, 0) >= ?1)",
+            [crate::now_unix()],
         )?;
     }
     Ok(())
