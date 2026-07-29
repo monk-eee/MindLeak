@@ -61,6 +61,19 @@ one intent plane and one memory graph by default.
 > the right thing — narration is not proof — and `export_evidence` makes it portable
 > for review, a CI gate, and audit.
 
+> **The default profile is the common path.** Every agent loads `tools/list`
+> before its first question, so an unspent minute of governance authoring is a
+> tax paid in every session (ADR-0059 rule 2). By default `lodestar-mcp`
+> advertises only the tools an agent uses to find, claim, do, prove and hand off
+> work, plus the ones it reads to know what governs it — 17 tools, ~4,513 tokens,
+> against 67 tools and ~13,757 tokens for the whole surface. The specialist
+> machinery below — the constitution and amendments, policy packs, waivers,
+> ratchets and controls, the design board, goal↔code binding, knowledge
+> maintenance, and database admin — is not advertised by default but stays fully
+> reachable: dispatch is unchanged, so a specialist tool called by name still
+> runs. Set `LODESTAR_TOOL_PROFILE=full` to advertise everything. Measure any
+> time with `node scripts/measure-tool-surface.mjs`.
+
 | Tool | Purpose |
 |---|---|
 | `constitution_define` | Write or rewrite intent — `action`: `goal` · `supersede` · `bind` · `unbind`. |

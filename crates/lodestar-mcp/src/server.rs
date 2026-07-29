@@ -83,7 +83,10 @@ fn handle_with_storage(
         "initialize" => Some(result_response(id?, initialize_result())),
         "notifications/initialized" | "notifications/cancelled" => None,
         "ping" => Some(result_response(id?, json!({}))),
-        "tools/list" => Some(result_response(id?, json!({ "tools": tools::list() }))),
+        "tools/list" => Some(result_response(
+            id?,
+            json!({ "tools": tools::advertised() }),
+        )),
         "tools/call" => {
             let id = id?;
             let response = match tools::bind_session(&params, sessions)

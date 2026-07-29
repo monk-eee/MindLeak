@@ -38,6 +38,92 @@ pub fn list() -> Vec<Value> {
     tools.into_iter().map(apply_session_contract).collect()
 }
 
+/// The common session path: the tools an agent uses to find, claim, do, prove
+/// and hand off work, plus the ones it reads to know what governs it. This is
+/// the default profile (ADR-0059 rule 2) — everything else is specialist and
+/// advertised only when asked for.
+///
+/// An allowlist, not a denylist, on purpose. A tool added anywhere else is
+/// specialist until someone deliberately adds its name here, so growing the
+/// surface every session pays for is a decision rather than a default. That is
+/// the counter-pressure ADR-0059 identifies as the missing piece: nothing
+/// treated the surface as a cost, so it only ever grew.
+///
+/// Governance authoring (the constitution, amendments, policy packs, waivers,
+/// ratchets and controls), the design board, goal↔code binding, knowledge
+/// maintenance and database admin are all specialist: real and load-bearing,
+/// used by a small minority of calls (ADR-0059).
+const DEFAULT_PROFILE_TOOLS: &[&str] = &[
+    // Identity and where your state lives.
+    "open_session",
+    "storage_status",
+    // The task lifecycle — the surface every session touches.
+    "task_create",
+    "task_claim",
+    "task_transition",
+    "task_query",
+    // Conformance during and at the end of the work.
+    "advise",
+    "check_conformance",
+    "conformance_history",
+    "governing_for_task",
+    // Completing: the evidence a task closes on.
+    "merge_evidence",
+    "export_evidence",
+    "export_conformance_manifest",
+    // Coordinating with the rest of the fleet.
+    "fleet_view",
+    // Learned knowledge on the recall-adjacent common path.
+    "active_knowledge",
+    "record_knowledge",
+    // The board at a glance.
+    "lodestar_stats",
+];
+
+/// The name of the profile an agent has opted into, from the environment the
+/// client launched the server with. Absent or unrecognised is the default: a
+/// specialist profile is a declared choice, never a silent one (ADR-0059).
+fn requested_profile() -> Profile {
+    match std::env::var("LODESTAR_TOOL_PROFILE").ok().as_deref() {
+        Some("full") => Profile::Full,
+        _ => Profile::Default,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Profile {
+    /// The common session path only.
+    Default,
+    /// Every tool the server has.
+    Full,
+}
+
+/// What `tools/list` advertises, narrowed to the requested profile.
+///
+/// Filters [`list`] rather than building a second source of truth, so a tool
+/// cannot exist for dispatch yet be missing from every profile, or drift in its
+/// schema between the two. Dispatch is unaffected either way: a specialist tool
+/// called by name still runs under the default profile, so nothing the server
+/// can do becomes unreachable — it is only no longer paid for up front.
+pub fn advertised() -> Vec<Value> {
+    advertised_for(requested_profile())
+}
+
+fn advertised_for(profile: Profile) -> Vec<Value> {
+    let all = list();
+    match profile {
+        Profile::Full => all,
+        Profile::Default => all
+            .into_iter()
+            .filter(|tool| {
+                tool.get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| DEFAULT_PROFILE_TOOLS.contains(&name))
+            })
+            .collect(),
+    }
+}
+
 /// The argument names a tool declares, from the schema it already advertises.
 ///
 /// Returns `None` for a name no tool declares, so dispatch keeps reporting the
@@ -1523,6 +1609,86 @@ mod tests {
                 .unwrap_or_default();
             assert!(!required.iter().any(|value| value == "agent"));
         }
+    }
+
+    /// ADR-0059 rule 2: the default profile is under 40 tools and under 6,000
+    /// tokens. Measured the same way `scripts/measure-tool-surface.mjs` does —
+    /// the compact JSON of the advertised array, tokens as bytes/4 — so the test
+    /// and the benchmark cannot disagree about whether the bar is met.
+    #[test]
+    fn the_default_profile_is_under_budget() {
+        let advertised = advertised_for(Profile::Default);
+        assert!(
+            advertised.len() < 40,
+            "default profile advertises {} tools, the budget is under 40",
+            advertised.len()
+        );
+        let bytes = serde_json::to_string(&advertised).unwrap().len();
+        let tokens = bytes / 4;
+        assert!(
+            tokens < 6_000,
+            "default profile is ~{tokens} tokens ({bytes}B), the budget is under 6,000"
+        );
+    }
+
+    /// The allowlist names real tools. A typo would silently drop a common-path
+    /// tool from every default session, which reads as "the tool is gone".
+    #[test]
+    fn every_default_profile_tool_is_a_real_tool() {
+        let tools = list();
+        let all: Vec<&str> = tools
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        for name in DEFAULT_PROFILE_TOOLS {
+            assert!(
+                all.contains(name),
+                "default profile names `{name}`, which no tool declares"
+            );
+        }
+    }
+
+    /// The whole point of tiering: the specialist machinery is off the default
+    /// surface, but still there. Narrowing what is advertised must never narrow
+    /// what can be called — a specialist tool called by name still dispatches.
+    #[test]
+    fn specialist_tools_leave_the_default_surface_but_stay_reachable() {
+        let default: Vec<String> = advertised_for(Profile::Default)
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap().to_string())
+            .collect();
+        let all: Vec<String> = list()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap().to_string())
+            .collect();
+        // The default is a strict subset of the full surface: every advertised
+        // tool is real, and tiering actually removed something — otherwise the
+        // profile is decoration.
+        for name in &default {
+            assert!(
+                all.contains(name),
+                "{name} is advertised by default but is not a real tool"
+            );
+        }
+        assert!(
+            all.len() > default.len(),
+            "the default profile advertises the whole surface — nothing was tiered"
+        );
+        // A concrete specialist: off the default surface, still dispatchable.
+        assert!(
+            !default.iter().any(|name| name == "grant_waiver"),
+            "grant_waiver should be specialist, not on the default surface"
+        );
+        assert!(
+            all.iter().any(|name| name == "grant_waiver"),
+            "grant_waiver must still exist for dispatch — no tool becomes unreachable"
+        );
+    }
+
+    /// The full profile is the whole surface, so opting in reaches everything.
+    #[test]
+    fn the_full_profile_advertises_every_tool() {
+        assert_eq!(advertised_for(Profile::Full).len(), list().len());
     }
 
     /// `check_overlap` takes a session when offered and answers without one.
