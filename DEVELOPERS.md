@@ -258,6 +258,29 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **The post-commit ingest hook skips under load, and a commit then has no
+  provenance at all — OBSERVED, reporting fixed, root cause open.** The hook
+  gives the MindLeak server 5s to answer; on a machine running a fleet of agents
+  the release binary can spend most of that just starting, so the race is lost
+  and the commit lands unrecorded. Seen on `b4a9067`: `evidence_for` over the
+  correct window returned nothing, and the task could not be certified until the
+  commit was re-ingested by hand. Impact: an empty evidence bundle that looks
+  exactly like an agent who forgot to ingest, which is the failure the hook was
+  built to eliminate — so the diagnosis lands on the wrong cause. The hook now
+  prints a warning naming the sha and how to backfill (and honours
+  `MINDLEAK_INGEST_TIMEOUT_MS`), so the loss is visible rather than silent, but
+  it is still a loss. Closing it properly means not paying server start-up on
+  every commit — a long-lived server, or a queued backfill — rather than raising
+  the timeout, which only moves the threshold.
+- **`Get-Date -UFormat %s` on Windows returns local time as an epoch, not UTC —
+  CONFIRMED, no code change.** Any evidence window built from it is hours in the
+  future, and `check_conformance` then rejects it with *"evidence interval falls
+  outside the live claim"* — an error that reads like a lapsed claim and is not
+  one. Impact: an agent can wrongly conclude a task is stranded and escalate it
+  to a human. Use `git log -1 --format=%ct`, which is true UTC. Confirm a
+  suspected lapse with `renew_lease` (`renewed: false`) rather than inferring it
+  from that message.
+
 - **The impact traversal has no cross-file edges for Rust, so it cannot say what
   *breaks* — MEASURED, and the pre-flight is worded accordingly.** Run against a
   real file in this repository (`crates/mindleak-core/src/facade/query.rs`) the
