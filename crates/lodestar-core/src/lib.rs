@@ -64,6 +64,15 @@ pub fn now_unix() -> i64 {
 pub struct Lodestar {
     store: LodestarStore,
     llm: LlmClient,
+    /// The checkout this process serves, when it knows one.
+    ///
+    /// Optional because the plane is useful without it — every existing verb
+    /// works against the ledger alone, and an in-memory store has no repository
+    /// at all. Merge verification is the one thing that needs a repository, and
+    /// it says so rather than guessing at the current directory: verifying
+    /// against whatever directory the server happened to start in is how you
+    /// prove a commit landed in somebody else's checkout.
+    workspace_root: Option<String>,
     #[cfg(test)]
     test_judge: Option<Box<TestJudge>>,
 }
@@ -76,6 +85,7 @@ impl Lodestar {
         Ok(Lodestar {
             store: LodestarStore::new(db::open(path)?),
             llm: LlmClient::default(),
+            workspace_root: None,
             #[cfg(test)]
             test_judge: None,
         })
@@ -85,9 +95,17 @@ impl Lodestar {
         Ok(Lodestar {
             store: LodestarStore::new(db::open_in_memory()?),
             llm: LlmClient::default(),
+            workspace_root: None,
             #[cfg(test)]
             test_judge: None,
         })
+    }
+
+    /// Declare the checkout this process serves (ADR-0058 merge verification).
+    pub fn with_workspace_root(mut self, root: impl Into<String>) -> Self {
+        let root = root.into();
+        self.workspace_root = (!root.trim().is_empty()).then_some(root);
+        self
     }
 
     /// Override the LLM client (dependency injection; used by tests to force the

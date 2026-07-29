@@ -181,3 +181,91 @@ fn a_hash_git_cannot_resolve_is_refused() {
 
     assert!(error.to_string().contains("rev-parse"), "{error}");
 }
+
+// The point of ADR-0058, end to end: the agent names a commit and the plane
+// derives the bundle, rather than the agent describing work it already finished.
+#[test]
+fn merge_evidence_derives_the_bundle_from_what_git_reports() {
+    let f = fixture("facade");
+    let engine = crate::Lodestar::open_in_memory()
+        .unwrap()
+        .with_workspace_root(f.root.to_string_lossy());
+    let goal = engine
+        .define_goal(crate::GoalKind::Objective, "Ship", "ship the thing", None)
+        .unwrap();
+    let task = engine.create_task(&goal.id, "build it", "built").unwrap();
+    let scope = crate::TaskScope {
+        paths: vec!["crates/thing/**".to_string()],
+        symbols: Vec::new(),
+    };
+    assert!(engine
+        .claim_task_with_scope(&task.id, "agent-a", 300, &scope)
+        .unwrap());
+
+    let evidence = engine
+        .merge_evidence(&task.id, &f.merged, "agent-a")
+        .expect("a landed merge inside scope is evidence");
+
+    assert_eq!(evidence.commit_ids, vec![format!("intent:{}", f.merged)]);
+    assert!(
+        evidence
+            .changed_node_ids
+            .contains(&"artifact:crates/thing/src/lib.rs".to_string()),
+        "nodes come from git, not from the caller: {:?}",
+        evidence.changed_node_ids
+    );
+    assert_eq!(evidence.task_id.as_deref(), Some(task.id.as_str()));
+    assert!(
+        evidence
+            .provenance
+            .iter()
+            .any(|p| p.relation == "refactored"),
+        "a verified merge is a provenance-bearing mutation"
+    );
+}
+
+// A merge proves who shipped the work, not who may claim credit for it.
+#[test]
+fn merge_evidence_refuses_a_task_this_agent_does_not_hold() {
+    let f = fixture("notmine");
+    let engine = crate::Lodestar::open_in_memory()
+        .unwrap()
+        .with_workspace_root(f.root.to_string_lossy());
+    let goal = engine
+        .define_goal(crate::GoalKind::Objective, "Ship", "ship the thing", None)
+        .unwrap();
+    let task = engine.create_task(&goal.id, "build it", "built").unwrap();
+    let scope = crate::TaskScope {
+        paths: vec!["crates/thing/**".to_string()],
+        symbols: Vec::new(),
+    };
+    assert!(engine
+        .claim_task_with_scope(&task.id, "agent-a", 300, &scope)
+        .unwrap());
+
+    let error = engine
+        .merge_evidence(&task.id, &f.merged, "agent-b")
+        .expect_err("a merge is not a way to collect somebody else's receipt");
+
+    assert!(error.to_string().contains("not held by"), "{error}");
+}
+
+// Without a declared checkout the plane would be verifying against whatever
+// directory the server started in, which proves nothing about this repository.
+#[test]
+fn merge_evidence_says_so_when_it_does_not_know_the_checkout() {
+    let engine = crate::Lodestar::open_in_memory().unwrap();
+    let goal = engine
+        .define_goal(crate::GoalKind::Objective, "Ship", "ship the thing", None)
+        .unwrap();
+    let task = engine.create_task(&goal.id, "build it", "built").unwrap();
+
+    let error = engine
+        .merge_evidence(&task.id, "deadbeef", "agent-a")
+        .expect_err("an unknown checkout must be reported, not guessed at");
+
+    assert!(
+        error.to_string().contains("which checkout it serves"),
+        "{error}"
+    );
+}
