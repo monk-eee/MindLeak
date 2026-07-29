@@ -21,6 +21,14 @@ fn main() -> anyhow::Result<()> {
     // Say plainly when this binary is a stale build of the checkout it serves.
     // The version has always been reported at `initialize`; nobody compared it,
     // and a two-day-old local build cost a night of misdirected debugging.
+    //
+    // stderr alone was not enough, for the same reason `initialize` was not: an
+    // MCP client does not show it to the agent. A whole session ran against a
+    // binary predating its own checkout, read its verdicts as authoritative,
+    // and diagnosed two absent tools as tool defects rather than as a stale
+    // build. So the notice is also handed to `open_session`, the one call every
+    // agent makes before anything else.
+    let mut stale_build = None;
     if let Ok(executable) = std::env::current_exe() {
         if let Some(notice) = build_notice(
             &executable,
@@ -30,6 +38,9 @@ fn main() -> anyhow::Result<()> {
         ) {
             // stderr, never stdout: stdout is the JSON-RPC channel.
             eprintln!("lodestar-mcp: {}", notice.message);
+            if notice.stale {
+                stale_build = Some(notice.message);
+            }
         }
     }
     let database = resolve_database(
@@ -52,7 +63,7 @@ fn main() -> anyhow::Result<()> {
         database.repository_id.as_deref().unwrap_or("none"),
         database.origin,
     );
-    server::run(engine, sessions, storage_status)
+    server::run(engine, sessions, storage_status, stale_build)
 }
 
 #[cfg(test)]
