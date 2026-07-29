@@ -606,6 +606,17 @@ pub struct Task {
     /// held — the size of the holes counted by `claim_lapses`.
     pub unleased_seconds: i64,
     pub blocked_by: Option<String>,
+    /// The branch this task's current evidence window is being done on
+    /// (ADR-0057), joined at claim time from what the claiming session already
+    /// declared to `open_session`. Nobody is asked to declare anything new, and
+    /// `None` records honestly that the session declared no branch rather than
+    /// guessing one — the server never inspects Git (ADR-0044).
+    ///
+    /// It follows the evidence window, not the agent: a same-owner re-claim
+    /// keeps it, exactly as `claim_started_at` does, so it still names the
+    /// branch the window's work was done on even if that agent has since moved
+    /// on. A claim by a different owner opens a fresh window and re-reads it.
+    pub branch: Option<String>,
     /// When the task was parked (needs_input/paused); after a bounded grace it
     /// becomes reclaimable by the pool so a vanished owner cannot strand it.
     pub parked_at: Option<i64>,
