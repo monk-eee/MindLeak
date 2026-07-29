@@ -3,7 +3,7 @@
 
 use crate::amendment::{diff_clauses, ClauseDiff, ConstitutionAmendment};
 use crate::error::LodestarError;
-use crate::model::{ConstitutionVersion, GoalStatus};
+use crate::model::{ConstitutionVersion, Goal, GoalKind, GoalStatus};
 use crate::policy::{PackClause, PackClauseDisposition};
 use crate::{now_unix, Lodestar, Result};
 use serde::{Deserialize, Serialize};
@@ -66,6 +66,45 @@ impl Lodestar {
         )?;
         self.store.copy_clauses_to_version(&active.id, &id)?;
         Ok(version)
+    }
+
+    /// Author a new clause directly into an amendment draft.
+    ///
+    /// Policy has to be able to grow. `define_goal` states a rule that is live
+    /// the moment it is written, and `complete_clause_contract` refuses to give
+    /// a live rule a contract, because hardening what people are already working
+    /// under is exactly what an amendment is for. Without this verb those two
+    /// correct rules met in a corner: the clause that most needed an enforcement
+    /// contract was the one clause that could never be given one, and belonging
+    /// to no constitutional version it never appeared in a diff either. The only
+    /// way in was to mint a policy pack, which records immutable *upstream*
+    /// provenance — a fabricated source for a rule this project wrote itself.
+    ///
+    /// The clause enters as part of the draft, so it takes effect only if the
+    /// amendment is promoted, and it shows up in `constitution_diff` as `added`
+    /// for whoever reviews it. It carries the same id shape as a clause copied
+    /// forward, so nothing downstream can tell an authored clause from an
+    /// inherited one once the version is live.
+    pub fn draft_clause(
+        &self,
+        draft_id: &str,
+        kind: GoalKind,
+        title: &str,
+        statement: &str,
+    ) -> Result<Goal> {
+        let version = self
+            .store
+            .constitution_version(draft_id)?
+            .ok_or_else(|| LodestarError::NotFound(draft_id.to_string()))?;
+        if version.status != GoalStatus::Draft {
+            return Err(LodestarError::Invalid(format!(
+                "{draft_id} is {}, and a clause may only be authored into a draft; \
+                 propose_amendment opens one",
+                version.status.as_str()
+            )));
+        }
+        self.store
+            .define_clause_in_version(kind, title, statement, draft_id, now_unix())
     }
 
     /// Promote a reviewed amendment draft, retiring the version it replaces.
@@ -530,6 +569,153 @@ mod tests {
         assert!(
             evidence.locally_tailored,
             "a tailored clause must be flagged before an upstream change overwrites it"
+        );
+    }
+
+    /// Regression, task:4cef8e361fc7: policy could not grow.
+    ///
+    /// `define_goal` writes a clause `active` with no constitution version, and
+    /// `complete_clause_contract` refuses an active clause — correctly, since
+    /// hardening a live rule mid-flight is an amendment. But `propose_amendment`
+    /// only copied the clauses that already existed, and nothing could add one.
+    /// So the clause that most needs a contract was the one clause that could
+    /// never be given one, and belonging to no version it never appeared in
+    /// `constitution_diff` either.
+    ///
+    /// Measured impact: this blocked registering a ratchet over the MCP tool
+    /// surface. `register_ratchet` requires an active clause that authorises it,
+    /// and none of the 25 clauses mentioned the tool surface. The only route
+    /// into a version was `register_policy_pack`, which records immutable
+    /// upstream provenance — minting a pack to carry a rule this project wrote
+    /// itself would have put a fabricated source in the provenance record.
+    #[test]
+    fn a_locally_authored_clause_can_be_written_into_an_amendment() {
+        let e = engine();
+        governed(&e);
+
+        let draft = e.propose_amendment(Some("monk-eee")).unwrap();
+        let clause = e
+            .draft_clause(
+                &draft.id,
+                GoalKind::Constraint,
+                "The advertised tool surface stays small",
+                "The MCP tool surface stays within the budget one session can read.",
+            )
+            .unwrap();
+
+        // It enters as part of the draft, not as live policy: a new rule that
+        // took effect the moment it was typed would bypass the review the
+        // amendment exists to be.
+        assert_eq!(clause.status, GoalStatus::Draft);
+        assert_eq!(
+            clause.constitution_version.as_deref(),
+            Some(draft.id.as_str())
+        );
+
+        e.complete_clause_contract(
+            &clause.id,
+            "mcp:tools",
+            "The advertised tool count and the tokens it costs a session.",
+            Some(Consequence::Review),
+            false,
+            None,
+        )
+        .unwrap();
+
+        e.amend_constitution(
+            &draft.id,
+            "monk-eee",
+            "Bring the tool surface under a stated rule.",
+        )
+        .unwrap();
+
+        let landed = e
+            .get_constitution()
+            .unwrap()
+            .into_iter()
+            .find(|g| g.slug == clause.slug)
+            .expect("the promoted version must contain the new clause");
+
+        assert_eq!(landed.status, GoalStatus::Active);
+        assert_eq!(landed.scope.as_deref(), Some("mcp:tools"));
+        assert_eq!(landed.consequence, Some(Consequence::Review));
+    }
+
+    /// A new clause is authored into the draft, so it must show up in the diff a
+    /// reviewer reads before promoting. A rule that arrives invisibly is the
+    /// laundering this verb exists to avoid.
+    #[test]
+    fn a_clause_authored_into_a_draft_appears_in_the_diff() {
+        let e = engine();
+        let active = governed(&e);
+        let draft = e.propose_amendment(Some("monk-eee")).unwrap();
+
+        let clause = e
+            .draft_clause(
+                &draft.id,
+                GoalKind::Constraint,
+                "The advertised tool surface stays small",
+                "The MCP tool surface stays within the budget one session can read.",
+            )
+            .unwrap();
+
+        let diff = e.constitution_diff(&active, &draft.id).unwrap();
+        let added = diff
+            .iter()
+            .find(|d| d.change == ClauseChange::Added)
+            .expect("a clause written into the draft must read as added");
+
+        assert_eq!(added.slug, clause.slug);
+    }
+
+    /// The draft is the only place a clause may be authored. Writing into the
+    /// live version would be the mid-flight change the amendment path exists to
+    /// prevent, and writing into a promoted one would rewrite settled history.
+    #[test]
+    fn a_clause_cannot_be_authored_into_a_version_that_is_not_a_draft() {
+        let e = engine();
+        let active = governed(&e);
+
+        let refused = e.draft_clause(
+            &active,
+            GoalKind::Constraint,
+            "Sneak a rule into live policy",
+            "This must not take effect without review.",
+        );
+
+        assert!(
+            refused.is_err(),
+            "authoring into the active version must be refused"
+        );
+    }
+
+    /// Two clauses with one slug in a version would make "which rule governs
+    /// this" ambiguous, and the carried-forward copy is already sitting there.
+    #[test]
+    fn a_clause_cannot_collide_with_one_the_draft_already_carries() {
+        let e = engine();
+        governed(&e);
+        let draft = e.propose_amendment(Some("monk-eee")).unwrap();
+
+        // The draft opened as a copy of live policy, so every active clause is
+        // already in it under its own slug.
+        let carried = e
+            .get_constitution()
+            .unwrap()
+            .first()
+            .map(|clause| clause.title.clone())
+            .expect("a governed project has clauses to carry forward");
+
+        let refused = e.draft_clause(
+            &draft.id,
+            GoalKind::Constraint,
+            &carried,
+            "A second rule under a slug the draft already holds.",
+        );
+
+        assert!(
+            refused.is_err(),
+            "a slug already in the draft must be refused"
         );
     }
 }

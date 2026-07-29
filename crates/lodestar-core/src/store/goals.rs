@@ -50,6 +50,56 @@ impl LodestarStore {
         define_goal_on(&self.conn, kind, title, statement, parent, now)
     }
 
+    /// Write a newly authored clause into an amendment draft.
+    ///
+    /// Deliberately not `define_goal` with an extra argument. `define_goal`
+    /// states intent that takes effect immediately; this states intent that
+    /// takes effect only if the amendment is promoted, and the two differ in the
+    /// thing that matters — whether anyone is governed by it yet. It carries the
+    /// same id shape as a clause copied forward (`goal:{slug}@{version}`), so a
+    /// clause the draft authored and a clause the draft inherited are
+    /// indistinguishable to everything downstream of the promotion.
+    pub fn define_clause_in_version(
+        &self,
+        kind: GoalKind,
+        title: &str,
+        statement: &str,
+        version_id: &str,
+        now: i64,
+    ) -> Result<Goal> {
+        let slug = slugify(title);
+        let id = format!("goal:{slug}@{version_id}");
+        if goal_exists_on(&self.conn, &id)? {
+            return Err(LodestarError::Invalid(format!(
+                "{version_id} already holds a clause with slug {slug}; \
+                 revise that one rather than adding a second rule under one name"
+            )));
+        }
+        let goal = Goal {
+            id,
+            slug,
+            kind,
+            title: title.to_string(),
+            statement: statement.to_string(),
+            status: GoalStatus::Draft,
+            version: 1,
+            parent_id: None,
+            superseded_by: None,
+            reason: None,
+            created_at: now,
+            constitution_version: Some(version_id.to_string()),
+            rationale: None,
+            scope: None,
+            evidence_contract: None,
+            consequence: None,
+            waivable: false,
+            waiver_authority: None,
+            origin: ClauseOrigin::Local,
+        };
+        insert_goal_on(&self.conn, &goal)?;
+        Ok(goal)
+    }
+
     fn insert_goal(&self, goal: &Goal) -> Result<()> {
         insert_goal_on(&self.conn, goal)
     }
