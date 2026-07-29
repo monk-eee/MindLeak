@@ -17,7 +17,7 @@ use mindleak_storage::{
 fn main() -> anyhow::Result<()> {
     mindleak_core::telemetry::init_tracing();
     let workspace = resolve_workspace();
-    report_build_identity(&workspace);
+    let stale_build = report_build_identity(&workspace);
     let database = resolve_database(
         &workspace,
         DatabaseKind::MindLeak,
@@ -93,7 +93,13 @@ fn main() -> anyhow::Result<()> {
             ),
         }
     });
-    let result = server::run(engine, sessions, maintenance.activity(), storage_status);
+    let result = server::run(
+        engine,
+        sessions,
+        maintenance.activity(),
+        storage_status,
+        stale_build,
+    );
     maintenance.shutdown();
     result
 }
@@ -103,24 +109,29 @@ fn main() -> anyhow::Result<()> {
 /// serves. The servers have always reported `<version>+<sha>` at `initialize`;
 /// nobody ever compared it, and a two-day-old local build was blamed on the
 /// extension four times in one session before anyone looked.
-fn report_build_identity(workspace: &Path) {
-    let Ok(executable) = std::env::current_exe() else {
-        return;
-    };
-    if let Some(notice) = build_notice(
+/// Returns the notice when this binary is *behind* the checkout it serves, so
+/// `open_session` can hand it to the agent. Logging alone was not enough for
+/// the same reason `initialize` was not: an MCP client shows neither to the
+/// agent, and a session ran a whole day against a stale build of this plane —
+/// with the sha validation that refuses a fabricated commit id simply not
+/// running, while every call still looked normal.
+fn report_build_identity(workspace: &Path) -> Option<String> {
+    let executable = std::env::current_exe().ok()?;
+    let notice = build_notice(
         &executable,
         workspace,
         env!("MINDLEAK_BUILD_SHA"),
         head_sha(workspace).as_deref(),
-    ) {
-        // Only a build behind the checkout it was built from is a warning.
-        // Naming an installed build is information, and logging it louder than
-        // that is how a real warning gets tuned out.
-        if notice.stale {
-            tracing::warn!("{}", notice.message);
-        } else {
-            tracing::info!("{}", notice.message);
-        }
+    )?;
+    // Only a build behind the checkout it was built from is a warning.
+    // Naming an installed build is information, and logging it louder than
+    // that is how a real warning gets tuned out.
+    if notice.stale {
+        tracing::warn!("{}", notice.message);
+        Some(notice.message)
+    } else {
+        tracing::info!("{}", notice.message);
+        None
     }
 }
 

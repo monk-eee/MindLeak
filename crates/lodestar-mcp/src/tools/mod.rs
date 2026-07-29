@@ -4,6 +4,7 @@
 mod amendments;
 mod conformance;
 mod constitution;
+mod constitution_packs;
 mod controls;
 mod design;
 mod design_materialization;
@@ -200,13 +201,14 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
 /// Dispatch a `tools/call`. Returns the MCP `content` object or an error string.
 #[cfg(test)]
 pub fn call(engine: &Lodestar, params: &Value) -> Result<Value, String> {
-    call_with_storage(engine, params, None)
+    call_with_storage(engine, params, None, None)
 }
 
 pub fn call_with_storage(
     engine: &Lodestar,
     params: &Value,
     storage: Option<&StorageStatus>,
+    stale_build: Option<&str>,
 ) -> Result<Value, String> {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
@@ -235,6 +237,12 @@ pub fn call_with_storage(
         let mut body = json!({ "agent_id": agent_id });
         if let Some(context) = args.get("resolved_context") {
             body["context"] = context.clone();
+        }
+        // A stale binary says so to the agent, not only to a log the agent
+        // cannot see. Only when stale: a current build says nothing, so the
+        // field keeps its meaning and never becomes noise to scroll past.
+        if let Some(notice) = stale_build {
+            body["stale_build"] = json!(notice);
         }
         executive::attach_owner_attention(engine, &args, &mut body)?;
         return ok(&body);
@@ -383,6 +391,7 @@ fn requires_session(name: &str) -> bool {
             // change wearing a helpful message.
             | "register_design"
             | "review_pack_clause"
+            | "policy_pack_decide"
             | "propose_constitution"
             | "activate_constitution"
             | "claim_task"
@@ -401,6 +410,12 @@ fn requires_session(name: &str) -> bool {
             | "revoke_waiver"
             | "propose_amendment"
             | "amend_constitution"
+            // A merge proves who shipped the work, so this one compares the caller
+            // against the task's owner. Without the binding it received the raw
+            // session token and compared it to a `session:v1:` agent id, which
+            // can never match — the tool refused every caller, including the
+            // holder of the task.
+            | "merge_evidence"
     )
 }
 
@@ -631,6 +646,42 @@ mod tests {
         }
     }
 
+    /// A tool that compares its caller against a task's owner must be
+    /// session-bound, or it refuses everyone.
+    ///
+    /// `merge_evidence` shipped reading `req_str(args, "session_id")` and
+    /// handing that raw token to the facade as the agent. The facade compares
+    /// it against `task.owner`, which is a resolved `session:v1:` id, so the
+    /// comparison could never succeed — the tool refused every caller including
+    /// the holder of the task, and the only symptom was a message accusing the
+    /// rightful owner of claiming credit for someone else's work.
+    ///
+    /// Pinned directly rather than through
+    /// `a_required_argument_is_either_declared_or_session_injected`, which
+    /// cannot see this: that scan resolves a handler by finding a top-level
+    /// `fn <tool_name>(`, and `evidence.rs` dispatches from match arms and
+    /// declares no such function. Adding the module to its `SOURCES` would
+    /// inspect nothing and read like cover it does not provide.
+    #[test]
+    fn merge_evidence_is_session_bound_or_it_refuses_the_task_holder() {
+        assert!(
+            requires_session("merge_evidence"),
+            "without this, bind_session never injects `agent`, the handler falls \
+             back to the raw session token, and no caller can ever match a task owner"
+        );
+        // The contract callers see: `session_id` in, `agent` never asked for.
+        let tool = list()
+            .into_iter()
+            .find(|tool| tool["name"] == "merge_evidence")
+            .expect("merge_evidence is advertised");
+        let properties = &tool["inputSchema"]["properties"];
+        assert!(properties["session_id"].is_object());
+        assert!(
+            properties["agent"].is_null(),
+            "a caller naming its own agent could certify another agent's merge"
+        );
+    }
+
     /// Every argument a handler requires is either declared or injected.
     ///
     /// Two ways an argument reaches a handler: the caller sends it, having read
@@ -662,9 +713,10 @@ mod tests {
             "resolved_context",
         ];
 
-        const SOURCES: [(&str, &str); 6] = [
+        const SOURCES: [(&str, &str); 7] = [
             ("amendments", include_str!("amendments.rs")),
             ("constitution", include_str!("constitution.rs")),
+            ("constitution_packs", include_str!("constitution_packs.rs")),
             ("controls", include_str!("controls.rs")),
             ("waivers", include_str!("waivers.rs")),
             ("executive", include_str!("executive.rs")),
@@ -967,6 +1019,11 @@ mod tests {
         // of them: it delegates to these and dispatches nothing itself, so
         // scanning it only ever matched this test's own `match name {` literal
         // and read the rest of the file as if it were dispatch.
+        //
+        // `constitution_packs` is not one either: it carries the policy-pack
+        // definitions and helpers, but every one of those names is dispatched
+        // from `constitution`, which is scanned. Listing it here would assert
+        // it holds dispatch arms it does not have.
         const SOURCES: [(&str, &str); 11] = [
             ("amendments", include_str!("amendments.rs")),
             ("conformance", include_str!("conformance.rs")),
@@ -1325,12 +1382,69 @@ mod tests {
         };
         let params = json!({ "name": "storage_status", "arguments": {} });
 
-        let result = call_with_storage(&engine, &params, Some(&status)).unwrap();
+        let result = call_with_storage(&engine, &params, Some(&status), None).unwrap();
         let value: Value =
             serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(value["plane"], "lodestar");
         assert_eq!(value["repository_id"], status.repository_id.unwrap());
         assert_eq!(value["origin"], "repository");
         assert_eq!(value["migrated_legacy"], false);
+    }
+
+    /// A server built from an older commit than the checkout it serves used to
+    /// say so only on stderr, which an MCP client does not show the agent. A
+    /// whole session then read its verdicts as authoritative and diagnosed two
+    /// absent tools as tool defects. The notice now reaches the one call every
+    /// agent makes first.
+    #[test]
+    fn a_stale_build_tells_the_session_that_opened_it() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        let params = json!({
+            "name": "open_session",
+            "arguments": { "session_id": "00112233445566778899aabbccddeeff" }
+        });
+        let bound = bind_session(&params, &sessions).unwrap();
+
+        let result = call_with_storage(
+            &engine,
+            &bound,
+            None,
+            Some("running a stale build of this checkout: binary was built from f9a549c4"),
+        )
+        .unwrap();
+        let value: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+
+        assert!(value["agent_id"].is_string());
+        assert!(
+            value["stale_build"]
+                .as_str()
+                .is_some_and(|notice| notice.contains("stale build")),
+            "the session response must carry the notice, got {value}"
+        );
+    }
+
+    /// And says nothing when it is current — otherwise the field becomes a line
+    /// to scroll past and stops meaning anything when it appears.
+    #[test]
+    fn a_current_build_adds_nothing_to_the_session_response() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        let params = json!({
+            "name": "open_session",
+            "arguments": { "session_id": "ffeeddccbbaa99887766554433221100" }
+        });
+        let bound = bind_session(&params, &sessions).unwrap();
+
+        let result = call_with_storage(&engine, &bound, None, None).unwrap();
+        let value: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+
+        assert!(value["agent_id"].is_string());
+        assert!(
+            value.get("stale_build").is_none(),
+            "a current build must stay silent, got {value}"
+        );
     }
 }
