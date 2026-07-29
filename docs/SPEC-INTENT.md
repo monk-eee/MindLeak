@@ -325,6 +325,16 @@ pretend to, per [ADR-0015](adr/0015-advisory-symbol-leases.md)).
   ([ADR-0003](adr/0003-agent-attribution-as-observed-edges.md)). Decay means
   stale attention has already faded below threshold, so only *currently hot*
   overlap raises a flag — no false alarms from last week's edits.
+- **Graded, not binary** ([ADR-0035](adr/0035-fleet-management-heuristics.md)
+  heuristic 4). An intersection is not one risk. Lodestar classifies each claim
+  from the branches the two sessions declared at `open_session`:
+  `same_branch_collision` (one history, colliding now),
+  `cross_branch_merge_risk` (divergence, paid at merge), or `undeclared`. The
+  branch is read from the session that declared it — passing an optional
+  `session_id` — and never accepted as a call argument, because a second place
+  to state it could disagree with the first. Declared context is optional and
+  self-reported (ADR-0035 decision 5): with none, the answer degrades to the
+  ungraded one rather than the check refusing to run.
 - **Advisory, never enforcing.** The check *warns*; it never blocks or grants
   false safety. On a warning an agent coordinates, picks different work, or
   converts to a `blocked_by` handoff (the supported same-file serialization).
@@ -410,7 +420,7 @@ Caller-selected `agent`/`agent_id` values are not part of the public schema.
 2. `supersede_goal(goal_id, new_statement, reason)` → new `goal_id` (version bump).
 3. `get_constitution(status="active")` → the authoritative goals/constraints an
    agent reads **before acting**.
-4. `link_goal_to_code(goal_id, node_ids[], mode="governed")` → the seam to MindLeak.
+4. `link_goal_to_artifact(goal_id, node_ids[], mode="governed")` → the seam to MindLeak.
 5. `export_constitution(path?)` → write a committed, human-reviewable markdown
    snapshot (durability + PR review without any network infra).
 
@@ -539,7 +549,7 @@ expose remotely; doing so would require an auth layer and its own ADR.
   `renew_lease`, `complete_task`, `board`. **Deterministic only, no LLM.** This
   alone lets parallel agents across worktrees share one spec and partition work
   without colliding.
-- **Phase 1 — conformance + seam.** `link_goal_to_code`, deterministic
+- **Phase 1 — conformance + seam.** `link_goal_to_artifact`, deterministic
   `check_conformance`, `next_task` allocator, `export_constitution`.
 - **Phase 2 — optional SLM.** `decompose_goal` and semantic conformance over the
   local model, with deterministic fallbacks.

@@ -30,9 +30,9 @@ pub use embed::{Embedder, TextEmbedder};
 pub use error::{MindLeakError, Result};
 pub use graph::{
     AgentActivity, AgentFootprintOverlap, ArtifactStub, ConformanceEvidence, Direction,
-    EvidenceProvenance, ForgetOutcome, GraphExport, GraphStore, PromotionCandidate, PruneOutcome,
-    ReconcileOutcome, ResetOutcome, ScoredNode, SignalCandidate, SignalConsolidationOutcome,
-    Subgraph, WeightedEdge, WorkingSetItem, WriteOutcome,
+    EvidenceProvenance, ForgetOutcome, GraphExport, GraphStore, Preflight, PromotionCandidate,
+    PruneOutcome, ReconcileOutcome, ResetOutcome, ScoredNode, SignalCandidate,
+    SignalConsolidationOutcome, Subgraph, WeightedEdge, WorkingSetItem, WriteOutcome,
 };
 pub use model::{Edge, Node, NodeType, RelationType};
 
@@ -112,18 +112,26 @@ impl MindLeak {
         ingest::repo_relative(path, self.workspace_root.as_deref())
     }
 
-    /// Collapse node ids that spell their path absolutely under this checkout
-    /// onto the repo-relative id the rest of the fleet writes, merging the two
-    /// halves' history rather than choosing between them.
+    /// Collapse node ids that spell their path absolutely onto the repo-relative
+    /// id the rest of the fleet writes, merging the two halves' history rather
+    /// than choosing between them.
     ///
-    /// A no-op when no workspace root was declared, and idempotent: a second
-    /// pass finds nothing left to collapse. Cheap enough to run at startup,
-    /// which is what keeps the graph healing itself if any producer ever writes
-    /// an absolute id again.
+    /// Idempotent, and cheap enough to run at startup, which is what keeps the
+    /// graph healing itself if any producer ever writes an absolute id again.
+    ///
+    /// The prefix pass needs a declared workspace root and is skipped without
+    /// one. Collapsing ids whose repo-relative twin the graph already holds does
+    /// not, and runs either way: a server that never declares a workspace is
+    /// precisely the case that used to leave a sibling checkout's ids orphaned
+    /// forever, because no root ever matched them.
     pub fn repair_workspace_paths(&self) -> Result<graph::RepairOutcome> {
         match self.workspace_root.as_deref() {
             Some(root) => self.store.repair_workspace_paths(root),
-            None => Ok(graph::RepairOutcome::default()),
+            None => {
+                let mut outcome = graph::RepairOutcome::default();
+                self.store.collapse_known_duplicates(&mut outcome)?;
+                Ok(outcome)
+            }
         }
     }
 

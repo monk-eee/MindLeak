@@ -21,7 +21,11 @@
 //
 //   It never fails a commit. Evidence capture that can block work would be
 //   disabled within a day, and then the graph is worse off than before. Every
-//   failure path here exits 0 and says nothing.
+//   failure path here exits 0 -- but it says so on the way out. Silence was the
+//   original design and it cost a real investigation: a commit landed with no
+//   provenance, the bundle came back empty, and nothing connected that to a hook
+//   that had timed out minutes earlier. Never blocking and never reporting are
+//   different promises; only the first one is load-bearing.
 //
 //   It records only what git already knows -- sha, subject, changed paths, and
 //   the commit's own timestamp. No interpretation, no model, no tokens. That
@@ -47,13 +51,54 @@ export function readCommit(run) {
 /**
  * Whether this commit is worth ingesting at all.
  *
- * A merge commit is not new work -- its content already arrived on the branches
- * it joins, and ingesting it would attribute every file in the merge to
- * whoever happened to run it. An empty commit has nothing to attribute.
+ * An empty commit has nothing to attribute, and neither does a *clean* merge:
+ * its content already arrived on the branches it joins, so crediting those files
+ * to whoever happened to run the merge would attribute other agents' work to
+ * them.
+ *
+ * A merge is not automatically contentless, though, and treating every merge as
+ * noise had a cost. When a merge conflicts, the resolution is genuinely
+ * authored -- and a reconcile's entire product IS that merge commit, so the
+ * evidence window came back empty and the work could not be certified at all.
+ *
+ * Git already draws the line in the right place. `git show --name-only` on a
+ * merge reports the combined diff: only files differing from *every* parent,
+ * which is precisely what the merge itself introduced. Measured across 25 merge
+ * commits in this repository, that set matched "differs from every parent" in
+ * 25 of 25 cases, and was empty for all 18 clean merges. So no parent counting
+ * is needed -- an empty `changed` already means this commit authored nothing.
  */
-export function worthIngesting(commit, parentCount) {
-  if (parentCount > 1) return false;
+export function worthIngesting(commit) {
   return commit.changed.length > 0;
+}
+
+/**
+ * How long to wait before giving up. A hook that hangs is a hook that gets
+ * uninstalled, so the budget stays small; it is configurable because a loaded
+ * machine can spend most of it just starting the server binary.
+ */
+export const timeoutMs = (env = process.env) => {
+  const raw = Number(env.MINDLEAK_INGEST_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 5000;
+};
+
+/**
+ * What to say when provenance was not recorded.
+ *
+ * Giving up quietly was the original design, and it was wrong: a commit landed
+ * with no provenance, the evidence bundle came back empty, and the task was
+ * uncertifiable -- with nothing anywhere connecting that outcome back to a hook
+ * that had silently timed out minutes earlier. Diagnosing it cost far more than
+ * this line ever will. The commit still succeeds; only the silence is fixed.
+ */
+export function skippedWarning(sha, reason) {
+  return (
+    `ingest-commit: provenance NOT recorded for ${sha} (${reason}).\n` +
+    "  The commit succeeded. Evidence for it will be missing, so a conformance\n" +
+    "  check over this window will report an empty bundle.\n" +
+    "  Backfill with mindleak `ingest_commit`, passing this commit's OWN timestamp\n" +
+    "  (`git log -1 --format=%ct`) -- a node keeps the timestamp it was first given."
+  );
 }
 
 const client = (bin) => {
@@ -98,12 +143,15 @@ async function main() {
   const run = (args) =>
     execFileSync("git", args, { encoding: "utf8", maxBuffer: 1 << 26 }).trim();
   const commit = readCommit(run);
-  const parents =
-    run(["rev-list", "--parents", "-n", "1", commit.sha]).split(/\s+/).length -
-    1;
-  if (!worthIngesting(commit, parents)) return;
+  if (!worthIngesting(commit)) return;
 
   const { proc, send } = client(bin);
+  // A missing or unstartable binary must not throw: an unhandled 'error' event
+  // on the child would take the hook down with a stack trace the committer has
+  // no use for.
+  const failed = new Promise((resolve) =>
+    proc.on("error", () => resolve("the MindLeak server could not be started")),
+  );
   const done = (async () => {
     await send("initialize", {
       protocolVersion: "2024-11-05",
@@ -127,10 +175,20 @@ async function main() {
         session_id: session,
       },
     });
+    return null;
   })();
 
-  // A hook that hangs is a hook that gets uninstalled. Give up quietly.
-  await Promise.race([done, new Promise((r) => setTimeout(r, 5000))]);
+  // Give up rather than hang -- but say so. Losing provenance is cheap to
+  // report and expensive to discover later.
+  const budget = timeoutMs();
+  const reason = await Promise.race([
+    done.catch(() => "the MindLeak server did not answer"),
+    failed,
+    new Promise((r) =>
+      setTimeout(() => r(`no response within ${budget}ms`), budget),
+    ),
+  ]);
+  if (reason) console.error(skippedWarning(commit.sha, reason));
   proc.kill();
 }
 

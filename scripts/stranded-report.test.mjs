@@ -1,4 +1,4 @@
-// Tests for the stranded-claim report. Run with: node --test scripts/
+// Tests for the stranded-claim report. Run with: node scripts/script-tests.mjs
 //
 // The report proposes a commit for a human to confirm. Its whole value is that
 // a weak guess reads as a weak guess -- a confident-looking wrong answer is

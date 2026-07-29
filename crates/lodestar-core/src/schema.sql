@@ -288,6 +288,31 @@ CREATE TABLE IF NOT EXISTS task_claim_transfers (
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
+-- The append-only record of the task lifecycle (ADR-0064). One row per
+-- transition. Rows are never updated and never deleted, and `tasks` is the
+-- projection of this log: the row is written in the same transaction that
+-- appends here, so the projection is always derivable from the record rather
+-- than merely consistent with it by convention.
+--
+-- `after` carries the full after-image of the task the transition produced.
+-- That is deliberate. A projector that had to recompute the resulting state
+-- would need the same conditional arithmetic the guarded UPDATE performs, in a
+-- second place, and the two would drift; carrying the outcome makes replay a
+-- deterministic assignment and lets a rebuild be diffed against the live table.
+--
+-- There is deliberately NO foreign key to tasks. task_claim_transfers cascades
+-- on delete, which is right for an audit of a row that must exist; a record of
+-- what happened must outlive its subject, not vanish with it.
+CREATE TABLE IF NOT EXISTS task_events (
+    seq         INTEGER PRIMARY KEY AUTOINCREMENT,  -- total order of application
+    task_id     TEXT NOT NULL,
+    kind        TEXT NOT NULL,             -- imported | created | claimed | released | ...
+    actor       TEXT,                      -- agent id that caused it, where there is one
+    recorded_at INTEGER NOT NULL,          -- unix seconds, supplied by the caller; never read from a clock here
+    after       TEXT NOT NULL,             -- JSON after-image of the task this transition produced
+    detail      TEXT NOT NULL DEFAULT ''   -- JSON transition context (reason, question, lease_secs)
+);
+
 -- Optional advisory scope declared atomically with a task claim (ADR-0024).
 -- Values are workspace-relative path globs or opaque MindLeak symbol ids. They
 -- inform pre-flight checks only; they are not locks.

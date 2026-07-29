@@ -5,13 +5,27 @@ use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, Transact
 use crate::error::{LodestarError, Result};
 use crate::fleet::Wait;
 use crate::model::{
-    ClaimOverlap, ConformanceRecord, HumanQuestion, Task, TaskQa, TaskScope, TaskStatus, Verdict,
+    ClaimOverlap, ClaimOverlapReport, ConformanceRecord, HumanQuestion, OverlapSignal, Task,
+    TaskEventKind, TaskQa, TaskScope, TaskStatus, Verdict,
 };
 use crate::util::short_hash;
 
-use super::{collect, goals, LodestarStore};
+use super::{collect, events, goals, LodestarStore};
 
-const TASK_COLS: &str = "id, goal_id, parent_task_id, title, acceptance, status, owner, \
+/// Render an optional free-text reason as event detail.
+///
+/// The reason already lands on the durable thread as a note; carrying it here
+/// too means the log can explain a transition without a second read, which is
+/// the whole point of a record you can replay.
+fn detail_json(reason: Option<&str>) -> String {
+    match reason.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(reason) => serde_json::json!({ "reason": reason }).to_string(),
+        None => String::new(),
+    }
+}
+
+pub(super) const TASK_COLS: &str =
+    "id, goal_id, parent_task_id, title, acceptance, status, owner, \
     claim_started_at, lease_expires_at, blocked_by, parked_at, created_at, updated_at, \
     claim_lapses, unleased_seconds, resolved_by, resolved_at, resolved_conformance_id";
 const CONFORMANCE_COLS: &str =
@@ -34,6 +48,21 @@ const UNANSWERED: &str = "NOT EXISTS (
 /// lease so a human has time to answer, while guaranteeing a vanished owner can
 /// never deadlock the task forever.
 pub const PARKING_GRACE_SECS: i64 = 7 * 24 * 3600;
+
+/// How many tasks one agent may hold at once (ADR-0067).
+///
+/// Counts every task in `claimed` status, live lease or lapsed. A cap on live
+/// leases alone would have no teeth: letting a claim lapse costs the holder
+/// nothing, so it would be the cheapest way to dodge the limit — which is
+/// exactly the behaviour measured. On the day this was added, 36 tasks were
+/// claimed and 4 had a live lease; two agents held 15 and 14 apiece.
+///
+/// Three, because a claim is a statement that you are working on something and
+/// nobody works on four things at once. The number is deliberately small and
+/// deliberately a constant rather than configuration: a limit you can raise
+/// when it becomes inconvenient is a limit that will be raised the first time
+/// it binds, which is the moment it was doing its job.
+pub const MAX_CONCURRENT_CLAIMS: usize = 3;
 
 pub(crate) struct ConformanceAudit<'a> {
     pub evidence_schema_version: u32,
@@ -120,6 +149,7 @@ impl LodestarStore {
         let scope = normalize_scope(scope)?;
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let parked_cutoff = now - PARKING_GRACE_SECS;
+        refuse_beyond_claim_limit(&transaction, id, agent)?;
         // The evidence window survives a lapse, and the lapse is counted
         // (ADR-0048). Re-claiming used to reset `claim_started_at` to now, which
         // silently put every commit made before the lapse outside the window the
@@ -174,6 +204,14 @@ impl LodestarStore {
                     params![id, symbol],
                 )?;
             }
+            events::record(
+                &transaction,
+                id,
+                TaskEventKind::Claimed,
+                Some(agent),
+                now,
+                &format!(r#"{{"lease_secs":{lease_secs}}}"#),
+            )?;
         }
         transaction.commit()?;
         Ok(changed == 1)
@@ -181,13 +219,21 @@ impl LodestarStore {
 
     /// Active claims whose declared scope intersects a requested pre-flight
     /// scope. Advisory only: no state is changed and no lock is granted.
+    ///
+    /// `requester` is the asking agent id, used only to read the branch that
+    /// agent already declared at `open_session`. The branch is never taken as a
+    /// call argument: it is declared once per session (ADR-0035 decision 2), and
+    /// a second place to state it would let a caller check against a branch it
+    /// is not on, with nothing able to tell which one was true.
     pub fn check_claim_overlap(
         &self,
         requested: &TaskScope,
         exclude_task_id: Option<&str>,
+        requester: Option<&str>,
         now: i64,
-    ) -> Result<Vec<ClaimOverlap>> {
+    ) -> Result<ClaimOverlapReport> {
         let requested = normalize_scope_values(requested);
+        let requester_branch = self.declared_branch(requester)?;
         let mut statement = self.conn.prepare(
             "SELECT id, owner, lease_expires_at
              FROM tasks
@@ -214,6 +260,9 @@ impl LodestarStore {
                 .cloned()
                 .collect::<Vec<_>>();
             if !matching_paths.is_empty() || !matching_symbols.is_empty() {
+                let owner_branch = self.declared_branch(Some(&owner))?;
+                let signal =
+                    OverlapSignal::classify(requester_branch.as_deref(), owner_branch.as_deref());
                 overlaps.push(ClaimOverlap {
                     task_id,
                     owner,
@@ -221,10 +270,28 @@ impl LodestarStore {
                     scope,
                     matching_paths,
                     matching_symbols,
+                    owner_branch,
+                    signal,
                 });
             }
         }
-        Ok(overlaps)
+        Ok(ClaimOverlapReport {
+            requester_branch,
+            claims: overlaps,
+        })
+    }
+
+    /// The branch an agent declared, treating an unregistered agent and a blank
+    /// declaration alike: both are "said nothing", not "said empty".
+    fn declared_branch(&self, agent: Option<&str>) -> Result<Option<String>> {
+        let Some(agent) = agent.map(str::trim).filter(|agent| !agent.is_empty()) else {
+            return Ok(None);
+        };
+        Ok(self
+            .session_context(agent)?
+            .and_then(|(context, _)| context.branch)
+            .map(|branch| branch.trim().to_string())
+            .filter(|branch| !branch.is_empty()))
     }
 
     /// Read one task's declared advisory scope.
@@ -244,12 +311,24 @@ impl LodestarStore {
     /// lease lapses it cannot be renewed: the owner must re-claim, which keeps
     /// the evidence window open but records the lapse (ADR-0048).
     pub fn renew_lease(&self, id: &str, agent: &str, lease_secs: i64, now: i64) -> Result<bool> {
-        let changed = self.conn.execute(
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
             "UPDATE tasks SET lease_expires_at = ?3, updated_at = ?4
                             WHERE id = ?1 AND owner = ?2 AND status = 'claimed'
                                 AND lease_expires_at >= ?4 AND blocked_by IS NULL",
             params![id, agent, now + lease_secs, now],
         )?;
+        if changed == 1 {
+            events::record(
+                &transaction,
+                id,
+                TaskEventKind::LeaseRenewed,
+                Some(agent),
+                now,
+                &format!(r#"{{"lease_secs":{lease_secs},"heartbeat":false}}"#),
+            )?;
+        }
+        transaction.commit()?;
         Ok(changed == 1)
     }
 
@@ -270,12 +349,24 @@ impl LodestarStore {
     /// call has its own job to do and a lapse must still require a deliberate
     /// re-claim rather than being resurrected by a passing read.
     pub fn touch_lease(&self, id: &str, agent: &str, lease_secs: i64, now: i64) -> Result<bool> {
-        let changed = self.conn.execute(
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
             "UPDATE tasks SET lease_expires_at = MAX(lease_expires_at, ?3), updated_at = ?4
                             WHERE id = ?1 AND owner = ?2 AND status = 'claimed'
                                 AND lease_expires_at >= ?4 AND blocked_by IS NULL",
             params![id, agent, now + lease_secs, now],
         )?;
+        if changed == 1 {
+            events::record(
+                &transaction,
+                id,
+                TaskEventKind::LeaseRenewed,
+                Some(agent),
+                now,
+                &format!(r#"{{"lease_secs":{lease_secs},"heartbeat":true}}"#),
+            )?;
+        }
+        transaction.commit()?;
         Ok(changed == 1)
     }
 
@@ -343,6 +434,14 @@ impl LodestarStore {
         }
         if changed == 1 {
             append_note_on(&transaction, id, reason, actor, now)?;
+            events::record(
+                &transaction,
+                id,
+                TaskEventKind::Blocked,
+                Some(actor),
+                now,
+                &detail_json(reason),
+            )?;
         }
         transaction.commit()?;
         Ok(changed == 1)
@@ -380,6 +479,9 @@ impl LodestarStore {
              WHERE id = ?1",
             params![id, now],
         )?;
+        if changed == 1 {
+            events::record(&transaction, id, TaskEventKind::Reopened, None, now, "")?;
+        }
         transaction.commit()?;
         Ok(changed == 1)
     }
@@ -429,6 +531,9 @@ impl LodestarStore {
              WHERE id = ?1",
             params![id, now],
         )?;
+        if changed == 1 {
+            events::record(&transaction, id, TaskEventKind::Abandoned, None, now, "")?;
+        }
         open_blocked_successor_on(&transaction, id, now)?;
         transaction.commit()?;
         Ok(changed == 1)
@@ -489,6 +594,19 @@ impl LodestarStore {
                     .to_string(),
             };
             append_note_on(&transaction, id, Some(note.as_str()), resolver, now)?;
+            events::record(
+                &transaction,
+                id,
+                TaskEventKind::Resolved,
+                Some(resolver),
+                now,
+                &match &overruled {
+                    Some((record, verdict)) => format!(
+                        r#"{{"overruled_conformance_id":{record},"overruled_verdict":"{verdict}"}}"#
+                    ),
+                    None => String::new(),
+                },
+            )?;
         }
         open_blocked_successor_on(&transaction, id, now)?;
         transaction.commit()?;
@@ -547,6 +665,17 @@ impl LodestarStore {
             "INSERT INTO task_qa (task_id, kind, body, author, audience, created_at)
              VALUES (?1, 'question', ?2, ?3, ?4, ?5)",
             params![id, question, agent, audience, now],
+        )?;
+        events::record(
+            &transaction,
+            id,
+            TaskEventKind::Questioned,
+            Some(agent),
+            now,
+            &match audience.as_deref() {
+                Some(to) => format!(r#"{{"audience":"{to}"}}"#),
+                None => String::new(),
+            },
         )?;
         transaction.commit()?;
         Ok(true)
@@ -673,6 +802,14 @@ impl LodestarStore {
              VALUES (?1, 'answer', ?2, ?3, NULL, ?4)",
             params![id, answer, author, now],
         )?;
+        events::record(
+            &transaction,
+            id,
+            TaskEventKind::Answered,
+            Some(author),
+            now,
+            &format!(r#"{{"lease_secs":{lease_secs}}}"#),
+        )?;
         transaction.commit()?;
         Ok(true)
     }
@@ -699,6 +836,14 @@ impl LodestarStore {
             return Ok(false);
         }
         append_note_on(&transaction, id, reason, agent, now)?;
+        events::record(
+            &transaction,
+            id,
+            TaskEventKind::Paused,
+            Some(agent),
+            now,
+            &detail_json(reason),
+        )?;
         transaction.commit()?;
         Ok(true)
     }
@@ -706,12 +851,24 @@ impl LodestarStore {
     /// Resume a paused task under the same owner (ADR-0020) with a fresh lease,
     /// preserving the `claim_started_at` evidence window.
     pub fn resume_task(&self, id: &str, agent: &str, lease_secs: i64, now: i64) -> Result<bool> {
-        let changed = self.conn.execute(
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
             "UPDATE tasks
              SET status = 'claimed', lease_expires_at = ?3, parked_at = NULL, updated_at = ?4
              WHERE id = ?1 AND owner = ?2 AND status = 'paused'",
             params![id, agent, now + lease_secs, now],
         )?;
+        if changed == 1 {
+            events::record(
+                &transaction,
+                id,
+                TaskEventKind::Resumed,
+                Some(agent),
+                now,
+                &format!(r#"{{"lease_secs":{lease_secs}}}"#),
+            )?;
+        }
+        transaction.commit()?;
         Ok(changed == 1)
     }
 
@@ -725,13 +882,25 @@ impl LodestarStore {
 
     /// Release a claim back to `open` (owner-guarded).
     pub fn release_task(&self, id: &str, agent: &str, now: i64) -> Result<bool> {
-        let changed = self.conn.execute(
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
             "UPDATE tasks SET status = 'open', owner = NULL, claim_started_at = NULL,
                                                             lease_expires_at = NULL, updated_at = ?3
                             WHERE id = ?1 AND owner = ?2 AND status = 'claimed'
                                 AND blocked_by IS NULL",
             params![id, agent, now],
         )?;
+        if changed == 1 {
+            events::record(
+                &transaction,
+                id,
+                TaskEventKind::Released,
+                Some(agent),
+                now,
+                "",
+            )?;
+        }
+        transaction.commit()?;
         Ok(changed == 1)
     }
 
@@ -873,6 +1042,14 @@ impl LodestarStore {
                 now
             ],
         )?;
+        events::record(
+            &transaction,
+            task_id,
+            TaskEventKind::ConformanceRecorded,
+            Some(agent),
+            now,
+            &serde_json::json!({ "verdict": audit.verdict.as_str() }).to_string(),
+        )?;
         if target_status == TaskStatus::Done {
             open_blocked_successor_on(&transaction, task_id, now)?;
         }
@@ -945,6 +1122,18 @@ impl LodestarStore {
         if changed != 1 {
             return Ok(false);
         }
+        events::record(
+            &transaction,
+            task_id,
+            TaskEventKind::ConformanceRecorded,
+            Some(agent),
+            now,
+            &serde_json::json!({
+                "verdict": verdict.as_str(),
+                "conformance_id": conformance_id,
+            })
+            .to_string(),
+        )?;
         if target_status == TaskStatus::Done {
             open_blocked_successor_on(&transaction, task_id, now)?;
         }
@@ -1047,6 +1236,11 @@ fn create_task_after_on(
             params![task.id, covered, now],
         )?;
     }
+    // Appended last, so a creation that is about to be rejected for a bad
+    // coverage declaration never leaves a birth certificate behind. The whole
+    // call runs inside the caller's transaction, so this either lands with the
+    // row or not at all.
+    events::append(connection, TaskEventKind::Created, None, now, &task, "")?;
     Ok(task)
 }
 
@@ -1076,16 +1270,39 @@ fn open_blocked_successor_on(
     predecessor_id: &str,
     now: i64,
 ) -> Result<()> {
-    connection.execute(
+    // Resolve the successor first rather than updating through a subquery, so
+    // the unblocking can be recorded against the task it actually moved. A
+    // predecessor-driven transition has no actor: nobody asked for it, the gate
+    // simply lifted, and naming a caller here would attribute a decision to an
+    // agent that never made one.
+    let successor: Option<String> = connection
+        .query_row(
+            "SELECT successor_id FROM task_handoffs WHERE predecessor_id = ?1",
+            params![predecessor_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(successor_id) = successor else {
+        return Ok(());
+    };
+    let changed = connection.execute(
         "UPDATE tasks
          SET status = 'open', owner = NULL, claim_started_at = NULL,
              lease_expires_at = NULL, parked_at = NULL, blocked_by = NULL, updated_at = ?2
-         WHERE id = (
-             SELECT successor_id FROM task_handoffs WHERE predecessor_id = ?1
-         )
-           AND blocked_by = ?1 AND status = 'blocked'",
-        params![predecessor_id, now],
+         WHERE id = ?1
+           AND blocked_by = ?3 AND status = 'blocked'",
+        params![successor_id, now, predecessor_id],
     )?;
+    if changed == 1 {
+        events::record(
+            connection,
+            &successor_id,
+            TaskEventKind::Reopened,
+            None,
+            now,
+            &serde_json::json!({ "unblocked_by": predecessor_id }).to_string(),
+        )?;
+    }
     Ok(())
 }
 
@@ -1177,7 +1394,7 @@ fn validate_dependency_on(
     Ok(false)
 }
 
-fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
+pub(super) fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
     let status: String = row.get(5)?;
     Ok(Task {
         id: row.get(0)?,
@@ -1272,6 +1489,53 @@ fn intersect_paths(requested: &[String], declared: &[String]) -> Result<Vec<Stri
     Ok(matches)
 }
 
+/// Refuse a claim that would take an agent past [`MAX_CONCURRENT_CLAIMS`]
+/// (ADR-0067), naming what it already holds.
+///
+/// Re-claiming a task the agent already owns is never a new claim: it is the
+/// heartbeat path, and refusing it would turn renewing a lease into an error at
+/// exactly the wrong moment.
+///
+/// The refusal lists the held tasks and what to do with them. A cap that only
+/// says "no" relocates the confusion rather than removing it \u2014 the holder still
+/// has to go and count, which is the work this exists to stop anyone doing.
+fn refuse_beyond_claim_limit(connection: &Connection, id: &str, agent: &str) -> Result<()> {
+    let already_held = connection.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM tasks
+             WHERE id = ?1 AND status = 'claimed' AND owner = ?2
+         )",
+        params![id, agent],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if already_held {
+        return Ok(());
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT id, title FROM tasks
+         WHERE status = 'claimed' AND owner = ?1
+         ORDER BY updated_at ASC, id ASC",
+    )?;
+    let held = collect(statement.query_map(params![agent], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?)?;
+    if held.len() < MAX_CONCURRENT_CLAIMS {
+        return Ok(());
+    }
+    let listed = held
+        .iter()
+        .map(|(id, title)| format!("\n  {id}  {title}"))
+        .collect::<String>();
+    Err(LodestarError::Invalid(format!(
+        "{agent} already holds {} claims and the limit is {MAX_CONCURRENT_CLAIMS}; \
+         claiming {id} as well would be a statement about work nobody is doing. \
+         Complete one, release it, or leave it for another agent — a lapsed lease \
+         still counts, because letting a claim go stale is not finishing it.{listed}",
+        held.len(),
+    )))
+}
+
 fn row_to_conformance(row: &Row) -> rusqlite::Result<ConformanceRecord> {
     let verdict: String = row.get(4)?;
     Ok(ConformanceRecord {
@@ -1330,6 +1594,7 @@ fn append_note_on(
 mod tests {
     use std::sync::{Arc, Barrier};
 
+    use mindleak_session::SessionContext;
     use rusqlite::params;
 
     use super::*;
@@ -1352,6 +1617,81 @@ mod tests {
         let held = s.get_task(&t.id).unwrap().unwrap();
         assert_eq!(held.owner.as_deref(), Some("alice"));
         assert_eq!(held.status, TaskStatus::Claimed);
+    }
+
+    /// Bug: nothing limited how many tasks one agent could hold, and holding a
+    /// claim it was not working cost it nothing. Measured on the live board: 36
+    /// tasks `claimed`, **4** with a live lease, the rest lapsed a median of 13
+    /// hours earlier — two agents holding 15 and 14 apiece. Impact: the board
+    /// read as a fleet with 36 things in flight when it had 4, so both humans
+    /// and agents planned against a number that was nine times wrong, and
+    /// discovering it took a bespoke script. Fix: refuse the claim that would
+    /// take an agent past the limit, counting lapsed claims too (ADR-0067).
+    #[test]
+    fn an_agent_cannot_hold_more_claims_than_it_can_be_working() {
+        let s = store();
+        let g = goal(&s);
+        let tasks: Vec<_> = (0..MAX_CONCURRENT_CLAIMS + 1)
+            .map(|n| {
+                s.create_task(&g.id, &format!("task {n}"), "", None, NOW + n as i64)
+                    .unwrap()
+            })
+            .collect();
+        for task in tasks.iter().take(MAX_CONCURRENT_CLAIMS) {
+            assert!(s.claim_task(&task.id, "alice", 60, NOW).unwrap());
+        }
+
+        let refused = s
+            .claim_task(&tasks[MAX_CONCURRENT_CLAIMS].id, "alice", 60, NOW)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("already holds"), "{refused}");
+        assert!(
+            refused.contains(&tasks[0].id),
+            "names what is already held: {refused}"
+        );
+
+        // A lapsed lease still counts: letting a claim go stale is not finishing
+        // it, and if it did not count it would be the cheapest way to dodge the
+        // limit — which is precisely the behaviour this exists to stop.
+        let lapsed = NOW + 1_000;
+        let still_refused = s
+            .claim_task(&tasks[MAX_CONCURRENT_CLAIMS].id, "alice", 60, lapsed)
+            .unwrap_err()
+            .to_string();
+        assert!(still_refused.contains("already holds"), "{still_refused}");
+
+        // Re-claiming something already held is a heartbeat, not a new claim.
+        assert!(s.claim_task(&tasks[0].id, "alice", 60, lapsed).unwrap());
+
+        // Existing ledgers may already be over the cap. Re-claiming one of
+        // those tasks still is not a new claim: refusing it would prevent the
+        // holder renewing, recording the lapse, or preserving its ADR-0048
+        // evidence window until it can finish/release the excess.
+        let grandfathered = s
+            .create_task(&g.id, "grandfathered", "", None, NOW)
+            .unwrap();
+        s.conn
+            .execute(
+                "UPDATE tasks
+                 SET status = 'claimed', owner = 'alice', claim_started_at = ?2,
+                     lease_expires_at = ?3, updated_at = ?2
+                 WHERE id = ?1",
+                params![grandfathered.id, NOW, NOW + 60],
+            )
+            .unwrap();
+        assert!(s
+            .claim_task(&grandfathered.id, "alice", 60, lapsed)
+            .unwrap());
+        assert!(s.release_task(&grandfathered.id, "alice", lapsed).unwrap());
+
+        // Another agent is unaffected, and finishing one frees the slot.
+        assert!(s
+            .claim_task(&tasks[MAX_CONCURRENT_CLAIMS].id, "bob", 60, NOW)
+            .unwrap());
+        assert!(s.release_task(&tasks[1].id, "alice", NOW).unwrap());
+        let freed = s.create_task(&g.id, "one more", "", None, NOW).unwrap();
+        assert!(s.claim_task(&freed.id, "alice", 60, NOW).unwrap());
     }
 
     #[test]
@@ -1390,9 +1730,11 @@ mod tests {
                     symbols: vec!["symbol:src/lib.rs:run".into()],
                 },
                 Some(&second.id),
+                None,
                 NOW + 3,
             )
-            .unwrap();
+            .unwrap()
+            .claims;
         assert_eq!(overlaps.len(), 1);
         assert_eq!(overlaps[0].task_id, first.id);
         assert_eq!(overlaps[0].owner, "alice");
@@ -1406,12 +1748,14 @@ mod tests {
             Some("alice")
         );
         assert!(store
-            .check_claim_overlap(&TaskScope::default(), None, NOW + 3)
+            .check_claim_overlap(&TaskScope::default(), None, None, NOW + 3)
             .unwrap()
+            .claims
             .is_empty());
         assert!(store
-            .check_claim_overlap(&scope, None, NOW + 63)
+            .check_claim_overlap(&scope, None, None, NOW + 63)
             .unwrap()
+            .claims
             .is_empty());
 
         // Requested paths are concrete, while claim declarations are globs.
@@ -1434,10 +1778,98 @@ mod tests {
                     symbols: vec![],
                 },
                 None,
+                None,
                 NOW + 3,
             )
             .unwrap()
+            .claims
             .is_empty());
+    }
+
+    /// ADR-0035 heuristic 4: an intersection is not one risk. Two agents on the
+    /// same declared branch collide now; on different branches they are storing
+    /// up a merge. Before this the caller got the same answer for both and had
+    /// to guess, which is how advisory output gets ignored.
+    #[test]
+    fn overlap_signal_separates_same_branch_collision_from_cross_branch_merge_risk() {
+        let store = store();
+        let goal = goal(&store);
+        let scope = TaskScope {
+            paths: vec!["src/lib.rs".into()],
+            symbols: vec![],
+        };
+        let held = store.create_task(&goal.id, "held", "", None, NOW).unwrap();
+        assert!(store
+            .claim_task_with_scope(&held.id, "alice", 60, &scope, NOW)
+            .unwrap());
+        store
+            .declare_session_context("alice", &branch_context("fleet/a"), NOW)
+            .unwrap();
+
+        // Same declared branch: the edits land in one history.
+        store
+            .declare_session_context("bob", &branch_context("fleet/a"), NOW)
+            .unwrap();
+        let report = store
+            .check_claim_overlap(&scope, None, Some("bob"), NOW)
+            .unwrap();
+        assert_eq!(report.requester_branch.as_deref(), Some("fleet/a"));
+        assert_eq!(report.claims.len(), 1);
+        assert_eq!(report.claims[0].owner_branch.as_deref(), Some("fleet/a"));
+        assert_eq!(report.claims[0].signal, OverlapSignal::SameBranchCollision);
+
+        // Different declared branches: divergence, paid at merge.
+        store
+            .declare_session_context("bob", &branch_context("fleet/b"), NOW + 1)
+            .unwrap();
+        let report = store
+            .check_claim_overlap(&scope, None, Some("bob"), NOW + 1)
+            .unwrap();
+        assert_eq!(report.requester_branch.as_deref(), Some("fleet/b"));
+        assert_eq!(report.claims[0].signal, OverlapSignal::CrossBranchMergeRisk);
+
+        // Either side silent degrades to today's behaviour, and says which side.
+        let report = store.check_claim_overlap(&scope, None, None, NOW).unwrap();
+        assert_eq!(report.requester_branch, None);
+        assert_eq!(report.claims[0].owner_branch.as_deref(), Some("fleet/a"));
+        assert_eq!(report.claims[0].signal, OverlapSignal::Undeclared);
+
+        let unregistered = store
+            .check_claim_overlap(&scope, None, Some("nobody"), NOW)
+            .unwrap();
+        assert_eq!(unregistered.claims[0].signal, OverlapSignal::Undeclared);
+
+        // A session that registered without declaring a branch is silent too:
+        // an empty declaration is not a branch nobody else is on.
+        store
+            .declare_session_context("bob", &SessionContext::default(), NOW + 2)
+            .unwrap();
+        let report = store
+            .check_claim_overlap(&scope, None, Some("bob"), NOW + 2)
+            .unwrap();
+        assert_eq!(report.requester_branch, None);
+        assert_eq!(report.claims[0].signal, OverlapSignal::Undeclared);
+
+        // Still advisory: nothing about the classification blocks a claim.
+        assert!(store
+            .claim_task_with_scope(
+                &store
+                    .create_task(&goal.id, "rival", "", None, NOW + 2)
+                    .unwrap()
+                    .id,
+                "bob",
+                60,
+                &scope,
+                NOW + 2
+            )
+            .unwrap());
+    }
+
+    fn branch_context(branch: &str) -> SessionContext {
+        SessionContext {
+            branch: Some(branch.to_string()),
+            ..SessionContext::default()
+        }
     }
 
     #[test]

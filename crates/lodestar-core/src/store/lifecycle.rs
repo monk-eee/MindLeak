@@ -118,7 +118,7 @@ mod tests {
             .create_task(&goal.id, "Implement reset", "all state gone", None, NOW)
             .unwrap();
         store
-            .link_goal_to_code(
+            .link_goal_to_artifact(
                 &goal.id,
                 &["artifact:src/lib.rs".to_string()],
                 CodeBindingMode::Governed,

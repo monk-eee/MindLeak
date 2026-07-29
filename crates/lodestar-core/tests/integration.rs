@@ -173,7 +173,7 @@ fn goal_task_claim_complete_flow() {
         .unwrap();
     let t = engine.create_task(&g.id, "wire fts", "tests pass").unwrap();
     engine
-        .link_goal_to_code(
+        .link_goal_to_artifact(
             &g.id,
             &["artifact:src/search.rs".into()],
             CodeBindingMode::Governed,
@@ -246,14 +246,14 @@ fn evidence(
     }
 }
 
-// ADR-0009 binding hygiene (built on request): unlink_goal_from_code is the
-// inverse of link_goal_to_code, so a stale cross-goal binding can be pruned.
+// ADR-0009 binding hygiene (built on request): unlink_goal_from_artifact is the
+// inverse of link_goal_to_artifact, so a stale cross-goal binding can be pruned.
 // Proves the round trip end to end: a node bound to a second goal with no
 // covering task drifts; governing_goals audits the bindings; unlinking the stale
 // one (idempotent; NotFound for an unknown goal) realigns the same evidence to
 // the task goal.
 #[test]
-fn unlink_goal_from_code_prunes_stale_binding_and_clears_drift() {
+fn unlink_goal_from_artifact_prunes_stale_binding_and_clears_drift() {
     let engine = Lodestar::open_in_memory().unwrap();
     let owner = engine
         .define_goal(GoalKind::Objective, "Owner", "owns the change", None)
@@ -263,14 +263,14 @@ fn unlink_goal_from_code_prunes_stale_binding_and_clears_drift() {
         .unwrap();
     let node = "artifact:src/shared.rs".to_string();
     engine
-        .link_goal_to_code(
+        .link_goal_to_artifact(
             &owner.id,
             std::slice::from_ref(&node),
             CodeBindingMode::Governed,
         )
         .unwrap();
     engine
-        .link_goal_to_code(
+        .link_goal_to_artifact(
             &stale.id,
             std::slice::from_ref(&node),
             CodeBindingMode::Governed,
@@ -297,18 +297,18 @@ fn unlink_goal_from_code_prunes_stale_binding_and_clears_drift() {
     // Prune the stale binding: audited, idempotent, and typed on a missing goal.
     assert_eq!(
         engine
-            .unlink_goal_from_code(&stale.id, std::slice::from_ref(&node))
+            .unlink_goal_from_artifact(&stale.id, std::slice::from_ref(&node))
             .unwrap(),
         1
     );
     assert_eq!(
         engine
-            .unlink_goal_from_code(&stale.id, std::slice::from_ref(&node))
+            .unlink_goal_from_artifact(&stale.id, std::slice::from_ref(&node))
             .unwrap(),
         0
     );
     assert!(engine
-        .unlink_goal_from_code("goal:missing", std::slice::from_ref(&node))
+        .unlink_goal_from_artifact("goal:missing", std::slice::from_ref(&node))
         .is_err());
 
     let remaining = engine.governing_goals(&node).unwrap();
@@ -329,7 +329,7 @@ fn unlink_goal_from_code_prunes_stale_binding_and_clears_drift() {
 //
 // What went wrong: evidence touching no goal-bound code was `aligned` when no
 // task was attached, but `needs_human` when one was — the presence of a task
-// made the verdict worse. Since `link_goal_to_code` binds code and nothing
+// made the verdict worse. Since `link_goal_to_artifact` binds code and nothing
 // else, a task delivering an ADR, documentation, a benchmark or a changelog
 // fragment could never reach `aligned` no matter how well it was done.
 //
@@ -353,10 +353,10 @@ fn work_whose_product_is_not_code_conforms_with_the_finding_recorded() {
         )
         .unwrap();
 
-    // The goal binds code, as `link_goal_to_code` is the only verb available.
+    // The goal binds code, as `link_goal_to_artifact` is the only verb available.
     let code = "artifact:crates/lodestar-core/src/engine.rs".to_string();
     engine
-        .link_goal_to_code(
+        .link_goal_to_artifact(
             &goal.id,
             std::slice::from_ref(&code),
             CodeBindingMode::Governed,
@@ -403,6 +403,122 @@ fn work_whose_product_is_not_code_conforms_with_the_finding_recorded() {
     );
 }
 
+// Regression, ADR-0060 item 3: a goal could not bind what it actually delivered.
+//
+// What went wrong: `link_goal_to_code` bound code, and a `governed` binding to a
+// documentation node was discarded at conformance read time before it could be
+// classified — so it could never land in scope. A goal whose delivery *is* an
+// ADR or a doc had no way to say so: `touched_task_goal` was vacuously false,
+// and the "does not touch code bound to the task goal" finding was attached to
+// work that had touched precisely the artefact its goal named.
+//
+// Impact: the finding was noise on exactly the tasks it was least true of, and
+// the only way to silence it was to bind an unrelated source file.
+//
+// The fix: the documentation exclusion applies only to the drift branch. A doc
+// bound to the task's own goal (or to a goal the task declared it covers) counts
+// in scope, so the verb now binds artefacts and is named for it.
+#[test]
+fn a_goal_may_bind_the_documentation_it_delivers_and_a_task_answers_for_it() {
+    let engine = Lodestar::open_in_memory().unwrap();
+    let goal = engine
+        .define_goal(
+            GoalKind::Objective,
+            "Record the decision",
+            "the ADR is the deliverable, not a side effect of one",
+            None,
+        )
+        .unwrap();
+
+    // The goal binds the artefact it actually delivers.
+    let adr = "artifact:docs/adr/0060-work-whose-product-is-not-code.md".to_string();
+    engine
+        .link_goal_to_artifact(
+            &goal.id,
+            std::slice::from_ref(&adr),
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
+
+    let task = engine
+        .create_task(&goal.id, "write the ADR", "ADR committed")
+        .unwrap();
+    assert!(engine.claim_task(&task.id, "agent-docs", 300).unwrap());
+    let claim = engine.store().get_task(&task.id).unwrap().unwrap();
+
+    let ev = evidence(
+        &task.id,
+        "agent-docs",
+        &adr,
+        claim.claim_started_at.unwrap(),
+    );
+    assert!(
+        !engine.governing_goals(&adr).unwrap().is_empty(),
+        "the binding must be visible through the public read"
+    );
+    let result = engine.check_conformance(&ev, Some(&task.id)).unwrap();
+
+    assert_eq!(
+        result.verdict,
+        Verdict::Aligned,
+        "delivering the bound artefact must conform: {:?}",
+        result.findings
+    );
+    assert!(
+        !result
+            .findings
+            .iter()
+            .any(|f| f.contains("does not touch code bound to the task goal")),
+        "the goal bound this very artefact, so the question is answered, \
+         not vacuously false: {:?}",
+        result.findings
+    );
+}
+
+// A documentation binding answers for the goal that made it, and stays silent
+// for every other goal — otherwise binding a changelog once would make every
+// later touch of it drift for whoever happened to edit it next.
+#[test]
+fn a_documentation_binding_to_another_goal_is_still_not_drift() {
+    let engine = Lodestar::open_in_memory().unwrap();
+    let owner = engine
+        .define_goal(GoalKind::Objective, "Owns the changelog", "…", None)
+        .unwrap();
+    let other = engine
+        .define_goal(GoalKind::Objective, "Unrelated work", "…", None)
+        .unwrap();
+
+    let changelog = "artifact:CHANGELOG.md".to_string();
+    engine
+        .link_goal_to_artifact(
+            &owner.id,
+            std::slice::from_ref(&changelog),
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
+
+    let task = engine
+        .create_task(&other.id, "unrelated change", "done")
+        .unwrap();
+    assert!(engine.claim_task(&task.id, "agent-b", 300).unwrap());
+    let claim = engine.store().get_task(&task.id).unwrap().unwrap();
+
+    let ev = evidence(
+        &task.id,
+        "agent-b",
+        &changelog,
+        claim.claim_started_at.unwrap(),
+    );
+    let result = engine.check_conformance(&ev, Some(&task.id)).unwrap();
+
+    assert_eq!(
+        result.verdict,
+        Verdict::Aligned,
+        "a changelog touch must not drift against a goal that merely bound it: {:?}",
+        result.findings
+    );
+}
+
 #[test]
 fn missing_evidence_stays_in_review() {
     let engine = Lodestar::open_in_memory().unwrap();
@@ -410,7 +526,7 @@ fn missing_evidence_stays_in_review() {
         .define_goal(GoalKind::Objective, "Ship auth", "change auth", None)
         .unwrap();
     engine
-        .link_goal_to_code(
+        .link_goal_to_artifact(
             &goal.id,
             &["artifact:src/auth.rs".into()],
             CodeBindingMode::Governed,
@@ -458,7 +574,7 @@ fn wrong_goal_drift_stays_in_review() {
         .define_goal(GoalKind::Objective, "Ship billing", "change billing", None)
         .unwrap();
     engine
-        .link_goal_to_code(
+        .link_goal_to_artifact(
             &other_goal.id,
             &["artifact:src/billing.rs".into()],
             CodeBindingMode::Governed,
@@ -502,7 +618,7 @@ fn forbidden_change_blocks_completion() {
         )
         .unwrap();
     engine
-        .link_goal_to_code(
+        .link_goal_to_artifact(
             &goal.id,
             &["artifact:src/schema.sql".into()],
             CodeBindingMode::ForbidChange,
@@ -539,7 +655,7 @@ fn cross_agent_and_out_of_window_evidence_are_rejected() {
         .define_goal(GoalKind::Objective, "Ship auth", "change auth", None)
         .unwrap();
     engine
-        .link_goal_to_code(
+        .link_goal_to_artifact(
             &goal.id,
             &["artifact:src/auth.rs".into()],
             CodeBindingMode::Governed,
@@ -687,7 +803,7 @@ fn isolated_worktrees_share_intent_and_evidence_with_distinct_sessions() {
         .ingest_commit_for_agent(
             &agent_a,
             &CommitRecord {
-                sha: Some("shared-proof".into()),
+                sha: Some("5ba12ed9f0e1d2c3b4a5968778695a4b3c2d1e0f".into()),
                 message: "feat: shared evidence".into(),
                 changed_files: vec!["src/shared.rs".into()],
                 timestamp: 100,
@@ -698,7 +814,10 @@ fn isolated_worktrees_share_intent_and_evidence_with_distinct_sessions() {
 
     let memory_b = MindLeak::open(&graph_path).unwrap();
     let evidence = memory_b.evidence_for(None, &agent_a, 90, 110).unwrap();
-    assert_eq!(evidence.commit_ids, vec!["intent:shared-proof"]);
+    assert_eq!(
+        evidence.commit_ids,
+        vec!["intent:5ba12ed9f0e1d2c3b4a5968778695a4b3c2d1e0f"]
+    );
     assert_eq!(evidence.changed_node_ids, vec!["artifact:src/shared.rs"]);
     assert!(memory_b
         .evidence_for(None, &agent_b, 90, 110)

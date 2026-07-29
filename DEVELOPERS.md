@@ -264,23 +264,307 @@ and footguns, with impact and status:
   `status = active` and `constitution_version = None` (`store/goals.rs`), and
   `complete_clause_contract` refuses any clause that is active
   (`facade/constitution.rs`) — correctly, because hardening a live rule
-  mid-flight is an amendment. But the amendment path cannot help either:
-  `propose_amendment` copies the *existing* active clauses into the draft and
-  nothing inserts a new one, so the clause that most needs a contract is the one
-  clause that can never be given one. It is stuck version-less, scope-less and
-  review-only, and belongs to no constitutional version, so `constitution_diff`
-  will never show it. The only way a new clause reaches a version is
-  `register_policy_pack` + `propose_policy_pack` + `review_pack_clause`, which
-  is designed for adopting *external* policy and records immutable upstream
-  provenance — minting a local pack to smuggle in a project's own rule would put
-  a fabricated source in the provenance record, so it is not a workaround.
-  — Measured impact: it blocked the ratchet half of task:3eab606fbaf6; the
-  tool-surface measurement ships, the ratchet cannot be registered, because
-  `register_ratchet` requires an active clause that authorises it and no clause
-  covers the MCP tool surface. Any future control over something the current 25
-  clauses do not already mention hits the same wall. — Found 2026-07-29, filed
-  as task:4cef8e361fc7; not fixed in that change, which stayed inside its
-  declared scope.
+  mid-flight is an amendment. But `propose_amendment` only copies existing
+  active clauses into the draft; nothing inserts a new one, so the clause that
+  most needs a contract can never be given one. The policy-pack path is not a
+  workaround: it records immutable upstream provenance, which would be false
+  for a locally authored rule. — Measured impact: it blocked the ratchet half
+  of task:3eab606fbaf6. The measurement is independently deliverable in PR
+  #147; the ratchet remains task:8000f45e0dfd, waiting on
+  task:4cef8e361fc7. — Found 2026-07-29; still open.
+
+- **17% of tracked files could not be re-ingested at all: another worktree's
+  absolute id owned them — MEASURED, FIXED.** Found by the first run of
+  `make reingest`. 43 of 247 files failed with
+
+  ```
+  structural edge is owned by
+  artifact:c:/Users/lyndonswan/Repos/MindLeak-export/scripts/design-audit.mjs,
+  not artifact:scripts/design-audit.mjs
+  ```
+
+  ADR-0038 gives every worktree of this repository one shared graph, so an
+  absolute id written from `MindLeak-export` names the *same file* as the
+  repo-relative id — but it held the structural edges, and the repo-relative id
+  could not take them. Those files were frozen under whichever worktree ingested
+  them first, so every future extractor improvement missed them and nothing
+  reported it; the error only appeared if something tried to re-ingest.
+  Repair was prefix-scoped, which assumes every worktree eventually hosts a
+  server that heals its own ids — untrue for a worktree an agent works in
+  without ever starting one there. An absolute id now merges onto a
+  repo-relative twin **the graph already holds**, taken as the longest matching
+  suffix; a path with no twin is still left alone, so repair never invents a
+  file and `repair_is_idempotent_and_leaves_foreign_paths_alone` stands
+  unchanged.
+  Two further defects only surfaced once that was fixed and the files stayed
+  blocked, and they are the more useful finding. `edges.owner_id` records which
+  artifact owns a structural snapshot (ADR-0007), and merging a node rewrote the
+  edge *endpoints* but never the *ownership* — a hole that predated all of this
+  and affected same-root repairs too. Ownership is not an endpoint, so it
+  survives the node it names being deleted, and with the absolute node already
+  collapsed there is nothing left for a node-level repair to find: the file
+  becomes permanently un-re-extractable, quietly. And the facade repair was a
+  no-op without a declared workspace root, which is exactly the case that
+  stranded sibling ids in the first place. Ownership is now carried across a
+  merge and reclaimed by a pass keyed off ownership rather than nodes, and the
+  collapse runs with or without a declared root.
+- **An extractor improvement does not reach the graph that already exists —
+  MITIGATED by `make reingest`, still not automatic.** Structural extraction
+  happens once, at ingest time, and nothing revisits it: `reconcile_workspace`
+  only forgets files that vanished, `index` only fills embeddings, and the
+  editor sensor re-ingests a file only when someone saves it. Measured
+  2026-07-29, immediately after Rust `mod`/`use` extraction shipped:
+  `get_impact_radius` on `crates/mindleak-core/src/model.rs` — imported by
+  nearly every module in the crate — returned 11 nodes, 11 edges and **zero**
+  imports edges. The improvement was real and entirely invisible. After one
+  `make reingest` pass the same query returned **189 nodes, 216 edges, 41
+  imports edges and 25 dependent `.rs` files**.
+  Two things remain. Nobody is told the graph is stale: no node records which
+  extractor version produced it, so "this file was last understood three
+  releases ago" is not a question the graph can answer, and the only symptom is
+  an impact result that is quietly too small. And re-ingesting resets the decay
+  clock on the structural edges it re-asserts — defensible, because structure is
+  true as long as the file says so, but it means the structural tier reads as
+  uniformly fresh afterwards. Attention (`observed`) edges are untouched.
+- **One session's agent id changed under a running server, silently resetting
+  its claim's evidence window and locking it out of its own task — OBSERVED,
+  FIXED by [ADR-0063](docs/adr/0063-a-migration-may-tidy-the-past-never-the-present.md);
+  one residual gap noted at the end.** Across a single session
+  holding one client-minted token, `open_session` (both planes) returned
+  `session:v1:copilot:b4baf280…`, while `board` reported the task's owner as
+  `session:v1:b4baf280…` — the same hash, with and without the label
+  (ADR-0054 removed it).
+  The owner string **flipped between two consecutive `board` reads with no
+  intervening claim** (labelled at `1785234086`, unlabelled at `1785234449`),
+  which points at more than one `lodestar-mcp` build attached to the same
+  `spec.db` rather than at anything the task did. **Not a stale deployment** —
+  that was the first diagnosis and it was wrong. Driving the same session token
+  through each binary on disk, both repository release builds *and* the
+  installed extension binary returned the collapsed id. Only the **live**
+  extension-hosted processes returned the labelled one: they had been started
+  from an earlier build and the file underneath them was replaced while they
+  kept running. Restarting the server was the whole remedy; rebuilding and
+  reinstalling would have changed nothing. The tell is a live process whose
+  start time predates the mtime of its own binary (ADR-0063).
+  Impact, measured on `task:f6daad456855`, is that the whole closing loop is
+  unreachable for such a session:
+  - `check_conformance` refuses with *"evidence agent does not own the task"*;
+  - `ask_question` returns `needs_input: false` — the owner guard rejects it, so
+    the task cannot even be **parked** with an explanation;
+  - the task stays `claimed` until the lease lapses, with no receipt and no
+    durable note, which is the one outcome the ledger exists to prevent.
+  A second, independent effect compounds it: a re-claim after a lapse only
+  preserves `claim_started_at` for the *same* owner (ADR-0048), so a changed id
+  reads as a different agent, opens a **fresh** window, and reports
+  `claim_lapses: 0` as if nothing happened. Work committed at `1785223462` under
+  a window started at `1785223449` fell outside a window later moved to
+  `1785234086`, and `check_conformance` refused the real evidence with
+  *"evidence interval falls outside the live claim"*.
+  Two things worth deciding rather than patching: whether identity should be
+  pinned per session against the *token* rather than whatever the current binary
+  formats, and whether a window reset should be visible (it currently looks
+  identical to a first claim). Do not "fix" this by re-committing work into a
+  fresh window, or by completing on an empty in-window bundle — both assert
+  proof the ledger never saw.
+  **Fixed:** ADR-0063 stops the collapse rewriting the owner of a live claim and
+  records identity migrations once per database, and `ask_question` now says why
+  it refused instead of returning `needs_input: false` for every reason at once.
+  **Still open:** a window reset remains invisible — a fresh window opened
+  because the owner id changed still reports `claim_lapses: 0`, identical to a
+  first claim. Whether identity should be pinned per session against the *token*
+  rather than whatever the running process formats is also undecided.
+- **Unit Test MCP with `framework=custom` run from `editors/vscode` silently
+  runs Cargo, not Vitest, and reports PASSED — CONFIRMED, config footgun.**
+  Cargo walks up from `editors/vscode` and finds the workspace `Cargo.toml`, so
+  the Rust suite runs and goes green while the extension tests never execute.
+  Verified by breaking a `util.test.ts` assertion on purpose: `framework=custom`
+  reported PASSED; `framework=vitest` with
+  `root_dir=<repo>/editors/vscode` reported the real failure and the assertion
+  diff. Any extension change validated through the custom adapter has a
+  meaningless green behind it. Use `framework=vitest` for
+  `editors/vscode`, and treat a suspiciously fast/slow duration as the tell.
+
+- **Two clauses declare `block` and currently cannot reach it, because an earlier
+  amendment orphaned their controls — MEASURED, fix landed but not yet
+  retroactive.** Measured across the live constitution: **30 active clauses, 13
+  with a complete contract, and only 4 binding any control — 2 of them
+  mechanical.** `clause_controls` reports
+  `one-publishing-owner-per-task-branch` and
+  `a-commit-stays-inside-its-declared-scope` as unguarded, though both still
+  declare `block`. A clause copy takes a new id and controls stored the old one,
+  so amending a rule silently disarmed it. Impact is narrower than it looks and
+  worth stating precisely: the *mechanisms* never stopped working — the
+  pre-commit hooks still exit non-zero and still refuse the commit — but the
+  *ledger* cannot resolve those clauses above `advise`, so a conformance verdict
+  will not report a violation of them. Do not read "no control" as "no
+  enforcement", or "declares block" as "will block". Amendments now carry active
+  controls across by slug, which re-adopts the stranded ones at the next
+  amendment; until an amendment happens, the four above are the complete list of
+  clauses that enforce anything.
+
+- **The conformance chain governs 8 code nodes, none of them Rust, and the gate
+  that would enforce it cannot run — MEASURED, partially mitigated.**
+  `ARCHITECTURE.md` calls the conformance chain "the only trustworthy proof that
+  the agents did the sanctioned work". Measured 2026-07-29 from a live
+  `export_conformance_manifest`:
+
+  | | |
+  |---|--:|
+  | governed code nodes in the whole workspace | **8** |
+  | of those, files under `crates/` | **0** |
+  | receipts covering zero governed nodes | **127 of 131** |
+  | verdicts | 52 aligned · 12 drift · 67 needs_human |
+
+  The eight are `.pre-commit-config.yaml` and seven `scripts/` and
+  `editors/vscode/scripts/` files. The entire engine — `mindleak-core`,
+  `lodestar-core`, both MCP servers — is ungoverned, so 97% of receipts prove
+  nothing about any governed code, and a receipt reading `aligned` most often
+  means "there was nothing to check" rather than "the work was proven".
+  **`scripts/conformance-gate.mjs` cannot close this, because it cannot run.**
+  It reads the manifest exported by `export_conformance_manifest`, and
+  `.gitignore` excludes `/.lodestar/*` with a single exception for
+  `CONSTITUTION.md`. The artifact it needs is by policy never committed, so the
+  gate appears in no workflow, no Makefile target, and no hook — not by
+  oversight but by construction. Anyone "wiring it into CI" will find there is
+  nothing for it to read.
+  Mitigated here only in that the gate no longer *reports* a pass it did not
+  earn: it used to print `OK — N changed path(s), no governed gaps` whether it
+  had verified everything or nothing, and it now distinguishes the two, saying
+  `CHECKED NOTHING` when no changed path was in scope. That is the same
+  correction already applied to receipts that were `aligned` over an empty
+  bundle — agreement about nothing reported in the words of proof.
+  Not fixed, because both halves are decisions rather than patches: binding the
+  engine to goals is ~30 goals' worth of attributed judgement, and making the
+  gate runnable means deciding whether a regenerable, agent-produced proof
+  artifact belongs in Git. Either is a reasonable call; neither is an agent's to
+  make quietly.
+
+- **The post-commit ingest hook is not installed, so commits land with no
+  provenance at all — VERIFIED, not yet fixed.** `.pre-commit-config.yaml`
+  declares `default_install_hook_types: [pre-commit, pre-push, post-commit]`,
+  but the shared `.git/hooks` directory contains only `pre-commit` and
+  `pre-push`. `default_install_hook_types` only takes effect when
+  `pre-commit install` is re-run; an environment set up before that line was
+  added keeps working and silently never installs the new type. Observed on
+  `b4a9067` and `543e1c1`: `evidence_for` over the correct window returned
+  nothing, and neither task could be certified until the commit was re-ingested
+  by hand. Impact: an empty evidence bundle that looks exactly like an agent who
+  forgot to ingest — which is the failure the hook was built to eliminate — so
+  the diagnosis lands on the wrong cause. It cost this session two wrong
+  theories before anyone checked whether the hook existed.
+  Fixing it is `pre-commit install --install-hooks`, but note that this is the
+  *shared* hooks directory: every worktree and every agent picks it up at once,
+  and each commit then spawns an MCP server, so it is a fleet-wide load change
+  rather than a local one.
+  The hook now reports when it cannot record, and honours
+  `MINDLEAK_INGEST_TIMEOUT_MS` — worth having, but it reports nothing while it
+  is not installed at all, which is the actual gap.
+  Unexplained: `ce99c35` *does* have provenance, recorded in the same
+  environment with no post-commit hook installed. Do not assume the hook ran.
+- **`Get-Date -UFormat %s` on Windows returns local time as an epoch, not UTC —
+  CONFIRMED, no code change.** Any evidence window built from it is hours in the
+  future, and `check_conformance` then rejects it with *"evidence interval falls
+  outside the live claim"* — an error that reads like a lapsed claim and is not
+  one. Impact: an agent can wrongly conclude a task is stranded and escalate it
+  to a human. Use `git log -1 --format=%ct`, which is true UTC. Confirm a
+  suspected lapse with `renew_lease` (`renewed: false`) rather than inferring it
+  from that message.
+
+- **The impact traversal had no cross-file edges for Rust, so it could not say
+  what *breaks* — FIXED, with two resolution limits that remain.** Run against a
+  real file in this repository (`crates/mindleak-core/src/facade/query.rs`) the
+  impact radius returned 15 nodes over 15 edges: 6 commit intents recorded
+  against the file, the 7 symbols it contains, and `contains`/`refactored`/
+  `modified`/`calls` edges — but not a single other Rust file, because Rust
+  ingestion emitted no inter-file `imports` edges at all. An agent reading that
+  clean result would conclude nothing depended on the file, which the graph had
+  never actually said. Meanwhile `docs/EVALUATION.md` reported 1.00 precision on
+  the impact question, measured on a **JS/TS** fixture where those edges exist.
+  Rust files now declare their neighbours: `mod x;` resolves to the declaring
+  module's directory, and `use crate::`/`self::`/`super::` resolve through a
+  longest-first candidate ladder that the store picks a known file from — the
+  same mechanism the JavaScript arm already used, because a `use` path cannot be
+  split into module part and item part by looking at it
+  (`crate::graph::GraphStore` and `crate::graph::query` are the same shape).
+  What still does not resolve, deliberately:
+  1. **Another workspace crate is a package, not a file.** `use
+     mindleak_storage::resolve_database` records `package:mindleak_storage`
+     rather than guessing `crates/mindleak-storage/src/lib.rs`, because the
+     crate-name-to-directory mapping is a convention this code cannot verify.
+     Cross-crate impact therefore stops at the crate boundary.
+  2. **Nested use-groups are read one level deep.** `use a::{b::{c}, d}` binds
+     the outer leaves; the inner group is not recursed. Rare in this codebase
+     and it under-reports rather than inventing an edge.
+  Both under-report, which is the safe direction: a missing edge is a smaller
+  lie than a fabricated one.
+  While confirming the original measurement: `AGENTS.md` had excluded
+  `get_impact_radius` from the checklist on the grounds that it, like `recall`,
+  "returns plausible strangers", citing this section — which only ever
+  substantiated the `recall`
+  half. The two were conflated: `recall` answers by embedding similarity and
+  genuinely can return a stranger, whereas the impact radius is a deterministic
+  traversal over recorded edges. Corrected in ADR-0066.
+- **`graph_multi_hop_query` is in a failing state and nobody noticed — OPEN.**
+  `telemetry_snapshot` reports `currently_failing: true` for it, with a last
+  error of `missing required argument: seed_entity`: a malformed call to the
+  headline traversal capability, never followed by a successful one. It has 10
+  lifetime calls. Impact: low today precisely because nothing depends on it,
+  which is the actual finding — a tool with no callers has no failure signal
+  either, so this could have been broken for any length of time. Left open
+  deliberately: ADR-0066 predicts the read-to-write ratio should move, and if it
+  does this tool starts mattering.
+- **Roughly 500 dashboard polls per decision-time read — SURFACED, not fixed.**
+  Lifetime telemetry: `graph_stats` 16,522 calls and `telemetry_snapshot`
+  12,567, against 66 reads that could change a decision. `graph_stats` alone has
+  spent 3,405 seconds — 57 minutes of cumulative compute — answering "how many
+  nodes are there". The caller is the extension's polling loop, not an agent.
+  Impact: wasted compute and a telemetry record whose shape is dominated by
+  self-observation, which is what made the retrieval gap hard to see in the
+  first place. Fix is a debounce or a push model in the extension; not attempted
+  here because it is a separate change in a separate plane.
+- **A lapsed claim can never certify the work it was claimed for — ROOT CAUSE,
+  OPEN.** The four traps below are real, but they are symptoms. Underneath them
+  is a rule that no amount of care gets past: `check_conformance` requires
+  `evidence.started_at >= task.claim_started_at`, and *every* route back to a
+  live claim sets `claim_started_at` to now. `claim_task` does.
+  `recover_claim` does (`SET status = 'claimed', ..., claim_started_at = ?4`
+  with `now`). `renew_lease` refuses outright — a lapsed lease cannot be
+  renewed. So the evidence window can only ever begin after the recovery, and
+  the work happened before it. There is no ordering of these calls that works.
+  — Reproduced end to end on `task:36fa0badd713`, whose commit
+  `64fb56b3` is on `main`: the commit was ingested with its true timestamp, the
+  window was bounded to the commit itself, and the bundle came back exactly
+  right — one commit, three changed nodes, no contamination. `check_conformance`
+  answered `invalid: evidence interval falls outside the live claim`. — A second
+  edge makes it worse: that task was committed at 05:49:36 and claimed
+  **fourteen seconds later**, so even its *original* claim window excludes its
+  own commit. Commit-then-claim-then-push is the normal shape of the work, which
+  means the evidence for a task routinely predates the claim that authorises it,
+  and the 300-second default lease is far shorter than the work. — Impact: an
+  agent cannot close a stranded claim at all, however carefully. The only exits
+  are a human `resolve_task` or abandonment, and the board accumulates claims
+  that look like abandoned work but are finished, shipped, merged work. Thirty-two
+  such claims are on the board today. — Status: not fixed, and deliberately not
+  worked around here. The honest fix needs the task's claim history rather than
+  the two scalar aggregates that replaced it, which is exactly what ADR-0064
+  (the log is the ledger) is for: with a real transition log, "evidence that
+  falls inside a *prior* claim by the same agent" becomes a question the store
+  can answer, and completing shipped work stops requiring a human. Anyone
+  implementing ADR-0064 should treat this as a requirement of it.
+  — **UPDATE, 29 Jul 2026: the absolute claim above is no longer true, and the
+  headline overstates what remains.** ADR-0048 landed after this was written: a
+  re-claim *by the same owner* now keeps `claim_started_at` and records the hole
+  in `claim_lapses` / `unleased_seconds` instead of moving the window
+  ([`store/coordination.rs`](crates/lodestar-core/src/store/coordination.rs),
+  the `claim_started_at = CASE WHEN status = 'claimed' AND owner = ?2 THEN
+  claim_started_at ELSE ?4 END` arm). Verified end to end on
+  `task:219184500419`: its lease lapsed twice mid-task, it was re-claimed by the
+  same owner each time, and evidence beginning at the *original* claim was still
+  accepted by both `check_conformance` and `complete_task`. So a lapse alone no
+  longer strands the work. What remains true is narrower: a **different** owner
+  still opens a fresh window, and commit-then-claim still puts the evidence
+  before the claim that authorises it. Treat the two scalars as the interim
+  mechanism, not the absence of one.
 
 - **Closing a stranded claim after the fact: four traps, all hit in one
   sitting — OPEN.** Most stranded claims are work that already shipped and was
@@ -1059,17 +1343,14 @@ and footguns, with impact and status:
   on local proof. — Left open in the external adapter; use a canonical uppercase
   Windows drive root for coverage, while CI's test counts remain authoritative.
 - **Unit Test MCP reports `PASSED` for `scripts/*.test.mjs`, which it never
-  runs — OPEN.** The repository's own guard tests are `node:test` files and no
+  runs — OPEN.** The repository's guard tests are `node:test` files and no
   adapter covers them. Asked to run one with `framework=custom`, `run_tests`
-  returns `status: PASSED` with `passed`/`failed`/`total` all zero in ~70 ms.
-  Proved by red/green probe on 2026-07-29: a test asserting `1 === 2` inside
+  returned `status: PASSED` with `passed`/`failed`/`total` all zero. A red/green
+  probe on 2026-07-29 proved the false green: an assertion that `1 === 2` inside
   `scripts/measure-tool-surface.test.mjs` still came back `PASSED`. — High
-  impact, and worse than the zero-count gap above: a green verdict on a suite
-  that never executed is indistinguishable from a real one, so the 88 assertions
-  guarding the conformance gate, claim gate, merge-driver guard and delivery
-  queue can all be reported as passing while broken. — Until an adapter exists,
-  validate script tests with `make script-test` (`node scripts/script-tests.mjs`),
-  which is what CI runs.
+  impact: a suite that never executed is indistinguishable from a real green
+  result. — Until an adapter exists, validate script tests with
+  `make script-test` (`node scripts/script-tests.mjs`), which is what CI runs.
 - **Disposable Git fixtures inherited the parent hook's alternate index —
   FIXED.** — Committed-snapshot Cargo hooks set `GIT_INDEX_FILE`; child `git`
   commands in repository-state and publisher tests inherited it even when they
@@ -1177,3 +1458,101 @@ and footguns, with impact and status:
   the workspace build and strict clippy were red. — Resolved Jul 2026 by making
   `TextEmbedder: Send + Sync` and adding compile-time and unit regression
   assertions that `MindLeak: Send` (Lodestar task `task:e0548f57556a`).
+- **One commit split into two intent nodes when ingested by an abbreviated
+  sha.** — `ingest::git::ingest_commit` built the node id from the sha exactly
+  as supplied, so a commit already ingested under its full hash gained a
+  *second* node when ingested again by its abbreviation. Observed 2026-07-29:
+  an evidence bundle carried both `intent:007835a` and
+  `intent:007835a1c979…` for one commit, with duplicated `refactored` edges to
+  all four artefacts and `commits=2`. — Medium impact: inflated commit counts in
+  conformance evidence, duplicated provenance, and two nodes competing to
+  represent one event, with nothing downstream able to tell they are the same
+  commit. The commit-level twin of the "one file is one node" defect. — **Fixed
+  Jul 2026:** an abbreviation is now refused with
+  `MindLeakError::InvalidArgument` naming the fix, and case is normalised;
+  ingestion cannot expand an abbreviation itself because it never shells out to
+  git (invariant 1). Regression tests
+  `an_abbreviated_sha_is_refused_rather_than_creating_a_second_node` and
+  `sha_case_does_not_fork_the_commit_into_two_nodes` (Lodestar task
+  `task:3767516939a0`).
+- **The active constitution governs no code, and owns no work — MEASURED,
+  OPEN.** Constitution v2 minted 25 active goals with ids suffixed
+  `@constitution:v2`. Every code binding and every task still names the v1 id,
+  and 25 of the 26 superseded goals record no `superseded_by`, so nothing can
+  follow the rename. Measured 2026-07-29 with `node scripts/binding-audit.mjs`:
+
+  ```
+  active goals                      : 25
+  active goals WITH code bindings   : 0
+  bindings held by superseded goals : 156 of 156
+  tasks under superseded goals      : 217 of 217
+  ```
+
+  — High impact: `governing_goals` filters to active goals, so it reports `[]`
+  for files that are demonstrably bound, and `advise` answers "no active clause
+  governs this change; proceed" for *every* change. That reads as approval and
+  is actually the constitution being disconnected — no `forbid_change` lock can
+  fire and no clause can be enforced. Conformance still works only because tasks
+  and bindings are consistently on the *old* ids. — Not fixed here: re-pointing
+  156 bindings and 217 tasks is a hard-to-reverse ledger rewrite on a live
+  fleet, and with no recorded `superseded_by` the v1→v2 mapping would have to be
+  guessed from slugs. Binding the v2 goals *without* moving the tasks would make
+  every agent's evidence read as `governed code changed without a covering
+  task`, i.e. drift. — **Root cause found and fixed in flight (PR #156):**
+  `amend_constitution` superseded the outgoing clauses with a bare status flip
+  and never set `superseded_by`, so nothing could follow the rename it performs.
+  The amendment now records the successor by slug and moves bindings and
+  non-terminal tasks in the same transaction, and a `run_once` migration repairs
+  ledgers already in this state. It cannot be done as a sweep: bindings and
+  tasks must move together or every live task reads as drift.
+- **Goal bindings did not cover the code that serves the goal — MEASURED,
+  FIXED.** 47 of 131 source files under `crates/*/src` were bound to no goal,
+  including the whole of `ingest/**` (the zero-token write path) and the whole
+  post-split `facade/conformance/**`; two bindings still named
+  `facade/conformance.rs` and `store/design.rs`, deleted by the module splits.
+  — Medium impact: conformance cannot tell drift from an unbound file, so honest
+  changes and real drift both come back silent. — **Fixed Jul 2026:** all files
+  bound to their owning goal, dead bindings pruned, and
+  `scripts/binding-audit.mjs --check` added so it cannot regress unnoticed
+  (Lodestar task `task:7c3a63f1cfd3`).
+- **The binding vocabulary is still named for code below the verb.** —
+  `link_goal_to_code` became `link_goal_to_artifact` (ADR-0060), but
+  `CodeBindingMode` and the `code_bindings` table it writes to still say
+  "code". — Low impact, cosmetic but misleading: the type name contradicts what
+  the verb accepts, and the next reader will reasonably infer the store refuses
+  non-code nodes when it does not. — **Left for later, deliberately:** renaming
+  the enum is a public-API change and renaming the table is a data migration,
+  neither of which belongs in a rename that had to migrate every caller
+  atomically. Should be its own change, not bolted onto this one.
+- **An agent can work all day and certify nothing, and the board cannot tell the
+  difference between unfinished and unclosed — MEASURED, OPEN.**
+  — *The measurement.* 48 of 101 `done` tasks rest on a `needs_human` receipt
+  rather than an affirmed one (`knowledge:d9ad8b8911d7`). Thirty-three claims sit
+  lapsed on the board. An audit against `origin/main` on 29 Jul 2026 found at
+  least **nine** of those tasks already fully implemented in main — all five
+  module-split tasks, plus PRs #100, #110, #114 and #116 — while still showing as
+  open or free to re-claim (`knowledge:93679dfca687`). This session added a
+  tenth: `task:219184500419` shipped as PR #149, merged, and still completed
+  `needs_human`.
+  — *The impact.* The board is not a statement of what is missing. An agent that
+  trusts it re-implements shipped work, and "done" does not mean "affirmed", so
+  the completion count cannot be read as delivery. Both failure modes are
+  silent: nothing warns you that the task you just claimed is already in main.
+  — *Why the guard is correct.* The temptation is to blame `check_conformance`
+  for refusing, and to loosen it. Do not. It requires evidence to fall inside
+  the claim window and refuses to upgrade a verdict it cannot substantiate;
+  without that, a receipt could be back-dated, or could cover another agent's
+  commits, and would certify nothing at all. The guard is the only reason a
+  receipt means anything. Every failure above is *upstream* of it — an orphaned
+  goal, a stale server binary, commit-then-claim ordering — and each is fixable
+  without touching the guard.
+  — *The candidate repair.* Three, in order of value. (1) Re-bind the 51 goals
+  orphaned when constitution v2 dropped every goal-to-code link, so
+  `touched_task_goal` is answerable at all; ADR-0060 item 3 now lets a goal bind
+  the docs, ADRs and benchmarks it delivers, so this is finally expressible.
+  (2) ADR-0064 (the log is the ledger), so "evidence inside a *prior* claim by
+  the same agent" becomes answerable and shipped work stops needing a human.
+  (3) `existing_work` (`task:b8ca6e0ca5fb`), so a claimant is told the
+  capability is already in main before doing the work twice. Explicitly **not**
+  a repair: raising the 300-second default lease — ADR-0052 considered and
+  rejected that, and a longer lease only widens the window it fails to police.

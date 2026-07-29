@@ -374,9 +374,9 @@ a fleet.
 
 | Server | Tools | `tools/list` | Approx. tokens |
 |---|---:|---:|---:|
-| `mindleak-mcp` | 27 | 11.7 KB | ~3,000 |
-| `lodestar-mcp` | 90 | 49.9 KB | ~12,800 |
-| **Combined** | **117** | **61.6 KB** | **~15,800** |
+| `mindleak-mcp` | 27 | 11.9 KB | ~3,052 |
+| `lodestar-mcp` | 91 | 51.8 KB | ~13,265 |
+| **Combined** | **118** | **63.7 KB** | **~16,316** |
 
 The servers are asked over MCP/stdio rather than parsed from source, because
 the number that matters is what a client is actually served. The unit is the
@@ -386,8 +386,9 @@ A server that cannot be reached fails the run rather than being omitted, since
 reporting one plane as the total would halve the number and read as progress.
 
 The measurement exists because the surface had no budget. ADR-0059 recorded 89
-`lodestar-mcp` tools on 2026-07-28; this script recorded **90** the next day.
-Nobody decided to grow it, and nothing would have noticed.
+`lodestar-mcp` tools on 2026-07-28; the first run recorded 90, and the
+reconciled run recorded **91**. Nobody decided to grow it, and without this
+measurement nothing would have noticed.
 
 Machine-readable result:
 [2026-07-29-tool-surface.json](../benchmarks/results/2026-07-29-tool-surface.json).
@@ -396,12 +397,10 @@ against an existing build. This measures cost, not benefit: whether a given
 tool earns its place in the context window is a judgment, so the number is
 meant to be held by a ratchet reporting at review rather than by a hard block.
 
-**The ratchet is not yet registered, and cannot currently be.** A ratchet must
-name an active clause that authorises it, no clause covers the tool surface,
-and a new clause cannot be given one: `define_goal` writes a clause `active`
-and version-less, while `complete_clause_contract` refuses any active clause,
-so a locally defined rule can never acquire a scope, an evidence contract or a
-consequence. Tracked in [DEVELOPERS.md](../DEVELOPERS.md#known-gaps). Until it
-is fixed the number is measured and published but not enforced, which is
-reported here rather than papered over by binding the ratchet to an unrelated
-clause.
+**The ratchet is separate follow-up work.** A ratchet must name an active clause
+that authorises it, no clause covers the tool surface, and a locally authored
+clause cannot yet be added through an amendment with an enforcement contract.
+That platform gap is task:4cef8e361fc7; task:8000f45e0dfd will register the
+reviewed budget after it lands. Until then the number is measured and published
+but not enforced, rather than being papered over by binding the ratchet to an
+unrelated clause.

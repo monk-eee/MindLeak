@@ -7,7 +7,7 @@ use crate::model::{
     ClauseOrigin, CodeBinding, CodeBindingMode, Consequence, ConstitutionVersion, Goal, GoalKind,
     GoalStatus,
 };
-use crate::util::{short_hash, slugify};
+use crate::util::{goal_slug, short_hash, slugify};
 
 use super::{collect, LodestarStore};
 
@@ -401,7 +401,7 @@ impl LodestarStore {
             .ok_or_else(|| LodestarError::NotFound(goal_id.to_string()))
     }
 
-    pub fn link_goal_to_code(
+    pub fn link_goal_to_artifact(
         &self,
         goal_id: &str,
         node_ids: &[String],
@@ -418,18 +418,28 @@ impl LodestarStore {
         Ok(linked)
     }
 
+    /// Every node bound to this goal, in any constitutional version.
+    ///
+    /// Matched by slug, the identity a goal keeps across versions: an amendment
+    /// re-issues a clause as `goal:<slug>@constitution:vN` and moves its
+    /// bindings there, while a task still names the bare `goal:<slug>`. Looking
+    /// up by exact id therefore returned nothing from the first amendment
+    /// onwards — silently, as an empty list, which reads as "this goal governs
+    /// no code" rather than as the lookup failure it is.
     pub fn code_for_goal(&self, goal_id: &str) -> Result<Vec<String>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT node_id FROM goal_code WHERE goal_id = ?1")?;
-        let rows = stmt.query_map(params![goal_id], |r| r.get::<_, String>(0))?;
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT goal_code.node_id FROM goal_code
+               JOIN goals ON goals.id = goal_code.goal_id
+              WHERE goals.slug = ?1",
+        )?;
+        let rows = stmt.query_map(params![goal_slug(goal_id)], |r| r.get::<_, String>(0))?;
         collect(rows)
     }
 
     /// Remove goal↔code bindings for the given node ids. Returns how many rows
     /// were deleted (a node not bound to the goal is a no-op, not an error), so a
     /// stale binding can be pruned without wiping and re-linking the goal.
-    pub fn unlink_goal_from_code(&self, goal_id: &str, node_ids: &[String]) -> Result<usize> {
+    pub fn unlink_goal_from_artifact(&self, goal_id: &str, node_ids: &[String]) -> Result<usize> {
         let mut removed = 0;
         for node in node_ids {
             removed += self.conn.execute(
@@ -746,7 +756,7 @@ mod tests {
     fn goal_code_seam_resolves_active_governors() {
         let s = store();
         let g = goal(&s);
-        s.link_goal_to_code(
+        s.link_goal_to_artifact(
             &g.id,
             &["artifact:src/x.rs".into()],
             CodeBindingMode::Governed,

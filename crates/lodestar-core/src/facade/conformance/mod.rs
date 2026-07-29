@@ -8,6 +8,7 @@ use crate::controls::{forbid_change_control, forbid_change_observation, resolve_
 use crate::model::Consequence;
 use crate::scope;
 use crate::store::ConformanceAudit;
+use crate::util::goal_slug;
 use crate::{
     now_unix, CodeBindingMode, ConformanceCheck, ConformanceEvidence, ConformanceResult, Goal,
     GoalStatus, GoverningClause, Lodestar, LodestarError, Result, Task, TaskStatus, Verdict,
@@ -168,8 +169,26 @@ impl Lodestar {
         }
         // Recorded after the transition succeeds: a lesson attached to a
         // completion that did not happen would be worse than none.
+        //
+        // The evidence carries the nodes this work changed, because that is the
+        // only thing `apply_knowledge_advisory` matches on. Recorded as the bare
+        // string `task:{id}` — which is not JSON and parses to no nodes at all —
+        // every lesson an agent has ever written was stored, counted in the
+        // stats, and could never reach anybody. Measured on this repository:
+        // 34 of 35 active knowledge records referenced nothing.
+        //
+        // With the changed nodes attached, a lesson learned while changing a
+        // file surfaces to the next agent who changes that file, which is both
+        // the moment it is useful and the moment it was written for.
         let learned = match learned.map(str::trim).filter(|text| !text.is_empty()) {
-            Some(text) => Some(self.record_knowledge(text, &format!("task:{id}"), None)?.id),
+            Some(text) => {
+                let provenance = serde_json::json!({
+                    "task": format!("task:{id}"),
+                    "nodes": evidence.changed_node_ids,
+                })
+                .to_string();
+                Some(self.record_knowledge(text, &provenance, None)?.id)
+            }
             None => None,
         };
         Ok(Completion {
@@ -276,7 +295,7 @@ mod tests {
             )
             .unwrap();
         let node_id = "artifact:src/delivery.rs";
-        e.link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
         let task = e
             .create_task(&goal.id, "fix delivery", "same evidence stays aligned")
@@ -319,7 +338,7 @@ mod tests {
             .define_goal(GoalKind::Objective, "Ship search", "add search", None)
             .unwrap();
         let node_id = "artifact:src/search.rs";
-        e.link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
         let task = e
             .create_task(&goal.id, "fix delivery", "learns something")
@@ -350,12 +369,175 @@ mod tests {
             recorded.statement,
             "GitHub does not apply .gitattributes merge drivers"
         );
-        assert_eq!(recorded.evidence, format!("task:{}", task.id));
+
+        // The lesson has to be reachable, not merely stored. The advisory
+        // matches on referenced nodes and nothing else, so a lesson naming none
+        // is written, counted, and delivered to nobody — which is what every
+        // recorded lesson was, because the provenance was the bare string
+        // `task:{id}` and parsed to no nodes at all.
+        assert_eq!(
+            recorded.referenced_nodes(),
+            vec![node_id.to_string()],
+            "the lesson names the code it was learned on, so it reaches whoever changes it next"
+        );
+        assert!(
+            recorded.evidence.contains(&task.id),
+            "and still says which task taught it: {}",
+            recorded.evidence
+        );
     }
 
     /// Completion is never blocked by an omission: most tasks teach nothing, and
     /// a gate would only produce a column of "n/a". The gap is reported instead,
     /// which is what makes it measurable rather than invisible.
+    /// A real clause that has been through an amendment, which is where the
+    /// versioned id comes from: the carry-forward rebuilds each clause as
+    /// `goal:{slug}@{version}`. Nothing here is fabricated — and note that a
+    /// freshly adopted v1 clause id is *bare*, so this only bites from the
+    /// first amendment onwards. That is exactly when it bit.
+    fn amended_clause(e: &Lodestar) -> crate::Goal {
+        let proposal = e
+            .propose_constitution(&["README.md".to_string()], Some("monk-eee"))
+            .unwrap();
+        for clause in proposal.common_core.proposals {
+            e.review_pack_clause(
+                &clause.id,
+                crate::PackClauseDisposition::Adopted,
+                None,
+                "monk-eee",
+                Some("Adopted as proposed"),
+            )
+            .unwrap();
+        }
+        e.activate_constitution(&proposal.version.id, "monk-eee")
+            .unwrap();
+
+        let draft = e.propose_amendment(Some("monk-eee")).unwrap();
+        // An amendment that changes nothing is refused as churn, so harden one
+        // carried clause — the same move the amendment tests make.
+        let target = e
+            .store
+            .clauses_for_version(&draft.id)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        e.store
+            .complete_clause_contract(
+                &target.id,
+                "artifact:crates/**",
+                "tests",
+                Some(crate::model::Consequence::Review),
+                false,
+                None,
+            )
+            .unwrap();
+        e.amend_constitution(&draft.id, "monk-eee", "Carry policy forward.")
+            .unwrap();
+        e.store
+            .clauses_for_version(&draft.id)
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("the amendment carries at least one clause forward")
+    }
+
+    /// Every task touching governed code completed as `drift`, however correct
+    /// it was, and `governing_for_task` returned an empty list for a task whose
+    /// goal was named in the very finding that condemned it.
+    ///
+    /// A clause carries the versioned id `goal:<slug>@constitution:vN`. A task
+    /// carries the bare `goal:<slug>`. The coverage test compared the two by
+    /// exact string equality, so from the first amendment onwards it could
+    /// never hold: nothing was in scope, every change read as unsanctioned, and
+    /// a verdict that is the same for every input has stopped carrying
+    /// information.
+    ///
+    /// Slug is the identity a clause keeps across versions — the carry-forward
+    /// builds the next id as `goal:{slug}@{version}`, and `diff_clauses`
+    /// already matches on it. This is the same rule in the place that needed it.
+    #[test]
+    fn a_covering_task_is_still_covering_after_the_clause_is_versioned() {
+        let e = engine();
+        let node = "artifact:crates/lodestar-core/src/store/coordination.rs";
+        let clause = amended_clause(&e);
+        e.link_goal_to_artifact(&clause.id, &[node.into()], CodeBindingMode::Governed)
+            .unwrap();
+        assert!(
+            clause.id.contains("@constitution:"),
+            "the clause is versioned: {}",
+            clause.id
+        );
+
+        // What a task holds: the bare goal id, never the clause version.
+        let task_goal_id = format!("goal:{}", clause.slug);
+        assert_ne!(task_goal_id, clause.id);
+
+        let resolved = e
+            .resolve_governing_clauses(&[node.to_string()], Some(&task_goal_id))
+            .unwrap();
+
+        assert_eq!(
+            resolved.in_scope.len(),
+            1,
+            "the task's own goal governs this file; it is not drift"
+        );
+        assert!(
+            resolved.other.is_empty(),
+            "and it is not somebody else's goal either: {:?}",
+            resolved.other
+        );
+    }
+
+    /// The mirror: slug matching must not turn every clause into coverage. A
+    /// different goal is still a different goal, and a fix that made everything
+    /// pass would be as uninformative as the failure it replaced.
+    #[test]
+    fn a_clause_from_another_goal_is_still_not_coverage() {
+        let e = engine();
+        let node = "artifact:src/auth.rs";
+        let clause = amended_clause(&e);
+        e.link_goal_to_artifact(&clause.id, &[node.into()], CodeBindingMode::Governed)
+            .unwrap();
+
+        let resolved = e
+            .resolve_governing_clauses(&[node.to_string()], Some("goal:something-else"))
+            .unwrap();
+
+        assert!(resolved.in_scope.is_empty());
+        assert_eq!(
+            resolved.other.len(),
+            1,
+            "it is reported as drift, as before"
+        );
+    }
+
+    /// The other half of the same bug, and the one an agent meets first:
+    /// `claim_task` and `governing_for_task` both answer through
+    /// `code_for_goal`, which looked its bindings up by exact goal id. After an
+    /// amendment that returns an empty list — indistinguishable from "nothing
+    /// governs this", so an agent was told to proceed freely on code that was
+    /// in fact governed, and only found out at completion.
+    #[test]
+    fn a_claim_is_told_which_clauses_govern_it_after_an_amendment() {
+        let e = engine();
+        let node = "artifact:crates/lodestar-core/src/store/coordination.rs";
+        let clause = amended_clause(&e);
+        e.link_goal_to_artifact(&clause.id, &[node.into()], CodeBindingMode::Governed)
+            .unwrap();
+
+        let bound = e
+            .store
+            .code_for_goal(&format!("goal:{}", clause.slug))
+            .unwrap();
+
+        assert_eq!(
+            bound,
+            vec![node.to_string()],
+            "the bare goal id finds the bindings its amended clause holds"
+        );
+    }
+
     #[test]
     fn a_task_that_taught_nothing_still_completes() {
         let e = engine();
@@ -363,7 +545,7 @@ mod tests {
             .define_goal(GoalKind::Objective, "Ship search", "add search", None)
             .unwrap();
         let node_id = "artifact:src/search.rs";
-        e.link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
 
         for (index, learned) in [None, Some("   ")].into_iter().enumerate() {
@@ -398,7 +580,7 @@ mod tests {
             .define_goal(GoalKind::Objective, "Ship search", "add search", None)
             .unwrap();
         let node_id = "artifact:src/search.rs";
-        e.link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
         let task = e.create_task(&goal.id, "wire search", "done").unwrap();
         e.claim_task(&task.id, "agent-a", 300).unwrap();
@@ -419,7 +601,7 @@ mod tests {
         let other_goal = e
             .define_goal(GoalKind::Objective, "Own search", "separate owner", None)
             .unwrap();
-        e.link_goal_to_code(&other_goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&other_goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
         assert!(e
             .complete_task(&task.id, "agent-a", &evidence, &checked, None)
@@ -486,7 +668,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &g.id,
             &["artifact:src/auth.rs".into()],
             CodeBindingMode::Governed,
@@ -516,13 +698,13 @@ mod tests {
         let other = e
             .define_goal(GoalKind::Objective, "Context graph", "graph", None)
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &primary.id,
             &["artifact:src/intent.rs".into()],
             CodeBindingMode::Governed,
         )
         .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &other.id,
             &["artifact:src/graph.rs".into()],
             CodeBindingMode::Governed,
@@ -598,7 +780,7 @@ mod tests {
         let unused = e
             .define_goal(GoalKind::Objective, "Context graph", "graph", None)
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &primary.id,
             &["artifact:src/intent.rs".into()],
             CodeBindingMode::Governed,
@@ -666,7 +848,7 @@ mod tests {
             )
             .unwrap();
         let node = "artifact:crates/core/src/publish.rs".to_string();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &goal.id,
             std::slice::from_ref(&node),
             CodeBindingMode::Governed,
@@ -723,7 +905,7 @@ mod tests {
             "a freshly defined clause declares no consequence"
         );
         let node = "artifact:crates/core/src/schema.sql".to_string();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &goal.id,
             std::slice::from_ref(&node),
             CodeBindingMode::ForbidChange,
@@ -764,7 +946,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &goal.id,
             std::slice::from_ref(&node.to_string()),
             CodeBindingMode::ForbidChange,
@@ -946,7 +1128,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &g.id,
             &["artifact:src/parser.rs".into()],
             CodeBindingMode::Governed,
@@ -982,7 +1164,7 @@ mod tests {
         let g = e
             .define_goal(GoalKind::Objective, "Auth typed", "harden auth", None)
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &g.id,
             &["artifact:src/auth.rs".into()],
             CodeBindingMode::Governed,
@@ -1020,7 +1202,7 @@ mod tests {
         let g = e
             .define_goal(GoalKind::Objective, "Docs", "own the changelog", None)
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &g.id,
             &["artifact:CHANGELOG.md".into()],
             CodeBindingMode::Governed,
@@ -1055,7 +1237,7 @@ mod tests {
             )
             .unwrap();
         let node_id = "artifact:src/delivery.rs";
-        e.link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
 
         // A continuous window is the control: it still passes cleanly.

@@ -436,7 +436,7 @@ async function seedLodestar(directory, database, sessionId) {
       throw new Error(
         `could not find goal id in ${JSON.stringify(goalResult)}`,
       );
-    await server.tool("link_goal_to_code", {
+    await server.tool("link_goal_to_artifact", {
       goal_id: goalId,
       node_ids: [
         "artifact:src/auth.js",

@@ -1,8 +1,8 @@
-- **The advertised MCP tool surface is now a measured number, so it can no
-  longer grow without anyone deciding to grow it.**
+- **The advertised MCP tool surface is now a measured number, so growth can no
+  longer pass unnoticed.**
   `scripts/measure-tool-surface.mjs` asks both servers for `tools/list` over
-  MCP stdio and reports what a session pays to load them: 117 tools, 61.6 KB,
-  roughly 15,800 tokens spent before the first question. It asks the servers
+  MCP stdio and reports what a session pays to load them: 118 tools, 63.7 KB,
+  roughly 16,316 tokens spent before the first question. It asks the servers
   rather than counting definitions in the Rust source, because the number that
   matters is what a client is actually served; the unit is the compact JSON
   that crosses the wire, and the token figure is bytes/4 and says so, since
@@ -14,6 +14,7 @@
   what was missing was never the judgment but the prompt to make it. That
   ratchet is not yet registered — no active clause authorises one and a new
   clause cannot currently be given an enforcement contract (see Known gaps) —
-  so for now the surface is measured and published rather than enforced.
-  ADR-0059 recorded 89 `lodestar-mcp` tools; the first run of this script, a
-  day later, recorded 90.
+  so for now the surface is measured and published rather than enforced. The
+  ratchet is tracked separately as task:8000f45e0dfd. ADR-0059 recorded 89
+  `lodestar-mcp` tools; the first run recorded 90, and the reconciled run
+  recorded 91.

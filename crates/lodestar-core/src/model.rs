@@ -184,6 +184,106 @@ impl TaskStatus {
     }
 }
 
+/// What happened to a task (ADR-0064).
+///
+/// One variant per transition the executive can perform. These are the verbs of
+/// the task lifecycle; `TaskStatus` is the noun they leave behind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskEventKind {
+    /// Genesis for a task that existed before the log did. It carries the state
+    /// at migration time and **no history before it** — see ADR-0064. The
+    /// absence of earlier events for such a task is a fact about this database,
+    /// not a gap to be filled in with plausible reconstruction.
+    Imported,
+    Created,
+    Claimed,
+    LeaseRenewed,
+    Released,
+    Blocked,
+    Reopened,
+    Abandoned,
+    /// Parked with a durable question (ADR-0020).
+    Questioned,
+    Answered,
+    Paused,
+    Resumed,
+    /// Ownership moved by audited recovery rather than by claim (ADR-0030).
+    ClaimRecovered,
+    /// A conformance verdict moved the task out of `claimed` (ADR-0009).
+    ConformanceRecorded,
+    /// A human accepted work out of `in_review`, overruling the verdict.
+    Resolved,
+}
+
+impl TaskEventKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TaskEventKind::Imported => "imported",
+            TaskEventKind::Created => "created",
+            TaskEventKind::Claimed => "claimed",
+            TaskEventKind::LeaseRenewed => "lease_renewed",
+            TaskEventKind::Released => "released",
+            TaskEventKind::Blocked => "blocked",
+            TaskEventKind::Reopened => "reopened",
+            TaskEventKind::Abandoned => "abandoned",
+            TaskEventKind::Questioned => "questioned",
+            TaskEventKind::Answered => "answered",
+            TaskEventKind::Paused => "paused",
+            TaskEventKind::Resumed => "resumed",
+            TaskEventKind::ClaimRecovered => "claim_recovered",
+            TaskEventKind::ConformanceRecorded => "conformance_recorded",
+            TaskEventKind::Resolved => "resolved",
+        }
+    }
+
+    pub fn from_tag(s: &str) -> Option<Self> {
+        match s {
+            "imported" => Some(TaskEventKind::Imported),
+            "created" => Some(TaskEventKind::Created),
+            "claimed" => Some(TaskEventKind::Claimed),
+            "lease_renewed" => Some(TaskEventKind::LeaseRenewed),
+            "released" => Some(TaskEventKind::Released),
+            "blocked" => Some(TaskEventKind::Blocked),
+            "reopened" => Some(TaskEventKind::Reopened),
+            "abandoned" => Some(TaskEventKind::Abandoned),
+            "questioned" => Some(TaskEventKind::Questioned),
+            "answered" => Some(TaskEventKind::Answered),
+            "paused" => Some(TaskEventKind::Paused),
+            "resumed" => Some(TaskEventKind::Resumed),
+            "claim_recovered" => Some(TaskEventKind::ClaimRecovered),
+            "conformance_recorded" => Some(TaskEventKind::ConformanceRecorded),
+            "resolved" => Some(TaskEventKind::Resolved),
+            _ => None,
+        }
+    }
+}
+
+/// One appended record in the task lifecycle log (ADR-0064).
+///
+/// `after` is the task as it stood once the transition had been applied.
+/// Replaying the log in `seq` order and assigning each `after` reproduces the
+/// `tasks` table exactly, which is what makes the projection checkable rather
+/// than merely believed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskEvent {
+    /// Total order of application. Assigned by the database, never by a caller.
+    pub seq: i64,
+    pub task_id: String,
+    pub kind: TaskEventKind,
+    /// The agent that caused this, where a transition has an actor. Genesis
+    /// imports and predecessor-driven unblocking do not.
+    pub actor: Option<String>,
+    /// Unix seconds, supplied by the caller. Nothing here reads a clock: a
+    /// projector that did could not replay deterministically (ADR-0064).
+    pub recorded_at: i64,
+    /// The task after the transition.
+    pub after: Task,
+    /// Transition-specific context as JSON: reason, question text, lease
+    /// seconds. Empty when the transition carries none.
+    pub detail: String,
+}
+
 /// The outcome of a conformance check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -531,6 +631,45 @@ pub struct TaskScope {
     pub symbols: Vec<String>,
 }
 
+/// How much an intersecting claim actually costs, from the branches the two
+/// sessions declared (ADR-0035 heuristic 4).
+///
+/// An intersection is not one risk. Two agents editing a path on the same branch
+/// are colliding *now*; on different branches they are building a merge conflict
+/// for later. Reporting both as "overlap" is what made the advice easy to
+/// ignore, because the caller had to guess which one it had.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlapSignal {
+    /// Both sessions declared the same branch: the edits land in one history.
+    SameBranchCollision,
+    /// The sessions declared different branches: divergence, paid at merge.
+    CrossBranchMergeRisk,
+    /// At least one side declared no branch, so the distinction is unknown.
+    /// Declared context is self-reported and optional (ADR-0035 decision 5);
+    /// absence degrades the signal, and must never be read as either verdict.
+    Undeclared,
+}
+
+impl OverlapSignal {
+    /// Classify one intersection from the two declared branches.
+    pub fn classify(requester: Option<&str>, owner: Option<&str>) -> Self {
+        match (requester, owner) {
+            (Some(requester), Some(owner)) if requester == owner => Self::SameBranchCollision,
+            (Some(_), Some(_)) => Self::CrossBranchMergeRisk,
+            _ => Self::Undeclared,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::SameBranchCollision => "same_branch_collision",
+            Self::CrossBranchMergeRisk => "cross_branch_merge_risk",
+            Self::Undeclared => "undeclared",
+        }
+    }
+}
+
 /// One active claim whose declared scope intersects a pre-flight request.
 /// Advisory only: this reports ownership intent and never grants a lock.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -541,6 +680,21 @@ pub struct ClaimOverlap {
     pub scope: TaskScope,
     pub matching_paths: Vec<String>,
     pub matching_symbols: Vec<String>,
+    /// The branch the owning session declared at `open_session`, if any.
+    pub owner_branch: Option<String>,
+    pub signal: OverlapSignal,
+}
+
+/// The result of one pre-flight overlap check.
+///
+/// `requester_branch` is the branch the *asking* session declared, echoed back
+/// because it is half of every `signal`. Without it an `undeclared` result is
+/// ambiguous — the caller cannot tell whether the peer said nothing or it did
+/// itself — and a stale declaration of its own stays invisible.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaimOverlapReport {
+    pub requester_branch: Option<String>,
+    pub claims: Vec<ClaimOverlap>,
 }
 
 /// One durable, append-only entry in a task's dialogue thread (ADR-0020,

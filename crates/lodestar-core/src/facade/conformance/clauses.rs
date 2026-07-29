@@ -10,9 +10,11 @@ impl Lodestar {
     /// one place the constitution is read against a change scope, shared by
     /// retrospective conformance (`evaluate_base_conformance`) and the
     /// forward-looking `advise` (ADR-0029) so neither forks the rule. A
-    /// documentation node contributes only a `forbid_change` lock; a `governed`
-    /// binding to a doc is ignored at read time (a changelog touch must not
-    /// drift), and no stored binding is mutated.
+    /// documentation node contributes a `forbid_change` lock, and a `governed`
+    /// binding to one counts as in scope for the goal it was bound to — that
+    /// binding is an explicit statement that this goal delivers that artefact
+    /// (ADR-0060). It is ignored only as *drift*, so a changelog touch under
+    /// some unrelated goal still does not fail. No stored binding is mutated.
     pub(crate) fn resolve_governing_clauses(
         &self,
         node_ids: &[String],
@@ -32,6 +34,13 @@ impl Lodestar {
         covered: &[String],
     ) -> Result<GoverningClauses> {
         let mut resolved = GoverningClauses::default();
+        // Compare goals by slug, the identity a clause keeps across versions. A
+        // clause carried into a new constitution is re-issued as
+        // `goal:<slug>@constitution:vN` while a task still names the bare
+        // `goal:<slug>`, so an equality test on the ids stops matching at the
+        // first amendment — and every task touching governed code then reads as
+        // unsanctioned, however correct it is.
+        let task_slug = task_goal_id.map(goal_slug);
         for node in node_ids {
             let node_is_doc = is_documentation_node(node);
             for binding in self.store.active_bindings_for_node(node)? {
@@ -39,17 +48,24 @@ impl Lodestar {
                     resolved.forbid.push((node.clone(), binding.goal));
                     continue;
                 }
-                if node_is_doc {
-                    continue;
-                }
-                match task_goal_id {
-                    Some(goal_id) if binding.goal.id == goal_id => {
+                match task_slug {
+                    Some(slug) if binding.goal.slug == slug => {
                         resolved.in_scope.push((node.clone(), binding.goal))
                     }
-                    _ if covered.contains(&binding.goal.id) => {
+                    _ if covered.iter().any(|c| goal_slug(c) == binding.goal.slug) => {
                         resolved.relied_on_coverage.push(binding.goal.id.clone());
                         resolved.in_scope.push((node.clone(), binding.goal))
                     }
+                    // A documentation binding to some *other* goal is not drift
+                    // (ADR-0060). Shared prose is touched by everyone, so
+                    // drifting on it would make CHANGELOG.md uneditable without
+                    // a covering task — the case this exclusion was written for.
+                    // It stays excluded here, and only here: a doc bound to the
+                    // task's own goal, or to a goal the task declared it covers,
+                    // is an explicit statement that this work delivers that
+                    // artefact, and answering `touched_task_goal` with it is the
+                    // whole point of binding it.
+                    _ if node_is_doc => continue,
                     _ => resolved.other.push((node.clone(), binding.goal)),
                 }
             }

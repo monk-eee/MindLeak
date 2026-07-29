@@ -256,13 +256,17 @@ fn record_decision_creates_intent_linked_to_related_nodes() {
 fn commit_ingestion_extracts_rationale() {
     let engine = MindLeak::open_in_memory().unwrap();
     let rec = CommitRecord {
-        sha: Some("abc123".to_string()),
+        sha: Some("a1b2c3d4e5f60718293a4b5c6d7e8f9012345678".to_string()),
         message: "Fix token crash\n\n// DECISION: null-guard the JWT path".to_string(),
         changed_files: vec!["src/auth.rs".to_string()],
         timestamp: now_unix(),
     };
     engine.ingest_commit(&rec).unwrap();
-    let node = engine.store().get_node("intent:abc123").unwrap().unwrap();
+    let node = engine
+        .store()
+        .get_node("intent:a1b2c3d4e5f60718293a4b5c6d7e8f9012345678")
+        .unwrap()
+        .unwrap();
     assert!(node.content.unwrap().contains("null-guard the JWT path"));
 }
 
@@ -403,6 +407,115 @@ fn relative_import_creates_cross_file_impact_and_call_edges() {
             && edge.source_id == "symbol:src/consumer.ts:consumer"
             && edge.target_id == "symbol:src/dependency.ts:dependency"
     }));
+}
+
+/// Regression: `impact_radius` could not answer "what breaks if I change this"
+/// for a Rust file, because Rust ingestion emitted no inter-file edges at all.
+/// Measured on this repository, the impact of a real `.rs` file was its own
+/// commits and its own symbols — never another file. An agent reading that
+/// clean result would conclude nothing depended on the file, which the graph
+/// had never actually said.
+#[test]
+fn a_rust_use_creates_a_cross_file_impact_edge() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("crates/c/src/graph/query.rs", "pub fn resolve_seed() {}\n")
+        .unwrap();
+    engine
+        .ingest_file(
+            "crates/c/src/facade/query.rs",
+            "use crate::graph::query::resolve_seed;\n\npub fn preflight() {}\n",
+        )
+        .unwrap();
+
+    let impact = engine
+        .impact_radius("artifact:crates/c/src/graph/query.rs")
+        .unwrap();
+    assert!(
+        impact
+            .nodes
+            .iter()
+            .any(|node| node.node.id == "artifact:crates/c/src/facade/query.rs"),
+        "the importing Rust file must appear in the impact radius; got {:?}",
+        impact
+            .nodes
+            .iter()
+            .map(|node| &node.node.id)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        impact.edges.iter().any(|edge| {
+            edge.relation == mindleak_core::RelationType::Imports
+                && edge.source_id == "artifact:crates/c/src/facade/query.rs"
+                && edge.target_id == "artifact:crates/c/src/graph/query.rs"
+        }),
+        "the edge must point from the importer to the file it depends on"
+    );
+}
+
+/// A `mod` declaration is the most precise dependency statement Rust has: it
+/// names exactly one file. It resolves to the declaring module's directory,
+/// which for a non-root file is a directory named after the file itself.
+#[test]
+fn a_rust_mod_declaration_links_the_parent_to_its_child_file() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("crates/c/src/graph/writes.rs", "pub fn upsert() {}\n")
+        .unwrap();
+    engine
+        .ingest_file("crates/c/src/graph.rs", "mod writes;\n")
+        .unwrap();
+
+    let impact = engine
+        .impact_radius("artifact:crates/c/src/graph/writes.rs")
+        .unwrap();
+    assert!(
+        impact.edges.iter().any(|edge| {
+            edge.relation == mindleak_core::RelationType::Imports
+                && edge.source_id == "artifact:crates/c/src/graph.rs"
+                && edge.target_id == "artifact:crates/c/src/graph/writes.rs"
+        }),
+        "`mod writes;` in graph.rs must reach graph/writes.rs; got {:?}",
+        impact
+            .edges
+            .iter()
+            .map(|edge| format!("{} -> {}", edge.source_id, edge.target_id))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// The pre-flight is the surface agents actually call (ADR-0066), so the new
+/// edges have to arrive there, not just in the traversal underneath it.
+#[test]
+fn the_preflight_now_reports_rust_dependents() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("crates/c/src/graph/query.rs", "pub fn resolve_seed() {}\n")
+        .unwrap();
+    engine
+        .ingest_file(
+            "crates/c/src/facade/query.rs",
+            "use crate::graph::query::resolve_seed;\n",
+        )
+        .unwrap();
+
+    let preflight = engine
+        .preflight(&["crates/c/src/graph/query.rs".to_string()], &[], None)
+        .unwrap();
+    assert!(
+        preflight
+            .impact
+            .nodes
+            .iter()
+            .any(|node| node.node.id == "artifact:crates/c/src/facade/query.rs"),
+        "a Rust dependent must reach the caller through the pre-flight; got {:?}",
+        preflight
+            .impact
+            .nodes
+            .iter()
+            .map(|node| &node.node.id)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -1016,7 +1129,7 @@ fn evidence_bundle_uses_attributed_mutations_within_the_work_window() {
         .ingest_commit_for_agent(
             "agent-a",
             &CommitRecord {
-                sha: Some("proof123".into()),
+                sha: Some("9f8e7d6c5b4a39281706f5e4d3c2b1a098765432".into()),
                 message: "fix auth".into(),
                 changed_files: vec!["src/auth.rs".into()],
                 timestamp: 115,
@@ -1036,7 +1149,10 @@ fn evidence_bundle_uses_attributed_mutations_within_the_work_window() {
     assert_eq!(evidence.agent_id, "agent-a");
     assert_eq!(evidence.execution_ids.len(), 2);
     assert_eq!(evidence.successful_execution_ids.len(), 1);
-    assert_eq!(evidence.commit_ids, vec!["intent:proof123"]);
+    assert_eq!(
+        evidence.commit_ids,
+        vec!["intent:9f8e7d6c5b4a39281706f5e4d3c2b1a098765432"]
+    );
     assert_eq!(evidence.changed_node_ids, vec!["artifact:src/auth.rs"]);
     assert_eq!(evidence.failed_node_ids, vec!["artifact:src/failing.rs"]);
     assert!(!evidence
@@ -1058,8 +1174,16 @@ fn evidence_bundle_uses_attributed_mutations_within_the_work_window() {
 fn evidence_isolated_between_explicit_session_agents() {
     let engine = MindLeak::open_in_memory().unwrap();
     for (agent, sha, path) in [
-        ("session:v1:test:first", "first", "src/first.rs"),
-        ("session:v1:test:second", "second", "src/second.rs"),
+        (
+            "session:v1:test:first",
+            "1111111111111111111111111111111111111111",
+            "src/first.rs",
+        ),
+        (
+            "session:v1:test:second",
+            "2222222222222222222222222222222222222222",
+            "src/second.rs",
+        ),
     ] {
         engine
             .ingest_commit_for_agent(
@@ -1081,9 +1205,15 @@ fn evidence_isolated_between_explicit_session_agents() {
         .evidence_for(None, "session:v1:test:second", 90, 110)
         .unwrap();
 
-    assert_eq!(first.commit_ids, vec!["intent:first"]);
+    assert_eq!(
+        first.commit_ids,
+        vec!["intent:1111111111111111111111111111111111111111"]
+    );
     assert_eq!(first.changed_node_ids, vec!["artifact:src/first.rs"]);
-    assert_eq!(second.commit_ids, vec!["intent:second"]);
+    assert_eq!(
+        second.commit_ids,
+        vec!["intent:2222222222222222222222222222222222222222"]
+    );
     assert_eq!(second.changed_node_ids, vec!["artifact:src/second.rs"]);
 }
 
@@ -1225,7 +1355,7 @@ fn evidence_for_returns_a_commit_the_agent_ingested_inside_the_window() {
             agent,
             &CommitRecord {
                 message: "fix(identity): restore the Memory Plane merge".to_string(),
-                sha: Some("e0585eb".to_string()),
+                sha: Some("e0585eb7c6d5a4b3928170f6e5d4c3b2a1908877".to_string()),
                 changed_files: vec!["crates/mindleak-core/src/db.rs".to_string()],
                 timestamp: started_at,
             },
@@ -1248,4 +1378,89 @@ fn evidence_for_returns_a_commit_the_agent_ingested_inside_the_window() {
         "the ingested commit must appear in its own window; got {:?}",
         evidence.commit_ids
     );
+}
+
+/// Regression (ADR-0066): the pre-flight an agent runs before editing a file
+/// used to answer only "is another agent here?". On a file nobody else was
+/// touching it returned an empty list, which reads as all-clear — while the
+/// graph already knew that file had failed a build. Learning that needed
+/// `get_impact_radius`, a separate call at the moment attention has already
+/// moved on, and over this repository's lifetime it was made three times
+/// against 8,109 ingests. One pre-flight now answers the whole question.
+#[test]
+fn the_preflight_reports_a_prior_failure_even_when_no_other_agent_is_present() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_execution(&exec(
+            "cargo test",
+            1,
+            "thread 'main' panicked at src/auth.rs:42",
+            &["src/auth.rs"],
+        ))
+        .unwrap();
+
+    // Nobody else has observed this file, so the footprint question is silent...
+    let footprints = engine
+        .check_overlap(&["src/auth.rs".to_string()], &[], None)
+        .unwrap();
+    assert!(
+        footprints.is_empty(),
+        "no other agent observed this file; got {footprints:?}"
+    );
+
+    // ...but the graph knows it failed a build, and the pre-flight now says so
+    // without the caller having to remember a second call.
+    let preflight = engine
+        .preflight(&["src/auth.rs".to_string()], &[], None)
+        .unwrap();
+    assert!(
+        preflight.unknown.is_empty(),
+        "the file is known to the graph; got {:?}",
+        preflight.unknown
+    );
+    assert!(
+        preflight
+            .impact
+            .nodes
+            .iter()
+            .any(|scored| scored.node.node_type == NodeType::Execution),
+        "the failing execution must reach the caller in the pre-flight; got {:?}",
+        preflight
+            .impact
+            .nodes
+            .iter()
+            .map(|scored| &scored.node.id)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A path MindLeak has never seen is reported as `unknown`, not as an empty
+/// impact. "I know nothing about this file" and "nothing depends on this file"
+/// are different facts, and a caller that cannot tell them apart reads silence
+/// as reassurance.
+#[test]
+fn the_preflight_separates_an_unknown_path_from_a_file_it_knows() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("src/lonely.rs", "fn lonely() {}\n")
+        .unwrap();
+
+    let known = engine
+        .preflight(&["src/lonely.rs".to_string()], &[], None)
+        .unwrap();
+    assert!(
+        known.unknown.is_empty(),
+        "an ingested file is known; got {:?}",
+        known.unknown
+    );
+
+    let never_seen = engine
+        .preflight(&["src/ghost.rs".to_string()], &[], None)
+        .unwrap();
+    assert_eq!(
+        never_seen.unknown,
+        vec!["artifact:src/ghost.rs".to_string()],
+        "an unseen path must be named as unknown rather than answered with silence"
+    );
+    assert!(never_seen.impact.nodes.is_empty());
 }

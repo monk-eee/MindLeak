@@ -102,3 +102,49 @@ test("a manifest with no governed nodes dangles nothing", () => {
     [],
   );
 });
+
+// Regression: `ok` could not distinguish "every governed change is proven" from
+// "nothing you changed was governed". Measured on this repository 2026-07-29,
+// the constitution bound 8 code nodes and none were in `crates/`, so a pull
+// request touching fifty Rust files passed the gate having inspected none of
+// them — and said so in the same words as a real pass. That is the shape of a
+// conformance receipt that is aligned over an empty bundle.
+test("a change with nothing governed reports that it checked nothing", () => {
+  const result = evaluateGate(artifact, [
+    "crates/mindleak-core/src/ingest/ast.rs",
+    "crates/lodestar-core/src/facade/conformance/verdict.rs",
+  ]);
+  assert.equal(result.ok, true, "there is no violation to report");
+  assert.equal(
+    result.coverage.checkedAnything,
+    false,
+    "but nothing was in scope, so this is not a pass",
+  );
+  assert.equal(result.coverage.inScope, 0);
+  assert.equal(result.coverage.ungoverned, 2);
+  assert.equal(result.coverage.governedNodes, 2);
+});
+
+test("a covered governed change reports what it actually verified", () => {
+  const result = evaluateGate(artifact, [
+    "crates/mindleak-mcp/src/main.rs",
+    "crates/mindleak-core/src/ingest/ast.rs",
+    "docs/SPEC.md",
+  ]);
+  assert.equal(result.ok, true);
+  assert.equal(result.coverage.checkedAnything, true);
+  assert.equal(result.coverage.inScope, 1, "one governed path was verified");
+  assert.equal(
+    result.coverage.ungoverned,
+    1,
+    "the ungoverned Rust file counts, the doc does not",
+  );
+});
+
+test("documentation is not counted as something the gate declined to check", () => {
+  // A docs-only change legitimately has nothing in scope. Counting the doc as
+  // "ungoverned code" would report a gap that governance never claimed.
+  const result = evaluateGate(artifact, ["docs/SPEC.md", "README.md"]);
+  assert.equal(result.coverage.inScope, 0);
+  assert.equal(result.coverage.ungoverned, 0);
+});

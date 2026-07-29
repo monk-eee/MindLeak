@@ -1,5 +1,5 @@
 {
-  "evaluated_at": 1785285372,
+  "evaluated_at": 1785301101,
   "method": {
     "source": "tools/list over MCP stdio",
     "unit": "compact JSON of the tools array",
@@ -10,19 +10,19 @@
     {
       "plane": "mindleak",
       "tools": 27,
-      "bytes": 12025,
-      "approx_tokens": 3006
+      "bytes": 12207,
+      "approx_tokens": 3052
     },
     {
       "plane": "lodestar",
-      "tools": 90,
-      "bytes": 51094,
-      "approx_tokens": 12774
+      "tools": 91,
+      "bytes": 53058,
+      "approx_tokens": 13265
     }
   ],
   "combined": {
-    "tools": 117,
-    "bytes": 63119,
-    "approx_tokens": 15780
+    "tools": 118,
+    "bytes": 65265,
+    "approx_tokens": 16316
   }
 }
