@@ -10,12 +10,12 @@
 //! the log is a deterministic assignment and a rebuild can be diffed against
 //! the live table.
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::BTreeMap;
 
 use super::LodestarStore;
 use crate::error::{LodestarError, Result};
-use crate::model::{TaskEvent, TaskEventKind};
+use crate::model::{ClaimWindow, TaskEvent, TaskEventKind};
 
 const EVENT_COLS: &str = "seq, task_id, kind, actor, recorded_at, after, detail";
 
@@ -177,9 +177,119 @@ pub(crate) fn import_genesis(connection: &Connection, now: i64) -> Result<usize>
     drop(statement);
 
     for task in &tasks {
-        append(connection, TaskEventKind::Imported, None, now, task, "")?;
+        // The genesis carries the counters it found, because they are the only
+        // surviving trace of a window that opened before the log did (ADR-0064
+        // decision 6). Deriving continuity purely from in-log transitions would
+        // report zero lapses for such a window, and under ADR-0048 a window
+        // with no lapses may certify itself as aligned — so dropping them here
+        // would launder a discontinuous window clean during a migration.
+        //
+        // Read straight off the row rather than through `Task`, which no longer
+        // has these fields (ADR-0064 d5). A database created after the columns
+        // were dropped has no holes to carry, and seeds from nothing.
+        let seed = legacy_counters(connection, &task.id)?;
+        append(
+            connection,
+            TaskEventKind::Imported,
+            None,
+            now,
+            task,
+            &match seed {
+                Some((lapses, unleased)) => serde_json::json!({
+                    "claim_lapses": lapses,
+                    "unleased_seconds": unleased,
+                })
+                .to_string(),
+                None => String::new(),
+            },
+        )?;
     }
     Ok(tasks.len())
+}
+
+/// The pre-ADR-0064 running totals for one task, when the columns are still
+/// present. `None` once they have been dropped, or on a database created after
+/// they were: there is then no pre-log window to carry forward.
+fn legacy_counters(connection: &Connection, task_id: &str) -> Result<Option<(i64, i64)>> {
+    if !crate::db::column_exists(connection, "tasks", "claim_lapses")? {
+        return Ok(None);
+    }
+    Ok(connection
+        .query_row(
+            "SELECT claim_lapses, unleased_seconds FROM tasks WHERE id = ?1",
+            params![task_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?)
+}
+
+/// The continuity of a task's current evidence window, derived from the log
+/// (ADR-0064 decision 6).
+///
+/// Replays the recorded transitions rather than reading a running total off the
+/// task row. A window is identified by its owner and the instant it opened; the
+/// same owner re-claiming keeps both, which is what makes a lapse detectable as
+/// "a claim whose predecessor's lease had already expired".
+///
+/// Where the window opened before the log existed, the genesis event carries
+/// the counters that were current at import and this seeds from them. A window
+/// that opened *after* the genesis starts clean, because its whole history is
+/// present and can be trusted to be complete.
+pub(crate) fn claim_window_on(connection: &Connection, task_id: &str) -> Result<ClaimWindow> {
+    let events = read(connection, Some(task_id))?;
+
+    let mut window: Option<(Option<String>, Option<i64>)> = None;
+    let mut lapses = 0i64;
+    let mut unleased = 0i64;
+    let mut previous_lease: Option<i64> = None;
+
+    for event in &events {
+        let key = (event.after.owner.clone(), event.after.claim_started_at);
+        let same_window = window.as_ref() == Some(&key);
+
+        if event.kind == TaskEventKind::Imported {
+            let seed: serde_json::Value =
+                serde_json::from_str(&event.detail).unwrap_or(serde_json::Value::Null);
+            lapses = seed
+                .get("claim_lapses")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0);
+            unleased = seed
+                .get("unleased_seconds")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0);
+        } else if !same_window {
+            // A different owner, or the same owner opening a fresh window:
+            // the previous window's holes do not travel with it.
+            lapses = 0;
+            unleased = 0;
+        } else if event.kind == TaskEventKind::Claimed {
+            // A re-claim inside a window it did not open means the lease had
+            // run out first. That gap is the hole ADR-0048 counts.
+            if let Some(expired_at) = previous_lease {
+                if expired_at < event.recorded_at {
+                    lapses += 1;
+                    unleased += event.recorded_at - expired_at;
+                }
+            }
+        }
+
+        window = Some(key);
+        previous_lease = event.after.lease_expires_at;
+    }
+
+    Ok(ClaimWindow {
+        started_at: window.and_then(|(_, started)| started),
+        lapses,
+        unleased_seconds: unleased,
+    })
+}
+
+impl LodestarStore {
+    /// The continuity of a task's current evidence window (ADR-0064 d6).
+    pub fn claim_window(&self, task_id: &str) -> Result<ClaimWindow> {
+        claim_window_on(&self.conn, task_id)
+    }
 }
 
 #[cfg(test)]
@@ -457,9 +567,9 @@ mod tests {
         assert_eq!(reopened[0].after.status, TaskStatus::Open);
     }
 
-    /// The claim CAS does conditional arithmetic (ADR-0048 lapse accounting).
-    /// The event carries the outcome rather than the caller's guess at it, so
-    /// this pins that what was recorded is what actually landed in the row.
+    /// The claim CAS keeps the evidence window open across a lapse (ADR-0048).
+    /// The event carries the outcome the guarded UPDATE actually produced, so
+    /// this pins that the recorded window start matches what landed in the row.
     #[test]
     fn a_claim_event_carries_the_state_the_guarded_update_actually_produced() {
         let s = store();
@@ -476,20 +586,19 @@ mod tests {
             .filter(|e| e.kind == TaskEventKind::Claimed)
             .collect();
         assert_eq!(claims.len(), 2);
-        assert_eq!(claims[0].after.claim_lapses, 0);
-        assert_eq!(
-            claims[1].after.claim_lapses, 1,
-            "the second claim followed a lapse and the event should say so"
-        );
-        assert_eq!(claims[1].after.unleased_seconds, 500 - 60);
         assert_eq!(
             claims[0].after.claim_started_at, claims[1].after.claim_started_at,
             "the evidence window survives the lapse (ADR-0048)"
         );
+        assert_eq!(
+            claims[0].after.lease_expires_at,
+            Some(NOW + 60),
+            "the first lease is the one the second claim found expired"
+        );
 
         let live = s.get_task(&task.id).unwrap().unwrap();
-        assert_eq!(claims[1].after.claim_lapses, live.claim_lapses);
-        assert_eq!(claims[1].after.unleased_seconds, live.unleased_seconds);
+        assert_eq!(claims[1].after.lease_expires_at, live.lease_expires_at);
+        assert_eq!(claims[1].after.claim_started_at, live.claim_started_at);
     }
 
     #[test]
@@ -511,5 +620,186 @@ mod tests {
             claims, 1,
             "an event for a transition that did not happen is a receipt for work nobody did"
         );
+    }
+
+    /// The window start is the one thing continuity still shares with the task
+    /// row, so it stays checkable against it. The lapse counts no longer have a
+    /// column to agree with — that equality was proved in the commit that
+    /// introduced the derivation, while both still existed.
+    fn assert_window_start_matches_row(s: &LodestarStore, task_id: &str, note: &str) {
+        let live = s.get_task(task_id).unwrap().unwrap();
+        let derived = s.claim_window(task_id).unwrap();
+        assert_eq!(
+            derived.started_at, live.claim_started_at,
+            "{note}: derived window start disagrees with the row"
+        );
+    }
+
+    #[test]
+    fn a_window_never_claimed_is_continuous_and_has_not_started() {
+        let s = store();
+        let task = seeded(&s);
+        let window = s.claim_window(&task.id).unwrap();
+        assert!(window.is_continuous());
+        assert_eq!(window.started_at, None);
+        assert_window_start_matches_row(&s, &task.id, "never claimed");
+    }
+
+    #[test]
+    fn a_clean_claim_and_its_renewals_leave_the_window_continuous() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "clean", "", None, NOW).unwrap();
+
+        assert!(s.claim_task(&t.id, "alice", 600, NOW).unwrap());
+        assert!(s.renew_lease(&t.id, "alice", 600, NOW + 10).unwrap());
+        assert!(s.touch_lease(&t.id, "alice", 600, NOW + 20).unwrap());
+
+        let window = s.claim_window(&t.id).unwrap();
+        assert!(window.is_continuous(), "renewal is not a lapse");
+        assert_eq!(window.unleased_seconds, 0);
+        assert_window_start_matches_row(&s, &t.id, "clean claim with renewals");
+    }
+
+    #[test]
+    fn each_lapse_is_derived_with_the_gap_it_left() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "lapsing", "", None, NOW).unwrap();
+
+        assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
+        assert_window_start_matches_row(&s, &t.id, "first claim");
+
+        // Lease ran out at NOW+60; re-claimed at NOW+500.
+        assert!(s.claim_task(&t.id, "alice", 60, NOW + 500).unwrap());
+        let one = s.claim_window(&t.id).unwrap();
+        assert_eq!(one.lapses, 1);
+        assert_eq!(one.unleased_seconds, 440);
+        assert_window_start_matches_row(&s, &t.id, "after one lapse");
+
+        // Expired again at NOW+560; re-claimed at NOW+1000.
+        assert!(s.claim_task(&t.id, "alice", 60, NOW + 1000).unwrap());
+        let two = s.claim_window(&t.id).unwrap();
+        assert_eq!(two.lapses, 2);
+        assert_eq!(two.unleased_seconds, 440 + 440);
+        assert!(!two.is_continuous());
+        assert_window_start_matches_row(&s, &t.id, "after two lapses");
+    }
+
+    #[test]
+    fn a_new_owner_opens_a_clean_window_and_does_not_inherit_the_holes() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "handed over", "", None, NOW).unwrap();
+
+        assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
+        assert!(s.claim_task(&t.id, "alice", 60, NOW + 500).unwrap());
+        assert_eq!(s.claim_window(&t.id).unwrap().lapses, 1);
+
+        assert!(s.claim_task(&t.id, "bob", 60, NOW + 2000).unwrap());
+        let window = s.claim_window(&t.id).unwrap();
+        assert!(
+            window.is_continuous(),
+            "bob did not lapse; alice's holes are not bob's to answer for"
+        );
+        assert_eq!(window.unleased_seconds, 0);
+        assert_window_start_matches_row(&s, &t.id, "after handover");
+    }
+
+    /// Parking deliberately clears the lease (ADR-0020), so resuming is not a
+    /// lapse — the owner did not lose the task, they set it down. The running
+    /// totals never counted this and neither does the derivation.
+    #[test]
+    fn parking_and_resuming_is_not_a_lapse() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "parked", "", None, NOW).unwrap();
+
+        assert!(s.claim_task(&t.id, "alice", 600, NOW).unwrap());
+        assert!(s
+            .pause_task(&t.id, "alice", Some("lunch"), NOW + 10)
+            .unwrap());
+        assert!(s.resume_task(&t.id, "alice", 600, NOW + 5000).unwrap());
+
+        assert!(s.claim_window(&t.id).unwrap().is_continuous());
+        assert_window_start_matches_row(&s, &t.id, "paused then resumed");
+    }
+
+    /// ADR-0064 decision 6. A window that opened before the log existed keeps
+    /// the lapses it had: deriving from in-log transitions alone would report
+    /// zero, and under ADR-0048 zero lapses may certify as aligned — so the
+    /// migration would launder a discontinuous window clean.
+    #[test]
+    fn a_window_imported_from_before_the_log_keeps_the_lapses_it_had() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "pre-log", "", None, NOW).unwrap();
+        assert!(s.claim_task(&t.id, "alice", 600, NOW).unwrap());
+
+        // Reconstruct a genuinely legacy database: the counter columns still
+        // present, carrying holes that no recorded transition explains, and no
+        // log for this task at all. This is the shape the migration meets in
+        // the field, so the seeding path is exercised rather than simulated.
+        s.conn
+            .execute_batch(
+                "ALTER TABLE tasks ADD COLUMN claim_lapses INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE tasks ADD COLUMN unleased_seconds INTEGER NOT NULL DEFAULT 0;",
+            )
+            .unwrap();
+        s.conn
+            .execute(
+                "UPDATE tasks SET claim_lapses = 3, unleased_seconds = 900 WHERE id = ?1",
+                params![t.id],
+            )
+            .unwrap();
+        s.conn
+            .execute("DELETE FROM task_events WHERE task_id = ?1", params![t.id])
+            .unwrap();
+
+        assert_eq!(import_genesis(&s.conn, NOW + 1).unwrap(), 1);
+
+        let window = s.claim_window(&t.id).unwrap();
+        assert_eq!(
+            window.lapses, 3,
+            "imported holes must survive the migration"
+        );
+        assert_eq!(window.unleased_seconds, 900);
+        assert!(!window.is_continuous());
+        assert_window_start_matches_row(&s, &t.id, "imported window");
+
+        // The columns can go now; the holes live in the log.
+        s.conn
+            .execute_batch(
+                "ALTER TABLE tasks DROP COLUMN claim_lapses;
+                 ALTER TABLE tasks DROP COLUMN unleased_seconds;",
+            )
+            .unwrap();
+        assert_eq!(s.claim_window(&t.id).unwrap().lapses, 3);
+
+        // And a lapse after the import still accumulates on top of the seed.
+        assert!(s.claim_task(&t.id, "alice", 60, NOW + 5000).unwrap());
+        assert_eq!(s.claim_window(&t.id).unwrap().lapses, 4);
+        assert_window_start_matches_row(&s, &t.id, "imported window, then another lapse");
+    }
+
+    /// A database created after ADR-0064 has no counters to carry, and must not
+    /// invent any. The genesis then seeds from nothing, which is the honest
+    /// answer: there is no pre-log window.
+    #[test]
+    fn a_genesis_on_a_database_that_never_had_counters_seeds_from_nothing() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "post-log", "", None, NOW).unwrap();
+        assert!(s.claim_task(&t.id, "alice", 600, NOW).unwrap());
+        s.conn
+            .execute("DELETE FROM task_events WHERE task_id = ?1", params![t.id])
+            .unwrap();
+
+        assert_eq!(import_genesis(&s.conn, NOW + 1).unwrap(), 1);
+
+        let genesis = &s.task_events(&t.id).unwrap()[0];
+        assert_eq!(genesis.kind, TaskEventKind::Imported);
+        assert_eq!(genesis.detail, "", "nothing to carry, so nothing claimed");
+        assert!(s.claim_window(&t.id).unwrap().is_continuous());
     }
 }

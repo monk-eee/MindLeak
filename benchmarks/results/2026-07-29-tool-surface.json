@@ -1,5 +1,5 @@
 {
-  "evaluated_at": 1785301101,
+  "evaluated_at": 1785301794,
   "method": {
     "source": "tools/list over MCP stdio",
     "unit": "compact JSON of the tools array",
