@@ -21,7 +21,7 @@ pub use constitution::{
     GoalKind, GoalStatus, GoverningClause,
 };
 pub use executive::{
-    ClaimOverlap, ClaimOverlapReport, HumanQuestion, OverlapSignal, Task, TaskEvent, TaskEventKind,
-    TaskQa, TaskScope, TaskStatus,
+    ClaimOverlap, ClaimOverlapReport, ClaimWindow, HumanQuestion, OverlapSignal, Task, TaskEvent,
+    TaskEventKind, TaskQa, TaskScope, TaskStatus,
 };
 pub use knowledge::{Knowledge, SignalPromotion};

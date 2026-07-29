@@ -2,8 +2,8 @@
 use crate::dialogue::{self, DraftedBy, QuestionDraft};
 use crate::stalls::{stalls, Stall};
 use crate::{
-    now_unix, ClaimOverlap, ClaimOverlapReport, ClaimTransfer, HumanQuestion, Lodestar,
-    LodestarError, Result, Task, TaskQa, TaskScope,
+    now_unix, ClaimOverlap, ClaimOverlapReport, ClaimTransfer, ClaimWindow, HumanQuestion,
+    Lodestar, LodestarError, Result, Task, TaskQa, TaskScope,
 };
 
 impl Lodestar {
@@ -122,6 +122,28 @@ impl Lodestar {
     /// Read one task's declared advisory scope.
     pub fn task_scope(&self, task_id: &str) -> Result<TaskScope> {
         self.store.task_scope(task_id)
+    }
+
+    /// Has this already been done?
+    ///
+    /// Distinct from `check_overlap`, which asks who is touching a file *right
+    /// now* and only sees live claims. This asks whether the work exists at all,
+    /// so it includes finished and abandoned tasks — a task that is already
+    /// `done` is the most useful answer it can give, and the one `board` hides.
+    ///
+    /// Answering nothing is a legitimate answer, and answering wrongly is not:
+    /// this reports, and no caller may refuse work on the strength of it. A
+    /// second task against one goal is often right, and a gate here would be
+    /// wrong more often than it was right (ADR-0015).
+    pub fn existing_work(&self, goal_id: Option<&str>, paths: &[String]) -> Result<Vec<Task>> {
+        self.store.existing_work(goal_id, paths)
+    }
+
+    /// The continuity of a task's current evidence window, derived from the log
+    /// (ADR-0064 d5/d6). Replaces the `claim_lapses` / `unleased_seconds`
+    /// columns that used to ride on the task row.
+    pub fn claim_window(&self, task_id: &str) -> Result<ClaimWindow> {
+        self.store.claim_window(task_id)
     }
 
     /// Read-only active-claim intersection for concrete requested paths/symbols.
@@ -247,17 +269,18 @@ impl Lodestar {
         &self,
         id: &str,
         expected_owner: &str,
-        agent: &str,
-        name: &str,
+        recovering: (&str, &str),
         reason: &str,
+        reviewer: Option<&str>,
         lease_secs: i64,
     ) -> Result<bool> {
+        let (agent, name) = recovering;
         let agent = self.resolve_agent(agent)?;
-        self.store.recover_claim(
+        self.store.recover_claim_authorized(
             id,
             expected_owner,
             crate::store::RecoveringSession { agent, name },
-            reason,
+            (reason, reviewer),
             lease_secs,
             now_unix(),
         )
@@ -439,6 +462,106 @@ mod tests {
     use crate::dialogue::DraftedBy;
     use crate::facade::test_support::engine;
     use crate::{GoalKind, TaskScope, TaskStatus};
+
+    /// The regression case: four tasks titled "Run the merge queue ourselves"
+    /// against one goal, and six titled "Carry controls across an amendment"
+    /// against another — the second set produced by a publish-time helper that
+    /// created a fresh task on every run because nothing told it one already
+    /// existed. Seven duplicate title groups were live on the board when this
+    /// was written.
+    ///
+    /// A finished task is the answer that matters most and the one `board`
+    /// hides, so terminal work is included deliberately.
+    #[test]
+    fn existing_work_finds_the_work_that_already_serves_a_goal_including_finished() {
+        let e = engine();
+        let goal = e
+            .define_goal(GoalKind::Objective, "Run the queue", "land work", None)
+            .unwrap();
+        // Same title, seconds apart — exactly how the six duplicates on the
+        // live board were produced. The id hashes the creation second, so the
+        // ledger does not stop this and nothing else was looking.
+        let first = e
+            .store
+            .create_task(
+                &goal.id,
+                "Run the merge queue ourselves",
+                "done",
+                None,
+                1_000,
+            )
+            .unwrap();
+        let second = e
+            .store
+            .create_task(
+                &goal.id,
+                "Run the merge queue ourselves",
+                "done",
+                None,
+                1_001,
+            )
+            .unwrap();
+        e.abandon_task(&second.id).unwrap();
+
+        let found = e.existing_work(Some(&goal.id), &[]).unwrap();
+        let ids: Vec<&str> = found.iter().map(|t| t.id.as_str()).collect();
+        assert!(ids.contains(&first.id.as_str()));
+        assert!(
+            ids.contains(&second.id.as_str()),
+            "terminal work is the answer that matters most and the one `board` hides"
+        );
+        assert_eq!(found.len(), 2, "both duplicates are reported, not one");
+    }
+
+    /// Scope matching goes through the same glob comparison `check_overlap`
+    /// uses. Two answers to "does this scope cover that file" would drift, and
+    /// the one that drifted would be the one nobody was testing.
+    #[test]
+    fn existing_work_matches_a_declared_scope_by_the_same_globbing_as_overlap() {
+        let e = engine();
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "Edit the tools", "done").unwrap();
+        e.claim_task_with_scope(
+            &task.id,
+            "agent-a",
+            300,
+            &TaskScope {
+                paths: vec!["crates/lodestar-mcp/src/**".to_string()],
+                symbols: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        let hit = e
+            .existing_work(
+                None,
+                &["crates/lodestar-mcp/src/tools/executive.rs".to_string()],
+            )
+            .unwrap();
+        assert_eq!(hit.len(), 1, "a file inside a declared scope is a hit");
+        assert_eq!(hit[0].id, task.id);
+
+        let miss = e
+            .existing_work(None, &["editors/vscode/src/util.ts".to_string()])
+            .unwrap();
+        assert!(miss.is_empty(), "an unrelated file is not");
+    }
+
+    /// Asking about nothing must not answer "nothing exists" — that reads as a
+    /// clean bill of health for a question never asked, which is the failure
+    /// this whole tool exists to prevent.
+    #[test]
+    fn existing_work_asked_about_nothing_finds_nothing_rather_than_everything() {
+        let e = engine();
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        e.create_task(&goal.id, "Work", "done").unwrap();
+
+        assert!(e.existing_work(None, &[]).unwrap().is_empty());
+    }
 
     /// ADR-0046 gave agents a way to address a peer and nothing ever used it:
     /// in an eight-hour session `pending_questions` stayed empty while five

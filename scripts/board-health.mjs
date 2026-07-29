@@ -89,6 +89,47 @@ export const isStrandedClaim = (task, now) =>
   task.lease_expires_at < now;
 
 /**
+ * Which branches have landed on `main`, and in which merge commit.
+ *
+ * Parsed from merge subjects rather than `git branch --merged`, because a
+ * branch is usually deleted the moment it merges — the ref is gone while the
+ * history that proves it landed is not. Pure: it takes the lines so the parsing
+ * is testable without a repository.
+ *
+ * `lines` are `"<sha> <subject>"` from `git log --merges`.
+ */
+export function mergedBranches(lines) {
+  const merged = new Map();
+  for (const line of lines) {
+    const [sha, ...rest] = String(line).trim().split(/\s+/);
+    const subject = rest.join(" ");
+    // "Merge pull request #186 from monk-eee/docs/the-blind-spot-is-recorded"
+    const match = subject.match(/^Merge pull request #\d+ from [^/\s]+\/(\S+)/);
+    if (!match || !sha) continue;
+    // First wins: `git log` is newest-first, and a branch name reused after a
+    // delete should resolve to the merge that most recently landed it.
+    if (!merged.has(match[1])) merged.set(match[1], sha);
+  }
+  return merged;
+}
+
+/**
+ * Work that shipped and never closed.
+ *
+ * The board understates what is finished, and that is expensive in a way an
+ * overstated board is not: `next_task` offers work that already exists, so an
+ * agent rebuilds it. Observed repeatedly — a task was offered whose branch was
+ * sitting in an open pull request, and four separate open tasks turned out to be
+ * already delivered.
+ *
+ * Reports and never closes. Completing one of these would manufacture a receipt
+ * for work this script did not witness, which ADR-0009 refuses; the merge commit
+ * is named so a person can check it in seconds.
+ */
+export const shippedButOpen = (task, merged) =>
+  isLive(task) && typeof task.branch === "string" && merged.has(task.branch);
+
+/**
  * Split parked work by whether a person can actually act on it.
  *
  * `entries` is `[{ task, audit }]` where `audit` is the task's most recent
@@ -96,32 +137,49 @@ export const isStrandedClaim = (task, now) =>
  * tasks are excluded: their verdicts are a record of what happened, not a
  * request for anyone to do anything.
  */
-export function classify(entries, now) {
+export function classify(entries, now, merged = new Map()) {
   const unresolvable = [];
   const decidable = [];
   const stranded = [];
+  const shipped = [];
 
   for (const entry of entries) {
     const { task, audit } = entry;
     if (!isLive(task)) continue;
     if (isStrandedClaim(task, now)) stranded.push(entry);
+    if (shippedButOpen(task, merged)) {
+      shipped.push({ ...entry, mergedAt: merged.get(task.branch) });
+    }
     if (audit?.verdict !== "needs_human") continue;
     if (findingsOf(audit).includes(EMPTY_EVIDENCE)) unresolvable.push(entry);
     else decidable.push(entry);
   }
-  return { unresolvable, decidable, stranded };
+  return { unresolvable, decidable, stranded, shipped };
 }
 
 /** Render the report. Counts first, because the ratio is the finding. */
 export function describe(report, entries) {
-  const { unresolvable, decidable, stranded } = report;
+  const { unresolvable, decidable, stranded, shipped = [] } = report;
   const parked = unresolvable.length + decidable.length;
+  // Zero because nothing shipped unclosed, or zero because nothing records a
+  // branch to check? Those read identically and mean opposite things. A task
+  // claimed before the branch column existed records none, and a server built
+  // before it does not return the column at all — so a bare 0 here would be the
+  // same falsely-reassuring signal this report exists to remove.
+  const recorded = entries.filter(
+    ({ task }) => typeof task.branch === "string" && task.branch.length > 0,
+  ).length;
+  const shippedLine =
+    recorded === 0
+      ? `shipped, never closed  : unknown   (no task records a branch; nothing to check against)`
+      : `shipped, never closed  : ${shipped.length}   (its branch is on main; the board understates what is done)`;
   const lines = [
     `board: ${entries.length} tasks`,
     ``,
     `needs a human decision : ${decidable.length}`,
     `nobody can resolve     : ${unresolvable.length}   (evidence was empty -- the work was never ingested)`,
     `awaiting confirmation  : ${stranded.length}   (lapsed claim; only a human can close it -- see below)`,
+    shippedLine,
   ];
   // Only worth saying when there is something to say. "0% of parked work is
   // unresolvable" is a sentence about nothing, and a report that pads itself
@@ -149,6 +207,21 @@ export function describe(report, entries) {
     );
     for (const { task } of stranded.slice(0, 10)) {
       lines.push(`  ${task.id}  ${String(task.title ?? "").slice(0, 56)}`);
+    }
+  }
+  if (shipped.length > 0) {
+    lines.push(
+      ``,
+      `shipped but still on the board. The branch each names has merged into main,`,
+      `so next_task can offer work that already exists and an agent rebuilds it.`,
+      `Reported, never closed: completing one here would manufacture a receipt for`,
+      `work this script did not witness (ADR-0009). The merge commit is named so a`,
+      `person can check it in seconds:`,
+    );
+    for (const { task, mergedAt } of shipped.slice(0, 10)) {
+      lines.push(
+        `  ${task.id}  ${String(mergedAt).slice(0, 8)}  ${String(task.title ?? "").slice(0, 48)}`,
+      );
     }
   }
   return lines.join("\n");
@@ -236,8 +309,26 @@ async function main() {
     }
     entries.push({ task, audit });
   }
+  // Which branches have landed. `git log` on the tracking ref rather than a
+  // network call: the report stays usable offline and costs nothing.
+  let merged = new Map();
+  try {
+    merged = mergedBranches(
+      execFileSync(
+        "git",
+        ["log", "origin/main", "--merges", "--format=%H %s", "-n", "500"],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+        },
+      ).split(/\r?\n/),
+    );
+  } catch {
+    // No origin/main here (a fresh clone, a detached CI checkout). Everything
+    // else in the report still stands, so say nothing and carry on.
+  }
   console.log(
-    describe(classify(entries, Math.floor(Date.now() / 1000)), entries),
+    describe(classify(entries, Math.floor(Date.now() / 1000), merged), entries),
   );
   proc.kill();
 }

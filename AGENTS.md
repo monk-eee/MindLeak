@@ -38,8 +38,8 @@ Run these checks before writing any helper, method, or "small" function:
    An unknown id is not an all-clear. "The graph has never seen this file" and
    "nothing depends on this file" are different answers and it reports them
    differently — do not read silence as reassurance.
-   `recall` is still deliberately **not** on this list — see Known gaps in
-   [`DEVELOPERS.md`](DEVELOPERS.md); it answers by embedding similarity and can
+   `recall` is still deliberately **not** on this list — see [`gaps.d/`](gaps.d/);
+   it answers by embedding similarity and can
    return a plausible stranger, and mandating that would only teach you to
    ignore this list. That objection does not extend to the impact half, which is
    a deterministic traversal. It now follows Rust `mod` and `use` edges as well
@@ -146,10 +146,10 @@ style nit.
   between files, before a long test run. Measured on this board: **27 lapses
   across 24 tasks, and roughly 100 hours of work sitting under a dead lease.**
   A lapsed claim is not a lost cause: a same-owner re-claim keeps your evidence
-  window and records the lapse rather than hiding it, so `claim_lapses` goes up
-  and `unleased_seconds` measures the gap. But it *does* free the task for
-  anyone else mid-flight, which is how two agents end up on one task. Renewing
-  costs one call; lapsing costs a collision.
+  window and the lapse is recorded in the task log rather than hidden, so
+  `claim_window` reports the count and the size of the gap. But it *does* free
+  the task for anyone else mid-flight, which is how two agents end up on one
+  task. Renewing costs one call; lapsing costs a collision.
 
 ### Test-driven workflow (NON-NEGOTIABLE)
 - **Tests are the only way we ship.** Every new tool, parser, or facade method
@@ -166,10 +166,13 @@ style nit.
   [`editors/vscode/src/util.ts`](editors/vscode/src/util.ts) is unit-tested; keep
   vscode-coupled code thin so it stays testable.
 - **Always report bugs and failures, even ones you do not fix this run.** If you
-  spot a bug, a flaky test, or a latent footgun while doing other work, add it to
-  the **Known gaps** section of [`DEVELOPERS.md`](DEVELOPERS.md) before you finish:
-  (1) what you observed, (2) where (file + symbol or test name), (3) impact,
-  (4) fixed this run or left for later. **We never silently drop bugs.**
+  spot a bug, a flaky test, or a latent footgun while doing other work, add a
+  fragment to [`gaps.d/`](gaps.d/) before you finish — one file per gap, named
+  `<slug>.md`, opening with a `- **` bullet giving: (1) what you observed,
+  (2) where (file + symbol or test name), (3) impact, (4) fixed this run or left
+  for later. **We never silently drop bugs.** Fragments rather than one shared
+  section because two branches must never write the same path; close a gap by
+  deleting its fragment in the commit that fixes it.
 
 ### Pre-commit hooks (NON-NEGOTIABLE)
 - **Hooks run on every commit** — rustfmt, clippy (`-D warnings`), eslint,
@@ -258,7 +261,7 @@ line if it is observable; otherwise no doc change is required.
   lives in `decay.rs`. If a capability is missing, **add it to the right module
   first**, then call it.
 - **If a near-miss exists, extend it** rather than forking. When you spot a
-  duplicate during unrelated work, file it in the Known gaps of `DEVELOPERS.md`
+  duplicate during unrelated work, file it as a fragment in [`gaps.d/`](gaps.d/)
   instead of silently leaving it for the next agent.
 
 ### Code design discipline (NON-NEGOTIABLE)
@@ -317,7 +320,8 @@ Idiomatic, testable Rust by default.
 MindLeak/
 ├── AGENTS.md                       # this file — agent grounding
 ├── README.md                       # front door / router
-├── DEVELOPERS.md                   # clean-machine-to-running + Known gaps
+├── DEVELOPERS.md                   # clean-machine-to-running
+├── gaps.d/                         # one file per known gap (never conflicts)
 ├── docs/                           # SPEC · ARCHITECTURE · CONTRIBUTING · adr/
 ├── crates/
 │   ├── mindleak-core/              # the engine (Rust lib)

@@ -46,7 +46,7 @@ fn main() -> anyhow::Result<()> {
     // without forking the identity of a session they both host.
     let display_name = std::env::var("LODESTAR_AGENT").unwrap_or_else(|_| "agent".to_string());
     let sessions = SessionRegistry::new(&display_name).map_err(anyhow::Error::msg)?;
-    let engine = Lodestar::open(&db_path)?;
+    let engine = Lodestar::open(&db_path)?.with_workspace_root(workspace.to_string_lossy());
     eprintln!(
         "[lodestar-mcp] ready — intent plane at {db_path}; repository_id={}; origin={:?}; migrated_legacy={migrated_legacy}",
         database.repository_id.as_deref().unwrap_or("none"),
