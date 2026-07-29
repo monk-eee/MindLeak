@@ -46,11 +46,19 @@ fn write(root: &Path, relative: &str, contents: &str) {
 
 /// A repository with `main`, plus a side branch merged into it.
 ///
-/// Returns the fixture root, the merge commit on `main`, and a commit that was
-/// never merged.
+/// Returns the fixture root, the branch commit that landed, the two-parent
+/// merge commit that landed it, and a commit that was never merged.
+///
+/// `merged` and `merge_commit` are deliberately both kept. They are different
+/// shapes and git treats them differently: a diff of a two-parent commit is
+/// empty unless asked for with `-m`, so a test that only ever passes the
+/// single-parent one cannot see that. This fixture used to return only
+/// `merged` while its doc called it "the merge commit on `main`", and the tool
+/// asks callers for exactly the shape that was missing.
 struct Fixture {
     root: PathBuf,
     merged: String,
+    merge_commit: String,
     unmerged: String,
 }
 
@@ -77,6 +85,9 @@ fn fixture(name: &str) -> Fixture {
     let merged = git(&root, &["rev-parse", "HEAD"]);
     git(&root, &["checkout", "main"]);
     git(&root, &["merge", "--no-ff", "--no-edit", "feature"]);
+    // The two-parent commit itself: what an agent actually names, and what a
+    // plain `git show --name-only` reports nothing for.
+    let merge_commit = git(&root, &["rev-parse", "HEAD"]);
 
     // Work that never landed, on a branch main cannot reach.
     git(&root, &["checkout", "-b", "abandoned"]);
@@ -89,6 +100,7 @@ fn fixture(name: &str) -> Fixture {
     Fixture {
         root,
         merged,
+        merge_commit,
         unmerged,
     }
 }
@@ -107,6 +119,76 @@ fn a_merged_commit_inside_the_declared_scope_verifies() {
             .contains(&"crates/thing/src/lib.rs".to_string()),
         "the touched paths are reported: {:?}",
         proof.changed_paths
+    );
+}
+
+/// Regression: the two-parent merge commit is the shape the tool asks for, and
+/// the one shape nothing tested.
+///
+/// `git show --pretty=format: --name-only <merge>` prints nothing at all — git
+/// suppresses diff output for a commit with two parents unless asked with `-m`,
+/// `-c` or `--first-parent`. So the verb whose entire premise is "a merge is
+/// evidence" saw an empty file list for precisely the commits it exists to
+/// read, and refused them as touching nothing inside the task's scope.
+///
+/// The old fixture hid this by capturing the *feature* commit and calling it
+/// `merged`: a single-parent commit reachable from `main`, which diffs fine.
+#[test]
+fn the_two_parent_merge_commit_reports_the_paths_it_carried() {
+    let f = fixture("mergecommit");
+    let scope = vec!["crates/thing/**".to_string()];
+
+    // It really is a merge: two parents, which is what breaks a plain diff.
+    let parents = git(
+        &f.root,
+        &["rev-list", "--parents", "-n", "1", &f.merge_commit],
+    );
+    assert_eq!(
+        parents.split_whitespace().count(),
+        3,
+        "fixture must produce a two-parent merge, got: {parents}"
+    );
+
+    let proof = verify_merge(&f.root, &f.merge_commit, "main", &scope).expect("verifies");
+
+    assert_eq!(proof.commit, f.merge_commit);
+    assert!(
+        proof
+            .changed_paths
+            .contains(&"crates/thing/src/lib.rs".to_string()),
+        "a merge must report the paths it carried, not an empty list: {:?}",
+        proof.changed_paths
+    );
+}
+
+/// Regression: the integration ref must be `origin/main`, not the local `main`.
+///
+/// Under ADR-0038 every workstream gets its own linked worktree and nobody
+/// checks `main` out, so the local branch sits wherever the clone left it —
+/// measured 294 commits behind on this repository, which refused a merge that
+/// was demonstrably on the integration branch. The refusal blamed the commit,
+/// not the ref it was compared against, which is what made it expensive to see.
+#[test]
+fn the_integration_ref_prefers_the_remote_tracking_branch() {
+    let f = fixture("integref");
+
+    // No remote yet: the single-checkout case the original name assumed.
+    assert_eq!(
+        crate::merge::integration_ref(&f.root),
+        "main",
+        "without a remote-tracking ref there is nothing else to use"
+    );
+
+    // Give it an `origin/main` that is deliberately *behind* local `main`, the
+    // shape a linked worktree actually has, and it must still be preferred.
+    git(
+        &f.root,
+        &["update-ref", "refs/remotes/origin/main", &f.merge_commit],
+    );
+    assert_eq!(
+        crate::merge::integration_ref(&f.root),
+        "origin/main",
+        "the protected branch's remote-tracking ref is the published truth"
     );
 }
 

@@ -46,12 +46,15 @@ impl Lodestar {
         }
 
         // The integration branch is the one a merge has to be reachable from.
-        // `main` is this repository's, and it is named here rather than derived
-        // from the current checkout, because "whatever branch I am on" is
-        // exactly the mutable present-state trust ADR-0058 removes.
+        // Resolved rather than named: `origin/main` when the checkout has it,
+        // because under ADR-0038 nobody checks `main` out and the local branch
+        // is whatever the clone left behind. This is still not "whatever branch
+        // I am on" — it is the protected branch's remote-tracking ref, which is
+        // exactly what ADR-0058 means by a merge that passed review and CI.
         let scope = self.store.task_scope(task_id)?;
-        let proof =
-            crate::merge::verify_merge(std::path::Path::new(root), commit, "main", &scope.paths)?;
+        let root_path = std::path::Path::new(root);
+        let integration = crate::merge::integration_ref(root_path);
+        let proof = crate::merge::verify_merge(root_path, commit, integration, &scope.paths)?;
 
         let intent = format!("intent:{}", proof.commit);
         let changed_node_ids: Vec<String> = proof

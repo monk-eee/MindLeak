@@ -54,6 +54,29 @@ fn git(root: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// The ref a merge has to be reachable from.
+///
+/// `origin/main` first, and that is not the "whatever branch I am on" trust
+/// ADR-0058 removes — it is the remote-tracking ref for the protected branch,
+/// the one a merge passed review and CI to reach.
+///
+/// The local `main` cannot serve. Under ADR-0038 every workstream gets its own
+/// linked worktree and nobody checks `main` out, so the local branch stays
+/// wherever the clone left it: measured 294 commits behind on this repository,
+/// which rejected a merge that was demonstrably on the integration branch. The
+/// failure is silent in the worst way, because the message is about the commit
+/// rather than about the ref it was compared against.
+///
+/// Falls back to `main` when there is no remote-tracking ref, which is the
+/// single-checkout case the original name assumed.
+pub fn integration_ref(root: &Path) -> &'static str {
+    if git(root, &["rev-parse", "--verify", "origin/main^{commit}"]).is_ok() {
+        "origin/main"
+    } else {
+        "main"
+    }
+}
+
 /// Verify that `commit` exists, is reachable from `integration`, and touched
 /// something inside `scope`.
 ///
@@ -110,9 +133,28 @@ pub fn verify_merge(
         )));
     }
 
+    // `git show --name-only` reports NOTHING for a merge commit: git suppresses
+    // diff output for a commit with two parents unless asked with `-m`, `-c` or
+    // `--first-parent`. A tool whose whole premise is "a merge is evidence"
+    // therefore saw an empty file list for exactly the commits it exists to
+    // read, and rejected them as touching nothing inside the task's scope.
+    //
+    // `--first-parent` is the right diff of the two: against the tip the merge
+    // landed on, which is the work the branch contributed, rather than against
+    // the branch, which would report everything main gained meanwhile. It is
+    // also correct for an ordinary single-parent commit, so one command serves
+    // both and there is no shape to get wrong.
     let listing = git(
         root,
-        &["show", "--pretty=format:", "--name-only", &resolved],
+        &[
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            "-m",
+            "--first-parent",
+            &resolved,
+        ],
     )?;
     let changed_paths: Vec<String> = listing
         .lines()
