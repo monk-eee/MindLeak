@@ -254,17 +254,18 @@ impl Lodestar {
         &self,
         id: &str,
         expected_owner: &str,
-        agent: &str,
-        name: &str,
+        recovering: (&str, &str),
         reason: &str,
+        reviewer: Option<&str>,
         lease_secs: i64,
     ) -> Result<bool> {
+        let (agent, name) = recovering;
         let agent = self.resolve_agent(agent)?;
-        self.store.recover_claim(
+        self.store.recover_claim_authorized(
             id,
             expected_owner,
             crate::store::RecoveringSession { agent, name },
-            reason,
+            (reason, reviewer),
             lease_secs,
             now_unix(),
         )
