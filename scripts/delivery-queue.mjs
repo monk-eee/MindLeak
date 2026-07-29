@@ -97,9 +97,16 @@ export function nextAction(prs, now, { stalledAfterMs = 45 * 60 * 1000 } = {}) {
   const queued = queueOrder(prs);
   const blocked = queued.filter((pr) => pr.mergeStateStatus === "DIRTY");
   const failing = queued.filter((pr) => checksFailing(pr).length > 0);
+  // Open work the queue is not managing. Arming is what queues a pull request
+  // (ADR-0045), so an unarmed one is not late in the queue -- it is not in it.
+  // Reporting only the armed ones made those two states indistinguishable: on
+  // the day this was written three of five open pull requests were invisible
+  // here, and no change to the ordering could ever have reached them.
+  const unqueued = prs.filter((pr) => !isQueued(pr));
+  const context = { queued, blocked, failing, unqueued };
 
   if (queued.length === 0) {
-    return { kind: "idle", reason: "nothing armed", queued, blocked, failing };
+    return { kind: "idle", reason: "nothing armed", ...context };
   }
 
   // Immediately after a merge, GitHub recomputes mergeability and every entry
@@ -111,9 +118,7 @@ export function nextAction(prs, now, { stalledAfterMs = 45 * 60 * 1000 } = {}) {
     return {
       kind: "settling",
       reason: "GitHub is still recomputing mergeability",
-      queued,
-      blocked,
-      failing,
+      ...context,
     };
   }
 
@@ -130,9 +135,7 @@ export function nextAction(prs, now, { stalledAfterMs = 45 * 60 * 1000 } = {}) {
         kind: "wait",
         pr: landing,
         reason: `#${landing.number} is up to date and about to land`,
-        queued,
-        blocked,
-        failing,
+        ...context,
       };
     }
     // Fall through: the in-flight run is older than the stall threshold, so it
@@ -153,9 +156,7 @@ export function nextAction(prs, now, { stalledAfterMs = 45 * 60 * 1000 } = {}) {
     return {
       kind: "idle",
       reason: "no armed branch is behind and idle",
-      queued,
-      blocked,
-      failing,
+      ...context,
     };
   }
   if (isUpToDate(next)) {
@@ -163,12 +164,10 @@ export function nextAction(prs, now, { stalledAfterMs = 45 * 60 * 1000 } = {}) {
       kind: "wait",
       pr: next,
       reason: `#${next.number} is up to date and waiting on GitHub to merge it`,
-      queued,
-      blocked,
-      failing,
+      ...context,
     };
   }
-  return { kind: "update", pr: next, queued, blocked, failing };
+  return { kind: "update", pr: next, ...context };
 }
 
 /** Render one tick's decision for a human reading the log. */
@@ -193,6 +192,15 @@ export function describe(action) {
   for (const pr of action.blocked) {
     lines.push(
       `   #${pr.number} has a real conflict; it needs its own worktree, not the queue`,
+    );
+  }
+  // An unarmed pull request is not last in the queue, it is absent from it, and
+  // silence here reads exactly like an empty backlog. Naming them is reporting,
+  // not policy: arming is still what queues a pull request (ADR-0045).
+  for (const pr of action.unqueued ?? []) {
+    lines.push(
+      `   #${String(pr.number).padEnd(4)} ${String(pr.mergeStateStatus).padEnd(9)} ` +
+        `not queued: nobody armed it`,
     );
   }
   return lines.join("\n");

@@ -5,9 +5,10 @@ use mindleak_session::compatible_legacy_owner;
 use rusqlite::{params, Transaction, TransactionBehavior};
 
 use crate::error::{LodestarError, Result};
+use crate::model::TaskEventKind;
 
 use super::coordination::PARKING_GRACE_SECS;
-use super::{ClaimTransfer, LodestarStore};
+use super::{events, ClaimTransfer, LodestarStore};
 
 /// The session taking over a stranded claim.
 ///
@@ -101,6 +102,19 @@ impl LodestarStore {
                 prior.parked_at,
                 now
             ],
+        )?;
+        events::record(
+            &transaction,
+            task_id,
+            TaskEventKind::ClaimRecovered,
+            Some(target_agent),
+            now,
+            &serde_json::json!({
+                "from_owner": prior.owner,
+                "from_status": prior.status,
+                "reason": reason.trim(),
+            })
+            .to_string(),
         )?;
         transaction.commit()?;
         Ok(true)

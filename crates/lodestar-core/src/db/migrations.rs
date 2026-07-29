@@ -77,6 +77,14 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
     run_once(connection, "reconnect_superseded_clauses", || {
         super::repairs::reconnect_superseded_clauses(connection)
     })?;
+    // Seed the task log with the present (ADR-0064). Recorded by name rather
+    // than guarded by pattern, per ADR-0063 decision 3: "has this already
+    // happened?" must be a fact, not an inference from the data the migration
+    // itself is editing. This appends only — no task row is touched, so no
+    // live claim moves.
+    run_once(connection, "import_task_genesis_events", || {
+        crate::store::import_genesis(connection, crate::now_unix()).map(|_| ())
+    })?;
     connection.execute(
         "UPDATE tasks
          SET claim_started_at = updated_at
