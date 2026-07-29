@@ -9,13 +9,14 @@ const gitMock = vi.hoisted(() => {
     return { dispose: vi.fn() };
   };
   const state = {
-    HEAD: { commit: "old-sha" },
+    HEAD: { commit: "old-sha", name: "main" },
     onDidChange: event(repositoryHandlers, "change"),
   };
   const repository = {
     rootUri: { toString: () => "file:///workspace" },
     state,
     onDidCommit: event(repositoryHandlers, "commit"),
+    onDidCheckout: event(repositoryHandlers, "checkout"),
     getCommit: vi.fn(async () => ({
       hash: "new-sha",
       message: "fix: captured commit",
@@ -50,7 +51,14 @@ import { GitSensor } from "./gitSensor";
 describe("GitSensor", () => {
   beforeEach(() => {
     gitMock.state.HEAD.commit = "old-sha";
-    gitMock.repository.getCommit.mockClear();
+    gitMock.state.HEAD.name = "main";
+    gitMock.repository.getCommit.mockReset();
+    gitMock.repository.getCommit.mockImplementation(async (ref: string) => ({
+      hash: ref,
+      message: `fix: captured ${ref}`,
+      parents: [ref === "new-sha" ? "old-sha" : "new-sha"],
+      commitDate: new Date("2026-07-22T00:00:00Z"),
+    }));
     gitMock.repository.diffBetween.mockClear();
   });
 
@@ -65,7 +73,7 @@ describe("GitSensor", () => {
     await vi.waitFor(() => expect(callTool).toHaveBeenCalledOnce());
     expect(callTool).toHaveBeenCalledWith("ingest_commit", {
       sha: "new-sha",
-      message: "fix: captured commit",
+      message: "fix: captured new-sha",
       changed_files: ["src/app.ts"],
       timestamp: 1784678400,
     });
@@ -85,6 +93,233 @@ describe("GitSensor", () => {
     ready = true;
     gitMock.repositoryHandlers.change();
     await vi.waitFor(() => expect(callTool).toHaveBeenCalledOnce());
+    sensor.dispose();
+  });
+
+  it("does not backfill a commit that happened while Git capture was disabled", async () => {
+    let enabled = false;
+    const callTool = vi.fn().mockResolvedValue({});
+    const sensor = new GitSensor(
+      { isReady: () => true, callTool },
+      () => enabled,
+      vi.fn(),
+      vi.fn()
+    );
+    await sensor.start();
+
+    gitMock.state.HEAD.commit = "new-sha";
+    gitMock.repositoryHandlers.commit();
+    expect(callTool).not.toHaveBeenCalled();
+
+    enabled = true;
+    gitMock.repositoryHandlers.change();
+    await Promise.resolve();
+    expect(callTool).not.toHaveBeenCalled();
+    sensor.dispose();
+  });
+
+  // A descendant branch's tip names the previous HEAD as its parent, so
+  // ancestry alone cannot distinguish checking that branch out from creating
+  // the commit. The old sensor attributed the branch tip to whoever viewed it.
+  it("does not ingest a checkout to a descendant branch as authored work", async () => {
+    const callTool = vi.fn().mockResolvedValue({});
+    const sensor = new GitSensor({ isReady: () => true, callTool }, () => true, vi.fn(), vi.fn());
+    await sensor.start();
+
+    gitMock.state.HEAD.commit = "new-sha";
+    gitMock.state.HEAD.name = "feature";
+    gitMock.repositoryHandlers.change();
+    gitMock.repositoryHandlers.checkout();
+
+    await Promise.resolve();
+    expect(callTool).not.toHaveBeenCalled();
+    sensor.dispose();
+  });
+
+  it("captures the first real commit after a checkout", async () => {
+    const callTool = vi.fn().mockResolvedValue({});
+    const sensor = new GitSensor({ isReady: () => true, callTool }, () => true, vi.fn(), vi.fn());
+    await sensor.start();
+
+    gitMock.state.HEAD.commit = "new-sha";
+    gitMock.state.HEAD.name = "feature";
+    gitMock.repositoryHandlers.change();
+    gitMock.repositoryHandlers.checkout();
+
+    gitMock.state.HEAD.commit = "feature-commit";
+    gitMock.repositoryHandlers.change();
+
+    await vi.waitFor(() => expect(callTool).toHaveBeenCalledOnce());
+    expect(callTool).toHaveBeenCalledWith(
+      "ingest_commit",
+      expect.objectContaining({ sha: "feature-commit" })
+    );
+    sensor.dispose();
+  });
+
+  it("captures an explicit non-linear commit even when state refresh started first", async () => {
+    let resolveCommit!: (commit: any) => void;
+    gitMock.repository.getCommit.mockImplementationOnce(
+      () => new Promise((resolve) => (resolveCommit = resolve))
+    );
+    const callTool = vi.fn().mockResolvedValue({});
+    const sensor = new GitSensor({ isReady: () => true, callTool }, () => true, vi.fn(), vi.fn());
+    await sensor.start();
+
+    gitMock.state.HEAD.commit = "amended-sha";
+    gitMock.repositoryHandlers.change();
+    await vi.waitFor(() =>
+      expect(gitMock.repository.getCommit).toHaveBeenCalledWith("amended-sha")
+    );
+
+    // VS Code fires this after its status refresh. It must upgrade the in-flight
+    // observation rather than disappear behind the duplicate-flight guard.
+    gitMock.repositoryHandlers.commit();
+    resolveCommit({
+      hash: "amended-sha",
+      message: "fix: amended commit",
+      parents: ["older-base"],
+      commitDate: new Date("2026-07-22T00:00:00Z"),
+    });
+
+    await vi.waitFor(() => expect(callTool).toHaveBeenCalledOnce());
+    expect(callTool).toHaveBeenCalledWith(
+      "ingest_commit",
+      expect.objectContaining({ sha: "amended-sha" })
+    );
+    sensor.dispose();
+  });
+
+  it("lets an explicit commit classify a coalesced branch change as work", async () => {
+    let resolveCommit!: (commit: any) => void;
+    gitMock.repository.getCommit.mockImplementationOnce(
+      () => new Promise((resolve) => (resolveCommit = resolve))
+    );
+    const callTool = vi.fn().mockResolvedValue({});
+    const sensor = new GitSensor({ isReady: () => true, callTool }, () => true, vi.fn(), vi.fn());
+    await sensor.start();
+
+    // Branch creation and its first commit may be observed in one state refresh.
+    gitMock.state.HEAD = { commit: "feature-first", name: "feature" };
+    gitMock.repositoryHandlers.change();
+    await vi.waitFor(() =>
+      expect(gitMock.repository.getCommit).toHaveBeenCalledWith("feature-first")
+    );
+    gitMock.repositoryHandlers.commit();
+    resolveCommit({
+      hash: "feature-first",
+      message: "feat: first branch commit",
+      parents: ["old-sha"],
+      commitDate: new Date("2026-07-22T00:00:00Z"),
+    });
+
+    await vi.waitFor(() => expect(callTool).toHaveBeenCalledOnce());
+    expect(callTool).toHaveBeenCalledWith(
+      "ingest_commit",
+      expect.objectContaining({ sha: "feature-first" })
+    );
+    sensor.dispose();
+  });
+
+  it("skips a state-only non-linear move and uses it as the next baseline", async () => {
+    const callTool = vi.fn().mockResolvedValue({});
+    const log = vi.fn();
+    const health = vi.fn();
+    const sensor = new GitSensor({ isReady: () => true, callTool }, () => true, log, health);
+    await sensor.start();
+
+    gitMock.repository.getCommit.mockResolvedValueOnce({
+      hash: "rebased-sha",
+      message: "fix: rebased elsewhere",
+      parents: ["different-base"],
+      commitDate: new Date("2026-07-22T00:00:00Z"),
+    });
+    gitMock.state.HEAD.commit = "rebased-sha";
+    gitMock.repositoryHandlers.change();
+
+    await vi.waitFor(() => expect(log).toHaveBeenCalledWith(expect.stringContaining("non-linear")));
+    expect(callTool).not.toHaveBeenCalled();
+
+    gitMock.repository.getCommit.mockResolvedValueOnce({
+      hash: "after-rebase",
+      message: "fix: real follow-up",
+      parents: ["rebased-sha"],
+      commitDate: new Date("2026-07-22T00:00:00Z"),
+    });
+    gitMock.state.HEAD.commit = "after-rebase";
+    gitMock.repositoryHandlers.change();
+
+    await vi.waitFor(() => expect(callTool).toHaveBeenCalledOnce());
+    expect(health).toHaveBeenCalledWith(
+      "Git capture degraded: non-linear HEAD change not attributed"
+    );
+    expect(callTool).toHaveBeenCalledWith(
+      "ingest_commit",
+      expect.objectContaining({ sha: "after-rebase" })
+    );
+    sensor.dispose();
+  });
+
+  it("captures a linear HEAD advance observed through repository state", async () => {
+    const callTool = vi.fn().mockResolvedValue({});
+    const sensor = new GitSensor({ isReady: () => true, callTool }, () => true, vi.fn(), vi.fn());
+    await sensor.start();
+
+    gitMock.state.HEAD.commit = "new-sha";
+    gitMock.repositoryHandlers.change();
+
+    await vi.waitFor(() => expect(callTool).toHaveBeenCalledOnce());
+    expect(callTool).toHaveBeenCalledWith(
+      "ingest_commit",
+      expect.objectContaining({ sha: "new-sha" })
+    );
+    sensor.dispose();
+  });
+
+  it("captures a root commit against the empty tree using its author date", async () => {
+    const callTool = vi.fn().mockResolvedValue({});
+    gitMock.repository.getCommit.mockResolvedValueOnce({
+      hash: "root-sha",
+      message: "feat: first commit",
+      parents: [],
+      authorDate: new Date("2026-07-23T00:00:00Z"),
+    });
+    const sensor = new GitSensor({ isReady: () => true, callTool }, () => true, vi.fn(), vi.fn());
+    await sensor.start();
+
+    gitMock.state.HEAD.commit = "root-sha";
+    gitMock.repositoryHandlers.commit();
+
+    await vi.waitFor(() => expect(callTool).toHaveBeenCalledOnce());
+    expect(gitMock.repository.diffBetween).toHaveBeenCalledWith(
+      "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+      "root-sha"
+    );
+    expect(callTool).toHaveBeenCalledWith(
+      "ingest_commit",
+      expect.objectContaining({ timestamp: 1784764800 })
+    );
+    sensor.dispose();
+  });
+
+  it("reports an ingestion failure without advancing the captured HEAD", async () => {
+    const callTool = vi.fn().mockRejectedValue(new Error("server unavailable"));
+    const log = vi.fn();
+    const health = vi.fn();
+    const sensor = new GitSensor({ isReady: () => true, callTool }, () => true, log, health);
+    await sensor.start();
+
+    gitMock.state.HEAD.commit = "new-sha";
+    gitMock.repositoryHandlers.commit();
+
+    await vi.waitFor(() =>
+      expect(health).toHaveBeenCalledWith("Git capture degraded: ingestion failed")
+    );
+    expect(log).toHaveBeenCalledWith("Git capture error: server unavailable");
+
+    callTool.mockResolvedValue({});
+    gitMock.repositoryHandlers.change();
+    await vi.waitFor(() => expect(callTool).toHaveBeenCalledTimes(2));
     sensor.dispose();
   });
 });

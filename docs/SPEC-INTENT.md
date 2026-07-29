@@ -450,12 +450,13 @@ Caller-selected `agent`/`agent_id` values are not part of the public schema.
   durably retires open/review/blocked or expired-claim work without deleting
   its audit history. Both refuse to disturb live or parked ownership.
   `resolve_task(task_id, human)` → the task-level mirror of `accept_design`:
-  human-accepts an `in_review` task (a `drift`/`needs_human` completion) to
-  `done` with no code-conformance re-run, opening any blocked successor. It
-  requires a reviewer identity and refuses self-resolution by the agent whose
-  work is under review (read from the task's conformance evidence), so a
-  docs-only task in an objective's chain has a human-in-the-loop path to
-  terminal `done` without weakening conformance.
+  accepts an `in_review` task (a `drift`/`needs_human` completion) to `done`
+  with no code-conformance re-run, opening any blocked successor. `human` is a
+  non-empty reviewer label recorded in `resolved_by` for attribution; it is
+  **not authenticated** (ADR-0071). The same-string agent id read from the
+  task's conformance evidence is refused, but any other label is accepted, so
+  a docs-only task in an objective's chain has a review path to terminal `done`
+  without pretending the local stdio plane verified a person's identity.
   `recover_claim(task_id, expected_owner, reason, lease_secs, session_id)` is the
   only transition from an expired compatible legacy owner into a registered
   session; `claim_transfer_history(task_id)` returns its append-only audit. That
@@ -472,43 +473,58 @@ the log never saw and cannot reconstruct.
 
 **Design**
 
-15. `register_design(adr_path, title, summary?)` → one proposed design item.
-16. `reconcile_designs(designs[])` → idempotently import structured ADR path,
-  title, summary, and declared status. Reconciliation is deterministic: it
-  never invokes a model or creates goals/tasks, and never overwrites an
-  existing Design Board decision or promotion state.
-17. `design_board()` → actionable design work: proposed items awaiting a human
-  decision plus accepted items whose promotion is pending or retryable.
-18. `accept_design(id, human)` / `reject_design(id, human, reason)` → attributed
-  human decision; no code conformance and no self-acceptance. The VS Code
-  workflow writes the matching ADR `Status` in the same operation.
-18a. `supersede_design(id, superseded_by, human)` → record that an accepted
-  design has been replaced. `status` is unchanged: the design was accepted, and
-  supersession is a fact about that decision rather than a different one, so a
-  live design is one with no `superseded_by` — the same shape as
-  `goal.superseded_by`. Guarded on a recorded `decided_by`, because superseding
-  is a statement about a decision that was actually made; a row carrying an
-  imported status with nobody behind it is reopened (ADR-0047) or retired
-  (ADR-0042) instead. The replacement must already be registered, and the link
-  is never inferred from an ADR's prose.
-19. `plan_design_promotion(id, objective_goal_id)` → a read-only suggested
-  `create` plan; optional model output and the deterministic fallback cannot
-  create work before human review.
-20. `promote_design(id, plan)` → atomically materialize one explicit `create`,
-  `link`, or `no_work` plan. Each new task names an objective; linked tasks may
-  span objectives; link/no-work require rationale. Identical retries return the
-  same revision.
-21. `revise_design_promotion(id, human, plan)` → append an attributed repair
-  revision and replace the current task/objective projection without deleting
-  prior plans or tasks. Existing normative clauses remain durable.
-22. `design_promotion(id)` / `design_materialization_history(id)` → current
-  provenance projection and the immutable reviewed revision chain.
+The design surface is four verbs (ADR-0059). Each takes the act as an argument,
+so the guards the separate names once encoded live on as argument validation
+carrying the same refusal. The fifteen former names answer for one minor
+version, each naming the call to make now, and are removed in the release train
+ADR-0059 names.
+
+15. `design_register(adr_path, title, summary?)` → one proposed design item.
+  Passing `designs[]` instead idempotently imports structured ADR path, title,
+  summary, and declared status. Reconciliation is deterministic: it never
+  invokes a model or creates goals/tasks, and never overwrites an existing
+  Design Board decision or promotion state. Passing both shapes at once is
+  refused rather than guessed.
+16. `design_decide(id, decision, …)` → every attributed human act on a design.
+  `accept` / `reject` record a decision with no code conformance and no
+  self-acceptance; the VS Code workflow writes the matching ADR `Status` in the
+  same operation. `retire` (ADR-0042) removes an orphaned record from the
+  working board without deleting it. `supersede` records that an accepted
+  design has been replaced: `status` is unchanged, because the design was
+  accepted and supersession is a fact about that decision rather than a
+  different one, so a live design is one with no `superseded_by` — the same
+  shape as `goal.superseded_by`. It is guarded on a recorded `decided_by`,
+  because superseding is a statement about a decision that was actually made;
+  a row carrying an imported status with nobody behind it is reopened
+  (ADR-0047) or retired instead. The replacement must already be registered,
+  and the link is never inferred from an ADR's prose. `reopen` (ADR-0047)
+  returns an undecided row to `proposed`, and defers to materialisation:
+  a row whose promotion has already created work is refused. `attribute`
+  (ADR-0051) records who made a decision the ledger asserts but attributes to
+  nobody, and never overwrites a `decided_by` already present — so `reopen` and
+  `attribute` continue to partition the undecided rows instead of overlapping.
+  Each decision states which arguments it requires and why.
+17. `design_promote(id, step, …)` → `plan` returns a read-only suggested
+  `create` plan, where optional model output and the deterministic fallback
+  cannot create work before human review. `materialize` atomically applies one
+  explicit `create`, `link`, or `no_work` plan: each new task names an
+  objective, linked tasks may span objectives, link/no-work require rationale,
+  and identical retries return the same revision. `revise` appends an
+  attributed repair revision and replaces the current task/objective projection
+  without deleting prior plans or tasks. Existing normative clauses remain
+  durable.
+18. `design_query(view, …)` → `board` returns actionable design work: proposed
+  items awaiting a human decision plus accepted items whose promotion is
+  pending or retryable. `ledger` returns the durable record, optionally
+  filtered by `status`, omitting retired rows unless `include_retired`.
+  `promotion` and `history` return the current provenance projection and the
+  immutable reviewed revision chain.
 
 **Conformance**
 
-23. `check_conformance(evidence, task_id?)` →
+19. `check_conformance(evidence, task_id?)` →
   `{ id, token, verdict, findings[] }`; persists one authoritative audit row.
-24. `conformance_history(task_id)` → the append-only evidence chain for a task:
+20. `conformance_history(task_id)` → the append-only evidence chain for a task:
     each record's stable `id`, the recorded evidence bundle, `verdict`,
     `findings`, and `checked_at` — the durable, resolvable link proving how (and
     whether) a task reached completion.

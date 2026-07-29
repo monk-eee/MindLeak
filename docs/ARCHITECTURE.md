@@ -189,7 +189,7 @@ tool success/error rates, latency, per-tool metrics) from `graph_stats` and
 pure helpers in `src/util.ts`.
 The Workspace readiness tree follows the same derived-state rule: pure
 `src/readiness.ts` maps MCP initialize identities, `graph_stats`, `board`,
-`design_board`, and sensor health to one next action; `readinessController.ts`
+`design_query`, and sensor health to one next action; `readinessController.ts`
 performs those reads and `readinessViewProvider.ts` is thin VS Code rendering.
 Only the one-time teaching-view dismissal uses workspace state; no graph or
 intent authority is copied into the extension.

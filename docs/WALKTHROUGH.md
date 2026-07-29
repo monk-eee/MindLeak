@@ -90,9 +90,9 @@ The new tasks show up in **Work**, ready to claim. The same flow from
 an agent:
 
 ```text
-reconcile_designs()                              # or register_design(...)
-accept_design(design_id, reviewer = "you")       # human-in-the-loop; not self-decided
-promote_design(design_id, objective_goal_id)     # idempotent materialisation
+design_register(designs = [...])                        # or design_register(adr_path, title)
+design_decide(design_id, decision = "accept", human = "you")   # human-in-the-loop; not self-decided
+design_promote(design_id, step = "materialize", ...)          # idempotent materialisation
 ```
 
 No agent may accept its own design, and ADR discovery never auto-accepts or

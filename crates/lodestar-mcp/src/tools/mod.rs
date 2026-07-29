@@ -32,7 +32,6 @@ pub fn list() -> Vec<Value> {
     tools.extend(knowledge::definitions());
     tools.extend(lifecycle::definitions());
     tools.extend(design::definitions());
-    tools.extend(design_materialization::definitions());
     tools.extend(evidence::definitions());
     tools.extend(fleet::definitions());
     tools.into_iter().map(apply_session_contract).collect()
@@ -218,6 +217,7 @@ pub fn call_with_storage(
         if let Some(context) = args.get("resolved_context") {
             body["context"] = context.clone();
         }
+        executive::attach_owner_attention(engine, &args, &mut body)?;
         return ok(&body);
     }
     if name == "storage_status" {
@@ -253,9 +253,6 @@ pub fn call_with_storage(
         return result;
     }
     if let Some(result) = design::dispatch(engine, name, &args) {
-        return result;
-    }
-    if let Some(result) = design_materialization::dispatch(engine, name, &args) {
         return result;
     }
 
@@ -361,7 +358,11 @@ const OPTIONAL_SESSION_TOOLS: [&str; 1] = ["check_overlap"];
 fn requires_session(name: &str) -> bool {
     matches!(
         name,
-        "register_design"
+        "design_register"
+            // Deprecated, and deliberately still session-bearing: the alias must
+            // keep the contract it had, or a deprecation becomes a breaking
+            // change wearing a helpful message.
+            | "register_design"
             | "review_pack_clause"
             | "propose_constitution"
             | "activate_constitution"
@@ -767,6 +768,35 @@ mod tests {
             sessions.resolve(TOKEN).unwrap().context.branch.unwrap(),
             "fleet/typed-controls"
         );
+
+        // Reconnecting is the first call an owner is guaranteed to make. A
+        // paused task that only exists on the board still depends on memory,
+        // which this repository has repeatedly measured at zero adoption.
+        let agent = undeclared["agent_id"].as_str().unwrap();
+        let goal = engine
+            .define_goal(lodestar_core::GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let paused = engine.create_task(&goal.id, "Paused work", "done").unwrap();
+        assert!(engine.claim_task(&paused.id, agent, 600).unwrap());
+        assert!(engine
+            .pause_task(&paused.id, agent, Some("waiting for the server restart"))
+            .unwrap());
+
+        let reconnected = body(json!({ "session_id": TOKEN }));
+        assert_eq!(reconnected["paused_by_you"][0]["task_id"], paused.id);
+        assert_eq!(
+            reconnected["paused_by_you"][0]["reason"],
+            "waiting for the server restart"
+        );
+        assert!(reconnected["paused_advice"]
+            .as_str()
+            .unwrap()
+            .contains("resume_task"));
+
+        let other = body(json!({
+            "session_id": "ffeeddccbbaa99887766554433221100"
+        }));
+        assert!(other.get("paused_by_you").is_none());
     }
 
     // Regression (ADR-0044): the durable row survives a bare re-registration.
@@ -825,23 +855,22 @@ mod tests {
     /// be found.
     #[test]
     fn every_tool_the_server_answers_to_is_advertised() {
-        const SOURCES: [(&str, &str); 13] = [
+        // Every module that answers to a name of its own. `mod.rs` is not one
+        // of them: it delegates to these and dispatches nothing itself, so
+        // scanning it only ever matched this test's own `match name {` literal
+        // and read the rest of the file as if it were dispatch.
+        const SOURCES: [(&str, &str); 11] = [
             ("amendments", include_str!("amendments.rs")),
             ("conformance", include_str!("conformance.rs")),
             ("constitution", include_str!("constitution.rs")),
             ("controls", include_str!("controls.rs")),
             ("design", include_str!("design.rs")),
-            (
-                "design_materialization",
-                include_str!("design_materialization.rs"),
-            ),
             ("evidence", include_str!("evidence.rs")),
             ("executive", include_str!("executive.rs")),
             ("fleet", include_str!("fleet.rs")),
             ("knowledge", include_str!("knowledge.rs")),
             ("lifecycle", include_str!("lifecycle.rs")),
             ("waivers", include_str!("waivers.rs")),
-            ("mod", include_str!("mod.rs")),
         ];
 
         let advertised: Vec<String> = list()
@@ -858,6 +887,7 @@ mod tests {
             // parsing, not tools — a guard that reports those trains people to
             // ignore it.
             let mut from = 0usize;
+            let mut found = 0usize;
             while let Some(at) = source[from..].find("match name {") {
                 let start = from + at + "match name {".len();
                 let end = source[start..]
@@ -867,21 +897,57 @@ mod tests {
                 let block = &source[start..end];
                 from = end;
 
-                for (arm, _) in block.match_indices("\" => ") {
-                    let before = &block[..arm];
-                    let Some(open) = before.rfind('"') else {
-                        continue;
-                    };
-                    let name = &before[open + 1..];
-                    if name.is_empty() {
-                        continue;
-                    }
-                    dispatched += 1;
-                    if !advertised.iter().any(|a| a == name) {
-                        undeclared.push(format!("{module}::{name}"));
+                // Only the arms of `match name` itself. A collapsed tool
+                // matches again inside its arm — `match decision`, `match
+                // step`, `match view` — and those arms are argument values,
+                // not tool names. Reporting them would train people to ignore
+                // this guard for the same reason `"ratchet"` would, so the
+                // scan tracks brace depth and reads the outer level only.
+                let mut depth = 0usize;
+                let mut opened_at: Option<usize> = None;
+                let mut escaped = false;
+
+                for (index, byte) in block.bytes().enumerate() {
+                    match opened_at {
+                        Some(open) => {
+                            if escaped {
+                                escaped = false;
+                            } else if byte == b'\\' {
+                                escaped = true;
+                            } else if byte == b'"' {
+                                opened_at = None;
+                                if depth > 0 || !block[index..].starts_with("\" => ") {
+                                    continue;
+                                }
+                                let name = &block[open + 1..index];
+                                if name.is_empty() {
+                                    continue;
+                                }
+                                found += 1;
+                                if !advertised.iter().any(|a| a == name) {
+                                    undeclared.push(format!("{module}::{name}"));
+                                }
+                            }
+                        }
+                        None => match byte {
+                            b'"' => opened_at = Some(index),
+                            b'{' => depth += 1,
+                            b'}' => depth = depth.saturating_sub(1),
+                            _ => {}
+                        },
                     }
                 }
             }
+
+            // Per module, not just in total. The depth rule above is the kind
+            // of narrowing that can stop reading a module altogether without
+            // failing anything, which is the silence this test exists to break.
+            assert!(
+                found > 0,
+                "the scan found no dispatch arms in {module}, so it is no longer \
+                 reading the dispatch it claims to guard"
+            );
+            dispatched += found;
         }
 
         // A source scan that matches nothing passes silently, which is the

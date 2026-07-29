@@ -19,10 +19,11 @@ interface GitChange {
 interface GitRepository {
   rootUri: vscode.Uri;
   state: {
-    HEAD?: { commit?: string };
+    HEAD?: { commit?: string; name?: string };
     onDidChange: vscode.Event<void>;
   };
   onDidCommit: vscode.Event<void>;
+  onDidCheckout: vscode.Event<void>;
   getCommit(ref: string): Promise<GitCommit>;
   diffBetween(ref1: string, ref2: string): Promise<GitChange[]>;
 }
@@ -38,12 +39,18 @@ interface GitExtension {
   getAPI(version: 1): GitApi;
 }
 
+interface ObservedHead {
+  commit: string;
+  branch?: string;
+}
+
 /** Ingests commits reported by VS Code's built-in Git extension. */
 export class GitSensor implements vscode.Disposable {
   private readonly subscriptions: vscode.Disposable[] = [];
   private readonly repositories = new Map<string, vscode.Disposable[]>();
-  private readonly heads = new Map<string, string>();
+  private readonly heads = new Map<string, ObservedHead>();
   private readonly inFlight = new Set<string>();
+  private readonly explicitCommits = new Set<string>();
 
   constructor(
     private readonly client: SensorClient,
@@ -83,6 +90,9 @@ export class GitSensor implements vscode.Disposable {
       }
     }
     this.repositories.clear();
+    this.heads.clear();
+    this.inFlight.clear();
+    this.explicitCommits.clear();
   }
 
   private attach(repository: GitRepository): void {
@@ -95,10 +105,11 @@ export class GitSensor implements vscode.Disposable {
     }
     const current = repository.state.HEAD?.commit;
     if (current) {
-      this.heads.set(key, current);
+      this.rememberHead(repository);
     }
     this.repositories.set(key, [
       repository.onDidCommit(() => void this.captureHead(repository, true)),
+      repository.onDidCheckout(() => this.rememberHead(repository)),
       repository.state.onDidChange(() => void this.captureHead(repository, false)),
     ]);
     this.updateHealth();
@@ -111,33 +122,67 @@ export class GitSensor implements vscode.Disposable {
     }
     this.repositories.delete(key);
     this.heads.delete(key);
+    this.clearExplicitCommits(key);
     this.updateHealth();
   }
 
   private async captureHead(repository: GitRepository, explicitCommit: boolean): Promise<void> {
     const key = repository.rootUri.toString();
     const previous = this.heads.get(key);
-    const head = repository.state.HEAD?.commit;
-    if (!head || head === previous) {
+    const current = observedHead(repository);
+    if (!current) {
+      return;
+    }
+    const { commit: head, branch } = current;
+    const flightKey = `${key}:${head}`;
+    if (explicitCommit) {
+      // onDidCommit fires after the repository state refresh. If that refresh
+      // already started capture, marking the HEAD here upgrades the in-flight
+      // observation instead of losing an amend/non-linear commit as a duplicate.
+      this.explicitCommits.add(flightKey);
+    }
+    if (sameHead(previous, current)) {
+      this.explicitCommits.delete(flightKey);
       return;
     }
     if (!this.enabled()) {
-      this.heads.set(key, head);
+      this.rememberObservedHead(key, current);
       return;
     }
     if (!this.client.isReady()) {
       return;
     }
 
-    const flightKey = `${key}:${head}`;
     if (this.inFlight.has(flightKey)) {
       return;
     }
+
     this.inFlight.add(flightKey);
     try {
       const commit = await repository.getCommit(head);
-      if (!explicitCommit && previous && !commit.parents.includes(previous)) {
-        this.heads.set(key, head);
+
+      // VS Code's checkout event fires after its status refresh. That refresh
+      // can already be awaiting getCommit here; the checkout handler advances
+      // `heads`, and this re-check cancels the stale capture before attribution.
+      if (sameHead(this.heads.get(key), current)) {
+        return;
+      }
+
+      const isExplicitCommit = explicitCommit || this.explicitCommits.has(flightKey);
+      // A branch change is a checkout, even when the target is a descendant and
+      // therefore names the previous HEAD as a parent. This decision belongs
+      // here, after the await: VS Code fires onDidCommit/onDidCheckout after its
+      // state refresh, and either may classify a capture already in flight.
+      if (!isExplicitCommit && previous && previous.branch !== branch) {
+        this.rememberObservedHead(key, current);
+        return;
+      }
+      if (!isExplicitCommit && previous && !commit.parents.includes(previous.commit)) {
+        // A state-only non-linear move may be reset, rebase, or an external
+        // checkout. Refusing to guess is safer than attributing old history.
+        this.rememberObservedHead(key, current);
+        this.health("Git capture degraded: non-linear HEAD change not attributed");
+        this.log(`Git capture skipped non-linear HEAD change ${previous.commit} -> ${head}`);
         return;
       }
       const changes = await repository.diffBetween(commit.parents[0] ?? EMPTY_TREE, head);
@@ -149,13 +194,35 @@ export class GitSensor implements vscode.Disposable {
         changed_files: changedFiles,
         timestamp: Math.floor(date.getTime() / 1000),
       });
-      this.heads.set(key, head);
+      this.heads.set(key, current);
       this.health(`Git capture active (${this.repositories.size} repositories)`);
     } catch (error) {
       this.health("Git capture degraded: ingestion failed");
       this.log(`Git capture error: ${(error as Error).message}`);
     } finally {
       this.inFlight.delete(flightKey);
+      this.explicitCommits.delete(flightKey);
+    }
+  }
+
+  private rememberHead(repository: GitRepository): void {
+    const head = observedHead(repository);
+    if (head) {
+      this.rememberObservedHead(repository.rootUri.toString(), head);
+    }
+  }
+
+  private rememberObservedHead(key: string, head: ObservedHead): void {
+    this.clearExplicitCommits(key);
+    this.heads.set(key, head);
+  }
+
+  private clearExplicitCommits(repositoryKey: string): void {
+    const prefix = `${repositoryKey}:`;
+    for (const key of this.explicitCommits) {
+      if (key.startsWith(prefix)) {
+        this.explicitCommits.delete(key);
+      }
     }
   }
 
@@ -168,6 +235,15 @@ export class GitSensor implements vscode.Disposable {
       this.health(`Git capture active (${this.repositories.size} repositories)`);
     }
   }
+}
+
+function observedHead(repository: GitRepository): ObservedHead | undefined {
+  const { commit, name } = repository.state.HEAD ?? {};
+  return commit ? { commit, branch: name } : undefined;
+}
+
+function sameHead(left: ObservedHead | undefined, right: ObservedHead): boolean {
+  return left?.commit === right.commit && left.branch === right.branch;
 }
 
 function relativePath(uri: vscode.Uri): string {

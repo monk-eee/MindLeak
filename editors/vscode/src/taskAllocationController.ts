@@ -142,13 +142,14 @@ export class TaskAllocationController {
     if (!this.requireReviewItem(item, "Accept Review")) {
       return;
     }
-    const human = await vscode.window.showInputBox({
+    const reviewerLabel = await vscode.window.showInputBox({
       title: `Accept: ${item.task.title}`,
-      prompt: "Human reviewer identity (must differ from the agent under review)",
+      prompt:
+        "Reviewer label (attributed, not authenticated; must differ from the agent id under review)",
       ignoreFocusOut: true,
-      validateInput: (value) => (value.trim() ? undefined : "A reviewer identity is required."),
+      validateInput: (value) => (value.trim() ? undefined : "A reviewer label is required."),
     });
-    if (!human) {
+    if (!reviewerLabel) {
       return;
     }
     const confirmed = await vscode.window.showWarningMessage(
@@ -156,7 +157,7 @@ export class TaskAllocationController {
       {
         modal: true,
         detail:
-          "The task moves to done without rerunning conformance. Its original evidence and verdict remain in the audit history.",
+          "The task moves to done without rerunning conformance. The label is recorded for attribution, not authenticated as a human identity; original evidence and verdict remain in the audit history.",
       },
       "Accept Task"
     );
@@ -166,7 +167,7 @@ export class TaskAllocationController {
     try {
       const result = await this.client.callTool("resolve_task", {
         task_id: item.task.id,
-        human: human.trim(),
+        human: reviewerLabel.trim(),
       });
       if (!result?.resolved) {
         throw new Error("the task state changed before review was accepted");

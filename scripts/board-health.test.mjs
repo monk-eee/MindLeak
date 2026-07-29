@@ -10,6 +10,8 @@ import {
   describe,
   isLive,
   isStrandedClaim,
+  mergedBranches,
+  shippedButOpen,
 } from "./board-health.mjs";
 
 const NOW = 1_800_000_000;
@@ -171,4 +173,139 @@ test("a board with nothing parked reports no ratio", () => {
   const rendered = describe(classify([], NOW), []);
   assert.match(rendered, /board: 0 tasks/);
   assert.doesNotMatch(rendered, /% of parked work/);
+});
+
+/// Work that shipped and never closed. The board understating what is finished
+/// is expensive in a way overstating it is not: `next_task` offers work that
+/// already exists, and an agent rebuilds it. Seen repeatedly on this board.
+test("a task whose branch has merged is named as shipped", () => {
+  const merged = mergedBranches([
+    "abc1234def5678 Merge pull request #186 from monk-eee/docs/the-blind-spot",
+    "9990000aaa1111 Merge pull request #185 from monk-eee/fix/something-else",
+  ]);
+  const shipped = task("task:shipped", {
+    status: "claimed",
+    branch: "docs/the-blind-spot",
+  });
+
+  assert.equal(merged.get("docs/the-blind-spot"), "abc1234def5678");
+  assert.equal(shippedButOpen(shipped, merged), true);
+
+  const report = classify([{ task: shipped }], NOW, merged);
+  assert.equal(report.shipped.length, 1);
+  assert.equal(report.shipped[0].mergedAt, "abc1234def5678");
+});
+
+/// It reports and never closes: completing one would manufacture a receipt for
+/// work the script did not witness, which ADR-0009 refuses.
+test("shipped work is reported with its merge commit, not closed", () => {
+  const merged = mergedBranches([
+    "abc1234def5678 Merge pull request #186 from monk-eee/docs/the-blind-spot",
+  ]);
+  const shipped = task("task:shipped", {
+    status: "claimed",
+    branch: "docs/the-blind-spot",
+  });
+  const report = classify([{ task: shipped }], NOW, merged);
+  const text = describe(report, [{ task: shipped }]);
+
+  assert.match(text, /shipped, never closed  : 1/);
+  assert.match(text, /abc1234d/);
+  assert.match(text, /never closed: completing one here would manufacture/);
+  assert.equal(shipped.status, "claimed", "the task must not be mutated");
+});
+
+/// A finished task is not "shipped and open" � it is simply finished, and
+/// listing it would rebuild the inflated-backlog bug this report already fixed.
+test("a task that already completed is not reported as shipped", () => {
+  const merged = mergedBranches([
+    "abc1234def5678 Merge pull request #186 from monk-eee/docs/the-blind-spot",
+  ]);
+  const done = task("task:done", {
+    status: "done",
+    branch: "docs/the-blind-spot",
+  });
+
+  assert.equal(shippedButOpen(done, merged), false);
+  assert.equal(classify([{ task: done }], NOW, merged).shipped.length, 0);
+});
+
+/// A task on a branch that has not landed is ordinary work in progress.
+test("an unmerged branch is not shipped", () => {
+  const merged = mergedBranches([
+    "abc1234def5678 Merge pull request #186 from monk-eee/docs/the-blind-spot",
+  ]);
+  const live = task("task:live", {
+    status: "claimed",
+    branch: "fleet/still-going",
+  });
+
+  assert.equal(shippedButOpen(live, merged), false);
+});
+
+/// A task claimed before the branch column existed records none, and must not
+/// be guessed at � every task would otherwise match an empty branch name.
+test("a task with no recorded branch is never shipped", () => {
+  const merged = mergedBranches([
+    "abc1234def5678 Merge pull request #186 from monk-eee/docs/the-blind-spot",
+  ]);
+
+  assert.equal(
+    shippedButOpen(task("task:old", { status: "claimed" }), merged),
+    false,
+  );
+  assert.equal(
+    shippedButOpen(task("task:blank", { branch: "" }), merged),
+    false,
+  );
+});
+
+/// Branches are usually deleted on merge, so the ref is gone while the history
+/// proving it landed is not. Anything that is not a pull-request merge � a
+/// hand-made merge of main into a branch, say � names no branch and is skipped.
+test("only pull-request merges name a branch", () => {
+  const merged = mergedBranches([
+    "1111111 Merge branch 'main' into fleet/whatever",
+    "2222222 Merge remote-tracking branch 'origin/main'",
+    "3333333 Merge pull request #1 from monk-eee/fix/real",
+    "",
+  ]);
+
+  assert.deepEqual([...merged.keys()], ["fix/real"]);
+});
+
+/// Zero because nothing shipped unclosed, or zero because nothing records a
+/// branch to check? Those read identically and mean opposite things. Reporting
+/// a bare 0 while the answer is unknowable is the falsely-reassuring signal
+/// this whole report exists to remove � and it is exactly what the first live
+/// run produced, against a server too old to return the column.
+test("a board with no recorded branches says unknown, not zero", () => {
+  const merged = mergedBranches([
+    "abc1234def5678 Merge pull request #186 from monk-eee/docs/the-blind-spot",
+  ]);
+  const entries = [{ task: task("task:old", { status: "claimed" }) }];
+
+  const text = describe(classify(entries, NOW, merged), entries);
+
+  assert.match(text, /shipped, never closed  : unknown/);
+  assert.doesNotMatch(text, /shipped, never closed  : 0/);
+});
+
+/// And once any task does record one, the count is real and says so.
+test("a board with recorded branches reports a real count", () => {
+  const merged = mergedBranches([
+    "abc1234def5678 Merge pull request #186 from monk-eee/docs/the-blind-spot",
+  ]);
+  const entries = [
+    {
+      task: task("task:live", {
+        status: "claimed",
+        branch: "fleet/still-going",
+      }),
+    },
+  ];
+
+  const text = describe(classify(entries, NOW, merged), entries);
+
+  assert.match(text, /shipped, never closed  : 0/);
 });

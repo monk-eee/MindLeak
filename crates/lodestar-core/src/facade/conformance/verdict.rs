@@ -40,22 +40,37 @@ impl Lodestar {
             .iter()
             .map(String::as_str)
             .collect();
-        let mut matched = false;
+        let mut nudged_by: Vec<String> = Vec::new();
         for knowledge in self.store.active_knowledge(now_unix())? {
             if knowledge
                 .referenced_nodes()
                 .iter()
                 .any(|node| changed.contains(node.as_str()))
             {
-                matched = true;
+                nudged_by.push(knowledge.id.clone());
                 result.findings.push(format!(
                     "advisory: learned knowledge {} — {}",
                     knowledge.id, knowledge.statement
                 ));
             }
         }
-        if matched && result.verdict == Verdict::Aligned {
+        // The nudge is ADR-0022 §4: knowledge is revalidated and decaying, so it
+        // may attach an advisory and at most move an otherwise-aligned verdict to
+        // `needs_human` — never a violation, never a silent hard fail.
+        //
+        // It has to say that it did. Every other route to `needs_human` pushes a
+        // finding naming its own reason; this one changed the verdict and left
+        // only lines labelled "advisory", which read as information rather than
+        // as the cause. The receipt then showed a positive result that had
+        // inexplicably failed, and the honest reading — "the work is fine, the
+        // verdict is wrong" — was unavailable to anyone holding it.
+        if !nudged_by.is_empty() && result.verdict == Verdict::Aligned {
             result.verdict = Verdict::NeedsHuman;
+            result.findings.push(format!(
+                "nudged to needs_human by learned knowledge, which a human confirms: {}. \
+                 Nothing else in this evidence is a problem signal (ADR-0022 §4).",
+                nudged_by.join(", ")
+            ));
         }
         Ok(())
     }

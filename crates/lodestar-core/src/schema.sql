@@ -251,6 +251,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     acceptance       TEXT NOT NULL DEFAULT '',
     status           TEXT NOT NULL,        -- open|claimed|needs_input|paused|in_review|done|blocked|abandoned
     owner            TEXT,                 -- agent id holding the claim
+    branch           TEXT,                 -- branch the current window is being done on (ADR-0057); NULL when the session declared none
     claim_started_at INTEGER,              -- start of the current owner's evidence window
     lease_expires_at INTEGER,              -- unix seconds; past this is reclaimable
     -- Continuity of the current evidence window (ADR-0048) is NOT stored here.

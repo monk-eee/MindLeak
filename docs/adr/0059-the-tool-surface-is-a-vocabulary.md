@@ -71,10 +71,18 @@ Design cluster, 15 → 4:
 
 | New | Replaces |
 |---|---|
-| `design_register` | `register_design` |
+| `design_register` | `register_design`, `reconcile_designs` |
 | `design_decide` | `accept_design`, `reject_design`, `attribute_design_decision`, `reopen_undecided_design`, `supersede_design`, `retire_design` |
-| `design_promote` | `promote_design`, `plan_design_promotion`, `revise_design_promotion`, `reconcile_designs` |
+| `design_promote` | `promote_design`, `plan_design_promotion`, `revise_design_promotion` |
 | `design_query` | `list_designs`, `design_board`, `design_promotion`, `design_materialization_history` |
+
+`reconcile_designs` belongs to `design_register` and not, as an earlier draft of
+this table had it, to `design_promote`. Reconciliation registers designs — it
+imports ADR metadata and is explicitly forbidden from creating tasks — so filing
+it under promotion would reproduce, inside the new vocabulary, exactly the
+`promote_design`/`design_promotion` confusion this ADR exists to remove. It is
+the batch shape of registration: one design when given `adr_path` and `title`, a
+set when given `designs`, and passing both is refused rather than guessed.
 
 The task cluster (~16 tools) and the constitution/policy-pack cluster (~25)
 collapse the same way and by the same rule.
