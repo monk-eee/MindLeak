@@ -1249,3 +1249,88 @@ fn evidence_for_returns_a_commit_the_agent_ingested_inside_the_window() {
         evidence.commit_ids
     );
 }
+
+/// Regression (ADR-0066): the pre-flight an agent runs before editing a file
+/// used to answer only "is another agent here?". On a file nobody else was
+/// touching it returned an empty list, which reads as all-clear — while the
+/// graph already knew that file had failed a build. Learning that needed
+/// `get_impact_radius`, a separate call at the moment attention has already
+/// moved on, and over this repository's lifetime it was made three times
+/// against 8,109 ingests. One pre-flight now answers the whole question.
+#[test]
+fn the_preflight_reports_a_prior_failure_even_when_no_other_agent_is_present() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_execution(&exec(
+            "cargo test",
+            1,
+            "thread 'main' panicked at src/auth.rs:42",
+            &["src/auth.rs"],
+        ))
+        .unwrap();
+
+    // Nobody else has observed this file, so the footprint question is silent...
+    let footprints = engine
+        .check_overlap(&["src/auth.rs".to_string()], &[], None)
+        .unwrap();
+    assert!(
+        footprints.is_empty(),
+        "no other agent observed this file; got {footprints:?}"
+    );
+
+    // ...but the graph knows it failed a build, and the pre-flight now says so
+    // without the caller having to remember a second call.
+    let preflight = engine
+        .preflight(&["src/auth.rs".to_string()], &[], None)
+        .unwrap();
+    assert!(
+        preflight.unknown.is_empty(),
+        "the file is known to the graph; got {:?}",
+        preflight.unknown
+    );
+    assert!(
+        preflight
+            .impact
+            .nodes
+            .iter()
+            .any(|scored| scored.node.node_type == NodeType::Execution),
+        "the failing execution must reach the caller in the pre-flight; got {:?}",
+        preflight
+            .impact
+            .nodes
+            .iter()
+            .map(|scored| &scored.node.id)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A path MindLeak has never seen is reported as `unknown`, not as an empty
+/// impact. "I know nothing about this file" and "nothing depends on this file"
+/// are different facts, and a caller that cannot tell them apart reads silence
+/// as reassurance.
+#[test]
+fn the_preflight_separates_an_unknown_path_from_a_file_it_knows() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("src/lonely.rs", "fn lonely() {}\n")
+        .unwrap();
+
+    let known = engine
+        .preflight(&["src/lonely.rs".to_string()], &[], None)
+        .unwrap();
+    assert!(
+        known.unknown.is_empty(),
+        "an ingested file is known; got {:?}",
+        known.unknown
+    );
+
+    let never_seen = engine
+        .preflight(&["src/ghost.rs".to_string()], &[], None)
+        .unwrap();
+    assert_eq!(
+        never_seen.unknown,
+        vec!["artifact:src/ghost.rs".to_string()],
+        "an unseen path must be named as unknown rather than answered with silence"
+    );
+    assert!(never_seen.impact.nodes.is_empty());
+}
