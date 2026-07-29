@@ -274,10 +274,15 @@ pub fn validate_arguments(name: &str, args: &Value) -> Result<(), String> {
 
 pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value, String> {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-    let requirement = params
-        .get("arguments")
-        .map(|args| session_requirement(name, args))
-        .unwrap_or(SessionRequirement::None);
+    // The session tables describe acts, so they are read against the call as it
+    // will actually be dispatched. Argument validation already followed the
+    // ADR-0059 collapse; session binding did not, and that asymmetry was the
+    // defect. `name` is kept as the caller wrote it, so a deprecated call is
+    // still reported in the name it used.
+    let (contract, contract_args) = resolved_call(
+        name,
+        &params.get("arguments").cloned().unwrap_or(Value::Null),
+    );
     let mut bound = params.clone();
     let args = bound
         .get_mut("arguments")
@@ -300,34 +305,37 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
         }
         return Ok(bound);
     }
-    match requirement {
-        SessionRequirement::Required => {
-            let token = args
-                .get("session_id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "missing required string arg: session_id".to_string())?;
-            let identity = sessions.resolve(token)?;
+    let required = requires_session(contract)
+        || REQUIRED_SESSION_ACTS
+            .iter()
+            .any(|act| act.covers(contract, &contract_args));
+    if required {
+        let token = args
+            .get("session_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "missing required string arg: session_id".to_string())?;
+        let identity = sessions.resolve(token)?;
+        args.insert("agent".to_string(), json!(identity.agent_id));
+        args.insert("resolved_name".to_string(), json!(identity.name));
+        if let Some(evidence) = args.get_mut("evidence").and_then(Value::as_object_mut) {
+            evidence.insert("agent_id".to_string(), json!(identity.agent_id));
+        }
+    } else if OPTIONAL_SESSION_ACTS
+        .iter()
+        .any(|act| act.covers(contract, &contract_args))
+    {
+        // A session sharpens the answer but is not the price of asking. An
+        // unresolvable token binds nothing and the tool still answers, because
+        // advisory reads and open answers must degrade rather than fail after a
+        // server restart.
+        if let Some(identity) = args
+            .get("session_id")
+            .and_then(Value::as_str)
+            .and_then(|token| sessions.resolve(token).ok())
+        {
             args.insert("agent".to_string(), json!(identity.agent_id));
             args.insert("resolved_name".to_string(), json!(identity.name));
-            if let Some(evidence) = args.get_mut("evidence").and_then(Value::as_object_mut) {
-                evidence.insert("agent_id".to_string(), json!(identity.agent_id));
-            }
         }
-        SessionRequirement::Optional => {
-            // A session sharpens the answer but is not the price of asking. An
-            // unresolvable token binds nothing and the tool still answers,
-            // because the registry is per-process and read-only advice must
-            // degrade rather than fail after a server restart.
-            if let Some(identity) = args
-                .get("session_id")
-                .and_then(Value::as_str)
-                .and_then(|token| sessions.resolve(token).ok())
-            {
-                args.insert("agent".to_string(), json!(identity.agent_id));
-                args.insert("resolved_name".to_string(), json!(identity.name));
-            }
-        }
-        SessionRequirement::None => {}
     }
     Ok(bound)
 }
@@ -427,14 +435,23 @@ pub fn call_with_storage(
     Err(format!("unknown tool: {name}"))
 }
 
-// Calls that prove their caller is still working on the task they name
-// (ADR-0052). Reading a task's scope, asking or answering a question about it,
-// reviewing its conformance history, or checking its evidence are all things
-// only an agent mid-task does.
-//
-// Claim, renew, complete and release are absent deliberately: they set or end
-// the lease themselves, so a heartbeat would silently widen what the caller
-// asked for.
+/// Calls that prove their caller is still working on the task they name
+/// (ADR-0052). Reading a task's scope, asking or answering a question about it,
+/// reviewing its conformance history, or checking its evidence are all things
+/// only an agent mid-task does.
+///
+/// Taking or renewing a claim is absent deliberately: `task_claim` sets the
+/// lease itself, and a heartbeat afterwards would silently widen what the
+/// caller asked for. Completing and releasing are absent for the opposite
+/// reason — the claim is ending, not continuing — which is why the two
+/// `task_transition` entries name their act rather than the whole tool.
+///
+/// Three of these were written as `task_scope`, `ask_question` and `answer`,
+/// and stopped matching anything when those names collapsed into `task_query`
+/// and `task_transition`. Heartbeats simply stopped firing for them: a lease
+/// that ADR-0052 says should be held by a working agent lapsed on schedule
+/// while the agent was working, and the next call was told the task was not
+/// held by it.
 const HEARTBEAT_ACTS: [ToolAct; 5] = [
     ToolAct {
         tool: "task_query",
@@ -462,6 +479,7 @@ const HEARTBEAT_ACTS: [ToolAct; 5] = [
         value: "",
     },
 ];
+
 // `advise` is deliberately absent, answering the question ADR-0052 left open.
 //
 // ADR-0052 listed it as proof of life, then said in the same breath that
@@ -491,7 +509,10 @@ const HEARTBEAT_LEASE_SECS: i64 = 300;
 /// actually made. A lapse still requires a deliberate re-claim, so this cannot
 /// resurrect a claim someone else has taken.
 fn touch_named_task(engine: &Lodestar, name: &str, args: &Value) {
-    if !is_heartbeat(name, args) {
+    // Resolved here rather than relying on dispatch to do it, because dispatch
+    // translates a deprecated call *after* this runs.
+    let (tool, args) = resolved_call(name, args);
+    if !HEARTBEAT_ACTS.iter().any(|act| act.covers(tool, &args)) {
         return;
     }
     let Some(task_id) = args.get("task_id").and_then(Value::as_str) else {
@@ -508,6 +529,7 @@ fn touch_named_task(engine: &Lodestar, name: &str, args: &Value) {
     let _ = engine.touch_lease(task_id, agent, HEARTBEAT_LEASE_SECS);
 }
 
+#[cfg(test)]
 fn is_heartbeat(name: &str, args: &Value) -> bool {
     let (tool, args) = resolved_call(name, args);
     HEARTBEAT_ACTS.iter().any(|act| act.covers(tool, &args))
@@ -529,19 +551,7 @@ fn storage_definition() -> Value {
     })
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SessionRequirement {
-    None,
-    Optional,
-    Required,
-}
-
-const REQUIRED_SESSION_ACTS: [ToolAct; 6] = [
-    ToolAct {
-        tool: "task_claim",
-        key: "",
-        value: "",
-    },
+const REQUIRED_SESSION_ACTS: [ToolAct; 5] = [
     ToolAct {
         tool: "task_transition",
         key: "to",
@@ -596,57 +606,37 @@ const OPTIONAL_SESSION_ACTS: [ToolAct; 4] = [
     },
 ];
 
-const REQUIRED_SESSION_TOOLS: [&str; 14] = [
-    "design_register",
-    "review_pack_clause",
-    "policy_pack_decide",
-    "propose_constitution",
-    "activate_constitution",
-    "constitution_decide",
-    "check_conformance",
-    "accept_ratchet_baseline",
-    "retire_control",
-    "grant_waiver",
-    "revoke_waiver",
-    "propose_amendment",
-    "amend_constitution",
-    "merge_evidence",
-];
-
-fn session_requirement(name: &str, args: &Value) -> SessionRequirement {
-    let (name, args) = resolved_call(name, args);
-    if REQUIRED_SESSION_TOOLS.contains(&name)
-        || REQUIRED_SESSION_ACTS
-            .iter()
-            .any(|act| act.covers(name, &args))
-    {
-        SessionRequirement::Required
-    } else if OPTIONAL_SESSION_ACTS
-        .iter()
-        .any(|act| act.covers(name, &args))
-    {
-        SessionRequirement::Optional
-    } else {
-        SessionRequirement::None
-    }
-}
-
-#[cfg(test)]
 fn requires_session(name: &str) -> bool {
-    session_requirement(name, &Value::Null) == SessionRequirement::Required
+    matches!(
+        name,
+        "design_register"
+            | "review_pack_clause"
+            | "policy_pack_decide"
+            | "propose_constitution"
+            | "activate_constitution"
+            | "task_claim"
+            | "constitution_decide"
+            | "check_conformance"
+            | "accept_ratchet_baseline"
+            | "retire_control"
+            | "grant_waiver"
+            | "revoke_waiver"
+            | "propose_amendment"
+            | "amend_constitution"
+            | "merge_evidence"
+    )
 }
 
-fn advertised_session_requirement(name: &str) -> SessionRequirement {
-    match name {
-        "task_transition" | "task_query" | "conformance_history" => SessionRequirement::Optional,
-        _ => session_requirement(name, &Value::Null),
-    }
+fn advertises_session(name: &str) -> bool {
+    requires_session(name)
+        || REQUIRED_SESSION_ACTS.iter().any(|act| act.tool == name)
+        || OPTIONAL_SESSION_ACTS.iter().any(|act| act.tool == name)
 }
 
 fn apply_session_contract(mut tool: Value) -> Value {
     let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
-    let requirement = advertised_session_requirement(name);
-    if requirement == SessionRequirement::None {
+    let required = requires_session(name);
+    if !required && !advertises_session(name) {
         return tool;
     }
     if let Some(properties) = tool
@@ -655,17 +645,16 @@ fn apply_session_contract(mut tool: Value) -> Value {
         .and_then(Value::as_object_mut)
     {
         properties.remove("agent");
-        properties
-            .entry("session_id".to_string())
-            .or_insert_with(|| {
-                json!({
-                    "type": "string",
-                    "pattern": "^[0-9a-f]{32}$",
-                    "description": "Session id previously registered with open_session."
-                })
-            });
+        properties.insert(
+            "session_id".to_string(),
+            json!({
+                "type": "string",
+                "pattern": "^[0-9a-f]{32}$",
+                "description": "Session id previously registered with open_session."
+            }),
+        );
     }
-    if requirement != SessionRequirement::Required {
+    if !required {
         return tool;
     }
     if let Some(required) = tool
@@ -981,14 +970,26 @@ mod tests {
             );
         }
 
-        assert_eq!(
-            bind(
+        for (name, arguments) in [
+            (
                 "task_query",
-                json!({ "view": "overlap", "session_id": TOKEN })
-            )
-            .unwrap()["arguments"]["agent"],
-            agent
-        );
+                json!({ "view": "overlap", "session_id": TOKEN }),
+            ),
+            (
+                "task_query",
+                json!({ "view": "scope", "task_id": "task:1", "session_id": TOKEN }),
+            ),
+            (
+                "task_transition",
+                json!({ "task_id": "task:1", "to": "answer", "answer": "use sqlite", "session_id": TOKEN }),
+            ),
+            (
+                "conformance_history",
+                json!({ "task_id": "task:1", "session_id": TOKEN }),
+            ),
+        ] {
+            assert_eq!(bind(name, arguments).unwrap()["arguments"]["agent"], agent);
+        }
         for (name, arguments) in [
             ("task_query", json!({ "view": "overlap" })),
             (
@@ -1073,10 +1074,25 @@ mod tests {
     /// named nothing after the cluster collapse, and all three tables were
     /// stale, because from inside a list a dead entry and a live one look
     /// identical.
-    ///
+    /// `requires_session` is read out of the source rather than restated here,
+    /// since a hand-copied second list is the same staleness one level up.
     #[test]
     fn every_table_names_a_tool_that_exists() {
-        let mut named = REQUIRED_SESSION_TOOLS.to_vec();
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("fn requires_session")
+            .expect("requires_session is defined in this file");
+        let body = &source[start..];
+        let end = body.find("\n}").expect("the function closes");
+        let mut named: Vec<&str> = body[..end]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .flat_map(|line| line.split('"').skip(1).step_by(2))
+            .collect();
+        assert!(
+            named.len() > 5,
+            "parsed only {named:?} from requires_session — the guard stopped reading the real list"
+        );
         named.extend(REQUIRED_SESSION_ACTS.iter().map(|act| act.tool));
         named.extend(OPTIONAL_SESSION_ACTS.iter().map(|act| act.tool));
         named.extend(HEARTBEAT_ACTS.iter().map(|act| act.tool));
