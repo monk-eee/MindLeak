@@ -1227,6 +1227,11 @@ fn create_task_after_on(
         return Err(LodestarError::NotFound(goal_id.to_string()));
     }
     let id = format!("task:{}", short_hash(&format!("{goal_id}|{title}|{now}")));
+    if get_task_on(connection, &id)?.is_some() {
+        return Err(LodestarError::Invalid(format!(
+            "an identical task already exists ({id}); reuse it or choose a distinct title"
+        )));
+    }
     let predecessor_id = blocked_by;
     let blocked_by = match predecessor_id.as_deref() {
         Some(blocker_id) => (!validate_dependency_on(connection, &id, goal_id, blocker_id)?)
@@ -1676,6 +1681,48 @@ mod tests {
                 NOW,
             )
             .unwrap();
+    }
+
+    // A task id is derived from goal, title and whole-second timestamp. Two
+    // identical creates in one second used to let the second INSERT hit the
+    // primary key and leak `UNIQUE constraint failed: tasks.id` to the caller.
+    // The duplicate is a domain error, not a database failure.
+    #[test]
+    fn duplicate_task_creation_is_a_typed_error_not_a_raw_sqlite_fault() {
+        let store = store();
+        let goal = goal(&store);
+        let first = store
+            .create_task(&goal.id, "same task", "done", None, NOW)
+            .unwrap();
+
+        let error = store
+            .create_task(&goal.id, "same task", "done", None, NOW)
+            .unwrap_err();
+
+        assert!(
+            matches!(error, LodestarError::Invalid(_)),
+            "expected a typed Invalid error, got {error:?}"
+        );
+        assert!(
+            error.to_string().contains(&first.id),
+            "the error should identify the existing task: {error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("reuse it or choose a distinct title"),
+            "the error should name the next action: {error}"
+        );
+        assert_eq!(
+            store
+                .board(true)
+                .unwrap()
+                .into_iter()
+                .filter(|task| task.id == first.id)
+                .count(),
+            1,
+            "a rejected duplicate must not create a second row"
+        );
     }
 
     // ADR-0057. A merge can only be checked against the work it came from if
