@@ -464,7 +464,8 @@ and documentation surface.
 | 6 | **Prove adoption and publish the extension contract.** Run end-to-end pilots for an ungoverned fixture and a migrated governed repository; publish pack authoring/upgrade guidance and a self-contained constitution export. | Both adoption paths satisfy §13; exported policy includes philosophy, versions, provenance, controls, and active waivers; deterministic operation works without an LLM; focused and workspace validation are green and user-visible surfaces are documented. |
 
 When the Design Board MCP surface is available, attributed human acceptance
-followed by idempotent `promote_design` should create these six tasks with task 2
+followed by idempotent `design_promote(step="materialize")` should create these
+six tasks with task 2
 blocked by task 1, continuing through task 6. Do not model the policy itself as
 completable tasks: principles, constraints, and invariants remain constitutional
 clauses enforced continuously by Conformance.
@@ -479,12 +480,13 @@ not infer tasks from arbitrary Markdown.
 | Repository ADR | Design state | Scheduling behaviour |
 |---|---|---|
 | New `Proposed` ADR | `proposed` | Register on the Design Board; create no task. |
-| Accepted through the Design Board | `accepted` / `pending` | Offer `promote_design`; materialise tasks exactly once. |
+| Accepted through the Design Board | `accepted` / `pending` | Offer `design_promote`; materialise tasks exactly once. |
 | Historical accepted ADR | `accepted` / `not_required` | Import for audit; create no task unless a human explicitly requests promotion. |
 | Rejected ADR | `rejected` | Retain for audit; never create tasks. |
 
-`accept_design` records only the attributed human decision. The separate
-`promote_design(design_id, objective_goal_id)` method reuses the planner behind
+`design_decide(decision="accept")` records only the attributed human decision.
+The separate `design_promote(design_id, step="materialize", ...)` step reuses the
+planner behind
 `decompose_goal`, then atomically stores the complete plan and design→task /
 design→goal provenance. It is idempotent: retries return the existing materialised
 result. Keeping promotion separate avoids holding a SQLite transaction across
