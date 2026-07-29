@@ -258,6 +258,49 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **17% of tracked files cannot be re-ingested at all: another worktree's
+  absolute id owns them — MEASURED, not fixed.** Found by the first run of
+  `make reingest`. 43 of 247 files failed with
+
+  ```
+  structural edge is owned by
+  artifact:c:/Users/lyndonswan/Repos/MindLeak-export/scripts/design-audit.mjs,
+  not artifact:scripts/design-audit.mjs
+  ```
+
+  ADR-0038 gives every worktree of this repository one shared graph, so an
+  absolute id written from `MindLeak-export` names the *same file* as the
+  repo-relative id — but it holds the structural edges, and the repo-relative id
+  cannot take them. `repair_workspace_paths` runs at server startup and would
+  collapse these, except that it deliberately skips ids outside its own root:
+  its own test is `repair_is_idempotent_and_leaves_foreign_paths_alone`. A
+  sibling worktree is not foreign, and treating it as foreign is what makes the
+  split permanent. Impact: those files are frozen under whichever worktree
+  ingested them first, so every future extractor improvement misses them and
+  nothing reports it — the error only appears if something tries to re-ingest.
+  Not fixed here because it is an ownership decision, not a patch: repair would
+  have to recognise a sibling checkout of the same repository id and merge into
+  the repo-relative id, and merging structure from two identities needs a rule
+  for which wins.
+- **An extractor improvement does not reach the graph that already exists —
+  MITIGATED by `make reingest`, still not automatic.** Structural extraction
+  happens once, at ingest time, and nothing revisits it: `reconcile_workspace`
+  only forgets files that vanished, `index` only fills embeddings, and the
+  editor sensor re-ingests a file only when someone saves it. Measured
+  2026-07-29, immediately after Rust `mod`/`use` extraction shipped:
+  `get_impact_radius` on `crates/mindleak-core/src/model.rs` — imported by
+  nearly every module in the crate — returned 11 nodes, 11 edges and **zero**
+  imports edges. The improvement was real and entirely invisible. After one
+  `make reingest` pass the same query returned **189 nodes, 216 edges, 41
+  imports edges and 25 dependent `.rs` files**.
+  Two things remain. Nobody is told the graph is stale: no node records which
+  extractor version produced it, so "this file was last understood three
+  releases ago" is not a question the graph can answer, and the only symptom is
+  an impact result that is quietly too small. And re-ingesting resets the decay
+  clock on the structural edges it re-asserts — defensible, because structure is
+  true as long as the file says so, but it means the structural tier reads as
+  uniformly fresh afterwards. Attention (`observed`) edges are untouched.
+
 - **The conformance chain governs 8 code nodes, none of them Rust, and the gate
   that would enforce it cannot run — MEASURED, partially mitigated.**
   `ARCHITECTURE.md` calls the conformance chain "the only trustworthy proof that
