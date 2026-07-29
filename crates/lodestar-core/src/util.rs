@@ -35,6 +35,21 @@ pub(crate) fn slugify(input: &str) -> String {
     }
 }
 
+/// The identity a goal keeps across constitutional versions.
+///
+/// A clause carried into version *N* is re-issued as `goal:<slug>@constitution:vN`
+/// while a task keeps naming the bare `goal:<slug>`. Comparing those two by
+/// string equality can never hold, so anything asking "is this the same goal"
+/// compares slugs — the same rule `diff_clauses` uses to recognise a restated
+/// clause rather than reading it as a simultaneous removal and addition.
+pub(crate) fn goal_slug(goal_id: &str) -> &str {
+    let without_prefix = goal_id.strip_prefix("goal:").unwrap_or(goal_id);
+    match without_prefix.split_once('@') {
+        Some((slug, _version)) => slug,
+        None => without_prefix,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
