@@ -206,12 +206,12 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "resolve_task",
-            "description": "Human-accept an in_review task to done — the task-level mirror of accept_design. A task lands in_review when conformance returns drift/needs_human (the work is plausibly complete but wants human judgement); this records that judgement and moves it to done with no code-conformance re-run, opening any blocked successor. Human-in-the-loop: the resolver identity is required and may not be the agent whose work is under review.",
+            "description": "Accept an in_review task to done under a reviewer label — the task-level mirror of accept_design. A task lands in_review when conformance returns drift/needs_human; this records the judgement and moves it to done with no code-conformance re-run, opening any blocked successor. The label is an attributable declaration, not an authenticated human identity (ADR-0071), and must differ from the agent id under review.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "task_id": { "type": "string" },
-                    "human": { "type": "string", "description": "The human reviewer's identity (must differ from the agent whose work is under review)." }
+                    "human": { "type": "string", "description": "Non-empty reviewer label recorded in resolved_by. Attributed, not authenticated; must differ from the agent id under review." }
                 },
                 "required": ["task_id", "human"]
             }
@@ -1507,10 +1507,13 @@ mod tests {
         );
         assert!(denied.unwrap_err().contains("may not resolve its own"));
 
-        // A distinct human accepts it to done with no conformance re-run.
+        // Any distinct non-empty label is accepted and attributed. This is
+        // deliberately not a known principal or credential: ADR-0071 requires
+        // the API to stop implying authentication it cannot perform.
+        let reviewer_label = "reviewed-by-lyndon (unverified label)";
         let result = call(
             &engine,
-            &json!({ "name": "resolve_task", "arguments": { "task_id": task.id, "human": "reviewer" } }),
+            &json!({ "name": "resolve_task", "arguments": { "task_id": task.id, "human": reviewer_label } }),
         )
         .unwrap();
         let payload: Value =
@@ -1520,6 +1523,16 @@ mod tests {
         let board = engine.board(true).unwrap();
         let resolved = board.iter().find(|t| t.id == task.id).unwrap();
         assert_eq!(resolved.status.as_str(), "done");
+        assert_eq!(resolved.resolved_by.as_deref(), Some(reviewer_label));
+
+        let definition = definitions()
+            .into_iter()
+            .find(|tool| tool["name"] == "resolve_task")
+            .unwrap();
+        let description = definition["inputSchema"]["properties"]["human"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(description.contains("not authenticated"), "{description}");
     }
 
     #[test]
