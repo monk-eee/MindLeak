@@ -489,6 +489,38 @@ export interface BoardRow {
   description: string;
   tooltip: string;
   status: string;
+  /** Codicon id for the row, derived from status *and* lease state. */
+  icon: string;
+}
+
+const TASK_STATUS_ICONS: Record<string, string> = {
+  claimed: "account",
+  needs_input: "comment-unresolved",
+  paused: "debug-pause",
+  open: "circle-outline",
+  in_review: "eye",
+  blocked: "error",
+  done: "check",
+};
+
+/**
+ * The icon a board row should carry.
+ *
+ * A claim whose lease has expired is nobody's work: the store's compare-and-swap
+ * admits it, and {@link boardRows} already sorts it with ready work. It still
+ * drew the `account` icon, which is the icon for *someone is holding this* — so
+ * the one row that means "abandoned, take it" looked identical to the rows that
+ * mean "hands off". Fifteen such rows in a day made the board unreadable, and
+ * the icon was the last part still saying the wrong thing.
+ *
+ * `watch` is the honest picture: a lease is a timer, and this one ran out.
+ * Derived from the clock at render time, never reaped or written back.
+ */
+export function boardIconId(task: LodestarTask, nowUnix: number): string {
+  if (task.status === "claimed" && taskLeaseState(task, nowUnix) === "expired") {
+    return "watch";
+  }
+  return TASK_STATUS_ICONS[task.status] ?? "circle-slash";
 }
 
 const BOARD_STATUS_ORDER = [
@@ -562,6 +594,7 @@ export function boardRows(
       description: taskDescription(t, nowUnix),
       tooltip: taskTooltip(t, nowUnix),
       status: t.status,
+      icon: boardIconId(t, nowUnix),
     }));
 }
 

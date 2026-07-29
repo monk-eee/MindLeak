@@ -227,3 +227,34 @@ test("the rendered tick names the decision and every entry", () => {
   assert.match(rendered, /#2/);
   assert.match(rendered, /-> updating #1 from main/);
 });
+
+/// An unarmed pull request is not late in the queue, it is absent from it, and
+/// reporting only the armed ones makes those two states look identical. Three
+/// of five open pull requests were invisible here on the day this was written,
+/// which reads as an empty backlog and is why "the queue never merges the old
+/// ones" looked like an ordering bug when nothing was ever in the queue at all.
+test("the tick names the open work the queue is not managing", () => {
+  const action = nextAction([pr(1), pr(2, { autoMergeRequest: null })], NOW);
+
+  assert.deepEqual(
+    action.unqueued.map((p) => p.number),
+    [2],
+    "an unarmed pull request must be reported, not dropped",
+  );
+  assert.deepEqual(
+    action.queued.map((p) => p.number),
+    [1],
+    "and it must not be treated as queued",
+  );
+
+  const rendered = describe(action);
+  assert.match(rendered, /#2\s+\S+\s+not queued: nobody armed it/);
+});
+
+/// Silence about unmanaged work is the failure being fixed, so the absence of
+/// any unarmed pull request must not print a phantom entry either.
+test("a fully armed queue reports nothing as unmanaged", () => {
+  const rendered = describe(nextAction([pr(1), pr(2)], NOW));
+
+  assert.equal(rendered.includes("not queued"), false);
+});
