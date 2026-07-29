@@ -258,6 +258,25 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **Two tasks with the same title on the same goal in the same second fail with
+  a raw SQLite error — FOUND, not fixed.** A task id is
+  `task:{short_hash(goal_id|title|now)}` where `now` is whole seconds
+  (`create_task_after_on`, `crates/lodestar-core/src/store/coordination.rs`).
+  Create the same title twice within one second and the second call returns
+  `sqlite error: UNIQUE constraint failed: tasks.id` — an implementation detail
+  leaking as an error message, for what is either a legitimate retry or an
+  obvious duplicate. Hit twice while writing the `existing_work` tests, which is
+  the only reason it was noticed; the six real duplicates on the board landed
+  seconds apart and so slipped through. Impact: confusing failure for scripted
+  task creation, and a de-duplication rule that exists by accident, applies for
+  one second, and reports itself as a database fault.
+
+- **A task does not record the branch it was claimed on — OPEN, tracked.**
+  `existing_work` can say a goal has already been worked, but not where that
+  work is or whether it merged, which is the half of the question that decides
+  whether to redo it. `Task` has no branch field; tracked as its own task rather
+  than guessed at in the report.
+
 - **A new constitutional clause can never acquire an enforcement contract —
   OPEN.** There is no supported route to add a locally authored, enforceable
   clause to the constitution. `define_goal` writes the clause with
@@ -358,6 +377,7 @@ and footguns, with impact and status:
   clock on the structural edges it re-asserts — defensible, because structure is
   true as long as the file says so, but it means the structural tier reads as
   uniformly fresh afterwards. Attention (`observed`) edges are untouched.
+
 - **One session's agent id changed under a running server, silently resetting
   its claim's evidence window and locking it out of its own task — OBSERVED,
   FIXED by [ADR-0063](docs/adr/0063-a-migration-may-tidy-the-past-never-the-present.md);
