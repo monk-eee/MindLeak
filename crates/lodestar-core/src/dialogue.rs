@@ -98,7 +98,7 @@ fn shared_scope_phrase(overlap: &ClaimOverlap) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::TaskScope;
+    use crate::model::{OverlapSignal, TaskScope};
 
     fn overlap(paths: &[&str], symbols: &[&str]) -> ClaimOverlap {
         ClaimOverlap {
@@ -108,6 +108,8 @@ mod tests {
             scope: TaskScope::default(),
             matching_paths: paths.iter().map(|p| p.to_string()).collect(),
             matching_symbols: symbols.iter().map(|s| s.to_string()).collect(),
+            owner_branch: None,
+            signal: OverlapSignal::Undeclared,
         }
     }
 

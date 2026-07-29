@@ -11,13 +11,13 @@ use std::path::{Path, PathBuf};
 use mindleak_core::MindLeak;
 use mindleak_session::SessionRegistry;
 use mindleak_storage::{
-    head_sha, resolve_database, resolve_workspace_path, stale_build_notice, DatabaseKind,
+    build_notice, head_sha, resolve_database, resolve_workspace_path, DatabaseKind,
 };
 
 fn main() -> anyhow::Result<()> {
     mindleak_core::telemetry::init_tracing();
     let workspace = resolve_workspace();
-    warn_when_stale(&workspace);
+    report_build_identity(&workspace);
     let database = resolve_database(
         &workspace,
         DatabaseKind::MindLeak,
@@ -103,17 +103,24 @@ fn main() -> anyhow::Result<()> {
 /// serves. The servers have always reported `<version>+<sha>` at `initialize`;
 /// nobody ever compared it, and a two-day-old local build was blamed on the
 /// extension four times in one session before anyone looked.
-fn warn_when_stale(workspace: &Path) {
+fn report_build_identity(workspace: &Path) {
     let Ok(executable) = std::env::current_exe() else {
         return;
     };
-    if let Some(notice) = stale_build_notice(
+    if let Some(notice) = build_notice(
         &executable,
         workspace,
         env!("MINDLEAK_BUILD_SHA"),
         head_sha(workspace).as_deref(),
     ) {
-        tracing::warn!("{notice}");
+        // Only a build behind the checkout it was built from is a warning.
+        // Naming an installed build is information, and logging it louder than
+        // that is how a real warning gets tuned out.
+        if notice.stale {
+            tracing::warn!("{}", notice.message);
+        } else {
+            tracing::info!("{}", notice.message);
+        }
     }
 }
 
