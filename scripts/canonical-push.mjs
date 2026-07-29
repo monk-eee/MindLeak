@@ -19,6 +19,7 @@ import {
   overlapNotice,
   publishVerdict,
   resolveServer,
+  staleServerWarning,
   sameSession,
 } from "./claim-gate.mjs";
 import { recordPublication } from "./publication-record.mjs";
@@ -171,6 +172,13 @@ const armed = armedPullRequestNumber(queryPullRequest(branch, repoRoot));
 // about the world.
 const sessionId = process.env.LODESTAR_SESSION_ID || "";
 const server = resolveServer(repoRoot);
+// Everything below asks the ledger questions and writes its answers down. A
+// stale build answers with the previous code, and the record it leaves looks
+// exactly like a current one.
+const staleServer = staleServerWarning(server, repoRoot);
+if (staleServer) {
+  console.warn(`canonical-push: ${staleServer}`);
+}
 let agent = "";
 let reachable = false;
 let tasks = [];

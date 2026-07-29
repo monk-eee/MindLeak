@@ -14,7 +14,7 @@
 // honest unit of work, and it is exactly where the coordination failures happen.
 
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -278,6 +278,80 @@ export const resolveServer = (repoRoot, plane = "lodestar") => {
     if (existsSync(candidate)) return candidate;
   }
   return null;
+};
+
+/**
+ * Warn when a locally built server predates the source it was built from.
+ *
+ * A running server is a *build*, not the code in front of you, and the gap
+ * between them is invisible: the tool answers, the answer is wrong in exactly
+ * the way the old code was wrong, and the obvious next move is to doubt the fix
+ * rather than the binary. It cost three separate diagnoses in one day — a
+ * conformance verdict read as a product bug, a knowledge record that stayed
+ * silent after the fix that should have made it speak, and ADR-0054's whole
+ * different-id-shape incident.
+ *
+ * Only local builds are judged. A binary supplied through the override may be a
+ * released artifact that was never built from this tree, and warning that a
+ * shipped release is "older than crates/" would be noise on every run — a
+ * warning that is always on is a warning nobody reads.
+ *
+ * Pure so the comparison can be tested without a filesystem: the decision is
+ * two numbers and a path, and that is exactly what is easy to get wrong.
+ */
+export const staleServerNotice = ({
+  binary,
+  repoRoot,
+  binaryMtime,
+  sourceMtime,
+}) => {
+  if (!binary || !binary.startsWith(join(repoRoot, "target"))) return null;
+  if (!(sourceMtime > binaryMtime)) return null;
+  const behind = Math.round((sourceMtime - binaryMtime) / 1000);
+  return (
+    `${binary} is ${behind}s older than the source it was built from; it is answering with the previous build.\n` +
+    "  Rebuild before trusting what it says:  cargo build -p lodestar-mcp -p mindleak-mcp"
+  );
+};
+
+/** Newest mtime among the Rust sources a server binary is built from. */
+export const newestSourceMtime = (repoRoot) => {
+  let newest = 0;
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".rs")) {
+        const { mtimeMs } = statSync(full);
+        if (mtimeMs > newest) newest = mtimeMs;
+      }
+    }
+  };
+  walk(join(repoRoot, "crates"));
+  return newest;
+};
+
+/** The notice for a resolved binary, or `null` when it is current or external. */
+export const staleServerWarning = (binary, repoRoot) => {
+  if (!binary || !binary.startsWith(join(repoRoot, "target"))) return null;
+  let binaryMtime;
+  try {
+    binaryMtime = statSync(binary).mtimeMs;
+  } catch {
+    return null;
+  }
+  return staleServerNotice({
+    binary,
+    repoRoot,
+    binaryMtime,
+    sourceMtime: newestSourceMtime(repoRoot),
+  });
 };
 
 /**

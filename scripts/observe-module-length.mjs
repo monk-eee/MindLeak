@@ -18,7 +18,7 @@
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 
-import { callTools, resolveServer } from "./claim-gate.mjs";
+import { callTools, resolveServer, staleServerWarning } from "./claim-gate.mjs";
 import { measure, THRESHOLD } from "./measure-module-length.mjs";
 
 const CONTROL = "control:rust-module-length";
@@ -45,6 +45,13 @@ if (!server) {
   fail(
     "no lodestar-mcp binary found; build one or set LODESTAR_MCP_BIN. Reporting nothing is not the same as reporting a pass",
   );
+}
+
+// A measurement judged by the previous build is a measurement about the
+// previous build. Say so rather than letting the number look current.
+const stale = staleServerWarning(server, repoRoot);
+if (stale) {
+  console.warn(`observe-module-length: ${stale}`);
 }
 
 const modules = measure(path.join(repoRoot, "crates"));
