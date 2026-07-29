@@ -161,7 +161,7 @@ impl Lodestar {
         // aligns in the branch directly above, so failing here made the
         // *presence of a task* the thing that worsened the verdict — and made
         // work whose product is an ADR, a benchmark, a changelog fragment or
-        // documentation impossible to complete, because `link_goal_to_code`
+        // documentation impossible to complete, because `link_goal_to_artifact`
         // binds code and nothing else. `needs_human` must mean "a human needs
         // to look at this", not "the work product was not Rust".
         //

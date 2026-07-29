@@ -796,7 +796,7 @@ mod tests {
             .any(|value| value == "evidence"));
         let link = tools
             .iter()
-            .find(|tool| tool["name"] == "link_goal_to_code")
+            .find(|tool| tool["name"] == "link_goal_to_artifact")
             .unwrap();
         assert_eq!(
             link["inputSchema"]["properties"]["mode"]["default"],
