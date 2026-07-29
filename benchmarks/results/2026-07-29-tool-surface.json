@@ -1,0 +1,28 @@
+{
+  "evaluated_at": 1785285372,
+  "method": {
+    "source": "tools/list over MCP stdio",
+    "unit": "compact JSON of the tools array",
+    "bytes_per_token": 4,
+    "tokens_are_approximate": true
+  },
+  "planes": [
+    {
+      "plane": "mindleak",
+      "tools": 27,
+      "bytes": 12025,
+      "approx_tokens": 3006
+    },
+    {
+      "plane": "lodestar",
+      "tools": 90,
+      "bytes": 51094,
+      "approx_tokens": 12774
+    }
+  ],
+  "combined": {
+    "tools": 117,
+    "bytes": 63119,
+    "approx_tokens": 15780
+  }
+}

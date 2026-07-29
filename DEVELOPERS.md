@@ -258,6 +258,30 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **A new constitutional clause can never acquire an enforcement contract —
+  OPEN.** There is no supported route to add a locally authored, enforceable
+  clause to the constitution. `define_goal` writes the clause with
+  `status = active` and `constitution_version = None` (`store/goals.rs`), and
+  `complete_clause_contract` refuses any clause that is active
+  (`facade/constitution.rs`) — correctly, because hardening a live rule
+  mid-flight is an amendment. But the amendment path cannot help either:
+  `propose_amendment` copies the *existing* active clauses into the draft and
+  nothing inserts a new one, so the clause that most needs a contract is the one
+  clause that can never be given one. It is stuck version-less, scope-less and
+  review-only, and belongs to no constitutional version, so `constitution_diff`
+  will never show it. The only way a new clause reaches a version is
+  `register_policy_pack` + `propose_policy_pack` + `review_pack_clause`, which
+  is designed for adopting *external* policy and records immutable upstream
+  provenance — minting a local pack to smuggle in a project's own rule would put
+  a fabricated source in the provenance record, so it is not a workaround.
+  — Measured impact: it blocked the ratchet half of task:3eab606fbaf6; the
+  tool-surface measurement ships, the ratchet cannot be registered, because
+  `register_ratchet` requires an active clause that authorises it and no clause
+  covers the MCP tool surface. Any future control over something the current 25
+  clauses do not already mention hits the same wall. — Found 2026-07-29, filed
+  as task:4cef8e361fc7; not fixed in that change, which stayed inside its
+  declared scope.
+
 - **Closing a stranded claim after the fact: four traps, all hit in one
   sitting — OPEN.** Most stranded claims are work that already shipped and was
   never closed, so reaching for the receipt afterwards is a natural move. It is
@@ -1034,6 +1058,18 @@ and footguns, with impact and status:
   correct unique-file aggregate (89.19% lines / 84.85% branches). — High impact
   on local proof. — Left open in the external adapter; use a canonical uppercase
   Windows drive root for coverage, while CI's test counts remain authoritative.
+- **Unit Test MCP reports `PASSED` for `scripts/*.test.mjs`, which it never
+  runs — OPEN.** The repository's own guard tests are `node:test` files and no
+  adapter covers them. Asked to run one with `framework=custom`, `run_tests`
+  returns `status: PASSED` with `passed`/`failed`/`total` all zero in ~70 ms.
+  Proved by red/green probe on 2026-07-29: a test asserting `1 === 2` inside
+  `scripts/measure-tool-surface.test.mjs` still came back `PASSED`. — High
+  impact, and worse than the zero-count gap above: a green verdict on a suite
+  that never executed is indistinguishable from a real one, so the 88 assertions
+  guarding the conformance gate, claim gate, merge-driver guard and delivery
+  queue can all be reported as passing while broken. — Until an adapter exists,
+  validate script tests with `make script-test` (`node scripts/script-tests.mjs`),
+  which is what CI runs.
 - **Disposable Git fixtures inherited the parent hook's alternate index —
   FIXED.** — Committed-snapshot Cargo hooks set `GIT_INDEX_FILE`; child `git`
   commands in repository-state and publisher tests inherited it even when they
