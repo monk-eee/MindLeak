@@ -118,9 +118,14 @@ mod tests {
 
         assert!(body["footprints"].is_array(), "footprints stay available");
         assert!(
-            body["impact"]["nodes"].is_array(),
+            body["impact"].is_array(),
             "the pre-flight carries the impact answer: {body}"
         );
+        assert!(
+            body["impact_total"].is_number(),
+            "and says how much it left out: {body}"
+        );
+        assert!(body["impact_edges"].is_array());
         assert!(body["unknown"].is_array());
         assert_eq!(body["requested"][0], "artifact:src/auth.rs");
     }
