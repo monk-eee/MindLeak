@@ -364,6 +364,7 @@ fn requires_session(name: &str) -> bool {
         name,
         "register_design"
             | "review_pack_clause"
+            | "policy_pack_decide"
             | "propose_constitution"
             | "activate_constitution"
             | "claim_task"

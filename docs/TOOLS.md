@@ -63,6 +63,10 @@ one intent plane and one memory graph by default.
 
 | Tool | Purpose |
 |---|---|
+| `constitution_define` | Write or rewrite intent — `action`: `goal` · `supersede` · `bind` · `unbind`. |
+| `constitution_decide` | Move a version through its lifecycle — `action`: `propose` · `activate`. |
+| `constitution_query` | Read policy and what it governs — `action`: `active` · `status` · `governing` · `for_task` · `export`. |
+| `policy_pack_register` / `policy_pack_decide` / `policy_pack_query` | The policy-pack half of the same vocabulary: register or propose a pack, attribute a clause disposition or complete its contract, and read the review record. |
 | `define_goal` / `supersede_goal` | Write/version the constitution (objective · constraint · invariant). |
 | `get_constitution` | The authoritative intent to read **before acting**. |
 | `constitution_status` | Whether this project has an active constitution, a draft awaiting review, or none at all, with the version and its clause count. |
