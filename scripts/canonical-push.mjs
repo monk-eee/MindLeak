@@ -243,16 +243,35 @@ if (server && /^[0-9a-f]{32}$/.test(sessionId)) {
   }
 }
 
+// What this push actually adds over what is already published. A reconciliation
+// merges the base in and nothing else, which is how the claim gate can attribute
+// it to the task that delivered the branch instead of demanding a fresh one for
+// work that was already recorded. Marked per commit rather than counted, so
+// "only merges" stays a fact about every commit rather than a guess from a total.
+const newCommits = remoteBranchExists
+  ? git(["rev-list", "--parents", `${remoteRef}..HEAD`])
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        const [sha, ...parents] = line.trim().split(/\s+/);
+        return { sha, isMerge: parents.length > 1 };
+      })
+  : [];
+
 const verdict = publishVerdict({
   reachable,
   sessionDeclared: Boolean(sessionId),
   agent,
   tasks,
   branch,
+  newCommits,
   now: Math.floor(Date.now() / 1000),
 });
 if (!verdict.ok) {
   fail(verdict.message);
+}
+if (verdict.notice) {
+  console.log(`canonical-push: ${verdict.notice}`);
 }
 
 const notice = overlapNotice(
