@@ -6,6 +6,22 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **A completion now says whether its evidence affirmed anything.** Reaching
+  `done` said nothing about whether the conformance receipt behind it proved
+  the work. Measured over this repository: **57 of 101 `done` tasks** rested on
+  a `drift`/`needs_human` verdict or on an `aligned` one covering **zero
+  nodes**, and 55 of 109 receipts overall covered no nodes at all — every one
+  reading on the board exactly like a task whose evidence proved something.
+  `board` rows now carry a derived `receipt` (`conformance_id`, `verdict`,
+  `covered_nodes`, `checked_at`, `affirms`), and `export_evidence` gains a
+  `Covered` column beside the verdict. `affirms` is true only for an `aligned`
+  verdict that covered at least one node: agreement about nothing is not proof,
+  so an `aligned` receipt over an empty bundle affirms as little as a
+  `needs_human` one. Derived at read time from the durable record — nothing is
+  stored twice — and a task with no record at all reports no receipt, which is
+  distinct from one that proved nothing.
+
 ### Fixed
 - **A migration no longer re-owns a live claim (ADR-0063).** The ADR-0054
   identity collapse rewrote `tasks.owner` for every labelled row and re-fired on

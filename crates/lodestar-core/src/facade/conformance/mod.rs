@@ -680,6 +680,8 @@ mod tests {
             version: 1,
             configuration: None,
             status: ControlStatus::Active,
+            retired_by: None,
+            retired_at: None,
         };
         e.register_control(&control).unwrap();
 
