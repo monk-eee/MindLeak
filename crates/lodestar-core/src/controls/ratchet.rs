@@ -122,6 +122,8 @@ impl Ratchet {
                 baseline: self.baseline.clone(),
             })?),
             status: ControlStatus::Active,
+            retired_by: None,
+            retired_at: None,
         })
     }
 
