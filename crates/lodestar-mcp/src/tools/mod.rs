@@ -15,6 +15,8 @@ mod knowledge;
 mod lifecycle;
 mod waivers;
 
+use std::borrow::Cow;
+
 use lodestar_core::Lodestar;
 use mindleak_session::{session_input_schema, SessionContext, SessionRegistry};
 use mindleak_storage::StorageStatus;
@@ -64,12 +66,27 @@ fn declared_arguments(name: &str) -> Option<Vec<String>> {
 
 /// The tool that answers to this name today, following any ADR-0059 rename.
 pub(super) fn current_name(name: &str) -> &str {
-    for table in RENAME_TABLES {
-        if let Some(renamed) = renamed(table, name) {
-            return renamed.new;
-        }
+    if let Some(renamed) = current_rename(name) {
+        return renamed.new;
     }
     name
+}
+
+fn current_rename(name: &str) -> Option<&'static Renamed> {
+    for table in RENAME_TABLES {
+        if let Some(renamed) = renamed(table, name) {
+            return Some(renamed);
+        }
+    }
+    None
+}
+
+/// The canonical tool and arguments that answer this call today.
+fn current_call<'a>(name: &'a str, args: &'a Value) -> (&'a str, Cow<'a, Value>) {
+    match current_rename(name) {
+        Some(renamed) => (renamed.new, Cow::Owned(renamed.translate(args))),
+        None => (name, Cow::Borrowed(args)),
+    }
 }
 
 /// Every rename table in the server. A cluster that collapses adds its table
@@ -145,6 +162,10 @@ pub fn validate_arguments(name: &str, args: &Value) -> Result<(), String> {
 
 pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value, String> {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+    let requirement = params
+        .get("arguments")
+        .map(|args| session_requirement(name, args))
+        .unwrap_or(SessionRequirement::None);
     let mut bound = params.clone();
     let args = bound
         .get_mut("arguments")
@@ -167,33 +188,34 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
         }
         return Ok(bound);
     }
-    if requires_session(name) {
-        let token = args
-            .get("session_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "missing required string arg: session_id".to_string())?;
-        let identity = sessions.resolve(token)?;
-        args.insert("agent".to_string(), json!(identity.agent_id));
-        args.insert("resolved_name".to_string(), json!(identity.name));
-        if let Some(evidence) = args.get_mut("evidence").and_then(Value::as_object_mut) {
-            evidence.insert("agent_id".to_string(), json!(identity.agent_id));
-        }
-    } else if OPTIONAL_SESSION_TOOLS.contains(&name) {
-        // A session sharpens the answer but is not the price of asking. An
-        // unresolvable token binds nothing and the tool still answers, because
-        // this is a read-only advisory that must degrade rather than refuse:
-        // the registry is per-process, so requiring resolution would turn a
-        // server restart into a hard failure on a call that worked a moment
-        // earlier. The degraded result says so — every signal reads
-        // `undeclared` and `requester_branch` is null.
-        if let Some(identity) = args
-            .get("session_id")
-            .and_then(Value::as_str)
-            .and_then(|token| sessions.resolve(token).ok())
-        {
+    match requirement {
+        SessionRequirement::Required => {
+            let token = args
+                .get("session_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing required string arg: session_id".to_string())?;
+            let identity = sessions.resolve(token)?;
             args.insert("agent".to_string(), json!(identity.agent_id));
             args.insert("resolved_name".to_string(), json!(identity.name));
+            if let Some(evidence) = args.get_mut("evidence").and_then(Value::as_object_mut) {
+                evidence.insert("agent_id".to_string(), json!(identity.agent_id));
+            }
         }
+        SessionRequirement::Optional => {
+            // A session sharpens the answer but is not the price of asking. An
+            // unresolvable token binds nothing and the tool still answers,
+            // because the registry is per-process and read-only advice must
+            // degrade rather than fail after a server restart.
+            if let Some(identity) = args
+                .get("session_id")
+                .and_then(Value::as_str)
+                .and_then(|token| sessions.resolve(token).ok())
+            {
+                args.insert("agent".to_string(), json!(identity.agent_id));
+                args.insert("resolved_name".to_string(), json!(identity.name));
+            }
+        }
+        SessionRequirement::None => {}
     }
     Ok(bound)
 }
@@ -293,23 +315,14 @@ pub fn call_with_storage(
     Err(format!("unknown tool: {name}"))
 }
 
-/// Calls that prove their caller is still working on the task they name
-/// (ADR-0052). Reading a task's scope, asking or answering a question about it,
-/// reviewing its conformance history, or checking its evidence are all things
-/// only an agent mid-task does.
-///
-/// `claim_task` and `renew_lease` are absent deliberately: they set the lease
-/// themselves, and a heartbeat afterwards would silently widen what the caller
-/// asked for. `complete_task` and `release_task` are absent because the claim is
-/// ending, not continuing.
-const HEARTBEAT_TOOLS: &[&str] = &[
-    "task_scope",
-    "ask_question",
-    "answer",
-    "conformance_history",
-    "check_conformance",
-];
-
+// Calls that prove their caller is still working on the task they name
+// (ADR-0052). Reading a task's scope, asking or answering a question about it,
+// reviewing its conformance history, or checking its evidence are all things
+// only an agent mid-task does.
+//
+// Claim, renew, complete and release are absent deliberately: they set or end
+// the lease themselves, so a heartbeat would silently widen what the caller
+// asked for.
 // `advise` is deliberately absent, answering the question ADR-0052 left open.
 //
 // ADR-0052 listed it as proof of life, then said in the same breath that
@@ -339,7 +352,7 @@ const HEARTBEAT_LEASE_SECS: i64 = 300;
 /// actually made. A lapse still requires a deliberate re-claim, so this cannot
 /// resurrect a claim someone else has taken.
 fn touch_named_task(engine: &Lodestar, name: &str, args: &Value) {
-    if !HEARTBEAT_TOOLS.contains(&name) {
+    if !is_heartbeat(name, args) {
         return;
     }
     let Some(task_id) = args.get("task_id").and_then(Value::as_str) else {
@@ -354,6 +367,19 @@ fn touch_named_task(engine: &Lodestar, name: &str, args: &Value) {
         return;
     }
     let _ = engine.touch_lease(task_id, agent, HEARTBEAT_LEASE_SECS);
+}
+
+fn is_heartbeat(name: &str, args: &Value) -> bool {
+    let (name, args) = current_call(name, args);
+    match name {
+        "check_conformance" | "conformance_history" => true,
+        "task_query" => args.get("view").and_then(Value::as_str) == Some("scope"),
+        "task_transition" => matches!(
+            args.get("to").and_then(Value::as_str),
+            Some("ask" | "answer")
+        ),
+        _ => false,
+    }
 }
 
 fn session_definition() -> Value {
@@ -372,37 +398,34 @@ fn storage_definition() -> Value {
     })
 }
 
-/// Tools that use a session when one is offered but never require one.
-///
-/// `check_overlap` is a read-only advisory: with a session it can classify each
-/// intersection against the branch that session declared (ADR-0035), and
-/// without one it must still give the answer it always gave. Requiring a
-/// session would be the cheap way to get the branch and the wrong one — it
-/// would make an advisory check refusable, which is exactly the property
-/// ADR-0024 says overlap detection must not have.
-const OPTIONAL_SESSION_TOOLS: [&str; 1] = ["check_overlap"];
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SessionRequirement {
+    None,
+    Optional,
+    Required,
+}
 
-fn requires_session(name: &str) -> bool {
-    matches!(
-        name,
+fn session_requirement(name: &str, args: &Value) -> SessionRequirement {
+    let (name, args) = current_call(name, args);
+    match name {
+        "task_claim" => SessionRequirement::Required,
+        "task_transition" => match args.get("to").and_then(Value::as_str) {
+            Some("complete" | "pause" | "resume" | "ask" | "answer") => {
+                SessionRequirement::Required
+            }
+            _ => SessionRequirement::None,
+        },
+        "task_query" => match args.get("view").and_then(Value::as_str) {
+            Some("pending_questions") => SessionRequirement::Required,
+            Some("overlap" | "scope") => SessionRequirement::Optional,
+            _ => SessionRequirement::None,
+        },
+        "conformance_history" => SessionRequirement::Optional,
         "design_register"
-            // Deprecated, and deliberately still session-bearing: the alias must
-            // keep the contract it had, or a deprecation becomes a breaking
-            // change wearing a helpful message.
-            | "register_design"
             | "review_pack_clause"
             | "policy_pack_decide"
             | "propose_constitution"
             | "activate_constitution"
-            | "claim_task"
-            | "renew_lease"
-            | "complete_task"
-            | "release_task"
-            | "recover_claim"
-            | "ask_question"
-            | "pending_questions"
-            | "pause_task"
-            | "resume_task"
             | "check_conformance"
             | "accept_ratchet_baseline"
             | "retire_control"
@@ -415,13 +438,27 @@ fn requires_session(name: &str) -> bool {
             // session token and compared it to a `session:v1:` agent id, which
             // can never match — the tool refused every caller, including the
             // holder of the task.
-            | "merge_evidence"
-    )
+            | "merge_evidence" => SessionRequirement::Required,
+        _ => SessionRequirement::None,
+    }
+}
+
+#[cfg(test)]
+fn requires_session(name: &str) -> bool {
+    session_requirement(name, &Value::Null) == SessionRequirement::Required
+}
+
+fn advertised_session_requirement(name: &str) -> SessionRequirement {
+    match name {
+        "task_transition" | "task_query" | "conformance_history" => SessionRequirement::Optional,
+        _ => session_requirement(name, &Value::Null),
+    }
 }
 
 fn apply_session_contract(mut tool: Value) -> Value {
     let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
-    if !requires_session(name) {
+    let requirement = advertised_session_requirement(name);
+    if requirement == SessionRequirement::None {
         return tool;
     }
     if let Some(properties) = tool
@@ -430,14 +467,18 @@ fn apply_session_contract(mut tool: Value) -> Value {
         .and_then(Value::as_object_mut)
     {
         properties.remove("agent");
-        properties.insert(
-            "session_id".to_string(),
-            json!({
-                "type": "string",
-                "pattern": "^[0-9a-f]{32}$",
-                "description": "Session id previously registered with open_session."
-            }),
-        );
+        properties
+            .entry("session_id".to_string())
+            .or_insert_with(|| {
+                json!({
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{32}$",
+                    "description": "Session id previously registered with open_session."
+                })
+            });
+    }
+    if requirement != SessionRequirement::Required {
+        return tool;
     }
     if let Some(required) = tool
         .get_mut("inputSchema")
@@ -632,7 +673,7 @@ mod tests {
     #[test]
     fn advise_is_not_a_heartbeat_while_adr_0029_calls_it_state_free() {
         assert!(
-            !HEARTBEAT_TOOLS.contains(&"advise"),
+            !is_heartbeat("advise", &Value::Null),
             "advise renews a lease, which is task state; ADR-0029 documents it \
              as state-free. Amend ADR-0029 before adding it back."
         );
@@ -640,10 +681,34 @@ mod tests {
         // read as "renewal-on-activity was reverted".
         for expected in ["task_scope", "conformance_history", "check_conformance"] {
             assert!(
-                HEARTBEAT_TOOLS.contains(&expected),
+                is_heartbeat(expected, &Value::Null),
                 "{expected} is proof the owner is still working (ADR-0052)"
             );
         }
+    }
+
+    #[test]
+    fn advertised_task_heartbeats_match_their_legacy_aliases() {
+        for (legacy, advertised, arguments) in [
+            ("task_scope", "task_query", json!({ "view": "scope" })),
+            ("ask_question", "task_transition", json!({ "to": "ask" })),
+            ("answer", "task_transition", json!({ "to": "answer" })),
+        ] {
+            assert!(
+                is_heartbeat(legacy, &Value::Null),
+                "{legacy} is a heartbeat"
+            );
+            assert!(
+                is_heartbeat(advertised, &arguments),
+                "{advertised} must preserve {legacy}'s heartbeat"
+            );
+        }
+
+        assert!(!is_heartbeat(
+            "task_transition",
+            &json!({ "to": "complete" })
+        ));
+        assert!(!is_heartbeat("task_query", &json!({ "view": "board" })));
     }
 
     /// A tool that compares its caller against a task's owner must be
@@ -680,6 +745,95 @@ mod tests {
             properties["agent"].is_null(),
             "a caller naming its own agent could certify another agent's merge"
         );
+    }
+
+    /// Bug regression: ADR-0059 renamed the task tools but the session policies
+    /// still recognized only their aliases. Advertised calls reached dispatch
+    /// without an agent, so claims and owner-guarded transitions were unusable.
+    #[test]
+    fn advertised_task_cluster_keeps_its_session_contract() {
+        const TOKEN: &str = "00112233445566778899aabbccddeeff";
+        let sessions = SessionRegistry::new("test").unwrap();
+        let opened = bind_session(
+            &json!({ "name": "open_session", "arguments": { "session_id": TOKEN } }),
+            &sessions,
+        )
+        .unwrap();
+        let agent = opened["arguments"]["resolved_agent"].clone();
+        let bind = |name: &str, arguments: Value| {
+            bind_session(&json!({ "name": name, "arguments": arguments }), &sessions)
+        };
+
+        for (name, arguments) in [
+            (
+                "task_claim",
+                json!({ "task_id": "task:1", "step": "claim", "session_id": TOKEN }),
+            ),
+            (
+                "task_transition",
+                json!({ "task_id": "task:1", "to": "complete", "evidence": {}, "session_id": TOKEN }),
+            ),
+            (
+                "task_query",
+                json!({ "view": "pending_questions", "session_id": TOKEN }),
+            ),
+        ] {
+            let bound = bind(name, arguments).unwrap();
+            assert_eq!(
+                bound["arguments"]["agent"], agent,
+                "{name} resolves its session"
+            );
+        }
+
+        assert_eq!(
+            bind(
+                "task_query",
+                json!({ "view": "overlap", "session_id": TOKEN })
+            )
+            .unwrap()["arguments"]["agent"],
+            agent
+        );
+        for (name, arguments) in [
+            ("task_query", json!({ "view": "overlap" })),
+            (
+                "task_transition",
+                json!({ "task_id": "task:1", "to": "resolve", "human": "reviewer" }),
+            ),
+        ] {
+            assert!(bind(name, arguments).unwrap()["arguments"]["agent"].is_null());
+        }
+
+        for (name, required) in [
+            ("task_claim", true),
+            ("task_transition", false),
+            ("task_query", false),
+        ] {
+            let tool = list()
+                .into_iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap_or_else(|| panic!("{name} is advertised"));
+            let schema = &tool["inputSchema"];
+            assert!(schema["properties"]["session_id"].is_object());
+            assert!(schema["properties"]["agent"].is_null());
+            assert_eq!(
+                schema["required"]
+                    .as_array()
+                    .is_some_and(|keys| keys.iter().any(|key| key == "session_id")),
+                required,
+                "{name} advertises the operation-level contract"
+            );
+        }
+
+        for (name, arguments) in [
+            (
+                "task_transition",
+                json!({ "task_id": "task:1", "to": "complete" }),
+            ),
+            ("task_query", json!({ "view": "pending_questions" })),
+        ] {
+            let error = bind(name, arguments).expect_err("this operation needs a session");
+            assert!(error.contains("session_id"), "actionable refusal: {error}");
+        }
     }
 
     /// Every argument a handler requires is either declared or injected.
