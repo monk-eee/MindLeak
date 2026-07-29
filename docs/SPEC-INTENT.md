@@ -327,6 +327,16 @@ pretend to, per [ADR-0015](adr/0015-advisory-symbol-leases.md)).
   ([ADR-0003](adr/0003-agent-attribution-as-observed-edges.md)). Decay means
   stale attention has already faded below threshold, so only *currently hot*
   overlap raises a flag — no false alarms from last week's edits.
+- **Graded, not binary** ([ADR-0035](adr/0035-fleet-management-heuristics.md)
+  heuristic 4). An intersection is not one risk. Lodestar classifies each claim
+  from the branches the two sessions declared at `open_session`:
+  `same_branch_collision` (one history, colliding now),
+  `cross_branch_merge_risk` (divergence, paid at merge), or `undeclared`. The
+  branch is read from the session that declared it — passing an optional
+  `session_id` — and never accepted as a call argument, because a second place
+  to state it could disagree with the first. Declared context is optional and
+  self-reported (ADR-0035 decision 5): with none, the answer degrades to the
+  ungraded one rather than the check refusing to run.
 - **Advisory, never enforcing.** The check *warns*; it never blocks or grants
   false safety. On a warning an agent coordinates, picks different work, or
   converts to a `blocked_by` handoff (the supported same-file serialization).

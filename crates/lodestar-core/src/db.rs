@@ -739,6 +739,116 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    // ADR-0063: a migration may tidy the past, never the present.
+    //
+    // `reconnect_superseded_clauses` repairs clauses stranded by an amendment
+    // that never recorded its successor, and moving a task's goal is not a
+    // cosmetic repair: the goal is what conformance judges the holder's
+    // evidence against. Changing it under a live claim would change the rule
+    // beneath someone mid-flight, which is the same class of harm as rewriting
+    // `tasks.owner` — and not ours to do as a side effect of opening a file.
+    //
+    // Measured on this repository before the guard: 56 non-terminal tasks would
+    // have moved, 3 of them held by an agent with an unexpired lease.
+    #[test]
+    fn migration_reconnects_stranded_clauses_but_never_a_live_claim() {
+        let path = temporary_database("stranded-clauses");
+        create_legacy_database(&path, false);
+
+        let now = crate::now_unix();
+        let connection = Connection::open(&path).unwrap();
+        // A superseded clause with no successor recorded, and its active twin.
+        connection
+            .execute(
+                "UPDATE goals SET status = 'superseded', superseded_by = NULL WHERE id = 'goal:test'",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO goals (id, slug, kind, title, statement, status, version, created_at)
+                 VALUES ('goal:test@constitution:v2', 'test', 'objective', 'Test', 'x', 'active', 1, 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO goal_code (goal_id, node_id, mode)
+                 VALUES ('goal:test', 'artifact:src/a.rs', 'governed')",
+                [],
+            )
+            .unwrap();
+        for (id, status, lease) in [
+            ("task:idle", "open", None),
+            ("task:lapsed", "claimed", Some(now - 60)),
+            ("task:live", "claimed", Some(now + 3_600)),
+            ("task:finished", "done", None),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO tasks (id, goal_id, title, acceptance, status, lease_expires_at, created_at, updated_at)
+                     VALUES (?1, 'goal:test', 't', 'a', ?2, ?3, 1, 1)",
+                    rusqlite::params![id, status, lease],
+                )
+                .unwrap();
+        }
+        drop(connection);
+
+        let store = LodestarStore::new(open(path.to_str().unwrap()).unwrap());
+        drop(store);
+
+        let connection = Connection::open(&path).unwrap();
+        let goal_of = |id: &str| -> String {
+            connection
+                .query_row("SELECT goal_id FROM tasks WHERE id = ?1", [id], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+        };
+        let successor: Option<String> = connection
+            .query_row(
+                "SELECT superseded_by FROM goals WHERE id = 'goal:test'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            successor.as_deref(),
+            Some("goal:test@constitution:v2"),
+            "the stranded clause must name the clause that replaced it"
+        );
+        assert_eq!(
+            goal_of("task:idle"),
+            "goal:test@constitution:v2",
+            "unclaimed work moves onto the active clause"
+        );
+        assert_eq!(
+            goal_of("task:lapsed"),
+            "goal:test@constitution:v2",
+            "a claim nobody is holding is safe to tidy"
+        );
+        assert_eq!(
+            goal_of("task:live"),
+            "goal:test",
+            "a claim someone is holding is not ours to touch (ADR-0063)"
+        );
+        assert_eq!(
+            goal_of("task:finished"),
+            "goal:test",
+            "finished work keeps naming the clause it was judged under (ADR-0025)"
+        );
+        let bound: String = connection
+            .query_row(
+                "SELECT goal_id FROM goal_code WHERE node_id = 'artifact:src/a.rs'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(bound, "goal:test@constitution:v2");
+        drop(connection);
+        std::fs::remove_file(path).unwrap();
+    }
+
     fn create_legacy_database(path: &PathBuf, fan_out: bool) {
         let connection = Connection::open(path).unwrap();
         connection.execute_batch(SCHEMA).unwrap();

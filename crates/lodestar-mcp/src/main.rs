@@ -9,7 +9,7 @@ mod tools;
 use lodestar_core::Lodestar;
 use mindleak_session::SessionRegistry;
 use mindleak_storage::{
-    head_sha, resolve_database, resolve_workspace_path, stale_build_notice, DatabaseKind,
+    build_notice, head_sha, resolve_database, resolve_workspace_path, DatabaseKind,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -22,14 +22,14 @@ fn main() -> anyhow::Result<()> {
     // The version has always been reported at `initialize`; nobody compared it,
     // and a two-day-old local build cost a night of misdirected debugging.
     if let Ok(executable) = std::env::current_exe() {
-        if let Some(notice) = stale_build_notice(
+        if let Some(notice) = build_notice(
             &executable,
             &workspace,
             env!("MINDLEAK_BUILD_SHA"),
             head_sha(&workspace).as_deref(),
         ) {
             // stderr, never stdout: stdout is the JSON-RPC channel.
-            eprintln!("lodestar-mcp: {notice}");
+            eprintln!("lodestar-mcp: {}", notice.message);
         }
     }
     let database = resolve_database(
