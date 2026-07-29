@@ -42,7 +42,7 @@ describe("TaskAllocationController review actions", () => {
     vi.clearAllMocks();
   });
 
-  it("accepts reviewed work with a distinct human identity and refreshes", async () => {
+  it("accepts reviewed work with an unverified reviewer label and refreshes", async () => {
     const callTool = vi.fn().mockResolvedValue({ resolved: true });
     const { instance, refresh } = controller(callTool);
     vscodeMock.showInputBox.mockResolvedValue("  Lyndon Swan  ");
@@ -50,6 +50,11 @@ describe("TaskAllocationController review actions", () => {
 
     await instance.accept(reviewItem());
 
+    expect(vscodeMock.showInputBox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: expect.stringContaining("attributed, not authenticated"),
+      })
+    );
     expect(callTool).toHaveBeenCalledWith("resolve_task", {
       task_id: "task:review",
       human: "Lyndon Swan",

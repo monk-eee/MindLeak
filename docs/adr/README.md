@@ -78,6 +78,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0068](0068-an-amendment-carries-the-work-it-renames.md) | An amendment carries the work it renames | Proposed |
 | [0069](0069-resolutions-that-predate-attribution-are-accepted-as-historical.md) | Resolutions that predate attribution are accepted as historical | Accepted |
 | [0070](0070-paused-work-must-find-its-owner-or-a-successor.md) | Paused work must find its owner or a successor | Accepted |
+| [0071](0071-task-resolution-records-an-unverified-reviewer-label.md) | Task resolution records an unverified reviewer label | Accepted |
 
 ## Writing a new ADR
 

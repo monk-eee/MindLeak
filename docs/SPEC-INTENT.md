@@ -450,12 +450,13 @@ Caller-selected `agent`/`agent_id` values are not part of the public schema.
   durably retires open/review/blocked or expired-claim work without deleting
   its audit history. Both refuse to disturb live or parked ownership.
   `resolve_task(task_id, human)` → the task-level mirror of `accept_design`:
-  human-accepts an `in_review` task (a `drift`/`needs_human` completion) to
-  `done` with no code-conformance re-run, opening any blocked successor. It
-  requires a reviewer identity and refuses self-resolution by the agent whose
-  work is under review (read from the task's conformance evidence), so a
-  docs-only task in an objective's chain has a human-in-the-loop path to
-  terminal `done` without weakening conformance.
+  accepts an `in_review` task (a `drift`/`needs_human` completion) to `done`
+  with no code-conformance re-run, opening any blocked successor. `human` is a
+  non-empty reviewer label recorded in `resolved_by` for attribution; it is
+  **not authenticated** (ADR-0071). The same-string agent id read from the
+  task's conformance evidence is refused, but any other label is accepted, so
+  a docs-only task in an objective's chain has a review path to terminal `done`
+  without pretending the local stdio plane verified a person's identity.
   `recover_claim(task_id, expected_owner, reason, lease_secs, session_id)` is the
   only transition from an expired compatible legacy owner into a registered
   session; `claim_transfer_history(task_id)` returns its append-only audit. That

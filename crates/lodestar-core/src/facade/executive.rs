@@ -320,32 +320,40 @@ impl Lodestar {
         self.store.abandon_task(id, now_unix())
     }
 
-    /// Human-accept an `in_review` task to `done` — the task-level mirror of
+    /// Accept an `in_review` task to `done` under a reviewer label — the
+    /// task-level mirror of
     /// `accept_design` (ADR-0009 close-out). A task lands in `in_review` when
     /// conformance returns `drift`/`needs_human`: the work is plausibly done but
-    /// a human must judge it. `resolve_task` records that judgement and moves the
-    /// task to `done` with no code-conformance re-run; the terminal transition
-    /// opens any blocked successor. Human-in-the-loop: a resolver identity is
-    /// required and may not be the agent whose work is under review.
-    pub fn resolve_task(&self, id: &str, human: &str) -> Result<bool> {
-        let human = human.trim();
-        if human.is_empty() {
+    /// a reviewer must judge it. `resolve_task` records that judgement and moves
+    /// the task to `done` with no code-conformance re-run; the terminal
+    /// transition opens any blocked successor.
+    ///
+    /// The label is an attributable declaration, not authentication
+    /// (ADR-0071). Lodestar has no human identity provider and proves only that
+    /// the non-empty label differs from the agent id in the evidence under
+    /// review. `resolved_by` records exactly that label and nothing stronger.
+    pub fn resolve_task(&self, id: &str, reviewer_label: &str) -> Result<bool> {
+        let reviewer_label = reviewer_label.trim();
+        if reviewer_label.is_empty() {
             return Err(LodestarError::Invalid(
-                "a human resolver identity is required".to_string(),
+                "a non-empty reviewer label is required; it is recorded for attribution, \
+                 not authenticated as a human identity"
+                    .to_string(),
             ));
         }
-        // Human-in-the-loop: the agent whose conformance evidence put the task in
-        // review may not sign off on its own work — a distinct human must accept.
+        // A same-string self-review remains forbidden. This is a guard against
+        // the reviewed agent naming itself, not proof that any other label names
+        // a person: the local stdio plane has no identity source to consult.
         if let Some(worker) = self.review_worker(id)? {
-            if worker == human {
+            if worker == reviewer_label {
                 return Err(LodestarError::Invalid(
-                    "an agent may not resolve its own in_review task; a distinct \
-                     human reviewer must accept it"
+                    "the reviewed agent may not resolve its own in_review task; provide a \
+                     distinct reviewer label (attributed, not authenticated)"
                         .to_string(),
                 ));
             }
         }
-        self.store.resolve_in_review(id, human, now_unix())
+        self.store.resolve_in_review(id, reviewer_label, now_unix())
     }
 
     /// The agent whose most recent conformance check put a task in review, read
@@ -887,14 +895,17 @@ mod tests {
     }
 
     #[test]
-    fn resolve_task_accepts_an_in_review_task_to_done() {
+    fn resolve_task_records_an_unverified_reviewer_label_on_acceptance() {
         let e = engine();
         let task = drive_to_review(&e, "agent-a");
-        assert!(e.resolve_task(&task.id, "reviewer").unwrap());
-        assert_eq!(
-            e.store.get_task(&task.id).unwrap().unwrap().status,
-            TaskStatus::Done
-        );
+        // This deliberately is not a credential or a known principal. Option 2
+        // of ADR-0071 permits an arbitrary distinct label and records it for
+        // attribution; it must never be described as authenticated identity.
+        let label = "reviewed-by-lyndon (unverified label)";
+        assert!(e.resolve_task(&task.id, label).unwrap());
+        let resolved = e.store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(resolved.status, TaskStatus::Done);
+        assert_eq!(resolved.resolved_by.as_deref(), Some(label));
     }
 
     #[test]
@@ -910,11 +921,12 @@ mod tests {
     }
 
     #[test]
-    fn resolve_task_requires_a_human_identity() {
+    fn resolve_task_requires_a_non_empty_reviewer_label() {
         let e = engine();
         let task = drive_to_review(&e, "agent-a");
         let err = e.resolve_task(&task.id, "   ").unwrap_err().to_string();
-        assert!(err.contains("resolver identity is required"), "{err}");
+        assert!(err.contains("reviewer label is required"), "{err}");
+        assert!(err.contains("not authenticated"), "{err}");
     }
 
     #[test]
