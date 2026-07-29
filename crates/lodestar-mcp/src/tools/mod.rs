@@ -4,6 +4,7 @@
 mod amendments;
 mod conformance;
 mod constitution;
+mod constitution_packs;
 mod controls;
 mod design;
 mod design_materialization;
@@ -371,6 +372,7 @@ fn requires_session(name: &str) -> bool {
             // change wearing a helpful message.
             | "register_design"
             | "review_pack_clause"
+            | "policy_pack_decide"
             | "propose_constitution"
             | "activate_constitution"
             | "claim_task"
@@ -561,9 +563,10 @@ mod tests {
             "resolved_context",
         ];
 
-        const SOURCES: [(&str, &str); 6] = [
+        const SOURCES: [(&str, &str); 7] = [
             ("amendments", include_str!("amendments.rs")),
             ("constitution", include_str!("constitution.rs")),
+            ("constitution_packs", include_str!("constitution_packs.rs")),
             ("controls", include_str!("controls.rs")),
             ("waivers", include_str!("waivers.rs")),
             ("executive", include_str!("executive.rs")),
@@ -866,6 +869,11 @@ mod tests {
         // of them: it delegates to these and dispatches nothing itself, so
         // scanning it only ever matched this test's own `match name {` literal
         // and read the rest of the file as if it were dispatch.
+        //
+        // `constitution_packs` is not one either: it carries the policy-pack
+        // definitions and helpers, but every one of those names is dispatched
+        // from `constitution`, which is scanned. Listing it here would assert
+        // it holds dispatch arms it does not have.
         const SOURCES: [(&str, &str); 11] = [
             ("amendments", include_str!("amendments.rs")),
             ("conformance", include_str!("conformance.rs")),
