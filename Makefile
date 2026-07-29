@@ -25,6 +25,9 @@ adr-index: ## Regenerate docs/adr/README.md from the ADR files
 changelog: ## Show what the next release would contain, from changelog.d fragments
 	node scripts/changelog.mjs
 
+gaps: ## List every known gap, from gaps.d fragments
+	node scripts/gaps.mjs --list
+
 design-audit: ## Report drift between the ADR files and the design ledger (needs a release build)
 	node scripts/design-audit.mjs
 
