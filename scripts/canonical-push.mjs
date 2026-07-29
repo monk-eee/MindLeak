@@ -21,6 +21,11 @@ import {
   resolveServer,
   sameSession,
 } from "./claim-gate.mjs";
+import {
+  completionOfferNotice,
+  persistCompletionOffer,
+  prepareCompletionOffer,
+} from "./completion-offer.mjs";
 import { recordPublication } from "./publication-record.mjs";
 
 const args = process.argv.slice(2);
@@ -300,6 +305,32 @@ const unrecorded = recordPublication({
 });
 if (unrecorded) {
   console.warn(`canonical-push: ${unrecorded}`);
+}
+
+// Completion is offered at the last moment all of its inputs are known to be
+// true at once: the push succeeded, the commit was recorded, and the claim the
+// gate just checked is still live (ADR-0065). The exact evidence/check pair is
+// persisted outside Git so submitting it is one explicit complete_task call,
+// not a reconstruction exercise.
+//
+// Never fatal and never automatic. Any unavailable plane, empty bundle,
+// expired claim, ambiguous set of claims, rejected check, or failed write
+// declines the offer silently. Publishing has already succeeded, and this path
+// contains no complete_task call by construction.
+const completionOffer = prepareCompletionOffer({
+  repoRoot,
+  sessionId,
+  claims: verdict.claims,
+  lodestarServer: server,
+});
+const completionOfferPath = persistCompletionOffer({
+  repoRoot,
+  offer: completionOffer,
+});
+if (completionOffer && completionOfferPath) {
+  console.log(
+    `canonical-push: ${completionOfferNotice(completionOffer, completionOfferPath)}`,
+  );
 }
 
 // Publication is when the work becomes visible to the fleet, which makes it the
