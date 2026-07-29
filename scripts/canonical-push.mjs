@@ -6,8 +6,11 @@ import { execFileSync } from "node:child_process";
 
 import {
   armedPullRequestNumber,
-  armedRefusal,
+  disarmPullRequest,
+  publishPromisedBranch,
   queryPullRequest,
+  rearmFailure,
+  rearmPullRequest,
 } from "./auto-merge-guard.mjs";
 import {
   callTools,
@@ -153,11 +156,13 @@ if (remoteBranchExists) {
 // checks go green. Pushing after that promise is made is a second writer to the
 // same decision, and the branch loses: PR #37 merged at 08:09:21Z and the next
 // commit landed 13 seconds later, stranding four commits with nothing reported.
-// So arming means finished. If more work is coming, disarm first.
+//
+// So the promise is withdrawn for the length of the push and re-made about the
+// tip that was actually published. Refusing the push held the same invariant,
+// but it made every follow-up commit a manual disarm/re-arm dance and pushed
+// people toward arming late, which means sitting and watching a pull request
+// instead. Nobody merges by hand here, and nobody disarms by hand either.
 const armed = armedPullRequestNumber(queryPullRequest(branch, repoRoot));
-if (armed !== null) {
-  fail(armedRefusal(armed, branch));
-}
 
 // Publication requires a live claim (ADR-0049). This is the one place the
 // intent plane is not optional: a push is where work becomes visible to the
@@ -264,11 +269,25 @@ if (collision) {
   console.warn(`canonical-push: ${collision}`);
 }
 
-run(["push", remote, `HEAD:refs/heads/${branch}`], {
-  cwd: repoRoot,
-  env: { ...process.env, MINDLEAK_CANONICAL_PUBLISH: "1" },
+const promise = publishPromisedBranch({
+  number: armed,
+  disarm: (number) => disarmPullRequest(number, repoRoot),
+  push: () =>
+    run(["push", remote, `HEAD:refs/heads/${branch}`], {
+      cwd: repoRoot,
+      env: { ...process.env, MINDLEAK_CANONICAL_PUBLISH: "1" },
+    }),
+  rearm: (number) => rearmPullRequest(number, repoRoot),
 });
 console.log(`canonical-push: published HEAD -> ${remote}/${branch}`);
+if (promise.cycled && promise.rearmed) {
+  console.log(
+    `canonical-push: auto-merge re-armed on pull request #${armed}, now promising this commit`,
+  );
+}
+if (promise.cycled && !promise.rearmed) {
+  console.warn(`canonical-push: ${rearmFailure(armed)}`);
+}
 
 // Recorded after the push, never before: this is evidence that a publication
 // happened, and writing it first would assert something that might not.

@@ -53,3 +53,79 @@ export const armedRefusal = (number, branch) =>
   `pull request #${number} has auto-merge armed on ${branch}; it can merge without this commit.\n` +
   `  Disarm it first:  gh pr merge ${number} --disable-auto\n` +
   "  Then publish, and re-arm when the branch is actually finished.";
+
+const gh = (args, cwd) => {
+  const bin = process.env.MINDLEAK_GH_BIN || "gh";
+  execFileSync(bin, args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+};
+
+/** Withdraw the merge promise so the branch can be written to. */
+export const disarmPullRequest = (number, cwd) =>
+  gh(["pr", "merge", String(number), "--disable-auto"], cwd);
+
+/** Re-make the promise, now about the tip that was actually published. */
+export const rearmPullRequest = (number, cwd) =>
+  gh(["pr", "merge", String(number), "--merge", "--auto"], cwd);
+
+/**
+ * Publish to a branch whose merge is already promised away.
+ *
+ * Refusing the push was the first answer, and it holds the invariant — one
+ * writer to the merge decision — at the cost of making every follow-up commit a
+ * manual disarm/re-arm dance, which is precisely the kind of ceremony people
+ * skip at 6pm. Worse, the escape hatch it pushes you toward is arming late,
+ * which means somebody has to sit and watch the pull request instead.
+ *
+ * Withdrawing the promise, writing, and re-making it holds the same invariant
+ * more strictly: at no point is there an armed promise about a branch that is
+ * being written to, and the promise that ends up armed describes the tip that
+ * was actually published rather than whatever happened to be there when
+ * somebody clicked. Nobody merges by hand and nobody disarms by hand.
+ *
+ * Every step is injected so the ordering can be proven without a network, a
+ * token, or a real `gh` — the ordering *is* the safety property, and it is the
+ * one thing a live smoke test would be least able to observe.
+ *
+ * Re-arming is attempted even when the push fails, because a failed push leaves
+ * the branch exactly as the promise already described it. If re-arming itself
+ * fails the pull request is left disarmed, which is the safe direction: work
+ * sits unmerged and visible rather than merging something nobody promised.
+ */
+export const publishPromisedBranch = ({ number, disarm, push, rearm }) => {
+  if (number === null) {
+    push();
+    return { cycled: false, pushed: true, rearmed: null, rearmError: null };
+  }
+
+  disarm(number);
+
+  let pushed = false;
+  let pushError = null;
+  try {
+    push();
+    pushed = true;
+  } catch (error) {
+    pushError = error;
+  }
+
+  let rearmed = false;
+  let rearmError = null;
+  try {
+    rearm(number);
+    rearmed = true;
+  } catch (error) {
+    rearmError = error;
+  }
+
+  if (pushError) throw pushError;
+  return { cycled: true, pushed, rearmed, rearmError };
+};
+
+/** What to tell someone whose pull request is disarmed and could not be re-armed. */
+export const rearmFailure = (number) =>
+  `auto-merge could not be re-armed on pull request #${number}; it is disarmed and will not merge.\n` +
+  `  Re-arm it:  gh pr merge ${number} --merge --auto`;
