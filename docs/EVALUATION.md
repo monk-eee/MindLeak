@@ -364,3 +364,43 @@ make bench
 This is a retrieval-quality proxy on small, engineered fixtures. It is not a
 multi-language precision/recall benchmark. Broader replication of both this
 proxy and the completed end-to-end agent outcome remains future work.
+
+## Tool surface cost
+
+Every benchmark above measures what the graph gives an agent. This one measures
+what it charges before the agent asks anything: an MCP client loads the whole
+advertised tool surface at connect time, in every session, in every worktree of
+a fleet.
+
+| Server | Tools | `tools/list` | Approx. tokens |
+|---|---:|---:|---:|
+| `mindleak-mcp` | 27 | 11.9 KB | ~3,052 |
+| `lodestar-mcp` | 91 | 51.8 KB | ~13,265 |
+| **Combined** | **118** | **63.7 KB** | **~16,316** |
+
+The servers are asked over MCP/stdio rather than parsed from source, because
+the number that matters is what a client is actually served. The unit is the
+compact JSON of the `tools` array — what crosses the wire — and the token
+figures are bytes/4, approximate by construction; only the tool count is exact.
+A server that cannot be reached fails the run rather than being omitted, since
+reporting one plane as the total would halve the number and read as progress.
+
+The measurement exists because the surface had no budget. ADR-0059 recorded 89
+`lodestar-mcp` tools on 2026-07-28; the first run recorded 90, and the
+reconciled run recorded **91**. Nobody decided to grow it, and without this
+measurement nothing would have noticed.
+
+Machine-readable result:
+[2026-07-29-tool-surface.json](../benchmarks/results/2026-07-29-tool-surface.json).
+Reproduce with `make tool-surface`, or `node scripts/measure-tool-surface.mjs`
+against an existing build. This measures cost, not benefit: whether a given
+tool earns its place in the context window is a judgment, so the number is
+meant to be held by a ratchet reporting at review rather than by a hard block.
+
+**The ratchet is separate follow-up work.** A ratchet must name an active clause
+that authorises it, no clause covers the tool surface, and a locally authored
+clause cannot yet be added through an amendment with an enforcement contract.
+That platform gap is task:4cef8e361fc7; task:8000f45e0dfd will register the
+reviewed budget after it lands. Until then the number is measured and published
+but not enforced, rather than being papered over by binding the ratchet to an
+unrelated clause.
