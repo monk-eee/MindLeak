@@ -448,7 +448,12 @@ Caller-selected `agent`/`agent_id` values are not part of the public schema.
   terminal `done` without weakening conformance.
   `recover_claim(task_id, expected_owner, reason, lease_secs, session_id)` is the
   only transition from an expired compatible legacy owner into a registered
-  session; `claim_transfer_history(task_id)` returns its append-only audit.
+  session; `claim_transfer_history(task_id)` returns its append-only audit. That
+audit has two sources and each row names its own (ADR-0064 d5): recoveries
+since the task log exists are `claim_recovered` events, while the
+`task_claim_transfers` table is a **closed archive** of the ones that predate
+it — no longer written, and not deleted either, because it holds real records
+the log never saw and cannot reconstruct.
 14. `board(include_terminal=true)` → coordination snapshot: every task, owner,
     status, lease, and advisory scope — so humans and agents see the parallel state at a glance.
     `include_terminal=false` returns only the live/actionable set (open, claimed,
