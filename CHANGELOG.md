@@ -6,6 +6,28 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A skipped commit-ingest now says so instead of losing provenance in
+  silence.** The post-commit hook could give up without a word: on timeout, on
+  an unstartable server, or on a transport error. The symptom — an empty
+  evidence bundle — is indistinguishable from an agent who simply forgot to
+  ingest, which is the exact failure the hook exists to eliminate, so the
+  diagnosis lands on the wrong cause. It still never fails a commit; it now
+  names the sha, says the commit succeeded, and says to backfill with the
+  commit's *own* timestamp, because a node keeps whatever timestamp it was first
+  given. The budget is configurable via `MINDLEAK_INGEST_TIMEOUT_MS`, and an
+  unstartable server no longer throws an unhandled `error` event at the
+  committer. Never blocking and never reporting turned out to be different
+  promises; only the first one was load-bearing.
+  Separately and more seriously, the hook is **not installed** in environments
+  set up before `default_install_hook_types` was added, because that setting
+  only takes effect when `pre-commit install` is re-run — so it reports nothing
+  because it never runs. Recorded in Known gaps; the fix touches the shared
+  hooks directory and therefore every agent at once, so it is not applied here.
+- Three script test headers advertised `node --test scripts/`, which fails on
+  Node 24 — the portable runner `node scripts/script-tests.mjs` already existed
+  and already documented that trap.
+
 ### Added
 - **Shell-specific plumbing is now refused at the commit.** The project already
   required platform-agnostic operation, but that rule is stated as an outcome,

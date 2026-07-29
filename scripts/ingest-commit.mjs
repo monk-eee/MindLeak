@@ -21,7 +21,11 @@
 //
 //   It never fails a commit. Evidence capture that can block work would be
 //   disabled within a day, and then the graph is worse off than before. Every
-//   failure path here exits 0 and says nothing.
+//   failure path here exits 0 -- but it says so on the way out. Silence was the
+//   original design and it cost a real investigation: a commit landed with no
+//   provenance, the bundle came back empty, and nothing connected that to a hook
+//   that had timed out minutes earlier. Never blocking and never reporting are
+//   different promises; only the first one is load-bearing.
 //
 //   It records only what git already knows -- sha, subject, changed paths, and
 //   the commit's own timestamp. No interpretation, no model, no tokens. That
@@ -54,6 +58,35 @@ export function readCommit(run) {
 export function worthIngesting(commit, parentCount) {
   if (parentCount > 1) return false;
   return commit.changed.length > 0;
+}
+
+/**
+ * How long to wait before giving up. A hook that hangs is a hook that gets
+ * uninstalled, so the budget stays small; it is configurable because a loaded
+ * machine can spend most of it just starting the server binary.
+ */
+export const timeoutMs = (env = process.env) => {
+  const raw = Number(env.MINDLEAK_INGEST_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 5000;
+};
+
+/**
+ * What to say when provenance was not recorded.
+ *
+ * Giving up quietly was the original design, and it was wrong: a commit landed
+ * with no provenance, the evidence bundle came back empty, and the task was
+ * uncertifiable -- with nothing anywhere connecting that outcome back to a hook
+ * that had silently timed out minutes earlier. Diagnosing it cost far more than
+ * this line ever will. The commit still succeeds; only the silence is fixed.
+ */
+export function skippedWarning(sha, reason) {
+  return (
+    `ingest-commit: provenance NOT recorded for ${sha} (${reason}).\n` +
+    "  The commit succeeded. Evidence for it will be missing, so a conformance\n" +
+    "  check over this window will report an empty bundle.\n" +
+    "  Backfill with mindleak `ingest_commit`, passing this commit's OWN timestamp\n" +
+    "  (`git log -1 --format=%ct`) -- a node keeps the timestamp it was first given."
+  );
 }
 
 const client = (bin) => {
@@ -104,6 +137,12 @@ async function main() {
   if (!worthIngesting(commit, parents)) return;
 
   const { proc, send } = client(bin);
+  // A missing or unstartable binary must not throw: an unhandled 'error' event
+  // on the child would take the hook down with a stack trace the committer has
+  // no use for.
+  const failed = new Promise((resolve) =>
+    proc.on("error", () => resolve("the MindLeak server could not be started")),
+  );
   const done = (async () => {
     await send("initialize", {
       protocolVersion: "2024-11-05",
@@ -127,10 +166,20 @@ async function main() {
         session_id: session,
       },
     });
+    return null;
   })();
 
-  // A hook that hangs is a hook that gets uninstalled. Give up quietly.
-  await Promise.race([done, new Promise((r) => setTimeout(r, 5000))]);
+  // Give up rather than hang -- but say so. Losing provenance is cheap to
+  // report and expensive to discover later.
+  const budget = timeoutMs();
+  const reason = await Promise.race([
+    done.catch(() => "the MindLeak server did not answer"),
+    failed,
+    new Promise((r) =>
+      setTimeout(() => r(`no response within ${budget}ms`), budget),
+    ),
+  ]);
+  if (reason) console.error(skippedWarning(commit.sha, reason));
   proc.kill();
 }
 
