@@ -146,13 +146,14 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "recover_claim",
-            "description": "Recover an expired claim stranded under a compatible legacy base/process identity into this registered session. Requires the exact current owner and a reason; writes an append-only transfer audit and opens a fresh evidence window.",
+            "description": "Recover an expired claim stranded under a compatible legacy identity, or transfer a paused task before its seven-day grace with an explicit human reviewer. Requires the exact current owner and a reason; writes append-only event/thread history and opens a fresh evidence window. `human` is an attributable declaration, not authentication; it must differ from both owners.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "task_id": { "type": "string" },
                     "expected_owner": { "type": "string" },
                     "reason": { "type": "string" },
+                    "human": { "type": "string", "description": "Distinct human reviewer authorizing a paused-task transfer before the parking grace. An attributable declaration, not authentication." },
                     "lease_secs": { "type": "integer", "default": 300 }
                 },
                 "required": ["task_id", "expected_owner", "reason"]
@@ -453,7 +454,7 @@ pub(super) fn dispatch(
                     }
                 }
             }
-            attach_waiting(engine, args, &mut response)?;
+            attach_owner_attention(engine, args, &mut response)?;
             ok(&response)
         })()),
         "task_scope" => Some((|| {
@@ -524,7 +525,7 @@ pub(super) fn dispatch(
                 )
                 .map_err(|e| e.to_string())?;
             let mut response = json!({ "renewed": renewed });
-            attach_waiting(engine, args, &mut response)?;
+            attach_owner_attention(engine, args, &mut response)?;
             ok(&response)
         })()),
         "complete_task" => Some((|| {
@@ -583,9 +584,12 @@ pub(super) fn dispatch(
                 .recover_claim(
                     req_str(args, "task_id")?,
                     req_str(args, "expected_owner")?,
-                    opt_str(args, "agent").unwrap_or_default().as_str(),
-                    opt_str(args, "resolved_name").unwrap_or_default().as_str(),
+                    (
+                        opt_str(args, "agent").unwrap_or_default().as_str(),
+                        opt_str(args, "resolved_name").unwrap_or_default().as_str(),
+                    ),
                     req_str(args, "reason")?,
+                    opt_str(args, "human").as_deref(),
                     i64_arg(args, "lease_secs", 300),
                 )
                 .map_err(|e| e.to_string())?;
@@ -894,22 +898,59 @@ fn attach_lease_warning(
     Ok(())
 }
 
-fn attach_waiting(engine: &Lodestar, args: &Value, response: &mut Value) -> Result<(), String> {
-    let agent = opt_str(args, "agent").unwrap_or_default();
+pub(super) fn attach_owner_attention(
+    engine: &Lodestar,
+    args: &Value,
+    response: &mut Value,
+) -> Result<(), String> {
+    let agent = args
+        .get("resolved_agent")
+        .or_else(|| args.get("agent"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     if agent.is_empty() {
         return Ok(());
     }
-    let waiting = engine
-        .pending_questions(&agent)
-        .map_err(|e| e.to_string())?;
-    if waiting.is_empty() {
-        return Ok(());
-    }
+    let waiting = engine.pending_questions(agent).map_err(|e| e.to_string())?;
     if let Some(object) = response.as_object_mut() {
-        object.insert(
-            "waiting_on_you".to_string(),
-            serde_json::to_value(&waiting).map_err(|e| e.to_string())?,
-        );
+        if !waiting.is_empty() {
+            object.insert(
+                "waiting_on_you".to_string(),
+                serde_json::to_value(&waiting).map_err(|e| e.to_string())?,
+            );
+        }
+
+        let mut paused = Vec::new();
+        for task in engine.board(false).map_err(|e| e.to_string())? {
+            if task.status != TaskStatus::Paused || task.owner.as_deref() != Some(agent) {
+                continue;
+            }
+            let reason = engine
+                .task_qa(&task.id)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .rev()
+                .find(|entry| {
+                    entry.kind == "note"
+                        && task
+                            .parked_at
+                            .is_some_and(|parked_at| entry.created_at == parked_at)
+                })
+                .map(|entry| entry.body);
+            paused.push(json!({
+                "task_id": task.id,
+                "title": task.title,
+                "parked_at": task.parked_at,
+                "reason": reason,
+            }));
+        }
+        if !paused.is_empty() {
+            object.insert("paused_by_you".to_string(), json!(paused));
+            object.insert(
+                "paused_advice".to_string(),
+                json!("Call resume_task for paused work you are continuing. `needs_input` is different: answer its question instead."),
+            );
+        }
     }
     Ok(())
 }
@@ -1369,6 +1410,62 @@ mod tests {
     }
 
     #[test]
+    fn recover_claim_dispatch_requires_a_human_for_early_paused_transfer() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Recover", "transfer paused work", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Paused", "done").unwrap();
+        let old_owner = "session:v1:old";
+        let new_owner = "session:v1:new";
+        assert!(engine.claim_task(&task.id, old_owner, 600).unwrap());
+        assert!(engine
+            .pause_task(&task.id, old_owner, Some("owner process exited"))
+            .unwrap());
+
+        let without_human = call(
+            &engine,
+            &json!({
+                "name": "recover_claim",
+                "arguments": {
+                    "task_id": task.id,
+                    "expected_owner": old_owner,
+                    "agent": new_owner,
+                    "resolved_name": "copilot",
+                    "reason": "continue the work"
+                }
+            }),
+        )
+        .unwrap_err();
+        assert!(without_human.contains("human reviewer"), "{without_human}");
+
+        let recovered = call(
+            &engine,
+            &json!({
+                "name": "recover_claim",
+                "arguments": {
+                    "task_id": task.id,
+                    "expected_owner": old_owner,
+                    "agent": new_owner,
+                    "resolved_name": "copilot",
+                    "reason": "owner is gone; continue the work",
+                    "human": "lyndon",
+                    "lease_secs": 300
+                }
+            }),
+        )
+        .unwrap();
+        let payload: Value =
+            serde_json::from_str(recovered["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["recovered"], true);
+
+        let transfers = engine.claim_transfer_history(&task.id).unwrap();
+        assert_eq!(transfers[0].from_owner, old_owner);
+        assert_eq!(transfers[0].to_owner, new_owner);
+        assert_eq!(transfers[0].recovered_by, "lyndon");
+    }
+
+    #[test]
     fn resolve_task_dispatch_human_accepts_an_in_review_task() {
         let engine = Lodestar::open_in_memory().unwrap();
         let goal = engine
@@ -1820,11 +1917,16 @@ mod tests {
             .unwrap();
         let theirs = engine.create_task(&goal.id, "their work", "done").unwrap();
         let mine = engine.create_task(&goal.id, "my work", "done").unwrap();
+        let paused = engine.create_task(&goal.id, "paused work", "done").unwrap();
 
         // agent-b parks its own task on a question addressed to agent-a.
         assert!(engine.claim_task(&theirs.id, "agent-b", 600).unwrap());
         assert!(engine
             .ask_question(&theirs.id, "agent-b", "did you rename it?", Some("agent-a"))
+            .unwrap());
+        assert!(engine.claim_task(&paused.id, "agent-a", 600).unwrap());
+        assert!(engine
+            .pause_task(&paused.id, "agent-a", Some("waiting for CI"))
             .unwrap());
 
         // agent-a picks up unrelated work and is told, without asking.
@@ -1838,6 +1940,8 @@ mod tests {
         assert_eq!(body["won"], true);
         assert_eq!(body["waiting_on_you"][0]["task_id"], theirs.id);
         assert_eq!(body["waiting_on_you"][0]["body"], "did you rename it?");
+        assert_eq!(body["paused_by_you"][0]["task_id"], paused.id);
+        assert_eq!(body["paused_by_you"][0]["reason"], "waiting for CI");
 
         // The heartbeat matters more than pickup: a question usually arrives
         // during the work, long after the claim.
@@ -1850,6 +1954,7 @@ mod tests {
             serde_json::from_str(renewed["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(beat["renewed"], true);
         assert_eq!(beat["waiting_on_you"][0]["task_id"], theirs.id);
+        assert_eq!(beat["paused_by_you"][0]["task_id"], paused.id);
 
         // Nobody asked agent-c anything, so agent-c is told nothing at all -
         // no key, no empty array. "No questions" and "this server does not
@@ -1877,6 +1982,7 @@ mod tests {
         let after_body: Value =
             serde_json::from_str(after["content"][0]["text"].as_str().unwrap()).unwrap();
         assert!(after_body.get("waiting_on_you").is_none());
+        assert_eq!(after_body["paused_by_you"][0]["task_id"], paused.id);
     }
 
     #[test]

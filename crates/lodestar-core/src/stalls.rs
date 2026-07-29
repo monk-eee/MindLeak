@@ -214,6 +214,7 @@ mod tests {
             owner: None,
             claim_started_at: None,
             lease_expires_at: None,
+            branch: None,
             blocked_by: None,
             parked_at: None,
             resolved_by: None,

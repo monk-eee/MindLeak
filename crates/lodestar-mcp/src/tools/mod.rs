@@ -218,6 +218,7 @@ pub fn call_with_storage(
         if let Some(context) = args.get("resolved_context") {
             body["context"] = context.clone();
         }
+        executive::attach_owner_attention(engine, &args, &mut body)?;
         return ok(&body);
     }
     if name == "storage_status" {
@@ -767,6 +768,35 @@ mod tests {
             sessions.resolve(TOKEN).unwrap().context.branch.unwrap(),
             "fleet/typed-controls"
         );
+
+        // Reconnecting is the first call an owner is guaranteed to make. A
+        // paused task that only exists on the board still depends on memory,
+        // which this repository has repeatedly measured at zero adoption.
+        let agent = undeclared["agent_id"].as_str().unwrap();
+        let goal = engine
+            .define_goal(lodestar_core::GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let paused = engine.create_task(&goal.id, "Paused work", "done").unwrap();
+        assert!(engine.claim_task(&paused.id, agent, 600).unwrap());
+        assert!(engine
+            .pause_task(&paused.id, agent, Some("waiting for the server restart"))
+            .unwrap());
+
+        let reconnected = body(json!({ "session_id": TOKEN }));
+        assert_eq!(reconnected["paused_by_you"][0]["task_id"], paused.id);
+        assert_eq!(
+            reconnected["paused_by_you"][0]["reason"],
+            "waiting for the server restart"
+        );
+        assert!(reconnected["paused_advice"]
+            .as_str()
+            .unwrap()
+            .contains("resume_task"));
+
+        let other = body(json!({
+            "session_id": "ffeeddccbbaa99887766554433221100"
+        }));
+        assert!(other.get("paused_by_you").is_none());
     }
 
     // Regression (ADR-0044): the durable row survives a bare re-registration.
