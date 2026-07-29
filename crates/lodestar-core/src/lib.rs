@@ -17,6 +17,9 @@ pub mod error;
 mod facade;
 pub mod fleet;
 pub mod llm;
+pub mod merge;
+#[cfg(test)]
+mod merge_tests;
 pub mod model;
 pub mod policy;
 pub mod scope;
