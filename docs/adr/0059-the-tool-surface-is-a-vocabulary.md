@@ -1,7 +1,8 @@
 # ADR-0059: The tool surface is a vocabulary, not an inventory
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-28
+- Accepted: 2026-07-29 by monk-eee (`design:0059-the-tool-surface-is-a-vocabulary`)
 - Related: [ADR-0004](0004-intent-plane-spec-brain.md) (Intent Plane spec brain),
   [ADR-0046](0046-agents-talk-through-the-durable-thread.md) (agents talk
   through the durable thread),
