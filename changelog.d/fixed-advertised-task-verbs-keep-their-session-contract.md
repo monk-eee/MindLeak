@@ -8,7 +8,7 @@
   server now canonicalizes deprecated calls before applying one
   operation-aware policy. Every ownership step is session-bound; only the
   transition and query variants that need identity require it; overlap remains
-  an anonymous advisory when no resolvable session is offered; and heartbeat
-  behavior is identical through either vocabulary during the deprecation
-  window. The advertised schemas expose `session_id` without accepting a
-  caller-asserted `agent`.
+  an anonymous advisory when no resolvable session is offered; `answer` remains
+  open to anyone as ADR-0046 requires; and heartbeat behavior is identical
+  through either vocabulary during the deprecation window. The advertised
+  schemas expose `session_id` without accepting a caller-asserted `agent`.

@@ -410,7 +410,7 @@ fn session_requirement(name: &str, args: &Value) -> SessionRequirement {
     match name {
         "task_claim" => SessionRequirement::Required,
         "task_transition" => match args.get("to").and_then(Value::as_str) {
-            Some("complete" | "pause" | "resume" | "ask" | "answer") => {
+            Some("complete" | "pause" | "resume" | "ask") => {
                 SessionRequirement::Required
             }
             _ => SessionRequirement::None,
@@ -798,6 +798,10 @@ mod tests {
             (
                 "task_transition",
                 json!({ "task_id": "task:1", "to": "resolve", "human": "reviewer" }),
+            ),
+            (
+                "task_transition",
+                json!({ "task_id": "task:1", "to": "answer", "answer": "use sqlite" }),
             ),
         ] {
             assert!(bind(name, arguments).unwrap()["arguments"]["agent"].is_null());

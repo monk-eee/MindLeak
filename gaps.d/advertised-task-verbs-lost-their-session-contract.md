@@ -10,6 +10,7 @@
   advertised MCP schema and made `task_query` overlap signals lose requester
   branch context. Fixed in this run by canonicalizing renamed calls before an
   operation-aware required/optional/no-session decision and by using the same
-  canonical call for heartbeat policy. Regression tests reproduce the failure
+  canonical call for heartbeat policy. `answer` remains anonymous because
+  ADR-0046 allows anyone to answer. Regression tests reproduce the failure
   through `bind_session`, pin conditional schema behavior, and prove legacy and
   advertised heartbeat parity.
