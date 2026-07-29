@@ -14,18 +14,19 @@ impl Lodestar {
     ) -> Result<String> {
         let mut basis = Vec::new();
         if let Some(task) = task {
-            // `claim_lapses` belongs in the basis because the window start no
+            // The lapse count belongs in the basis because the window start no
             // longer moves when the same owner re-claims (ADR-0048). Without it
             // a lease could lapse between a check and its completion and the
             // token would still match, letting a continuous-window verdict
-            // certify a window that had since acquired a hole.
+            // certify a window that had since acquired a hole. It is derived
+            // from the log now (ADR-0064 d5) rather than read off the row.
             basis.push(format!(
                 "claim:{}:{}:{}:{}:{}",
                 task.id,
                 task.goal_id,
                 task.owner.as_deref().unwrap_or_default(),
                 task.claim_started_at.unwrap_or_default(),
-                task.claim_lapses
+                self.store.claim_window(&task.id)?.lapses
             ));
             let goal = self
                 .store

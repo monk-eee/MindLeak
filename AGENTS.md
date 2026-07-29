@@ -146,10 +146,10 @@ style nit.
   between files, before a long test run. Measured on this board: **27 lapses
   across 24 tasks, and roughly 100 hours of work sitting under a dead lease.**
   A lapsed claim is not a lost cause: a same-owner re-claim keeps your evidence
-  window and records the lapse rather than hiding it, so `claim_lapses` goes up
-  and `unleased_seconds` measures the gap. But it *does* free the task for
-  anyone else mid-flight, which is how two agents end up on one task. Renewing
-  costs one call; lapsing costs a collision.
+  window and the lapse is recorded in the task log rather than hidden, so
+  `claim_window` reports the count and the size of the gap. But it *does* free
+  the task for anyone else mid-flight, which is how two agents end up on one
+  task. Renewing costs one call; lapsing costs a collision.
 
 ### Test-driven workflow (NON-NEGOTIABLE)
 - **Tests are the only way we ship.** Every new tool, parser, or facade method
