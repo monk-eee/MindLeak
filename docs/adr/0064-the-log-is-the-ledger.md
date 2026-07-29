@@ -87,12 +87,37 @@ that only stores the present.
    into a scratch table and diffing it against the live table is a test, and that
    test is how decision 2 stays honest.
 
-5. **`claim_lapses`, `unleased_seconds` and `task_claim_transfers` are deleted**
-   once the log subsumes them. This ADR is a net removal of state, not an
-   addition: three lossy summaries collapse into one record that answers the
-   questions they could only approximate.
+5. **`claim_lapses` and `unleased_seconds` are deleted; `task_claim_transfers`
+   is closed, not deleted.** The two counters are derivable and go: three lossy
+   summaries collapse into one record that answers what they could only
+   approximate. `task_claim_transfers` does not go, and the distinction is the
+   whole point of this ADR. A counter is an *aggregate of transitions*, so the
+   log can reproduce it. `task_claim_transfers` is a *record of transitions that
+   happened before the log existed* — real, accurate, and nowhere else. The log
+   cannot reproduce it, because it was not there.
 
-6. **Scope is the task lifecycle only.** Goals, designs, amendments, policy
+   So `recover_claim` stops writing to it (it records `claim_recovered` in the
+   log instead) and the table stands as a closed historical archive. Migrating
+   its rows into the log was considered and rejected: an event must carry the
+   after-image its transition produced, that state was never recorded, and
+   fabricating one to satisfy the schema would place an invented receipt in an
+   audit ledger — the precise failure this ledger exists to refuse.
+
+   Deleting accurate audit records to make a schema tidier is a bad trade, and
+   an earlier draft of this ADR made it. It said all three went "because the log
+   answers what they lossily summarised", which is true of the counters and
+   false of the transfers.
+
+6. **A derived window is seeded from its genesis, never assumed to start at
+   zero.** Deriving lapses purely from in-log transitions would report zero for
+   any window that opened before the log did — and under ADR-0048 a window with
+   no lapses may certify itself as `aligned`. That is a regression in the unsafe
+   direction: it would manufacture clean receipts for work with holes in it. The
+   genesis event therefore carries the counters it imported, and derivation is
+   *genesis seed plus in-log transitions*. A task whose history predates the log
+   keeps the lapses it had, and cannot launder them by migration.
+
+7. **Scope is the task lifecycle only.** Goals, designs, amendments, policy
    packs, knowledge and controls keep their current write path. They have not
    caused this class of failure, and widening the blast radius to 144 mutating
    statements to fix a problem concentrated in 36 of them would be paying for
@@ -125,7 +150,10 @@ Three things this deliberately does **not** do:
   substrate; that capability is a separate decision on top of it.
 - **It does not recover the history we never had.** Every task existing at
   migration time starts from a genesis event and nothing before it. The board's
-  past is not reconstructable, and the log will not pretend otherwise.
+  past is not reconstructable, and the log will not pretend otherwise. This is
+  also why `task_claim_transfers` survives (decision 5): where a real record of
+  the pre-log past exists, it is kept rather than deleted in favour of a log
+  that never saw it.
 
 The cost is real: the task-domain write path (36 mutating statements across
 `store/coordination.rs`, `store/lifecycle.rs` and `store/claim_transfer.rs`)
