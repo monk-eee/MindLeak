@@ -7,7 +7,7 @@ use rusqlite::{params, Transaction, TransactionBehavior};
 use crate::error::{LodestarError, Result};
 use crate::model::TaskEventKind;
 
-use super::coordination::PARKING_GRACE_SECS;
+use super::coordination::{MAX_CONCURRENT_CLAIMS, PARKING_GRACE_SECS};
 use super::{events, ClaimTransfer, LodestarStore, TransferSource};
 
 /// The session taking over a stranded claim.
@@ -32,6 +32,33 @@ impl LodestarStore {
         lease_secs: i64,
         now: i64,
     ) -> Result<bool> {
+        self.recover_claim_authorized(
+            task_id,
+            expected_owner,
+            recovering,
+            (reason, None),
+            lease_secs,
+            now,
+        )
+    }
+
+    /// Recover a stranded claim, optionally under an explicit human review.
+    ///
+    /// The reviewer is an attributable declaration, not authentication. It is
+    /// deliberately narrow: only a `paused` task may transfer before the
+    /// parking grace, and neither the old nor new owner may review their own
+    /// transfer. Without a reviewer, every legacy/grace guard remains exactly
+    /// the same as [`recover_claim`](Self::recover_claim).
+    pub fn recover_claim_authorized(
+        &self,
+        task_id: &str,
+        expected_owner: &str,
+        recovering: RecoveringSession<'_>,
+        authorization: (&str, Option<&str>),
+        lease_secs: i64,
+        now: i64,
+    ) -> Result<bool> {
+        let (reason, reviewer) = authorization;
         let RecoveringSession {
             agent: target_agent,
             name: target_name,
@@ -39,12 +66,6 @@ impl LodestarStore {
         if reason.trim().is_empty() {
             return Err(LodestarError::Invalid(
                 "claim recovery requires a reason".to_string(),
-            ));
-        }
-        if !compatible_legacy_owner(expected_owner, target_agent, target_name) {
-            return Err(LodestarError::Invalid(
-                "claim recovery requires a compatible legacy owner and registered session identity"
-                    .to_string(),
             ));
         }
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
@@ -55,18 +76,61 @@ impl LodestarStore {
                 prior.owner
             )));
         }
-        let reclaimable = match prior.status.as_str() {
-            "claimed" => prior.lease_expires_at.is_some_and(|expiry| expiry < now),
-            "needs_input" | "paused" => prior
+        let parked_before_grace = prior.status == "paused"
+            && prior
                 .parked_at
-                .is_some_and(|parked| parked + PARKING_GRACE_SECS < now),
-            _ => false,
-        };
+                .is_some_and(|parked| parked + PARKING_GRACE_SECS >= now);
+        let reviewer = reviewer.map(str::trim).filter(|value| !value.is_empty());
+        if parked_before_grace {
+            let reviewer = reviewer.ok_or_else(|| {
+                LodestarError::Invalid(
+                    "paused ownership remains protected until the parking grace expires; \
+                     an early transfer requires a distinct human reviewer"
+                        .to_string(),
+                )
+            })?;
+            if reviewer == expected_owner || reviewer == target_agent {
+                return Err(LodestarError::Invalid(
+                    "the old or new owner may not review their own paused-task transfer"
+                        .to_string(),
+                ));
+            }
+            if expected_owner == target_agent {
+                return Err(LodestarError::Invalid(
+                    "the existing owner should resume_task; recovery is only for a transfer"
+                        .to_string(),
+                ));
+            }
+        } else if !compatible_legacy_owner(expected_owner, target_agent, target_name) {
+            return Err(LodestarError::Invalid(
+                "claim recovery requires a compatible legacy owner and registered session identity"
+                    .to_string(),
+            ));
+        }
+        let reclaimable = parked_before_grace
+            || match prior.status.as_str() {
+                "claimed" => prior.lease_expires_at.is_some_and(|expiry| expiry < now),
+                "needs_input" | "paused" => prior
+                    .parked_at
+                    .is_some_and(|parked| parked + PARKING_GRACE_SECS < now),
+                _ => false,
+            };
         if !reclaimable {
             return Err(LodestarError::Invalid(
                 "claim recovery is allowed only after the live lease or parking grace expires"
                     .to_string(),
             ));
+        }
+        let target_claims: i64 = transaction.query_row(
+            "SELECT COUNT(1) FROM tasks WHERE status = 'claimed' AND owner = ?1",
+            params![target_agent],
+            |row| row.get(0),
+        )?;
+        if target_claims >= MAX_CONCURRENT_CLAIMS as i64 {
+            return Err(LodestarError::Invalid(format!(
+                "{target_agent} already holds {target_claims} claims and the limit is \
+                 {MAX_CONCURRENT_CLAIMS}; recovery cannot bypass the claim cap"
+            )));
         }
         let changed = transaction.execute(
             "UPDATE tasks
@@ -90,19 +154,37 @@ impl LodestarStore {
         // other transition it has to be read alongside. The table survives as a
         // closed archive of the recoveries that predate the log — real records
         // the log never saw — and `claim_transfer_history` reads both.
+        let actor = reviewer.unwrap_or(target_agent);
         events::record(
             &transaction,
             task_id,
             TaskEventKind::ClaimRecovered,
-            Some(target_agent),
+            Some(actor),
             now,
             &serde_json::json!({
                 "from_owner": prior.owner,
                 "from_status": prior.status,
                 "reason": reason.trim(),
+                "reviewer": reviewer,
             })
             .to_string(),
         )?;
+        if let Some(reviewer) = reviewer {
+            transaction.execute(
+                "INSERT INTO task_qa (task_id, kind, body, author, audience, created_at)
+                 VALUES (?1, 'note', ?2, ?3, NULL, ?4)",
+                params![
+                    task_id,
+                    format!(
+                        "{reviewer} authorized transfer of paused work from {expected_owner} \
+                         to {target_agent}: {}",
+                        reason.trim()
+                    ),
+                    reviewer,
+                    now,
+                ],
+            )?;
+        }
         transaction.commit()?;
         Ok(true)
     }
@@ -473,5 +555,129 @@ mod tests {
                 NOW + 2 + PARKING_GRACE_SECS,
             )
             .unwrap());
+    }
+
+    /// A dead owner used to strand deliberately paused work for seven days even
+    /// when a person was present to reassign it. The ordinary grace remains the
+    /// anti-theft boundary; this is the explicit, attributable exception.
+    #[test]
+    fn a_human_can_transfer_paused_work_before_grace_without_enabling_agent_theft() {
+        let store = store();
+        let objective = goal(&store);
+        let task = store
+            .create_task(&objective.id, "Paused", "done", None, NOW)
+            .unwrap();
+        let old_owner = session(SESSION_A);
+        let new_owner = session(SESSION_B);
+        assert!(store.claim_task(&task.id, &old_owner, 60, NOW).unwrap());
+        assert!(store
+            .pause_task(&task.id, &old_owner, Some("owner process exited"), NOW + 1)
+            .unwrap());
+
+        let taking = RecoveringSession {
+            agent: &new_owner,
+            name: "copilot",
+        };
+        let without_human = store
+            .recover_claim_authorized(
+                &task.id,
+                &old_owner,
+                taking,
+                ("take over stranded work", None),
+                60,
+                NOW + 2,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(without_human.contains("human reviewer"), "{without_human}");
+        assert!(store
+            .recover_claim_authorized(
+                &task.id,
+                &old_owner,
+                taking,
+                ("self review", Some(&new_owner)),
+                60,
+                NOW + 2,
+            )
+            .is_err());
+
+        let held: Vec<_> = (0..MAX_CONCURRENT_CLAIMS)
+            .map(|index| {
+                store
+                    .create_task(&objective.id, &format!("held {index}"), "done", None, NOW)
+                    .unwrap()
+            })
+            .collect();
+        for held_task in &held {
+            assert!(store
+                .claim_task(&held_task.id, &new_owner, 60, NOW + 1)
+                .unwrap());
+        }
+        let capped = store
+            .recover_claim_authorized(
+                &task.id,
+                &old_owner,
+                taking,
+                ("owner is gone", Some("lyndon")),
+                60,
+                NOW + 2,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(capped.contains("claim cap"), "{capped}");
+        for held_task in &held {
+            assert!(store
+                .release_task(&held_task.id, &new_owner, NOW + 1)
+                .unwrap());
+        }
+
+        assert!(store
+            .recover_claim_authorized(
+                &task.id,
+                &old_owner,
+                taking,
+                ("owner is gone; continue the published work", Some("lyndon"),),
+                60,
+                NOW + 2,
+            )
+            .unwrap());
+        let recovered = store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(recovered.owner.as_deref(), Some(new_owner.as_str()));
+        assert_eq!(recovered.status.as_str(), "claimed");
+        assert_eq!(recovered.claim_started_at, Some(NOW + 2));
+        assert_eq!(recovered.parked_at, None);
+        assert!(!store
+            .resume_task(&task.id, &old_owner, 60, NOW + 3)
+            .unwrap());
+
+        let history = store.claim_transfer_history(&task.id).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].from_owner, old_owner);
+        assert_eq!(history[0].to_owner, new_owner);
+        assert_eq!(history[0].recovered_by, "lyndon");
+        assert_eq!(history[0].from_parked_at, Some(NOW + 1));
+        assert_eq!(history[0].to_claim_started_at, NOW + 2);
+        let thread = store.task_qa(&task.id).unwrap();
+        let note = thread.last().expect("transfer note");
+        assert_eq!(note.author, "lyndon");
+        assert!(note.body.contains("owner is gone"), "{}", note.body);
+
+        let waiting = store
+            .create_task(&objective.id, "Waiting", "done", None, NOW)
+            .unwrap();
+        assert!(store.claim_task(&waiting.id, &old_owner, 60, NOW).unwrap());
+        assert!(store
+            .ask_question(&waiting.id, &old_owner, "which design?", None, NOW + 1,)
+            .unwrap());
+        assert!(store
+            .recover_claim_authorized(
+                &waiting.id,
+                &old_owner,
+                taking,
+                ("do not steal a question", Some("lyndon")),
+                60,
+                NOW + 2,
+            )
+            .is_err());
     }
 }

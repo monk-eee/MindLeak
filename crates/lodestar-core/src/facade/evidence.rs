@@ -6,6 +6,95 @@ use serde_json::{json, Value};
 use crate::{ConformanceRecord, Lodestar, Result, TaskReceipt, Verdict};
 
 impl Lodestar {
+    /// Build an evidence bundle from a merge that already landed (ADR-0058).
+    ///
+    /// This is the point of the whole decision: the agent names the commit that
+    /// carried its work and the plane verifies it, instead of the agent
+    /// assembling a description of work it has already finished at the moment it
+    /// cares least. Every field below is derived from what git reports, so there
+    /// is nothing for a caller to get wrong and nothing to embellish.
+    ///
+    /// It does **not** complete the task. Conformance still judges the result
+    /// (ADR-0058 decision 3) and somebody still has to submit it (decision 5) —
+    /// this removes the requirement to *manufacture* evidence, not the
+    /// requirement to *submit* it. A verb that closed the task here would record
+    /// a completion nobody attested, which is the failure ADR-0009 exists to
+    /// prevent.
+    pub fn merge_evidence(
+        &self,
+        task_id: &str,
+        commit: &str,
+        agent: &str,
+    ) -> Result<crate::ConformanceEvidence> {
+        let root = self.workspace_root.as_deref().ok_or_else(|| {
+            crate::LodestarError::Invalid(
+                "this server was not told which checkout it serves, so it cannot verify a merge; \
+                 set MINDLEAK_WORKSPACE or complete with an evidence bundle instead"
+                    .to_string(),
+            )
+        })?;
+        let agent = self.resolve_agent(agent)?;
+        let task = self
+            .store
+            .get_task(task_id)?
+            .ok_or_else(|| crate::LodestarError::NotFound(task_id.to_string()))?;
+        if task.owner.as_deref() != Some(agent) {
+            return Err(crate::LodestarError::Invalid(format!(
+                "{task_id} is not held by {agent}; a merge proves who shipped the work, \
+                 not who may claim credit for it"
+            )));
+        }
+
+        // The integration branch is the one a merge has to be reachable from.
+        // `main` is this repository's, and it is named here rather than derived
+        // from the current checkout, because "whatever branch I am on" is
+        // exactly the mutable present-state trust ADR-0058 removes.
+        let scope = self.store.task_scope(task_id)?;
+        let proof =
+            crate::merge::verify_merge(std::path::Path::new(root), commit, "main", &scope.paths)?;
+
+        let intent = format!("intent:{}", proof.commit);
+        let changed_node_ids: Vec<String> = proof
+            .changed_paths
+            .iter()
+            .map(|path| format!("artifact:{path}"))
+            .collect();
+        let mut provenance = vec![crate::EvidenceProvenance {
+            source_id: format!("agent:{agent}"),
+            target_id: intent.clone(),
+            relation: "observed".to_string(),
+        }];
+        provenance.extend(
+            changed_node_ids
+                .iter()
+                .map(|node| crate::EvidenceProvenance {
+                    source_id: intent.clone(),
+                    target_id: node.clone(),
+                    relation: "refactored".to_string(),
+                }),
+        );
+
+        let started_at = task.claim_started_at.unwrap_or_else(crate::now_unix);
+        Ok(crate::ConformanceEvidence {
+            schema_version: 1,
+            task_id: Some(task_id.to_string()),
+            agent_id: agent.to_string(),
+            started_at,
+            ended_at: crate::now_unix(),
+            summary: format!(
+                "agent={agent}; verified merge {} touching {} path(s) inside the task's declared scope",
+                proof.commit,
+                proof.changed_paths.len()
+            ),
+            changed_node_ids,
+            failed_node_ids: Vec::new(),
+            execution_ids: Vec::new(),
+            successful_execution_ids: Vec::new(),
+            commit_ids: vec![intent],
+            provenance,
+        })
+    }
+
     /// Render a task's durable conformance record chain as committed-friendly,
     /// portable proof-of-work (ADR-0031): each check's stable id, verdict, acting
     /// agent, claim window, and evidence summary. Optionally write it to `path` so

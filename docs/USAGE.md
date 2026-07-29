@@ -48,7 +48,7 @@ graph_snapshot(seed = "artifact:src/main.ts", limit = 60)
 
 # 4. Surface coordination only when durable work exists.
 board(include_terminal = false)
-design_board()
+design_query(view = "board")
 ```
 
 If a server cannot initialize, report its command/path and initialize error. If
