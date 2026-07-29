@@ -258,20 +258,28 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
-- **The post-commit ingest hook skips under load, and a commit then has no
-  provenance at all — OBSERVED, reporting fixed, root cause open.** The hook
-  gives the MindLeak server 5s to answer; on a machine running a fleet of agents
-  the release binary can spend most of that just starting, so the race is lost
-  and the commit lands unrecorded. Seen on `b4a9067`: `evidence_for` over the
-  correct window returned nothing, and the task could not be certified until the
-  commit was re-ingested by hand. Impact: an empty evidence bundle that looks
-  exactly like an agent who forgot to ingest, which is the failure the hook was
-  built to eliminate — so the diagnosis lands on the wrong cause. The hook now
-  prints a warning naming the sha and how to backfill (and honours
-  `MINDLEAK_INGEST_TIMEOUT_MS`), so the loss is visible rather than silent, but
-  it is still a loss. Closing it properly means not paying server start-up on
-  every commit — a long-lived server, or a queued backfill — rather than raising
-  the timeout, which only moves the threshold.
+- **The post-commit ingest hook is not installed, so commits land with no
+  provenance at all — VERIFIED, not yet fixed.** `.pre-commit-config.yaml`
+  declares `default_install_hook_types: [pre-commit, pre-push, post-commit]`,
+  but the shared `.git/hooks` directory contains only `pre-commit` and
+  `pre-push`. `default_install_hook_types` only takes effect when
+  `pre-commit install` is re-run; an environment set up before that line was
+  added keeps working and silently never installs the new type. Observed on
+  `b4a9067` and `543e1c1`: `evidence_for` over the correct window returned
+  nothing, and neither task could be certified until the commit was re-ingested
+  by hand. Impact: an empty evidence bundle that looks exactly like an agent who
+  forgot to ingest — which is the failure the hook was built to eliminate — so
+  the diagnosis lands on the wrong cause. It cost this session two wrong
+  theories before anyone checked whether the hook existed.
+  Fixing it is `pre-commit install --install-hooks`, but note that this is the
+  *shared* hooks directory: every worktree and every agent picks it up at once,
+  and each commit then spawns an MCP server, so it is a fleet-wide load change
+  rather than a local one.
+  The hook now reports when it cannot record, and honours
+  `MINDLEAK_INGEST_TIMEOUT_MS` — worth having, but it reports nothing while it
+  is not installed at all, which is the actual gap.
+  Unexplained: `ce99c35` *does* have provenance, recorded in the same
+  environment with no post-commit hook installed. Do not assume the hook ran.
 - **`Get-Date -UFormat %s` on Windows returns local time as an epoch, not UTC —
   CONFIRMED, no code change.** Any evidence window built from it is hours in the
   future, and `check_conformance` then rejects it with *"evidence interval falls
