@@ -6,6 +6,25 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **An agent may hold at most three claims at once (ADR-0067).** Measured with
+  six agents running: **36 tasks `claimed`, 4 with a live lease** — the rest
+  lapsed a median of 13 hours earlier, with two agents holding 15 and 14 apiece.
+  The board therefore read as a fleet with 36 things in flight when it had 4,
+  and establishing that took a bespoke script. `claim_task` now refuses a claim
+  that would take an agent past the limit, naming the tasks it already holds and
+  what to do with them. Lapsed claims count: letting a claim go stale is not
+  finishing it, and a cap on live leases alone would make going stale the
+  cheapest way to dodge the limit. Re-claiming a task you already hold is never a
+  new claim, so the ADR-0052 heartbeat and the ADR-0048 window-preserving
+  re-claim are untouched. `board` rows also carry a derived `lease_state`
+  (`live`/`lapsed`), so a claim nobody is holding never again reads as work in
+  progress.
+  Deliberately *not* done: releasing claims on lapse. A lapsed claim is already
+  claimable by anyone — `claim_task`, `next_task` and `stalled_work` all handle
+  it — so a sweep would fix nothing, and `release_task` nulls `claim_started_at`,
+  which would destroy the evidence window ADR-0048 exists to preserve.
+
 ### Changed
 - **A completion now says whether its evidence affirmed anything.** Reaching
   `done` said nothing about whether the conformance receipt behind it proved

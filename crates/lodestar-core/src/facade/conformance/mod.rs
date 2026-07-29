@@ -294,7 +294,7 @@ mod tests {
             )
             .unwrap();
         let node_id = "artifact:src/delivery.rs";
-        e.link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
         let task = e
             .create_task(&goal.id, "fix delivery", "same evidence stays aligned")
@@ -337,7 +337,7 @@ mod tests {
             .define_goal(GoalKind::Objective, "Ship search", "add search", None)
             .unwrap();
         let node_id = "artifact:src/search.rs";
-        e.link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
         let task = e
             .create_task(&goal.id, "fix delivery", "learns something")
@@ -396,7 +396,7 @@ mod tests {
             .define_goal(GoalKind::Objective, "Ship search", "add search", None)
             .unwrap();
         let node_id = "artifact:src/search.rs";
-        e.link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
 
         for (index, learned) in [None, Some("   ")].into_iter().enumerate() {
@@ -431,7 +431,7 @@ mod tests {
             .define_goal(GoalKind::Objective, "Ship search", "add search", None)
             .unwrap();
         let node_id = "artifact:src/search.rs";
-        e.link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
         let task = e.create_task(&goal.id, "wire search", "done").unwrap();
         e.claim_task(&task.id, "agent-a", 300).unwrap();
@@ -452,7 +452,7 @@ mod tests {
         let other_goal = e
             .define_goal(GoalKind::Objective, "Own search", "separate owner", None)
             .unwrap();
-        e.link_goal_to_code(&other_goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&other_goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
         assert!(e
             .complete_task(&task.id, "agent-a", &evidence, &checked, None)
@@ -519,7 +519,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &g.id,
             &["artifact:src/auth.rs".into()],
             CodeBindingMode::Governed,
@@ -549,13 +549,13 @@ mod tests {
         let other = e
             .define_goal(GoalKind::Objective, "Context graph", "graph", None)
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &primary.id,
             &["artifact:src/intent.rs".into()],
             CodeBindingMode::Governed,
         )
         .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &other.id,
             &["artifact:src/graph.rs".into()],
             CodeBindingMode::Governed,
@@ -631,7 +631,7 @@ mod tests {
         let unused = e
             .define_goal(GoalKind::Objective, "Context graph", "graph", None)
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &primary.id,
             &["artifact:src/intent.rs".into()],
             CodeBindingMode::Governed,
@@ -699,7 +699,7 @@ mod tests {
             )
             .unwrap();
         let node = "artifact:crates/core/src/publish.rs".to_string();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &goal.id,
             std::slice::from_ref(&node),
             CodeBindingMode::Governed,
@@ -756,7 +756,7 @@ mod tests {
             "a freshly defined clause declares no consequence"
         );
         let node = "artifact:crates/core/src/schema.sql".to_string();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &goal.id,
             std::slice::from_ref(&node),
             CodeBindingMode::ForbidChange,
@@ -797,7 +797,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &goal.id,
             std::slice::from_ref(&node.to_string()),
             CodeBindingMode::ForbidChange,
@@ -979,7 +979,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &g.id,
             &["artifact:src/parser.rs".into()],
             CodeBindingMode::Governed,
@@ -1015,7 +1015,7 @@ mod tests {
         let g = e
             .define_goal(GoalKind::Objective, "Auth typed", "harden auth", None)
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &g.id,
             &["artifact:src/auth.rs".into()],
             CodeBindingMode::Governed,
@@ -1053,7 +1053,7 @@ mod tests {
         let g = e
             .define_goal(GoalKind::Objective, "Docs", "own the changelog", None)
             .unwrap();
-        e.link_goal_to_code(
+        e.link_goal_to_artifact(
             &g.id,
             &["artifact:CHANGELOG.md".into()],
             CodeBindingMode::Governed,
@@ -1088,7 +1088,7 @@ mod tests {
             )
             .unwrap();
         let node_id = "artifact:src/delivery.rs";
-        e.link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
 
         // A continuous window is the control: it still passes cleanly.
