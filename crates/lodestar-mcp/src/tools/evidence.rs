@@ -55,7 +55,10 @@ pub(super) fn dispatch(
                 .merge_evidence(
                     req_str(args, "task_id")?,
                     req_str(args, "commit")?,
-                    req_str(args, "session_id")?,
+                    // The agent bind_session resolved from the token, not the
+                    // token itself: the facade compares this against the task's
+                    // owner, which is a `session:v1:` id.
+                    req_str(args, "agent")?,
                 )
                 .map_err(|e| e.to_string())?;
             text(serde_json::to_string_pretty(&evidence).map_err(|e| e.to_string())?)
