@@ -3,21 +3,207 @@
 
 use super::conformance::parse_evidence;
 use super::{
-    bool_arg, i64_arg, ok, opt_str, optional_string_arg, rendered, req_str, str_array, text,
+    bool_arg, i64_arg, ok, one_of, opt_str, optional_string_arg, renamed, rendered, req_str,
+    required_for, str_array, text, Renamed,
 };
 use lodestar_core::{now_unix, GoverningClause, HumanQuestion, Lodestar, TaskScope, TaskStatus};
 use serde_json::{json, Value};
 
+const CLAIM_STEPS: [&str; 4] = ["claim", "renew", "release", "recover"];
+
+const TRANSITIONS: [&str; 9] = [
+    "complete", "resolve", "block", "reopen", "abandon", "pause", "resume", "ask", "answer",
+];
+
+const VIEWS: [&str; 11] = [
+    "board",
+    "next",
+    "scope",
+    "existing_work",
+    "overlap",
+    "stalled",
+    "thread",
+    "pending_questions",
+    "questions_for_a_human",
+    "drafts",
+    "claim_transfers",
+];
+
+/// The twenty-six names this cluster used to answer to, and the call to make now
+/// (ADR-0059).
+///
+/// `decompose_goal` maps onto `task_create` by shape rather than by argument:
+/// it was only ever called with a goal id, and a `task_create` without a title
+/// is a decomposition. Everything else names its transition explicitly.
+pub(super) const RENAMED: [Renamed; 26] = [
+    Renamed {
+        old: "create_task",
+        new: "task_create",
+        key: "",
+        value: "",
+    },
+    Renamed {
+        old: "decompose_goal",
+        new: "task_create",
+        key: "",
+        value: "",
+    },
+    Renamed {
+        old: "claim_task",
+        new: "task_claim",
+        key: "step",
+        value: "claim",
+    },
+    Renamed {
+        old: "renew_lease",
+        new: "task_claim",
+        key: "step",
+        value: "renew",
+    },
+    Renamed {
+        old: "release_task",
+        new: "task_claim",
+        key: "step",
+        value: "release",
+    },
+    Renamed {
+        old: "recover_claim",
+        new: "task_claim",
+        key: "step",
+        value: "recover",
+    },
+    Renamed {
+        old: "complete_task",
+        new: "task_transition",
+        key: "to",
+        value: "complete",
+    },
+    Renamed {
+        old: "resolve_task",
+        new: "task_transition",
+        key: "to",
+        value: "resolve",
+    },
+    Renamed {
+        old: "block_task",
+        new: "task_transition",
+        key: "to",
+        value: "block",
+    },
+    Renamed {
+        old: "reopen_task",
+        new: "task_transition",
+        key: "to",
+        value: "reopen",
+    },
+    Renamed {
+        old: "abandon_task",
+        new: "task_transition",
+        key: "to",
+        value: "abandon",
+    },
+    Renamed {
+        old: "pause_task",
+        new: "task_transition",
+        key: "to",
+        value: "pause",
+    },
+    Renamed {
+        old: "resume_task",
+        new: "task_transition",
+        key: "to",
+        value: "resume",
+    },
+    Renamed {
+        old: "ask_question",
+        new: "task_transition",
+        key: "to",
+        value: "ask",
+    },
+    Renamed {
+        old: "answer",
+        new: "task_transition",
+        key: "to",
+        value: "answer",
+    },
+    Renamed {
+        old: "board",
+        new: "task_query",
+        key: "view",
+        value: "board",
+    },
+    Renamed {
+        old: "next_task",
+        new: "task_query",
+        key: "view",
+        value: "next",
+    },
+    Renamed {
+        old: "task_scope",
+        new: "task_query",
+        key: "view",
+        value: "scope",
+    },
+    Renamed {
+        old: "existing_work",
+        new: "task_query",
+        key: "view",
+        value: "existing_work",
+    },
+    Renamed {
+        old: "check_overlap",
+        new: "task_query",
+        key: "view",
+        value: "overlap",
+    },
+    Renamed {
+        old: "stalled_work",
+        new: "task_query",
+        key: "view",
+        value: "stalled",
+    },
+    Renamed {
+        old: "task_qa",
+        new: "task_query",
+        key: "view",
+        value: "thread",
+    },
+    Renamed {
+        old: "pending_questions",
+        new: "task_query",
+        key: "view",
+        value: "pending_questions",
+    },
+    Renamed {
+        old: "questions_for_a_human",
+        new: "task_query",
+        key: "view",
+        value: "questions_for_a_human",
+    },
+    Renamed {
+        old: "draft_questions",
+        new: "task_query",
+        key: "view",
+        value: "drafts",
+    },
+    Renamed {
+        old: "claim_transfer_history",
+        new: "task_query",
+        key: "view",
+        value: "claim_transfers",
+    },
+];
+
 pub(super) fn definitions() -> Vec<Value> {
     vec![
         json!({
-            "name": "create_task",
-            "description": "Create work serving a goal. With blocked_by, the task remains unclaimable until the predecessor completes aligned, enabling progressive same-file handoffs without pretending to lock symbols or text. With also_serves, the task declares up front the additional goals it serves, so genuinely cross-cutting work is reviewable breadth rather than drift (ADR-0041).",
+            "name": "task_create",
+            "description": "Create work serving a goal. With `title`, one task: `blocked_by` keeps it unclaimable until the predecessor completes aligned, enabling progressive same-file handoffs without pretending to lock symbols or text, and `also_serves` declares up front the additional goals it serves, so genuinely cross-cutting work is reviewable breadth rather than drift (ADR-0041). Without `title`, the goal is decomposed into claimable tasks instead, using a local model when one is reachable and a single-task fallback when not. Either way the answer names what already serves this goal rather than refusing the request (ADR-0015).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "goal_id": { "type": "string" },
-                    "title": { "type": "string" },
+                    "title": { "type": "string", "description": "The single task to create. Omit to decompose the goal into tasks instead." },
                     "acceptance": { "type": "string", "description": "What 'done' means." },
                     "blocked_by": { "type": "string", "description": "Optional predecessor task. The new task opens automatically only after that task completes aligned." },
                     "also_serves": {
@@ -26,288 +212,78 @@ pub(super) fn definitions() -> Vec<Value> {
                         "description": "Optional additional goal ids this work legitimately serves. Declared here and fixed for the task's life; there is no verb that adds coverage later. A verdict that relied on one caps at needs_human, so declaring breadth buys a review, not a pass (ADR-0041)."
                     }
                 },
-                "required": ["goal_id", "title"]
-            }
-        }),
-        json!({
-            "name": "decompose_goal",
-            "description": "Break a goal into claimable tasks (uses a local model when reachable, else a single-task fallback).",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "goal_id": { "type": "string" } },
                 "required": ["goal_id"]
             }
         }),
         json!({
-            "name": "next_task",
-            "description": "Suggest the next unblocked, claimable task (open or lease-expired), oldest first.",
-            "inputSchema": { "type": "object", "properties": {} }
-        }),
-        json!({
-            "name": "claim_task",
-            "description": "Atomically claim a task with a lease and optional advisory path globs / MindLeak symbol ids (ADR-0024). Returns won=true only if this agent won; a losing claimant cannot overwrite scope.",
+            "name": "task_claim",
+            "description": "Ownership and the lease, with `step` naming the act. `claim` atomically takes a task with a lease and optional advisory path globs / MindLeak symbol ids (ADR-0024); it returns won=true only if this agent won, a losing claimant cannot overwrite scope, and a lost claim says which of the knowable reasons it was rather than a bare false. A won claim returns the evidence window it opened, because that window is what completion later validates evidence against. `renew` is the heartbeat: it extends a still-live lease owned by this agent, and after expiry only a fresh `claim` opens a new window. `release` hands a claim back to open, owner-guarded. `recover` takes an expired claim stranded under a compatible legacy identity, or transfers a paused task before its seven-day grace with an explicit human reviewer; it requires the exact current owner and a reason, writes append-only history, and opens a fresh window. A `human` label is an attributable declaration, not authentication, and must differ from both owners.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "task_id": { "type": "string" },
+                    "step": { "type": "string", "enum": ["claim", "renew", "release", "recover"], "description": "Which ownership act. Each names the further arguments it needs." },
                     "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." },
-                    "lease_secs": { "type": "integer", "default": 300 },
-                    "paths": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Workspace-relative path globs this work expects to touch." },
-                    "symbols": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Opaque MindLeak symbol ids this work expects to touch." }
+                    "lease_secs": { "type": "integer", "default": 300, "description": "Lease length for claim, renew and recover." },
+                    "paths": { "type": "array", "items": { "type": "string" }, "default": [], "description": "claim: workspace-relative path globs this work expects to touch." },
+                    "symbols": { "type": "array", "items": { "type": "string" }, "default": [], "description": "claim: opaque MindLeak symbol ids this work expects to touch." },
+                    "expected_owner": { "type": "string", "description": "recover: the exact current owner. A recovery that does not name who it is taking from is not a recovery." },
+                    "reason": { "type": "string", "description": "recover: why ownership moved." },
+                    "human": { "type": "string", "description": "recover: distinct human reviewer authorizing a paused-task transfer before the parking grace. An attributable declaration, not authentication." }
                 },
-                "required": ["task_id"]
+                "required": ["task_id", "step"]
             }
         }),
         json!({
-            "name": "task_scope",
-            "description": "Read one task's declared advisory path/symbol scope (ADR-0024). Scope is a planning hint, never a lock.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "task_id": { "type": "string" } },
-                "required": ["task_id"]
-            }
-        }),
-        json!({
-            "name": "existing_work",
-            "description": "Has this already been done? Returns tasks already serving a goal or already declaring any of these paths in scope, INCLUDING finished and abandoned ones - a task that is already done is the most useful answer, and the one `board` hides. Distinct from check_overlap, which asks who is touching a file right now and sees only live claims. Advisory: a second task against one goal is often legitimate, so this reports and never refuses (ADR-0015). Ask before creating a task or implementing from an acceptance - the board understates what is finished, because work routinely lands without closing its task.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "goal_id": { "type": "string", "description": "Work already serving this goal." },
-                    "paths": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Workspace-relative paths; matched against declared scopes with the same globbing check_overlap uses."
-                    }
-                }
-            }
-        }),
-        json!({
-            "name": "check_overlap",
-            "description": "Read-only pre-flight check for live Lodestar claims whose declared scope intersects these concrete workspace-relative paths or symbol ids (ADR-0024). Each intersection is classified from the branches the two sessions declared at open_session (ADR-0035): same_branch_collision (edits land in one history, colliding now), cross_branch_merge_risk (divergence, paid at merge), or undeclared when either side declared no branch. Advisory only, and never blocks a claim; combine with MindLeak's check_overlap footprint result for cross-plane awareness.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "paths": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Concrete workspace-relative paths about to be touched; claim scopes are the glob side of the comparison." },
-                    "symbols": { "type": "array", "items": { "type": "string" }, "default": [] },
-                    "exclude_task_id": { "type": "string", "description": "Optional current task to omit from results." },
-                    "session_id": { "type": "string", "pattern": "^[0-9a-f]{32}$", "description": "Optional session id from open_session. Supplying it classifies each overlap against the branch that session already declared; without it every signal is 'undeclared'. No branch argument is accepted: the branch is declared once per session, and a second place to state it could disagree with the first." }
-                }
-            }
-        }),
-        json!({
-            "name": "draft_questions",
-            "description": "Propose the questions this task's owner could put to peers whose live claims collide with its declared scope (ADR-0055). Read-only and evidence-free: it records nothing, parks nothing and addresses nothing; call ask_question with the returned audience to actually send one. The collision is found deterministically from declared scope; only the phrasing is model-assisted, and it falls back to a template when no local model is reachable, so each draft reports whether it was written by 'model' or 'template'. It never decides who should win: that is a question for the two agents or a human, and a model verdict carries no evidence.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "task_id": { "type": "string", "description": "A task whose scope is compared against every other live claim." } },
-                "required": ["task_id"]
-            }
-        }),
-        json!({
-            "name": "renew_lease",
-            "description": "Heartbeat: extend a still-live lease owned by this agent. After expiry, call claim_task to open a fresh evidence window.",
+            "name": "task_transition",
+            "description": "Move a task through the lifecycle, with `to` naming the transition. `complete` consumes an authoritative check_conformance result for the same claim-bounded ADR-0009 evidence: aligned completes, drift/uncertainty stay in review, violation blocks; pass `learned` with what the next agent should know, recorded as durable knowledge at the moment you hold it (ADR-0053) and named as an omission rather than blocked when absent. `resolve` accepts an in_review task to done under a reviewer label with no code-conformance re-run, opening any blocked successor; the label is attributed, not authenticated (ADR-0071), and must differ from the agent under review. `block` marks nonterminal work blocked and clears any live claim, and its reason is the only way the former owner learns why. `reopen` returns stranded work (in_review after a drift/needs-human completion, or manually blocked with no predecessor gate) to open; it refuses to bypass a handoff dependency, to disturb an active claim, or to revive terminal work. `abandon` permanently retires nonterminal work while preserving its history. `pause` and `resume` are the owner deliberately suspending and restarting, keeping owner and evidence window (ADR-0020). `ask` parks a claimed task with a durable question and `answer` returns it to claimed with a fresh lease; address a peer with `audience`, omit it to ask a human (ADR-0046).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "task_id": { "type": "string" },
+                    "to": {
+                        "type": "string",
+                        "enum": ["complete", "resolve", "block", "reopen", "abandon", "pause", "resume", "ask", "answer"],
+                        "description": "The transition to make. Each names the further arguments it needs and why."
+                    },
                     "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." },
-                    "lease_secs": { "type": "integer", "default": 300 }
+                    "evidence": { "type": "object", "description": "complete: versioned ConformanceEvidence returned by MindLeak evidence_for." },
+                    "check": { "type": "object", "description": "complete: the exact id/token/verdict/findings object returned by check_conformance." },
+                    "learned": { "type": "string", "description": "complete: what this task taught that the next agent would otherwise rediscover. Omit when it taught nothing." },
+                    "human": { "type": "string", "description": "resolve: non-empty reviewer label recorded in resolved_by. Attributed, not authenticated; must differ from the agent id under review." },
+                    "blocked_by": { "type": "string", "description": "block: optional predecessor, which must be same-goal, acyclic, and part of a one-to-one handoff chain." },
+                    "reason": { "type": "string", "description": "block and pause: why. Recorded as a durable note on the task's thread, readable by its former owner." },
+                    "actor": { "type": "string", "default": "human", "description": "block: who blocked it." },
+                    "question": { "type": "string", "description": "ask: the durable question that parks the task." },
+                    "audience": { "type": "string", "description": "ask: agent id to address the question to. Omit to ask a human." },
+                    "answer": { "type": "string", "description": "answer: the durable answer." },
+                    "author": { "type": "string", "default": "human", "description": "answer: who answered." },
+                    "lease_secs": { "type": "integer", "default": 300, "description": "resume and answer: length of the fresh lease." }
                 },
-                "required": ["task_id"]
+                "required": ["task_id", "to"]
             }
         }),
         json!({
-            "name": "complete_task",
-            "description": "Consume an authoritative check_conformance result for the same claim-bounded ADR-0009 evidence. Aligned completes; drift/uncertainty stay in review; violation blocks. Pass `learned` with what the next agent should know — it is recorded as durable knowledge at the moment you hold it, because a conclusion is supplied, not extracted from an execution log (ADR-0053). Omitting it never blocks completion; the response names the omission instead.",
+            "name": "task_query",
+            "description": "Every read over tasks, with `view` naming the question. `board` is the coordination snapshot with owner, status and lease. `next` suggests the next unblocked claimable task, oldest first. `scope` reads one task's declared advisory path/symbol scope, which is a planning hint and never a lock (ADR-0024). `existing_work` answers 'has this already been done?' and INCLUDES finished and abandoned tasks, because a task that is already done is the most useful answer and the one `board` hides. `overlap` is the pre-flight check for live claims intersecting concrete paths or symbols, each classified from the branches the two sessions declared at open_session (ADR-0035) as same_branch_collision, cross_branch_merge_risk, or undeclared. `stalled` returns every task that is not progressing and the fact that stalled it, reporting how long without deciding whether that is too long. `thread` is the durable append-only dialogue for a task. `pending_questions` is what is addressed to you, `questions_for_a_human` what is waiting on a person — necessarily separate, because a human has no agent id, so a query matching an id can never return one (ADR-0046). `drafts` proposes the questions a task's owner could put to colliding peers (ADR-0055). `claim_transfers` is the append-only ownership recovery history. All of it is read-only and evidence-free: nothing is delivered, reserved or consumed, so reading can never lose a question and two readers see the same rows.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "task_id": { "type": "string" },
-                    "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." },
-                    "evidence": { "type": "object", "description": "Versioned ConformanceEvidence returned by MindLeak evidence_for." },
-                    "check": { "type": "object", "description": "The exact id/token/verdict/findings object returned by check_conformance." },
-                    "learned": { "type": "string", "description": "What this task taught that the next agent would otherwise rediscover. Omit when it taught nothing." }
+                    "view": {
+                        "type": "string",
+                        "enum": ["board", "next", "scope", "existing_work", "overlap", "stalled", "thread", "pending_questions", "questions_for_a_human", "drafts", "claim_transfers"],
+                        "description": "Which question to ask. Each names the further arguments it needs."
+                    },
+                    "task_id": { "type": "string", "description": "scope, thread, drafts and claim_transfers: the task to read." },
+                    "include_terminal": { "type": "boolean", "default": true, "description": "board: include terminal done/abandoned tasks (default true). Pass false for only the live/actionable set." },
+                    "goal_id": { "type": "string", "description": "existing_work: work already serving this goal." },
+                    "paths": { "type": "array", "items": { "type": "string" }, "default": [], "description": "existing_work and overlap: concrete workspace-relative paths. Declared claim scopes are the glob side of the comparison." },
+                    "symbols": { "type": "array", "items": { "type": "string" }, "default": [], "description": "overlap: opaque MindLeak symbol ids." },
+                    "exclude_task_id": { "type": "string", "description": "overlap: optional current task to omit from results." },
+                    "session_id": { "type": "string", "pattern": "^[0-9a-f]{32}$", "description": "overlap: optional session id from open_session. Supplying it classifies each overlap against the branch that session already declared; without it every signal is 'undeclared'. No branch argument is accepted: the branch is declared once per session, and a second place to state it could disagree with the first." }
                 },
-                "required": ["task_id", "evidence", "check"]
+                "required": ["view"]
             }
-        }),
-        json!({
-            "name": "release_task",
-            "description": "Release a claim back to open (owner-guarded).",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "task_id": { "type": "string" },
-                    "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." }
-                },
-                "required": ["task_id"]
-            }
-        }),
-        json!({
-            "name": "recover_claim",
-            "description": "Recover an expired claim stranded under a compatible legacy identity, or transfer a paused task before its seven-day grace with an explicit human reviewer. Requires the exact current owner and a reason; writes append-only event/thread history and opens a fresh evidence window. `human` is an attributable declaration, not authentication; it must differ from both owners.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "task_id": { "type": "string" },
-                    "expected_owner": { "type": "string" },
-                    "reason": { "type": "string" },
-                    "human": { "type": "string", "description": "Distinct human reviewer authorizing a paused-task transfer before the parking grace. An attributable declaration, not authentication." },
-                    "lease_secs": { "type": "integer", "default": 300 }
-                },
-                "required": ["task_id", "expected_owner", "reason"]
-            }
-        }),
-        json!({
-            "name": "claim_transfer_history",
-            "description": "Read the append-only ownership recovery history for a task.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "task_id": { "type": "string" } },
-                "required": ["task_id"]
-            }
-        }),
-        json!({
-            "name": "block_task",
-            "description": "Mark a nonterminal task blocked and clear any live claim. An optional blocked_by predecessor must be same-goal, acyclic, and part of a one-to-one handoff chain; release/claim cannot bypass it. Pass a reason: blocking takes work away from whoever held it, and the reason is the only way they can find out why.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "task_id": { "type": "string" },
-                    "blocked_by": { "type": "string" },
-                    "reason": { "type": "string", "description": "Why the work was blocked. Recorded as a durable note on the task's thread, readable by its former owner." },
-                    "actor": { "type": "string", "default": "human", "description": "Who blocked it." }
-                },
-                "required": ["task_id"]
-            }
-        }),
-        json!({
-            "name": "reopen_task",
-            "description": "Return a stranded task (in_review after a drift/needs-human completion, or manually blocked with no predecessor gate) to open so an agent can claim it again. Refuses to bypass a handoff dependency, to disturb an active claim (use release_task), or to revive terminal work.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "task_id": { "type": "string" }
-                },
-                "required": ["task_id"]
-            }
-        }),
-        json!({
-            "name": "abandon_task",
-            "description": "Permanently retire nonterminal work to abandoned while preserving its durable history. Open, in-review, blocked, and expired-claim tasks are eligible. Live claims and parked ownership remain protected; release or resolve them first.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "task_id": { "type": "string" }
-                },
-                "required": ["task_id"]
-            }
-        }),
-        json!({
-            "name": "resolve_task",
-            "description": "Accept an in_review task to done under a reviewer label — the task-level mirror of accept_design. A task lands in_review when conformance returns drift/needs_human; this records the judgement and moves it to done with no code-conformance re-run, opening any blocked successor. The label is an attributable declaration, not an authenticated human identity (ADR-0071), and must differ from the agent id under review.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "task_id": { "type": "string" },
-                    "human": { "type": "string", "description": "Non-empty reviewer label recorded in resolved_by. Attributed, not authenticated; must differ from the agent id under review." }
-                },
-                "required": ["task_id", "human"]
-            }
-        }),
-        json!({
-            "name": "ask_question",
-            "description": "Park a claimed task with a durable question (ADR-0020). Owner-guarded: moves the task to needs_input, clearing the live lease but keeping the owner and evidence window. Address it at a peer with 'audience' (an agent id) instead of a human; the peer finds it via 'pending_questions'. Answer it with 'answer'.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "task_id": { "type": "string" },
-                    "question": { "type": "string" },
-                    "audience": { "type": "string", "description": "Agent id to address the question to. Omit to ask a human." },
-                    "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." }
-                },
-                "required": ["task_id", "question"]
-            }
-        }),
-        json!({
-            "name": "pending_questions",
-            "description": "Unanswered questions addressed to you (ADR-0046), oldest first. A read over the durable task threads, not a queue: nothing is delivered, reserved, or consumed, so reading can never lose a question and two readers see the same rows. Reply with 'answer' on the returned task_id.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." }
-                }
-            }
-        }),
-        json!({
-            "name": "questions_for_a_human",
-            "description": "Everything currently waiting on a person, oldest first: each parked task's question, who asked it, and how long it has gone unanswered. The human counterpart of pending_questions, and necessarily a separate call, because a human has no agent id - 'addressed at a human' is the absence of an audience (ADR-0046), so a query matching an id can never return one. Read-only and evidence-free: it records nothing, changes no task state, and reading a question cannot consume it. Reply with 'answer' on the returned task_id, which resumes that agent under its existing owner with a fresh lease. Waiting time is reported, never judged - how long is too long is not a decision this tool is entitled to make for you.",
-            "inputSchema": { "type": "object", "properties": {} }
-        }),
-        json!({
-            "name": "answer",
-            "description": "Answer a needs_input task's question (ADR-0020). Records the durable answer and returns the task to claimed under the same owner with a fresh lease. Any author may answer, including a human answering one agent's question to another — a pair of agents waiting on each other must always be unstickable.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "task_id": { "type": "string" },
-                    "answer": { "type": "string" },
-                    "author": { "type": "string", "default": "human", "description": "Who answered." },
-                    "lease_secs": { "type": "integer", "default": 300 }
-                },
-                "required": ["task_id", "answer"]
-            }
-        }),
-        json!({
-            "name": "pause_task",
-            "description": "Deliberately suspend a claimed task (ADR-0020). Owner-guarded: moves it to paused, clearing the live lease but keeping the owner and evidence window. Resume with 'resume_task'.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "task_id": { "type": "string" },
-                    "reason": { "type": "string", "description": "Why the work was suspended. Recorded as a durable note on the task's thread." },
-                    "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." }
-                },
-                "required": ["task_id"]
-            }
-        }),
-        json!({
-            "name": "resume_task",
-            "description": "Resume a paused task under the same owner with a fresh lease (ADR-0020).",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "task_id": { "type": "string" },
-                    "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." },
-                    "lease_secs": { "type": "integer", "default": 300 }
-                },
-                "required": ["task_id"]
-            }
-        }),
-        json!({
-            "name": "task_qa",
-            "description": "The durable, append-only dialogue thread for a task (ADR-0020, ADR-0046), oldest first: questions, answers, and notes recording why a state change parked or blocked the work.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "task_id": { "type": "string" } },
-                "required": ["task_id"]
-            }
-        }),
-        json!({
-            "name": "board",
-            "description": "The coordination snapshot of tasks with owner, status, and lease. Returns every task by default; pass include_terminal=false for only the live/actionable set (open, claimed, in_review, blocked), leaving done/abandoned tasks durable but out of view.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "include_terminal": { "type": "boolean", "default": true, "description": "Include terminal done/abandoned tasks (default true)." }
-                }
-            }
-        }),
-        json!({
-            "name": "stalled_work",
-            "description": "Every task that is not progressing, and the fact that stalled it: lapsed leases, work awaiting a human decision, tasks blocked behind something no agent will advance, blocks naming a task that is not on the board, and parked work. Read-only and evidence-free — it records nothing, changes no task state, and produces no verdict. It reports how long each stall has been true and deliberately does not decide whether that is too long, because a staleness threshold invented here would become policy nobody agreed to.",
-            "inputSchema": { "type": "object", "properties": {} }
         }),
     ]
 }
@@ -317,13 +293,25 @@ pub(super) fn dispatch(
     name: &str,
     args: &Value,
 ) -> Option<Result<Value, String>> {
+    if let Some(renamed) = renamed(&RENAMED, name) {
+        let translated = renamed.translate(args);
+        let answer = dispatch(engine, renamed.new, &translated)?;
+        return Some(answer.map(|result| renamed.teach(result)));
+    }
+
     match name {
-        "create_task" => Some((|| {
+        "task_create" => Some((|| {
             let goal_id = req_str(args, "goal_id")?;
+            // Shape says which act this is, the same way `design_register`
+            // tells one design from a batch: a title is the task you are
+            // creating, and its absence is a request to find the tasks.
+            let Some(title) = opt_str(args, "title").filter(|t| !t.trim().is_empty()) else {
+                return ok(&engine.decompose_goal(goal_id).map_err(|e| e.to_string())?);
+            };
             let task = engine
                 .create_task_covering(
                     goal_id,
-                    req_str(args, "title")?,
+                    title.as_str(),
                     opt_str(args, "acceptance").unwrap_or_default().as_str(),
                     optional_string_arg(args, "blocked_by")?,
                     &str_array(args, "also_serves"),
@@ -354,388 +342,439 @@ pub(super) fn dispatch(
             }
             ok(&value)
         })()),
-        "decompose_goal" => Some((|| {
-            ok(&engine
-                .decompose_goal(req_str(args, "goal_id")?)
-                .map_err(|e| e.to_string())?)
-        })()),
-        "next_task" => Some((|| match engine.next_task().map_err(|e| e.to_string())? {
-            Some(t) => {
-                let governing = engine
-                    .governing_clauses_for_task(&t.id)
-                    .map_err(|e| e.to_string())?;
-                let owner = t.owner.as_deref().unwrap_or("unclaimed");
-                let mut markdown = format!(
-                    "**Next task**: `{}`\n\n**{}**\n\n- Goal: `{}`\n- Status: **{}** / Owner: {}\n\n{}",
-                    t.id,
-                    t.title,
-                    t.goal_id,
-                    t.status.as_str(),
-                    owner,
-                    t.acceptance
-                );
-                markdown.push_str(&render_governing(&governing));
-                let mut structured = serde_json::to_value(&t).map_err(|e| e.to_string())?;
-                if let Some(obj) = structured.as_object_mut() {
-                    obj.insert(
-                        "governing".to_string(),
-                        serde_json::to_value(&governing).map_err(|e| e.to_string())?,
-                    );
-                }
-                rendered(markdown, &structured)
-            }
-            None => text("no claimable task".to_string()),
-        })()),
-        "claim_task" => Some((|| {
+        "task_claim" => Some((|| {
             let task_id = req_str(args, "task_id")?;
-            let scope = TaskScope {
-                paths: str_array(args, "paths"),
-                symbols: str_array(args, "symbols"),
-            };
-            let agent = opt_str(args, "agent").unwrap_or_default();
-            let won = engine
-                .claim_task_with_scope(
-                    task_id,
-                    agent.as_str(),
-                    i64_arg(args, "lease_secs", 300),
-                    &scope,
-                )
-                .map_err(|e| e.to_string())?;
-            // On a won claim, surface what governs the work so the agent sees it
-            // on pickup without a separate advise call (ADR-0029).
-            let governing = if won {
-                engine
-                    .governing_clauses_for_task(task_id)
-                    .map_err(|e| e.to_string())?
-            } else {
-                Vec::new()
-            };
-            let mut response = json!({ "won": won, "governing": governing });
-            // The claim opens the window that `complete_task` later validates
-            // evidence against: evidence starting before `claim_started_at` is
-            // refused as "outside the live claim". Returning the window here is
-            // what makes that constructible — without it an agent has to guess a
-            // `started_at`, and a wrong guess reads as a policy refusal rather
-            // than a missing accessor (ADR-0060).
-            if won {
-                if let Some(task) = engine
-                    .store()
-                    .get_task(task_id)
-                    .map_err(|e| e.to_string())?
-                {
-                    if let Some(obj) = response.as_object_mut() {
-                        obj.insert("claim_started_at".to_string(), json!(task.claim_started_at));
-                        obj.insert("lease_expires_at".to_string(), json!(task.lease_expires_at));
-                    }
+            match one_of(args, "step", &CLAIM_STEPS)? {
+                "claim" => claim(engine, task_id, args),
+                "renew" => {
+                    let renewed = engine
+                        .renew_lease(
+                            task_id,
+                            opt_str(args, "agent").unwrap_or_default().as_str(),
+                            i64_arg(args, "lease_secs", 300),
+                        )
+                        .map_err(|e| e.to_string())?;
+                    let mut response = json!({ "renewed": renewed });
+                    attach_owner_attention(engine, args, &mut response)?;
+                    ok(&response)
                 }
-            } else {
-                // A lost claim used to be a bare `won: false`. Every reason it
-                // can fail is knowable from the row the compare-and-swap just
-                // missed, and they call for opposite responses: wait for a live
-                // lease, pick different work if it is finished, unblock a
-                // blocker, rebuild a stale binary. Collapsing them into one
-                // boolean is why `scripts/claim-gate.mjs` exists at all — a
-                // whole diagnostic written to guess, after the fact, at
-                // something the plane knew at the time.
-                let task = engine
-                    .store()
-                    .get_task(task_id)
+                "release" => {
+                    let released = engine
+                        .release_task(task_id, opt_str(args, "agent").unwrap_or_default().as_str())
+                        .map_err(|e| e.to_string())?;
+                    ok(&json!({ "released": released }))
+                }
+                "recover" => {
+                    let recovered = engine
+                        .recover_claim(
+                            task_id,
+                            &required_for(
+                                args,
+                                "expected_owner",
+                                "recover",
+                                "the exact current owner. A recovery that does not name who it \
+                                 takes from is not a recovery.",
+                            )?,
+                            (
+                                opt_str(args, "agent").unwrap_or_default().as_str(),
+                                opt_str(args, "resolved_name").unwrap_or_default().as_str(),
+                            ),
+                            &required_for(args, "reason", "recover", "why ownership moved.")?,
+                            opt_str(args, "human").as_deref(),
+                            i64_arg(args, "lease_secs", 300),
+                        )
+                        .map_err(|e| e.to_string())?;
+                    ok(&json!({ "recovered": recovered }))
+                }
+                other => {
+                    unreachable!("one_of refused every value but {CLAIM_STEPS:?}, not {other}")
+                }
+            }
+        })()),
+        "task_query" => Some((|| match one_of(args, "view", &VIEWS)? {
+            "next" => match engine.next_task().map_err(|e| e.to_string())? {
+                Some(t) => {
+                    let governing = engine
+                        .governing_clauses_for_task(&t.id)
+                        .map_err(|e| e.to_string())?;
+                    let owner = t.owner.as_deref().unwrap_or("unclaimed");
+                    let mut markdown = format!(
+                            "**Next task**: `{}`\n\n**{}**\n\n- Goal: `{}`\n- Status: **{}** / Owner: {}\n\n{}",
+                            t.id,
+                            t.title,
+                            t.goal_id,
+                            t.status.as_str(),
+                            owner,
+                            t.acceptance
+                        );
+                    markdown.push_str(&render_governing(&governing));
+                    let mut structured = serde_json::to_value(&t).map_err(|e| e.to_string())?;
+                    if let Some(obj) = structured.as_object_mut() {
+                        obj.insert(
+                            "governing".to_string(),
+                            serde_json::to_value(&governing).map_err(|e| e.to_string())?,
+                        );
+                    }
+                    rendered(markdown, &structured)
+                }
+                None => text("no claimable task".to_string()),
+            },
+            "scope" => ok(&engine
+                .task_scope(&required_for(
+                    args,
+                    "task_id",
+                    "scope",
+                    "the task to read.",
+                )?)
+                .map_err(|e| e.to_string())?),
+            "thread" => ok(&engine
+                .task_qa(&required_for(
+                    args,
+                    "task_id",
+                    "thread",
+                    "the task to read.",
+                )?)
+                .map_err(|e| e.to_string())?),
+            "claim_transfers" => ok(&engine
+                .claim_transfer_history(&required_for(
+                    args,
+                    "task_id",
+                    "claim_transfers",
+                    "the task to read.",
+                )?)
+                .map_err(|e| e.to_string())?),
+            "drafts" => {
+                let drafts = engine
+                    .draft_questions(&required_for(
+                        args,
+                        "task_id",
+                        "drafts",
+                        "a task whose scope is compared against every other live claim.",
+                    )?)
                     .map_err(|e| e.to_string())?;
-                if let Some(obj) = response.as_object_mut() {
-                    obj.insert(
-                        "reason".to_string(),
-                        json!(lost_claim_reason(task.as_ref(), &agent, now_unix())),
-                    );
-                    if let Some(task) = task.as_ref() {
-                        obj.insert("status".to_string(), json!(task.status.as_str()));
-                        obj.insert("owner".to_string(), json!(task.owner));
-                        obj.insert("lease_expires_at".to_string(), json!(task.lease_expires_at));
-                        obj.insert("blocked_by".to_string(), json!(task.blocked_by));
-                    }
-                }
+                ok(&json!({ "drafts": drafts }))
             }
-            attach_owner_attention(engine, args, &mut response)?;
-            ok(&response)
-        })()),
-        "task_scope" => Some((|| {
-            ok(&engine
-                .task_scope(req_str(args, "task_id")?)
-                .map_err(|e| e.to_string())?)
-        })()),
-        "existing_work" => Some((|| {
-            let goal_id = opt_str(args, "goal_id");
-            let paths = str_array(args, "paths");
-            if goal_id.is_none() && paths.is_empty() {
-                return Err(
-                    "existing_work needs a goal_id or paths; asking about nothing answers nothing"
-                        .to_string(),
-                );
-            }
-            let found = engine
-                .existing_work(goal_id.as_deref(), &paths)
-                .map_err(|e| e.to_string())?;
-            let rows: Vec<Value> = found
-                .iter()
-                .map(|task| {
-                    json!({
-                        "task_id": task.id,
-                        "title": task.title,
-                        "status": task.status.as_str(),
-                        "goal_id": task.goal_id,
-                        "owner": task.owner,
-                    })
-                })
-                .collect();
-            let finished = found
-                .iter()
-                .filter(|task| task.status == TaskStatus::Done)
-                .count();
-            ok(&json!({
-                "count": rows.len(),
-                "already_done": finished,
-                "work": rows,
-            }))
-        })()),
-        "check_overlap" => Some((|| {
-            let scope = TaskScope {
-                paths: str_array(args, "paths"),
-                symbols: str_array(args, "symbols"),
-            };
-            let report = engine
-                .check_claim_overlap(
-                    &scope,
-                    opt_str(args, "exclude_task_id").as_deref(),
-                    opt_str(args, "agent").as_deref(),
-                )
-                .map_err(|e| e.to_string())?;
-            ok(&report)
-        })()),
-        "draft_questions" => Some((|| {
-            let drafts = engine
-                .draft_questions(req_str(args, "task_id")?)
-                .map_err(|e| e.to_string())?;
-            ok(&json!({ "drafts": drafts }))
-        })()),
-        "renew_lease" => Some((|| {
-            let renewed = engine
-                .renew_lease(
-                    req_str(args, "task_id")?,
-                    opt_str(args, "agent").unwrap_or_default().as_str(),
-                    i64_arg(args, "lease_secs", 300),
-                )
-                .map_err(|e| e.to_string())?;
-            let mut response = json!({ "renewed": renewed });
-            attach_owner_attention(engine, args, &mut response)?;
-            ok(&response)
-        })()),
-        "complete_task" => Some((|| {
-            let evidence = parse_evidence(args)?;
-            let check = serde_json::from_value(
-                args.get("check")
-                    .cloned()
-                    .ok_or_else(|| "missing required object arg: check".to_string())?,
-            )
-            .map_err(|error| format!("invalid conformance check: {error}"))?;
-            let learned = opt_str(args, "learned");
-            let completion = engine
-                .complete_task(
-                    req_str(args, "task_id")?,
-                    opt_str(args, "agent").unwrap_or_default().as_str(),
-                    &evidence,
-                    &check,
-                    learned.as_deref(),
-                )
-                .map_err(|e| e.to_string())?;
-            let mut response = json!({
-                "completed": completion.completed,
-                "conformance": completion.conformance,
-            });
-            // The omission is reported, never blocked (ADR-0053). Most tasks
-            // teach nothing; a gate would produce a column of "n/a" and the gap
-            // would stay invisible. Naming it is what makes it measurable.
-            match &completion.learned {
-                Some(id) => {
-                    response["learned"] = json!(id);
-                }
-                None => {
-                    response["learned_omitted"] = json!(
-                        "no conclusion recorded; pass `learned` with what the next agent should know, or nothing if this taught nothing"
-                    );
-                }
-            }
-            // The one place an agent reliably discovers a dead lease, and until
-            // now it discovered only that completion failed. If any claim of
-            // theirs has lapsed, say so here with what can and cannot be done
-            // about it -- renewing does not repair a holed window.
-            attach_lease_warning(engine, args, &mut response)?;
-            ok(&response)
-        })()),
-        "release_task" => Some((|| {
-            let released = engine
-                .release_task(
-                    req_str(args, "task_id")?,
-                    opt_str(args, "agent").unwrap_or_default().as_str(),
-                )
-                .map_err(|e| e.to_string())?;
-            ok(&json!({ "released": released }))
-        })()),
-        "recover_claim" => Some((|| {
-            let recovered = engine
-                .recover_claim(
-                    req_str(args, "task_id")?,
-                    req_str(args, "expected_owner")?,
-                    (
-                        opt_str(args, "agent").unwrap_or_default().as_str(),
-                        opt_str(args, "resolved_name").unwrap_or_default().as_str(),
-                    ),
-                    req_str(args, "reason")?,
-                    opt_str(args, "human").as_deref(),
-                    i64_arg(args, "lease_secs", 300),
-                )
-                .map_err(|e| e.to_string())?;
-            ok(&json!({ "recovered": recovered }))
-        })()),
-        "claim_transfer_history" => Some((|| {
-            ok(&engine
-                .claim_transfer_history(req_str(args, "task_id")?)
-                .map_err(|e| e.to_string())?)
-        })()),
-        "block_task" => Some((|| {
-            let blocked = engine
-                .block_task(
-                    req_str(args, "task_id")?,
-                    optional_string_arg(args, "blocked_by")?,
-                    opt_str(args, "reason").as_deref(),
-                    opt_str(args, "actor")
-                        .unwrap_or_else(|| "human".to_string())
-                        .as_str(),
-                )
-                .map_err(|e| e.to_string())?;
-            ok(&json!({ "blocked": blocked }))
-        })()),
-        "reopen_task" => Some((|| {
-            let reopened = engine
-                .reopen_task(req_str(args, "task_id")?)
-                .map_err(|e| e.to_string())?;
-            ok(&json!({ "reopened": reopened }))
-        })()),
-        "abandon_task" => Some((|| {
-            let abandoned = engine
-                .abandon_task(req_str(args, "task_id")?)
-                .map_err(|e| e.to_string())?;
-            ok(&json!({ "abandoned": abandoned }))
-        })()),
-        "resolve_task" => Some((|| {
-            let resolved = engine
-                .resolve_task(req_str(args, "task_id")?, req_str(args, "human")?)
-                .map_err(|e| e.to_string())?;
-            ok(&json!({ "resolved": resolved }))
-        })()),
-        "ask_question" => Some((|| {
-            let parked = engine
-                .ask_question(
-                    req_str(args, "task_id")?,
-                    opt_str(args, "agent").unwrap_or_default().as_str(),
-                    req_str(args, "question")?,
-                    opt_str(args, "audience").as_deref(),
-                )
-                .map_err(|e| e.to_string())?;
-            ok(&json!({ "needs_input": parked }))
-        })()),
-        "pending_questions" => Some((|| {
-            ok(&engine
+            "pending_questions" => ok(&engine
                 .pending_questions(opt_str(args, "agent").unwrap_or_default().as_str())
-                .map_err(|e| e.to_string())?)
-        })()),
-        "questions_for_a_human" => Some((|| {
-            let questions = engine.questions_for_a_human().map_err(|e| e.to_string())?;
-            rendered(render_human_questions(&questions), &questions)
-        })()),
-        "answer" => Some((|| {
-            let answered = engine
-                .answer_question(
-                    req_str(args, "task_id")?,
-                    req_str(args, "answer")?,
-                    opt_str(args, "author")
-                        .unwrap_or_else(|| "human".to_string())
-                        .as_str(),
-                    i64_arg(args, "lease_secs", 300),
-                )
-                .map_err(|e| e.to_string())?;
-            ok(&json!({ "answered": answered }))
-        })()),
-        "pause_task" => Some((|| {
-            let paused = engine
-                .pause_task(
-                    req_str(args, "task_id")?,
-                    opt_str(args, "agent").unwrap_or_default().as_str(),
-                    opt_str(args, "reason").as_deref(),
-                )
-                .map_err(|e| e.to_string())?;
-            ok(&json!({ "paused": paused }))
-        })()),
-        "resume_task" => Some((|| {
-            let resumed = engine
-                .resume_task(
-                    req_str(args, "task_id")?,
-                    opt_str(args, "agent").unwrap_or_default().as_str(),
-                    i64_arg(args, "lease_secs", 300),
-                )
-                .map_err(|e| e.to_string())?;
-            ok(&json!({ "resumed": resumed }))
-        })()),
-        "task_qa" => Some((|| {
-            ok(&engine
-                .task_qa(req_str(args, "task_id")?)
-                .map_err(|e| e.to_string())?)
-        })()),
-        "stalled_work" => Some((|| {
-            ok(&engine.stalled_work().map_err(|e| e.to_string())?)
-        })()),
-        "board" => Some((|| {
-            let tasks = engine
-                .board(bool_arg(args, "include_terminal", true))
-                .map_err(|e| e.to_string())?;
-            let mut rows = Vec::with_capacity(tasks.len());
-            for task in tasks {
-                let scope = engine.task_scope(&task.id).map_err(|e| e.to_string())?;
-                // The receipt the task closed on, beside the status rather than
-                // one query away. A `done` row says nothing about whether its
-                // evidence ever affirmed the work, and most of them did not.
-                let receipt = engine.task_receipt(&task.id).map_err(|e| e.to_string())?;
-                // Evidence-window continuity, derived from the task log rather
-                // than read off the row (ADR-0064 d5). It rides here because a
-                // discontinuous window is why a task cannot close itself, and
-                // that is a fact about the row a reader should not have to go
-                // looking for.
-                let window = engine.claim_window(&task.id).map_err(|e| e.to_string())?;
-                // Whether the claim is actually being held, beside the status
-                // rather than inferred from a timestamp. `claimed` alone read as
-                // work in progress: measured once at 36 claimed rows of which 4
-                // had a live lease, and finding that out took a bespoke script.
-                let lease_state = match (task.status, task.lease_expires_at) {
-                    (TaskStatus::Claimed, Some(expires)) if expires >= now_unix() => Some("live"),
-                    (TaskStatus::Claimed, _) => Some("lapsed"),
-                    _ => None,
-                };
-                let mut row = serde_json::to_value(task).map_err(|e| e.to_string())?;
-                let object = row
-                    .as_object_mut()
-                    .ok_or_else(|| "task did not serialize as an object".to_string())?;
-                object.insert("scope".to_string(), json!(scope));
-                object.insert("claim_window".to_string(), json!(window));
-                if let Some(state) = lease_state {
-                    object.insert("lease_state".to_string(), json!(state));
-                }
-                if let Some(receipt) = receipt {
-                    object.insert("receipt".to_string(), json!(receipt));
-                }
-                rows.push(row);
+                .map_err(|e| e.to_string())?),
+            "questions_for_a_human" => {
+                let questions = engine.questions_for_a_human().map_err(|e| e.to_string())?;
+                rendered(render_human_questions(&questions), &questions)
             }
-            ok(&rows)
+            "stalled" => ok(&engine.stalled_work().map_err(|e| e.to_string())?),
+            "overlap" => {
+                let scope = TaskScope {
+                    paths: str_array(args, "paths"),
+                    symbols: str_array(args, "symbols"),
+                };
+                let report = engine
+                    .check_claim_overlap(
+                        &scope,
+                        opt_str(args, "exclude_task_id").as_deref(),
+                        opt_str(args, "agent").as_deref(),
+                    )
+                    .map_err(|e| e.to_string())?;
+                ok(&report)
+            }
+            "existing_work" => existing_work(engine, args),
+            "board" => board(engine, args),
+            other => unreachable!("one_of refused every value but {VIEWS:?}, not {other}"),
+        })()),
+        "task_transition" => Some((|| {
+            let task_id = req_str(args, "task_id")?;
+            match one_of(args, "to", &TRANSITIONS)? {
+                "complete" => complete(engine, task_id, args),
+                "resolve" => {
+                    let resolved = engine
+                        .resolve_task(
+                            task_id,
+                            &required_for(
+                                args,
+                                "human",
+                                "resolve",
+                                "the reviewer label recorded in resolved_by. Attributed, not \
+                                 authenticated; it must differ from the agent under review.",
+                            )?,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    ok(&json!({ "resolved": resolved }))
+                }
+                "block" => {
+                    let blocked = engine
+                        .block_task(
+                            task_id,
+                            optional_string_arg(args, "blocked_by")?,
+                            opt_str(args, "reason").as_deref(),
+                            opt_str(args, "actor")
+                                .unwrap_or_else(|| "human".to_string())
+                                .as_str(),
+                        )
+                        .map_err(|e| e.to_string())?;
+                    ok(&json!({ "blocked": blocked }))
+                }
+                "reopen" => {
+                    let reopened = engine.reopen_task(task_id).map_err(|e| e.to_string())?;
+                    ok(&json!({ "reopened": reopened }))
+                }
+                "abandon" => {
+                    let abandoned = engine.abandon_task(task_id).map_err(|e| e.to_string())?;
+                    ok(&json!({ "abandoned": abandoned }))
+                }
+                "pause" => {
+                    let paused = engine
+                        .pause_task(
+                            task_id,
+                            opt_str(args, "agent").unwrap_or_default().as_str(),
+                            opt_str(args, "reason").as_deref(),
+                        )
+                        .map_err(|e| e.to_string())?;
+                    ok(&json!({ "paused": paused }))
+                }
+                "resume" => {
+                    let resumed = engine
+                        .resume_task(
+                            task_id,
+                            opt_str(args, "agent").unwrap_or_default().as_str(),
+                            i64_arg(args, "lease_secs", 300),
+                        )
+                        .map_err(|e| e.to_string())?;
+                    ok(&json!({ "resumed": resumed }))
+                }
+                "ask" => {
+                    let parked = engine
+                        .ask_question(
+                            task_id,
+                            opt_str(args, "agent").unwrap_or_default().as_str(),
+                            &required_for(
+                                args,
+                                "question",
+                                "ask",
+                                "the durable question that parks the task.",
+                            )?,
+                            opt_str(args, "audience").as_deref(),
+                        )
+                        .map_err(|e| e.to_string())?;
+                    ok(&json!({ "needs_input": parked }))
+                }
+                "answer" => {
+                    let answered = engine
+                        .answer_question(
+                            task_id,
+                            &required_for(args, "answer", "answer", "the durable answer.")?,
+                            opt_str(args, "author")
+                                .unwrap_or_else(|| "human".to_string())
+                                .as_str(),
+                            i64_arg(args, "lease_secs", 300),
+                        )
+                        .map_err(|e| e.to_string())?;
+                    ok(&json!({ "answered": answered }))
+                }
+                other => {
+                    unreachable!("one_of refused every value but {TRANSITIONS:?}, not {other}")
+                }
+            }
         })()),
         _ => None,
     }
+}
+
+/// The claim itself: a compare-and-swap, plus everything the losing side needs.
+fn claim(engine: &Lodestar, task_id: &str, args: &Value) -> Result<Value, String> {
+    let scope = TaskScope {
+        paths: str_array(args, "paths"),
+        symbols: str_array(args, "symbols"),
+    };
+    let agent = opt_str(args, "agent").unwrap_or_default();
+    let won = engine
+        .claim_task_with_scope(
+            task_id,
+            agent.as_str(),
+            i64_arg(args, "lease_secs", 300),
+            &scope,
+        )
+        .map_err(|e| e.to_string())?;
+    // On a won claim, surface what governs the work so the agent sees it
+    // on pickup without a separate advise call (ADR-0029).
+    let governing = if won {
+        engine
+            .governing_clauses_for_task(task_id)
+            .map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let mut response = json!({ "won": won, "governing": governing });
+    // The claim opens the window that completion later validates evidence
+    // against: evidence starting before `claim_started_at` is refused as
+    // "outside the live claim". Returning the window here is what makes that
+    // constructible — without it an agent has to guess a `started_at`, and a
+    // wrong guess reads as a policy refusal rather than a missing accessor
+    // (ADR-0060).
+    if won {
+        if let Some(task) = engine
+            .store()
+            .get_task(task_id)
+            .map_err(|e| e.to_string())?
+        {
+            if let Some(obj) = response.as_object_mut() {
+                obj.insert("claim_started_at".to_string(), json!(task.claim_started_at));
+                obj.insert("lease_expires_at".to_string(), json!(task.lease_expires_at));
+            }
+        }
+    } else {
+        // A lost claim used to be a bare `won: false`. Every reason it
+        // can fail is knowable from the row the compare-and-swap just
+        // missed, and they call for opposite responses: wait for a live
+        // lease, pick different work if it is finished, unblock a
+        // blocker, rebuild a stale binary. Collapsing them into one
+        // boolean is why `scripts/claim-gate.mjs` exists at all — a
+        // whole diagnostic written to guess, after the fact, at
+        // something the plane knew at the time.
+        let task = engine
+            .store()
+            .get_task(task_id)
+            .map_err(|e| e.to_string())?;
+        if let Some(obj) = response.as_object_mut() {
+            obj.insert(
+                "reason".to_string(),
+                json!(lost_claim_reason(task.as_ref(), &agent, now_unix())),
+            );
+            if let Some(task) = task.as_ref() {
+                obj.insert("status".to_string(), json!(task.status.as_str()));
+                obj.insert("owner".to_string(), json!(task.owner));
+                obj.insert("lease_expires_at".to_string(), json!(task.lease_expires_at));
+                obj.insert("blocked_by".to_string(), json!(task.blocked_by));
+            }
+        }
+    }
+    attach_owner_attention(engine, args, &mut response)?;
+    ok(&response)
+}
+
+/// Has this already been done? Terminal work is included on purpose: a task
+/// that is already finished is the most useful answer, and the one the board
+/// hides (ADR-0015).
+fn existing_work(engine: &Lodestar, args: &Value) -> Result<Value, String> {
+    let goal_id = opt_str(args, "goal_id");
+    let paths = str_array(args, "paths");
+    if goal_id.is_none() && paths.is_empty() {
+        return Err(
+            "\"existing_work\" needs a goal_id or paths; asking about nothing answers nothing"
+                .to_string(),
+        );
+    }
+    let found = engine
+        .existing_work(goal_id.as_deref(), &paths)
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<Value> = found
+        .iter()
+        .map(|task| {
+            json!({
+                "task_id": task.id,
+                "title": task.title,
+                "status": task.status.as_str(),
+                "goal_id": task.goal_id,
+                "owner": task.owner,
+            })
+        })
+        .collect();
+    let finished = found
+        .iter()
+        .filter(|task| task.status == TaskStatus::Done)
+        .count();
+    ok(&json!({
+        "count": rows.len(),
+        "already_done": finished,
+        "work": rows,
+    }))
+}
+
+fn complete(engine: &Lodestar, task_id: &str, args: &Value) -> Result<Value, String> {
+    let evidence = parse_evidence(args)?;
+    let check = serde_json::from_value(
+        args.get("check")
+            .cloned()
+            .ok_or_else(|| "\"complete\" requires check: the exact id/token/verdict/findings object returned by check_conformance.".to_string())?,
+    )
+    .map_err(|error| format!("invalid conformance check: {error}"))?;
+    let learned = opt_str(args, "learned");
+    let completion = engine
+        .complete_task(
+            task_id,
+            opt_str(args, "agent").unwrap_or_default().as_str(),
+            &evidence,
+            &check,
+            learned.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
+    let mut response = json!({
+        "completed": completion.completed,
+        "conformance": completion.conformance,
+    });
+    // The omission is reported, never blocked (ADR-0053). Most tasks
+    // teach nothing; a gate would produce a column of "n/a" and the gap
+    // would stay invisible. Naming it is what makes it measurable.
+    match &completion.learned {
+        Some(id) => {
+            response["learned"] = json!(id);
+        }
+        None => {
+            response["learned_omitted"] = json!(
+                "no conclusion recorded; pass `learned` with what the next agent should know, or nothing if this taught nothing"
+            );
+        }
+    }
+    // The one place an agent reliably discovers a dead lease, and until
+    // now it discovered only that completion failed. If any claim of
+    // theirs has lapsed, say so here with what can and cannot be done
+    // about it -- renewing does not repair a holed window.
+    attach_lease_warning(engine, args, &mut response)?;
+    ok(&response)
+}
+/// The coordination snapshot: every task with the facts a reader would
+/// otherwise have to go and derive — declared scope, the receipt it closed on,
+/// whether its evidence window is continuous, and whether the claim is actually
+/// being held rather than merely recorded.
+fn board(engine: &Lodestar, args: &Value) -> Result<Value, String> {
+    let tasks = engine
+        .board(bool_arg(args, "include_terminal", true))
+        .map_err(|e| e.to_string())?;
+    let mut rows = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        let scope = engine.task_scope(&task.id).map_err(|e| e.to_string())?;
+        // The receipt the task closed on, beside the status rather than
+        // one query away. A `done` row says nothing about whether its
+        // evidence ever affirmed the work, and most of them did not.
+        let receipt = engine.task_receipt(&task.id).map_err(|e| e.to_string())?;
+        // Evidence-window continuity, derived from the task log rather
+        // than read off the row (ADR-0064 d5). It rides here because a
+        // discontinuous window is why a task cannot close itself, and
+        // that is a fact about the row a reader should not have to go
+        // looking for.
+        let window = engine.claim_window(&task.id).map_err(|e| e.to_string())?;
+        // Whether the claim is actually being held, beside the status
+        // rather than inferred from a timestamp. `claimed` alone read as
+        // work in progress: measured once at 36 claimed rows of which 4
+        // had a live lease, and finding that out took a bespoke script.
+        let lease_state = match (task.status, task.lease_expires_at) {
+            (TaskStatus::Claimed, Some(expires)) if expires >= now_unix() => Some("live"),
+            (TaskStatus::Claimed, _) => Some("lapsed"),
+            _ => None,
+        };
+        let mut row = serde_json::to_value(task).map_err(|e| e.to_string())?;
+        let object = row
+            .as_object_mut()
+            .ok_or_else(|| "task did not serialize as an object".to_string())?;
+        object.insert("scope".to_string(), json!(scope));
+        object.insert("claim_window".to_string(), json!(window));
+        if let Some(state) = lease_state {
+            object.insert("lease_state".to_string(), json!(state));
+        }
+        if let Some(receipt) = receipt {
+            object.insert("receipt".to_string(), json!(receipt));
+        }
+        rows.push(row);
+    }
+    ok(&rows)
 }
 
 /// Attach any questions addressed to this agent to a response (ADR-0046).
@@ -778,10 +817,12 @@ fn lost_claim_reason(task: Option<&lodestar_core::Task>, agent: &str, now: i64) 
             }
             Some(owner) if owner != agent => match task.lease_expires_at {
                 Some(expires) if expires > now => format!(
-                    "held by {owner} for another {}s; recover_claim can take it over with a reason",
+                    "held by {owner} for another {}s; task_claim with step=\"recover\" can take it over with a reason",
                     expires - now
                 ),
-                _ => format!("held by {owner} with a lapsed lease; use recover_claim to take it"),
+                _ => format!(
+            "held by {owner} with a lapsed lease; use task_claim with step=\"recover\" to take it"
+        ),
             },
             _ => format!(
                 "status {} does not accept a claim right now",
@@ -876,7 +917,7 @@ fn attach_lease_warning(
             object.insert(
                 "lease_advice".to_string(),
                 json!(
-                    "renew_lease now. A lapsed claim cannot be completed afterwards: \
+                    "task_claim with step=\"renew\" now. A lapsed claim cannot be completed afterwards: \
                      re-claiming records the lapse and conformance refuses to certify \
                      across the hole (ADR-0048)."
                 ),
@@ -991,7 +1032,8 @@ fn humanize_seconds(seconds: i64) -> String {
 }
 
 /// Render the clauses governing a task's scope as a bounded Markdown section for
-/// pickup responses (`next_task` / `claim_task`). Empty when nothing governs.
+/// pickup responses (`task_query` view=next / `task_claim` step=claim). Empty
+/// when nothing governs.
 fn render_governing(governing: &[GoverningClause]) -> String {
     if governing.is_empty() {
         return String::new();
@@ -1017,6 +1059,77 @@ mod tests {
     use lodestar_core::{now_unix, CodeBindingMode, ConformanceEvidence, GoalKind};
     use mindleak_session::SessionRegistry;
 
+    /// The deprecation window has to be worth having: an old name must answer,
+    /// and the answer must say what to call instead. A rename table that
+    /// silently succeeded would leave every caller on the old name until the
+    /// removal broke them without warning.
+    #[test]
+    fn every_old_name_still_answers_and_names_its_replacement() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Old", "answer old names", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Work", "done").unwrap();
+
+        let answered = call(
+            &engine,
+            &json!({ "name": "board", "arguments": { "include_terminal": true } }),
+        )
+        .unwrap();
+        let notice = answered["content"].as_array().unwrap().last().unwrap()["text"]
+            .as_str()
+            .unwrap();
+        assert!(notice.contains("board is deprecated"), "{notice}");
+        assert!(
+            notice.contains("task_query with view=\"board\""),
+            "names the call to make: {notice}"
+        );
+        assert!(
+            notice.contains("ADR-0059"),
+            "names the removal train: {notice}"
+        );
+
+        // The payload a caller already parses is unchanged, so an old call
+        // keeps working rather than merely keeping answering.
+        let rows: Value =
+            serde_json::from_str(answered["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == task.id));
+
+        // Every entry points at a name the server actually advertises.
+        let advertised: Vec<String> = definitions()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+            .collect();
+        for renamed in RENAMED.iter() {
+            assert!(
+                advertised.iter().any(|name| name == renamed.new),
+                "{} redirects to {}, which nothing advertises",
+                renamed.old,
+                renamed.new
+            );
+        }
+    }
+
+    /// A deprecated name must keep its argument checking. Without it the
+    /// collapse would switch validation off for exactly the callers most likely
+    /// to get an argument wrong, for the whole deprecation window — and the
+    /// original incident (`lease_seconds` silently dropped, claim lapsed
+    /// mid-work) would be back, reachable through the old name.
+    #[test]
+    fn a_deprecated_name_is_still_checked_against_the_schema_that_answers_it() {
+        let error = super::super::validate_arguments(
+            "claim_task",
+            &json!({ "task_id": "task:1", "lease_seconds": 3600 }),
+        )
+        .expect_err("a misspelt argument is refused through the old name too");
+        assert!(error.contains("lease_seconds"), "{error}");
+        assert!(error.contains("lease_secs"), "{error}");
+    }
+
     /// Six identical "carry controls across an amendment" tasks reached the
     /// live board because a publish-time helper made a fresh one on every run
     /// and nothing showed it the five before it. `create_task` now names the
@@ -1040,7 +1153,7 @@ mod tests {
         let created = call(
             &engine,
             &json!({
-                "name": "create_task",
+                "name": "task_create",
                 "arguments": {
                     "goal_id": goal.id,
                     "title": "Carry controls across an amendment (again)",
@@ -1076,9 +1189,10 @@ mod tests {
         let claimed = call(
             &engine,
             &json!({
-                "name": "claim_task",
+                "name": "task_claim",
                 "arguments": {
                     "task_id": task_id,
+                    "step": "claim",
                     "agent": "alice",
                     "lease_secs": 300,
                     "paths": ["crates/mindleak-core/src/**"],
@@ -1095,8 +1209,9 @@ mod tests {
         let overlap = call(
             &engine,
             &json!({
-                "name": "check_overlap",
+                "name": "task_query",
                 "arguments": {
+                    "view": "overlap",
                     "paths": ["crates/mindleak-core/src/lib.rs"],
                     "symbols": ["symbol:crates/mindleak-core/src/lib.rs:MindLeak"]
                 }
@@ -1115,8 +1230,8 @@ mod tests {
         let board = call(
             &engine,
             &json!({
-                "name": "board",
-                "arguments": { "include_terminal": false }
+                "name": "task_query",
+                "arguments": { "view": "board", "include_terminal": false }
             }),
         )
         .unwrap();
@@ -1185,9 +1300,10 @@ mod tests {
         let completed_response = call(
             &engine,
             &json!({
-                "name": "complete_task",
+                "name": "task_transition",
                 "arguments": {
                     "task_id": task.id,
+                    "to": "complete",
                     "agent": "agent-a",
                     "evidence": evidence,
                     "check": checked
@@ -1214,7 +1330,7 @@ mod tests {
         let result = call(
             &engine,
             &json!({
-                "name": "create_task",
+                "name": "task_create",
                 "arguments": {
                     "goal_id": goal.id,
                     "title": "Second",
@@ -1233,7 +1349,7 @@ mod tests {
 
     #[test]
     fn decompose_goal_dispatch_falls_back_to_a_single_task_offline() {
-        // The decompose_goal tool calls the optional planning model. With no
+        // The decomposition path calls the optional planning model. With no
         // model reachable it must degrade to a single seed task rather than
         // error — and the test must stay deterministic regardless of whatever
         // model a developer happens to be running locally.
@@ -1252,7 +1368,7 @@ mod tests {
         let result = call(
             &engine,
             &json!({
-                "name": "decompose_goal",
+                "name": "task_create",
                 "arguments": { "goal_id": goal.id }
             }),
         )
@@ -1272,12 +1388,12 @@ mod tests {
             .unwrap();
         let task = engine.create_task(&goal.id, "Held", "done").unwrap();
         // A manual hold with no predecessor was previously unrecoverable via the
-        // tool surface; reopen_task must return it to a claimable state.
+        // tool surface; reopening must return it to a claimable state.
         engine.block_task(&task.id, None, None, "human").unwrap();
 
         let result = call(
             &engine,
-            &json!({ "name": "reopen_task", "arguments": { "task_id": task.id } }),
+            &json!({ "name": "task_transition", "arguments": { "task_id": task.id, "to": "reopen" } }),
         )
         .unwrap();
         let payload: Value =
@@ -1321,8 +1437,9 @@ mod tests {
             let result = call(
                 &engine,
                 &json!({
-                    "name": "check_overlap",
+                    "name": "task_query",
                     "arguments": {
+                        "view": "overlap",
                         "paths": ["crates/mindleak-core/src/lib.rs"],
                         // Injected by `bind_session` from the offered session.
                         "agent": agent
@@ -1374,9 +1491,10 @@ mod tests {
         let recovered = call(
             &engine,
             &json!({
-                "name": "recover_claim",
+                "name": "task_claim",
                 "arguments": {
                     "task_id": task.id,
+                    "step": "recover",
                     "expected_owner": "copilot-abcd1234",
                     "agent": agent,
                     // Injected by `bind_session` in the running server. Since
@@ -1397,8 +1515,8 @@ mod tests {
         let history = call(
             &engine,
             &json!({
-                "name": "claim_transfer_history",
-                "arguments": { "task_id": task.id }
+                "name": "task_query",
+                "arguments": { "view": "claim_transfers", "task_id": task.id }
             }),
         )
         .unwrap();
@@ -1426,9 +1544,10 @@ mod tests {
         let without_human = call(
             &engine,
             &json!({
-                "name": "recover_claim",
+                "name": "task_claim",
                 "arguments": {
                     "task_id": task.id,
+                    "step": "recover",
                     "expected_owner": old_owner,
                     "agent": new_owner,
                     "resolved_name": "copilot",
@@ -1442,9 +1561,10 @@ mod tests {
         let recovered = call(
             &engine,
             &json!({
-                "name": "recover_claim",
+                "name": "task_claim",
                 "arguments": {
                     "task_id": task.id,
+                    "step": "recover",
                     "expected_owner": old_owner,
                     "agent": new_owner,
                     "resolved_name": "copilot",
@@ -1503,7 +1623,7 @@ mod tests {
         // The reviewed agent may not sign off on its own work.
         let denied = call(
             &engine,
-            &json!({ "name": "resolve_task", "arguments": { "task_id": task.id, "human": "agent-a" } }),
+            &json!({ "name": "task_transition", "arguments": { "task_id": task.id, "to": "resolve", "human": "agent-a" } }),
         );
         assert!(denied.unwrap_err().contains("may not resolve its own"));
 
@@ -1513,7 +1633,7 @@ mod tests {
         let reviewer_label = "reviewed-by-lyndon (unverified label)";
         let result = call(
             &engine,
-            &json!({ "name": "resolve_task", "arguments": { "task_id": task.id, "human": reviewer_label } }),
+            &json!({ "name": "task_transition", "arguments": { "task_id": task.id, "to": "resolve", "human": reviewer_label } }),
         )
         .unwrap();
         let payload: Value =
@@ -1527,7 +1647,7 @@ mod tests {
 
         let definition = definitions()
             .into_iter()
-            .find(|tool| tool["name"] == "resolve_task")
+            .find(|tool| tool["name"] == "task_transition")
             .unwrap();
         let description = definition["inputSchema"]["properties"]["human"]["description"]
             .as_str()
@@ -1547,8 +1667,11 @@ mod tests {
 
         // Default: every task, including the abandoned one.
         let all: Value = serde_json::from_str(
-            call(&engine, &json!({ "name": "board", "arguments": {} })).unwrap()["content"][0]
-                ["text"]
+            call(
+                &engine,
+                &json!({ "name": "task_query", "arguments": { "view": "board" } }),
+            )
+            .unwrap()["content"][0]["text"]
                 .as_str()
                 .unwrap(),
         )
@@ -1563,7 +1686,7 @@ mod tests {
         let active: Value = serde_json::from_str(
             call(
                 &engine,
-                &json!({ "name": "board", "arguments": { "include_terminal": false } }),
+                &json!({ "name": "task_query", "arguments": { "view": "board", "include_terminal": false } }),
             )
             .unwrap()["content"][0]["text"]
                 .as_str()
@@ -1597,8 +1720,11 @@ mod tests {
         assert!(engine.claim_task(&lapsed.id, "bob", -1).unwrap());
 
         let board: Value = serde_json::from_str(
-            call(&engine, &json!({ "name": "board", "arguments": {} })).unwrap()["content"][0]
-                ["text"]
+            call(
+                &engine,
+                &json!({ "name": "task_query", "arguments": { "view": "board" } }),
+            )
+            .unwrap()["content"][0]["text"]
                 .as_str()
                 .unwrap(),
         )
@@ -1622,7 +1748,7 @@ mod tests {
             .define_goal(GoalKind::Objective, "Handoff", "serialize edits", None)
             .unwrap();
         let malformed = json!({
-            "name": "create_task",
+            "name": "task_create",
             "arguments": {
                 "goal_id": goal.id,
                 "title": "Unsafe",
@@ -1636,7 +1762,7 @@ mod tests {
         let legacy = call(
             &engine,
             &json!({
-                "name": "create_task",
+                "name": "task_create",
                 "arguments": { "goal_id": goal.id, "title": "Legacy" }
             }),
         )
@@ -1670,7 +1796,10 @@ mod tests {
         assert_eq!(expiring.len(), 1);
         assert_eq!(expiring[0]["task_id"], task.id);
         let advice = response["lease_advice"].as_str().unwrap();
-        assert!(advice.contains("renew_lease"), "names the fix: {advice}");
+        assert!(
+            advice.contains("task_claim with step=\"renew\""),
+            "names the fix: {advice}"
+        );
         assert!(
             advice.contains("ADR-0048"),
             "says why missing it cannot be repaired later: {advice}"
@@ -1761,8 +1890,8 @@ mod tests {
         let lost = call(
             &engine,
             &json!({
-                "name": "claim_task",
-                "arguments": { "task_id": held.id, "agent": "agent-b" }
+                "name": "task_claim",
+                "arguments": { "task_id": held.id, "step": "claim", "agent": "agent-b" }
             }),
         )
         .unwrap();
@@ -1774,7 +1903,7 @@ mod tests {
             .expect("a lost claim reports a reason");
         assert!(reason.contains("agent-a"), "names the holder: {reason}");
         assert!(
-            reason.contains("recover_claim"),
+            reason.contains("task_claim with step=\"recover\""),
             "names the verb that can take it: {reason}"
         );
         assert_eq!(
@@ -1789,8 +1918,8 @@ mod tests {
         let on_terminal = call(
             &engine,
             &json!({
-                "name": "claim_task",
-                "arguments": { "task_id": finished.id, "agent": "agent-b" }
+                "name": "task_claim",
+                "arguments": { "task_id": finished.id, "step": "claim", "agent": "agent-b" }
             }),
         )
         .unwrap();
@@ -1807,8 +1936,8 @@ mod tests {
         let missing = call(
             &engine,
             &json!({
-                "name": "claim_task",
-                "arguments": { "task_id": "task:nope", "agent": "agent-b" }
+                "name": "task_claim",
+                "arguments": { "task_id": "task:nope", "step": "claim", "agent": "agent-b" }
             }),
         )
         .unwrap();
@@ -1833,9 +1962,10 @@ mod tests {
         let lost = call(
             &engine,
             &json!({
-                "name": "claim_task",
+                "name": "task_claim",
                 "arguments": {
                     "task_id": task.id,
+                    "step": "claim",
                     "agent": "session:v1:bff9bbe3968f16636cbc5522086114e3"
                 }
             }),
@@ -1873,8 +2003,8 @@ mod tests {
         let claimed = call(
             &engine,
             &json!({
-                "name": "claim_task",
-                "arguments": { "task_id": task.id, "agent": "agent-a", "lease_secs": 600 }
+                "name": "task_claim",
+                "arguments": { "task_id": task.id, "step": "claim", "agent": "agent-a", "lease_secs": 600 }
             }),
         )
         .unwrap();
@@ -1906,8 +2036,8 @@ mod tests {
         let lost = call(
             &engine,
             &json!({
-                "name": "claim_task",
-                "arguments": { "task_id": task.id, "agent": "agent-b" }
+                "name": "task_claim",
+                "arguments": { "task_id": task.id, "step": "claim", "agent": "agent-b" }
             }),
         )
         .unwrap();
@@ -1945,7 +2075,7 @@ mod tests {
         // agent-a picks up unrelated work and is told, without asking.
         let claimed = call(
             &engine,
-            &json!({ "name": "claim_task", "arguments": { "task_id": mine.id, "agent": "agent-a" } }),
+            &json!({ "name": "task_claim", "arguments": { "task_id": mine.id, "step": "claim", "agent": "agent-a" } }),
         )
         .unwrap();
         let body: Value =
@@ -1960,7 +2090,7 @@ mod tests {
         // during the work, long after the claim.
         let renewed = call(
             &engine,
-            &json!({ "name": "renew_lease", "arguments": { "task_id": mine.id, "agent": "agent-a" } }),
+            &json!({ "name": "task_claim", "arguments": { "task_id": mine.id, "step": "renew", "agent": "agent-a" } }),
         )
         .unwrap();
         let beat: Value =
@@ -1975,7 +2105,7 @@ mod tests {
         let other = engine.create_task(&goal.id, "other work", "done").unwrap();
         let quiet = call(
             &engine,
-            &json!({ "name": "claim_task", "arguments": { "task_id": other.id, "agent": "agent-c" } }),
+            &json!({ "name": "task_claim", "arguments": { "task_id": other.id, "step": "claim", "agent": "agent-c" } }),
         )
         .unwrap();
         let quiet_body: Value =
@@ -1989,7 +2119,7 @@ mod tests {
             .unwrap());
         let after = call(
             &engine,
-            &json!({ "name": "renew_lease", "arguments": { "task_id": mine.id, "agent": "agent-a" } }),
+            &json!({ "name": "task_claim", "arguments": { "task_id": mine.id, "step": "renew", "agent": "agent-a" } }),
         )
         .unwrap();
         let after_body: Value =
@@ -2016,7 +2146,7 @@ mod tests {
         // claim_task surfaces what governs the work on a won claim.
         let claimed = call(
             &engine,
-            &json!({ "name": "claim_task", "arguments": { "task_id": task.id, "agent": "agent-a" } }),
+            &json!({ "name": "task_claim", "arguments": { "task_id": task.id, "step": "claim", "agent": "agent-a" } }),
         )
         .unwrap();
         let body: Value =
@@ -2025,7 +2155,11 @@ mod tests {
         assert_eq!(body["governing"][0]["goal"]["id"], goal.id);
 
         // next_task surfaces the same in structuredContent and the Markdown card.
-        let next = call(&engine, &json!({ "name": "next_task", "arguments": {} })).unwrap();
+        let next = call(
+            &engine,
+            &json!({ "name": "task_query", "arguments": { "view": "next" } }),
+        )
+        .unwrap();
         assert_eq!(next["structuredContent"]["id"], open_next.id);
         assert_eq!(
             next["structuredContent"]["governing"][0]["goal"]["id"],
@@ -2043,7 +2177,7 @@ mod tests {
         let ftask = engine.create_task(&free.id, "loose", "x").unwrap();
         let claimed_free = call(
             &engine,
-            &json!({ "name": "claim_task", "arguments": { "task_id": ftask.id, "agent": "agent-b" } }),
+            &json!({ "name": "task_claim", "arguments": { "task_id": ftask.id, "step": "claim", "agent": "agent-b" } }),
         )
         .unwrap();
         let free_body: Value =
