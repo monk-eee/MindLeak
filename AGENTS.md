@@ -42,8 +42,11 @@ Run these checks before writing any helper, method, or "small" function:
    [`DEVELOPERS.md`](DEVELOPERS.md); it answers by embedding similarity and can
    return a plausible stranger, and mandating that would only teach you to
    ignore this list. That objection does not extend to the impact half, which is
-   a deterministic traversal — but read its measured limit in Known gaps before
-   trusting it to tell you what *breaks*.
+   a deterministic traversal. It now follows Rust `mod` and `use` edges as well
+   as JavaScript imports, so it answers what breaks — with two limits worth
+   knowing: it stops at the crate boundary (another workspace crate reads as a
+   package, not a file), and it under-reports rather than guessing. A quiet
+   impact result still means "nothing recorded", never "nothing depends on it".
 2. **Grep the crate for the behaviour.** `grep -rn "fn <verb>" crates/` — if
    something already does this, call it. If a near-miss exists, extend it — do
    not fork a parallel helper.
@@ -200,6 +203,14 @@ style nit.
   and proof; MindLeak shares repository learning. Sharing one writable checkout
   is a reviewed exception, not the default. Do not cherry-pick, rebase, or squash
   routine work: those operations replace evidence-bearing commit identities.
+- **Never commit in a worktree you do not own.** Git isolates files, the index,
+  and branch selection — but not *who may type in a checkout*. A linked worktree
+  has exactly one writer: the session that first commits in it. Committing in a
+  peer's worktree races their edits, and `pre-commit`'s stash/restore can land on
+  top of work they are still writing; the failure then appears in *their* branch,
+  naming files you never touched. The `worktree-owner` hook now refuses this
+  (exit 4). If a worktree is genuinely handed to you, take it deliberately with
+  `--adopt-worktree` — never by walking in.
 - **Publish exact commits; converge through review.** Any clean attached worktree
   may publish its current non-protected branch with
   `node scripts/canonical-push.mjs`. The script pushes exact `HEAD` to the same

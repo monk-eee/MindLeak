@@ -7,6 +7,44 @@ to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Shell-specific plumbing is now refused at the commit.** The project already
+  required platform-agnostic operation, but that rule is stated as an outcome,
+  so it was only ever noticed after something had broken on someone else's
+  machine — and in practice it was broken repeatedly by the agents who had just
+  read it. The `no-shell-plumbing` hook checks the plumbing itself: a
+  documentation fence tagged `powershell`/`pwsh`/`cmd`/`bat` is a command the
+  reader on another OS cannot run, and an inline interpreter one-liner
+  (`node -e`, `python -c`, `powershell -Command`, `cmd /c`) embeds a program
+  inside shell quoting that every shell quotes differently — the same line that
+  works in one mangles its input in another, silently, surfacing only when
+  someone reads the file it wrote. Deliberately narrow so it stays quiet on
+  legitimate usage: ```bash fences and ordinary interpreter invocations pass.
+  It is a ratchet, not a backlog — the tracked tree is already clean, and a test
+  asserts that it stays so.
+- **A worktree now refuses a second writer.** Worktree isolation assumed a
+  linked worktree belonged to whoever was standing in it — git isolates files,
+  the index, and branch selection, but not *who may type*. So nothing stopped an
+  agent committing inside a peer's checkout, which is exactly what happened:
+  a commit landed in a branch its author did not own, mid-merge, corrupting
+  files there. The failure surfaced in the *other* agent's branch, naming files
+  the intruder never touched, which is what made it expensive rather than merely
+  wrong. A linked worktree now records the session that first commits in it, and
+  refuses any other session, both in `scripts/scoped-commit.mjs` and in a new
+  `worktree-owner` pre-commit hook that covers every commit path. The marker
+  lives in the per-worktree git dir, so it is never committed and never collides
+  between worktrees. A deliberate handover is still possible with
+  `--adopt-worktree`; an accidental one is not. Verified in both directions: the
+  previous script let the intruder commit land, the current one exits 4 and
+  leaves the branch untouched.
+- **Five fleet-discipline clauses adopted into the constitution**
+  (`mindleak-fleet-discipline@1`): worktree ownership, claim-before-first-commit,
+  provenance recorded at commit time, a lapsed claim being a human matter, and
+  no shell-specific plumbing in committed instructions. Each is drawn from a
+  measured incident rather than from principle. Two are backed by real
+  mechanisms and reach their declared consequence — `control:worktree-owner`
+  (mechanical, ceiling `block`) and `control:ingest-commit` (observed, ceiling
+  `review`); the other three resolve at advise until a mechanism exists, which
+  is the honest reading of a rule nothing enforces.
 - **An agent may hold at most three claims at once (ADR-0067).** Measured with
   six agents running: **36 tasks `claimed`, 4 with a live lease** — the rest
   lapsed a median of 13 hours earlier, with two agents holding 15 and 14 apiece.
