@@ -616,11 +616,23 @@ pub(super) fn dispatch(
                 // one query away. A `done` row says nothing about whether its
                 // evidence ever affirmed the work, and most of them did not.
                 let receipt = engine.task_receipt(&task.id).map_err(|e| e.to_string())?;
+                // Whether the claim is actually being held, beside the status
+                // rather than inferred from a timestamp. `claimed` alone read as
+                // work in progress: measured once at 36 claimed rows of which 4
+                // had a live lease, and finding that out took a bespoke script.
+                let lease_state = match (task.status, task.lease_expires_at) {
+                    (TaskStatus::Claimed, Some(expires)) if expires >= now_unix() => Some("live"),
+                    (TaskStatus::Claimed, _) => Some("lapsed"),
+                    _ => None,
+                };
                 let mut row = serde_json::to_value(task).map_err(|e| e.to_string())?;
                 let object = row
                     .as_object_mut()
                     .ok_or_else(|| "task did not serialize as an object".to_string())?;
                 object.insert("scope".to_string(), json!(scope));
+                if let Some(state) = lease_state {
+                    object.insert("lease_state".to_string(), json!(state));
+                }
                 if let Some(receipt) = receipt {
                     object.insert("receipt".to_string(), json!(receipt));
                 }
