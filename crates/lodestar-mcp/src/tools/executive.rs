@@ -626,6 +626,12 @@ pub(super) fn dispatch(
                 // one query away. A `done` row says nothing about whether its
                 // evidence ever affirmed the work, and most of them did not.
                 let receipt = engine.task_receipt(&task.id).map_err(|e| e.to_string())?;
+                // Evidence-window continuity, derived from the task log rather
+                // than read off the row (ADR-0064 d5). It rides here because a
+                // discontinuous window is why a task cannot close itself, and
+                // that is a fact about the row a reader should not have to go
+                // looking for.
+                let window = engine.claim_window(&task.id).map_err(|e| e.to_string())?;
                 // Whether the claim is actually being held, beside the status
                 // rather than inferred from a timestamp. `claimed` alone read as
                 // work in progress: measured once at 36 claimed rows of which 4
@@ -640,6 +646,7 @@ pub(super) fn dispatch(
                     .as_object_mut()
                     .ok_or_else(|| "task did not serialize as an object".to_string())?;
                 object.insert("scope".to_string(), json!(scope));
+                object.insert("claim_window".to_string(), json!(window));
                 if let Some(state) = lease_state {
                     object.insert("lease_state".to_string(), json!(state));
                 }

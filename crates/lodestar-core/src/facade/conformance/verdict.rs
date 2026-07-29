@@ -221,11 +221,17 @@ impl Lodestar {
         // deliberate: if it depended on whether the hole fell inside the
         // evidence span, an agent could dodge it by submitting a narrower span
         // — which is exactly the laundering this rule exists to stop.
-        if task.claim_lapses > 0 {
+        //
+        // The window is derived from the task log (ADR-0064 d5/d6) rather than
+        // read off a counter column. It is asked for explicitly here because
+        // there is no field to forget: a missing continuity check would fail
+        // open, and failing open means handing out a clean receipt.
+        let window = self.store.claim_window(&task.id)?;
+        if !window.is_continuous() {
             findings.push(format!(
                 "evidence window is discontinuous: the lease lapsed {} time(s), \
                  leaving {}s unleased, which a human confirms",
-                task.claim_lapses, task.unleased_seconds
+                window.lapses, window.unleased_seconds
             ));
             return Ok(ConformanceResult {
                 verdict: Verdict::NeedsHuman,
