@@ -4,6 +4,7 @@ import * as path from "path";
 import { describe, expect, it } from "vitest";
 
 import {
+  boardIconId,
   boardRows,
   canClaimTask,
   canRecoverLegacyClaim,
@@ -262,6 +263,50 @@ describe("boardRows", () => {
 
     // Both are claimable; work nobody has started outranks work someone dropped.
     expect(rows.map((row) => row.id)).toEqual(["untouched", "lapsed"]);
+  });
+
+  /**
+   * Regression: the sort knew a lapsed claim was ready work, and the icon did
+   * not. Both a live claim and an expired one drew `account` — the icon that
+   * means "someone is holding this" — so the single row that means "abandoned,
+   * take it" was indistinguishable from the rows that mean "hands off". The
+   * board said the right thing in its order and the wrong thing in its icons.
+   */
+  it("gives an expired claim its own icon instead of the owner icon", () => {
+    const rows = boardRows(
+      [
+        { id: "live", goal_id: "g", title: "live", status: "claimed", lease_expires_at: 900 },
+        { id: "lapsed", goal_id: "g", title: "lapsed", status: "claimed", lease_expires_at: 50 },
+      ],
+      false,
+      100
+    );
+
+    const icons = new Map(rows.map((row) => [row.id, row.icon]));
+    expect(icons.get("live")).toBe("account");
+    expect(icons.get("lapsed")).not.toBe("account");
+    expect(icons.get("lapsed")).toBe("watch");
+  });
+
+  it("keeps an icon for every board status and falls back rather than blanking", () => {
+    const at = (status: string) => boardIconId({ id: "t", goal_id: "g", title: "t", status }, 100);
+
+    expect(at("open")).toBe("circle-outline");
+    expect(at("in_review")).toBe("eye");
+    expect(at("needs_input")).toBe("comment-unresolved");
+    expect(at("paused")).toBe("debug-pause");
+    expect(at("blocked")).toBe("error");
+    expect(at("done")).toBe("check");
+    // An unknown status must still render something.
+    expect(at("something_new")).toBe("circle-slash");
+  });
+
+  it("treats a claim with no lease as expired, not as owned", () => {
+    // A claimed row carrying no lease_expires_at cannot be live; taskLeaseState
+    // already says "expired", and the icon must agree rather than imply an owner.
+    expect(boardIconId({ id: "t", goal_id: "g", title: "t", status: "claimed" }, 100)).toBe(
+      "watch"
+    );
   });
 
   it("hides terminal history by default and retains an explicit history view", () => {

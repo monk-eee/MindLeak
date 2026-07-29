@@ -20,13 +20,30 @@ const sourceFiles = (dir: string): string[] =>
     return entry.endsWith(".ts") && !entry.endsWith(".test.ts") ? [full] : [];
   });
 
-/** Every `config.get<T>("name")` the extension actually reads. */
+/**
+ * The call shapes a settings read can take. Both must be scanned.
+ *
+ * The extension reads settings two ways: through a `config` variable held
+ * across several reads, and inline off `getConfiguration("mindleak")` for a
+ * one-off. Matching only the first left `captureCommits` and `snapshotLimit`
+ * invisible — 16 of 18 reads were checked and two were not, so the guard could
+ * not have caught the very mistake it exists to catch, had either been
+ * undeclared.
+ */
+const SETTING_READ_PATTERNS = [
+  /config\.get(?:<[^>]+>)?\(\s*"([a-zA-Z.]+)"/g,
+  /getConfiguration\(\s*"mindleak"\s*\)\s*\.get(?:<[^>]+>)?\(\s*"([a-zA-Z.]+)"/g,
+];
+
+/** Every setting id the extension actually reads, by any call shape. */
 const readByCode = () => {
   const found = new Set<string>();
   for (const file of sourceFiles(join(extensionRoot, "src"))) {
     const text = readFileSync(file, "utf8");
-    for (const match of text.matchAll(/config\.get(?:<[^>]+>)?\(\s*"([a-zA-Z.]+)"/g)) {
-      found.add(`mindleak.${match[1]}`);
+    for (const pattern of SETTING_READ_PATTERNS) {
+      for (const match of text.matchAll(pattern)) {
+        found.add(`mindleak.${match[1]}`);
+      }
     }
   }
   return [...found];
@@ -73,7 +90,23 @@ describe("settings surface", () => {
     expect(undeclared).toEqual([]);
   });
 
-  /** Guards the guard: a scrape that matches nothing would pass vacuously. */
+  /**
+   * Guards the guard. A scrape that matches nothing would pass vacuously, and a
+   * scrape that matches *most* things is worse: it reports green while a whole
+   * call shape goes unchecked. The original floor of "more than 5" was satisfied
+   * by 16 of 18 reads, which is exactly how the inline shape stayed invisible.
+   * Naming one read of each shape is what actually holds the blind spot closed.
+   */
+  it("sees both call shapes, not just reads through a config variable", () => {
+    const read = readByCode();
+
+    // Held in a `config` variable.
+    expect(read).toContain("mindleak.serverPath");
+    // Read inline off getConfiguration("mindleak").
+    expect(read).toContain("mindleak.captureCommits");
+    expect(read).toContain("mindleak.snapshotLimit");
+  });
+
   it("still finds the settings the extension reads", () => {
     expect(readByCode().length).toBeGreaterThan(5);
   });
