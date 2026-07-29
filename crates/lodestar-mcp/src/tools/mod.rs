@@ -391,6 +391,12 @@ fn requires_session(name: &str) -> bool {
             | "revoke_waiver"
             | "propose_amendment"
             | "amend_constitution"
+            // A merge proves who shipped the work, so this one compares the caller
+            // against the task's owner. Without the binding it received the raw
+            // session token and compared it to a `session:v1:` agent id, which
+            // can never match — the tool refused every caller, including the
+            // holder of the task.
+            | "merge_evidence"
     )
 }
 
@@ -530,6 +536,42 @@ mod tests {
                 "{expected} is proof the owner is still working (ADR-0052)"
             );
         }
+    }
+
+    /// A tool that compares its caller against a task's owner must be
+    /// session-bound, or it refuses everyone.
+    ///
+    /// `merge_evidence` shipped reading `req_str(args, "session_id")` and
+    /// handing that raw token to the facade as the agent. The facade compares
+    /// it against `task.owner`, which is a resolved `session:v1:` id, so the
+    /// comparison could never succeed — the tool refused every caller including
+    /// the holder of the task, and the only symptom was a message accusing the
+    /// rightful owner of claiming credit for someone else's work.
+    ///
+    /// Pinned directly rather than through
+    /// `a_required_argument_is_either_declared_or_session_injected`, which
+    /// cannot see this: that scan resolves a handler by finding a top-level
+    /// `fn <tool_name>(`, and `evidence.rs` dispatches from match arms and
+    /// declares no such function. Adding the module to its `SOURCES` would
+    /// inspect nothing and read like cover it does not provide.
+    #[test]
+    fn merge_evidence_is_session_bound_or_it_refuses_the_task_holder() {
+        assert!(
+            requires_session("merge_evidence"),
+            "without this, bind_session never injects `agent`, the handler falls \
+             back to the raw session token, and no caller can ever match a task owner"
+        );
+        // The contract callers see: `session_id` in, `agent` never asked for.
+        let tool = list()
+            .into_iter()
+            .find(|tool| tool["name"] == "merge_evidence")
+            .expect("merge_evidence is advertised");
+        let properties = &tool["inputSchema"]["properties"];
+        assert!(properties["session_id"].is_object());
+        assert!(
+            properties["agent"].is_null(),
+            "a caller naming its own agent could certify another agent's merge"
+        );
     }
 
     /// Every argument a handler requires is either declared or injected.
