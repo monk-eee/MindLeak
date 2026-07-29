@@ -6,7 +6,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { readCommit, worthIngesting } from "./ingest-commit.mjs";
+import {
+  readCommit,
+  skippedWarning,
+  timeoutMs,
+  worthIngesting,
+} from "./ingest-commit.mjs";
 
 const fakeGit = (log, changed) => (args) => {
   if (args[0] === "log") return log;
@@ -48,4 +53,36 @@ test("a merge commit is not ingested as new work", () => {
 
 test("an empty commit has nothing to attribute", () => {
   assert.equal(worthIngesting({ changed: [] }, 1), false);
+});
+
+/// Giving up quietly was the original design and it was wrong. A commit landed
+/// with no provenance, the evidence bundle came back empty, and the task was
+/// uncertifiable -- with nothing connecting that outcome back to a hook that had
+/// silently timed out minutes earlier. Never blocking and never reporting are
+/// different promises; only the first one is load-bearing.
+test("a skipped ingest names the commit and how to backfill it", () => {
+  const warning = skippedWarning("abc123", "no response within 5000ms");
+
+  assert.match(warning, /abc123/);
+  assert.match(warning, /no response within 5000ms/);
+  assert.match(warning, /NOT recorded/);
+  // It must say the commit still succeeded, or the committer will think it did not.
+  assert.match(warning, /commit succeeded/);
+  // And it must say to use the commit's own timestamp, because backfilling with
+  // the wrong one is permanent.
+  assert.match(warning, /OWN timestamp/);
+});
+
+/// The budget stays small by default -- a hook that hangs gets uninstalled --
+/// but a loaded machine can spend most of it just starting the server binary,
+/// which is exactly how provenance went missing here.
+test("the timeout is configurable and defaults to five seconds", () => {
+  assert.equal(timeoutMs({}), 5000);
+  assert.equal(timeoutMs({ MINDLEAK_INGEST_TIMEOUT_MS: "20000" }), 20000);
+});
+
+test("a nonsensical timeout falls back to the default rather than disabling the guard", () => {
+  for (const bad of ["", "nonsense", "0", "-1", "NaN"]) {
+    assert.equal(timeoutMs({ MINDLEAK_INGEST_TIMEOUT_MS: bad }), 5000, bad);
+  }
 });
