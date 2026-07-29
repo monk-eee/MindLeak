@@ -3,7 +3,7 @@ use std::collections::HashSet;
 
 use serde_json::{json, Value};
 
-use crate::{ConformanceRecord, Lodestar, Result, Verdict};
+use crate::{ConformanceRecord, Lodestar, Result, TaskReceipt, Verdict};
 
 impl Lodestar {
     /// Render a task's durable conformance record chain as committed-friendly,
@@ -22,6 +22,18 @@ impl Lodestar {
             std::fs::write(destination, &markdown)?;
         }
         Ok(markdown)
+    }
+
+    /// The conformance record a task closed on, summarised for a reader who is
+    /// looking at the completion rather than auditing the chain.
+    ///
+    /// `None` when the task has no record at all — which is itself worth seeing,
+    /// and is not the same as a record that proved nothing.
+    pub fn task_receipt(&self, task_id: &str) -> Result<Option<TaskReceipt>> {
+        Ok(self
+            .conformance_history(task_id)?
+            .last()
+            .map(summarise_receipt))
     }
 
     /// Render the repo-wide conformance manifest — the machine-checkable artifact
@@ -81,6 +93,31 @@ fn verdict_label(verdict: &Verdict) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// How many nodes an evidence bundle covered, read from the stored blob.
+fn covered_node_count(record: &ConformanceRecord) -> usize {
+    serde_json::from_str::<Value>(&record.evidence)
+        .ok()
+        .as_ref()
+        .and_then(|bundle| bundle.get("changed_node_ids"))
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0)
+}
+
+/// Summarise one record for a reader looking at a completion.
+fn summarise_receipt(record: &ConformanceRecord) -> TaskReceipt {
+    let covered_nodes = covered_node_count(record);
+    TaskReceipt {
+        conformance_id: record.id,
+        verdict: record.verdict,
+        covered_nodes,
+        checked_at: record.checked_at,
+        // Agreement about nothing is not proof: an `aligned` verdict over a
+        // bundle that touched no node affirms as little as a `needs_human` one.
+        affirms: matches!(record.verdict, Verdict::Aligned) && covered_nodes > 0,
+    }
+}
+
 /// Render the conformance chain as committed-friendly markdown. Each row resolves
 /// back to the durable record by its stable `id`; the evidence summary carries the
 /// provenance counts (executions, commits, changed nodes) behind the verdict.
@@ -94,8 +131,8 @@ fn render_evidence(task_id: &str, records: &[ConformanceRecord]) -> String {
         out.push_str("_No conformance records: this task never reached a checked completion._\n");
         return out;
     }
-    out.push_str("| Check | Verdict | Agent | Window (unix) | Checked | Summary |\n");
-    out.push_str("|--:|---|---|---|--:|---|\n");
+    out.push_str("| Check | Verdict | Covered | Agent | Window (unix) | Checked | Summary |\n");
+    out.push_str("|--:|---|--:|---|---|--:|---|\n");
     for record in records {
         let bundle: Value = serde_json::from_str(&record.evidence).unwrap_or(Value::Null);
         let agent = bundle
@@ -108,10 +145,14 @@ fn render_evidence(task_id: &str, records: &[ConformanceRecord]) -> String {
             .unwrap_or(0);
         let ended = bundle.get("ended_at").and_then(Value::as_i64).unwrap_or(0);
         let summary = bundle.get("summary").and_then(Value::as_str).unwrap_or("");
+        // Covered nodes sit beside the verdict rather than inside the summary
+        // prose: a receipt that proved nothing about any code is the thing a
+        // reader most needs to see, and it must not need parsing to find.
         out.push_str(&format!(
-            "| {} | {} | {} | {}-{} | {} | {} |\n",
+            "| {} | {} | {} | {} | {}-{} | {} | {} |\n",
             record.id,
             verdict_label(&record.verdict),
+            covered_node_count(record),
             agent,
             started,
             ended,
@@ -136,6 +177,85 @@ fn render_evidence(task_id: &str, records: &[ConformanceRecord]) -> String {
 #[cfg(test)]
 mod tests {
     use crate::facade::test_support::engine;
+    use crate::store::ConformanceAudit;
+    use crate::{GoalKind, TaskStatus, Verdict};
+
+    /// Bug: a completion said nothing about whether its evidence affirmed the
+    /// work. Measured over this repository, 57 of 101 `done` tasks rested on a
+    /// `drift`/`needs_human` verdict or an `aligned` one covering no nodes, and
+    /// on the board every one of them read exactly like a task whose evidence
+    /// proved something. Impact: the conformance chain is described as the only
+    /// trustworthy proof the agents did the sanctioned work, and the surface
+    /// people actually read could not tell proof from its absence. Fix: derive
+    /// the receipt at read time and carry `affirms` with the completion.
+    #[test]
+    fn a_receipt_over_an_empty_bundle_does_not_affirm_however_it_was_graded() {
+        let engine = engine();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let checked = |title: &str, verdict: Verdict, status: TaskStatus, evidence: &str| {
+            let task = engine.create_task(&goal.id, title, "done").unwrap();
+            assert!(engine.claim_task(&task.id, "agent-a", 600).unwrap());
+            assert!(engine
+                .store
+                .record_conformance_and_transition(
+                    &task.id,
+                    "agent-a",
+                    ConformanceAudit {
+                        evidence_schema_version: 1,
+                        evidence,
+                        verdict,
+                        findings: "",
+                    },
+                    status,
+                    crate::now_unix(),
+                )
+                .unwrap());
+            engine.task_receipt(&task.id).unwrap().expect("a receipt")
+        };
+
+        let proved = checked(
+            "Proved",
+            Verdict::Aligned,
+            TaskStatus::Done,
+            r#"{"changed_node_ids":["artifact:src/lib.rs","artifact:src/db.rs"]}"#,
+        );
+        assert_eq!(proved.covered_nodes, 2);
+        assert!(proved.affirms, "aligned over real nodes affirms");
+
+        // The sharp case: agreement about nothing is not proof.
+        let hollow = checked(
+            "Hollow",
+            Verdict::Aligned,
+            TaskStatus::Done,
+            r#"{"changed_node_ids":[]}"#,
+        );
+        assert_eq!(hollow.covered_nodes, 0);
+        assert!(
+            !hollow.affirms,
+            "an aligned verdict over an empty bundle affirms nothing"
+        );
+
+        let unresolved = checked(
+            "Unresolved",
+            Verdict::NeedsHuman,
+            TaskStatus::InReview,
+            r#"{"changed_node_ids":["artifact:src/lib.rs"]}"#,
+        );
+        assert_eq!(unresolved.covered_nodes, 1);
+        assert!(
+            !unresolved.affirms,
+            "a verdict that deferred to a human has not affirmed anything"
+        );
+    }
+
+    #[test]
+    fn a_task_with_no_record_at_all_has_no_receipt_rather_than_an_empty_one() {
+        // Distinct from a receipt that proved nothing, and worth seeing as such.
+        let engine = engine();
+        assert!(engine.task_receipt("task:none").unwrap().is_none());
+    }
 
     #[test]
     fn export_of_a_task_without_records_is_explicit_not_empty() {
