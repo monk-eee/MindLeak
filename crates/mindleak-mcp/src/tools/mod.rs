@@ -470,6 +470,54 @@ mod tests {
         assert!(evidence["inputSchema"]["properties"]["agent_id"].is_null());
     }
 
+    // The memory read tools used to define their mechanisms without naming the
+    // moment to use them. Models consequently ingested thousands of writes but
+    // almost never read memory; the advertised contract must carry the cue.
+    #[test]
+    fn memory_tools_advertise_when_to_use_them_without_growing_the_surface() {
+        let names = [
+            "working_set",
+            "get_impact_radius",
+            "recall",
+            "graph_multi_hop_query",
+        ];
+        let tools: Vec<Value> = list()
+            .into_iter()
+            .filter(|tool| {
+                tool["name"]
+                    .as_str()
+                    .is_some_and(|name| names.contains(&name))
+            })
+            .collect();
+        let bytes = serde_json::to_vec(&tools).unwrap().len();
+        assert!(
+            bytes <= 2072,
+            "memory trigger cues grew the four-tool surface from 2072 to {bytes} bytes"
+        );
+
+        for (name, cues) in [
+            ("working_set", &["resume", "switch tasks"][..]),
+            ("get_impact_radius", &["before the first edit"][..]),
+            ("recall", &["why", "prior decisions", "regressions"][..]),
+            (
+                "graph_multi_hop_query",
+                &["task text", "semantic recall is unavailable"][..],
+            ),
+        ] {
+            let description = tools
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .and_then(|tool| tool["description"].as_str())
+                .unwrap();
+            for cue in cues {
+                assert!(
+                    description.contains(cue),
+                    "{name} description is missing trigger cue: {cue}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn ingest_file_then_query_dispatches() {
         let engine = MindLeak::open_in_memory().unwrap();

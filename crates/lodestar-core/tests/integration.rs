@@ -803,7 +803,7 @@ fn isolated_worktrees_share_intent_and_evidence_with_distinct_sessions() {
         .ingest_commit_for_agent(
             &agent_a,
             &CommitRecord {
-                sha: Some("shared-proof".into()),
+                sha: Some("5ba12ed9f0e1d2c3b4a5968778695a4b3c2d1e0f".into()),
                 message: "feat: shared evidence".into(),
                 changed_files: vec!["src/shared.rs".into()],
                 timestamp: 100,
@@ -814,7 +814,10 @@ fn isolated_worktrees_share_intent_and_evidence_with_distinct_sessions() {
 
     let memory_b = MindLeak::open(&graph_path).unwrap();
     let evidence = memory_b.evidence_for(None, &agent_a, 90, 110).unwrap();
-    assert_eq!(evidence.commit_ids, vec!["intent:shared-proof"]);
+    assert_eq!(
+        evidence.commit_ids,
+        vec!["intent:5ba12ed9f0e1d2c3b4a5968778695a4b3c2d1e0f"]
+    );
     assert_eq!(evidence.changed_node_ids, vec!["artifact:src/shared.rs"]);
     assert!(memory_b
         .evidence_for(None, &agent_b, 90, 110)
