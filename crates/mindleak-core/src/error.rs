@@ -18,6 +18,9 @@ pub enum MindLeakError {
     #[error("not found: {0}")]
     NotFound(String),
 
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
+
     #[error("busy: {0}")]
     Busy(String),
 

@@ -65,7 +65,7 @@ pub(super) fn context_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "working_set",
-            "description": "Return the registered session's small, derived attentional working set, ranked by active observed-edge weight and hard-capped by MINDLEAK_WORKING_SET_SIZE (default 7). This is a bounded focus view, not a graph neighborhood or stored buffer.",
+            "description": "Call when you resume or switch tasks after this session has observed work. Return its derived top-K focus, ranked by decayed observed-edge weight and capped by MINDLEAK_WORKING_SET_SIZE (default 7); not a stored buffer or cross-session recall.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
