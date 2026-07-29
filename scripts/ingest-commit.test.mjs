@@ -1,4 +1,4 @@
-// Tests for capturing a commit as evidence. Run with: node --test scripts/
+// Tests for capturing a commit as evidence. Run with: node scripts/script-tests.mjs
 //
 // The behaviour that matters is what this refuses to do. A hook on every commit
 // is trusted only as long as it is invisible, so the interesting cases are the
