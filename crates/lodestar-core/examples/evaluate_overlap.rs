@@ -59,7 +59,8 @@ fn overlap_aware_arm(now: i64) -> EvaluationResult<Value> {
     let scope = declared_scope();
     let first_claimed = engine.claim_task_with_scope(&first.id, "alice", LEASE_SECS, &scope)?;
     let state_before = task_state(&engine, &first, &second)?;
-    let claims = engine.check_claim_overlap(&requested_scope(), Some(&second.id))?;
+    let overlap = engine.check_claim_overlap(&requested_scope(), Some(&second.id), Some("bob"))?;
+    let claims = &overlap.claims;
     let state_after = task_state(&engine, &first, &second)?;
 
     let active_graph = footprint_graph(now)?;
