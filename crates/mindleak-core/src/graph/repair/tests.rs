@@ -170,3 +170,200 @@ fn repair_is_idempotent_and_leaves_foreign_paths_alone() {
     // A path genuinely outside this checkout is not ours to rewrite.
     assert!(s.get_node(outside).unwrap().is_some());
 }
+
+/// Regression: repair was prefix-scoped, which assumes every worktree
+/// eventually hosts a server that heals its own ids. A worktree an agent works
+/// in without ever starting a server there leaves its ids orphaned permanently,
+/// and because the absolute id owns the structural edges, the repo-relative id
+/// can never take them: `ingest_file` fails with "structural edge is owned by
+/// artifact:<other checkout>/x, not artifact:x". Measured 2026-07-29, 43 of 247
+/// tracked files were stuck this way and every future extractor improvement
+/// would have missed them silently.
+#[test]
+fn a_sibling_checkouts_absolute_id_collapses_onto_the_twin_the_graph_already_has() {
+    let s = store();
+    let sibling = "artifact:C:/Users/dev/Repos/MindLeak-export/scripts/design-audit.mjs";
+    add_node(&s, sibling, NodeType::Artifact, "design-audit.mjs", NOW);
+    add_node(
+        &s,
+        "artifact:scripts/design-audit.mjs",
+        NodeType::Artifact,
+        "scripts/design-audit.mjs",
+        NOW,
+    );
+
+    // ROOT is this checkout; the sibling is spelled under a different one.
+    let outcome = s.repair_workspace_paths(ROOT).unwrap();
+
+    assert_eq!(
+        outcome.nodes_merged, 1,
+        "the duplicate identity is collapsed"
+    );
+    assert!(
+        s.get_node(sibling).unwrap().is_none(),
+        "the sibling's absolute id is retired"
+    );
+    assert!(s
+        .get_node("artifact:scripts/design-audit.mjs")
+        .unwrap()
+        .is_some());
+}
+
+/// The warrant is that the twin was already observed, not that the path looked
+/// absolute. Without a twin the id stays exactly where it is — inventing a
+/// relative form for something genuinely elsewhere would invent a file that
+/// does not exist, which is what the prefix pass was protecting.
+#[test]
+fn an_absolute_path_with_no_twin_in_the_graph_is_still_left_alone() {
+    let s = store();
+    let elsewhere = "artifact:D:/some/other/project/main.rs";
+    add_node(&s, elsewhere, NodeType::Artifact, "main.rs", NOW);
+
+    let outcome = s.repair_workspace_paths(ROOT).unwrap();
+
+    assert_eq!(outcome.nodes_rewritten, 0);
+    assert!(s.get_node(elsewhere).unwrap().is_some());
+    // Nor was a relative id conjured for it.
+    assert!(s.get_node("artifact:main.rs").unwrap().is_none());
+    assert!(s
+        .get_node("artifact:some/other/project/main.rs")
+        .unwrap()
+        .is_none());
+}
+
+/// A bare filename can collide across directories, so the longest suffix the
+/// graph already holds wins. Matching `util.rs` when
+/// `crates/a/src/util.rs` is present would merge two different files into one.
+#[test]
+fn the_longest_known_suffix_wins_over_a_bare_filename() {
+    let s = store();
+    let absolute = "artifact:C:/Users/dev/Repos/MindLeak-other/crates/a/src/util.rs";
+    add_node(&s, absolute, NodeType::Artifact, "util.rs", NOW);
+    add_node(&s, "artifact:util.rs", NodeType::Artifact, "util.rs", NOW);
+    add_node(
+        &s,
+        "artifact:crates/a/src/util.rs",
+        NodeType::Artifact,
+        "crates/a/src/util.rs",
+        NOW,
+    );
+
+    s.repair_workspace_paths(ROOT).unwrap();
+
+    assert!(s.get_node(absolute).unwrap().is_none());
+    assert!(s
+        .get_node("artifact:crates/a/src/util.rs")
+        .unwrap()
+        .is_some());
+    // The top-level file is a different file and keeps its own identity.
+    assert!(s.get_node("artifact:util.rs").unwrap().is_some());
+}
+
+/// A symbol id is `symbol:<path>:<name>`; only the path half is a duplicate
+/// identity, and the name must survive the collapse intact.
+#[test]
+fn a_sibling_symbol_id_collapses_and_keeps_its_name() {
+    let s = store();
+    let absolute = "symbol:C:/Users/dev/Repos/MindLeak-export/src/decay.rs:effective_weight";
+    add_node(&s, absolute, NodeType::Symbol, "effective_weight", NOW);
+    add_node(
+        &s,
+        "symbol:src/decay.rs:effective_weight",
+        NodeType::Symbol,
+        "effective_weight",
+        NOW,
+    );
+
+    s.repair_workspace_paths(ROOT).unwrap();
+
+    assert!(s.get_node(absolute).unwrap().is_none());
+    assert!(s
+        .get_node("symbol:src/decay.rs:effective_weight")
+        .unwrap()
+        .is_some());
+}
+
+/// The collapse carries the edges with it, which is the entire point: the
+/// absolute id owning the structural edges is what blocked re-ingest.
+#[test]
+fn collapsing_a_sibling_id_carries_its_edges_onto_the_twin() {
+    let s = store();
+    let sibling = "artifact:C:/Users/dev/Repos/MindLeak-export/scripts/a.mjs";
+    add_node(&s, sibling, NodeType::Artifact, "a.mjs", NOW);
+    add_node(
+        &s,
+        "artifact:scripts/a.mjs",
+        NodeType::Artifact,
+        "scripts/a.mjs",
+        NOW,
+    );
+    add_node(
+        &s,
+        "artifact:scripts/b.mjs",
+        NodeType::Artifact,
+        "scripts/b.mjs",
+        NOW,
+    );
+    reinforce(&s, sibling, "artifact:scripts/b.mjs", 3);
+
+    s.repair_workspace_paths(ROOT).unwrap();
+
+    assert!(
+        edge_row(&s, "artifact:scripts/a.mjs", "artifact:scripts/b.mjs").is_some(),
+        "the edge must survive under the surviving id"
+    );
+    assert!(edge_row(&s, sibling, "artifact:scripts/b.mjs").is_none());
+}
+
+/// Regression, and the reason the node-level collapse alone was not enough:
+/// `owner_id` is not an endpoint, so it survives the node it names being
+/// deleted. An edge owned by a vanished absolute id makes `replace_structure`
+/// refuse every later ingest of that file — "structural edge is owned by
+/// <absolute id>, not <relative id>" — and with the absolute node already gone
+/// there is nothing left for a node-level repair to find. The file becomes
+/// permanently un-re-extractable, silently. Reproduced from the live graph:
+/// five files stayed blocked after their nodes had already been collapsed.
+#[test]
+fn ownership_left_behind_by_an_already_deleted_absolute_id_is_reclaimed() {
+    let s = store();
+    add_node(
+        &s,
+        "artifact:scripts/a.mjs",
+        NodeType::Artifact,
+        "scripts/a.mjs",
+        NOW,
+    );
+    add_node(
+        &s,
+        "artifact:scripts/b.mjs",
+        NodeType::Artifact,
+        "scripts/b.mjs",
+        NOW,
+    );
+    reinforce(&s, "artifact:scripts/a.mjs", "artifact:scripts/b.mjs", 1);
+    // The absolute node is already gone; only its ownership remains.
+    let orphaned = "artifact:C:/Users/dev/Repos/MindLeak-export/scripts/a.mjs";
+    s.conn
+        .execute(
+            "UPDATE edges SET owner_id = ?1 WHERE source_id = ?2",
+            rusqlite::params![orphaned, "artifact:scripts/a.mjs"],
+        )
+        .unwrap();
+    assert!(s.get_node(orphaned).unwrap().is_none());
+
+    s.repair_workspace_paths(ROOT).unwrap();
+
+    let owner: Option<String> = s
+        .conn
+        .query_row(
+            "SELECT owner_id FROM edges WHERE source_id = ?1",
+            rusqlite::params!["artifact:scripts/a.mjs"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        owner.as_deref(),
+        Some("artifact:scripts/a.mjs"),
+        "ownership must follow the surviving identity"
+    );
+}
