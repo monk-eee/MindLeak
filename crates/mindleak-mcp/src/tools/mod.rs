@@ -119,6 +119,11 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
     // Checked before anything is injected, so the caller is judged on exactly
     // what the caller sent.
     validate_arguments(name, &Value::Object(args.clone()))?;
+    // These fields are owned by the server. Remove caller values before
+    // resolving so idempotent rebinding stays supported without making them an
+    // attribution back door.
+    args.remove("resolved_agent");
+    args.remove("resolved_context");
     if name == "open_session" {
         let token = args
             .get("session_id")
@@ -132,15 +137,18 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
         }
         return Ok(bound);
     }
-    if requires_session(name) {
-        let token = args
-            .get("session_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "missing required argument: session_id".to_string())?;
+    let token = args.get("session_id").and_then(Value::as_str);
+    if requires_session(name) && token.is_none() {
+        return Err("missing required argument: session_id".to_string());
+    }
+    if let Some(token) = token {
         let identity = sessions.resolve(token)?;
-        args.insert("agent".to_string(), json!(identity.agent_id));
-        args.insert("agent_id".to_string(), json!(identity.agent_id));
-        args.insert("exclude_agent".to_string(), json!(identity.agent_id));
+        args.insert("resolved_agent".to_string(), json!(identity.agent_id));
+        if requires_session(name) {
+            args.insert("agent".to_string(), json!(identity.agent_id));
+            args.insert("agent_id".to_string(), json!(identity.agent_id));
+            args.insert("exclude_agent".to_string(), json!(identity.agent_id));
+        }
     }
     Ok(bound)
 }
@@ -169,7 +177,11 @@ pub fn call_with_storage(
     let result = dispatch(engine, params, storage);
     let duration_ms = start.elapsed().as_millis() as i64;
     let detail = result.as_ref().err().map(|e| json!({ "error": e }));
-    engine.record_tool_call(&name, result.is_ok(), duration_ms, detail);
+    let agent_id = params
+        .get("arguments")
+        .and_then(|args| args.get("resolved_agent"))
+        .and_then(Value::as_str);
+    engine.record_tool_call(&name, result.is_ok(), duration_ms, detail, agent_id);
     match &result {
         Ok(_) => tracing::info!(tool = %name, duration_ms, "ok"),
         Err(e) => tracing::warn!(tool = %name, duration_ms, error = %e, "tool error"),
@@ -430,6 +442,40 @@ mod tests {
 
         let error = bind_session(&params, &sessions).unwrap_err();
         assert!(error.contains("dirty"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn optional_memory_read_uses_registered_identity_not_caller_agent() {
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        const TOKEN: &str = "00112233445566778899aabbccddeeff";
+        let trusted = sessions
+            .open_session(TOKEN, SessionContext::default())
+            .unwrap();
+        let params = json!({
+            "name": "recall",
+            "arguments": {
+                "query": "why did this fail",
+                "session_id": TOKEN,
+                "agent": "caller:spoofed"
+            }
+        });
+
+        let bound = bind_session(&params, &sessions).unwrap();
+        assert_eq!(bound["arguments"]["resolved_agent"], trusted.agent_id);
+        assert_ne!(
+            bound["arguments"]["resolved_agent"],
+            bound["arguments"]["agent"]
+        );
+
+        let sessionless = bind_session(
+            &json!({
+                "name": "recall",
+                "arguments": { "query": "why", "resolved_agent": "caller:spoofed" }
+            }),
+            &sessions,
+        )
+        .unwrap();
+        assert!(sessionless["arguments"].get("resolved_agent").is_none());
     }
 
     #[test]

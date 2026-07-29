@@ -2,6 +2,8 @@
 use globset::{GlobBuilder, GlobMatcher};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 
+use std::collections::HashSet;
+
 use crate::error::{LodestarError, Result};
 use crate::fleet::Wait;
 use crate::model::{
@@ -945,6 +947,57 @@ impl LodestarStore {
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], row_to_task)?;
         collect(rows)
+    }
+
+    /// Work that already serves this goal, or already declared any of these
+    /// paths in its scope — including finished work.
+    ///
+    /// The question is "has this already been done", not "who is touching this
+    /// file", so `done` and `abandoned` are included and a finished task is the
+    /// most useful answer of all. `board` deliberately hides terminal tasks,
+    /// which is right for a board and wrong for this.
+    ///
+    /// Path matching reuses `intersect_paths`, the same glob comparison
+    /// `check_overlap` uses, so "does this scope cover that file" has one answer
+    /// in this codebase rather than two that drift apart.
+    pub fn existing_work(&self, goal_id: Option<&str>, paths: &[String]) -> Result<Vec<Task>> {
+        let mut found: Vec<Task> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+
+        if let Some(goal_id) = goal_id {
+            let sql =
+                format!("SELECT {TASK_COLS} FROM tasks WHERE goal_id = ?1 ORDER BY created_at ASC");
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![goal_id], row_to_task)?;
+            for task in collect(rows)? {
+                if seen.insert(task.id.clone()) {
+                    found.push(task);
+                }
+            }
+        }
+
+        if !paths.is_empty() {
+            let sql = format!(
+                "SELECT {TASK_COLS} FROM tasks WHERE id IN (
+                     SELECT task_id FROM task_scopes WHERE kind = 'path'
+                 ) ORDER BY created_at ASC"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map([], row_to_task)?;
+            for task in collect(rows)? {
+                if seen.contains(&task.id) {
+                    continue;
+                }
+                let scope = task_scope_on(&self.conn, &task.id)?;
+                if !intersect_paths(paths, &scope.paths)?.is_empty() {
+                    seen.insert(task.id.clone());
+                    found.push(task);
+                }
+            }
+        }
+
+        found.sort_by_key(|task| task.created_at);
+        Ok(found)
     }
 
     pub(crate) fn record_conformance(

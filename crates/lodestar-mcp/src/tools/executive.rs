@@ -68,6 +68,21 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "existing_work",
+            "description": "Has this already been done? Returns tasks already serving a goal or already declaring any of these paths in scope, INCLUDING finished and abandoned ones - a task that is already done is the most useful answer, and the one `board` hides. Distinct from check_overlap, which asks who is touching a file right now and sees only live claims. Advisory: a second task against one goal is often legitimate, so this reports and never refuses (ADR-0015). Ask before creating a task or implementing from an acceptance - the board understates what is finished, because work routinely lands without closing its task.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "goal_id": { "type": "string", "description": "Work already serving this goal." },
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Workspace-relative paths; matched against declared scopes with the same globbing check_overlap uses."
+                    }
+                }
+            }
+        }),
+        json!({
             "name": "check_overlap",
             "description": "Read-only pre-flight check for live Lodestar claims whose declared scope intersects these concrete workspace-relative paths or symbol ids (ADR-0024). Each intersection is classified from the branches the two sessions declared at open_session (ADR-0035): same_branch_collision (edits land in one history, colliding now), cross_branch_merge_risk (divergence, paid at merge), or undeclared when either side declared no branch. Advisory only, and never blocks a claim; combine with MindLeak's check_overlap footprint result for cross-plane awareness.",
             "inputSchema": {
@@ -131,13 +146,14 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "recover_claim",
-            "description": "Recover an expired claim stranded under a compatible legacy base/process identity into this registered session. Requires the exact current owner and a reason; writes an append-only transfer audit and opens a fresh evidence window.",
+            "description": "Recover an expired claim stranded under a compatible legacy identity, or transfer a paused task before its seven-day grace with an explicit human reviewer. Requires the exact current owner and a reason; writes append-only event/thread history and opens a fresh evidence window. `human` is an attributable declaration, not authentication; it must differ from both owners.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "task_id": { "type": "string" },
                     "expected_owner": { "type": "string" },
                     "reason": { "type": "string" },
+                    "human": { "type": "string", "description": "Distinct human reviewer authorizing a paused-task transfer before the parking grace. An attributable declaration, not authentication." },
                     "lease_secs": { "type": "integer", "default": 300 }
                 },
                 "required": ["task_id", "expected_owner", "reason"]
@@ -303,16 +319,40 @@ pub(super) fn dispatch(
 ) -> Option<Result<Value, String>> {
     match name {
         "create_task" => Some((|| {
+            let goal_id = req_str(args, "goal_id")?;
             let task = engine
                 .create_task_covering(
-                    req_str(args, "goal_id")?,
+                    goal_id,
                     req_str(args, "title")?,
                     opt_str(args, "acceptance").unwrap_or_default().as_str(),
                     optional_string_arg(args, "blocked_by")?,
                     &str_array(args, "also_serves"),
                 )
                 .map_err(|e| e.to_string())?;
-            ok(&task)
+            // Report what already serves this goal, and name it. A second task
+            // against one goal is often legitimate, so this must not refuse
+            // (ADR-0015) — a gate here would be wrong more often than right.
+            // Six identical tasks reached the live board because the thing
+            // creating them had no way to see the five before it.
+            let prior: Vec<Value> = engine
+                .existing_work(Some(goal_id), &[])
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .filter(|t| t.id != task.id)
+                .map(|t| {
+                    json!({
+                        "task_id": t.id,
+                        "title": t.title,
+                        "status": t.status,
+                    })
+                })
+                .collect();
+            let mut value = serde_json::to_value(&task).map_err(|e| e.to_string())?;
+            if let Some(object) = value.as_object_mut() {
+                object.insert("already_serving_this_goal".into(), json!(prior.len()));
+                object.insert("prior_work".into(), json!(prior));
+            }
+            ok(&value)
         })()),
         "decompose_goal" => Some((|| {
             ok(&engine
@@ -414,13 +454,47 @@ pub(super) fn dispatch(
                     }
                 }
             }
-            attach_waiting(engine, args, &mut response)?;
+            attach_owner_attention(engine, args, &mut response)?;
             ok(&response)
         })()),
         "task_scope" => Some((|| {
             ok(&engine
                 .task_scope(req_str(args, "task_id")?)
                 .map_err(|e| e.to_string())?)
+        })()),
+        "existing_work" => Some((|| {
+            let goal_id = opt_str(args, "goal_id");
+            let paths = str_array(args, "paths");
+            if goal_id.is_none() && paths.is_empty() {
+                return Err(
+                    "existing_work needs a goal_id or paths; asking about nothing answers nothing"
+                        .to_string(),
+                );
+            }
+            let found = engine
+                .existing_work(goal_id.as_deref(), &paths)
+                .map_err(|e| e.to_string())?;
+            let rows: Vec<Value> = found
+                .iter()
+                .map(|task| {
+                    json!({
+                        "task_id": task.id,
+                        "title": task.title,
+                        "status": task.status.as_str(),
+                        "goal_id": task.goal_id,
+                        "owner": task.owner,
+                    })
+                })
+                .collect();
+            let finished = found
+                .iter()
+                .filter(|task| task.status == TaskStatus::Done)
+                .count();
+            ok(&json!({
+                "count": rows.len(),
+                "already_done": finished,
+                "work": rows,
+            }))
         })()),
         "check_overlap" => Some((|| {
             let scope = TaskScope {
@@ -451,7 +525,7 @@ pub(super) fn dispatch(
                 )
                 .map_err(|e| e.to_string())?;
             let mut response = json!({ "renewed": renewed });
-            attach_waiting(engine, args, &mut response)?;
+            attach_owner_attention(engine, args, &mut response)?;
             ok(&response)
         })()),
         "complete_task" => Some((|| {
@@ -510,9 +584,12 @@ pub(super) fn dispatch(
                 .recover_claim(
                     req_str(args, "task_id")?,
                     req_str(args, "expected_owner")?,
-                    opt_str(args, "agent").unwrap_or_default().as_str(),
-                    opt_str(args, "resolved_name").unwrap_or_default().as_str(),
+                    (
+                        opt_str(args, "agent").unwrap_or_default().as_str(),
+                        opt_str(args, "resolved_name").unwrap_or_default().as_str(),
+                    ),
                     req_str(args, "reason")?,
+                    opt_str(args, "human").as_deref(),
                     i64_arg(args, "lease_secs", 300),
                 )
                 .map_err(|e| e.to_string())?;
@@ -821,22 +898,59 @@ fn attach_lease_warning(
     Ok(())
 }
 
-fn attach_waiting(engine: &Lodestar, args: &Value, response: &mut Value) -> Result<(), String> {
-    let agent = opt_str(args, "agent").unwrap_or_default();
+pub(super) fn attach_owner_attention(
+    engine: &Lodestar,
+    args: &Value,
+    response: &mut Value,
+) -> Result<(), String> {
+    let agent = args
+        .get("resolved_agent")
+        .or_else(|| args.get("agent"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     if agent.is_empty() {
         return Ok(());
     }
-    let waiting = engine
-        .pending_questions(&agent)
-        .map_err(|e| e.to_string())?;
-    if waiting.is_empty() {
-        return Ok(());
-    }
+    let waiting = engine.pending_questions(agent).map_err(|e| e.to_string())?;
     if let Some(object) = response.as_object_mut() {
-        object.insert(
-            "waiting_on_you".to_string(),
-            serde_json::to_value(&waiting).map_err(|e| e.to_string())?,
-        );
+        if !waiting.is_empty() {
+            object.insert(
+                "waiting_on_you".to_string(),
+                serde_json::to_value(&waiting).map_err(|e| e.to_string())?,
+            );
+        }
+
+        let mut paused = Vec::new();
+        for task in engine.board(false).map_err(|e| e.to_string())? {
+            if task.status != TaskStatus::Paused || task.owner.as_deref() != Some(agent) {
+                continue;
+            }
+            let reason = engine
+                .task_qa(&task.id)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .rev()
+                .find(|entry| {
+                    entry.kind == "note"
+                        && task
+                            .parked_at
+                            .is_some_and(|parked_at| entry.created_at == parked_at)
+                })
+                .map(|entry| entry.body);
+            paused.push(json!({
+                "task_id": task.id,
+                "title": task.title,
+                "parked_at": task.parked_at,
+                "reason": reason,
+            }));
+        }
+        if !paused.is_empty() {
+            object.insert("paused_by_you".to_string(), json!(paused));
+            object.insert(
+                "paused_advice".to_string(),
+                json!("Call resume_task for paused work you are continuing. `needs_input` is different: answer its question instead."),
+            );
+        }
     }
     Ok(())
 }
@@ -902,6 +1016,53 @@ mod tests {
     use lodestar_core::llm::LlmClient;
     use lodestar_core::{now_unix, CodeBindingMode, ConformanceEvidence, GoalKind};
     use mindleak_session::SessionRegistry;
+
+    /// Six identical "carry controls across an amendment" tasks reached the
+    /// live board because a publish-time helper made a fresh one on every run
+    /// and nothing showed it the five before it. `create_task` now names the
+    /// prior work — and still creates the task, because a second task against
+    /// one goal is often legitimate and a gate here would be wrong more often
+    /// than right (ADR-0015).
+    #[test]
+    fn create_task_names_the_work_already_serving_the_goal_without_refusing() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Amend", "carry controls", None)
+            .unwrap();
+        let first = engine
+            .create_task(&goal.id, "Carry controls across an amendment", "done")
+            .unwrap();
+        // Titles differ only because a task id hashes the creation *second*, so
+        // two identical titles created in the same second collide on a raw
+        // sqlite UNIQUE error. Recorded in DEVELOPERS.md; what is under test
+        // here is that prior work on the goal is named either way.
+
+        let created = call(
+            &engine,
+            &json!({
+                "name": "create_task",
+                "arguments": {
+                    "goal_id": goal.id,
+                    "title": "Carry controls across an amendment (again)",
+                    "acceptance": "done"
+                }
+            }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(created["content"][0]["text"].as_str().unwrap()).unwrap();
+
+        assert!(
+            body["id"].as_str().is_some_and(|id| id != first.id),
+            "the task is still created: {body}"
+        );
+        assert_eq!(body["already_serving_this_goal"], 1);
+        assert_eq!(body["prior_work"][0]["task_id"], first.id);
+        assert_eq!(
+            body["prior_work"][0]["title"], "Carry controls across an amendment",
+            "the prior task is named, not merely counted"
+        );
+    }
 
     #[test]
     fn scoped_claim_and_overlap_round_trip_through_tools() {
@@ -1246,6 +1407,62 @@ mod tests {
         assert_eq!(transfers.as_array().unwrap().len(), 1);
         assert_eq!(transfers[0]["from_owner"], "copilot-abcd1234");
         assert_eq!(transfers[0]["to_owner"], agent);
+    }
+
+    #[test]
+    fn recover_claim_dispatch_requires_a_human_for_early_paused_transfer() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Recover", "transfer paused work", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Paused", "done").unwrap();
+        let old_owner = "session:v1:old";
+        let new_owner = "session:v1:new";
+        assert!(engine.claim_task(&task.id, old_owner, 600).unwrap());
+        assert!(engine
+            .pause_task(&task.id, old_owner, Some("owner process exited"))
+            .unwrap());
+
+        let without_human = call(
+            &engine,
+            &json!({
+                "name": "recover_claim",
+                "arguments": {
+                    "task_id": task.id,
+                    "expected_owner": old_owner,
+                    "agent": new_owner,
+                    "resolved_name": "copilot",
+                    "reason": "continue the work"
+                }
+            }),
+        )
+        .unwrap_err();
+        assert!(without_human.contains("human reviewer"), "{without_human}");
+
+        let recovered = call(
+            &engine,
+            &json!({
+                "name": "recover_claim",
+                "arguments": {
+                    "task_id": task.id,
+                    "expected_owner": old_owner,
+                    "agent": new_owner,
+                    "resolved_name": "copilot",
+                    "reason": "owner is gone; continue the work",
+                    "human": "lyndon",
+                    "lease_secs": 300
+                }
+            }),
+        )
+        .unwrap();
+        let payload: Value =
+            serde_json::from_str(recovered["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["recovered"], true);
+
+        let transfers = engine.claim_transfer_history(&task.id).unwrap();
+        assert_eq!(transfers[0].from_owner, old_owner);
+        assert_eq!(transfers[0].to_owner, new_owner);
+        assert_eq!(transfers[0].recovered_by, "lyndon");
     }
 
     #[test]
@@ -1700,11 +1917,16 @@ mod tests {
             .unwrap();
         let theirs = engine.create_task(&goal.id, "their work", "done").unwrap();
         let mine = engine.create_task(&goal.id, "my work", "done").unwrap();
+        let paused = engine.create_task(&goal.id, "paused work", "done").unwrap();
 
         // agent-b parks its own task on a question addressed to agent-a.
         assert!(engine.claim_task(&theirs.id, "agent-b", 600).unwrap());
         assert!(engine
             .ask_question(&theirs.id, "agent-b", "did you rename it?", Some("agent-a"))
+            .unwrap());
+        assert!(engine.claim_task(&paused.id, "agent-a", 600).unwrap());
+        assert!(engine
+            .pause_task(&paused.id, "agent-a", Some("waiting for CI"))
             .unwrap());
 
         // agent-a picks up unrelated work and is told, without asking.
@@ -1718,6 +1940,8 @@ mod tests {
         assert_eq!(body["won"], true);
         assert_eq!(body["waiting_on_you"][0]["task_id"], theirs.id);
         assert_eq!(body["waiting_on_you"][0]["body"], "did you rename it?");
+        assert_eq!(body["paused_by_you"][0]["task_id"], paused.id);
+        assert_eq!(body["paused_by_you"][0]["reason"], "waiting for CI");
 
         // The heartbeat matters more than pickup: a question usually arrives
         // during the work, long after the claim.
@@ -1730,6 +1954,7 @@ mod tests {
             serde_json::from_str(renewed["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(beat["renewed"], true);
         assert_eq!(beat["waiting_on_you"][0]["task_id"], theirs.id);
+        assert_eq!(beat["paused_by_you"][0]["task_id"], paused.id);
 
         // Nobody asked agent-c anything, so agent-c is told nothing at all -
         // no key, no empty array. "No questions" and "this server does not
@@ -1757,6 +1982,7 @@ mod tests {
         let after_body: Value =
             serde_json::from_str(after["content"][0]["text"].as_str().unwrap()).unwrap();
         assert!(after_body.get("waiting_on_you").is_none());
+        assert_eq!(after_body["paused_by_you"][0]["task_id"], paused.id);
     }
 
     #[test]

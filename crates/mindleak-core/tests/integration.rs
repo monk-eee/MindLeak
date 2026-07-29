@@ -505,15 +505,13 @@ fn the_preflight_now_reports_rust_dependents() {
     assert!(
         preflight
             .impact
-            .nodes
             .iter()
-            .any(|node| node.node.id == "artifact:crates/c/src/facade/query.rs"),
+            .any(|node| node.id == "artifact:crates/c/src/facade/query.rs"),
         "a Rust dependent must reach the caller through the pre-flight; got {:?}",
         preflight
             .impact
-            .nodes
             .iter()
-            .map(|node| &node.node.id)
+            .map(|node| &node.id)
             .collect::<Vec<_>>()
     );
 }
@@ -1421,15 +1419,13 @@ fn the_preflight_reports_a_prior_failure_even_when_no_other_agent_is_present() {
     assert!(
         preflight
             .impact
-            .nodes
             .iter()
-            .any(|scored| scored.node.node_type == NodeType::Execution),
+            .any(|node| node.node_type == NodeType::Execution),
         "the failing execution must reach the caller in the pre-flight; got {:?}",
         preflight
             .impact
-            .nodes
             .iter()
-            .map(|scored| &scored.node.id)
+            .map(|node| &node.id)
             .collect::<Vec<_>>()
     );
 }
@@ -1462,5 +1458,85 @@ fn the_preflight_separates_an_unknown_path_from_a_file_it_knows() {
         vec!["artifact:src/ghost.rs".to_string()],
         "an unseen path must be named as unknown rather than answered with silence"
     );
-    assert!(never_seen.impact.nodes.is_empty());
+    assert!(never_seen.impact.is_empty());
+}
+
+/// Regression: the pre-flight is read before every edit, so its size is part of
+/// its cost. Measured 2026-07-29 on `crates/lodestar-mcp/src/tools/mod.rs`, one
+/// path returned 196 nodes over 295 edges — 351 KB — because `impact_radius`
+/// traverses at zero minimum weight with no node cap, and Rust files had just
+/// gained real cross-file structure. A mandatory decision aid that displaces the
+/// decision fails the same way an unread one does.
+#[test]
+fn the_preflight_bounds_its_impact_and_says_what_it_left_out() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("src/hub.ts", "export function hub() {}\n")
+        .unwrap();
+    // Far more dependents than the pre-flight will carry.
+    for index in 0..80 {
+        engine
+            .ingest_file(
+                &format!("src/dependent{index}.ts"),
+                "import { hub } from './hub';\nexport function use() { hub(); }\n",
+            )
+            .unwrap();
+    }
+
+    let preflight = engine
+        .preflight(&["src/hub.ts".to_string()], &[], None)
+        .unwrap();
+
+    assert!(
+        preflight.impact.len() <= 32,
+        "the view must stay readable; got {} nodes",
+        preflight.impact.len()
+    );
+    assert!(
+        preflight.impact_total > preflight.impact.len(),
+        "the traversal reached more than was shown; total {} vs shown {}",
+        preflight.impact_total,
+        preflight.impact.len()
+    );
+    // Every retained edge must join two retained nodes, or the caller is handed
+    // an edge to something it cannot see.
+    let shown: std::collections::HashSet<&str> = preflight
+        .impact
+        .iter()
+        .map(|node| node.id.as_str())
+        .collect();
+    for edge in &preflight.impact_edges {
+        assert!(
+            shown.contains(edge.source_id.as_str()) && shown.contains(edge.target_id.as_str()),
+            "edge {} -> {} dangles outside the shown nodes",
+            edge.source_id,
+            edge.target_id
+        );
+    }
+}
+
+/// A trimmed answer must not read as a complete one. When nothing was cut,
+/// `impact_total` equals what was shown.
+#[test]
+fn an_untrimmed_preflight_reports_a_total_equal_to_what_it_showed() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("src/small.ts", "export function small() {}\n")
+        .unwrap();
+    engine
+        .ingest_file(
+            "src/one.ts",
+            "import { small } from './small';\nexport function one() { small(); }\n",
+        )
+        .unwrap();
+
+    let preflight = engine
+        .preflight(&["src/small.ts".to_string()], &[], None)
+        .unwrap();
+
+    assert_eq!(
+        preflight.impact_total,
+        preflight.impact.len(),
+        "nothing was cut, so the total must match what was shown"
+    );
 }

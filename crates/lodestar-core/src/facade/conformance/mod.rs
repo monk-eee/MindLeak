@@ -1114,6 +1114,20 @@ mod tests {
             .findings
             .iter()
             .any(|f| f.contains("advisory: learned knowledge")));
+
+        // And the nudge names itself. Every other route to needs_human pushes a
+        // finding saying why; this one changed the verdict while leaving only
+        // lines labelled "advisory", so a receipt whose every other signal was
+        // positive read as an inexplicable failure. A verdict nobody can read
+        // backwards to its reason cannot be argued with, which is the same
+        // defect the semantic judge had.
+        assert!(
+            res.findings
+                .iter()
+                .any(|f| f.contains("nudged to needs_human by learned knowledge")),
+            "the nudge must state that it is the reason: {:?}",
+            res.findings
+        );
     }
 
     #[test]
@@ -1156,6 +1170,18 @@ mod tests {
             .findings
             .iter()
             .any(|f| f.contains("advisory: learned knowledge")));
+
+        // The advisory annotated this verdict; it did not cause it. Claiming the
+        // nudge here would blame the wrong thing for a drift the drift rule
+        // decided, and send the reader looking at knowledge instead of at the
+        // governed code they changed without a covering task.
+        assert!(
+            !res.findings
+                .iter()
+                .any(|f| f.contains("nudged to needs_human")),
+            "a verdict knowledge did not move must not claim it was nudged: {:?}",
+            res.findings
+        );
     }
 
     #[test]

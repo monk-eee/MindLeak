@@ -10,8 +10,15 @@ impl MindLeak {
         tool: &str,
         ok: bool,
         duration_ms: i64,
-        detail: Option<serde_json::Value>,
+        mut detail: Option<serde_json::Value>,
+        agent_id: Option<&str>,
     ) {
+        if let Some(agent_id) = agent_id {
+            let value = detail.get_or_insert_with(|| serde_json::json!({}));
+            if let Some(object) = value.as_object_mut() {
+                object.insert("agent_id".to_string(), serde_json::json!(agent_id));
+            }
+        }
         let outcome = if ok { "ok" } else { "error" };
         if let Err(e) = telemetry::record(
             &self.store.conn,
