@@ -35,9 +35,22 @@ pub fn is_full_object_name(sha: &str) -> bool {
 /// Deterministic and token-free: it reads what git already knows and decides
 /// nothing (invariant 1). `cat-file -e` exits non-zero for an unknown object,
 /// which is exactly the question being asked.
+///
+/// The environment is scrubbed because `-C` sets the working directory but does
+/// not override an inherited `GIT_DIR`, and those variables win. A process
+/// started from a git hook inherits them, so without this the check would
+/// silently answer for a different repository than the one we were asked about
+/// — and answering confidently about the wrong repository is worse than not
+/// answering at all.
 fn resolves_to_a_commit(root: &str, sha: &str) -> bool {
     std::process::Command::new("git")
         .args(["-C", root, "cat-file", "-e", &format!("{sha}^{{commit}}")])
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .output()
         .map(|out| out.status.success())
         .unwrap_or(false)
@@ -226,10 +239,22 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let root = dir.to_str().unwrap().to_string();
+        // `-C` changes the working directory; it does NOT override an inherited
+        // GIT_DIR. Cargo runs under the pre-push hook, where git exports
+        // GIT_DIR/GIT_INDEX_FILE, and those win — so without this the fixture
+        // commits land in the REAL repository. That is not theoretical: this
+        // test did exactly that, adding an `a.txt` commit to the branch being
+        // pushed, before the scrubbing was added.
         let git = |args: &[&str]| {
             std::process::Command::new("git")
                 .args(["-C", root.as_str()])
                 .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_COMMON_DIR")
+                .env_remove("GIT_INDEX_FILE")
+                .env_remove("GIT_OBJECT_DIRECTORY")
+                .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
                 .output()
                 .unwrap()
         };
