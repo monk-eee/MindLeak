@@ -227,7 +227,7 @@ fn memory_habits(conn: &Connection) -> Result<Vec<MemoryHabit>> {
             )
         })
         .collect();
-    habits.sort_by(|left, right| right.0.cmp(&left.0));
+    habits.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     habits.truncate(MEMORY_HABIT_LIMIT);
     Ok(habits.into_iter().map(|(_, habit)| habit).collect())
 }
