@@ -301,3 +301,24 @@ const unrecorded = recordPublication({
 if (unrecorded) {
   console.warn(`canonical-push: ${unrecorded}`);
 }
+
+// Publication is when the work becomes visible to the fleet, which makes it the
+// honest moment to measure what the fleet now has to live with. Reported here
+// rather than in CI because the Intent Plane is a per-developer local store: an
+// observation recorded on a throwaway runner is recorded nowhere.
+//
+// Never fatal. The clause behind this control resolves at `review` and the
+// control's power is `observed`, so failing the push on a regression would
+// enforce harder than the rule it serves (ADR-0034). A rising count is a
+// question for a human, not a locked door.
+try {
+  execFileSync(process.execPath, ["scripts/observe-module-length.mjs"], {
+    cwd: repoRoot,
+    stdio: "inherit",
+    env: process.env,
+  });
+} catch {
+  console.warn(
+    "canonical-push: the module-length ratchet was not observed for this publication",
+  );
+}
