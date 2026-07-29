@@ -218,13 +218,15 @@ mod tests {
             (
                 10,
                 "00112233445566778899aabbccddeeff",
-                "session-a",
+                // A full object name: ingestion refuses anything that is not
+                // forty hex digits, so a label like "session-a" no longer works.
+                format!("{:0<40}", "5e5510a"),
                 "src/a.rs",
             ),
             (
                 11,
                 "ffeeddccbbaa99887766554433221100",
-                "session-b",
+                format!("{:0<40}", "5e5510b"),
                 "src/b.rs",
             ),
         ] {
@@ -269,8 +271,14 @@ mod tests {
         let first_id = first["agent_id"].as_str().unwrap();
         assert!(first_id.starts_with("session:v1:"));
         assert_eq!(first_id.matches(':').count(), 2);
-        assert_eq!(first["commit_ids"], json!(["intent:session-a"]));
-        assert_eq!(second["commit_ids"], json!(["intent:session-b"]));
+        assert_eq!(
+            first["commit_ids"],
+            json!([format!("intent:{:0<40}", "5e5510a")])
+        );
+        assert_eq!(
+            second["commit_ids"],
+            json!([format!("intent:{:0<40}", "5e5510b")])
+        );
         assert_eq!(first["changed_node_ids"], json!(["artifact:src/a.rs"]));
         assert_eq!(second["changed_node_ids"], json!(["artifact:src/b.rs"]));
     }

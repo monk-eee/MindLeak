@@ -803,7 +803,10 @@ fn isolated_worktrees_share_intent_and_evidence_with_distinct_sessions() {
         .ingest_commit_for_agent(
             &agent_a,
             &CommitRecord {
-                sha: Some("shared-proof".into()),
+                // A real object name: the SHA-1 of the empty string. Any sha
+                // reaching ingestion must be a full forty-hex-digit name, so a
+                // label like "shared-proof" is now refused.
+                sha: Some("da39a3ee5e6b4b0d3255bfef95601890afd80709".into()),
                 message: "feat: shared evidence".into(),
                 changed_files: vec!["src/shared.rs".into()],
                 timestamp: 100,
@@ -814,7 +817,10 @@ fn isolated_worktrees_share_intent_and_evidence_with_distinct_sessions() {
 
     let memory_b = MindLeak::open(&graph_path).unwrap();
     let evidence = memory_b.evidence_for(None, &agent_a, 90, 110).unwrap();
-    assert_eq!(evidence.commit_ids, vec!["intent:shared-proof"]);
+    assert_eq!(
+        evidence.commit_ids,
+        vec!["intent:da39a3ee5e6b4b0d3255bfef95601890afd80709"]
+    );
     assert_eq!(evidence.changed_node_ids, vec!["artifact:src/shared.rs"]);
     assert!(memory_b
         .evidence_for(None, &agent_b, 90, 110)
