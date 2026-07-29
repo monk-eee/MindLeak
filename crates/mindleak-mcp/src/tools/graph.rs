@@ -31,7 +31,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "check_overlap",
-            "description": "Read-only decay-aware pre-flight footprint for other agents on requested workspace paths or MindLeak symbol ids (ADR-0024). Advisory only; combine with Lodestar's check_overlap claim result.",
+            "description": "Pre-flight before you edit: what this graph already knows about these workspace paths or symbol ids. Returns what is structurally connected to them (dependents, previously failing executions, related intents), which other agents hold a decay-active footprint there (ADR-0024), and which ids are unknown to the graph entirely. Read-only, advisory, never a lock; combine with Lodestar's check_overlap claim result (ADR-0066).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -64,14 +64,14 @@ pub(super) fn dispatch(
             Ok(text_result(&json!(sub)))
         })()),
         "check_overlap" => Some((|| {
-            let overlaps = engine
-                .check_overlap(
+            let preflight = engine
+                .preflight(
                     &str_array(args, "paths"),
                     &str_array(args, "symbols"),
                     opt_str(args, "exclude_agent").as_deref(),
                 )
                 .map_err(|e| e.to_string())?;
-            Ok(text_result(&json!({ "footprints": overlaps })))
+            Ok(text_result(&json!(preflight)))
         })()),
         _ => None,
     }
@@ -87,9 +87,41 @@ mod tests {
             .into_iter()
             .find(|tool| tool["name"] == "check_overlap")
             .unwrap();
-        assert!(tool["description"].as_str().unwrap().contains("Read-only"));
-        assert!(tool["description"].as_str().unwrap().contains("Advisory"));
+        let description = tool["description"].as_str().unwrap();
+        assert!(description.contains("Read-only"));
+        assert!(description.contains("advisory"));
+        assert!(description.contains("never a lock"));
+        // The tool must advertise the decision it informs, not just the
+        // footprint it reports — an agent picks the pre-flight by reading this.
+        assert!(description.contains("before you edit"));
+        assert!(description.contains("failing executions"));
         assert!(tool["inputSchema"]["properties"]["paths"].is_object());
         assert!(tool["inputSchema"]["properties"]["symbols"].is_object());
+    }
+
+    #[test]
+    fn the_overlap_tool_returns_impact_not_only_footprints() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        engine
+            .ingest_file("src/auth.rs", "fn verify() {}\n")
+            .unwrap();
+
+        let result = dispatch(
+            &engine,
+            "check_overlap",
+            &json!({ "paths": ["src/auth.rs"] }),
+        )
+        .unwrap()
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+
+        assert!(body["footprints"].is_array(), "footprints stay available");
+        assert!(
+            body["impact"]["nodes"].is_array(),
+            "the pre-flight carries the impact answer: {body}"
+        );
+        assert!(body["unknown"].is_array());
+        assert_eq!(body["requested"][0], "artifact:src/auth.rs");
     }
 }
