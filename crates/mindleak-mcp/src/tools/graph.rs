@@ -7,7 +7,7 @@ pub(super) fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "graph_multi_hop_query",
-            "description": "Navigate the context graph up to N directional hops from a seed node id or search phrase, keeping only edges above a minimum time-decayed weight. Returns connected nodes, paths, and recent state.",
+            "description": "Use task text as the seed when semantic recall is unavailable, or a node id after recall. Traverse up to N directional hops, filtering by decayed weight; return connected nodes, paths, and recent state.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -20,7 +20,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "get_impact_radius",
-            "description": "Determine what is structurally connected to a file or symbol you are about to edit: dependent symbols, previously failing executions, and related intents.",
+            "description": "Call once before the first edit to a file or symbol. Return dependent symbols, prior failing executions, related intents, and other structurally connected context.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

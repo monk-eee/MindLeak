@@ -1363,6 +1363,63 @@ and footguns, with impact and status:
   the workspace build and strict clippy were red. — Resolved Jul 2026 by making
   `TextEmbedder: Send + Sync` and adding compile-time and unit regression
   assertions that `MindLeak: Send` (Lodestar task `task:e0548f57556a`).
+- **One commit split into two intent nodes when ingested by an abbreviated
+  sha.** — `ingest::git::ingest_commit` built the node id from the sha exactly
+  as supplied, so a commit already ingested under its full hash gained a
+  *second* node when ingested again by its abbreviation. Observed 2026-07-29:
+  an evidence bundle carried both `intent:007835a` and
+  `intent:007835a1c979…` for one commit, with duplicated `refactored` edges to
+  all four artefacts and `commits=2`. — Medium impact: inflated commit counts in
+  conformance evidence, duplicated provenance, and two nodes competing to
+  represent one event, with nothing downstream able to tell they are the same
+  commit. The commit-level twin of the "one file is one node" defect. — **Fixed
+  Jul 2026:** an abbreviation is now refused with
+  `MindLeakError::InvalidArgument` naming the fix, and case is normalised;
+  ingestion cannot expand an abbreviation itself because it never shells out to
+  git (invariant 1). Regression tests
+  `an_abbreviated_sha_is_refused_rather_than_creating_a_second_node` and
+  `sha_case_does_not_fork_the_commit_into_two_nodes` (Lodestar task
+  `task:3767516939a0`).
+- **The active constitution governs no code, and owns no work — MEASURED,
+  OPEN.** Constitution v2 minted 25 active goals with ids suffixed
+  `@constitution:v2`. Every code binding and every task still names the v1 id,
+  and 25 of the 26 superseded goals record no `superseded_by`, so nothing can
+  follow the rename. Measured 2026-07-29 with `node scripts/binding-audit.mjs`:
+
+  ```
+  active goals                      : 25
+  active goals WITH code bindings   : 0
+  bindings held by superseded goals : 156 of 156
+  tasks under superseded goals      : 217 of 217
+  ```
+
+  — High impact: `governing_goals` filters to active goals, so it reports `[]`
+  for files that are demonstrably bound, and `advise` answers "no active clause
+  governs this change; proceed" for *every* change. That reads as approval and
+  is actually the constitution being disconnected — no `forbid_change` lock can
+  fire and no clause can be enforced. Conformance still works only because tasks
+  and bindings are consistently on the *old* ids. — Not fixed here: re-pointing
+  156 bindings and 217 tasks is a hard-to-reverse ledger rewrite on a live
+  fleet, and with no recorded `superseded_by` the v1→v2 mapping would have to be
+  guessed from slugs. Binding the v2 goals *without* moving the tasks would make
+  every agent's evidence read as `governed code changed without a covering
+  task`, i.e. drift. — **Root cause found and fixed in flight (PR #156):**
+  `amend_constitution` superseded the outgoing clauses with a bare status flip
+  and never set `superseded_by`, so nothing could follow the rename it performs.
+  The amendment now records the successor by slug and moves bindings and
+  non-terminal tasks in the same transaction, and a `run_once` migration repairs
+  ledgers already in this state. It cannot be done as a sweep: bindings and
+  tasks must move together or every live task reads as drift.
+- **Goal bindings did not cover the code that serves the goal — MEASURED,
+  FIXED.** 47 of 131 source files under `crates/*/src` were bound to no goal,
+  including the whole of `ingest/**` (the zero-token write path) and the whole
+  post-split `facade/conformance/**`; two bindings still named
+  `facade/conformance.rs` and `store/design.rs`, deleted by the module splits.
+  — Medium impact: conformance cannot tell drift from an unbound file, so honest
+  changes and real drift both come back silent. — **Fixed Jul 2026:** all files
+  bound to their owning goal, dead bindings pruned, and
+  `scripts/binding-audit.mjs --check` added so it cannot regress unnoticed
+  (Lodestar task `task:7c3a63f1cfd3`).
 - **The binding vocabulary is still named for code below the verb.** —
   `link_goal_to_code` became `link_goal_to_artifact` (ADR-0060), but
   `CodeBindingMode` and the `code_bindings` table it writes to still say
