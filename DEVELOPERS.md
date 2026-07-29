@@ -511,8 +511,29 @@ and footguns, with impact and status:
   The hook now reports when it cannot record, and honours
   `MINDLEAK_INGEST_TIMEOUT_MS` — worth having, but it reports nothing while it
   is not installed at all, which is the actual gap.
-  Unexplained: `ce99c35` *does* have provenance, recorded in the same
-  environment with no post-commit hook installed. Do not assume the hook ran.
+  **Explained (was "unexplained"): the VS Code extension's passive git sensor is
+  what records commits today.** `editors/vscode/src/gitSensor.ts` watches
+  `repository.state.HEAD` and calls `ingest_commit` with `commit.hash` and the
+  commit's own date. That is why provenance appears with no hook installed, and
+  why re-ingesting a commit by hand returns `nodes_created: 0` — the sensor got
+  there first. Two earlier guesses were both wrong and should not be
+  re-proposed: that the hook ran and timed out, and that `canonical-push`
+  ingests. `canonical-push` contains no ingest call.
+  **The sensor skips more than it looks like it does, and that is the real
+  finding.** It ingests only when the new HEAD is a *child* of the previous one:
+
+  ```ts
+  if (!explicitCommit && previous && !commit.parents.includes(previous)) return;
+  ```
+
+  So a branch switch, a checkout, or any non-linear HEAD move records nothing.
+  In a fleet where every unit of work gets its own branch, that is not an edge
+  case — it is the common path, and it is the true cause of the empty evidence
+  bundles that were repeatedly diagnosed as ingestion being broken. It also
+  means provenance depends on the workspace being open in an editor at all: an
+  agent working through a terminal in a worktree nobody has open records
+  nothing, silently. Whether that skip is the right behaviour is a separate
+  decision and is not settled here.
 - **`Get-Date -UFormat %s` on Windows returns local time as an epoch, not UTC —
   CONFIRMED, no code change.** Any evidence window built from it is hours in the
   future, and `check_conformance` then rejects it with *"evidence interval falls
