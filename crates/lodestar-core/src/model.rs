@@ -1,27 +1,14 @@
 //! Domain model for the Lodestar Intent Plane: goals (the constitution), tasks
 //! (the executive), conformance verdicts, and consolidated learned knowledge.
-//!
-//! Split by those four concerns rather than left as one file. Every type is
-//! re-exported here unchanged, so `crate::model::Task` and its siblings resolve
-//! exactly as before: a reader gains a smaller file to open, and no call site
-//! has to know the split happened.
 
+// Split by concern. This stays the surface: everything below is re-exported,
+// so every `crate::model::X` path resolves exactly as it did before.
 mod conformance;
 mod constitution;
 mod executive;
 mod knowledge;
 
-pub use conformance::{
-    ConformanceCheck, ConformanceEvidence, ConformanceRecord, ConformanceResult,
-    EvidenceProvenance, TaskReceipt, Verdict,
-};
-pub use constitution::{
-    Advice, AdviceDisposition, ClauseOrigin, CodeBinding, CodeBindingMode, Consequence,
-    ConstitutionProposal, ConstitutionState, ConstitutionStatus, ConstitutionVersion, Goal,
-    GoalKind, GoalStatus, GoverningClause,
-};
-pub use executive::{
-    ClaimOverlap, ClaimOverlapReport, HumanQuestion, OverlapSignal, Task, TaskEvent, TaskEventKind,
-    TaskQa, TaskScope, TaskStatus,
-};
-pub use knowledge::{Knowledge, SignalPromotion};
+pub use conformance::*;
+pub use constitution::*;
+pub use executive::*;
+pub use knowledge::*;

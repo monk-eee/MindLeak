@@ -40,22 +40,37 @@ impl Lodestar {
             .iter()
             .map(String::as_str)
             .collect();
-        let mut matched = false;
+        let mut nudged_by: Vec<String> = Vec::new();
         for knowledge in self.store.active_knowledge(now_unix())? {
             if knowledge
                 .referenced_nodes()
                 .iter()
                 .any(|node| changed.contains(node.as_str()))
             {
-                matched = true;
+                nudged_by.push(knowledge.id.clone());
                 result.findings.push(format!(
                     "advisory: learned knowledge {} — {}",
                     knowledge.id, knowledge.statement
                 ));
             }
         }
-        if matched && result.verdict == Verdict::Aligned {
+        // The nudge is ADR-0022 §4: knowledge is revalidated and decaying, so it
+        // may attach an advisory and at most move an otherwise-aligned verdict to
+        // `needs_human` — never a violation, never a silent hard fail.
+        //
+        // It has to say that it did. Every other route to `needs_human` pushes a
+        // finding naming its own reason; this one changed the verdict and left
+        // only lines labelled "advisory", which read as information rather than
+        // as the cause. The receipt then showed a positive result that had
+        // inexplicably failed, and the honest reading — "the work is fine, the
+        // verdict is wrong" — was unavailable to anyone holding it.
+        if !nudged_by.is_empty() && result.verdict == Verdict::Aligned {
             result.verdict = Verdict::NeedsHuman;
+            result.findings.push(format!(
+                "nudged to needs_human by learned knowledge, which a human confirms: {}. \
+                 Nothing else in this evidence is a problem signal (ADR-0022 §4).",
+                nudged_by.join(", ")
+            ));
         }
         Ok(())
     }
@@ -221,11 +236,17 @@ impl Lodestar {
         // deliberate: if it depended on whether the hole fell inside the
         // evidence span, an agent could dodge it by submitting a narrower span
         // — which is exactly the laundering this rule exists to stop.
-        if task.claim_lapses > 0 {
+        //
+        // The window is derived from the task log (ADR-0064 d5/d6) rather than
+        // read off a counter column. It is asked for explicitly here because
+        // there is no field to forget: a missing continuity check would fail
+        // open, and failing open means handing out a clean receipt.
+        let window = self.store.claim_window(&task.id)?;
+        if !window.is_continuous() {
             findings.push(format!(
                 "evidence window is discontinuous: the lease lapsed {} time(s), \
                  leaving {}s unleased, which a human confirms",
-                task.claim_lapses, task.unleased_seconds
+                window.lapses, window.unleased_seconds
             ));
             return Ok(ConformanceResult {
                 verdict: Verdict::NeedsHuman,

@@ -1,4 +1,5 @@
-//! Consolidated learned knowledge, and the proven signals promoted into it.
+//! Consolidated learned knowledge, and the promotion of a repeated signal
+//! into something durable.
 
 use serde::{Deserialize, Serialize};
 

@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 // Prepare stranded claims for the human confirmation they require.
 //
-// Every stranded claim has `claim_lapses > 0`, and conformance returns
-// needs_human for that unconditionally -- deliberately, because letting an
-// agent narrow its evidence window around the hole is the laundering ADR-0048
+// Every stranded claim has a discontinuous evidence window, and conformance
+// returns needs_human for that unconditionally -- deliberately, because letting
+// an agent narrow its evidence window around the hole is the laundering ADR-0048
 // exists to stop. So no agent can close these, however good its evidence.
+//
+// Continuity is derived from the task log and rides on each board row as
+// `claim_window` (ADR-0064 d5); it used to be the `claim_lapses` and
+// `unleased_seconds` columns on the task itself.
 //
 // What an agent *can* do is remove the investigation. For each claim this finds
 // the commit that most likely shipped the work and how long the lease has been
@@ -234,7 +238,8 @@ async function main() {
       console.log(`${task.id}  ${String(task.title).slice(0, 66)}`);
       console.log(
         `    lapsed ${hours(now - (task.lease_expires_at ?? now))} ago, ` +
-          `${task.claim_lapses ?? 0} lapse(s), ${hours(task.unleased_seconds ?? 0)} unleased`,
+          `${task.claim_window?.lapses ?? 0} lapse(s), ` +
+          `${hours(task.claim_window?.unleased_seconds ?? 0)} unleased`,
       );
       if (level === "none")
         console.log(

@@ -251,13 +251,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     acceptance       TEXT NOT NULL DEFAULT '',
     status           TEXT NOT NULL,        -- open|claimed|needs_input|paused|in_review|done|blocked|abandoned
     owner            TEXT,                 -- agent id holding the claim
+    branch           TEXT,                 -- branch the current window is being done on (ADR-0057); NULL when the session declared none
     claim_started_at INTEGER,              -- start of the current owner's evidence window
     lease_expires_at INTEGER,              -- unix seconds; past this is reclaimable
-    -- Continuity of the current evidence window (ADR-0048). A window survives a
-    -- lapse so earlier work stays provable, but the holes are counted here: a
-    -- discontinuous window can never certify itself as aligned.
-    claim_lapses     INTEGER NOT NULL DEFAULT 0,  -- times the lease lapsed inside this window
-    unleased_seconds INTEGER NOT NULL DEFAULT 0,  -- seconds of this window held under no lease
+    -- Continuity of the current evidence window (ADR-0048) is NOT stored here.
+    -- It was, as claim_lapses/unleased_seconds, and those were running totals of
+    -- transitions nobody recorded. It is derived from task_events instead
+    -- (ADR-0064 d5/d6) so the holes can be located, not merely counted.
     blocked_by       TEXT,                 -- optional task id
     parked_at        INTEGER,              -- when parked (needs_input/paused); reclaimable after a grace
     -- Who accepted this task out of in_review, when, and the conformance record

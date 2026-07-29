@@ -2,7 +2,7 @@
 //! (SPEC-CONSTITUTION §9).
 
 use super::{ok, opt_str, req_str};
-use lodestar_core::Lodestar;
+use lodestar_core::{GoalKind, Lodestar};
 use serde_json::{json, Value};
 
 pub(super) fn definitions() -> Vec<Value> {
@@ -11,6 +11,20 @@ pub(super) fn definitions() -> Vec<Value> {
             "name": "propose_amendment",
             "description": "Begin changing adopted policy: draft the next constitutional version, carrying every active clause forward so the draft starts as the current policy. Edit the draft, then amend_constitution promotes it. Starting from a copy is what keeps the eventual diff readable — only what you actually change appears in it. Refuses when no constitution is active (that is an activation) or a draft is already open.",
             "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "draft_clause",
+            "description": "Author a NEW rule into an open amendment draft, then give it a contract with complete_clause_contract before amend_constitution promotes it. This is how policy grows: define_goal states a rule that is live the moment it is written, and complete_clause_contract refuses to harden a live rule (that is what an amendment is for), so without this the clause most needing an enforcement contract was the one clause that could never be given one. The clause takes effect only if the draft is promoted, and appears in constitution_diff as 'added' for the reviewer. Use this rather than minting a policy pack for a rule this project wrote itself — a pack records immutable upstream provenance, which would be a fabricated source.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "draft_id": { "type": "string", "description": "The draft opened by propose_amendment." },
+                    "kind": { "type": "string", "enum": ["objective", "constraint", "invariant"] },
+                    "title": { "type": "string" },
+                    "statement": { "type": "string", "description": "The normative text: what must hold." }
+                },
+                "required": ["draft_id", "kind", "title", "statement"]
+            }
         }),
         json!({
             "name": "amend_constitution",
@@ -63,6 +77,7 @@ pub(super) fn dispatch(
 ) -> Option<Result<Value, String>> {
     match name {
         "propose_amendment" => Some(propose_amendment(engine, args)),
+        "draft_clause" => Some(draft_clause(engine, args)),
         "amend_constitution" => Some(amend_constitution(engine, args)),
         "constitution_diff" => Some(constitution_diff(engine, args)),
         "amendments" => Some(amendments(engine)),
@@ -80,6 +95,31 @@ fn propose_amendment(engine: &Lodestar, args: &Value) -> Result<Value, String> {
         "version": version.version,
         "status": version.status.as_str(),
         "note": "carried the active clauses forward; edit the draft, then amend_constitution",
+    }))
+}
+
+fn draft_clause(engine: &Lodestar, args: &Value) -> Result<Value, String> {
+    let kind = GoalKind::from_tag(req_str(args, "kind")?).ok_or_else(|| {
+        format!(
+            "invalid kind: {}",
+            req_str(args, "kind").unwrap_or_default()
+        )
+    })?;
+    let clause = engine
+        .draft_clause(
+            req_str(args, "draft_id")?,
+            kind,
+            req_str(args, "title")?,
+            req_str(args, "statement")?,
+        )
+        .map_err(|e| e.to_string())?;
+    ok(&json!({
+        "clause_id": clause.id,
+        "slug": clause.slug,
+        "status": clause.status.as_str(),
+        "constitution_version": clause.constitution_version,
+        "note": "authored into the draft; give it a contract with complete_clause_contract, \
+                 then amend_constitution promotes it",
     }))
 }
 
