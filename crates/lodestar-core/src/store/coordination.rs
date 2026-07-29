@@ -2,6 +2,8 @@
 use globset::{GlobBuilder, GlobMatcher};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 
+use std::collections::HashSet;
+
 use crate::error::{LodestarError, Result};
 use crate::fleet::Wait;
 use crate::model::{
@@ -27,7 +29,7 @@ fn detail_json(reason: Option<&str>) -> String {
 pub(super) const TASK_COLS: &str =
     "id, goal_id, parent_task_id, title, acceptance, status, owner, \
     claim_started_at, lease_expires_at, blocked_by, parked_at, created_at, updated_at, \
-    resolved_by, resolved_at, resolved_conformance_id";
+    resolved_by, resolved_at, resolved_conformance_id, branch";
 const CONFORMANCE_COLS: &str =
     "id, task_id, evidence_schema_version, evidence, verdict, findings, checked_at";
 const QA_COLS: &str = "id, task_id, kind, body, author, audience, created_at";
@@ -166,6 +168,22 @@ impl LodestarStore {
                     claim_started_at = CASE
                         WHEN status = 'claimed' AND owner = ?2
                         THEN claim_started_at ELSE ?4 END,
+                    -- The branch belongs to the evidence window, so it follows
+                    -- the same rule as `claim_started_at`: a same-owner
+                    -- re-claim keeps it, a different owner opens a fresh
+                    -- window and re-reads it. Recording the *current* branch
+                    -- on every re-claim would let an agent that moved on
+                    -- silently rename the branch its earlier commits were made
+                    -- on, which is the one thing this column exists to pin.
+                    --
+                    -- Joined from what the session already told `open_session`
+                    -- (ADR-0057): nobody declares anything new, and a session
+                    -- that declared no branch records NULL rather than a guess,
+                    -- because the server never inspects Git (ADR-0044).
+                    branch = CASE
+                        WHEN status = 'claimed' AND owner = ?2 THEN branch
+                        ELSE (SELECT branch FROM session_context
+                               WHERE agent_id = ?2) END,
                     lease_expires_at = ?3, parked_at = NULL, updated_at = ?4
               WHERE id = ?1
                                 AND blocked_by IS NULL
@@ -931,6 +949,57 @@ impl LodestarStore {
         collect(rows)
     }
 
+    /// Work that already serves this goal, or already declared any of these
+    /// paths in its scope — including finished work.
+    ///
+    /// The question is "has this already been done", not "who is touching this
+    /// file", so `done` and `abandoned` are included and a finished task is the
+    /// most useful answer of all. `board` deliberately hides terminal tasks,
+    /// which is right for a board and wrong for this.
+    ///
+    /// Path matching reuses `intersect_paths`, the same glob comparison
+    /// `check_overlap` uses, so "does this scope cover that file" has one answer
+    /// in this codebase rather than two that drift apart.
+    pub fn existing_work(&self, goal_id: Option<&str>, paths: &[String]) -> Result<Vec<Task>> {
+        let mut found: Vec<Task> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+
+        if let Some(goal_id) = goal_id {
+            let sql =
+                format!("SELECT {TASK_COLS} FROM tasks WHERE goal_id = ?1 ORDER BY created_at ASC");
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![goal_id], row_to_task)?;
+            for task in collect(rows)? {
+                if seen.insert(task.id.clone()) {
+                    found.push(task);
+                }
+            }
+        }
+
+        if !paths.is_empty() {
+            let sql = format!(
+                "SELECT {TASK_COLS} FROM tasks WHERE id IN (
+                     SELECT task_id FROM task_scopes WHERE kind = 'path'
+                 ) ORDER BY created_at ASC"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map([], row_to_task)?;
+            for task in collect(rows)? {
+                if seen.contains(&task.id) {
+                    continue;
+                }
+                let scope = task_scope_on(&self.conn, &task.id)?;
+                if !intersect_paths(paths, &scope.paths)?.is_empty() {
+                    seen.insert(task.id.clone());
+                    found.push(task);
+                }
+            }
+        }
+
+        found.sort_by_key(|task| task.created_at);
+        Ok(found)
+    }
+
     pub(crate) fn record_conformance(
         &self,
         task_id: Option<&str>,
@@ -1179,6 +1248,9 @@ fn create_task_after_on(
         owner: None,
         claim_started_at: None,
         lease_expires_at: None,
+        // An unclaimed task is on no branch. The branch is a property of the
+        // evidence window, and no window is open until someone claims it.
+        branch: None,
         blocked_by,
         parked_at: None,
         resolved_by: None,
@@ -1402,6 +1474,7 @@ pub(super) fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
         resolved_by: row.get(13)?,
         resolved_at: row.get(14)?,
         resolved_conformance_id: row.get(15)?,
+        branch: row.get(16)?,
     })
 }
 
@@ -1590,6 +1663,112 @@ mod tests {
     use crate::store::test_support::{
         complete_aligned, goal, store, temporary_database, HOUR, NOW,
     };
+
+    /// Declare where a session is working, exactly as `open_session` does.
+    fn working_on(store: &LodestarStore, agent: &str, branch: Option<&str>) {
+        store
+            .declare_session_context(
+                agent,
+                &SessionContext {
+                    branch: branch.map(str::to_string),
+                    ..SessionContext::default()
+                },
+                NOW,
+            )
+            .unwrap();
+    }
+
+    // ADR-0057. A merge can only be checked against the work it came from if
+    // the ledger knows which branch that work was done on. `open_session`
+    // already collects it, so claiming joins the two rather than asking anyone
+    // to declare it twice.
+    #[test]
+    fn claiming_records_the_branch_the_session_declared() {
+        let store = store();
+        let goal = goal(&store);
+        let task = store
+            .create_task(&goal.id, "do the thing", "done", None, NOW)
+            .unwrap();
+        working_on(&store, "agent-a", Some("feat/the-thing"));
+
+        assert!(store.claim_task(&task.id, "agent-a", 300, NOW).unwrap());
+
+        assert_eq!(
+            store.get_task(&task.id).unwrap().unwrap().branch.as_deref(),
+            Some("feat/the-thing"),
+            "the branch must be readable from a task read"
+        );
+    }
+
+    // A session that declared no branch is recorded as none, not refused: the
+    // server never inspects Git (ADR-0044), so the only honest alternatives are
+    // NULL or a guess, and a guess would be worse than knowing nothing.
+    #[test]
+    fn a_session_that_declared_no_branch_still_claims() {
+        let store = store();
+        let goal = goal(&store);
+        let task = store
+            .create_task(&goal.id, "do the thing", "done", None, NOW)
+            .unwrap();
+        working_on(&store, "agent-a", None);
+
+        assert!(store.claim_task(&task.id, "agent-a", 300, NOW).unwrap());
+        assert_eq!(store.get_task(&task.id).unwrap().unwrap().branch, None);
+    }
+
+    // The branch belongs to the evidence window, not to the agent. Re-reading
+    // it on every re-claim would let an agent that has since moved on silently
+    // rename the branch its earlier commits were made on — which is the single
+    // thing this column exists to pin down.
+    #[test]
+    fn a_same_owner_reclaim_keeps_the_branch_the_window_started_on() {
+        let store = store();
+        let goal = goal(&store);
+        let task = store
+            .create_task(&goal.id, "do the thing", "done", None, NOW)
+            .unwrap();
+        working_on(&store, "agent-a", Some("feat/where-the-work-happened"));
+        assert!(store.claim_task(&task.id, "agent-a", 300, NOW).unwrap());
+
+        // The same agent moves to another branch and re-claims after a lapse.
+        working_on(&store, "agent-a", Some("feat/somewhere-else"));
+        assert!(store
+            .claim_task(&task.id, "agent-a", 300, NOW + 10_000)
+            .unwrap());
+
+        let claimed = store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(
+            claimed.branch.as_deref(),
+            Some("feat/where-the-work-happened"),
+            "a re-claim must not rewrite the branch the window's work was done on"
+        );
+        assert_eq!(
+            claimed.claim_started_at,
+            Some(NOW),
+            "and it follows the same window as claim_started_at"
+        );
+    }
+
+    // A different owner opens a fresh window, so the branch is re-read with it.
+    #[test]
+    fn a_new_owner_opens_a_fresh_window_and_rereads_the_branch() {
+        let store = store();
+        let goal = goal(&store);
+        let task = store
+            .create_task(&goal.id, "do the thing", "done", None, NOW)
+            .unwrap();
+        working_on(&store, "agent-a", Some("feat/first"));
+        assert!(store.claim_task(&task.id, "agent-a", 300, NOW).unwrap());
+
+        working_on(&store, "agent-b", Some("feat/second"));
+        assert!(store
+            .claim_task(&task.id, "agent-b", 300, NOW + 10_000)
+            .unwrap());
+
+        let claimed = store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(claimed.branch.as_deref(), Some("feat/second"));
+        assert_eq!(claimed.claim_started_at, Some(NOW + 10_000));
+    }
 
     #[test]
     fn claim_is_a_compare_and_swap() {

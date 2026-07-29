@@ -68,6 +68,21 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "existing_work",
+            "description": "Has this already been done? Returns tasks already serving a goal or already declaring any of these paths in scope, INCLUDING finished and abandoned ones - a task that is already done is the most useful answer, and the one `board` hides. Distinct from check_overlap, which asks who is touching a file right now and sees only live claims. Advisory: a second task against one goal is often legitimate, so this reports and never refuses (ADR-0015). Ask before creating a task or implementing from an acceptance - the board understates what is finished, because work routinely lands without closing its task.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "goal_id": { "type": "string", "description": "Work already serving this goal." },
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Workspace-relative paths; matched against declared scopes with the same globbing check_overlap uses."
+                    }
+                }
+            }
+        }),
+        json!({
             "name": "check_overlap",
             "description": "Read-only pre-flight check for live Lodestar claims whose declared scope intersects these concrete workspace-relative paths or symbol ids (ADR-0024). Each intersection is classified from the branches the two sessions declared at open_session (ADR-0035): same_branch_collision (edits land in one history, colliding now), cross_branch_merge_risk (divergence, paid at merge), or undeclared when either side declared no branch. Advisory only, and never blocks a claim; combine with MindLeak's check_overlap footprint result for cross-plane awareness.",
             "inputSchema": {
@@ -304,16 +319,40 @@ pub(super) fn dispatch(
 ) -> Option<Result<Value, String>> {
     match name {
         "create_task" => Some((|| {
+            let goal_id = req_str(args, "goal_id")?;
             let task = engine
                 .create_task_covering(
-                    req_str(args, "goal_id")?,
+                    goal_id,
                     req_str(args, "title")?,
                     opt_str(args, "acceptance").unwrap_or_default().as_str(),
                     optional_string_arg(args, "blocked_by")?,
                     &str_array(args, "also_serves"),
                 )
                 .map_err(|e| e.to_string())?;
-            ok(&task)
+            // Report what already serves this goal, and name it. A second task
+            // against one goal is often legitimate, so this must not refuse
+            // (ADR-0015) — a gate here would be wrong more often than right.
+            // Six identical tasks reached the live board because the thing
+            // creating them had no way to see the five before it.
+            let prior: Vec<Value> = engine
+                .existing_work(Some(goal_id), &[])
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .filter(|t| t.id != task.id)
+                .map(|t| {
+                    json!({
+                        "task_id": t.id,
+                        "title": t.title,
+                        "status": t.status,
+                    })
+                })
+                .collect();
+            let mut value = serde_json::to_value(&task).map_err(|e| e.to_string())?;
+            if let Some(object) = value.as_object_mut() {
+                object.insert("already_serving_this_goal".into(), json!(prior.len()));
+                object.insert("prior_work".into(), json!(prior));
+            }
+            ok(&value)
         })()),
         "decompose_goal" => Some((|| {
             ok(&engine
@@ -422,6 +461,40 @@ pub(super) fn dispatch(
             ok(&engine
                 .task_scope(req_str(args, "task_id")?)
                 .map_err(|e| e.to_string())?)
+        })()),
+        "existing_work" => Some((|| {
+            let goal_id = opt_str(args, "goal_id");
+            let paths = str_array(args, "paths");
+            if goal_id.is_none() && paths.is_empty() {
+                return Err(
+                    "existing_work needs a goal_id or paths; asking about nothing answers nothing"
+                        .to_string(),
+                );
+            }
+            let found = engine
+                .existing_work(goal_id.as_deref(), &paths)
+                .map_err(|e| e.to_string())?;
+            let rows: Vec<Value> = found
+                .iter()
+                .map(|task| {
+                    json!({
+                        "task_id": task.id,
+                        "title": task.title,
+                        "status": task.status.as_str(),
+                        "goal_id": task.goal_id,
+                        "owner": task.owner,
+                    })
+                })
+                .collect();
+            let finished = found
+                .iter()
+                .filter(|task| task.status == TaskStatus::Done)
+                .count();
+            ok(&json!({
+                "count": rows.len(),
+                "already_done": finished,
+                "work": rows,
+            }))
         })()),
         "check_overlap" => Some((|| {
             let scope = TaskScope {
@@ -943,6 +1016,53 @@ mod tests {
     use lodestar_core::llm::LlmClient;
     use lodestar_core::{now_unix, CodeBindingMode, ConformanceEvidence, GoalKind};
     use mindleak_session::SessionRegistry;
+
+    /// Six identical "carry controls across an amendment" tasks reached the
+    /// live board because a publish-time helper made a fresh one on every run
+    /// and nothing showed it the five before it. `create_task` now names the
+    /// prior work — and still creates the task, because a second task against
+    /// one goal is often legitimate and a gate here would be wrong more often
+    /// than right (ADR-0015).
+    #[test]
+    fn create_task_names_the_work_already_serving_the_goal_without_refusing() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Amend", "carry controls", None)
+            .unwrap();
+        let first = engine
+            .create_task(&goal.id, "Carry controls across an amendment", "done")
+            .unwrap();
+        // Titles differ only because a task id hashes the creation *second*, so
+        // two identical titles created in the same second collide on a raw
+        // sqlite UNIQUE error. Recorded in DEVELOPERS.md; what is under test
+        // here is that prior work on the goal is named either way.
+
+        let created = call(
+            &engine,
+            &json!({
+                "name": "create_task",
+                "arguments": {
+                    "goal_id": goal.id,
+                    "title": "Carry controls across an amendment (again)",
+                    "acceptance": "done"
+                }
+            }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(created["content"][0]["text"].as_str().unwrap()).unwrap();
+
+        assert!(
+            body["id"].as_str().is_some_and(|id| id != first.id),
+            "the task is still created: {body}"
+        );
+        assert_eq!(body["already_serving_this_goal"], 1);
+        assert_eq!(body["prior_work"][0]["task_id"], first.id);
+        assert_eq!(
+            body["prior_work"][0]["title"], "Carry controls across an amendment",
+            "the prior task is named, not merely counted"
+        );
+    }
 
     #[test]
     fn scoped_claim_and_overlap_round_trip_through_tools() {
