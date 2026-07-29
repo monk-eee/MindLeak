@@ -162,6 +162,49 @@ pub(super) fn current_name(name: &str) -> &str {
 /// here, so argument validation and the rename guard both see it.
 const RENAME_TABLES: [&[Renamed]; 2] = [&design::RENAMED, &executive::RENAMED];
 
+/// The call as it will actually be dispatched: the tool that answers this name
+/// today, and the arguments once a rename has restored the discriminator that
+/// used to be part of the name.
+///
+/// Every server-side table keyed by tool name goes through here. They describe
+/// *acts* — this call takes ownership, this one is a heartbeat — and an act
+/// does not change when its name does. Reading them under the raw name is what
+/// silently unbound the task cluster: `requires_session` went on naming
+/// `claim_task` and `complete_task` after they collapsed into `task_claim` and
+/// `task_transition`, so the verbs that replaced them matched nothing.
+fn resolved_call<'a>(name: &'a str, args: &Value) -> (&'a str, Value) {
+    for table in RENAME_TABLES {
+        if let Some(renamed) = renamed(table, name) {
+            return (renamed.new, renamed.translate(args));
+        }
+    }
+    (name, args.clone())
+}
+
+/// A tool, optionally narrowed to one act within it.
+///
+/// A collapsed cluster moved the act out of the tool name and into an argument,
+/// so a table that still names only tools can no longer say "the scope view but
+/// not the board". `key` empty means the whole tool.
+struct ToolAct {
+    tool: &'static str,
+    key: &'static str,
+    value: &'static str,
+}
+
+impl ToolAct {
+    /// Whether this entry covers an already-resolved call.
+    fn covers(&self, tool: &str, args: &Value) -> bool {
+        if self.tool != tool {
+            return false;
+        }
+        if self.key.is_empty() {
+            return true;
+        }
+        args.get(self.key).and_then(Value::as_str) == Some(self.value)
+    }
+}
+
 /// Keys that belong to the call envelope rather than to any tool's contract.
 ///
 /// `agent`, `resolved_agent`, `resolved_name` and `resolved_context` are
@@ -231,6 +274,22 @@ pub fn validate_arguments(name: &str, args: &Value) -> Result<(), String> {
 
 pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value, String> {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+    // The session tables describe acts, so they are read against the call as it
+    // will actually be dispatched. Argument validation already followed the
+    // ADR-0059 collapse; session binding did not, and that asymmetry was the
+    // defect. `requires_session` went on naming `claim_task`, `complete_task`,
+    // `pause_task` and seven more that had stopped existing, so the verbs that
+    // replaced them bound no session at all. That is worse than
+    // unauthenticated: `apply_session_contract` only strips `agent` from a
+    // bound tool, so each one advertised `agent` for the caller to fill in, and
+    // naming yourself is the one thing resolving a session exists to prevent.
+    //
+    // `name` is kept as the caller wrote it, so a deprecated call is still
+    // reported in the name it used.
+    let (contract, contract_args) = resolved_call(
+        name,
+        &params.get("arguments").cloned().unwrap_or(Value::Null),
+    );
     let mut bound = params.clone();
     let args = bound
         .get_mut("arguments")
@@ -253,7 +312,7 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
         }
         return Ok(bound);
     }
-    if requires_session(name) {
+    if requires_session(contract) {
         let token = args
             .get("session_id")
             .and_then(Value::as_str)
@@ -264,7 +323,10 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
         if let Some(evidence) = args.get_mut("evidence").and_then(Value::as_object_mut) {
             evidence.insert("agent_id".to_string(), json!(identity.agent_id));
         }
-    } else if OPTIONAL_SESSION_TOOLS.contains(&name) {
+    } else if OPTIONAL_SESSION_ACTS
+        .iter()
+        .any(|act| act.covers(contract, &contract_args))
+    {
         // A session sharpens the answer but is not the price of asking. An
         // unresolvable token binds nothing and the tool still answers, because
         // this is a read-only advisory that must degrade rather than refuse:
@@ -384,16 +446,44 @@ pub fn call_with_storage(
 /// reviewing its conformance history, or checking its evidence are all things
 /// only an agent mid-task does.
 ///
-/// `claim_task` and `renew_lease` are absent deliberately: they set the lease
-/// themselves, and a heartbeat afterwards would silently widen what the caller
-/// asked for. `complete_task` and `release_task` are absent because the claim is
-/// ending, not continuing.
-const HEARTBEAT_TOOLS: &[&str] = &[
-    "task_scope",
-    "ask_question",
-    "answer",
-    "conformance_history",
-    "check_conformance",
+/// Taking or renewing a claim is absent deliberately: `task_claim` sets the
+/// lease itself, and a heartbeat afterwards would silently widen what the
+/// caller asked for. Completing and releasing are absent for the opposite
+/// reason — the claim is ending, not continuing — which is why the two
+/// `task_transition` entries name their act rather than the whole tool.
+///
+/// Three of these were written as `task_scope`, `ask_question` and `answer`,
+/// and stopped matching anything when those names collapsed into `task_query`
+/// and `task_transition`. Heartbeats simply stopped firing for them: a lease
+/// that ADR-0052 says should be held by a working agent lapsed on schedule
+/// while the agent was working, and the next call was told the task was not
+/// held by it.
+const HEARTBEAT_ACTS: [ToolAct; 5] = [
+    ToolAct {
+        tool: "task_query",
+        key: "view",
+        value: "scope",
+    },
+    ToolAct {
+        tool: "task_transition",
+        key: "to",
+        value: "ask",
+    },
+    ToolAct {
+        tool: "task_transition",
+        key: "to",
+        value: "answer",
+    },
+    ToolAct {
+        tool: "conformance_history",
+        key: "",
+        value: "",
+    },
+    ToolAct {
+        tool: "check_conformance",
+        key: "",
+        value: "",
+    },
 ];
 
 // `advise` is deliberately absent, answering the question ADR-0052 left open.
@@ -425,7 +515,10 @@ const HEARTBEAT_LEASE_SECS: i64 = 300;
 /// actually made. A lapse still requires a deliberate re-claim, so this cannot
 /// resurrect a claim someone else has taken.
 fn touch_named_task(engine: &Lodestar, name: &str, args: &Value) {
-    if !HEARTBEAT_TOOLS.contains(&name) {
+    // Resolved here rather than relying on dispatch to do it, because dispatch
+    // translates a deprecated call *after* this runs.
+    let (tool, args) = resolved_call(name, args);
+    if !HEARTBEAT_ACTS.iter().any(|act| act.covers(tool, &args)) {
         return;
     }
     let Some(task_id) = args.get("task_id").and_then(Value::as_str) else {
@@ -458,37 +551,44 @@ fn storage_definition() -> Value {
     })
 }
 
-/// Tools that use a session when one is offered but never require one.
+/// Acts that use a session when one is offered but never require one.
 ///
-/// `check_overlap` is a read-only advisory: with a session it can classify each
-/// intersection against the branch that session declared (ADR-0035), and
+/// The overlap view is a read-only advisory: with a session it can classify
+/// each intersection against the branch that session declared (ADR-0035), and
 /// without one it must still give the answer it always gave. Requiring a
 /// session would be the cheap way to get the branch and the wrong one — it
 /// would make an advisory check refusable, which is exactly the property
 /// ADR-0024 says overlap detection must not have.
-const OPTIONAL_SESSION_TOOLS: [&str; 1] = ["check_overlap"];
+///
+/// Narrowed to the one view rather than to `task_query` whole: the cluster it
+/// collapsed into also answers `board` and `next`, and quietly binding an agent
+/// into those would change what they return for reasons no caller asked for.
+const OPTIONAL_SESSION_ACTS: [ToolAct; 1] = [ToolAct {
+    tool: "task_query",
+    key: "view",
+    value: "overlap",
+}];
 
 fn requires_session(name: &str) -> bool {
     matches!(
         name,
         "design_register"
-            // Deprecated, and deliberately still session-bearing: the alias must
-            // keep the contract it had, or a deprecation becomes a breaking
-            // change wearing a helpful message.
-            | "register_design"
             | "review_pack_clause"
             | "policy_pack_decide"
             | "propose_constitution"
             | "activate_constitution"
-            | "claim_task"
-            | "renew_lease"
-            | "complete_task"
-            | "release_task"
-            | "recover_claim"
-            | "ask_question"
-            | "pending_questions"
-            | "pause_task"
-            | "resume_task"
+            // Ownership, the task lifecycle, and constitutional law. This list
+            // held the pre-collapse names — `claim_task`, `complete_task`,
+            // `pause_task` and the rest — which stopped existing when the
+            // clusters were renamed. Ten entries named nothing, and the three
+            // verbs that replaced them were bound to no session: every one
+            // answered "a registered session agent is required", and because
+            // `apply_session_contract` only strips `agent` from a bound tool,
+            // each advertised `agent` for the caller to fill in. Naming
+            // yourself is exactly what resolving a session exists to prevent.
+            | "task_claim"
+            | "task_transition"
+            | "constitution_decide"
             | "check_conformance"
             | "accept_ratchet_baseline"
             | "retire_control"
@@ -714,20 +814,28 @@ mod tests {
     /// redefine another one." The first implementation included it, which made
     /// the two ADRs contradict each other in code while both still read as
     /// authoritative. This test is the guard: re-adding `advise` to
-    /// `HEARTBEAT_TOOLS` without first amending ADR-0029 fails here.
+    /// `HEARTBEAT_ACTS` without first amending ADR-0029 fails here.
     #[test]
     fn advise_is_not_a_heartbeat_while_adr_0029_calls_it_state_free() {
         assert!(
-            !HEARTBEAT_TOOLS.contains(&"advise"),
+            !HEARTBEAT_ACTS.iter().any(|act| act.tool == "advise"),
             "advise renews a lease, which is task state; ADR-0029 documents it \
              as state-free. Amend ADR-0029 before adding it back."
         );
-        // The tools that *are* heartbeats stay heartbeats: this must not be
-        // read as "renewal-on-activity was reverted".
-        for expected in ["task_scope", "conformance_history", "check_conformance"] {
+        // The acts that *are* heartbeats stay heartbeats: this must not be read
+        // as "renewal-on-activity was reverted". Named as they are dispatched
+        // today — reading a task's scope survived the cluster collapse as a
+        // view of `task_query`, and the entry has to follow it there.
+        for (tool, key, value) in [
+            ("task_query", "view", "scope"),
+            ("conformance_history", "", ""),
+            ("check_conformance", "", ""),
+        ] {
             assert!(
-                HEARTBEAT_TOOLS.contains(&expected),
-                "{expected} is proof the owner is still working (ADR-0052)"
+                HEARTBEAT_ACTS
+                    .iter()
+                    .any(|act| act.tool == tool && act.key == key && act.value == value),
+                "{tool} is proof the owner is still working (ADR-0052)"
             );
         }
     }
@@ -765,6 +873,82 @@ mod tests {
         assert!(
             properties["agent"].is_null(),
             "a caller naming its own agent could certify another agent's merge"
+        );
+    }
+
+    /// No advertised tool may declare `agent`.
+    ///
+    /// `agent` is resolved from a session, never asserted by the caller —
+    /// `apply_session_contract` strips it and puts `session_id` in its place.
+    /// A tool that declares it lets a caller name itself anything it likes, and
+    /// on the verbs that take ownership, complete work and change constitutional
+    /// law that is impersonation, not a naming convention.
+    ///
+    /// Measured when the task and constitution clusters were renamed:
+    /// `task_claim`, `task_transition` and `constitution_decide` all advertised
+    /// `agent` and bound no session, because `requires_session` still named the
+    /// verbs they replaced. Verified against the live ledger at the time: a
+    /// caller-supplied `agent` was accepted and the transition applied.
+    #[test]
+    fn no_advertised_tool_lets_its_caller_name_itself() {
+        let offenders: Vec<String> = list()
+            .into_iter()
+            .filter(|tool| !tool["inputSchema"]["properties"]["agent"].is_null())
+            .map(|tool| tool["name"].as_str().unwrap_or("?").to_string())
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "these advertise `agent`, so a caller can act as anyone: {offenders:?}. \
+             Add them to requires_session instead."
+        );
+    }
+
+    /// Every tool named by a server-side table is a tool that exists.
+    ///
+    /// This is the guard that would have caught the rename. A table entry
+    /// pointing at a name nothing advertises is not inert: the tool that
+    /// replaced it silently loses the behaviour the entry described — a session
+    /// binding, an optional one, a heartbeat — which is the same failure
+    /// wearing a different name. Ten of twenty-three `requires_session` entries
+    /// named nothing after the cluster collapse, and all three tables were
+    /// stale, because from inside a list a dead entry and a live one look
+    /// identical.
+    ///
+    /// `requires_session` is read out of the source rather than restated here,
+    /// since a hand-copied second list is the same staleness one level up.
+    #[test]
+    fn every_table_names_a_tool_that_exists() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("fn requires_session")
+            .expect("requires_session is defined in this file");
+        let body = &source[start..];
+        let end = body.find("\n}").expect("the function closes");
+        let mut named: Vec<&str> = body[..end]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .flat_map(|line| line.split('"').skip(1).step_by(2))
+            .collect();
+        assert!(
+            named.len() > 5,
+            "parsed only {named:?} from requires_session — the guard stopped reading the real list"
+        );
+        named.extend(OPTIONAL_SESSION_ACTS.iter().map(|act| act.tool));
+        named.extend(HEARTBEAT_ACTS.iter().map(|act| act.tool));
+
+        let advertised: Vec<String> = list()
+            .into_iter()
+            .map(|tool| tool["name"].as_str().unwrap_or("").to_string())
+            .collect();
+        let absent: Vec<&str> = named
+            .into_iter()
+            .filter(|name| !advertised.iter().any(|a| a == name))
+            .collect();
+
+        assert!(
+            absent.is_empty(),
+            "server-side tables name tools that do not exist: {absent:?}. \
+             A rename must move the entry, not leave it pointing at the old name."
         );
     }
 

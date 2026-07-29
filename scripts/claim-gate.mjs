@@ -103,6 +103,38 @@ export const liveClaims = (tasks, agent, now) =>
   );
 
 /**
+ * The finished task this branch belongs to, when the push only reconciles it.
+ *
+ * Completing a task releases its claim, so a delivered branch could never be
+ * brought up to date again: `main` moves, the pull request goes stale, and the
+ * delivery queue steps over it forever. Observed on #168, which needed hand
+ * reconciliation three times, each one inventing a throwaway task to get past
+ * this gate — and inventing a task per republish is exactly how six duplicate
+ * tasks reached the board.
+ *
+ * A branch a task recorded (ADR: a task records the branch it is claimed on) is
+ * already attributed. Re-attributing it to a fresh task records a fiction.
+ *
+ * The narrow part is `newCommits`: every new commit must be a merge. A
+ * reconciliation merges the base in and nothing else, so this cannot become
+ * "finish a task, then push anything to that branch forever" — the moment real
+ * work appears, the exemption stops applying and a claim is required again.
+ */
+export const reconciliationOf = ({ tasks, branch, newCommits }) => {
+  if (!branch || !Array.isArray(newCommits) || newCommits.length === 0) {
+    return null;
+  }
+  if (!newCommits.every((commit) => commit.isMerge)) return null;
+  return (
+    (tasks ?? []).find(
+      (task) =>
+        task.branch === branch &&
+        (task.status === "done" || task.status === "abandoned"),
+    ) ?? null
+  );
+};
+
+/**
  * Whether this publication may proceed.
  *
  * The checks are ordered so each refusal names its own cause. An unreachable
@@ -122,6 +154,7 @@ export const publishVerdict = ({
   agent,
   tasks,
   branch,
+  newCommits,
   now,
 }) => {
   if (!sessionDeclared) {
@@ -145,6 +178,18 @@ export const publishVerdict = ({
   }
   const held = liveClaims(tasks, agent, now);
   if (held.length === 0) {
+    const delivered = reconciliationOf({ tasks, branch, newCommits });
+    if (delivered) {
+      return {
+        ok: true,
+        claims: [],
+        reconciles: delivered,
+        notice:
+          `no live claim, but ${branch} was delivered by ${delivered.id} and this push only merges ` +
+          "the base in. Publishing as a reconciliation, attributed to that task — a delivered branch\n" +
+          "  must stay reconcilable, and minting a task per republish would record a fiction.",
+      };
+    }
     return {
       ok: false,
       message:

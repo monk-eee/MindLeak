@@ -6,6 +6,7 @@ import {
   claimsUnderAnotherIdShape,
   missingClaimAdvice,
   publishVerdict,
+  reconciliationOf,
 } from "./claim-gate.mjs";
 
 const NOW = 1_000_000;
@@ -78,4 +79,86 @@ test("the shifted claim still refuses the publication", () => {
     "a mismatched identity is not a licence to publish",
   );
   assert.match(verdict.message, /ADR-0054/);
+});
+
+// A delivered branch must stay reconcilable. Completing a task releases its
+// claim, so `main` moving left the pull request permanently stale: the queue
+// stepped over it, and each rescue invented a throwaway task to get past the
+// gate. #168 needed that three times. Minting a task per republish is how six
+// duplicate tasks reached the board.
+const delivered = {
+  id: "task:delivered",
+  status: "done",
+  branch: "feat/already-shipped",
+  owner: COLLAPSED,
+};
+const merge = { sha: "aaa", isMerge: true };
+const work = { sha: "bbb", isMerge: false };
+
+test("a finished task's branch may be reconciled without inventing a new task", () => {
+  const verdict = publishVerdict({
+    reachable: true,
+    sessionDeclared: true,
+    agent: COLLAPSED,
+    tasks: [delivered],
+    branch: "feat/already-shipped",
+    newCommits: [merge],
+    now: NOW,
+  });
+
+  assert.equal(verdict.ok, true);
+  assert.equal(verdict.reconciles.id, "task:delivered");
+  assert.match(verdict.notice, /attributed to that task/);
+});
+
+// The narrow part. Without this the exemption reads "finish a task, then push
+// anything to that branch forever", which is a bypass wearing a fix's clothes.
+test("real work on a delivered branch still requires a claim", () => {
+  const verdict = publishVerdict({
+    reachable: true,
+    sessionDeclared: true,
+    agent: COLLAPSED,
+    tasks: [delivered],
+    branch: "feat/already-shipped",
+    newCommits: [merge, work],
+    now: NOW,
+  });
+
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.message, /no live Lodestar claim/);
+});
+
+test("an unrelated branch is not reconciliation, however finished the task is", () => {
+  assert.equal(
+    reconciliationOf({
+      tasks: [delivered],
+      branch: "feat/something-else",
+      newCommits: [merge],
+    }),
+    null,
+  );
+});
+
+// A branch nobody ever claimed has nothing to attribute a push to, so the
+// absence of new commits must not read as "reconciliation".
+test("no new commits is not a reconciliation", () => {
+  assert.equal(
+    reconciliationOf({
+      tasks: [delivered],
+      branch: "feat/already-shipped",
+      newCommits: [],
+    }),
+    null,
+  );
+});
+
+test("a still-open task's branch is not reconcilable: claim it instead", () => {
+  assert.equal(
+    reconciliationOf({
+      tasks: [{ ...delivered, status: "open" }],
+      branch: "feat/already-shipped",
+      newCommits: [merge],
+    }),
+    null,
+  );
 });
