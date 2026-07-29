@@ -1269,6 +1269,41 @@ mod tests {
         assert!(!ids.contains(&retired.id.as_str()));
     }
 
+    /// Bug: `status: claimed` was the only state the board exposed, so a row
+    /// whose lease expired hours ago read exactly like work in progress.
+    /// Measured once at 36 claimed rows with 4 live leases, making every plan
+    /// against the board nine times wrong. The lease state is derived where the
+    /// board is read rather than by rewriting durable task status (ADR-0067).
+    #[test]
+    fn board_tool_distinguishes_a_live_claim_from_a_lapsed_one() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "do it", None)
+            .unwrap();
+        let live = engine.create_task(&goal.id, "Live lease", "").unwrap();
+        let lapsed = engine.create_task(&goal.id, "Lapsed lease", "").unwrap();
+        assert!(engine.claim_task(&live.id, "alice", 600).unwrap());
+        assert!(engine.claim_task(&lapsed.id, "bob", -1).unwrap());
+
+        let board: Value = serde_json::from_str(
+            call(&engine, &json!({ "name": "board", "arguments": {} })).unwrap()["content"][0]
+                ["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let row = |id: &str| {
+            board
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|task| task["id"] == id)
+                .unwrap()
+        };
+        assert_eq!(row(&live.id)["lease_state"], "live");
+        assert_eq!(row(&lapsed.id)["lease_state"], "lapsed");
+    }
+
     #[test]
     fn create_task_rejects_malformed_predecessor_and_preserves_legacy_calls() {
         let engine = Lodestar::open_in_memory().unwrap();

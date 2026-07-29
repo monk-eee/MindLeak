@@ -1299,12 +1299,24 @@ fn intersect_paths(requested: &[String], declared: &[String]) -> Result<Vec<Stri
 /// says "no" relocates the confusion rather than removing it \u2014 the holder still
 /// has to go and count, which is the work this exists to stop anyone doing.
 fn refuse_beyond_claim_limit(connection: &Connection, id: &str, agent: &str) -> Result<()> {
+    let already_held = connection.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM tasks
+             WHERE id = ?1 AND status = 'claimed' AND owner = ?2
+         )",
+        params![id, agent],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if already_held {
+        return Ok(());
+    }
+
     let mut statement = connection.prepare(
         "SELECT id, title FROM tasks
-         WHERE status = 'claimed' AND owner = ?1 AND id != ?2
+         WHERE status = 'claimed' AND owner = ?1
          ORDER BY updated_at ASC, id ASC",
     )?;
-    let held = collect(statement.query_map(params![agent, id], |row| {
+    let held = collect(statement.query_map(params![agent], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?)?;
     if held.len() < MAX_CONCURRENT_CLAIMS {
@@ -1449,6 +1461,27 @@ mod tests {
 
         // Re-claiming something already held is a heartbeat, not a new claim.
         assert!(s.claim_task(&tasks[0].id, "alice", 60, lapsed).unwrap());
+
+        // Existing ledgers may already be over the cap. Re-claiming one of
+        // those tasks still is not a new claim: refusing it would prevent the
+        // holder renewing, recording the lapse, or preserving its ADR-0048
+        // evidence window until it can finish/release the excess.
+        let grandfathered = s
+            .create_task(&g.id, "grandfathered", "", None, NOW)
+            .unwrap();
+        s.conn
+            .execute(
+                "UPDATE tasks
+                 SET status = 'claimed', owner = 'alice', claim_started_at = ?2,
+                     lease_expires_at = ?3, updated_at = ?2
+                 WHERE id = ?1",
+                params![grandfathered.id, NOW, NOW + 60],
+            )
+            .unwrap();
+        assert!(s
+            .claim_task(&grandfathered.id, "alice", 60, lapsed)
+            .unwrap());
+        assert!(s.release_task(&grandfathered.id, "alice", lapsed).unwrap());
 
         // Another agent is unaffected, and finishing one frees the slot.
         assert!(s
