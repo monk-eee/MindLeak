@@ -23,19 +23,30 @@ or a one-line addition to an existing function instead of a new sibling.
 
 Run these checks before writing any helper, method, or "small" function:
 
-1. **Check who else is already in there.** `check_overlap(paths, session_id)` —
-   it names the agents whose recent, decay-weighted footprints touch the files
-   you are about to edit. Use it before editing any shared file (`AGENTS.md`,
-   `DEVELOPERS.md`, `CHANGELOG.md`, `docs/ARCHITECTURE.md`, anything in
-   `scripts/`), and before claiming work that spans them. Measured: the dominant
-   collision in this fleet is two agents editing neighbouring lines of the same
-   file, and `check_overlap` names them correctly *before* the merge conflict
-   rather than after.
-   This is the only graph read the checklist mandates. `recall` and
-   `get_impact_radius` are deliberately **not** here — see Known gaps in
-   [`DEVELOPERS.md`](DEVELOPERS.md); neither can currently answer a
-   before-you-write question about Rust, and mandating a tool that returns
-   plausible strangers would only teach you to ignore this list.
+1. **Ask what is already known about the files you are about to touch.**
+   `check_overlap(paths, session_id)` is the pre-flight, and it answers the
+   whole question in one call (ADR-0066): which agents' recent, decay-weighted
+   footprints touch those files (ADR-0024); what the graph holds about them —
+   the commits and the `DECISION:`/`WHY:` rationale recorded against them, the
+   symbols they define, and any execution that previously failed on them; and
+   which ids it has never seen at all. Use it before editing any shared file
+   (`AGENTS.md`, `DEVELOPERS.md`, `CHANGELOG.md`, `docs/ARCHITECTURE.md`,
+   anything in `scripts/`), and before claiming work that spans them. Measured:
+   the dominant collision in this fleet is two agents editing neighbouring lines
+   of the same file, and `check_overlap` names them correctly *before* the merge
+   conflict rather than after.
+   An unknown id is not an all-clear. "The graph has never seen this file" and
+   "nothing depends on this file" are different answers and it reports them
+   differently — do not read silence as reassurance.
+   `recall` is still deliberately **not** on this list — see Known gaps in
+   [`DEVELOPERS.md`](DEVELOPERS.md); it answers by embedding similarity and can
+   return a plausible stranger, and mandating that would only teach you to
+   ignore this list. That objection does not extend to the impact half, which is
+   a deterministic traversal. It now follows Rust `mod` and `use` edges as well
+   as JavaScript imports, so it answers what breaks — with two limits worth
+   knowing: it stops at the crate boundary (another workspace crate reads as a
+   package, not a file), and it under-reports rather than guessing. A quiet
+   impact result still means "nothing recorded", never "nothing depends on it".
 2. **Grep the crate for the behaviour.** `grep -rn "fn <verb>" crates/` — if
    something already does this, call it. If a near-miss exists, extend it — do
    not fork a parallel helper.
@@ -192,6 +203,14 @@ style nit.
   and proof; MindLeak shares repository learning. Sharing one writable checkout
   is a reviewed exception, not the default. Do not cherry-pick, rebase, or squash
   routine work: those operations replace evidence-bearing commit identities.
+- **Never commit in a worktree you do not own.** Git isolates files, the index,
+  and branch selection — but not *who may type in a checkout*. A linked worktree
+  has exactly one writer: the session that first commits in it. Committing in a
+  peer's worktree races their edits, and `pre-commit`'s stash/restore can land on
+  top of work they are still writing; the failure then appears in *their* branch,
+  naming files you never touched. The `worktree-owner` hook now refuses this
+  (exit 4). If a worktree is genuinely handed to you, take it deliberately with
+  `--adopt-worktree` — never by walking in.
 - **Publish exact commits; converge through review.** Any clean attached worktree
   may publish its current non-protected branch with
   `node scripts/canonical-push.mjs`. The script pushes exact `HEAD` to the same

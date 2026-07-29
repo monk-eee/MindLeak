@@ -3,6 +3,13 @@
 # Run manually:  pre-commit run --all-files
 minimum_pre_commit_version: "3.5.0"
 
+# Installing every hook type by default matters more than it looks. A hook that
+# has to be installed with an extra flag is a hook most checkouts do not have,
+# and `post-commit` is the one that records evidence -- if it is missing, the
+# work is unattributable and nothing says so until `complete_task` refuses,
+# hours later, with no way left to repair it (ADR-0048).
+default_install_hook_types: [pre-commit, pre-push, post-commit]
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
@@ -20,6 +27,19 @@ repos:
 
   - repo: local
     hooks:
+      - id: worktree-owner
+        name: worktree ownership (one writer per worktree)
+        entry: node scripts/worktree-owner.mjs
+        language: system
+        always_run: true
+        pass_filenames: false
+
+      - id: no-shell-plumbing
+        name: no shell-specific plumbing in committed files
+        entry: node scripts/no-shell-plumbing.mjs
+        language: system
+        files: \.(md|mjs|cjs|js|ts|yml|yaml|toml|rs|sql|sh)$|(^|/)Makefile$
+
       - id: cargo-fmt
         name: cargo fmt (scoped)
         entry: node scripts/cargo-precommit.mjs fmt commit
@@ -146,3 +166,22 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [pre-push]
+
+      # Evidence exists because you committed, not because you remembered.
+      # Forty conformance audits on this repository reported "evidence contains
+      # no provenance-bearing mutation" -- every bundle empty, because
+      # `ingest_commit` had to be called by hand at the moment the work felt
+      # finished. Nothing here that relies on remembering has ever worked; what
+      # works is hanging the obligation off something already being done.
+      #
+      # It never fails a commit and never prints on the happy path. A hook that
+      # can block work gets uninstalled, and then the graph is worse off than
+      # if it had never existed.
+      - id: ingest-commit
+        name: record the commit as evidence
+        entry: node scripts/ingest-commit.mjs
+        language: system
+        pass_filenames: false
+        always_run: true
+        verbose: false
+        stages: [post-commit]

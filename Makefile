@@ -1,12 +1,14 @@
 # MindLeak developer commands. On Windows, run the underlying commands directly
 # (see DEVELOPERS.md) if `make` is unavailable.
 
-.PHONY: setup worktree-setup adr-index changelog design-audit merge-audit queue queue-watch board-health build test script-test coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
+.PHONY: setup worktree-setup adr-index changelog design-audit merge-audit queue queue-watch board-health stranded-report build test script-test ratchet coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
 
 setup: ## Install pre-commit hooks and extension deps
 	pip install pre-commit
-	pre-commit install
-	pre-commit install --hook-type pre-push
+	# Installs pre-commit, pre-push and post-commit together — the config
+	# declares default_install_hook_types, so no hook depends on someone
+	# remembering an extra flag. post-commit is the one that records evidence.
+	pre-commit install --install-hooks
 	cargo install cargo-llvm-cov --locked
 	npm --prefix editors/vscode install
 
@@ -35,6 +37,9 @@ queue: ## Show the delivery queue and update the branch whose turn it is (ADR-00
 board-health: ## Separate work a human must decide from work nobody can (ADR-0058)
 	node scripts/board-health.mjs
 
+stranded-report: ## Name the likely shipping commit for each lapsed claim (ADR-0048)
+	node scripts/stranded-report.mjs
+
 queue-watch: ## Run the delivery queue as an agent until stopped (ADR-0062)
 	node scripts/delivery-queue.mjs --watch
 
@@ -46,6 +51,9 @@ test: ## Run the Rust test suite
 
 script-test: ## Run the repository's own script tests
 	node scripts/script-tests.mjs
+
+ratchet: ## Report the governed module count to the ratchet watching it
+	node scripts/observe-module-length.mjs
 
 coverage: ## Run Rust + extension tests with coverage reports
 	cargo llvm-cov --workspace --all-features --lcov --output-path coverage.lcov

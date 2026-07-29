@@ -39,7 +39,7 @@ pub use model::{
     ConformanceCheck, ConformanceEvidence, ConformanceRecord, ConformanceResult,
     ConstitutionProposal, ConstitutionState, ConstitutionStatus, ConstitutionVersion,
     EvidenceProvenance, Goal, GoalKind, GoalStatus, GoverningClause, HumanQuestion, Knowledge,
-    OverlapSignal, SignalPromotion, Task, TaskQa, TaskScope, TaskStatus, Verdict,
+    OverlapSignal, SignalPromotion, Task, TaskQa, TaskReceipt, TaskScope, TaskStatus, Verdict,
 };
 pub use policy::{
     common_core_pack, fleet_delivery_pack, ConstitutionPack, PackClause, PackClauseDisposition,

@@ -36,8 +36,14 @@
 // report that mutated the board would be exactly the auto-closing this project
 // has refused twice.
 
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
+
+import { resolveServer } from "./claim-gate.mjs";
+
+const repoRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+  encoding: "utf8",
+}).trim();
 
 /** The finding that means "there was nothing to judge", not "judge this". */
 export const EMPTY_EVIDENCE = "no provenance-bearing mutation";
@@ -60,7 +66,23 @@ export const isLive = (task) => !TERMINAL.has(task.status);
 
 const findingsOf = (audit) => String(audit?.findings ?? "");
 
-/** A claim that is still held but whose lease has run out (ADR-0048). */
+/** A claim that is still held but whose lease has run out (ADR-0048).
+ *
+ * Calling these "stranded" invited the obvious response -- have an agent pick
+ * them up and close them -- and that response cannot work. Closing one requires
+ * re-claiming it, and re-claiming after a lapse records the lapse, whereupon
+ * conformance returns `needs_human` for a discontinuous evidence window and
+ * refuses to certify across the hole. That is deliberate: narrowing the window
+ * around the gap is precisely the laundering ADR-0048 exists to stop, so the
+ * refusal is the guarantee working, not a defect to route around.
+ *
+ * Measured while trying: a task showing `0 lapse(s)` reported
+ * `the lease lapsed 1 time(s), leaving 85730s unleased` immediately after being
+ * claimed in order to close it. Acquiring the claim is what creates the hole.
+ * Three tasks were moved to `in_review` learning this. The label now says what
+ * is actually true -- a person must confirm these -- rather than implying work
+ * an agent could pick up.
+ */
 export const isStrandedClaim = (task, now) =>
   task.status === "claimed" &&
   typeof task.lease_expires_at === "number" &&
@@ -99,9 +121,12 @@ export function describe(report, entries) {
     ``,
     `needs a human decision : ${decidable.length}`,
     `nobody can resolve     : ${unresolvable.length}   (evidence was empty -- the work was never ingested)`,
-    `stranded claims        : ${stranded.length}   (lease lapsed, still held)`,
+    `awaiting confirmation  : ${stranded.length}   (lapsed claim; only a human can close it -- see below)`,
   ];
-  if (parked > 0) {
+  // Only worth saying when there is something to say. "0% of parked work is
+  // unresolvable" is a sentence about nothing, and a report that pads itself
+  // teaches readers to skim past the lines that matter.
+  if (parked > 0 && unresolvable.length > 0) {
     const share = Math.round((unresolvable.length / parked) * 100);
     lines.push(
       ``,
@@ -116,7 +141,12 @@ export function describe(report, entries) {
     }
   }
   if (stranded.length > 0) {
-    lines.push(``, `stranded claims (hold scope against other agents):`);
+    lines.push(
+      ``,
+      `lapsed claims a person must confirm (ADR-0048 -- an agent cannot close these:`,
+      `closing one means re-claiming it, and re-claiming records the lapse the rule`,
+      `refuses to certify across). \`make stranded-report\` names the likely commit:`,
+    );
     for (const { task } of stranded.slice(0, 10)) {
       lines.push(`  ${task.id}  ${String(task.title ?? "").slice(0, 56)}`);
     }
@@ -159,11 +189,22 @@ const client = (bin) => {
 };
 
 async function main() {
-  const bin =
-    process.env.LODESTAR_MCP_BIN ??
-    (process.platform === "win32"
-      ? "target/release/lodestar-mcp.exe"
-      : "target/release/lodestar-mcp");
+  // Resolved through the shared helper, which honours the override, accepts a
+  // debug build, and returns null rather than handing back a path that is not
+  // there. Forking this logic release-only meant the report crashed with an
+  // unhandled ENOENT for anyone who had not run a release build, which is the
+  // normal state - so a report about the board's health could not be run by
+  // most of the people it was written for.
+  const bin = resolveServer(repoRoot, "lodestar");
+  if (!bin) {
+    console.error(
+      "board-health: no lodestar-mcp binary found.\n" +
+        "  Build one:  cargo build -p lodestar-mcp\n" +
+        "  Or point at one:  set LODESTAR_MCP_BIN",
+    );
+    process.exitCode = 2;
+    return;
+  }
   const session = process.env.LODESTAR_SESSION_ID;
   if (!session) {
     console.error("board-health: set LODESTAR_SESSION_ID");

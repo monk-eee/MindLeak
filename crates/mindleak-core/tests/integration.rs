@@ -405,6 +405,115 @@ fn relative_import_creates_cross_file_impact_and_call_edges() {
     }));
 }
 
+/// Regression: `impact_radius` could not answer "what breaks if I change this"
+/// for a Rust file, because Rust ingestion emitted no inter-file edges at all.
+/// Measured on this repository, the impact of a real `.rs` file was its own
+/// commits and its own symbols — never another file. An agent reading that
+/// clean result would conclude nothing depended on the file, which the graph
+/// had never actually said.
+#[test]
+fn a_rust_use_creates_a_cross_file_impact_edge() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("crates/c/src/graph/query.rs", "pub fn resolve_seed() {}\n")
+        .unwrap();
+    engine
+        .ingest_file(
+            "crates/c/src/facade/query.rs",
+            "use crate::graph::query::resolve_seed;\n\npub fn preflight() {}\n",
+        )
+        .unwrap();
+
+    let impact = engine
+        .impact_radius("artifact:crates/c/src/graph/query.rs")
+        .unwrap();
+    assert!(
+        impact
+            .nodes
+            .iter()
+            .any(|node| node.node.id == "artifact:crates/c/src/facade/query.rs"),
+        "the importing Rust file must appear in the impact radius; got {:?}",
+        impact
+            .nodes
+            .iter()
+            .map(|node| &node.node.id)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        impact.edges.iter().any(|edge| {
+            edge.relation == mindleak_core::RelationType::Imports
+                && edge.source_id == "artifact:crates/c/src/facade/query.rs"
+                && edge.target_id == "artifact:crates/c/src/graph/query.rs"
+        }),
+        "the edge must point from the importer to the file it depends on"
+    );
+}
+
+/// A `mod` declaration is the most precise dependency statement Rust has: it
+/// names exactly one file. It resolves to the declaring module's directory,
+/// which for a non-root file is a directory named after the file itself.
+#[test]
+fn a_rust_mod_declaration_links_the_parent_to_its_child_file() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("crates/c/src/graph/writes.rs", "pub fn upsert() {}\n")
+        .unwrap();
+    engine
+        .ingest_file("crates/c/src/graph.rs", "mod writes;\n")
+        .unwrap();
+
+    let impact = engine
+        .impact_radius("artifact:crates/c/src/graph/writes.rs")
+        .unwrap();
+    assert!(
+        impact.edges.iter().any(|edge| {
+            edge.relation == mindleak_core::RelationType::Imports
+                && edge.source_id == "artifact:crates/c/src/graph.rs"
+                && edge.target_id == "artifact:crates/c/src/graph/writes.rs"
+        }),
+        "`mod writes;` in graph.rs must reach graph/writes.rs; got {:?}",
+        impact
+            .edges
+            .iter()
+            .map(|edge| format!("{} -> {}", edge.source_id, edge.target_id))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// The pre-flight is the surface agents actually call (ADR-0066), so the new
+/// edges have to arrive there, not just in the traversal underneath it.
+#[test]
+fn the_preflight_now_reports_rust_dependents() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("crates/c/src/graph/query.rs", "pub fn resolve_seed() {}\n")
+        .unwrap();
+    engine
+        .ingest_file(
+            "crates/c/src/facade/query.rs",
+            "use crate::graph::query::resolve_seed;\n",
+        )
+        .unwrap();
+
+    let preflight = engine
+        .preflight(&["crates/c/src/graph/query.rs".to_string()], &[], None)
+        .unwrap();
+    assert!(
+        preflight
+            .impact
+            .nodes
+            .iter()
+            .any(|node| node.node.id == "artifact:crates/c/src/facade/query.rs"),
+        "a Rust dependent must reach the caller through the pre-flight; got {:?}",
+        preflight
+            .impact
+            .nodes
+            .iter()
+            .map(|node| &node.node.id)
+            .collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn hierarchy_edges_resolve_promote_drive_impact_and_retract() {
     let engine = MindLeak::open_in_memory().unwrap();
@@ -1248,4 +1357,89 @@ fn evidence_for_returns_a_commit_the_agent_ingested_inside_the_window() {
         "the ingested commit must appear in its own window; got {:?}",
         evidence.commit_ids
     );
+}
+
+/// Regression (ADR-0066): the pre-flight an agent runs before editing a file
+/// used to answer only "is another agent here?". On a file nobody else was
+/// touching it returned an empty list, which reads as all-clear — while the
+/// graph already knew that file had failed a build. Learning that needed
+/// `get_impact_radius`, a separate call at the moment attention has already
+/// moved on, and over this repository's lifetime it was made three times
+/// against 8,109 ingests. One pre-flight now answers the whole question.
+#[test]
+fn the_preflight_reports_a_prior_failure_even_when_no_other_agent_is_present() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_execution(&exec(
+            "cargo test",
+            1,
+            "thread 'main' panicked at src/auth.rs:42",
+            &["src/auth.rs"],
+        ))
+        .unwrap();
+
+    // Nobody else has observed this file, so the footprint question is silent...
+    let footprints = engine
+        .check_overlap(&["src/auth.rs".to_string()], &[], None)
+        .unwrap();
+    assert!(
+        footprints.is_empty(),
+        "no other agent observed this file; got {footprints:?}"
+    );
+
+    // ...but the graph knows it failed a build, and the pre-flight now says so
+    // without the caller having to remember a second call.
+    let preflight = engine
+        .preflight(&["src/auth.rs".to_string()], &[], None)
+        .unwrap();
+    assert!(
+        preflight.unknown.is_empty(),
+        "the file is known to the graph; got {:?}",
+        preflight.unknown
+    );
+    assert!(
+        preflight
+            .impact
+            .nodes
+            .iter()
+            .any(|scored| scored.node.node_type == NodeType::Execution),
+        "the failing execution must reach the caller in the pre-flight; got {:?}",
+        preflight
+            .impact
+            .nodes
+            .iter()
+            .map(|scored| &scored.node.id)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A path MindLeak has never seen is reported as `unknown`, not as an empty
+/// impact. "I know nothing about this file" and "nothing depends on this file"
+/// are different facts, and a caller that cannot tell them apart reads silence
+/// as reassurance.
+#[test]
+fn the_preflight_separates_an_unknown_path_from_a_file_it_knows() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("src/lonely.rs", "fn lonely() {}\n")
+        .unwrap();
+
+    let known = engine
+        .preflight(&["src/lonely.rs".to_string()], &[], None)
+        .unwrap();
+    assert!(
+        known.unknown.is_empty(),
+        "an ingested file is known; got {:?}",
+        known.unknown
+    );
+
+    let never_seen = engine
+        .preflight(&["src/ghost.rs".to_string()], &[], None)
+        .unwrap();
+    assert_eq!(
+        never_seen.unknown,
+        vec!["artifact:src/ghost.rs".to_string()],
+        "an unseen path must be named as unknown rather than answered with silence"
+    );
+    assert!(never_seen.impact.nodes.is_empty());
 }

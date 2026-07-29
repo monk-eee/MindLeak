@@ -18,9 +18,10 @@ impl Lodestar {
         self.store.controls_for_clause(clause_id)
     }
 
-    /// Retire a control without deleting it.
-    pub fn retire_control(&self, control_id: &str) -> Result<bool> {
-        self.store.retire_control(control_id)
+    /// Retire a control without deleting it, recording who stood it down.
+    pub fn retire_control(&self, control_id: &str, retired_by: &str) -> Result<bool> {
+        self.store
+            .retire_control(control_id, retired_by, now_unix())
     }
 
     /// Resolve reported observations against the clauses that authorise them.
@@ -165,6 +166,8 @@ mod tests {
             version: 1,
             configuration: None,
             status: ControlStatus::Active,
+            retired_by: None,
+            retired_at: None,
         })
         .unwrap();
 
@@ -191,9 +194,11 @@ mod tests {
             version: 1,
             configuration: None,
             status: ControlStatus::Active,
+            retired_by: None,
+            retired_at: None,
         })
         .unwrap();
-        assert!(e.retire_control("control:retired").unwrap());
+        assert!(e.retire_control("control:retired", "monk-eee").unwrap());
 
         let resolved = e
             .resolve_control_observations(&[observation("control:retired", &clause.id, 1)])

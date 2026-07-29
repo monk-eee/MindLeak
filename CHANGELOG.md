@@ -25,6 +25,101 @@ to [Semantic Versioning](https://semver.org/).
   VS Code pre-flight warning names the cost in the same terms, and adds nothing
   when the context is undeclared.
 ### Fixed
+- **A skipped commit-ingest now says so instead of losing provenance in
+  silence.** The post-commit hook could give up without a word: on timeout, on
+  an unstartable server, or on a transport error. The symptom — an empty
+  evidence bundle — is indistinguishable from an agent who simply forgot to
+  ingest, which is the exact failure the hook exists to eliminate, so the
+  diagnosis lands on the wrong cause. It still never fails a commit; it now
+  names the sha, says the commit succeeded, and says to backfill with the
+  commit's *own* timestamp, because a node keeps whatever timestamp it was first
+  given. The budget is configurable via `MINDLEAK_INGEST_TIMEOUT_MS`, and an
+  unstartable server no longer throws an unhandled `error` event at the
+  committer. Never blocking and never reporting turned out to be different
+  promises; only the first one was load-bearing.
+  Separately and more seriously, the hook is **not installed** in environments
+  set up before `default_install_hook_types` was added, because that setting
+  only takes effect when `pre-commit install` is re-run — so it reports nothing
+  because it never runs. Recorded in Known gaps; the fix touches the shared
+  hooks directory and therefore every agent at once, so it is not applied here.
+- Three script test headers advertised `node --test scripts/`, which fails on
+  Node 24 — the portable runner `node scripts/script-tests.mjs` already existed
+  and already documented that trap.
+
+### Added
+- **Shell-specific plumbing is now refused at the commit.** The project already
+  required platform-agnostic operation, but that rule is stated as an outcome,
+  so it was only ever noticed after something had broken on someone else's
+  machine — and in practice it was broken repeatedly by the agents who had just
+  read it. The `no-shell-plumbing` hook checks the plumbing itself: a
+  documentation fence tagged `powershell`/`pwsh`/`cmd`/`bat` is a command the
+  reader on another OS cannot run, and an inline interpreter one-liner
+  (`node -e`, `python -c`, `powershell -Command`, `cmd /c`) embeds a program
+  inside shell quoting that every shell quotes differently — the same line that
+  works in one mangles its input in another, silently, surfacing only when
+  someone reads the file it wrote. Deliberately narrow so it stays quiet on
+  legitimate usage: ```bash fences and ordinary interpreter invocations pass.
+  It is a ratchet, not a backlog — the tracked tree is already clean, and a test
+  asserts that it stays so.
+- **A worktree now refuses a second writer.** Worktree isolation assumed a
+  linked worktree belonged to whoever was standing in it — git isolates files,
+  the index, and branch selection, but not *who may type*. So nothing stopped an
+  agent committing inside a peer's checkout, which is exactly what happened:
+  a commit landed in a branch its author did not own, mid-merge, corrupting
+  files there. The failure surfaced in the *other* agent's branch, naming files
+  the intruder never touched, which is what made it expensive rather than merely
+  wrong. A linked worktree now records the session that first commits in it, and
+  refuses any other session, both in `scripts/scoped-commit.mjs` and in a new
+  `worktree-owner` pre-commit hook that covers every commit path. The marker
+  lives in the per-worktree git dir, so it is never committed and never collides
+  between worktrees. A deliberate handover is still possible with
+  `--adopt-worktree`; an accidental one is not. Verified in both directions: the
+  previous script let the intruder commit land, the current one exits 4 and
+  leaves the branch untouched.
+- **Five fleet-discipline clauses adopted into the constitution**
+  (`mindleak-fleet-discipline@1`): worktree ownership, claim-before-first-commit,
+  provenance recorded at commit time, a lapsed claim being a human matter, and
+  no shell-specific plumbing in committed instructions. Each is drawn from a
+  measured incident rather than from principle. Two are backed by real
+  mechanisms and reach their declared consequence — `control:worktree-owner`
+  (mechanical, ceiling `block`) and `control:ingest-commit` (observed, ceiling
+  `review`); the other three resolve at advise until a mechanism exists, which
+  is the honest reading of a rule nothing enforces.
+- **An agent may hold at most three claims at once (ADR-0067).** Measured with
+  six agents running: **36 tasks `claimed`, 4 with a live lease** — the rest
+  lapsed a median of 13 hours earlier, with two agents holding 15 and 14 apiece.
+  The board therefore read as a fleet with 36 things in flight when it had 4,
+  and establishing that took a bespoke script. `claim_task` now refuses a claim
+  that would take an agent past the limit, naming the tasks it already holds and
+  what to do with them. Lapsed claims count: letting a claim go stale is not
+  finishing it, and a cap on live leases alone would make going stale the
+  cheapest way to dodge the limit. Re-claiming a task you already hold is never a
+  new claim, so the ADR-0052 heartbeat and the ADR-0048 window-preserving
+  re-claim are untouched. `board` rows also carry a derived `lease_state`
+  (`live`/`lapsed`), so a claim nobody is holding never again reads as work in
+  progress.
+  Deliberately *not* done: releasing claims on lapse. A lapsed claim is already
+  claimable by anyone — `claim_task`, `next_task` and `stalled_work` all handle
+  it — so a sweep would fix nothing, and `release_task` nulls `claim_started_at`,
+  which would destroy the evidence window ADR-0048 exists to preserve.
+
+### Changed
+- **A completion now says whether its evidence affirmed anything.** Reaching
+  `done` said nothing about whether the conformance receipt behind it proved
+  the work. Measured over this repository: **57 of 101 `done` tasks** rested on
+  a `drift`/`needs_human` verdict or on an `aligned` one covering **zero
+  nodes**, and 55 of 109 receipts overall covered no nodes at all — every one
+  reading on the board exactly like a task whose evidence proved something.
+  `board` rows now carry a derived `receipt` (`conformance_id`, `verdict`,
+  `covered_nodes`, `checked_at`, `affirms`), and `export_evidence` gains a
+  `Covered` column beside the verdict. `affirms` is true only for an `aligned`
+  verdict that covered at least one node: agreement about nothing is not proof,
+  so an `aligned` receipt over an empty bundle affirms as little as a
+  `needs_human` one. Derived at read time from the durable record — nothing is
+  stored twice — and a task with no record at all reports no receipt, which is
+  distinct from one that proved nothing.
+
+### Fixed
 - **A migration no longer re-owns a live claim (ADR-0063).** The ADR-0054
   identity collapse rewrote `tasks.owner` for every labelled row and re-fired on
   every database open, because its idempotence was by *pattern* — "rewrite

@@ -376,6 +376,7 @@ fn requires_session(name: &str) -> bool {
             | "resume_task"
             | "check_conformance"
             | "accept_ratchet_baseline"
+            | "retire_control"
             | "grant_waiver"
             | "revoke_waiver"
             | "propose_amendment"
@@ -807,6 +808,99 @@ mod tests {
         assert_eq!(session.context.behind, Some(0));
     }
 
+    /// Every tool the server will answer to is a tool it advertises.
+    ///
+    /// `active_knowledge` dispatched for months and appeared in no
+    /// `definitions()` list, so the only way to discover that the repository's
+    /// learned knowledge could be read at all was to read the Rust. From the
+    /// tool surface the knowledge base looked write-only: record, promote,
+    /// reconfirm, prune, and no way to see what was already known — which is
+    /// exactly the state that makes an agent rediscover, expensively, what
+    /// somebody already wrote down.
+    ///
+    /// This is the mirror of the undeclared-argument bug above. There the
+    /// contract asked for something it never mentioned; here the server answers
+    /// to something it never mentions. Both fail the same way: the code is
+    /// right, the advertisement is wrong, and nothing breaks loudly enough to
+    /// be found.
+    #[test]
+    fn every_tool_the_server_answers_to_is_advertised() {
+        const SOURCES: [(&str, &str); 13] = [
+            ("amendments", include_str!("amendments.rs")),
+            ("conformance", include_str!("conformance.rs")),
+            ("constitution", include_str!("constitution.rs")),
+            ("controls", include_str!("controls.rs")),
+            ("design", include_str!("design.rs")),
+            (
+                "design_materialization",
+                include_str!("design_materialization.rs"),
+            ),
+            ("evidence", include_str!("evidence.rs")),
+            ("executive", include_str!("executive.rs")),
+            ("fleet", include_str!("fleet.rs")),
+            ("knowledge", include_str!("knowledge.rs")),
+            ("lifecycle", include_str!("lifecycle.rs")),
+            ("waivers", include_str!("waivers.rs")),
+            ("mod", include_str!("mod.rs")),
+        ];
+
+        let advertised: Vec<String> = list()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+            .collect();
+
+        let mut undeclared: Vec<String> = Vec::new();
+        let mut dispatched = 0usize;
+
+        for (module, source) in SOURCES {
+            // Only the tool dispatch itself. Scanning whole files also matches
+            // `"ratchet" => ControlKind::Ratchet` and friends, which are enum
+            // parsing, not tools — a guard that reports those trains people to
+            // ignore it.
+            let mut from = 0usize;
+            while let Some(at) = source[from..].find("match name {") {
+                let start = from + at + "match name {".len();
+                let end = source[start..]
+                    .find("_ => None,")
+                    .map(|e| start + e)
+                    .unwrap_or(source.len());
+                let block = &source[start..end];
+                from = end;
+
+                for (arm, _) in block.match_indices("\" => ") {
+                    let before = &block[..arm];
+                    let Some(open) = before.rfind('"') else {
+                        continue;
+                    };
+                    let name = &before[open + 1..];
+                    if name.is_empty() {
+                        continue;
+                    }
+                    dispatched += 1;
+                    if !advertised.iter().any(|a| a == name) {
+                        undeclared.push(format!("{module}::{name}"));
+                    }
+                }
+            }
+        }
+
+        // A source scan that matches nothing passes silently, which is the
+        // failure this test exists to catch, one level up.
+        assert!(
+            dispatched >= 40,
+            "the scan found only {dispatched} dispatch arms, so it is no longer \
+             reading the dispatch it claims to guard"
+        );
+
+        undeclared.sort();
+        undeclared.dedup();
+        assert!(
+            undeclared.is_empty(),
+            "the server answers to these but advertises none of them:\n  {}",
+            undeclared.join("\n  ")
+        );
+    }
+
     #[test]
     fn tool_contract_requires_evidence_and_exposes_binding_mode() {
         let tools = list();
@@ -821,7 +915,7 @@ mod tests {
             .any(|value| value == "evidence"));
         let link = tools
             .iter()
-            .find(|tool| tool["name"] == "link_goal_to_code")
+            .find(|tool| tool["name"] == "link_goal_to_artifact")
             .unwrap();
         assert_eq!(
             link["inputSchema"]["properties"]["mode"]["default"],
@@ -901,6 +995,143 @@ mod tests {
         let none = bind_session(&params(json!({ "paths": ["src/lib.rs"] })), &sessions)
             .expect("no session at all still answers");
         assert!(none["arguments"]["agent"].is_null());
+    }
+
+    /// A control registered under the wrong id used to be permanent: its
+    /// version can never move backwards, so re-registering is refused, and
+    /// `retire_control` lived on the facade without ever reaching the tool
+    /// surface. Dead and duplicate mechanisms accumulated against live clauses
+    /// and went on reporting.
+    ///
+    /// Driven through `bind_session` rather than by handing the tool an author,
+    /// because that is the whole point: retiring a control weakens what its
+    /// clause can enforce, so the author is resolved from the session and
+    /// cannot be claimed.
+    #[test]
+    fn a_control_can_be_stood_down_through_the_tool_surface() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        const TOKEN: &str = "00112233445566778899aabbccddeeff";
+        let bound = |tool: &str, arguments: Value| -> Value {
+            let params = json!({ "name": tool, "arguments": arguments });
+            bind_session(&params, &sessions).expect("session binds")
+        };
+
+        call(
+            &engine,
+            &bound("open_session", json!({ "session_id": TOKEN })),
+        )
+        .expect("the session opens");
+
+        let clause = engine
+            .define_goal(
+                lodestar_core::GoalKind::Constraint,
+                "Modules stay small",
+                "Split a module that outgrows its responsibility.",
+                None,
+            )
+            .unwrap();
+
+        let registered = call(
+            &engine,
+            &json!({
+                "name": "register_control",
+                "arguments": {
+                    "control_id": "control:misnamed",
+                    "clause_id": clause.id,
+                    "kind": "check",
+                    "power": "mechanical"
+                }
+            }),
+        );
+        assert!(registered.is_ok(), "the control registers: {registered:?}");
+
+        let retired = call(
+            &engine,
+            &bound(
+                "retire_control",
+                json!({ "session_id": TOKEN, "control_id": "control:misnamed" }),
+            ),
+        )
+        .expect("the control is stood down");
+        let body: Value =
+            serde_json::from_str(retired["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["status"], "retired");
+        assert!(
+            body["retired_by"].is_string(),
+            "the stand-down names who did it: {body}"
+        );
+
+        // Retirement is not deletion: the control still records what it served,
+        // which is why observations naming it resolve as unknown rather than
+        // vanishing.
+        let listed = call(
+            &engine,
+            &json!({
+                "name": "clause_controls",
+                "arguments": { "clause_id": clause.id }
+            }),
+        )
+        .unwrap();
+        let listed: Value =
+            serde_json::from_str(listed["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(listed["controls"][0]["status"], "retired");
+    }
+
+    /// Reporting success for a control that was never there would let a typo
+    /// read as a completed stand-down.
+    #[test]
+    fn retiring_a_control_that_was_never_registered_is_refused() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        const TOKEN: &str = "00112233445566778899aabbccddeeff";
+
+        call(
+            &engine,
+            &bind_session(
+                &json!({
+                    "name": "open_session",
+                    "arguments": { "session_id": TOKEN }
+                }),
+                &sessions,
+            )
+            .expect("session binds"),
+        )
+        .expect("the session opens");
+
+        let params = bind_session(
+            &json!({
+                "name": "retire_control",
+                "arguments": { "session_id": TOKEN, "control_id": "control:never-existed" }
+            }),
+            &sessions,
+        )
+        .expect("session binds");
+
+        let error = call(&engine, &params).expect_err("an unknown control cannot be stood down");
+        assert!(
+            error.contains("control:never-existed"),
+            "names the control it could not find: {error}"
+        );
+    }
+
+    /// Without a session there is nobody to attribute the stand-down to, so the
+    /// call must not quietly succeed unattributed.
+    #[test]
+    fn retiring_a_control_without_a_session_is_refused() {
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        let error = bind_session(
+            &json!({
+                "name": "retire_control",
+                "arguments": { "control_id": "control:misnamed" }
+            }),
+            &sessions,
+        )
+        .expect_err("an unbound stand-down is refused");
+        assert!(
+            error.contains("session_id"),
+            "says a session is required: {error}"
+        );
     }
 
     #[test]
