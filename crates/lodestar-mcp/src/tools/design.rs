@@ -20,7 +20,7 @@ use lodestar_core::{DesignStatus, Lodestar};
 use serde_json::{json, Value};
 
 use super::design_materialization::{materialization_plan_schema, parse_materialization_plan};
-use super::{bool_arg, ok, opt_str, req_str};
+use super::{bool_arg, ok, one_of, opt_str, renamed, req_str, required_for, Renamed};
 
 const DECISIONS: [&str; 6] = [
     "accept",
@@ -114,7 +114,7 @@ pub(super) fn dispatch(
     name: &str,
     args: &Value,
 ) -> Option<Result<Value, String>> {
-    if let Some(renamed) = RENAMED.iter().find(|renamed| renamed.old == name) {
+    if let Some(renamed) = renamed(&RENAMED, name) {
         let translated = renamed.translate(args);
         let answer = dispatch(engine, renamed.new, &translated)?;
         return Some(answer.map(|result| renamed.teach(result)));
@@ -258,24 +258,10 @@ pub(super) fn dispatch(
 
 /// The fifteen names this cluster used to answer to, and the call to make now.
 ///
-/// A table rather than match arms on purpose: the guard test that checks the
-/// server advertises everything it answers to reads `match name {` blocks, and a
-/// deprecated name is by definition one the tool list no longer carries. It is
-/// also the shape that makes removal a single deletion when the release train
-/// named in ADR-0059 arrives, instead of fifteen scattered edits.
-///
-/// The old names keep their old contracts exactly — `reconcile_designs` still
-/// answers without a session, where `design_register` now requires one, because
-/// a deprecation that changes behaviour teaches the wrong lesson.
-struct Renamed {
-    old: &'static str,
-    new: &'static str,
-    /// The argument that used to be the name. Empty when the shape alone says.
-    key: &'static str,
-    value: &'static str,
-}
-
-const RENAMED: [Renamed; 15] = [
+/// `reconcile_designs` still answers without a session, where `design_register`
+/// now requires one, because a deprecation that changes behaviour teaches the
+/// wrong lesson.
+pub(super) const RENAMED: [Renamed; 15] = [
     Renamed {
         old: "register_design",
         new: "design_register",
@@ -367,66 +353,6 @@ const RENAMED: [Renamed; 15] = [
         value: "history",
     },
 ];
-
-impl Renamed {
-    fn translate(&self, args: &Value) -> Value {
-        let mut translated = args.clone();
-        if self.key.is_empty() {
-            return translated;
-        }
-        match translated.as_object_mut() {
-            Some(object) => {
-                object.insert(self.key.to_string(), json!(self.value));
-                translated
-            }
-            None => json!({ self.key: self.value }),
-        }
-    }
-
-    /// Answer, and say what to call next time. Appended as a second content item
-    /// so the payload a caller already parses is byte-for-byte unchanged.
-    fn teach(&self, mut result: Value) -> Value {
-        if let Some(content) = result.get_mut("content").and_then(Value::as_array_mut) {
-            content.push(json!({ "type": "text", "text": self.notice() }));
-        }
-        result
-    }
-
-    fn notice(&self) -> String {
-        let call = if self.key.is_empty() {
-            self.new.to_string()
-        } else {
-            format!("{} with {}=\"{}\"", self.new, self.key, self.value)
-        };
-        format!(
-            "{} is deprecated: it answers here for one minor version, and the removal ships \
-             in the release train named in ADR-0059. Call {call} instead.",
-            self.old
-        )
-    }
-}
-
-fn one_of<'a>(args: &'a Value, key: &str, allowed: &[&str]) -> Result<&'a str, String> {
-    let value = req_str(args, key)?;
-    if allowed.contains(&value) {
-        return Ok(value);
-    }
-    Err(format!(
-        "unknown {key}: {value}. Accepted: {}.",
-        allowed.join(", ")
-    ))
-}
-
-/// An argument that only some values of the discriminator need.
-///
-/// The message names the discriminator as well as the argument, because a
-/// collapsed tool's required set is conditional and "missing required string
-/// arg: reason" no longer says which call it is talking about.
-fn required_for(args: &Value, key: &str, chose: &str, what: &str) -> Result<String, String> {
-    opt_str(args, key)
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| format!("\"{chose}\" requires {key}: {what}"))
-}
 
 fn parse_design_metadata(args: &Value) -> Result<Vec<DesignMetadata>, String> {
     let designs = args

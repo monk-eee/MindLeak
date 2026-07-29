@@ -42,6 +42,11 @@ pub fn list() -> Vec<Value> {
 /// Returns `None` for a name no tool declares, so dispatch keeps reporting the
 /// unknown *tool* rather than complaining about its arguments.
 fn declared_arguments(name: &str) -> Option<Vec<String>> {
+    // A deprecated name is validated against the schema that now answers it.
+    // Without this a collapsed cluster silently switches argument checking off
+    // for every caller still using the old name — exactly the callers most
+    // likely to get an argument wrong, and for the whole deprecation window.
+    let name = current_name(name);
     list().into_iter().find_map(|tool| {
         if tool.get("name").and_then(Value::as_str) != Some(name) {
             return None;
@@ -55,6 +60,20 @@ fn declared_arguments(name: &str) -> Option<Vec<String>> {
         )
     })
 }
+
+/// The tool that answers to this name today, following any ADR-0059 rename.
+pub(super) fn current_name(name: &str) -> &str {
+    for table in RENAME_TABLES {
+        if let Some(renamed) = renamed(table, name) {
+            return renamed.new;
+        }
+    }
+    name
+}
+
+/// Every rename table in the server. A cluster that collapses adds its table
+/// here, so argument validation and the rename guard both see it.
+const RENAME_TABLES: [&[Renamed]; 2] = [&design::RENAMED, &executive::RENAMED];
 
 /// Keys that belong to the call envelope rather than to any tool's contract.
 ///
@@ -470,6 +489,95 @@ pub(super) fn str_array(args: &Value, key: &str) -> Vec<String> {
 pub(super) fn ok<T: Serialize>(value: &T) -> Result<Value, String> {
     let body = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
     text(body)
+}
+
+/// One tool name a collapsed cluster used to answer to, and the call to make now
+/// (ADR-0059).
+///
+/// A table rather than match arms on purpose: the guard test that checks the
+/// server advertises everything it answers to reads `match name {` blocks, and a
+/// deprecated name is by definition one the tool list no longer carries. It is
+/// also the shape that makes removal a single deletion when the release train
+/// named in ADR-0059 arrives, instead of one scattered edit per retired name.
+///
+/// Each old name keeps its old contract exactly, because a deprecation that also
+/// changes behaviour teaches the wrong lesson.
+pub(super) struct Renamed {
+    pub old: &'static str,
+    pub new: &'static str,
+    /// The argument that used to be the name. Empty when the shape alone says.
+    pub key: &'static str,
+    pub value: &'static str,
+}
+
+impl Renamed {
+    pub(super) fn translate(&self, args: &Value) -> Value {
+        let mut translated = args.clone();
+        if self.key.is_empty() {
+            return translated;
+        }
+        match translated.as_object_mut() {
+            Some(object) => {
+                object.insert(self.key.to_string(), json!(self.value));
+                translated
+            }
+            None => json!({ self.key: self.value }),
+        }
+    }
+
+    /// Answer, and say what to call next time. Appended as a second content item
+    /// so the payload a caller already parses is byte-for-byte unchanged.
+    pub(super) fn teach(&self, mut result: Value) -> Value {
+        if let Some(content) = result.get_mut("content").and_then(Value::as_array_mut) {
+            content.push(json!({ "type": "text", "text": self.notice() }));
+        }
+        result
+    }
+
+    fn notice(&self) -> String {
+        let call = if self.key.is_empty() {
+            self.new.to_string()
+        } else {
+            format!("{} with {}=\"{}\"", self.new, self.key, self.value)
+        };
+        format!(
+            "{} is deprecated: it answers here for one minor version, and the removal ships \
+             in the release train named in ADR-0059. Call {call} instead.",
+            self.old
+        )
+    }
+}
+
+/// Answer the old name with the new call, or `None` when the name is current.
+pub(super) fn renamed(table: &'static [Renamed], name: &str) -> Option<&'static Renamed> {
+    table.iter().find(|renamed| renamed.old == name)
+}
+
+pub(super) fn one_of<'a>(args: &'a Value, key: &str, allowed: &[&str]) -> Result<&'a str, String> {
+    let value = req_str(args, key)?;
+    if allowed.contains(&value) {
+        return Ok(value);
+    }
+    Err(format!(
+        "unknown {key}: {value}. Accepted: {}.",
+        allowed.join(", ")
+    ))
+}
+
+/// An argument that only some values of the discriminator need.
+///
+/// The message names the discriminator as well as the argument, because a
+/// collapsed tool's required set is conditional and "missing required string
+/// arg: reason" no longer says which call it is talking about.
+pub(super) fn required_for(
+    args: &Value,
+    key: &str,
+    chose: &str,
+    what: &str,
+) -> Result<String, String> {
+    opt_str(args, key)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("\"{chose}\" requires {key}: {what}"))
 }
 
 /// A tool result that renders as Markdown in chat while keeping the structured
@@ -972,13 +1080,17 @@ mod tests {
         let tools = list();
         let complete = tools
             .iter()
-            .find(|tool| tool["name"] == "complete_task")
+            .find(|tool| tool["name"] == "task_transition")
             .unwrap();
+        // Evidence is not in `required`, because only `to="complete"` needs it;
+        // the conditional requirement is enforced in dispatch and stated in the
+        // schema, which is what a collapsed transition costs and repays.
+        assert!(complete["inputSchema"]["properties"]["evidence"].is_object());
         assert!(complete["inputSchema"]["required"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|value| value == "evidence"));
+            .any(|value| value == "to"));
         let link = tools
             .iter()
             .find(|tool| tool["name"] == "link_goal_to_artifact")
@@ -989,7 +1101,7 @@ mod tests {
         );
         let create = tools
             .iter()
-            .find(|tool| tool["name"] == "create_task")
+            .find(|tool| tool["name"] == "task_create")
             .unwrap();
         assert!(create["inputSchema"]["properties"]["blocked_by"].is_object());
     }

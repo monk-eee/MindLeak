@@ -83,8 +83,26 @@ it under promotion would reproduce, inside the new vocabulary, exactly the
 the batch shape of registration: one design when given `adr_path` and `title`, a
 set when given `designs`, and passing both is refused rather than guessed.
 
-The task cluster (~16 tools) and the constitution/policy-pack cluster (~25)
-collapse the same way and by the same rule.
+The constitution/policy-pack cluster (~25) collapses the same way and by the
+same rule.
+
+Task cluster, 26 → 4. It is twenty-six rather than the sixteen estimated above:
+counting the tools that answer questions *about* tasks, not only those that move
+one, gives the true size of what a session has to hold.
+
+| New | Replaces |
+|---|---|
+| `task_create` | `create_task`, `decompose_goal` |
+| `task_claim` | `claim_task`, `renew_lease`, `release_task`, `recover_claim` |
+| `task_transition` | `complete_task`, `resolve_task`, `block_task`, `reopen_task`, `abandon_task`, `pause_task`, `resume_task`, `ask_question`, `answer` |
+| `task_query` | `board`, `next_task`, `task_scope`, `existing_work`, `check_overlap`, `stalled_work`, `task_qa`, `pending_questions`, `questions_for_a_human`, `draft_questions`, `claim_transfer_history` |
+
+`task_claim` stays separate from `task_transition` even though claiming does
+move a task between `open` and `claimed`. The distinction that earns it a verb
+is compare-and-swap: a claim can be *lost* to another agent, and answering
+"you did not get it, and here is why" is not the same kind of act as asserting
+a status. Ownership and the lease are one family; what the owner then does with
+the work is another.
 
 Crucially, `design_decide` keeps the ADR-0051 guards intact — attribution still
 refuses to overwrite a recorded name, reopening still defers to materialisation.
