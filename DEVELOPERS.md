@@ -258,6 +258,46 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **The impact traversal has no cross-file edges for Rust, so it cannot say what
+  *breaks* — MEASURED, and the pre-flight is worded accordingly.** Run against a
+  real file in this repository (`crates/mindleak-core/src/facade/query.rs`) the
+  impact radius returns 15 nodes over 15 edges: 6 commit intents recorded
+  against the file, the 7 symbols it contains, and `contains`/`refactored`/
+  `modified`/`calls` edges. What it does **not** return is a single other Rust
+  file, because Rust ingestion produces no inter-file `imports` or `depends_on`
+  edges. So it answers "what was decided about this file" well and "what breaks
+  if I change it" not at all for Rust — while `docs/EVALUATION.md` reports 1.00
+  precision on the impact question, measured on a **JS/TS** fixture where those
+  edges exist. Impact: an agent reading a clean impact result on a `.rs` file
+  may conclude nothing depends on it, which the graph never actually said.
+  ADR-0066 puts the traversal on the mandatory checklist with this limit stated
+  rather than leaving the tool unused; closing the gap means emitting `imports`
+  edges from the Rust AST extractor, not rewording the docs.
+  While confirming this: `AGENTS.md` had excluded `get_impact_radius` from the
+  checklist on the grounds that it, like `recall`, "returns plausible
+  strangers", citing this section — which only ever substantiated the `recall`
+  half. The two were conflated: `recall` answers by embedding similarity and
+  genuinely can return a stranger, whereas the impact radius is a deterministic
+  traversal over recorded edges. Corrected in ADR-0066.
+- **`graph_multi_hop_query` is in a failing state and nobody noticed — OPEN.**
+  `telemetry_snapshot` reports `currently_failing: true` for it, with a last
+  error of `missing required argument: seed_entity`: a malformed call to the
+  headline traversal capability, never followed by a successful one. It has 10
+  lifetime calls. Impact: low today precisely because nothing depends on it,
+  which is the actual finding — a tool with no callers has no failure signal
+  either, so this could have been broken for any length of time. Left open
+  deliberately: ADR-0066 predicts the read-to-write ratio should move, and if it
+  does this tool starts mattering.
+- **Roughly 500 dashboard polls per decision-time read — SURFACED, not fixed.**
+  Lifetime telemetry: `graph_stats` 16,522 calls and `telemetry_snapshot`
+  12,567, against 66 reads that could change a decision. `graph_stats` alone has
+  spent 3,405 seconds — 57 minutes of cumulative compute — answering "how many
+  nodes are there". The caller is the extension's polling loop, not an agent.
+  Impact: wasted compute and a telemetry record whose shape is dominated by
+  self-observation, which is what made the retrieval gap hard to see in the
+  first place. Fix is a debounce or a push model in the extension; not attempted
+  here because it is a separate change in a separate plane.
+
 - **Closing a stranded claim after the fact: four traps, all hit in one
   sitting — OPEN.** Most stranded claims are work that already shipped and was
   never closed, so reaching for the receipt afterwards is a natural move. It is

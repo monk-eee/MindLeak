@@ -190,6 +190,26 @@ pub struct AgentFootprintOverlap {
     pub last_observed_at: i64,
 }
 
+/// Everything the memory plane knows that should change a decision about the
+/// paths an agent is about to edit: who else is active there, and what is
+/// structurally connected to them (ADR-0066).
+///
+/// `unknown` is load-bearing and deliberately separate from an empty `impact`.
+/// "MindLeak has never seen this file" and "nothing depends on this file" are
+/// different facts, and a caller that cannot tell them apart will read silence
+/// as reassurance.
+#[derive(Debug, Clone, Serialize)]
+pub struct Preflight {
+    /// The deterministic node ids the requested paths and symbols resolved to.
+    pub requested: Vec<String>,
+    /// Requested ids with no node in the graph — nothing is known about these.
+    pub unknown: Vec<String>,
+    /// Other agents' decay-active footprints on the requested ids.
+    pub footprints: Vec<AgentFootprintOverlap>,
+    /// Dependents, previously failing executions, and related intents.
+    pub impact: Subgraph,
+}
+
 /// One node in an agent's bounded, derived attentional working set.
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkingSetItem {
