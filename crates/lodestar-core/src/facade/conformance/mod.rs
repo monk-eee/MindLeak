@@ -168,8 +168,26 @@ impl Lodestar {
         }
         // Recorded after the transition succeeds: a lesson attached to a
         // completion that did not happen would be worse than none.
+        //
+        // The evidence carries the nodes this work changed, because that is the
+        // only thing `apply_knowledge_advisory` matches on. Recorded as the bare
+        // string `task:{id}` — which is not JSON and parses to no nodes at all —
+        // every lesson an agent has ever written was stored, counted in the
+        // stats, and could never reach anybody. Measured on this repository:
+        // 34 of 35 active knowledge records referenced nothing.
+        //
+        // With the changed nodes attached, a lesson learned while changing a
+        // file surfaces to the next agent who changes that file, which is both
+        // the moment it is useful and the moment it was written for.
         let learned = match learned.map(str::trim).filter(|text| !text.is_empty()) {
-            Some(text) => Some(self.record_knowledge(text, &format!("task:{id}"), None)?.id),
+            Some(text) => {
+                let provenance = serde_json::json!({
+                    "task": format!("task:{id}"),
+                    "nodes": evidence.changed_node_ids,
+                })
+                .to_string();
+                Some(self.record_knowledge(text, &provenance, None)?.id)
+            }
             None => None,
         };
         Ok(Completion {
@@ -350,7 +368,22 @@ mod tests {
             recorded.statement,
             "GitHub does not apply .gitattributes merge drivers"
         );
-        assert_eq!(recorded.evidence, format!("task:{}", task.id));
+
+        // The lesson has to be reachable, not merely stored. The advisory
+        // matches on referenced nodes and nothing else, so a lesson naming none
+        // is written, counted, and delivered to nobody — which is what every
+        // recorded lesson was, because the provenance was the bare string
+        // `task:{id}` and parsed to no nodes at all.
+        assert_eq!(
+            recorded.referenced_nodes(),
+            vec![node_id.to_string()],
+            "the lesson names the code it was learned on, so it reaches whoever changes it next"
+        );
+        assert!(
+            recorded.evidence.contains(&task.id),
+            "and still says which task taught it: {}",
+            recorded.evidence
+        );
     }
 
     /// Completion is never blocked by an omission: most tasks teach nothing, and
