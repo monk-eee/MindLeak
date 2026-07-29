@@ -74,6 +74,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0065](0065-completion-belongs-at-the-publication-boundary.md) | Completion belongs at the publication boundary | Proposed |
 | [0066](0066-retrieval-rides-on-the-question-already-asked.md) | Retrieval rides on the question already asked | Proposed |
 | [0067](0067-a-claim-is-a-statement-that-you-are-working-on-something.md) | A claim is a statement that you are working on something | Accepted |
+| [0068](0068-an-amendment-carries-the-work-it-renames.md) | An amendment carries the work it renames | Proposed |
 
 ## Writing a new ADR
 

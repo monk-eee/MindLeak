@@ -281,6 +281,13 @@ fn run_once(
 /// Repairs that state with the same same-slug rule the fixed amendment uses,
 /// and moves bindings and live work together, because moving either alone is
 /// what turns a silent gap into a fleet-wide drift report.
+///
+/// A task that is `claimed` with an unexpired lease is left alone (ADR-0063).
+/// Its goal is what conformance judges the holder's evidence against, so moving
+/// it mid-claim would change the rule under someone doing the work — the same
+/// class of harm as rewriting `tasks.owner`, and not ours to do as a side
+/// effect of opening a file. Those tasks heal at the next amendment instead,
+/// which is an attributed act. Measured here: 3 of 56.
 fn reconnect_superseded_clauses(connection: &Connection) -> Result<()> {
     connection.execute(
         "UPDATE goals AS outgoing
@@ -315,11 +322,12 @@ fn reconnect_superseded_clauses(connection: &Connection) -> Result<()> {
                  WHERE outgoing.id = tasks.goal_id
             )
           WHERE status NOT IN ('done', 'abandoned')
+            AND NOT (status = 'claimed' AND lease_expires_at > ?1)
             AND goal_id IN (
                 SELECT id FROM goals
                  WHERE status = 'superseded' AND superseded_by IS NOT NULL
             )",
-        [],
+        [crate::now_unix()],
     )?;
     Ok(())
 }
