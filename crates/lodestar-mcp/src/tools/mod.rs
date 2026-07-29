@@ -1112,9 +1112,29 @@ mod tests {
     /// Asserted over the readiness tools by name: a whitelist entry is easy to
     /// drop in a refactor, and the unit that catches it must be the call the
     /// client actually makes.
+    ///
+    /// That warning came true. The whitelist named `board` and `design_board`,
+    /// which ADR-0059 retired: the server no longer advertises them and answers
+    /// them only through the deprecation table, so this test was exercising the
+    /// aliases rather than the advertised readiness path, and the regression
+    /// could have returned through `task_query` without failing anything. The
+    /// whitelist now has to prove each name is a tool the server advertises,
+    /// which turns the next rename into a failure here instead of a guard
+    /// quietly hollowed out — the same shape as `requires_session`, which is a
+    /// list keyed by tool name that a rename left pointing at nothing.
     #[test]
     fn the_session_envelope_is_accepted_by_tools_that_never_declare_it() {
-        for tool in ["board", "design_board"] {
+        let advertised: Vec<String> = list()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+            .collect();
+
+        for tool in ["task_query", "design_query"] {
+            assert!(
+                advertised.iter().any(|name| name == tool),
+                "{tool} is not advertised, so this guard is watching a name \
+                 nothing answers to under its own contract"
+            );
             assert!(
                 !requires_session(tool),
                 "{tool} is the case worth testing only while it declares no session"
@@ -1127,8 +1147,8 @@ mod tests {
         }
         // ...and it stays acceptable alongside a real declared argument.
         validate_arguments(
-            "board",
-            &json!({ "include_terminal": false, "session_id": "0123456789abcdef0123456789abcdef" }),
+            "task_query",
+            &json!({ "view": "board", "include_terminal": false, "session_id": "0123456789abcdef0123456789abcdef" }),
         )
         .expect("the envelope does not invalidate declared arguments");
     }
@@ -1221,7 +1241,7 @@ mod tests {
         assert!(reconnected["paused_advice"]
             .as_str()
             .unwrap()
-            .contains("resume_task"));
+            .contains("task_transition with to=\"resume\""));
 
         let other = body(json!({
             "session_id": "ffeeddccbbaa99887766554433221100"
@@ -1546,13 +1566,19 @@ mod tests {
         assert_eq!(advertised_for(Profile::Full).len(), list().len());
     }
 
-    /// `check_overlap` takes a session when offered and answers without one.
+    /// The overlap read takes a session when offered and answers without one.
     ///
     /// Both halves matter. Binding is what lets the branch signal exist at all;
     /// tolerating an unresolvable token is what keeps a read-only advisory from
     /// becoming refusable, which is the property ADR-0024 requires of overlap
     /// detection. The registry is per-process, so a server restart leaves a
     /// perfectly well-behaved client holding a token this process never saw.
+    ///
+    /// Driven through `task_query` rather than the retired `check_overlap`
+    /// alias. The alias resolves to this same handler, so exercising it proves
+    /// the deprecation table works and proves nothing about the contract the
+    /// server actually advertises — and when the alias is removed, a guard
+    /// written against it disappears with it.
     #[test]
     fn an_offered_session_sharpens_check_overlap_and_its_absence_never_refuses() {
         const TOKEN: &str = "00112233445566778899aabbccddeeff";
@@ -1561,7 +1587,12 @@ mod tests {
             .open_session(TOKEN, SessionContext::default())
             .unwrap()
             .agent_id;
-        let params = |arguments: Value| json!({ "name": "check_overlap", "arguments": arguments });
+        let params = |mut arguments: Value| {
+            if let Some(object) = arguments.as_object_mut() {
+                object.insert("view".to_string(), json!("overlap"));
+            }
+            json!({ "name": "task_query", "arguments": arguments })
+        };
 
         let bound = bind_session(
             &params(json!({ "paths": ["src/lib.rs"], "session_id": TOKEN })),

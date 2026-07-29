@@ -989,7 +989,7 @@ pub(super) fn attach_owner_attention(
             object.insert("paused_by_you".to_string(), json!(paused));
             object.insert(
                 "paused_advice".to_string(),
-                json!("Call resume_task for paused work you are continuing. `needs_input` is different: answer its question instead."),
+                json!("Call task_transition with to=\"resume\" for paused work you are continuing. `needs_input` is different: answer its question instead, with to=\"answer\"."),
             );
         }
     }
