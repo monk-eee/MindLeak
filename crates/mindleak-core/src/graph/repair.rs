@@ -22,6 +22,8 @@ use crate::Result;
 
 pub use crate::graph::types::RepairOutcome;
 
+mod collapse;
+
 #[cfg(test)]
 mod tests;
 
@@ -29,6 +31,14 @@ impl GraphStore {
     /// Rewrite every node id that spells its path absolutely under `root` to the
     /// repo-relative id the rest of the fleet writes, merging into the relative
     /// node when one already exists.
+    ///
+    /// Then collapse absolute ids spelled under *any other* checkout of this
+    /// repository, which the prefix pass cannot see. Being prefix-scoped assumes
+    /// every worktree eventually hosts a server that heals its own ids, and that
+    /// is not true: a worktree an agent works in without ever starting a server
+    /// there leaves its ids orphaned permanently. Measured 2026-07-29, 43 of 247
+    /// tracked files could not be re-ingested at all because a sibling
+    /// checkout's absolute id still owned their structural edges.
     pub fn repair_workspace_paths(&self, root: &str) -> Result<RepairOutcome> {
         let root = root.trim_end_matches(['/', '\\']);
         if root.is_empty() {
@@ -47,6 +57,7 @@ impl GraphStore {
                 outcome.nodes_merged += 1;
             }
         }
+        self.collapse_known_duplicates(&mut outcome)?;
         Ok(outcome)
     }
 
@@ -137,6 +148,19 @@ impl GraphStore {
             );
             self.conn.execute(&sql, params![from, to])?;
         }
+
+        // Ownership follows the identity, not just the endpoints. `owner_id`
+        // records which artifact owns a structural snapshot (ADR-0007), and
+        // moving an edge without it leaves the snapshot owned by an id that is
+        // about to be deleted. `replace_structure` then refuses every later
+        // ingest of that file — "structural edge is owned by <old id>, not
+        // <new id>" — so the file can never be re-extracted, which is exactly
+        // the state 43 files were found in. The endpoints had been rewritten
+        // for as long as this merge has existed; the ownership never was.
+        self.conn.execute(
+            "UPDATE edges SET owner_id = ?2 WHERE owner_id = ?1",
+            params![from, to],
+        )?;
 
         // Cascades the stale edges and the stale embedding; the index pass will
         // re-embed the survivor under its one true id.

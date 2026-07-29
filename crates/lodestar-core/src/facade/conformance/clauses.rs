@@ -34,6 +34,13 @@ impl Lodestar {
         covered: &[String],
     ) -> Result<GoverningClauses> {
         let mut resolved = GoverningClauses::default();
+        // Compare goals by slug, the identity a clause keeps across versions. A
+        // clause carried into a new constitution is re-issued as
+        // `goal:<slug>@constitution:vN` while a task still names the bare
+        // `goal:<slug>`, so an equality test on the ids stops matching at the
+        // first amendment — and every task touching governed code then reads as
+        // unsanctioned, however correct it is.
+        let task_slug = task_goal_id.map(goal_slug);
         for node in node_ids {
             let node_is_doc = is_documentation_node(node);
             for binding in self.store.active_bindings_for_node(node)? {
@@ -41,11 +48,11 @@ impl Lodestar {
                     resolved.forbid.push((node.clone(), binding.goal));
                     continue;
                 }
-                match task_goal_id {
-                    Some(goal_id) if binding.goal.id == goal_id => {
+                match task_slug {
+                    Some(slug) if binding.goal.slug == slug => {
                         resolved.in_scope.push((node.clone(), binding.goal))
                     }
-                    _ if covered.contains(&binding.goal.id) => {
+                    _ if covered.iter().any(|c| goal_slug(c) == binding.goal.slug) => {
                         resolved.relied_on_coverage.push(binding.goal.id.clone());
                         resolved.in_scope.push((node.clone(), binding.goal))
                     }

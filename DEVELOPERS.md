@@ -258,6 +258,59 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **17% of tracked files could not be re-ingested at all: another worktree's
+  absolute id owned them — MEASURED, FIXED.** Found by the first run of
+  `make reingest`. 43 of 247 files failed with
+
+  ```
+  structural edge is owned by
+  artifact:c:/Users/lyndonswan/Repos/MindLeak-export/scripts/design-audit.mjs,
+  not artifact:scripts/design-audit.mjs
+  ```
+
+  ADR-0038 gives every worktree of this repository one shared graph, so an
+  absolute id written from `MindLeak-export` names the *same file* as the
+  repo-relative id — but it held the structural edges, and the repo-relative id
+  could not take them. Those files were frozen under whichever worktree ingested
+  them first, so every future extractor improvement missed them and nothing
+  reported it; the error only appeared if something tried to re-ingest.
+  Repair was prefix-scoped, which assumes every worktree eventually hosts a
+  server that heals its own ids — untrue for a worktree an agent works in
+  without ever starting one there. An absolute id now merges onto a
+  repo-relative twin **the graph already holds**, taken as the longest matching
+  suffix; a path with no twin is still left alone, so repair never invents a
+  file and `repair_is_idempotent_and_leaves_foreign_paths_alone` stands
+  unchanged.
+  Two further defects only surfaced once that was fixed and the files stayed
+  blocked, and they are the more useful finding. `edges.owner_id` records which
+  artifact owns a structural snapshot (ADR-0007), and merging a node rewrote the
+  edge *endpoints* but never the *ownership* — a hole that predated all of this
+  and affected same-root repairs too. Ownership is not an endpoint, so it
+  survives the node it names being deleted, and with the absolute node already
+  collapsed there is nothing left for a node-level repair to find: the file
+  becomes permanently un-re-extractable, quietly. And the facade repair was a
+  no-op without a declared workspace root, which is exactly the case that
+  stranded sibling ids in the first place. Ownership is now carried across a
+  merge and reclaimed by a pass keyed off ownership rather than nodes, and the
+  collapse runs with or without a declared root.
+- **An extractor improvement does not reach the graph that already exists —
+  MITIGATED by `make reingest`, still not automatic.** Structural extraction
+  happens once, at ingest time, and nothing revisits it: `reconcile_workspace`
+  only forgets files that vanished, `index` only fills embeddings, and the
+  editor sensor re-ingests a file only when someone saves it. Measured
+  2026-07-29, immediately after Rust `mod`/`use` extraction shipped:
+  `get_impact_radius` on `crates/mindleak-core/src/model.rs` — imported by
+  nearly every module in the crate — returned 11 nodes, 11 edges and **zero**
+  imports edges. The improvement was real and entirely invisible. After one
+  `make reingest` pass the same query returned **189 nodes, 216 edges, 41
+  imports edges and 25 dependent `.rs` files**.
+  Two things remain. Nobody is told the graph is stale: no node records which
+  extractor version produced it, so "this file was last understood three
+  releases ago" is not a question the graph can answer, and the only symptom is
+  an impact result that is quietly too small. And re-ingesting resets the decay
+  clock on the structural edges it re-asserts — defensible, because structure is
+  true as long as the file says so, but it means the structural tier reads as
+  uniformly fresh afterwards. Attention (`observed`) edges are untouched.
 - **One session's agent id changed under a running server, silently resetting
   its claim's evidence window and locking it out of its own task — OBSERVED,
   FIXED by [ADR-0063](docs/adr/0063-a-migration-may-tidy-the-past-never-the-present.md);
@@ -315,6 +368,24 @@ and footguns, with impact and status:
   diff. Any extension change validated through the custom adapter has a
   meaningless green behind it. Use `framework=vitest` for
   `editors/vscode`, and treat a suspiciously fast/slow duration as the tell.
+
+- **Two clauses declare `block` and currently cannot reach it, because an earlier
+  amendment orphaned their controls — MEASURED, fix landed but not yet
+  retroactive.** Measured across the live constitution: **30 active clauses, 13
+  with a complete contract, and only 4 binding any control — 2 of them
+  mechanical.** `clause_controls` reports
+  `one-publishing-owner-per-task-branch` and
+  `a-commit-stays-inside-its-declared-scope` as unguarded, though both still
+  declare `block`. A clause copy takes a new id and controls stored the old one,
+  so amending a rule silently disarmed it. Impact is narrower than it looks and
+  worth stating precisely: the *mechanisms* never stopped working — the
+  pre-commit hooks still exit non-zero and still refuse the commit — but the
+  *ledger* cannot resolve those clauses above `advise`, so a conformance verdict
+  will not report a violation of them. Do not read "no control" as "no
+  enforcement", or "declares block" as "will block". Amendments now carry active
+  controls across by slug, which re-adopts the stranded ones at the next
+  amendment; until an amendment happens, the four above are the complete list of
+  clauses that enforce anything.
 
 - **The conformance chain governs 8 code nodes, none of them Rust, and the gate
   that would enforce it cannot run — MEASURED, partially mitigated.**

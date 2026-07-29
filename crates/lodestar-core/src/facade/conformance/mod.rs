@@ -8,6 +8,7 @@ use crate::controls::{forbid_change_control, forbid_change_observation, resolve_
 use crate::model::Consequence;
 use crate::scope;
 use crate::store::ConformanceAudit;
+use crate::util::goal_slug;
 use crate::{
     now_unix, CodeBindingMode, ConformanceCheck, ConformanceEvidence, ConformanceResult, Goal,
     GoalStatus, GoverningClause, Lodestar, LodestarError, Result, Task, TaskStatus, Verdict,
@@ -389,6 +390,154 @@ mod tests {
     /// Completion is never blocked by an omission: most tasks teach nothing, and
     /// a gate would only produce a column of "n/a". The gap is reported instead,
     /// which is what makes it measurable rather than invisible.
+    /// A real clause that has been through an amendment, which is where the
+    /// versioned id comes from: the carry-forward rebuilds each clause as
+    /// `goal:{slug}@{version}`. Nothing here is fabricated — and note that a
+    /// freshly adopted v1 clause id is *bare*, so this only bites from the
+    /// first amendment onwards. That is exactly when it bit.
+    fn amended_clause(e: &Lodestar) -> crate::Goal {
+        let proposal = e
+            .propose_constitution(&["README.md".to_string()], Some("monk-eee"))
+            .unwrap();
+        for clause in proposal.common_core.proposals {
+            e.review_pack_clause(
+                &clause.id,
+                crate::PackClauseDisposition::Adopted,
+                None,
+                "monk-eee",
+                Some("Adopted as proposed"),
+            )
+            .unwrap();
+        }
+        e.activate_constitution(&proposal.version.id, "monk-eee")
+            .unwrap();
+
+        let draft = e.propose_amendment(Some("monk-eee")).unwrap();
+        // An amendment that changes nothing is refused as churn, so harden one
+        // carried clause — the same move the amendment tests make.
+        let target = e
+            .store
+            .clauses_for_version(&draft.id)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        e.store
+            .complete_clause_contract(
+                &target.id,
+                "artifact:crates/**",
+                "tests",
+                Some(crate::model::Consequence::Review),
+                false,
+                None,
+            )
+            .unwrap();
+        e.amend_constitution(&draft.id, "monk-eee", "Carry policy forward.")
+            .unwrap();
+        e.store
+            .clauses_for_version(&draft.id)
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("the amendment carries at least one clause forward")
+    }
+
+    /// Every task touching governed code completed as `drift`, however correct
+    /// it was, and `governing_for_task` returned an empty list for a task whose
+    /// goal was named in the very finding that condemned it.
+    ///
+    /// A clause carries the versioned id `goal:<slug>@constitution:vN`. A task
+    /// carries the bare `goal:<slug>`. The coverage test compared the two by
+    /// exact string equality, so from the first amendment onwards it could
+    /// never hold: nothing was in scope, every change read as unsanctioned, and
+    /// a verdict that is the same for every input has stopped carrying
+    /// information.
+    ///
+    /// Slug is the identity a clause keeps across versions — the carry-forward
+    /// builds the next id as `goal:{slug}@{version}`, and `diff_clauses`
+    /// already matches on it. This is the same rule in the place that needed it.
+    #[test]
+    fn a_covering_task_is_still_covering_after_the_clause_is_versioned() {
+        let e = engine();
+        let node = "artifact:crates/lodestar-core/src/store/coordination.rs";
+        let clause = amended_clause(&e);
+        e.link_goal_to_artifact(&clause.id, &[node.into()], CodeBindingMode::Governed)
+            .unwrap();
+        assert!(
+            clause.id.contains("@constitution:"),
+            "the clause is versioned: {}",
+            clause.id
+        );
+
+        // What a task holds: the bare goal id, never the clause version.
+        let task_goal_id = format!("goal:{}", clause.slug);
+        assert_ne!(task_goal_id, clause.id);
+
+        let resolved = e
+            .resolve_governing_clauses(&[node.to_string()], Some(&task_goal_id))
+            .unwrap();
+
+        assert_eq!(
+            resolved.in_scope.len(),
+            1,
+            "the task's own goal governs this file; it is not drift"
+        );
+        assert!(
+            resolved.other.is_empty(),
+            "and it is not somebody else's goal either: {:?}",
+            resolved.other
+        );
+    }
+
+    /// The mirror: slug matching must not turn every clause into coverage. A
+    /// different goal is still a different goal, and a fix that made everything
+    /// pass would be as uninformative as the failure it replaced.
+    #[test]
+    fn a_clause_from_another_goal_is_still_not_coverage() {
+        let e = engine();
+        let node = "artifact:src/auth.rs";
+        let clause = amended_clause(&e);
+        e.link_goal_to_artifact(&clause.id, &[node.into()], CodeBindingMode::Governed)
+            .unwrap();
+
+        let resolved = e
+            .resolve_governing_clauses(&[node.to_string()], Some("goal:something-else"))
+            .unwrap();
+
+        assert!(resolved.in_scope.is_empty());
+        assert_eq!(
+            resolved.other.len(),
+            1,
+            "it is reported as drift, as before"
+        );
+    }
+
+    /// The other half of the same bug, and the one an agent meets first:
+    /// `claim_task` and `governing_for_task` both answer through
+    /// `code_for_goal`, which looked its bindings up by exact goal id. After an
+    /// amendment that returns an empty list — indistinguishable from "nothing
+    /// governs this", so an agent was told to proceed freely on code that was
+    /// in fact governed, and only found out at completion.
+    #[test]
+    fn a_claim_is_told_which_clauses_govern_it_after_an_amendment() {
+        let e = engine();
+        let node = "artifact:crates/lodestar-core/src/store/coordination.rs";
+        let clause = amended_clause(&e);
+        e.link_goal_to_artifact(&clause.id, &[node.into()], CodeBindingMode::Governed)
+            .unwrap();
+
+        let bound = e
+            .store
+            .code_for_goal(&format!("goal:{}", clause.slug))
+            .unwrap();
+
+        assert_eq!(
+            bound,
+            vec![node.to_string()],
+            "the bare goal id finds the bindings its amended clause holds"
+        );
+    }
+
     #[test]
     fn a_task_that_taught_nothing_still_completes() {
         let e = engine();
