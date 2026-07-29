@@ -284,6 +284,32 @@ pub struct TaskEvent {
     pub detail: String,
 }
 
+/// The continuity of a task's current evidence window, derived from the log
+/// (ADR-0064 decision 6).
+///
+/// ADR-0048 says a window survives a lapse so earlier work stays provable, but
+/// a discontinuous window cannot certify itself as aligned. This is that
+/// continuity, computed from the recorded transitions rather than carried as a
+/// running total on the task row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaimWindow {
+    /// When the current window opened, if the task is in one.
+    pub started_at: Option<i64>,
+    /// How many times the lease lapsed inside this window.
+    pub lapses: i64,
+    /// Seconds of this window spent under no lease.
+    pub unleased_seconds: i64,
+}
+
+impl ClaimWindow {
+    /// A window with no holes in it. Not the same as "no window": a task that
+    /// was never claimed and a task claimed once without lapsing are both
+    /// continuous, and neither is capped by ADR-0048.
+    pub fn is_continuous(&self) -> bool {
+        self.lapses == 0
+    }
+}
+
 /// The outcome of a conformance check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
