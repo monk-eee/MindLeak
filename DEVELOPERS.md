@@ -821,8 +821,8 @@ and footguns, with impact and status:
   understood: not a wrong verdict, but a confident verdict on a question never
   asked. — Fixed this run. A lapse now holes the window instead of moving it: a
   same-owner re-claim keeps `claim_started_at`, so earlier work stays provable,
-  while `tasks.claim_lapses` and `tasks.unleased_seconds` record the
-  discontinuity and cap conformance at `needs_human`. The cap follows the task,
+  while the task log records the discontinuity — read back by `claim_window`
+  (ADR-0064) — and caps conformance at `needs_human`. The cap follows the task,
   not the submitted interval, so shrinking the evidence no longer buys a pass. A
   different owner still opens a fresh window, so reach-back never crosses a
   period somebody else owned the task. `recover_claim` remains restricted to

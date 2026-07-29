@@ -622,15 +622,14 @@ pub struct Task {
     pub owner: Option<String>,
     pub claim_started_at: Option<i64>,
     pub lease_expires_at: Option<i64>,
-    /// How many times the lease lapsed inside the current evidence window
-    /// (ADR-0048). The window survives a lapse so earlier work stays provable,
-    /// but a non-zero count means the window has holes, which caps conformance
-    /// at `needs_human`. Reset when a fresh window opens, so it describes the
-    /// current window rather than the task's whole history.
-    pub claim_lapses: i64,
-    /// Seconds inside the current evidence window during which no lease was
-    /// held — the size of the holes counted by `claim_lapses`.
-    pub unleased_seconds: i64,
+    // The continuity of the current evidence window (ADR-0048) used to live
+    // here as `claim_lapses` and `unleased_seconds`. It is derived from the
+    // task log instead (ADR-0064 d5/d6): ask `claim_window`.
+    //
+    // Deliberately not kept as derived fields on this struct. Zero lapses means
+    // "this window may certify itself as aligned", so a field that any read
+    // path could leave unpopulated would fail *open* — quietly handing out a
+    // clean receipt for work with holes in it. There is no field to forget.
     pub blocked_by: Option<String>,
     /// When the task was parked (needs_input/paused); after a bounded grace it
     /// becomes reclaimable by the pool so a vanished owner cannot strand it.

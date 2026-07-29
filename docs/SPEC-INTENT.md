@@ -164,7 +164,7 @@ Live coordination state. Not versioned; churny.
 | `owner` | stable opaque id derived from the registered client session (ADR-0030) |
 | `claim_started_at` | start of the current owner's evidence window; neither lease renewal nor a same-owner re-claim moves it (ADR-0048) |
 | `lease_expires_at` | unix seconds; a claim past this is reclaimable |
-| `claim_lapses` / `unleased_seconds` | how many times the lease lapsed inside the current window, and how much of it was held under no lease; non-zero caps conformance at `needs_human` (ADR-0048) |
+| *(window continuity)* | **not a column.** How many times the lease lapsed inside the current window, and how much of it was held under no lease, are derived from `task_events` and read with `claim_window`; non-zero caps conformance at `needs_human` (ADR-0048, ADR-0064) |
 | `blocked_by` | optional task id |
 | `created_at` / `updated_at` | unix seconds |
 
@@ -292,12 +292,14 @@ UPDATE tasks
   renewal fails and the owner uses `claim_task` like any other contender.
 - **A lapse holes the evidence window; it does not move it (ADR-0048).** A
   re-claim by the *same* owner keeps `claim_started_at`, so work done before the
-  lapse stays provable, and increments `claim_lapses` / `unleased_seconds` to
-  record the discontinuity. A claim by a *different* owner opens a fresh window,
-  so reach-back never crosses a period somebody else owned the task. A non-zero
-  `claim_lapses` caps the conformance verdict at `needs_human`: a window with a
-  hole in it cannot certify itself, and the cap follows the task rather than the
-  submitted interval so narrowing the evidence cannot dodge it.
+  lapse stays provable, and the hole is recorded in the task log. A claim by a
+  *different* owner opens a fresh window, so reach-back never crosses a period
+  somebody else owned the task. A discontinuous window — `claim_window` reports
+  a non-zero lapse count — caps the conformance verdict at `needs_human`: a
+  window with a hole in it cannot certify itself, and the cap follows the task
+  rather than the submitted interval so narrowing the evidence cannot dodge it.
+  The counts are derived from the log rather than stored on the row (ADR-0064),
+  so the holes can be located and not merely tallied.
 - **Completion is guarded too:** `… SET status='in_review' WHERE id=:task AND
   owner=:agent AND status='claimed'` — you can only complete what you still hold.
 

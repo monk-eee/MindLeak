@@ -4,6 +4,8 @@
 mod functions;
 mod migrations;
 
+pub(crate) use migrations::column_exists;
+
 use rusqlite::Connection;
 
 use crate::error::Result;

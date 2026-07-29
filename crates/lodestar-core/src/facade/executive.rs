@@ -2,8 +2,8 @@
 use crate::dialogue::{self, DraftedBy, QuestionDraft};
 use crate::stalls::{stalls, Stall};
 use crate::{
-    now_unix, ClaimOverlap, ClaimTransfer, HumanQuestion, Lodestar, LodestarError, Result, Task,
-    TaskQa, TaskScope,
+    now_unix, ClaimOverlap, ClaimTransfer, ClaimWindow, HumanQuestion, Lodestar, LodestarError,
+    Result, Task, TaskQa, TaskScope,
 };
 
 impl Lodestar {
@@ -122,6 +122,13 @@ impl Lodestar {
     /// Read one task's declared advisory scope.
     pub fn task_scope(&self, task_id: &str) -> Result<TaskScope> {
         self.store.task_scope(task_id)
+    }
+
+    /// The continuity of a task's current evidence window, derived from the log
+    /// (ADR-0064 d5/d6). Replaces the `claim_lapses` / `unleased_seconds`
+    /// columns that used to ride on the task row.
+    pub fn claim_window(&self, task_id: &str) -> Result<ClaimWindow> {
+        self.store.claim_window(task_id)
     }
 
     /// Read-only active-claim intersection for concrete requested paths/symbols.

@@ -27,7 +27,7 @@ fn detail_json(reason: Option<&str>) -> String {
 pub(super) const TASK_COLS: &str =
     "id, goal_id, parent_task_id, title, acceptance, status, owner, \
     claim_started_at, lease_expires_at, blocked_by, parked_at, created_at, updated_at, \
-    claim_lapses, unleased_seconds, resolved_by, resolved_at, resolved_conformance_id";
+    resolved_by, resolved_at, resolved_conformance_id";
 const CONFORMANCE_COLS: &str =
     "id, task_id, evidence_schema_version, evidence, verdict, findings, checked_at";
 const QA_COLS: &str = "id, task_id, kind, body, author, audience, created_at";
@@ -134,31 +134,22 @@ impl LodestarStore {
         let scope = normalize_scope(scope)?;
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let parked_cutoff = now - PARKING_GRACE_SECS;
-        // The evidence window survives a lapse, and the lapse is counted
-        // (ADR-0048). Re-claiming used to reset `claim_started_at` to now, which
-        // silently put every commit made before the lapse outside the window the
-        // agent could prove. That did not merely under-report: because the
-        // verdict is computed over the nodes the evidence covers, a lapse let an
-        // agent submit the surviving sliver and collect an `aligned` receipt
-        // while the bulk of the change went unchecked. So a re-claim by the same
-        // owner keeps the window open and records the hole instead; conformance
-        // refuses to certify a discontinuous window on its own authority.
+        // The evidence window survives a lapse (ADR-0048). Re-claiming used to
+        // reset `claim_started_at` to now, which silently put every commit made
+        // before the lapse outside the window the agent could prove. That did
+        // not merely under-report: because the verdict is computed over the
+        // nodes the evidence covers, a lapse let an agent submit the surviving
+        // sliver and collect an `aligned` receipt while the bulk of the change
+        // went unchecked. So a re-claim by the same owner keeps the window open;
+        // the hole it leaves is recorded in the task log and read back by
+        // `claim_window` (ADR-0064 d5), and conformance refuses to certify a
+        // discontinuous window on its own authority.
         let changed = transaction.execute(
             "UPDATE tasks
                 SET status = 'claimed', owner = ?2,
                     claim_started_at = CASE
                         WHEN status = 'claimed' AND owner = ?2
                         THEN claim_started_at ELSE ?4 END,
-                    claim_lapses = CASE
-                        WHEN status = 'claimed' AND owner = ?2 AND lease_expires_at < ?4
-                        THEN claim_lapses + 1
-                        WHEN status = 'claimed' AND owner = ?2 THEN claim_lapses
-                        ELSE 0 END,
-                    unleased_seconds = CASE
-                        WHEN status = 'claimed' AND owner = ?2 AND lease_expires_at < ?4
-                        THEN unleased_seconds + (?4 - lease_expires_at)
-                        WHEN status = 'claimed' AND owner = ?2 THEN unleased_seconds
-                        ELSE 0 END,
                     lease_expires_at = ?3, parked_at = NULL, updated_at = ?4
               WHERE id = ?1
                                 AND blocked_by IS NULL
@@ -1143,8 +1134,6 @@ fn create_task_after_on(
         owner: None,
         claim_started_at: None,
         lease_expires_at: None,
-        claim_lapses: 0,
-        unleased_seconds: 0,
         blocked_by,
         parked_at: None,
         resolved_by: None,
@@ -1365,11 +1354,9 @@ pub(super) fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
         parked_at: row.get(10)?,
         created_at: row.get(11)?,
         updated_at: row.get(12)?,
-        claim_lapses: row.get(13)?,
-        unleased_seconds: row.get(14)?,
-        resolved_by: row.get(15)?,
-        resolved_at: row.get(16)?,
-        resolved_conformance_id: row.get(17)?,
+        resolved_by: row.get(13)?,
+        resolved_at: row.get(14)?,
+        resolved_conformance_id: row.get(15)?,
     })
 }
 
@@ -2496,8 +2483,9 @@ mod tests {
         let live = s.get_task(&t.id).unwrap().unwrap();
         assert_eq!(live.claim_started_at, Some(NOW));
         // A renewed, unbroken window has nothing to declare.
-        assert_eq!(live.claim_lapses, 0);
-        assert_eq!(live.unleased_seconds, 0);
+        let clean = s.claim_window(&t.id).unwrap();
+        assert_eq!(clean.lapses, 0);
+        assert_eq!(clean.unleased_seconds, 0);
 
         // The lease lapses at NOW + 90 and alice does not return for 2 hours.
         let after_expiry = NOW + 2 * HOUR;
@@ -2510,8 +2498,9 @@ mod tests {
         assert_eq!(reclaimed.claim_started_at, Some(NOW));
         assert_eq!(reclaimed.lease_expires_at, Some(after_expiry + 60));
         // ...and the hole it now contains is recorded rather than forgotten.
-        assert_eq!(reclaimed.claim_lapses, 1);
-        assert_eq!(reclaimed.unleased_seconds, after_expiry - (NOW + 90));
+        let holed = s.claim_window(&t.id).unwrap();
+        assert_eq!(holed.lapses, 1);
+        assert_eq!(holed.unleased_seconds, after_expiry - (NOW + 90));
     }
 
     #[test]
@@ -2528,9 +2517,10 @@ mod tests {
 
         let twice_lapsed = s.get_task(&t.id).unwrap().unwrap();
         assert_eq!(twice_lapsed.claim_started_at, Some(NOW));
-        assert_eq!(twice_lapsed.claim_lapses, 2);
+        let window = s.claim_window(&t.id).unwrap();
+        assert_eq!(window.lapses, 2);
         assert_eq!(
-            twice_lapsed.unleased_seconds,
+            window.unleased_seconds,
             (first - (NOW + 60)) + (second - (first + 60))
         );
 
@@ -2540,8 +2530,9 @@ mod tests {
         assert!(s.claim_task(&t.id, "bob", 60, third).unwrap());
         let bob = s.get_task(&t.id).unwrap().unwrap();
         assert_eq!(bob.claim_started_at, Some(third));
-        assert_eq!(bob.claim_lapses, 0);
-        assert_eq!(bob.unleased_seconds, 0);
+        let bob_window = s.claim_window(&t.id).unwrap();
+        assert_eq!(bob_window.lapses, 0);
+        assert_eq!(bob_window.unleased_seconds, 0);
     }
 
     #[test]

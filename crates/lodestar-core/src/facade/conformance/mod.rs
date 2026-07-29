@@ -1087,7 +1087,7 @@ mod tests {
 
         let reclaimed = e.store.get_task(&lapsed.id).unwrap().unwrap();
         assert_eq!(reclaimed.claim_started_at, Some(started));
-        assert_eq!(reclaimed.claim_lapses, 1);
+        assert_eq!(e.store.claim_window(&lapsed.id).unwrap().lapses, 1);
 
         let mut spanning = test_evidence(Some(lapsed.id.clone()), "agent-b", node_id);
         spanning.started_at = started;
