@@ -19,8 +19,8 @@ mod writes;
 
 pub use types::{
     AgentActivity, AgentFootprintOverlap, ArtifactStub, ConformanceEvidence, Direction,
-    EvidenceProvenance, ForgetOutcome, GraphExport, Preflight, PromotionCandidate, PruneOutcome,
-    ReconcileOutcome, RepairOutcome, ResetOutcome, ScoredNode, SignalCandidate,
+    EvidenceProvenance, ForgetOutcome, GraphExport, Preflight, PreflightNode, PromotionCandidate,
+    PruneOutcome, ReconcileOutcome, RepairOutcome, ResetOutcome, ScoredNode, SignalCandidate,
     SignalConsolidationOutcome, Subgraph, WeightedEdge, WorkingSetItem, WriteOutcome,
 };
 
