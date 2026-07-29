@@ -312,12 +312,16 @@ export function parseTaskScope(paths: string, symbols: string): TaskScope {
   };
 }
 
+export type OverlapSignal = "same_branch_collision" | "cross_branch_merge_risk" | "undeclared";
+
 export interface OverlapPreflight {
   claims: Array<{
     task_id: string;
     owner: string;
     matching_paths?: string[];
     matching_symbols?: string[];
+    owner_branch?: string | null;
+    signal?: OverlapSignal;
   }>;
   footprints: Array<{
     agent_id: string;
@@ -326,10 +330,34 @@ export interface OverlapPreflight {
   }>;
 }
 
+/**
+ * What the overlap actually costs, in the words a person deciding whether to
+ * claim anyway needs (ADR-0035). An undeclared signal adds nothing: the reader
+ * gets exactly the message they got before, because a guess dressed as a
+ * warning is worse than the plain fact of the collision.
+ */
+function overlapSignalLabel(claim: {
+  owner_branch?: string | null;
+  signal?: OverlapSignal;
+}): string {
+  const branch = claim.owner_branch?.trim();
+  switch (claim.signal) {
+    case "same_branch_collision":
+      return branch ? ` [same branch ${branch} \u2014 colliding now]` : "";
+    case "cross_branch_merge_risk":
+      return branch ? ` [on ${branch} \u2014 conflicts at merge]` : "";
+    default:
+      return "";
+  }
+}
+
 export function overlapWarningDetail(preflight: OverlapPreflight): string | undefined {
   const lines = preflight.claims.slice(0, 5).map((claim) => {
     const matches = [...(claim.matching_paths ?? []), ...(claim.matching_symbols ?? [])];
-    return `Claim ${claim.task_id} (${claim.owner}): ${matches.join(", ") || "matching scope"}`;
+    return (
+      `Claim ${claim.task_id} (${claim.owner})${overlapSignalLabel(claim)}: ` +
+      (matches.join(", ") || "matching scope")
+    );
   });
   lines.push(
     ...preflight.footprints
@@ -461,6 +489,38 @@ export interface BoardRow {
   description: string;
   tooltip: string;
   status: string;
+  /** Codicon id for the row, derived from status *and* lease state. */
+  icon: string;
+}
+
+const TASK_STATUS_ICONS: Record<string, string> = {
+  claimed: "account",
+  needs_input: "comment-unresolved",
+  paused: "debug-pause",
+  open: "circle-outline",
+  in_review: "eye",
+  blocked: "error",
+  done: "check",
+};
+
+/**
+ * The icon a board row should carry.
+ *
+ * A claim whose lease has expired is nobody's work: the store's compare-and-swap
+ * admits it, and {@link boardRows} already sorts it with ready work. It still
+ * drew the `account` icon, which is the icon for *someone is holding this* — so
+ * the one row that means "abandoned, take it" looked identical to the rows that
+ * mean "hands off". Fifteen such rows in a day made the board unreadable, and
+ * the icon was the last part still saying the wrong thing.
+ *
+ * `watch` is the honest picture: a lease is a timer, and this one ran out.
+ * Derived from the clock at render time, never reaped or written back.
+ */
+export function boardIconId(task: LodestarTask, nowUnix: number): string {
+  if (task.status === "claimed" && taskLeaseState(task, nowUnix) === "expired") {
+    return "watch";
+  }
+  return TASK_STATUS_ICONS[task.status] ?? "circle-slash";
 }
 
 const BOARD_STATUS_ORDER = [
@@ -534,6 +594,7 @@ export function boardRows(
       description: taskDescription(t, nowUnix),
       tooltip: taskTooltip(t, nowUnix),
       status: t.status,
+      icon: boardIconId(t, nowUnix),
     }));
 }
 

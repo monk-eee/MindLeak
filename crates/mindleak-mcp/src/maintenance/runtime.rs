@@ -432,6 +432,7 @@ fn error_category(error: &MindLeakError) -> &'static str {
         MindLeakError::Io(_) => "io",
         MindLeakError::Http(_) => "http",
         MindLeakError::NotFound(_) => "not_found",
+        MindLeakError::InvalidArgument(_) => "invalid_argument",
         MindLeakError::Busy(_) => "busy",
         MindLeakError::Cancelled(_) => "cancelled",
         MindLeakError::Other(_) => "other",

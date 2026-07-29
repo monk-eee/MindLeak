@@ -6,7 +6,7 @@ pub(super) fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "recall",
-            "description": "Semantic recall: return nodes whose content is closest in meaning to a free-text query, using an optional local embedding index (ADR-0008; MINDLEAK_EMBED_URL / MINDLEAK_EMBED_MODEL). Complements FTS and graph search — seed the results into graph_multi_hop_query. Errors cleanly when no embedding model is reachable.",
+            "description": "Call for questions about why, prior decisions, regressions, or resumed work. Return meaning-nearest nodes from the optional local embedding index, then seed them into graph_multi_hop_query. If unavailable, use task text with graph_multi_hop_query.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

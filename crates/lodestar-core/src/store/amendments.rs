@@ -181,6 +181,77 @@ impl LodestarStore {
                 )",
             params![draft_id],
         )?;
+
+        // Record where each clause went. The incoming ids are
+        // `goal:{slug}@{version}`, so an amendment renames every clause it
+        // carries forward; superseding the outgoing row without naming its
+        // successor leaves `superseded_by` NULL and nothing can follow the
+        // rename. Slug is the stable identity across versions, so the successor
+        // is exact rather than inferred, and a clause the amendment drops has
+        // no successor and is correctly left alone.
+        transaction.execute(
+            "UPDATE goals AS outgoing
+                SET superseded_by = (
+                    SELECT successor.id FROM goals AS successor
+                     WHERE successor.constitution_version = ?2
+                       AND successor.status = 'active'
+                       AND successor.slug = outgoing.slug
+                )
+              WHERE outgoing.constitution_version = ?1
+                AND outgoing.superseded_by IS NULL
+                AND EXISTS (
+                    SELECT 1 FROM goals AS successor
+                     WHERE successor.constitution_version = ?2
+                       AND successor.status = 'active'
+                       AND successor.slug = outgoing.slug
+                )",
+            params![before, draft_id],
+        )?;
+
+        // Carry the bound code and the work in flight across with the clause,
+        // in this same transaction. Atomicity is the whole point. Move the
+        // bindings while tasks still name the outgoing clause and every live
+        // task's evidence reads as `governed code changed without a covering
+        // task` — drift, reported against work nobody touched. Move the tasks
+        // while the bindings lag and conformance goes blind instead, because no
+        // goal binds the file that changed. Neither half is safe on its own,
+        // which is why this cannot be a sweep run afterwards.
+        //
+        // `OR REPLACE` because (goal_id, node_id) is the primary key: if the
+        // successor is already bound to a node the outgoing clause also bound,
+        // the two collapse to one row rather than failing the amendment.
+        transaction.execute(
+            "UPDATE OR REPLACE goal_code
+                SET goal_id = (
+                    SELECT outgoing.superseded_by FROM goals AS outgoing
+                     WHERE outgoing.id = goal_code.goal_id
+                )
+              WHERE goal_id IN (
+                    SELECT id FROM goals
+                     WHERE constitution_version = ?1
+                       AND superseded_by IS NOT NULL
+                )",
+            params![before],
+        )?;
+
+        // Only work still in flight moves. A finished task keeps naming the
+        // clause it was actually judged under, because rewriting that would
+        // rewrite the audit (ADR-0025).
+        transaction.execute(
+            "UPDATE tasks
+                SET goal_id = (
+                        SELECT outgoing.superseded_by FROM goals AS outgoing
+                         WHERE outgoing.id = tasks.goal_id
+                    ),
+                    updated_at = ?2
+              WHERE status NOT IN ('done', 'abandoned')
+                AND goal_id IN (
+                    SELECT id FROM goals
+                     WHERE constitution_version = ?1
+                       AND superseded_by IS NOT NULL
+                )",
+            params![before, now],
+        )?;
         transaction.execute(
             "INSERT INTO constitution_amendments
                  (id, from_version, to_version, rationale, amended_by, created_at, diff)
@@ -247,6 +318,7 @@ impl LodestarStore {
 mod tests {
     use super::*;
     use crate::amendment::ClauseChange;
+    use crate::model::CodeBindingMode;
     use crate::model::Consequence;
     use crate::store::test_support::store;
     use crate::GoalKind;
@@ -337,6 +409,99 @@ mod tests {
         assert!(store.clauses_for_version(&before).unwrap().is_empty());
         assert_eq!(store.clauses_for_version(&draft).unwrap().len(), 1);
         assert_eq!(store.amendments().unwrap().len(), 1);
+    }
+
+    // Regression: an amendment stranded everything that named the clause.
+    //
+    // What went wrong: the outgoing clauses were superseded with a bare
+    // `UPDATE goals SET status = 'superseded'`, leaving `superseded_by` NULL.
+    // Because an amendment renames every clause it carries forward
+    // (`goal:{slug}@{version}`), nothing could follow the rename: code bindings
+    // and open tasks kept naming a clause no active constitution contained.
+    //
+    // Impact, measured on this repository after constitution:v2 was adopted:
+    // 25 active clauses held zero code bindings and zero tasks, while all 156
+    // bindings and all 217 tasks named superseded v1 ids. `governing_goals`
+    // filters to active clauses, so it reported "nothing governs this" for
+    // files that were demonstrably bound, and `advise` answered "no active
+    // clause governs this change; proceed" for every change — which reads as
+    // approval and was actually the constitution being disconnected.
+    #[test]
+    fn an_amendment_records_where_each_clause_went() {
+        let store = store();
+        let (before, draft) = governed(&store);
+        store.copy_clauses_to_version(&before, &draft).unwrap();
+        harden(&store, &draft);
+        let outgoing = store.clauses_for_version(&before).unwrap()[0].id.clone();
+
+        store
+            .amend_constitution(&draft, "monk-eee", "Harden the secrets rule.", NOW + 10)
+            .unwrap();
+
+        let successor = store.clauses_for_version(&draft).unwrap()[0].id.clone();
+        assert_ne!(outgoing, successor, "an amendment renames the clause");
+        assert_eq!(
+            store.get_goal(&outgoing).unwrap().unwrap().superseded_by,
+            Some(successor),
+            "the superseded clause must name the clause that replaced it"
+        );
+    }
+
+    // The bindings and the work in flight must move with the clause, in the
+    // same transaction. Moving bindings alone would report drift against work
+    // nobody touched; moving tasks alone would leave conformance blind.
+    #[test]
+    fn an_amendment_carries_bindings_and_live_work_onto_the_successor() {
+        let store = store();
+        let (before, draft) = governed(&store);
+        store.copy_clauses_to_version(&before, &draft).unwrap();
+        harden(&store, &draft);
+        let outgoing = store.clauses_for_version(&before).unwrap()[0].id.clone();
+
+        store
+            .link_goal_to_artifact(
+                &outgoing,
+                &["artifact:src/secrets.rs".to_string()],
+                CodeBindingMode::Governed,
+            )
+            .unwrap();
+        let live = store
+            .create_task(&outgoing, "rotate the key", "rotated", None, NOW)
+            .unwrap();
+        let finished = store
+            .create_task(&outgoing, "already audited", "done", None, NOW)
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE tasks SET status = 'done' WHERE id = ?1",
+                params![finished.id],
+            )
+            .unwrap();
+
+        store
+            .amend_constitution(&draft, "monk-eee", "Harden the secrets rule.", NOW + 10)
+            .unwrap();
+
+        let successor = store.clauses_for_version(&draft).unwrap()[0].id.clone();
+        assert_eq!(
+            store
+                .active_bindings_for_node("artifact:src/secrets.rs")
+                .unwrap()
+                .len(),
+            1,
+            "the binding must survive as a binding of the ACTIVE clause"
+        );
+        assert_eq!(
+            store.get_task(&live.id).unwrap().unwrap().goal_id,
+            successor,
+            "work still in flight moves to the clause that now governs it"
+        );
+        assert_eq!(
+            store.get_task(&finished.id).unwrap().unwrap().goal_id,
+            outgoing,
+            "a finished task keeps naming the clause it was judged under (ADR-0025)"
+        );
     }
 
     #[test]

@@ -7,7 +7,8 @@ use std::collections::HashSet;
 use crate::error::{LodestarError, Result};
 use crate::fleet::Wait;
 use crate::model::{
-    ClaimOverlap, ConformanceRecord, HumanQuestion, Task, TaskQa, TaskScope, TaskStatus, Verdict,
+    ClaimOverlap, ClaimOverlapReport, ConformanceRecord, HumanQuestion, OverlapSignal, Task,
+    TaskQa, TaskScope, TaskStatus, Verdict,
 };
 use crate::util::short_hash;
 
@@ -199,13 +200,21 @@ impl LodestarStore {
 
     /// Active claims whose declared scope intersects a requested pre-flight
     /// scope. Advisory only: no state is changed and no lock is granted.
+    ///
+    /// `requester` is the asking agent id, used only to read the branch that
+    /// agent already declared at `open_session`. The branch is never taken as a
+    /// call argument: it is declared once per session (ADR-0035 decision 2), and
+    /// a second place to state it would let a caller check against a branch it
+    /// is not on, with nothing able to tell which one was true.
     pub fn check_claim_overlap(
         &self,
         requested: &TaskScope,
         exclude_task_id: Option<&str>,
+        requester: Option<&str>,
         now: i64,
-    ) -> Result<Vec<ClaimOverlap>> {
+    ) -> Result<ClaimOverlapReport> {
         let requested = normalize_scope_values(requested);
+        let requester_branch = self.declared_branch(requester)?;
         let mut statement = self.conn.prepare(
             "SELECT id, owner, lease_expires_at
              FROM tasks
@@ -232,6 +241,9 @@ impl LodestarStore {
                 .cloned()
                 .collect::<Vec<_>>();
             if !matching_paths.is_empty() || !matching_symbols.is_empty() {
+                let owner_branch = self.declared_branch(Some(&owner))?;
+                let signal =
+                    OverlapSignal::classify(requester_branch.as_deref(), owner_branch.as_deref());
                 overlaps.push(ClaimOverlap {
                     task_id,
                     owner,
@@ -239,10 +251,28 @@ impl LodestarStore {
                     scope,
                     matching_paths,
                     matching_symbols,
+                    owner_branch,
+                    signal,
                 });
             }
         }
-        Ok(overlaps)
+        Ok(ClaimOverlapReport {
+            requester_branch,
+            claims: overlaps,
+        })
+    }
+
+    /// The branch an agent declared, treating an unregistered agent and a blank
+    /// declaration alike: both are "said nothing", not "said empty".
+    fn declared_branch(&self, agent: Option<&str>) -> Result<Option<String>> {
+        let Some(agent) = agent.map(str::trim).filter(|agent| !agent.is_empty()) else {
+            return Ok(None);
+        };
+        Ok(self
+            .session_context(agent)?
+            .and_then(|(context, _)| context.branch)
+            .map(|branch| branch.trim().to_string())
+            .filter(|branch| !branch.is_empty()))
     }
 
     /// Read one task's declared advisory scope.
@@ -1446,6 +1476,7 @@ fn append_note_on(
 mod tests {
     use std::sync::{Arc, Barrier};
 
+    use mindleak_session::SessionContext;
     use rusqlite::params;
 
     use super::*;
@@ -1581,9 +1612,11 @@ mod tests {
                     symbols: vec!["symbol:src/lib.rs:run".into()],
                 },
                 Some(&second.id),
+                None,
                 NOW + 3,
             )
-            .unwrap();
+            .unwrap()
+            .claims;
         assert_eq!(overlaps.len(), 1);
         assert_eq!(overlaps[0].task_id, first.id);
         assert_eq!(overlaps[0].owner, "alice");
@@ -1597,12 +1630,14 @@ mod tests {
             Some("alice")
         );
         assert!(store
-            .check_claim_overlap(&TaskScope::default(), None, NOW + 3)
+            .check_claim_overlap(&TaskScope::default(), None, None, NOW + 3)
             .unwrap()
+            .claims
             .is_empty());
         assert!(store
-            .check_claim_overlap(&scope, None, NOW + 63)
+            .check_claim_overlap(&scope, None, None, NOW + 63)
             .unwrap()
+            .claims
             .is_empty());
 
         // Requested paths are concrete, while claim declarations are globs.
@@ -1625,10 +1660,98 @@ mod tests {
                     symbols: vec![],
                 },
                 None,
+                None,
                 NOW + 3,
             )
             .unwrap()
+            .claims
             .is_empty());
+    }
+
+    /// ADR-0035 heuristic 4: an intersection is not one risk. Two agents on the
+    /// same declared branch collide now; on different branches they are storing
+    /// up a merge. Before this the caller got the same answer for both and had
+    /// to guess, which is how advisory output gets ignored.
+    #[test]
+    fn overlap_signal_separates_same_branch_collision_from_cross_branch_merge_risk() {
+        let store = store();
+        let goal = goal(&store);
+        let scope = TaskScope {
+            paths: vec!["src/lib.rs".into()],
+            symbols: vec![],
+        };
+        let held = store.create_task(&goal.id, "held", "", None, NOW).unwrap();
+        assert!(store
+            .claim_task_with_scope(&held.id, "alice", 60, &scope, NOW)
+            .unwrap());
+        store
+            .declare_session_context("alice", &branch_context("fleet/a"), NOW)
+            .unwrap();
+
+        // Same declared branch: the edits land in one history.
+        store
+            .declare_session_context("bob", &branch_context("fleet/a"), NOW)
+            .unwrap();
+        let report = store
+            .check_claim_overlap(&scope, None, Some("bob"), NOW)
+            .unwrap();
+        assert_eq!(report.requester_branch.as_deref(), Some("fleet/a"));
+        assert_eq!(report.claims.len(), 1);
+        assert_eq!(report.claims[0].owner_branch.as_deref(), Some("fleet/a"));
+        assert_eq!(report.claims[0].signal, OverlapSignal::SameBranchCollision);
+
+        // Different declared branches: divergence, paid at merge.
+        store
+            .declare_session_context("bob", &branch_context("fleet/b"), NOW + 1)
+            .unwrap();
+        let report = store
+            .check_claim_overlap(&scope, None, Some("bob"), NOW + 1)
+            .unwrap();
+        assert_eq!(report.requester_branch.as_deref(), Some("fleet/b"));
+        assert_eq!(report.claims[0].signal, OverlapSignal::CrossBranchMergeRisk);
+
+        // Either side silent degrades to today's behaviour, and says which side.
+        let report = store.check_claim_overlap(&scope, None, None, NOW).unwrap();
+        assert_eq!(report.requester_branch, None);
+        assert_eq!(report.claims[0].owner_branch.as_deref(), Some("fleet/a"));
+        assert_eq!(report.claims[0].signal, OverlapSignal::Undeclared);
+
+        let unregistered = store
+            .check_claim_overlap(&scope, None, Some("nobody"), NOW)
+            .unwrap();
+        assert_eq!(unregistered.claims[0].signal, OverlapSignal::Undeclared);
+
+        // A session that registered without declaring a branch is silent too:
+        // an empty declaration is not a branch nobody else is on.
+        store
+            .declare_session_context("bob", &SessionContext::default(), NOW + 2)
+            .unwrap();
+        let report = store
+            .check_claim_overlap(&scope, None, Some("bob"), NOW + 2)
+            .unwrap();
+        assert_eq!(report.requester_branch, None);
+        assert_eq!(report.claims[0].signal, OverlapSignal::Undeclared);
+
+        // Still advisory: nothing about the classification blocks a claim.
+        assert!(store
+            .claim_task_with_scope(
+                &store
+                    .create_task(&goal.id, "rival", "", None, NOW + 2)
+                    .unwrap()
+                    .id,
+                "bob",
+                60,
+                &scope,
+                NOW + 2
+            )
+            .unwrap());
+    }
+
+    fn branch_context(branch: &str) -> SessionContext {
+        SessionContext {
+            branch: Some(branch.to_string()),
+            ..SessionContext::default()
+        }
     }
 
     #[test]
