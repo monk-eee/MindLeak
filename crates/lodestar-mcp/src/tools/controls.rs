@@ -79,6 +79,15 @@ pub(super) fn definitions() -> Vec<Value> {
                 "required": ["control_id", "clause_id", "kind", "power"]
             }
         }),
+        json!({
+            "name": "retire_control",
+            "description": "Stand a control down when it is superseded, misregistered, or no longer the mechanism behind its clause. Attributed to the calling session and permanent: retiring a control is the one act that reduces what a clause can enforce without changing a word of the clause, so it is recorded like a waiver. Retirement is not deletion - the control stays, so observations naming it resolve as unknown rather than silently disappearing, and it keeps recording what it once enforced. Without this a control registered under the wrong id cannot be withdrawn at all, because a control version never moves backwards, so dead and duplicate mechanisms accumulate against live clauses and go on reporting.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "control_id": { "type": "string" } },
+                "required": ["control_id"]
+            }
+        }),
     ]
 }
 
@@ -93,6 +102,7 @@ pub(super) fn dispatch(
         "observe_ratchet" => Some(observe_ratchet(engine, args)),
         "clause_controls" => Some(clause_controls(engine, args)),
         "register_control" => Some(register_control(engine, args)),
+        "retire_control" => Some(retire_control(engine, args)),
         _ => None,
     }
 }
@@ -118,6 +128,8 @@ fn register_control(engine: &Lodestar, args: &Value) -> Result<Value, String> {
             version: i64_arg(args, "version", 1),
             configuration: opt_str(args, "configuration"),
             status: ControlStatus::Active,
+            retired_by: None,
+            retired_at: None,
         })
         .map_err(|e| e.to_string())?;
     ok(&json!({
@@ -126,6 +138,24 @@ fn register_control(engine: &Lodestar, args: &Value) -> Result<Value, String> {
         "power": control.power.as_str(),
         "ceiling": control.power.ceiling().as_str(),
         "version": control.version,
+    }))
+}
+
+fn retire_control(engine: &Lodestar, args: &Value) -> Result<Value, String> {
+    let control_id = req_str(args, "control_id")?;
+    let retired_by = req_str(args, "agent")?;
+    let retired = engine
+        .retire_control(control_id, retired_by)
+        .map_err(|e| e.to_string())?;
+    if !retired {
+        return Err(format!(
+            "no control {control_id} to retire; a control that was never registered cannot be stood down"
+        ));
+    }
+    ok(&json!({
+        "control_id": control_id,
+        "status": "retired",
+        "retired_by": retired_by
     }))
 }
 

@@ -617,10 +617,18 @@ pub(super) fn dispatch(
             let mut rows = Vec::with_capacity(tasks.len());
             for task in tasks {
                 let scope = engine.task_scope(&task.id).map_err(|e| e.to_string())?;
+                // The receipt the task closed on, beside the status rather than
+                // one query away. A `done` row says nothing about whether its
+                // evidence ever affirmed the work, and most of them did not.
+                let receipt = engine.task_receipt(&task.id).map_err(|e| e.to_string())?;
                 let mut row = serde_json::to_value(task).map_err(|e| e.to_string())?;
-                row.as_object_mut()
-                    .ok_or_else(|| "task did not serialize as an object".to_string())?
-                    .insert("scope".to_string(), json!(scope));
+                let object = row
+                    .as_object_mut()
+                    .ok_or_else(|| "task did not serialize as an object".to_string())?;
+                object.insert("scope".to_string(), json!(scope));
+                if let Some(receipt) = receipt {
+                    object.insert("receipt".to_string(), json!(receipt));
+                }
                 rows.push(row);
             }
             ok(&rows)
