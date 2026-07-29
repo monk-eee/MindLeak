@@ -22,8 +22,6 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
     for (table, column, definition) in [
         ("tasks", "claim_started_at", "INTEGER"),
         ("tasks", "parked_at", "INTEGER"),
-        ("tasks", "claim_lapses", "INTEGER NOT NULL DEFAULT 0"),
-        ("tasks", "unleased_seconds", "INTEGER NOT NULL DEFAULT 0"),
         // Who overrode a non-affirming verdict, when, and which verdict
         // (ADR-0009). NULL on every pre-existing row is the honest answer:
         // those acceptances were not recorded and cannot be reconstructed.
@@ -84,6 +82,22 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
     // live claim moves.
     run_once(connection, "import_task_genesis_events", || {
         crate::store::import_genesis(connection, crate::now_unix()).map(|_| ())
+    })?;
+    // Only after the genesis has carried them into the log (ADR-0064 d5/d6).
+    // Order is load-bearing: the counters are the sole surviving trace of a
+    // window that opened before the log, so dropping them first would lose the
+    // holes and let a discontinuous window certify itself clean.
+    //
+    // DROP COLUMN, never a table rebuild. A rebuild rewrites every row,
+    // including `owner` on live claims, and ADR-0063 is explicit that a live
+    // claim is not ours to touch. Dropping an unrelated column moves nothing.
+    run_once(connection, "drop_task_lapse_counters", || {
+        for column in ["claim_lapses", "unleased_seconds"] {
+            if column_exists(connection, "tasks", column)? {
+                connection.execute_batch(&format!("ALTER TABLE tasks DROP COLUMN {column}"))?;
+            }
+        }
+        Ok(())
     })?;
     connection.execute(
         "UPDATE tasks
@@ -402,7 +416,7 @@ fn migrate_constitution_versions(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn column_exists(connection: &Connection, table: &str, column: &str) -> Result<bool> {
+pub(crate) fn column_exists(connection: &Connection, table: &str, column: &str) -> Result<bool> {
     let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
     let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
     for row in rows {
