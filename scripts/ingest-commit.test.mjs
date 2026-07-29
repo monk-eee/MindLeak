@@ -4,6 +4,10 @@
 // is trusted only as long as it is invisible, so the interesting cases are the
 // ones where it declines to act.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import {
@@ -41,18 +45,116 @@ test("the commit's timestamp is captured, not the moment of ingestion", () => {
   assert.notEqual(commit.timestamp, Math.floor(Date.now() / 1000));
 });
 
-/// A merge commit is not new work. Its content already arrived on the branches
-/// it joins, so ingesting it would attribute every file in the merge to
-/// whoever happened to run it -- and on this repository that is one agent
-/// reconciling another's branch.
-test("a merge commit is not ingested as new work", () => {
-  const commit = { changed: ["a.rs", "b.rs"] };
-  assert.equal(worthIngesting(commit, 2), false);
-  assert.equal(worthIngesting(commit, 1), true);
+/// A clean merge is not new work: its content already arrived on the branches it
+/// joins, so ingesting it would attribute every file to whoever happened to run
+/// it. Git reports no files for such a merge, because `git show --name-only`
+/// lists only what differs from EVERY parent.
+test("a clean merge is not ingested as new work", () => {
+  assert.equal(worthIngesting({ changed: [] }), false);
+});
+
+/// But a conflicted merge IS authored work, and dropping it made reconcile-
+/// shaped tasks impossible to certify: the whole product of a reconcile is the
+/// merge commit, so the evidence window came back empty every time. Git already
+/// isolates the resolutions -- measured across 25 merges in this repository, the
+/// files `git show` reports matched "differs from every parent" in 25 of 25.
+test("a conflicted merge keeps the provenance of what it resolved", () => {
+  assert.equal(worthIngesting({ changed: ["DEVELOPERS.md"] }), true);
 });
 
 test("an empty commit has nothing to attribute", () => {
-  assert.equal(worthIngesting({ changed: [] }, 1), false);
+  assert.equal(worthIngesting({ changed: [] }), false);
+});
+
+/// The rule above rests entirely on a claim about git: that `git show
+/// --name-only` on a merge reports only what differs from EVERY parent. That is
+/// load-bearing enough to check against real git rather than a fake, because if
+/// it were false a clean merge would attribute another agent's whole branch to
+/// whoever ran the merge.
+///
+/// The environment scrubbing below is not decoration. This suite runs from the
+/// pre-push hook, and git exports GIT_DIR, GIT_INDEX_FILE and friends to its
+/// hooks. Inherited, they outrank `cwd`: every git call here then reads the temp
+/// directory's files but writes to the REAL repository. Without this, the test
+/// committed its fixtures onto the branch being pushed and left the worktree
+/// checked out on a branch called `theirs`.
+const isolatedGitEnvironment = () => {
+  const isolated = { ...process.env };
+  for (const variable of [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  ]) {
+    delete isolated[variable];
+  }
+  return isolated;
+};
+
+test("git reports only the conflict resolutions for a merge", () => {
+  const repo = mkdtempSync(join(tmpdir(), "mindleak-merge-"));
+  try {
+    const git = (args) =>
+      execFileSync("git", args, {
+        cwd: repo,
+        encoding: "utf8",
+        stdio: "pipe",
+        env: isolatedGitEnvironment(),
+      }).trim();
+    const commit = (message) => git(["commit", "-m", message, "--no-verify"]);
+
+    git(["init", "-b", "main"]);
+    git(["config", "user.name", "Merge Test"]);
+    git(["config", "user.email", "merge@example.invalid"]);
+    writeFileSync(join(repo, "shared.txt"), "base\n");
+    writeFileSync(join(repo, "untouched.txt"), "quiet\n");
+    git(["add", "."]);
+    commit("base");
+
+    // A branch that changes a file nobody else touches.
+    git(["checkout", "-b", "theirs"]);
+    writeFileSync(join(repo, "untouched.txt"), "their work\n");
+    git(["add", "untouched.txt"]);
+    commit("theirs");
+
+    // A clean merge: the content arrived from `theirs`, authored by them.
+    git(["checkout", "main"]);
+    writeFileSync(join(repo, "shared.txt"), "base\nmine\n");
+    git(["add", "shared.txt"]);
+    commit("mine");
+    git(["merge", "theirs", "--no-edit", "-m", "clean merge"]);
+
+    const clean = readCommit(git);
+    assert.deepEqual(clean.changed, [], "a clean merge must attribute nothing");
+    assert.equal(worthIngesting(clean), false);
+
+    // A conflicting branch, resolved by hand.
+    git(["checkout", "-b", "conflicting", "HEAD~2"]);
+    writeFileSync(join(repo, "shared.txt"), "base\nconflict\n");
+    git(["add", "shared.txt"]);
+    commit("conflicting");
+    git(["checkout", "main"]);
+    try {
+      git(["merge", "conflicting", "--no-edit"]);
+    } catch {
+      // Expected: the merge stops on the conflict.
+    }
+    writeFileSync(join(repo, "shared.txt"), "base\nresolved by hand\n");
+    git(["add", "shared.txt"]);
+    commit("conflicted merge");
+
+    const conflicted = readCommit(git);
+    assert.deepEqual(
+      conflicted.changed,
+      ["shared.txt"],
+      "a conflicted merge must attribute exactly what was resolved",
+    );
+    assert.equal(worthIngesting(conflicted), true);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
 });
 
 /// Giving up quietly was the original design and it was wrong. A commit landed

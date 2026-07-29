@@ -17,6 +17,12 @@
 import { spawn, execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
 
+import { resolveServer } from "./claim-gate.mjs";
+
+const repoRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+  encoding: "utf8",
+}).trim();
+
 /** Words too common in this repository to carry any signal. */
 const STOP = new Set([
   "the",
@@ -148,11 +154,19 @@ const hours = (secs) => {
 };
 
 async function main() {
-  const bin =
-    process.env.LODESTAR_MCP_BIN ??
-    (process.platform === "win32"
-      ? "target/release/lodestar-mcp.exe"
-      : "target/release/lodestar-mcp");
+  // Shared resolver: honours the override, accepts a debug build, and reports
+  // absence instead of spawning a path that does not exist. A release-only
+  // fork made this report unrunnable for anyone without a release build.
+  const bin = resolveServer(repoRoot, "lodestar");
+  if (!bin) {
+    console.error(
+      "stranded-report: no lodestar-mcp binary found.\n" +
+        "  Build one:  cargo build -p lodestar-mcp\n" +
+        "  Or point at one:  set LODESTAR_MCP_BIN",
+    );
+    process.exitCode = 2;
+    return;
+  }
   const session = process.env.LODESTAR_SESSION_ID;
   if (!session) {
     console.error("stranded-report: set LODESTAR_SESSION_ID");

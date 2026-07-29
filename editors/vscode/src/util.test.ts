@@ -614,6 +614,41 @@ describe("overlap pre-flight", () => {
     expect(detail).toContain("Claim task:a (alice): src/auth.ts");
     expect(detail).toContain("Footprint agent:bob: artifact:src/auth.ts via execution:run");
   });
+
+  it("says what an overlap costs when both sides declared a branch", () => {
+    const claim = (signal: "same_branch_collision" | "cross_branch_merge_risk") =>
+      overlapWarningDetail({
+        claims: [
+          {
+            task_id: "task:a",
+            owner: "alice",
+            matching_paths: ["src/auth.ts"],
+            owner_branch: "fleet/a",
+            signal,
+          },
+        ],
+        footprints: [],
+      });
+    expect(claim("same_branch_collision")).toContain("same branch fleet/a");
+    expect(claim("cross_branch_merge_risk")).toContain("conflicts at merge");
+
+    // Undeclared context degrades to exactly the message it always gave: a
+    // warning that guesses is worse than the plain fact of the collision.
+    expect(
+      overlapWarningDetail({
+        claims: [
+          {
+            task_id: "task:a",
+            owner: "alice",
+            matching_paths: ["src/auth.ts"],
+            owner_branch: null,
+            signal: "undeclared",
+          },
+        ],
+        footprints: [],
+      })
+    ).toBe("Claim task:a (alice): src/auth.ts");
+  });
 });
 
 describe("conformanceDiagnostic", () => {

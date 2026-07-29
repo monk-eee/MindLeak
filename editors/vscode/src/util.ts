@@ -312,12 +312,16 @@ export function parseTaskScope(paths: string, symbols: string): TaskScope {
   };
 }
 
+export type OverlapSignal = "same_branch_collision" | "cross_branch_merge_risk" | "undeclared";
+
 export interface OverlapPreflight {
   claims: Array<{
     task_id: string;
     owner: string;
     matching_paths?: string[];
     matching_symbols?: string[];
+    owner_branch?: string | null;
+    signal?: OverlapSignal;
   }>;
   footprints: Array<{
     agent_id: string;
@@ -326,10 +330,34 @@ export interface OverlapPreflight {
   }>;
 }
 
+/**
+ * What the overlap actually costs, in the words a person deciding whether to
+ * claim anyway needs (ADR-0035). An undeclared signal adds nothing: the reader
+ * gets exactly the message they got before, because a guess dressed as a
+ * warning is worse than the plain fact of the collision.
+ */
+function overlapSignalLabel(claim: {
+  owner_branch?: string | null;
+  signal?: OverlapSignal;
+}): string {
+  const branch = claim.owner_branch?.trim();
+  switch (claim.signal) {
+    case "same_branch_collision":
+      return branch ? ` [same branch ${branch} \u2014 colliding now]` : "";
+    case "cross_branch_merge_risk":
+      return branch ? ` [on ${branch} \u2014 conflicts at merge]` : "";
+    default:
+      return "";
+  }
+}
+
 export function overlapWarningDetail(preflight: OverlapPreflight): string | undefined {
   const lines = preflight.claims.slice(0, 5).map((claim) => {
     const matches = [...(claim.matching_paths ?? []), ...(claim.matching_symbols ?? [])];
-    return `Claim ${claim.task_id} (${claim.owner}): ${matches.join(", ") || "matching scope"}`;
+    return (
+      `Claim ${claim.task_id} (${claim.owner})${overlapSignalLabel(claim)}: ` +
+      (matches.join(", ") || "matching scope")
+    );
   });
   lines.push(
     ...preflight.footprints

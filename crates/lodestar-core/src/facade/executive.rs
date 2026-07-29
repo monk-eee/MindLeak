@@ -2,8 +2,8 @@
 use crate::dialogue::{self, DraftedBy, QuestionDraft};
 use crate::stalls::{stalls, Stall};
 use crate::{
-    now_unix, ClaimOverlap, ClaimTransfer, HumanQuestion, Lodestar, LodestarError, Result, Task,
-    TaskQa, TaskScope,
+    now_unix, ClaimOverlap, ClaimOverlapReport, ClaimTransfer, HumanQuestion, Lodestar,
+    LodestarError, Result, Task, TaskQa, TaskScope,
 };
 
 impl Lodestar {
@@ -126,13 +126,18 @@ impl Lodestar {
 
     /// Read-only active-claim intersection for concrete requested paths/symbols.
     /// It warns; it never locks.
+    ///
+    /// `requester` is optional so an agent that never registered a session still
+    /// gets today's answer — the signal degrades to `undeclared` rather than the
+    /// check refusing to run (ADR-0035 decision 5).
     pub fn check_claim_overlap(
         &self,
         scope: &TaskScope,
         exclude_task_id: Option<&str>,
-    ) -> Result<Vec<ClaimOverlap>> {
+        requester: Option<&str>,
+    ) -> Result<ClaimOverlapReport> {
         self.store
-            .check_claim_overlap(scope, exclude_task_id, now_unix())
+            .check_claim_overlap(scope, exclude_task_id, requester, now_unix())
     }
 
     pub fn renew_lease(&self, id: &str, agent: &str, lease_secs: i64) -> Result<bool> {
@@ -169,11 +174,16 @@ impl Lodestar {
             .get_task(task_id)?
             .ok_or_else(|| LodestarError::NotFound(task_id.to_string()))?;
         let scope = self.store.task_scope(task_id)?;
-        let overlaps = self
-            .store
-            .check_claim_overlap(&scope, Some(task_id), now_unix())?;
+        // The asking side is this task's owner, so the branch each collision is
+        // classified against is that agent's declared one, not the caller's.
+        let overlaps = self.store.check_claim_overlap(
+            &scope,
+            Some(task_id),
+            task.owner.as_deref(),
+            now_unix(),
+        )?;
         let mut drafts = Vec::new();
-        for overlap in overlaps {
+        for overlap in overlaps.claims {
             // An agent may not address a question to itself (ADR-0046 clause 6):
             // it would park the task waiting on the only agent that cannot act
             // while it is parked. Two of one agent's own tasks colliding is
