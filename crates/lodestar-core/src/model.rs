@@ -425,6 +425,31 @@ impl Verdict {
     }
 }
 
+/// A one-glance summary of the conformance record a task closed on.
+///
+/// A task reaching `done` says nothing about whether its evidence ever affirmed
+/// the work. Measured over this repository, 57 of 101 `done` tasks rested on a
+/// `drift`/`needs_human` verdict or on an `aligned` one covering no nodes at
+/// all, and every one of them read on the board exactly like a task whose
+/// evidence proved something. `affirms` is the distinction, carried where the
+/// completion is reported rather than left for a reader to reconstruct from the
+/// conformance chain.
+///
+/// Derived at read time from the durable record; nothing here is stored twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct TaskReceipt {
+    /// The conformance record this summarises, resolvable after the fact.
+    pub conformance_id: i64,
+    pub verdict: Verdict,
+    /// How many nodes the evidence bundle actually covered.
+    pub covered_nodes: usize,
+    pub checked_at: i64,
+    /// Whether the receipt affirmed the work: `aligned` **and** covering at
+    /// least one node. An `aligned` verdict over an empty bundle is agreement
+    /// about nothing, which is not the same as proof.
+    pub affirms: bool,
+}
+
 /// One persisted conformance audit record: the durable, resolvable evidence
 /// link for a task. Its `id` is stable and addressable after the fact, and the
 /// stored `evidence` is exactly the bundle that produced `verdict`/`findings`.
