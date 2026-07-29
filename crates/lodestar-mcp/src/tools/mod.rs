@@ -350,6 +350,7 @@ fn requires_session(name: &str) -> bool {
             | "resume_task"
             | "check_conformance"
             | "accept_ratchet_baseline"
+            | "retire_control"
             | "grant_waiver"
             | "revoke_waiver"
             | "propose_amendment"
@@ -834,6 +835,143 @@ mod tests {
                 .iter()
                 .any(|value| value == "agent"));
         }
+    }
+
+    /// A control registered under the wrong id used to be permanent: its
+    /// version can never move backwards, so re-registering is refused, and
+    /// `retire_control` lived on the facade without ever reaching the tool
+    /// surface. Dead and duplicate mechanisms accumulated against live clauses
+    /// and went on reporting.
+    ///
+    /// Driven through `bind_session` rather than by handing the tool an author,
+    /// because that is the whole point: retiring a control weakens what its
+    /// clause can enforce, so the author is resolved from the session and
+    /// cannot be claimed.
+    #[test]
+    fn a_control_can_be_stood_down_through_the_tool_surface() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        const TOKEN: &str = "00112233445566778899aabbccddeeff";
+        let bound = |tool: &str, arguments: Value| -> Value {
+            let params = json!({ "name": tool, "arguments": arguments });
+            bind_session(&params, &sessions).expect("session binds")
+        };
+
+        call(
+            &engine,
+            &bound("open_session", json!({ "session_id": TOKEN })),
+        )
+        .expect("the session opens");
+
+        let clause = engine
+            .define_goal(
+                lodestar_core::GoalKind::Constraint,
+                "Modules stay small",
+                "Split a module that outgrows its responsibility.",
+                None,
+            )
+            .unwrap();
+
+        let registered = call(
+            &engine,
+            &json!({
+                "name": "register_control",
+                "arguments": {
+                    "control_id": "control:misnamed",
+                    "clause_id": clause.id,
+                    "kind": "check",
+                    "power": "mechanical"
+                }
+            }),
+        );
+        assert!(registered.is_ok(), "the control registers: {registered:?}");
+
+        let retired = call(
+            &engine,
+            &bound(
+                "retire_control",
+                json!({ "session_id": TOKEN, "control_id": "control:misnamed" }),
+            ),
+        )
+        .expect("the control is stood down");
+        let body: Value =
+            serde_json::from_str(retired["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["status"], "retired");
+        assert!(
+            body["retired_by"].is_string(),
+            "the stand-down names who did it: {body}"
+        );
+
+        // Retirement is not deletion: the control still records what it served,
+        // which is why observations naming it resolve as unknown rather than
+        // vanishing.
+        let listed = call(
+            &engine,
+            &json!({
+                "name": "clause_controls",
+                "arguments": { "clause_id": clause.id }
+            }),
+        )
+        .unwrap();
+        let listed: Value =
+            serde_json::from_str(listed["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(listed["controls"][0]["status"], "retired");
+    }
+
+    /// Reporting success for a control that was never there would let a typo
+    /// read as a completed stand-down.
+    #[test]
+    fn retiring_a_control_that_was_never_registered_is_refused() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        const TOKEN: &str = "00112233445566778899aabbccddeeff";
+
+        call(
+            &engine,
+            &bind_session(
+                &json!({
+                    "name": "open_session",
+                    "arguments": { "session_id": TOKEN }
+                }),
+                &sessions,
+            )
+            .expect("session binds"),
+        )
+        .expect("the session opens");
+
+        let params = bind_session(
+            &json!({
+                "name": "retire_control",
+                "arguments": { "session_id": TOKEN, "control_id": "control:never-existed" }
+            }),
+            &sessions,
+        )
+        .expect("session binds");
+
+        let error = call(&engine, &params).expect_err("an unknown control cannot be stood down");
+        assert!(
+            error.contains("control:never-existed"),
+            "names the control it could not find: {error}"
+        );
+    }
+
+    /// Without a session there is nobody to attribute the stand-down to, so the
+    /// call must not quietly succeed unattributed.
+    #[test]
+    fn retiring_a_control_without_a_session_is_refused() {
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        let error = bind_session(
+            &json!({
+                "name": "retire_control",
+                "arguments": { "control_id": "control:misnamed" }
+            }),
+            &sessions,
+        )
+        .expect_err("an unbound stand-down is refused");
+        assert!(
+            error.contains("session_id"),
+            "says a session is required: {error}"
+        );
     }
 
     #[test]

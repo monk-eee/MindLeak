@@ -331,6 +331,8 @@ mod tests {
             version: 1,
             configuration: None,
             status: ControlStatus::Active,
+            retired_by: None,
+            retired_at: None,
         })
         .unwrap();
 
@@ -374,6 +376,8 @@ mod tests {
             version: 1,
             configuration: None,
             status: ControlStatus::Active,
+            retired_by: None,
+            retired_at: None,
         })
         .unwrap();
         assert!(
@@ -414,9 +418,11 @@ mod tests {
             version: 1,
             configuration: None,
             status: ControlStatus::Active,
+            retired_by: None,
+            retired_at: None,
         })
         .unwrap();
-        assert!(e.retire_control("control:retired").unwrap());
+        assert!(e.retire_control("control:retired", "monk-eee").unwrap());
 
         e.amend_constitution(&draft.id, "monk-eee", "Evidence rule needed teeth.")
             .unwrap();
