@@ -4,6 +4,7 @@
 mod amendments;
 mod conformance;
 mod constitution;
+mod constitution_packs;
 mod controls;
 mod design;
 mod design_materialization;
@@ -555,9 +556,10 @@ mod tests {
             "resolved_context",
         ];
 
-        const SOURCES: [(&str, &str); 6] = [
+        const SOURCES: [(&str, &str); 7] = [
             ("amendments", include_str!("amendments.rs")),
             ("constitution", include_str!("constitution.rs")),
+            ("constitution_packs", include_str!("constitution_packs.rs")),
             ("controls", include_str!("controls.rs")),
             ("waivers", include_str!("waivers.rs")),
             ("executive", include_str!("executive.rs")),
@@ -856,10 +858,11 @@ mod tests {
     /// be found.
     #[test]
     fn every_tool_the_server_answers_to_is_advertised() {
-        const SOURCES: [(&str, &str); 13] = [
+        const SOURCES: [(&str, &str); 14] = [
             ("amendments", include_str!("amendments.rs")),
             ("conformance", include_str!("conformance.rs")),
             ("constitution", include_str!("constitution.rs")),
+            ("constitution_packs", include_str!("constitution_packs.rs")),
             ("controls", include_str!("controls.rs")),
             ("design", include_str!("design.rs")),
             (
