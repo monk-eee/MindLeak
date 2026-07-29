@@ -182,13 +182,14 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
 /// Dispatch a `tools/call`. Returns the MCP `content` object or an error string.
 #[cfg(test)]
 pub fn call(engine: &Lodestar, params: &Value) -> Result<Value, String> {
-    call_with_storage(engine, params, None)
+    call_with_storage(engine, params, None, None)
 }
 
 pub fn call_with_storage(
     engine: &Lodestar,
     params: &Value,
     storage: Option<&StorageStatus>,
+    stale_build: Option<&str>,
 ) -> Result<Value, String> {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
@@ -217,6 +218,12 @@ pub fn call_with_storage(
         let mut body = json!({ "agent_id": agent_id });
         if let Some(context) = args.get("resolved_context") {
             body["context"] = context.clone();
+        }
+        // A stale binary says so to the agent, not only to a log the agent
+        // cannot see. Only when stale: a current build says nothing, so the
+        // field keeps its meaning and never becomes noise to scroll past.
+        if let Some(notice) = stale_build {
+            body["stale_build"] = json!(notice);
         }
         return ok(&body);
     }
@@ -1147,12 +1154,69 @@ mod tests {
         };
         let params = json!({ "name": "storage_status", "arguments": {} });
 
-        let result = call_with_storage(&engine, &params, Some(&status)).unwrap();
+        let result = call_with_storage(&engine, &params, Some(&status), None).unwrap();
         let value: Value =
             serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(value["plane"], "lodestar");
         assert_eq!(value["repository_id"], status.repository_id.unwrap());
         assert_eq!(value["origin"], "repository");
         assert_eq!(value["migrated_legacy"], false);
+    }
+
+    /// A server built from an older commit than the checkout it serves used to
+    /// say so only on stderr, which an MCP client does not show the agent. A
+    /// whole session then read its verdicts as authoritative and diagnosed two
+    /// absent tools as tool defects. The notice now reaches the one call every
+    /// agent makes first.
+    #[test]
+    fn a_stale_build_tells_the_session_that_opened_it() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        let params = json!({
+            "name": "open_session",
+            "arguments": { "session_id": "00112233445566778899aabbccddeeff" }
+        });
+        let bound = bind_session(&params, &sessions).unwrap();
+
+        let result = call_with_storage(
+            &engine,
+            &bound,
+            None,
+            Some("running a stale build of this checkout: binary was built from f9a549c4"),
+        )
+        .unwrap();
+        let value: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+
+        assert!(value["agent_id"].is_string());
+        assert!(
+            value["stale_build"]
+                .as_str()
+                .is_some_and(|notice| notice.contains("stale build")),
+            "the session response must carry the notice, got {value}"
+        );
+    }
+
+    /// And says nothing when it is current — otherwise the field becomes a line
+    /// to scroll past and stops meaning anything when it appears.
+    #[test]
+    fn a_current_build_adds_nothing_to_the_session_response() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        let params = json!({
+            "name": "open_session",
+            "arguments": { "session_id": "ffeeddccbbaa99887766554433221100" }
+        });
+        let bound = bind_session(&params, &sessions).unwrap();
+
+        let result = call_with_storage(&engine, &bound, None, None).unwrap();
+        let value: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+
+        assert!(value["agent_id"].is_string());
+        assert!(
+            value.get("stale_build").is_none(),
+            "a current build must stay silent, got {value}"
+        );
     }
 }

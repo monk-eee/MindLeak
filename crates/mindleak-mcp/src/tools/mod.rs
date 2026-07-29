@@ -150,13 +150,14 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
 /// operator can confirm what ran and whether it succeeded (ADR-0010).
 #[cfg(test)]
 pub fn call(engine: &MindLeak, params: &Value) -> Result<Value, String> {
-    call_with_storage(engine, params, None)
+    call_with_storage(engine, params, None, None)
 }
 
 pub fn call_with_storage(
     engine: &MindLeak,
     params: &Value,
     storage: Option<&StorageStatus>,
+    stale_build: Option<&str>,
 ) -> Result<Value, String> {
     let name = params
         .get("name")
@@ -166,7 +167,7 @@ pub fn call_with_storage(
     let span = tracing::info_span!("tool_call", tool = %name);
     let _enter = span.enter();
     let start = std::time::Instant::now();
-    let result = dispatch(engine, params, storage);
+    let result = dispatch(engine, params, storage, stale_build);
     let duration_ms = start.elapsed().as_millis() as i64;
     let detail = result.as_ref().err().map(|e| json!({ "error": e }));
     engine.record_tool_call(&name, result.is_ok(), duration_ms, detail);
@@ -182,6 +183,7 @@ fn dispatch(
     engine: &MindLeak,
     params: &Value,
     storage: Option<&StorageStatus>,
+    stale_build: Option<&str>,
 ) -> Result<Value, String> {
     let name = params
         .get("name")
@@ -193,6 +195,13 @@ fn dispatch(
         let mut body = json!({ "agent_id": req_str(&args, "resolved_agent")? });
         if let Some(context) = args.get("resolved_context") {
             body["context"] = context.clone();
+        }
+        // A stale binary says so to the agent, not only to a log the agent
+        // cannot see. This plane matters most: the sha validation that refuses
+        // a fabricated commit id lives here, so a stale build means that guard
+        // is not running at all while every call still looks normal.
+        if let Some(notice) = stale_build {
+            body["stale_build"] = json!(notice);
         }
         return Ok(text_result(&body));
     }
@@ -554,7 +563,7 @@ mod tests {
         };
         let params = json!({ "name": "storage_status", "arguments": {} });
 
-        let result = call_with_storage(&engine, &params, Some(&status)).unwrap();
+        let result = call_with_storage(&engine, &params, Some(&status), None).unwrap();
         let value: Value = serde_json::from_str(&content_text(&result)).unwrap();
         assert_eq!(value["plane"], "mindleak");
         assert_eq!(value["repository_id"], status.repository_id.unwrap());
