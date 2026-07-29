@@ -13,28 +13,9 @@ export class BoardItem extends vscode.TreeItem {
     this.description = row.description;
     this.tooltip = row.tooltip;
     this.contextValue = taskContextValue(task, Math.floor(Date.now() / 1000), currentAgent);
-    this.iconPath = iconFor(row.status);
-  }
-}
-
-function iconFor(status: string): vscode.ThemeIcon {
-  switch (status) {
-    case "claimed":
-      return new vscode.ThemeIcon("account");
-    case "needs_input":
-      return new vscode.ThemeIcon("comment-unresolved");
-    case "paused":
-      return new vscode.ThemeIcon("debug-pause");
-    case "open":
-      return new vscode.ThemeIcon("circle-outline");
-    case "in_review":
-      return new vscode.ThemeIcon("eye");
-    case "blocked":
-      return new vscode.ThemeIcon("error");
-    case "done":
-      return new vscode.ThemeIcon("check");
-    default:
-      return new vscode.ThemeIcon("circle-slash");
+    // The icon is chosen in `boardIconId`, beside the sort that already knows an
+    // expired claim is ready work — status alone cannot tell the two apart.
+    this.iconPath = new vscode.ThemeIcon(row.icon);
   }
 }
 

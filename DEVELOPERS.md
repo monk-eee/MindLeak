@@ -258,8 +258,8 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
-- **17% of tracked files cannot be re-ingested at all: another worktree's
-  absolute id owns them — MEASURED, not fixed.** Found by the first run of
+- **17% of tracked files could not be re-ingested at all: another worktree's
+  absolute id owned them — MEASURED, FIXED.** Found by the first run of
   `make reingest`. 43 of 247 files failed with
 
   ```
@@ -270,18 +270,29 @@ and footguns, with impact and status:
 
   ADR-0038 gives every worktree of this repository one shared graph, so an
   absolute id written from `MindLeak-export` names the *same file* as the
-  repo-relative id — but it holds the structural edges, and the repo-relative id
-  cannot take them. `repair_workspace_paths` runs at server startup and would
-  collapse these, except that it deliberately skips ids outside its own root:
-  its own test is `repair_is_idempotent_and_leaves_foreign_paths_alone`. A
-  sibling worktree is not foreign, and treating it as foreign is what makes the
-  split permanent. Impact: those files are frozen under whichever worktree
-  ingested them first, so every future extractor improvement misses them and
-  nothing reports it — the error only appears if something tries to re-ingest.
-  Not fixed here because it is an ownership decision, not a patch: repair would
-  have to recognise a sibling checkout of the same repository id and merge into
-  the repo-relative id, and merging structure from two identities needs a rule
-  for which wins.
+  repo-relative id — but it held the structural edges, and the repo-relative id
+  could not take them. Those files were frozen under whichever worktree ingested
+  them first, so every future extractor improvement missed them and nothing
+  reported it; the error only appeared if something tried to re-ingest.
+  Repair was prefix-scoped, which assumes every worktree eventually hosts a
+  server that heals its own ids — untrue for a worktree an agent works in
+  without ever starting one there. An absolute id now merges onto a
+  repo-relative twin **the graph already holds**, taken as the longest matching
+  suffix; a path with no twin is still left alone, so repair never invents a
+  file and `repair_is_idempotent_and_leaves_foreign_paths_alone` stands
+  unchanged.
+  Two further defects only surfaced once that was fixed and the files stayed
+  blocked, and they are the more useful finding. `edges.owner_id` records which
+  artifact owns a structural snapshot (ADR-0007), and merging a node rewrote the
+  edge *endpoints* but never the *ownership* — a hole that predated all of this
+  and affected same-root repairs too. Ownership is not an endpoint, so it
+  survives the node it names being deleted, and with the absolute node already
+  collapsed there is nothing left for a node-level repair to find: the file
+  becomes permanently un-re-extractable, quietly. And the facade repair was a
+  no-op without a declared workspace root, which is exactly the case that
+  stranded sibling ids in the first place. Ownership is now carried across a
+  merge and reclaimed by a pass keyed off ownership rather than nodes, and the
+  collapse runs with or without a declared root.
 - **An extractor improvement does not reach the graph that already exists —
   MITIGATED by `make reingest`, still not automatic.** Structural extraction
   happens once, at ingest time, and nothing revisits it: `reconcile_workspace`
@@ -300,6 +311,63 @@ and footguns, with impact and status:
   clock on the structural edges it re-asserts — defensible, because structure is
   true as long as the file says so, but it means the structural tier reads as
   uniformly fresh afterwards. Attention (`observed`) edges are untouched.
+- **One session's agent id changed under a running server, silently resetting
+  its claim's evidence window and locking it out of its own task — OBSERVED,
+  FIXED by [ADR-0063](docs/adr/0063-a-migration-may-tidy-the-past-never-the-present.md);
+  one residual gap noted at the end.** Across a single session
+  holding one client-minted token, `open_session` (both planes) returned
+  `session:v1:copilot:b4baf280…`, while `board` reported the task's owner as
+  `session:v1:b4baf280…` — the same hash, with and without the label
+  (ADR-0054 removed it).
+  The owner string **flipped between two consecutive `board` reads with no
+  intervening claim** (labelled at `1785234086`, unlabelled at `1785234449`),
+  which points at more than one `lodestar-mcp` build attached to the same
+  `spec.db` rather than at anything the task did. **Not a stale deployment** —
+  that was the first diagnosis and it was wrong. Driving the same session token
+  through each binary on disk, both repository release builds *and* the
+  installed extension binary returned the collapsed id. Only the **live**
+  extension-hosted processes returned the labelled one: they had been started
+  from an earlier build and the file underneath them was replaced while they
+  kept running. Restarting the server was the whole remedy; rebuilding and
+  reinstalling would have changed nothing. The tell is a live process whose
+  start time predates the mtime of its own binary (ADR-0063).
+  Impact, measured on `task:f6daad456855`, is that the whole closing loop is
+  unreachable for such a session:
+  - `check_conformance` refuses with *"evidence agent does not own the task"*;
+  - `ask_question` returns `needs_input: false` — the owner guard rejects it, so
+    the task cannot even be **parked** with an explanation;
+  - the task stays `claimed` until the lease lapses, with no receipt and no
+    durable note, which is the one outcome the ledger exists to prevent.
+  A second, independent effect compounds it: a re-claim after a lapse only
+  preserves `claim_started_at` for the *same* owner (ADR-0048), so a changed id
+  reads as a different agent, opens a **fresh** window, and reports
+  `claim_lapses: 0` as if nothing happened. Work committed at `1785223462` under
+  a window started at `1785223449` fell outside a window later moved to
+  `1785234086`, and `check_conformance` refused the real evidence with
+  *"evidence interval falls outside the live claim"*.
+  Two things worth deciding rather than patching: whether identity should be
+  pinned per session against the *token* rather than whatever the current binary
+  formats, and whether a window reset should be visible (it currently looks
+  identical to a first claim). Do not "fix" this by re-committing work into a
+  fresh window, or by completing on an empty in-window bundle — both assert
+  proof the ledger never saw.
+  **Fixed:** ADR-0063 stops the collapse rewriting the owner of a live claim and
+  records identity migrations once per database, and `ask_question` now says why
+  it refused instead of returning `needs_input: false` for every reason at once.
+  **Still open:** a window reset remains invisible — a fresh window opened
+  because the owner id changed still reports `claim_lapses: 0`, identical to a
+  first claim. Whether identity should be pinned per session against the *token*
+  rather than whatever the running process formats is also undecided.
+- **Unit Test MCP with `framework=custom` run from `editors/vscode` silently
+  runs Cargo, not Vitest, and reports PASSED — CONFIRMED, config footgun.**
+  Cargo walks up from `editors/vscode` and finds the workspace `Cargo.toml`, so
+  the Rust suite runs and goes green while the extension tests never execute.
+  Verified by breaking a `util.test.ts` assertion on purpose: `framework=custom`
+  reported PASSED; `framework=vitest` with
+  `root_dir=<repo>/editors/vscode` reported the real failure and the assertion
+  diff. Any extension change validated through the custom adapter has a
+  meaningless green behind it. Use `framework=vitest` for
+  `editors/vscode`, and treat a suspiciously fast/slow duration as the tell.
 
 - **The conformance chain governs 8 code nodes, none of them Rust, and the gate
   that would enforce it cannot run — MEASURED, partially mitigated.**
@@ -1348,6 +1416,63 @@ and footguns, with impact and status:
   the workspace build and strict clippy were red. — Resolved Jul 2026 by making
   `TextEmbedder: Send + Sync` and adding compile-time and unit regression
   assertions that `MindLeak: Send` (Lodestar task `task:e0548f57556a`).
+- **One commit split into two intent nodes when ingested by an abbreviated
+  sha.** — `ingest::git::ingest_commit` built the node id from the sha exactly
+  as supplied, so a commit already ingested under its full hash gained a
+  *second* node when ingested again by its abbreviation. Observed 2026-07-29:
+  an evidence bundle carried both `intent:007835a` and
+  `intent:007835a1c979…` for one commit, with duplicated `refactored` edges to
+  all four artefacts and `commits=2`. — Medium impact: inflated commit counts in
+  conformance evidence, duplicated provenance, and two nodes competing to
+  represent one event, with nothing downstream able to tell they are the same
+  commit. The commit-level twin of the "one file is one node" defect. — **Fixed
+  Jul 2026:** an abbreviation is now refused with
+  `MindLeakError::InvalidArgument` naming the fix, and case is normalised;
+  ingestion cannot expand an abbreviation itself because it never shells out to
+  git (invariant 1). Regression tests
+  `an_abbreviated_sha_is_refused_rather_than_creating_a_second_node` and
+  `sha_case_does_not_fork_the_commit_into_two_nodes` (Lodestar task
+  `task:3767516939a0`).
+- **The active constitution governs no code, and owns no work — MEASURED,
+  OPEN.** Constitution v2 minted 25 active goals with ids suffixed
+  `@constitution:v2`. Every code binding and every task still names the v1 id,
+  and 25 of the 26 superseded goals record no `superseded_by`, so nothing can
+  follow the rename. Measured 2026-07-29 with `node scripts/binding-audit.mjs`:
+
+  ```
+  active goals                      : 25
+  active goals WITH code bindings   : 0
+  bindings held by superseded goals : 156 of 156
+  tasks under superseded goals      : 217 of 217
+  ```
+
+  — High impact: `governing_goals` filters to active goals, so it reports `[]`
+  for files that are demonstrably bound, and `advise` answers "no active clause
+  governs this change; proceed" for *every* change. That reads as approval and
+  is actually the constitution being disconnected — no `forbid_change` lock can
+  fire and no clause can be enforced. Conformance still works only because tasks
+  and bindings are consistently on the *old* ids. — Not fixed here: re-pointing
+  156 bindings and 217 tasks is a hard-to-reverse ledger rewrite on a live
+  fleet, and with no recorded `superseded_by` the v1→v2 mapping would have to be
+  guessed from slugs. Binding the v2 goals *without* moving the tasks would make
+  every agent's evidence read as `governed code changed without a covering
+  task`, i.e. drift. — **Root cause found and fixed in flight (PR #156):**
+  `amend_constitution` superseded the outgoing clauses with a bare status flip
+  and never set `superseded_by`, so nothing could follow the rename it performs.
+  The amendment now records the successor by slug and moves bindings and
+  non-terminal tasks in the same transaction, and a `run_once` migration repairs
+  ledgers already in this state. It cannot be done as a sweep: bindings and
+  tasks must move together or every live task reads as drift.
+- **Goal bindings did not cover the code that serves the goal — MEASURED,
+  FIXED.** 47 of 131 source files under `crates/*/src` were bound to no goal,
+  including the whole of `ingest/**` (the zero-token write path) and the whole
+  post-split `facade/conformance/**`; two bindings still named
+  `facade/conformance.rs` and `store/design.rs`, deleted by the module splits.
+  — Medium impact: conformance cannot tell drift from an unbound file, so honest
+  changes and real drift both come back silent. — **Fixed Jul 2026:** all files
+  bound to their owning goal, dead bindings pruned, and
+  `scripts/binding-audit.mjs --check` added so it cannot regress unnoticed
+  (Lodestar task `task:7c3a63f1cfd3`).
 - **The binding vocabulary is still named for code below the verb.** —
   `link_goal_to_code` became `link_goal_to_artifact` (ADR-0060), but
   `CodeBindingMode` and the `code_bindings` table it writes to still say
