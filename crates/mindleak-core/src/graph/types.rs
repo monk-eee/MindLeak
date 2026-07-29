@@ -2,7 +2,7 @@
 use serde::Serialize;
 
 use crate::decay::SignalEvidence;
-use crate::model::{Node, RelationType};
+use crate::model::{Node, NodeType, RelationType};
 
 /// Direction of edge expansion during traversal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,6 +190,21 @@ pub struct AgentFootprintOverlap {
     pub last_observed_at: i64,
 }
 
+/// One node in a pre-flight's impact view: enough to decide with, and
+/// deliberately without `content`.
+///
+/// A pre-flight is read before every edit, so what it costs to read is part of
+/// what it costs to use. Carrying each node's full text turned a decision aid
+/// into something that displaces the decision.
+#[derive(Debug, Clone, Serialize)]
+pub struct PreflightNode {
+    pub id: String,
+    pub label: String,
+    pub node_type: NodeType,
+    pub depth: u32,
+    pub score: f64,
+}
+
 /// Everything the memory plane knows that should change a decision about the
 /// paths an agent is about to edit: who else is active there, and what is
 /// structurally connected to them (ADR-0066).
@@ -206,8 +221,15 @@ pub struct Preflight {
     pub unknown: Vec<String>,
     /// Other agents' decay-active footprints on the requested ids.
     pub footprints: Vec<AgentFootprintOverlap>,
-    /// Dependents, previously failing executions, and related intents.
-    pub impact: Subgraph,
+    /// Dependents, previously failing executions, and related intents — the
+    /// most relevant first, capped, and without node content.
+    pub impact: Vec<PreflightNode>,
+    /// Edges among the nodes that survived the cap.
+    pub impact_edges: Vec<WeightedEdge>,
+    /// How many nodes the full traversal reached. Greater than `impact.len()`
+    /// means the view was cut, which the caller is told rather than left to
+    /// infer from a suspiciously round number.
+    pub impact_total: usize,
 }
 
 /// One node in an agent's bounded, derived attentional working set.

@@ -258,6 +258,21 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 Be honest — an empty Known Gaps section is almost always a lie. The rough edges
 and footguns, with impact and status:
 
+- **A new constitutional clause can never acquire an enforcement contract —
+  OPEN.** There is no supported route to add a locally authored, enforceable
+  clause to the constitution. `define_goal` writes the clause with
+  `status = active` and `constitution_version = None` (`store/goals.rs`), and
+  `complete_clause_contract` refuses any clause that is active
+  (`facade/constitution.rs`) — correctly, because hardening a live rule
+  mid-flight is an amendment. But `propose_amendment` only copies existing
+  active clauses into the draft; nothing inserts a new one, so the clause that
+  most needs a contract can never be given one. The policy-pack path is not a
+  workaround: it records immutable upstream provenance, which would be false
+  for a locally authored rule. — Measured impact: it blocked the ratchet half
+  of task:3eab606fbaf6. The measurement is independently deliverable in PR
+  #147; the ratchet remains task:8000f45e0dfd, waiting on
+  task:4cef8e361fc7. — Found 2026-07-29; still open.
+
 - **A task claimed across a constitution amendment cannot certify itself, and
   must be human-accepted — MEASURED, OPEN.** Observed 2026-07-29 on
   `task:7b6154f1d69a` (ADR-0064). The task was claimed under
@@ -1373,6 +1388,15 @@ and footguns, with impact and status:
   correct unique-file aggregate (89.19% lines / 84.85% branches). — High impact
   on local proof. — Left open in the external adapter; use a canonical uppercase
   Windows drive root for coverage, while CI's test counts remain authoritative.
+- **Unit Test MCP reports `PASSED` for `scripts/*.test.mjs`, which it never
+  runs — OPEN.** The repository's guard tests are `node:test` files and no
+  adapter covers them. Asked to run one with `framework=custom`, `run_tests`
+  returned `status: PASSED` with `passed`/`failed`/`total` all zero. A red/green
+  probe on 2026-07-29 proved the false green: an assertion that `1 === 2` inside
+  `scripts/measure-tool-surface.test.mjs` still came back `PASSED`. — High
+  impact: a suite that never executed is indistinguishable from a real green
+  result. — Until an adapter exists, validate script tests with
+  `make script-test` (`node scripts/script-tests.mjs`), which is what CI runs.
 - **Disposable Git fixtures inherited the parent hook's alternate index —
   FIXED.** — Committed-snapshot Cargo hooks set `GIT_INDEX_FILE`; child `git`
   commands in repository-state and publisher tests inherited it even when they
