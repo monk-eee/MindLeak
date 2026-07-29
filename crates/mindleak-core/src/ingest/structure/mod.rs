@@ -5,9 +5,19 @@ use crate::ingest::javascript::Token;
 
 mod hierarchy;
 mod imports;
+mod rust;
 
 pub use hierarchy::{extract_hierarchy, Hierarchy, HierarchyRelation};
-pub use imports::{extract, Import, ImportBinding, ImportTarget};
+pub use imports::{Import, ImportBinding, ImportTarget};
+
+/// Extract the structural edges a file declares, in whichever language it is
+/// written. Each language arm gates on the file extension and returns nothing
+/// for a file it does not own, so exactly one of them ever answers.
+pub fn extract(path: &str, content: &str) -> Vec<Import> {
+    let mut imports = imports::extract(path, content);
+    imports.extend(rust::extract(path, content));
+    imports
+}
 
 fn supports_javascript(path: &str) -> bool {
     matches!(

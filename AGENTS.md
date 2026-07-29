@@ -42,8 +42,11 @@ Run these checks before writing any helper, method, or "small" function:
    [`DEVELOPERS.md`](DEVELOPERS.md); it answers by embedding similarity and can
    return a plausible stranger, and mandating that would only teach you to
    ignore this list. That objection does not extend to the impact half, which is
-   a deterministic traversal — but read its measured limit in Known gaps before
-   trusting it to tell you what *breaks*.
+   a deterministic traversal. It now follows Rust `mod` and `use` edges as well
+   as JavaScript imports, so it answers what breaks — with two limits worth
+   knowing: it stops at the crate boundary (another workspace crate reads as a
+   package, not a file), and it under-reports rather than guessing. A quiet
+   impact result still means "nothing recorded", never "nothing depends on it".
 2. **Grep the crate for the behaviour.** `grep -rn "fn <verb>" crates/` — if
    something already does this, call it. If a near-miss exists, extend it — do
    not fork a parallel helper.
