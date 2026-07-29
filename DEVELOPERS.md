@@ -884,6 +884,18 @@ and footguns, with impact and status:
   **Still do not "fix" this by widening the evidence window.** That was the wrong
   fix when it looked like a bug and it is a worse one now that it does not.
 
+  **Not seen again, 2026-07-29, in an independent session.** The entry asked to
+  be revisited if it recurred, so: four `evidence_for` calls across four tasks
+  that day each returned the commits they should — `task:194573331b4f` (1
+  commit, 6 changed nodes), `task:8858d8b95805` (1, 4), `task:f563d801e3cb` (2,
+  5), `task:c83a6ad5b2eb` (recorded, shipped as #178). All four shared the shape
+  the disproof above predicts works: the commit ingested by an explicit
+  `ingest_commit` carrying its true author timestamp, attributed to the session,
+  and a window opened at `claim_started_at` *before* the commit existed. That
+  last detail is the one worth keeping in view — the failures this entry was
+  originally written about were all cases where the window opened *after* the
+  work, which is a claim-ordering problem and not an evidence-query one.
+
 - **The release smoke reported success on platforms it never executed —
   FIXED.** — Found Jul 2026 diagnosing why v0.1.3 tagged but published nothing.
   The smoke compared `process.arch` against the target architecture and, on a
