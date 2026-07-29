@@ -283,7 +283,16 @@ impl Lodestar {
         )
     }
 
-    pub fn link_goal_to_code(
+    /// Bind a goal to the MindLeak nodes that realise it, so conformance can
+    /// tell which intent governs an artefact.
+    ///
+    /// The verb binds *artefacts*, not only code (ADR-0060). A goal whose
+    /// delivery is an ADR, documentation, a benchmark or a build script binds
+    /// those, and a task against that goal can then answer for what it actually
+    /// produced instead of reading as having touched nothing. Binding a
+    /// documentation node does not make honest edits to it drift under some
+    /// *other* goal — shared prose stays shared; see `is_documentation_node`.
+    pub fn link_goal_to_artifact(
         &self,
         goal_id: &str,
         node_ids: &[String],
@@ -301,25 +310,25 @@ impl Lodestar {
                 "forbid_change is valid only for constraints and invariants".to_string(),
             ));
         }
-        self.store.link_goal_to_code(goal_id, node_ids, mode)
+        self.store.link_goal_to_artifact(goal_id, node_ids, mode)
     }
 
-    /// Remove goal↔code bindings (ADR-0009 seam upkeep). The inverse of
-    /// `link_goal_to_code`: prune a stale or mistaken binding — e.g. a shared doc
+    /// Remove goal↔artifact bindings (ADR-0009 seam upkeep). The inverse of
+    /// `link_goal_to_artifact`: prune a stale or mistaken binding — e.g. a shared doc
     /// or a source file that a goal no longer governs — so conformance stops
     /// flagging honest changes to it as drift against a goal it does not realise.
     /// A node not bound to the goal is a no-op. Returns how many bindings were
     /// removed.
-    pub fn unlink_goal_from_code(&self, goal_id: &str, node_ids: &[String]) -> Result<usize> {
+    pub fn unlink_goal_from_artifact(&self, goal_id: &str, node_ids: &[String]) -> Result<usize> {
         if !self.store.goal_exists(goal_id)? {
             return Err(LodestarError::NotFound(goal_id.to_string()));
         }
-        self.store.unlink_goal_from_code(goal_id, node_ids)
+        self.store.unlink_goal_from_artifact(goal_id, node_ids)
     }
 
     /// Audit which active goals govern a code node, and how (governed /
     /// forbid_change) — the read that makes binding hygiene inspectable before
-    /// pruning with `unlink_goal_from_code`.
+    /// pruning with `unlink_goal_from_artifact`.
     pub fn governing_goals(&self, node_id: &str) -> Result<Vec<crate::CodeBinding>> {
         self.store.active_bindings_for_node(node_id)
     }
@@ -348,12 +357,13 @@ impl Lodestar {
     }
 }
 
-/// A goal is realised by *code*, not by the shared prose many goals touch.
-/// Documentation artifacts — markdown, and the root operational/meta files — are
-/// therefore treated as never goal-governed **at conformance read time**: a
-/// documentation node never drives a drift verdict, even when a binding to it
-/// exists. This is derived, never enforced by mutating stored bindings — nothing
-/// is deleted, so it can never clobber a legitimately-recorded binding.
+/// Documentation artifacts — markdown, and the root operational/meta files —
+/// never drive a *drift* verdict: shared prose is touched by everyone, and
+/// failing on it would make CHANGELOG.md uneditable without a covering task.
+/// They are still bindable and still count in scope for the goal they were
+/// bound to (ADR-0060) — the exclusion is about drift, not about governance.
+/// This is derived, never enforced by mutating stored bindings — nothing is
+/// deleted, so it can never clobber a legitimately-recorded binding.
 pub(crate) fn is_documentation_node(node_id: &str) -> bool {
     let path = node_id.strip_prefix("artifact:").unwrap_or(node_id);
     let file = path.rsplit('/').next().unwrap_or(path);
