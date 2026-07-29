@@ -42,8 +42,8 @@ pub(super) fn definitions() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
-            "name": "link_goal_to_code",
-            "description": "Link a goal to the MindLeak code nodes (artifact:/symbol: ids) that realise it, so conformance can tell which intent governs a file.",
+            "name": "link_goal_to_artifact",
+            "description": "Link a goal to the MindLeak nodes (artifact:/symbol: ids) that realise it, so conformance can tell which intent governs a file. Bind whatever the goal actually delivers — source, but equally an ADR, documentation, a benchmark or a build script — so a task delivering it can answer for it instead of appearing to have touched nothing (ADR-0060). Documentation still never counts as drift against a goal that did not bind it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -55,8 +55,8 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "unlink_goal_from_code",
-            "description": "Remove goal↔code bindings — the inverse of link_goal_to_code. Prune a stale or mistaken binding (e.g. a shared doc, or a source file a goal no longer realises) so conformance stops flagging honest changes to it as drift against that goal. A node not bound to the goal is a no-op. Returns how many bindings were removed.",
+            "name": "unlink_goal_from_artifact",
+            "description": "Remove goal↔artifact bindings — the inverse of link_goal_to_artifact. Prune a stale or mistaken binding (e.g. a shared doc, or a source file a goal no longer realises) so conformance stops flagging honest changes to it as drift against that goal. A node not bound to the goal is a no-op. Returns how many bindings were removed.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -68,7 +68,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "governing_goals",
-            "description": "Audit which active goals govern a code node, and how (governed / forbid_change) — inspect binding hygiene before pruning with unlink_goal_from_code.",
+            "description": "Audit which active goals govern a node, and how (governed / forbid_change) — inspect binding hygiene before pruning with unlink_goal_from_artifact.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "node_id": { "type": "string" } },
@@ -247,14 +247,14 @@ pub(super) fn dispatch(
         "get_constitution" => Some((|| {
             ok(&engine.get_constitution().map_err(|e| e.to_string())?)
         })()),
-        "link_goal_to_code" => Some((|| {
+        "link_goal_to_artifact" => Some((|| {
             let mode = parse_binding_mode(
                 opt_str(args, "mode")
                     .unwrap_or_else(|| "governed".to_string())
                     .as_str(),
             )?;
             let linked = engine
-                .link_goal_to_code(
+                .link_goal_to_artifact(
                     req_str(args, "goal_id")?,
                     &str_array(args, "node_ids"),
                     mode,
@@ -262,9 +262,9 @@ pub(super) fn dispatch(
                 .map_err(|e| e.to_string())?;
             ok(&json!({ "linked": linked }))
         })()),
-        "unlink_goal_from_code" => Some((|| {
+        "unlink_goal_from_artifact" => Some((|| {
             let removed = engine
-                .unlink_goal_from_code(req_str(args, "goal_id")?, &str_array(args, "node_ids"))
+                .unlink_goal_from_artifact(req_str(args, "goal_id")?, &str_array(args, "node_ids"))
                 .map_err(|e| e.to_string())?;
             ok(&json!({ "removed": removed }))
         })()),

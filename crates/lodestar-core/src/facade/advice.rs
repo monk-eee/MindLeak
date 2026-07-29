@@ -266,7 +266,7 @@ mod tests {
             .unwrap();
         let node = "artifact:crates/core/src/schema.sql".to_string();
         engine
-            .link_goal_to_code(
+            .link_goal_to_artifact(
                 &goal.id,
                 std::slice::from_ref(&node),
                 CodeBindingMode::ForbidChange,
@@ -305,7 +305,7 @@ mod tests {
             .unwrap();
         let node = "artifact:crates/pay/src/lib.rs".to_string();
         engine
-            .link_goal_to_code(
+            .link_goal_to_artifact(
                 &goal.id,
                 std::slice::from_ref(&node),
                 CodeBindingMode::Governed,
@@ -331,7 +331,7 @@ mod tests {
             .unwrap();
         let node = "artifact:crates/core/src/graph.rs".to_string();
         engine
-            .link_goal_to_code(
+            .link_goal_to_artifact(
                 &goal.id,
                 std::slice::from_ref(&node),
                 CodeBindingMode::Governed,
@@ -355,7 +355,7 @@ mod tests {
             .unwrap();
         let node = "artifact:crates/core/src/thing.rs".to_string();
         engine
-            .link_goal_to_code(
+            .link_goal_to_artifact(
                 &goal.id,
                 std::slice::from_ref(&node),
                 CodeBindingMode::Governed,
@@ -380,7 +380,7 @@ mod tests {
             .unwrap();
         let node = "artifact:crates/core/src/graph.rs".to_string();
         engine
-            .link_goal_to_code(
+            .link_goal_to_artifact(
                 &goal.id,
                 std::slice::from_ref(&node),
                 CodeBindingMode::Governed,

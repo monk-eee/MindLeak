@@ -410,7 +410,7 @@ Caller-selected `agent`/`agent_id` values are not part of the public schema.
 2. `supersede_goal(goal_id, new_statement, reason)` → new `goal_id` (version bump).
 3. `get_constitution(status="active")` → the authoritative goals/constraints an
    agent reads **before acting**.
-4. `link_goal_to_code(goal_id, node_ids[], mode="governed")` → the seam to MindLeak.
+4. `link_goal_to_artifact(goal_id, node_ids[], mode="governed")` → the seam to MindLeak.
 5. `export_constitution(path?)` → write a committed, human-reviewable markdown
    snapshot (durability + PR review without any network infra).
 
@@ -539,7 +539,7 @@ expose remotely; doing so would require an auth layer and its own ADR.
   `renew_lease`, `complete_task`, `board`. **Deterministic only, no LLM.** This
   alone lets parallel agents across worktrees share one spec and partition work
   without colliding.
-- **Phase 1 — conformance + seam.** `link_goal_to_code`, deterministic
+- **Phase 1 — conformance + seam.** `link_goal_to_artifact`, deterministic
   `check_conformance`, `next_task` allocator, `export_constitution`.
 - **Phase 2 — optional SLM.** `decompose_goal` and semantic conformance over the
   local model, with deterministic fallbacks.
