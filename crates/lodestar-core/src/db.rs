@@ -3,6 +3,7 @@
 
 mod functions;
 mod migrations;
+mod repairs;
 
 pub(crate) use migrations::column_exists;
 
