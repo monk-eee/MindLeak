@@ -125,6 +125,18 @@ repos:
         files: ^changelog\.d/.*\.md$
         pass_filenames: false
 
+      - id: gap-fragments
+        name: known gap fragments are usable
+        # Same shape as changelog fragments, same reason (ADR-0056): the Known
+        # gaps section was one shared append-only list, so two agents recording
+        # two unrelated gaps collided on the same paragraph. A malformed
+        # fragment fails here rather than being quietly skipped by `--list`,
+        # which would make a recorded gap unreadable while still looking filed.
+        entry: node scripts/gaps.mjs --check
+        language: system
+        files: ^gaps\.d/.*\.md$
+        pass_filenames: false
+
       - id: canonical-push
         name: canonical fleet publisher
         entry: node scripts/canonical-push.mjs --verify-pre-push
