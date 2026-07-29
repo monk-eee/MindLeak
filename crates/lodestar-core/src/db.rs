@@ -3,6 +3,7 @@
 
 mod functions;
 mod migrations;
+mod repairs;
 
 use rusqlite::Connection;
 
