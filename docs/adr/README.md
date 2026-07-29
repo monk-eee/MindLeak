@@ -72,8 +72,9 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0062](0062-the-delivery-queue-is-ours-to-run.md) | The delivery queue is ours to run | Proposed |
 | [0063](0063-a-migration-may-tidy-the-past-never-the-present.md) | A migration may tidy the past, never the present | Accepted |
 | [0064](0064-the-log-is-the-ledger.md) | The log is the ledger | Accepted |
-| [0065](0065-completion-belongs-at-the-publication-boundary.md) | Completion belongs at the publication boundary | Proposed |
+| [0065](0065-completion-belongs-at-the-publication-boundary.md) | Completion belongs at the publication boundary | Accepted |
 | [0066](0066-retrieval-rides-on-the-question-already-asked.md) | Retrieval rides on the question already asked | Proposed |
+| [0067](0067-a-claim-is-a-statement-that-you-are-working-on-something.md) | A claim is a statement that you are working on something | Accepted |
 
 ## Writing a new ADR
 

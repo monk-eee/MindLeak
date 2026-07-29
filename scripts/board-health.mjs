@@ -36,8 +36,14 @@
 // report that mutated the board would be exactly the auto-closing this project
 // has refused twice.
 
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
+
+import { resolveServer } from "./claim-gate.mjs";
+
+const repoRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+  encoding: "utf8",
+}).trim();
 
 /** The finding that means "there was nothing to judge", not "judge this". */
 export const EMPTY_EVIDENCE = "no provenance-bearing mutation";
@@ -183,11 +189,22 @@ const client = (bin) => {
 };
 
 async function main() {
-  const bin =
-    process.env.LODESTAR_MCP_BIN ??
-    (process.platform === "win32"
-      ? "target/release/lodestar-mcp.exe"
-      : "target/release/lodestar-mcp");
+  // Resolved through the shared helper, which honours the override, accepts a
+  // debug build, and returns null rather than handing back a path that is not
+  // there. Forking this logic release-only meant the report crashed with an
+  // unhandled ENOENT for anyone who had not run a release build, which is the
+  // normal state - so a report about the board's health could not be run by
+  // most of the people it was written for.
+  const bin = resolveServer(repoRoot, "lodestar");
+  if (!bin) {
+    console.error(
+      "board-health: no lodestar-mcp binary found.\n" +
+        "  Build one:  cargo build -p lodestar-mcp\n" +
+        "  Or point at one:  set LODESTAR_MCP_BIN",
+    );
+    process.exitCode = 2;
+    return;
+  }
   const session = process.env.LODESTAR_SESSION_ID;
   if (!session) {
     console.error("board-health: set LODESTAR_SESSION_ID");

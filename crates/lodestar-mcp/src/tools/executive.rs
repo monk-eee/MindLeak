@@ -627,12 +627,24 @@ pub(super) fn dispatch(
                 // that is a fact about the row a reader should not have to go
                 // looking for.
                 let window = engine.claim_window(&task.id).map_err(|e| e.to_string())?;
+                // Whether the claim is actually being held, beside the status
+                // rather than inferred from a timestamp. `claimed` alone read as
+                // work in progress: measured once at 36 claimed rows of which 4
+                // had a live lease, and finding that out took a bespoke script.
+                let lease_state = match (task.status, task.lease_expires_at) {
+                    (TaskStatus::Claimed, Some(expires)) if expires >= now_unix() => Some("live"),
+                    (TaskStatus::Claimed, _) => Some("lapsed"),
+                    _ => None,
+                };
                 let mut row = serde_json::to_value(task).map_err(|e| e.to_string())?;
                 let object = row
                     .as_object_mut()
                     .ok_or_else(|| "task did not serialize as an object".to_string())?;
                 object.insert("scope".to_string(), json!(scope));
                 object.insert("claim_window".to_string(), json!(window));
+                if let Some(state) = lease_state {
+                    object.insert("lease_state".to_string(), json!(state));
+                }
                 if let Some(receipt) = receipt {
                     object.insert("receipt".to_string(), json!(receipt));
                 }
@@ -955,7 +967,7 @@ mod tests {
             .unwrap();
         let node_id = "artifact:src/search.rs";
         engine
-            .link_goal_to_code(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+            .link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
             .unwrap();
         let task = engine.create_task(&goal.id, "wire search", "done").unwrap();
         engine.claim_task(&task.id, "agent-a", 300).unwrap();
@@ -1262,6 +1274,41 @@ mod tests {
             .collect();
         assert!(ids.contains(&live.id.as_str()));
         assert!(!ids.contains(&retired.id.as_str()));
+    }
+
+    /// Bug: `status: claimed` was the only state the board exposed, so a row
+    /// whose lease expired hours ago read exactly like work in progress.
+    /// Measured once at 36 claimed rows with 4 live leases, making every plan
+    /// against the board nine times wrong. The lease state is derived where the
+    /// board is read rather than by rewriting durable task status (ADR-0067).
+    #[test]
+    fn board_tool_distinguishes_a_live_claim_from_a_lapsed_one() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "do it", None)
+            .unwrap();
+        let live = engine.create_task(&goal.id, "Live lease", "").unwrap();
+        let lapsed = engine.create_task(&goal.id, "Lapsed lease", "").unwrap();
+        assert!(engine.claim_task(&live.id, "alice", 600).unwrap());
+        assert!(engine.claim_task(&lapsed.id, "bob", -1).unwrap());
+
+        let board: Value = serde_json::from_str(
+            call(&engine, &json!({ "name": "board", "arguments": {} })).unwrap()["content"][0]
+                ["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let row = |id: &str| {
+            board
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|task| task["id"] == id)
+                .unwrap()
+        };
+        assert_eq!(row(&live.id)["lease_state"], "live");
+        assert_eq!(row(&lapsed.id)["lease_state"], "lapsed");
     }
 
     #[test]
@@ -1646,7 +1693,7 @@ mod tests {
             .unwrap();
         let node = "artifact:src/search.rs";
         engine
-            .link_goal_to_code(&goal.id, &[node.into()], CodeBindingMode::Governed)
+            .link_goal_to_artifact(&goal.id, &[node.into()], CodeBindingMode::Governed)
             .unwrap();
         let task = engine.create_task(&goal.id, "wire search", "done").unwrap();
         let open_next = engine
