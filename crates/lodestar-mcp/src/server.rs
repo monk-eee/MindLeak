@@ -13,10 +13,14 @@ use crate::tools;
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
 /// Run the blocking request/response loop until stdin closes.
+///
+/// `stale_build` carries the notice when this binary is behind the checkout it
+/// serves, so `open_session` can tell the agent rather than only the log.
 pub fn run(
     engine: Lodestar,
     sessions: SessionRegistry,
     storage: StorageStatus,
+    stale_build: Option<String>,
 ) -> anyhow::Result<()> {
     let stdin = io::stdin();
     let mut reader = stdin.lock();
@@ -46,7 +50,13 @@ pub fn run(
             }
         };
 
-        if let Some(response) = handle_with_storage(&engine, &sessions, Some(&storage), &request) {
+        if let Some(response) = handle_with_storage(
+            &engine,
+            &sessions,
+            Some(&storage),
+            stale_build.as_deref(),
+            &request,
+        ) {
             write_message(&mut out, &response)?;
         }
     }
@@ -55,13 +65,14 @@ pub fn run(
 
 #[cfg(test)]
 fn handle(engine: &Lodestar, sessions: &SessionRegistry, req: &Value) -> Option<Value> {
-    handle_with_storage(engine, sessions, None, req)
+    handle_with_storage(engine, sessions, None, None, req)
 }
 
 fn handle_with_storage(
     engine: &Lodestar,
     sessions: &SessionRegistry,
     storage: Option<&StorageStatus>,
+    stale_build: Option<&str>,
     req: &Value,
 ) -> Option<Value> {
     let id = req.get("id").cloned();
@@ -76,7 +87,7 @@ fn handle_with_storage(
         "tools/call" => {
             let id = id?;
             let response = match tools::bind_session(&params, sessions)
-                .and_then(|bound| tools::call_with_storage(engine, &bound, storage))
+                .and_then(|bound| tools::call_with_storage(engine, &bound, storage, stale_build))
             {
                 Ok(content) => content,
                 Err(msg) => tool_error(&msg),
