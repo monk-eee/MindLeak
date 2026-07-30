@@ -43,7 +43,7 @@ export class DesignBoardController {
     }
     try {
       const { metadata, skipped } = await readWorkspaceAdrMetadata(this.agentId);
-      await this.client.callTool("reconcile_designs", { designs: metadata });
+      await this.client.callTool("design_register", { designs: metadata });
       await this.refresh();
       this.log(`Design Board synchronized ${metadata.length} repository ADRs.`);
       // An ADR the parser cannot read is an ADR the board can never show. That
@@ -67,15 +67,18 @@ export class DesignBoardController {
       return;
     }
     try {
-      const designs = (await this.client.callTool("list_designs", {})) as DesignItem[];
+      const designs = (await this.client.callTool("design_query", {
+        view: "ledger",
+      })) as DesignItem[];
       const materialized = designs.filter((design) => design.promotion_status === "materialized");
       // One unreadable promotion must not blank the whole board. `Promise.all`
       // rejected the entire batch, so a single bad row left the view showing
       // stale contents with only an error toast to explain it.
       const settled = await Promise.allSettled(
         materialized.map(async (design) => {
-          const promotion = (await this.client.callTool("design_promotion", {
+          const promotion = (await this.client.callTool("design_query", {
             id: design.id,
+            view: "promotion",
           })) as DesignPromotion | null;
           return [design.id, promotion] as const;
         })
@@ -108,7 +111,11 @@ export class DesignBoardController {
       return;
     }
     try {
-      await this.client.callTool("accept_design", { id: item.design.id, human });
+      await this.client.callTool("design_decide", {
+        id: item.design.id,
+        decision: "accept",
+        human,
+      });
       await this.alignAdrStatus(item.design, "accepted");
       vscode.window.showInformationMessage(`Accepted design: ${item.design.title}`);
       await this.refresh();
@@ -135,8 +142,9 @@ export class DesignBoardController {
       return;
     }
     try {
-      await this.client.callTool("reject_design", {
+      await this.client.callTool("design_decide", {
         id: item.design.id,
+        decision: "reject",
         human,
         reason: reason.trim(),
       });
@@ -158,8 +166,9 @@ export class DesignBoardController {
         this.reportCancelled("Materialization", item.design);
         return;
       }
-      const promotion = (await this.client.callTool("promote_design", {
+      const promotion = (await this.client.callTool("design_promote", {
         id: item.design.id,
+        step: "materialize",
         plan: selection.plan,
       })) as DesignPromotion;
       vscode.window.showInformationMessage(
@@ -187,8 +196,9 @@ export class DesignBoardController {
         this.reportCancelled("Materialization repair", item.design);
         return;
       }
-      const promotion = (await this.client.callTool("revise_design_promotion", {
+      const promotion = (await this.client.callTool("design_promote", {
         id: item.design.id,
+        step: "revise",
         human,
         plan: selection.plan,
       })) as DesignPromotion;
@@ -222,8 +232,9 @@ export class DesignBoardController {
     try {
       const promotion =
         item.promotion ??
-        ((await this.client.callTool("design_promotion", {
+        ((await this.client.callTool("design_query", {
           id: item.design.id,
+          view: "promotion",
         })) as DesignPromotion | null);
       if (!promotion) {
         vscode.window.showInformationMessage(
@@ -231,8 +242,9 @@ export class DesignBoardController {
         );
         return;
       }
-      const history = (await this.client.callTool("design_materialization_history", {
+      const history = (await this.client.callTool("design_query", {
         id: item.design.id,
+        view: "history",
       })) as DesignMaterializationRecord[];
       const document = await vscode.workspace.openTextDocument({
         content: formatDesignPromotion(promotion, history),
@@ -284,8 +296,9 @@ export class DesignBoardController {
       const suggestions = await Promise.all(
         objectives.map(
           async (objective) =>
-            (await this.client.callTool("plan_design_promotion", {
+            (await this.client.callTool("design_promote", {
               id: design.id,
+              step: "plan",
               objective_goal_id: objective.id,
             })) as DesignMaterializationPlan
         )
@@ -319,7 +332,10 @@ export class DesignBoardController {
     }
 
     const tasks = (
-      (await this.client.callTool("board", { include_terminal: true })) as DesignTask[]
+      (await this.client.callTool("task_query", {
+        view: "board",
+        include_terminal: true,
+      })) as DesignTask[]
     ).filter((task) => task.status !== "abandoned");
     const selected = await vscode.window.showQuickPick(
       tasks.map((task) => ({

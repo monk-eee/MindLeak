@@ -128,6 +128,38 @@ test("real work on a delivered branch still requires a claim", () => {
   assert.match(verdict.message, /no live Lodestar claim/);
 });
 
+/// The remediation an agent reads at the moment it is blocked, and therefore
+/// the moment it is most likely to copy an instruction verbatim.
+///
+/// It named `claim_task` and `create_task`, both retired by ADR-0059. Nothing
+/// was broken — the deprecation table still answers them — so no test, type or
+/// lint could notice; advice is a string. What it cost was a reader taught the
+/// retiring name by the tool that stopped them, and one more caller to migrate
+/// before the removal train. The verbs are asserted here rather than the whole
+/// sentence so the wording stays free to improve.
+test("the remediation names verbs the server still advertises", () => {
+  const verdict = publishVerdict({
+    reachable: true,
+    sessionDeclared: true,
+    agent: COLLAPSED,
+    tasks: [],
+    branch: "feat/unclaimed",
+    newCommits: [work],
+    now: NOW,
+  });
+
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.message, /task_claim\(task_id, step="claim"\)/);
+  assert.match(verdict.message, /task_create\(goal_id, title, acceptance\)/);
+  for (const retired of ["claim_task(", "create_task("]) {
+    assert.equal(
+      verdict.message.includes(retired),
+      false,
+      `the advice still teaches ${retired}, which ADR-0059 retired`,
+    );
+  }
+});
+
 test("an unrelated branch is not reconciliation, however finished the task is", () => {
   assert.equal(
     reconciliationOf({

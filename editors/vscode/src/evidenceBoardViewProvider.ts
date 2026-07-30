@@ -10,8 +10,8 @@ export type EvidenceNode =
 /**
  * A two-level tree of conformance proof: each task with a `conformance_history`
  * chain, expandable to its individual checks (the drift→aligned story a reviewer
- * needs). Fed from the `board` + `conformance_history` tools; grouping/order is
- * the pure {@link import("./util").evidenceGroups}. Actions resolve the task id
+ * needs). Fed from `task_query(view=board)` plus `conformance_history`;
+ * grouping/order is the pure {@link import("./util").evidenceGroups}. Actions resolve the task id
  * from the node, so vscode-coupled code here stays thin.
  */
 export class EvidenceBoardViewProvider implements vscode.TreeDataProvider<EvidenceNode> {
