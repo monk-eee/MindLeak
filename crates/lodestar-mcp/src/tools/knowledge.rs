@@ -1,7 +1,7 @@
 //! Knowledge tool definitions and dispatch.
 
 use super::{i64_arg, ok, opt_str, req_str, str_array, text};
-use lodestar_core::{Lodestar, SignalPromotion};
+use lodestar_core::{KnowledgeReach, Lodestar, SignalPromotion};
 use serde_json::{json, Value};
 
 pub(super) fn definitions() -> Vec<Value> {
@@ -26,7 +26,7 @@ pub(super) fn definitions() -> Vec<Value> {
                     // pre-flight and about facade tests missing MCP wiring.
                     "evidence": {
                         "type": "string",
-                        "description": "JSON provenance. MUST carry a `nodes` array of the artifact:/symbol: ids this is about, e.g. {\"nodes\":[\"artifact:src/a.rs\"],\"method\":\"how you know\"} — the conformance advisory matches on those ids and nothing else, so a record naming none can never reach another agent. The reply's `surfaces` field tells you which you got."
+                        "description": "JSON provenance. Carry a `nodes` array of the artifact:/symbol: ids this is about, e.g. {\"nodes\":[\"artifact:src/a.rs\"],\"method\":\"how you know\"} — a lesson naming nodes reaches anyone whose evidence touches them, unconditionally. Failing that, a `goal` (or a task id the ledger still knows) reaches work under that goal, but competes with every other node-less lesson there for a capped number of slots. With neither, the record is stored and arrives nowhere. The reply's `reach` and `surfaces` fields tell you which you got."
                     },
                     "half_life_hours": { "type": "number" }
                 },
@@ -87,7 +87,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "active_knowledge",
-            "description": "Read what this repository has learned and not yet forgotten. Knowledge was write-only from this surface: it could be recorded, promoted, reconfirmed and pruned, but never read, so the only consumer was the conformance advisory and an agent could not find out what was already known before rediscovering it. Each entry reports the nodes it references, because that is the sole thing the advisory matches on - a record whose evidence carries no `nodes` array is stored, counted, and can never surface, and `surfaces: false` is how you see that rather than guessing.",
+            "description": "Read what this repository has learned and not yet forgotten. Knowledge was write-only from this surface: it could be recorded, promoted, reconfirmed and pruned, but never read, so the only consumer was the conformance advisory and an agent could not find out what was already known before rediscovering it. Each entry reports how it reaches an agent: `reach` is `node` when the nodes it names carry it unconditionally, `goal:<id>` when it names none but still reaches work under the goal it was learned under (a capped, contended path), and `none` when it has neither and arrives nowhere.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -116,37 +116,61 @@ pub(super) fn dispatch(
                 )
                 .map_err(|e| e.to_string())?;
             // Whether this record can ever be read, answered here rather than
-            // left for someone to discover later. The advisory matches on
-            // referenced nodes and nothing else, so a record naming none is
-            // stored, counted, and permanently unreachable — and the failure is
-            // silent in the one direction that matters, because the agent it
-            // was written for never learns it exists.
+            // left for someone to discover later. The failure is silent in the
+            // one direction that matters, because the agent it was written for
+            // never learns it exists.
             //
             // Said at write time because that is the only moment anyone still
-            // has the nodes to hand. `active_knowledge` already reports
-            // `surfaces`, but reading it requires suspecting the problem first,
-            // and an agent recording a lesson for a colleague has no reason to.
-            // Measured before this landed: 3 of 17 active records were
-            // invisible, one of them the cost of skipping the mandatory advise
-            // pre-flight — written precisely so the next agent would not repeat
-            // it, and unable to reach them.
-            let nodes = k.referenced_nodes();
+            // has the nodes to hand. `active_knowledge` also reports `reach`,
+            // but reading it requires suspecting the problem first, and an
+            // agent recording a lesson for a colleague has no reason to.
+            //
+            // The judgement itself belongs to the facade, not here: this reply,
+            // `active_knowledge` and `scripts/silent-knowledge.mjs` each used to
+            // decide it independently, and all three were falsified together the
+            // day a second reaching path landed.
+            let reach = engine.knowledge_reach(&k).map_err(|e| e.to_string())?;
             let mut body = serde_json::to_value(&k).map_err(|e| e.to_string())?;
             if let Some(object) = body.as_object_mut() {
-                object.insert("surfaces".to_string(), json!(!nodes.is_empty()));
-                if nodes.is_empty() {
-                    object.insert(
-                        "surfaces_advice".to_string(),
-                        json!(
-                            "This record can never reach another agent: the conformance advisory \
-                             matches on referenced nodes, and this one names none. Record it again \
-                             with evidence carrying a `nodes` array of the artifact:/symbol: ids it \
-                             is about — the ids you were just working on. It is kept either way, \
-                             because deleting an agent's stated lesson is worse than storing an \
-                             unreachable one."
-                        ),
-                    );
+                object.insert("surfaces".to_string(), json!(reach.reaches()));
+                match &reach {
+                    KnowledgeReach::ByNode => {}
+                    KnowledgeReach::ByGoal(goal) => {
+                        object.insert(
+                            "surfaces_advice".to_string(),
+                            json!(format!(
+                                "This record names no node, so it reaches agents only through the \
+                                 goal it was learned under ({goal}) — and only while it is among \
+                                 the strongest few lessons there, because that path is capped per \
+                                 check. Recording it again with an evidence `nodes` array of the \
+                                 artifact:/symbol: ids it is about would make it arrive \
+                                 unconditionally, for anyone touching those files."
+                            )),
+                        );
+                    }
+                    KnowledgeReach::Unreachable => {
+                        object.insert(
+                            "surfaces_advice".to_string(),
+                            json!(
+                                "This record can reach nobody: the conformance advisory carries a \
+                                 lesson by the nodes it names or by the goal it was learned under, \
+                                 and this one has neither. Record it again with evidence carrying a \
+                                 `nodes` array of the artifact:/symbol: ids it is about — the ids \
+                                 you were just working on — or a `goal`. It is kept either way, \
+                                 because deleting an agent's stated lesson is worse than storing an \
+                                 unreachable one."
+                            ),
+                        );
+                    }
                 }
+                object.insert(
+                    "reach".to_string(),
+                    json!(match &reach {
+                        KnowledgeReach::ByNode => "node".to_string(),
+                        KnowledgeReach::ByGoal(goal) => format!("goal:{goal}"),
+                        KnowledgeReach::Unreachable => "none".to_string(),
+                    }),
+                );
             }
             ok(&body)
         })()),
@@ -204,29 +228,45 @@ pub(super) fn dispatch(
                 })
                 .map(|k| {
                     let nodes = k.referenced_nodes();
-                    json!({
+                    // Which of the two advisory paths carries this lesson, said
+                    // plainly rather than left to be inferred from an empty
+                    // array. Inferring it from `nodes` alone is what made this
+                    // surface, `record_knowledge` and the audit script all
+                    // report the same wrong answer.
+                    let reach = engine.knowledge_reach(k).map_err(|e| e.to_string())?;
+                    Ok(json!({
                         "id": k.id,
                         "statement": k.statement,
                         "weight": k.weight,
                         "half_life_hours": k.half_life_hours,
                         "confirmed_at": k.confirmed_at,
                         "nodes": nodes,
-                        // The advisory matches on referenced nodes and nothing
-                        // else, so knowledge naming none can never reach the
-                        // agent it was written for. Said plainly rather than
-                        // left to be inferred from an empty array.
-                        "surfaces": !nodes.is_empty(),
-                    })
+                        "reach": match &reach {
+                            KnowledgeReach::ByNode => "node".to_string(),
+                            KnowledgeReach::ByGoal(goal) => format!("goal:{goal}"),
+                            KnowledgeReach::Unreachable => "none".to_string(),
+                        },
+                        "surfaces": reach.reaches(),
+                    }))
                 })
-                .collect();
+                .collect::<std::result::Result<Vec<Value>, String>>()?;
 
-            let silent = rows
+            let unreachable = rows
                 .iter()
                 .filter(|r| r["surfaces"] == json!(false))
                 .count();
+            let by_goal_only = rows
+                .iter()
+                .filter(|r| {
+                    r["reach"]
+                        .as_str()
+                        .is_some_and(|reach| reach.starts_with("goal:"))
+                })
+                .count();
             ok(&json!({
                 "count": rows.len(),
-                "never_surfaces": silent,
+                "never_surfaces": unreachable,
+                "reaches_by_goal_only": by_goal_only,
                 "knowledge": rows,
             }))
         })()),
@@ -269,12 +309,11 @@ mod tests {
 
     /// The advertised schema tells a caller what evidence must carry.
     ///
-    /// The reply's `surfaces` warning is a backstop, and it arrives after the
+    /// The reply's `reach` warning is a backstop, and it arrives after the
     /// record exists. The schema is where the caller decides what to send, so
-    /// it has to name the `nodes` array and say what omitting it costs.
-    /// Describing the field as "JSON provenance" was accurate and useless:
-    /// measured when this landed, 67 of 170 active records named no nodes and
-    /// could reach nobody.
+    /// it has to name the `nodes` array and say what omitting it costs — not
+    /// that the record dies, which was never true of every such record, but
+    /// that it falls back to a capped, contended path.
     #[test]
     fn the_schema_says_evidence_must_name_nodes() {
         let record = super::definitions()
@@ -294,39 +333,73 @@ mod tests {
             "and what an id looks like: {described}"
         );
         assert!(
-            described.contains("never"),
-            "and that omitting it makes the record unreachable: {described}"
+            described.contains("goal"),
+            "and that a goal is the other way a lesson reaches anyone: {described}"
         );
     }
 
-    /// Recording knowledge that names no nodes says so, at the moment of
+    /// Recording knowledge that can reach nobody says so, at the moment of
     /// writing.
     ///
-    /// The conformance advisory matches on referenced nodes and nothing else,
-    /// so a record naming none is stored, counted, and can never reach the
-    /// agent it was written for. Nothing reported that: `active_knowledge`
-    /// exposes `surfaces`, but reading it requires already suspecting the
-    /// problem, and an agent recording a lesson for a colleague has no reason
-    /// to. Measured before this landed — 3 of 17 active records were invisible,
-    /// one of them the cost of skipping the mandatory `advise` pre-flight,
-    /// written precisely so the next agent would not repeat it.
+    /// A lesson reaches an agent by the nodes it names or by the goal it was
+    /// learned under. One naming neither is stored, counted, and arrives
+    /// nowhere. Nothing reported that until this landed, and reading
+    /// `active_knowledge` to find out requires already suspecting the problem.
     #[test]
-    fn knowledge_that_can_never_be_read_says_so_when_it_is_written() {
+    fn knowledge_that_can_reach_nobody_says_so_when_it_is_written() {
         let engine = Lodestar::open_in_memory().unwrap();
 
-        let silent = record(&engine, "a lesson addressed to nobody", "{}");
+        let unreachable = record(&engine, "a lesson addressed to nobody", "{}");
 
         assert_eq!(
-            silent["surfaces"],
+            unreachable["surfaces"],
             json!(false),
-            "a record naming no nodes cannot surface and must say so: {silent}"
+            "a record naming neither a node nor a goal must say so: {unreachable}"
         );
-        let advice = silent["surfaces_advice"]
+        assert_eq!(unreachable["reach"], json!("none"));
+        let advice = unreachable["surfaces_advice"]
             .as_str()
             .expect("an unreachable record explains what to do about it");
         assert!(
             advice.contains("nodes"),
             "the advice must name the missing field: {advice}"
+        );
+    }
+
+    /// A lesson naming no node but declaring a goal is NOT unreachable, and
+    /// must not be reported as though it were.
+    ///
+    /// This is the regression that motivated the change. Reachability was
+    /// computed as `!nodes.is_empty()` in three separate places, so when the
+    /// goal path landed all three began reporting records as dead that were
+    /// arriving on every check under that goal — 68 of 210 here, against 12
+    /// genuinely unreachable. The advice must still push toward nodes, because
+    /// the goal path is capped and contended.
+    #[test]
+    fn a_lesson_naming_a_goal_reaches_that_goal_rather_than_nobody() {
+        let engine = Lodestar::open_in_memory().unwrap();
+
+        let by_goal = record(
+            &engine,
+            "a lesson learned serving an objective",
+            r#"{"goal":"goal:durable-intent-plane@constitution:v3"}"#,
+        );
+
+        assert_eq!(
+            by_goal["surfaces"],
+            json!(true),
+            "it reaches work under its goal: {by_goal}"
+        );
+        assert_eq!(
+            by_goal["reach"],
+            json!("goal:goal:durable-intent-plane@constitution:v3")
+        );
+        let advice = by_goal["surfaces_advice"]
+            .as_str()
+            .expect("the contended path still deserves advice");
+        assert!(
+            advice.contains("capped") || advice.contains("strongest"),
+            "and that advice must say the path is contended: {advice}"
         );
     }
 
