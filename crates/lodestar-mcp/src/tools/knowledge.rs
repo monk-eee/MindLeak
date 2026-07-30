@@ -101,7 +101,40 @@ pub(super) fn dispatch(
                     args.get("half_life_hours").and_then(Value::as_f64),
                 )
                 .map_err(|e| e.to_string())?;
-            ok(&k)
+            // Whether this record can ever be read, answered here rather than
+            // left for someone to discover later. The advisory matches on
+            // referenced nodes and nothing else, so a record naming none is
+            // stored, counted, and permanently unreachable — and the failure is
+            // silent in the one direction that matters, because the agent it
+            // was written for never learns it exists.
+            //
+            // Said at write time because that is the only moment anyone still
+            // has the nodes to hand. `active_knowledge` already reports
+            // `surfaces`, but reading it requires suspecting the problem first,
+            // and an agent recording a lesson for a colleague has no reason to.
+            // Measured before this landed: 3 of 17 active records were
+            // invisible, one of them the cost of skipping the mandatory advise
+            // pre-flight — written precisely so the next agent would not repeat
+            // it, and unable to reach them.
+            let nodes = k.referenced_nodes();
+            let mut body = serde_json::to_value(&k).map_err(|e| e.to_string())?;
+            if let Some(object) = body.as_object_mut() {
+                object.insert("surfaces".to_string(), json!(!nodes.is_empty()));
+                if nodes.is_empty() {
+                    object.insert(
+                        "surfaces_advice".to_string(),
+                        json!(
+                            "This record can never reach another agent: the conformance advisory \
+                             matches on referenced nodes, and this one names none. Record it again \
+                             with evidence carrying a `nodes` array of the artifact:/symbol: ids it \
+                             is about — the ids you were just working on. It is kept either way, \
+                             because deleting an agent's stated lesson is worse than storing an \
+                             unreachable one."
+                        ),
+                    );
+                }
+            }
+            ok(&body)
         })()),
         "consolidate" => Some((|| {
             let promoted = engine
@@ -194,5 +227,107 @@ pub(super) fn dispatch(
             ok(&json!({ "pruned": pruned }))
         })()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::call;
+    use lodestar_core::Lodestar;
+    use serde_json::{json, Value};
+
+    fn payload(result: Value) -> Value {
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
+    fn record(engine: &Lodestar, statement: &str, evidence: &str) -> Value {
+        payload(
+            call(
+                engine,
+                &json!({
+                    "name": "record_knowledge",
+                    "arguments": { "statement": statement, "evidence": evidence },
+                }),
+            )
+            .unwrap(),
+        )
+    }
+
+    /// Recording knowledge that names no nodes says so, at the moment of
+    /// writing.
+    ///
+    /// The conformance advisory matches on referenced nodes and nothing else,
+    /// so a record naming none is stored, counted, and can never reach the
+    /// agent it was written for. Nothing reported that: `active_knowledge`
+    /// exposes `surfaces`, but reading it requires already suspecting the
+    /// problem, and an agent recording a lesson for a colleague has no reason
+    /// to. Measured before this landed — 3 of 17 active records were invisible,
+    /// one of them the cost of skipping the mandatory `advise` pre-flight,
+    /// written precisely so the next agent would not repeat it.
+    #[test]
+    fn knowledge_that_can_never_be_read_says_so_when_it_is_written() {
+        let engine = Lodestar::open_in_memory().unwrap();
+
+        let silent = record(&engine, "a lesson addressed to nobody", "{}");
+
+        assert_eq!(
+            silent["surfaces"],
+            json!(false),
+            "a record naming no nodes cannot surface and must say so: {silent}"
+        );
+        let advice = silent["surfaces_advice"]
+            .as_str()
+            .expect("an unreachable record explains what to do about it");
+        assert!(
+            advice.contains("nodes"),
+            "the advice must name the missing field: {advice}"
+        );
+    }
+
+    /// The record is kept either way. Refusing it would lose an agent's stated
+    /// lesson to a formatting mistake, which is worse than storing one that
+    /// cannot be matched.
+    #[test]
+    fn an_unreachable_record_is_still_recorded() {
+        let engine = Lodestar::open_in_memory().unwrap();
+
+        let silent = record(&engine, "kept despite naming nobody", "{}");
+        assert!(silent["id"].is_string(), "it still has an id: {silent}");
+
+        let active = payload(
+            call(
+                &engine,
+                &json!({ "name": "active_knowledge", "arguments": {} }),
+            )
+            .unwrap(),
+        );
+        let statements = active.to_string();
+        assert!(
+            statements.contains("kept despite naming nobody"),
+            "the record survives: {statements}"
+        );
+    }
+
+    /// A record that does name nodes reports that it will surface, so the
+    /// field means something rather than always warning.
+    #[test]
+    fn a_record_naming_nodes_reports_that_it_surfaces() {
+        let engine = Lodestar::open_in_memory().unwrap();
+
+        let reachable = record(
+            &engine,
+            "a lesson about a real file",
+            "{\"nodes\": [\"artifact:crates/lodestar-mcp/src/tools/knowledge.rs\"]}",
+        );
+
+        assert_eq!(
+            reachable["surfaces"],
+            json!(true),
+            "naming a node makes it reachable: {reachable}"
+        );
+        assert!(
+            reachable["surfaces_advice"].is_null(),
+            "a reachable record is not nagged: {reachable}"
+        );
     }
 }
