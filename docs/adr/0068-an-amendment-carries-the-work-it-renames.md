@@ -1,6 +1,6 @@
 # ADR-0068: An amendment carries the work it renames
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-29
 - Deciders: MindLeak maintainers
 - Related: [ADR-0063](0063-a-migration-may-tidy-the-past-never-the-present.md)
