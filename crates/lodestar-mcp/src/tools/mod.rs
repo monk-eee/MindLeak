@@ -420,7 +420,7 @@ pub fn call_with_storage(
                     .get_task(&stall.task_id)
                     .map_err(|error| error.to_string())?;
                 let next = match stall.kind.as_str() {
-                    "lapsed_lease" => json!({
+                    "lapsed_lease" | "paused" => json!({
                         "inspect": {
                             "tool": "task_query",
                             "view": "scope",
@@ -614,7 +614,7 @@ fn is_heartbeat(name: &str, args: &Value) -> bool {
 fn session_definition() -> Value {
     json!({
         "name": "open_session",
-        "description": "Register one client-minted 128-bit session id and return its stable cross-plane agent identity. Optionally declare where this session is working (branch, head_sha, base, dirty); the server records what you declare and never inspects Git itself. Non-empty attention fields are delivered here because every agent calls it: awaiting_a_human for completed work needing a person, rescue_work for lapsed claims or deadlocks another agent can inspect and take, waiting_on_you for addressed questions, and paused_by_you for owned suspended work. All are read-only; opening a session never transfers or closes work. Reuse the same session_id on every identity-bearing tool call and after server restarts.",
+        "description": "Register one client-minted 128-bit session id and return its stable cross-plane agent identity. Optionally declare where this session is working (branch, head_sha, base, dirty); the server records what you declare and never inspects Git itself. Non-empty attention fields are delivered here because every agent calls it: awaiting_a_human for completed work needing a person, rescue_work for lapsed claims, pauses beyond their seven-day grace, or deadlocks another agent can inspect and take, waiting_on_you for addressed questions, and paused_by_you for owned suspended work. All are read-only; opening a session never transfers or closes work. Reuse the same session_id on every identity-bearing tool call and after server restarts.",
         "inputSchema": session_input_schema()
     })
 }
@@ -1636,6 +1636,66 @@ mod tests {
 
         let unchanged = engine.store().get_task(&task.id).unwrap().unwrap();
         assert_eq!(unchanged.status, lodestar_core::TaskStatus::Claimed);
+        assert_eq!(unchanged.owner.as_deref(), Some(owner));
+    }
+
+    #[test]
+    fn open_session_delivers_paused_work_after_grace_without_transferring_it() {
+        let engine = Lodestar::open_in_memory().expect("in-memory engine");
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        const TOKEN: &str = "33445566778899001122aabbccddeeff";
+        let goal = engine
+            .define_goal(
+                lodestar_core::GoalKind::Objective,
+                "Paused rescue",
+                "rescue an abandoned pause",
+                None,
+            )
+            .unwrap();
+        let task = engine
+            .create_task(&goal.id, "owner paused and disappeared", "done")
+            .unwrap();
+        let owner = "session:v1:paused-owner";
+        engine
+            .declare_session_context(
+                owner,
+                &SessionContext {
+                    branch: Some("fix/paused-work".to_string()),
+                    head_sha: Some("def5678".to_string()),
+                    base: Some("origin/main".to_string()),
+                    dirty: Some(false),
+                    behind: Some(0),
+                },
+            )
+            .unwrap();
+        engine.claim_task(&task.id, owner, 600).unwrap();
+        engine
+            .store()
+            .pause_task(
+                &task.id,
+                owner,
+                Some("back later"),
+                lodestar_core::now_unix() - (7 * 24 * 3600) - 1,
+            )
+            .unwrap();
+
+        let params = json!({ "name": "open_session", "arguments": { "session_id": TOKEN } });
+        let bound = bind_session(&params, &sessions).expect("session binds");
+        let result = call(&engine, &bound).expect("open_session succeeds");
+        let body: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap())
+            .expect("body is JSON");
+        let rescue = body["rescue_work"].as_array().unwrap();
+
+        assert_eq!(rescue.len(), 1);
+        assert_eq!(rescue[0]["task_id"], task.id);
+        assert_eq!(rescue[0]["kind"], "paused");
+        assert_eq!(rescue[0]["owner"], owner);
+        assert_eq!(rescue[0]["branch"], "fix/paused-work");
+        assert_eq!(rescue[0]["next"]["inspect"]["view"], "scope");
+        assert_eq!(rescue[0]["next"]["take"]["step"], "claim");
+
+        let unchanged = engine.store().get_task(&task.id).unwrap().unwrap();
+        assert_eq!(unchanged.status, lodestar_core::TaskStatus::Paused);
         assert_eq!(unchanged.owner.as_deref(), Some(owner));
     }
 
