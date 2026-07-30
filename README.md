@@ -302,9 +302,9 @@ For the full local workflow (lint, format, pre-commit, CI), see
 ```
 crates/
   mindleak-core/   memory plane: db · model · decay · graph · ingest · consolidate
-  mindleak-mcp/    stdio JSON-RPC MCP server (23 tools)
+  mindleak-mcp/    stdio JSON-RPC MCP server
   lodestar-core/   intent plane: constitution · tasks (claim/lease) · conformance · knowledge
-  lodestar-mcp/    stdio JSON-RPC MCP server (49 tools)
+  lodestar-mcp/    stdio JSON-RPC MCP server
 editors/
   vscode/          passive sensor + Cytoscape visualizer
 docs/              SPEC · SPEC-INTENT · ARCHITECTURE · CONTRIBUTING
