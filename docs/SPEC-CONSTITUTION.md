@@ -486,8 +486,7 @@ not infer tasks from arbitrary Markdown.
 
 `design_decide(decision="accept")` records only the attributed human decision.
 The separate `design_promote(design_id, step="materialize", ...)` step reuses the
-planner behind
-`decompose_goal`, then atomically stores the complete plan and design→task /
+planner behind `task_create` without a title, then atomically stores the complete plan and design→task /
 design→goal provenance. It is idempotent: retries return the existing materialised
 result. Keeping promotion separate avoids holding a SQLite transaction across
 optional model I/O and leaves a failed decomposition visibly pending and safely

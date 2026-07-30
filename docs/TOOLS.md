@@ -54,7 +54,7 @@ per-clone repository id and user-local directory, so isolated worktrees share
 one intent plane and one memory graph by default.
 
 > **Evidence is the proof.** Completion here isn't a claim an agent makes — it's
-> proof it must produce. `complete_task` accepts only a provenance-bearing evidence
+> proof it must produce. `task_transition` (`to="complete"`) accepts only a provenance-bearing evidence
 > bundle that a separate `check_conformance` scores against the goal's code, bounded
 > by the live claim and attributed to the acting agent. The durable
 > `conformance_history` chain is the **only** trustworthy record that a fleet did
