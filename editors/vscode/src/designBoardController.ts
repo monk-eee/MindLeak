@@ -1,6 +1,7 @@
 import * as path from "path";
 import * as vscode from "vscode";
 
+import { ADR_REF, readAdrsOnRef } from "./adrRecord";
 import {
   chooseAdrTarget,
   DesignGoal,
@@ -43,10 +44,24 @@ export class DesignBoardController {
       return;
     }
     try {
-      const { metadata, skipped } = await readWorkspaceAdrMetadata(this.agentId);
+      const { metadata, skipped, fellBack } = await readWorkspaceAdrMetadata(this.agentId);
       await this.client.callTool("design_register", { designs: metadata });
       await this.refresh();
       this.log(`Design Board synchronized ${metadata.length} repository ADRs.`);
+      // Reading the working tree means registering this checkout's subset of
+      // the record as though it were the record, which tells the ledger that
+      // decisions on main do not exist. Correct in a fresh clone, never silent.
+      for (const folder of fellBack) {
+        this.log(
+          `Design Board could not resolve ${ADR_REF} in ${folder}; read its working tree instead. ` +
+            `That is this checkout's subset of the design record, not the record.`
+        );
+      }
+      if (fellBack.length) {
+        vscode.window.showWarningMessage(
+          `MindLeak read ADRs from the working tree in ${fellBack.join(", ")} because ${ADR_REF} could not be resolved. See the MindLeak output channel.`
+        );
+      }
       // An ADR the parser cannot read is an ADR the board can never show. That
       // has to be noisy: silence is what let two accepted decisions sit
       // unregistered while the sync kept reporting success.
@@ -529,6 +544,8 @@ export interface SkippedAdr {
 export interface WorkspaceAdrScan {
   metadata: DesignMetadata[];
   skipped: SkippedAdr[];
+  /** Folders whose record could not be read from the ref, and why it matters. */
+  fellBack: string[];
 }
 
 /** A thrown value is not always an `Error`; say something useful regardless. */
@@ -539,38 +556,64 @@ export function describeError(error: unknown): string {
   return typeof error === "string" ? error : JSON.stringify(error);
 }
 
+/**
+ * The ADR record for every workspace folder, read from the ref that holds it.
+ *
+ * Not from the working tree. Under ADR-0038 concurrent work lives in many
+ * worktrees on different branches, so the open checkout is a subset of the
+ * record and a different subset in each window: measured across 84 of them,
+ * 65 were missing between 1 and 26 ADRs and this one held 49 of 75. Registering
+ * that subset tells the ledger a decision does not exist.
+ *
+ * A folder with no resolvable ref falls back to its working tree, and says so.
+ * That is right for a fresh clone; doing it silently is not, because a partial
+ * record that reports itself as complete is indistinguishable from a good one.
+ */
 export async function readWorkspaceAdrMetadata(proposedBy: string): Promise<WorkspaceAdrScan> {
-  const files = await vscode.workspace.findFiles(
-    "**/docs/adr/*.md",
-    "**/{.git,node_modules,target,.vscode-test}/**"
-  );
   const metadata: DesignMetadata[] = [];
   const skipped: SkippedAdr[] = [];
-  for (const uri of files) {
-    const folder = vscode.workspace.getWorkspaceFolder(uri);
-    if (!folder) {
-      continue;
-    }
-    const relativePath = path.relative(folder.uri.fsPath, uri.fsPath).replace(/\\/g, "/");
-    // The glob matches every `.md` under docs/adr, including the index that
-    // scripts/adr-index.mjs generates. That is not a decision, and reporting it
-    // as an unreadable ADR on every load is noise that hides the real skips.
-    if (!isAdrFile(relativePath)) {
-      continue;
-    }
-    const content = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("utf8");
+  const fellBack: string[] = [];
+
+  const record = (relativePath: string, content: string) => {
     const parsed = parseAdrMetadata(relativePath, content, proposedBy);
     if (parsed) {
       metadata.push(parsed);
-      continue;
+      return;
     }
     const raw = rawAdrStatus(content);
     skipped.push({
       adrPath: relativePath,
       reason: raw ? `unrecognised status "${raw}"` : "no readable title or Status line",
     });
+  };
+
+  for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    const onRef = await readAdrsOnRef(folder.uri.fsPath);
+    if (onRef) {
+      for (const { path: adrPath, text } of onRef) {
+        record(adrPath, text);
+      }
+      continue;
+    }
+
+    fellBack.push(folder.name);
+    const files = await vscode.workspace.findFiles(
+      new vscode.RelativePattern(folder, "docs/adr/*.md"),
+      "**/{.git,node_modules,target,.vscode-test}/**"
+    );
+    for (const uri of files) {
+      const relativePath = path.relative(folder.uri.fsPath, uri.fsPath).replace(/\\/g, "/");
+      // The glob matches every `.md` under docs/adr, including the index that
+      // scripts/adr-index.mjs generates. That is not a decision, and reporting
+      // it as an unreadable ADR on every load is noise that hides real skips.
+      if (!isAdrFile(relativePath)) {
+        continue;
+      }
+      record(relativePath, Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("utf8"));
+    }
   }
+
   metadata.sort((left, right) => left.adr_path.localeCompare(right.adr_path));
   skipped.sort((left, right) => left.adrPath.localeCompare(right.adrPath));
-  return { metadata, skipped };
+  return { metadata, skipped, fellBack };
 }
