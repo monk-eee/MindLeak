@@ -4,7 +4,7 @@
 - Date: 2026-07-27
 - Deciders: MindLeak maintainers
 - Related: [ADR-0009](0009-evidence-backed-conformance.md) (conformance),
-  [ADR-0029](0029-ask-before-acting.md) (advise),
+  [ADR-0029](0029-proactive-constitutional-advice.md) (advise),
   [ADR-0034](0034-typed-controls-and-enforcement-ceilings.md)
   (enforcement ceilings),
   [ADR-0039](0039-waivers-end-amendments-change.md)
