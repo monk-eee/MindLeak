@@ -1,5 +1,5 @@
-- **The pre-commit stash race reports a failure that names the wrong thing —
-  GUARDED, not fixed.** — `pre-commit` stashes every unstaged change before
+- **Bare commits can still hit the pre-commit stash race and report the wrong
+  failure — GUARDED, OPEN.** `pre-commit` stashes every unstaged change before
   running hooks and restores it afterwards. Alone that is invisible; in a fleet
   it corrupts. If a second agent writes to the same working tree inside that
   window, the restore collides and hooks report `files were modified by this

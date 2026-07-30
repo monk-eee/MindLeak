@@ -1,5 +1,5 @@
-- **The impact traversal had no cross-file edges for Rust, so it could not say
-  what *breaks* — FIXED, with two resolution limits that remain.** Run against a
+- **Rust impact traversal stops at cross-crate and nested-use boundaries —
+   OPEN.** Run against a
   real file in this repository (`crates/mindleak-core/src/facade/query.rs`) the
   impact radius returned 15 nodes over 15 edges: 6 commit intents recorded
   against the file, the 7 symbols it contains, and `contains`/`refactored`/

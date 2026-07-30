@@ -30,6 +30,13 @@ export const FRAGMENT_DIR = "gaps.d";
 export const isFragmentName = (name) =>
   /^[a-z0-9]+(-[a-z0-9]+)*\.md$/.test(name);
 
+const terminalStatusWithoutOpenResidual = (heading) => {
+  const status = heading.split(/\s+(?:—|--)\s+/).at(-1) ?? "";
+  return (
+    /\b(?:FIXED|RESOLVED|CLOSED)\b/i.test(status) && !/\bOPEN\b/i.test(status)
+  );
+};
+
 /**
  * Read every fragment, newest-agnostic and sorted by name so the rendered order
  * is stable. Unreadable or malformed fragments are collected rather than thrown,
@@ -51,9 +58,16 @@ export const readFragments = (dir = FRAGMENT_DIR) => {
       continue;
     }
     const body = readFileSync(join(dir, name), "utf8").replace(/\s+$/, "");
-    if (!/^- \*\*/m.test(body)) {
+    const heading = body.match(/^- \*\*([\s\S]*?)\*\*/)?.[1];
+    if (!heading) {
       problems.push(
         `${name}: must open with a "- **" bullet naming the gap and its status`,
+      );
+      continue;
+    }
+    if (terminalStatusWithoutOpenResidual(heading)) {
+      problems.push(
+        `${name}: terminal status has no OPEN residual; delete the fragment when the gap closes`,
       );
       continue;
     }

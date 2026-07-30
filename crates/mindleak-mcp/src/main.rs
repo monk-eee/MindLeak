@@ -51,6 +51,21 @@ fn main() -> anyhow::Result<()> {
         .with_decay_policy(decay_policy)
         .with_working_set_size(working_set_size)
         .with_workspace_root(workspace.to_string_lossy().into_owned())
+        // Every worktree of this repository shares one graph (ADR-0038), so a
+        // file saved in a sibling checkout is the same file. Discovering the
+        // other roots here means it is placed rather than refused, whichever
+        // window did the saving.
+        .with_worktree_roots(mindleak_storage::worktree_roots(&workspace))
+        // Resolved once, the set above is frozen for the life of this process,
+        // and this fleet creates worktrees hourly — so the fix above decays from
+        // the moment it is deployed, fastest when the fleet is busiest. Re-resolve
+        // when a path lands outside every known root, which is the one moment the
+        // answer might have changed. Bounded inside the engine, so a genuinely
+        // foreign path cannot make every refusal pay for a subprocess.
+        .with_worktree_refresh({
+            let workspace = workspace.clone();
+            move || mindleak_storage::worktree_roots(&workspace)
+        })
         .with_recall_floor(mindleak_core::config::load_recall_floor())
         .with_consolidation_min_interval(maintenance_config.min_interval.as_secs());
     // Collapse any absolute node ids this checkout wrote before paths were made
