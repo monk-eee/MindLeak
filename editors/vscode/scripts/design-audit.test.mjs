@@ -47,14 +47,18 @@ describe("auditDesigns", () => {
     expect(findings[0].detail).toMatch(/file says Accepted, ledger says proposed/);
   });
 
-  // The ADR-0047 shape: reconcile_designs imports the status out of the file,
-  // so a row can be `accepted` with nobody named as the decider. accept_design
-  // then refuses it, because deciding again is not an undo — so this state is
-  // stuck until someone reopens it, and it is invisible without this check.
-  it("flags a decision that names no decider", () => {
+  // The ADR-0047 shape: a reconciled import takes the status out of the file,
+  // so a row can be `accepted` with nobody named as the decider. Accepting again
+  // cannot repair it, because deciding twice is not an undo — ADR-0051 added
+  // `attribute` for exactly this row, which records the decider and leaves the
+  // status alone. The advice must say so: reopening would throw away an
+  // acceptance that already holds and send the row back to proposed.
+  it("flags a decision that names no decider, and points it at attribute", () => {
     const findings = auditDesigns([adr("0001", "Accepted")], [row("0001", "accepted", null)]);
     expect(kinds(findings)).toEqual(["undecided"]);
-    expect(findings[0].detail).toMatch(/reopen_undecided_design/);
+    expect(findings[0].detail).toMatch(/design_decide/);
+    expect(findings[0].detail).toMatch(/attribute/);
+    expect(findings[0].detail).not.toMatch(/\breopen\b/);
   });
 
   it("does not expect a decider on a proposed row", () => {
@@ -71,7 +75,8 @@ describe("auditDesigns", () => {
       [row("0018", "accepted", "monk-eee")]
     );
     expect(kinds(findings)).toEqual(["supersession"]);
-    expect(findings[0].detail).toMatch(/supersede_design/);
+    expect(findings[0].detail).toMatch(/design_decide/);
+    expect(findings[0].detail).toMatch(/supersede/);
   });
 
   it("reports nothing when both sides agree the design was superseded", () => {
