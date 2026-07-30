@@ -38,13 +38,16 @@ pub struct BuildNotice {
 /// What the running binary should report about itself, or `None` when there is
 /// nothing meaningful to say.
 ///
-/// `head` is passed in rather than read here so the rule stays a pure decision
-/// and can be tested without a repository.
+/// `head` and `build_descends_from_head` are passed in rather than read here so
+/// the rule stays a pure decision and can be tested without a repository.
+/// `build_descends_from_head` is `None` when git could not answer, which is not
+/// the same as `Some(false)`: one is ignorance, the other is evidence.
 pub fn build_notice(
     executable: &Path,
     workspace: &Path,
     build_sha: &str,
     head: Option<&str>,
+    build_descends_from_head: Option<bool>,
 ) -> Option<BuildNotice> {
     let build_sha = build_sha.trim().to_ascii_lowercase();
     if build_sha.is_empty() || build_sha == "unknown" {
@@ -73,6 +76,25 @@ pub fn build_notice(
     if build_sha[..shared] == head[..shared] {
         return None;
     }
+    // Differing from HEAD is not yet a staleness claim. Stale means the binary
+    // was built from something this checkout has since moved past; if the build
+    // *descends* from HEAD then the checkout is the thing that is behind, and
+    // "rebuild and restart" would replace a newer binary with an older one.
+    //
+    // This is not hypothetical. The checkout the fleet's servers are compared
+    // against sat 599 commits behind main on 2026-07-30, so a binary built from
+    // main's tip was reported stale, and following the advice would have
+    // reverted an ingest guard merged minutes earlier.
+    if build_descends_from_head == Some(true) {
+        return Some(BuildNotice {
+            message: format!(
+                "this checkout is behind the running binary: it was built from {build_sha}, \
+                 HEAD is {head}. Rebuilding here would replace the binary with an older \
+                 one -- update the checkout instead."
+            ),
+            stale: false,
+        });
+    }
     Some(BuildNotice {
         message: format!(
             "running a stale build of this checkout: binary was built from {build_sha}, \
@@ -80,6 +102,27 @@ pub fn build_notice(
         ),
         stale: true,
     })
+}
+
+/// Whether `descendant` has `ancestor` in its history, or `None` when git
+/// cannot answer -- because it is unavailable, or because either commit is not
+/// present in this checkout (a binary built elsewhere).
+///
+/// `None` is deliberately distinct from `Some(false)`: an unanswerable question
+/// must not read as evidence that the build is behind.
+pub fn is_ancestor(workspace: &Path, ancestor: &str, descendant: &str) -> Option<bool> {
+    let output = Command::new("git")
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .current_dir(workspace)
+        .output()
+        .ok()?;
+    match output.status.code() {
+        Some(0) => Some(true),
+        // 1 is git's answer of "no"; anything else is git failing to answer,
+        // most often an unknown revision.
+        Some(1) => Some(false),
+        _ => None,
+    }
 }
 
 /// The checkout's current `HEAD`, or `None` when git is unavailable.
@@ -107,7 +150,93 @@ mod tests {
     const HEAD: &str = "a1b2c3d4e5f6789000000000000000000000aaaa";
 
     fn notice(exe: &str, build: &str, head: Option<&str>) -> Option<BuildNotice> {
-        build_notice(&PathBuf::from(exe), &PathBuf::from(WORKSPACE), build, head)
+        // No lineage answer: git could not tell us, which is the conservative
+        // case and must keep behaving exactly as it did before.
+        notice_with_lineage(exe, build, head, None)
+    }
+
+    fn notice_with_lineage(
+        exe: &str,
+        build: &str,
+        head: Option<&str>,
+        descends: Option<bool>,
+    ) -> Option<BuildNotice> {
+        build_notice(
+            &PathBuf::from(exe),
+            &PathBuf::from(WORKSPACE),
+            build,
+            head,
+            descends,
+        )
+    }
+
+    /// Regression: a binary built *ahead* of HEAD was reported as stale, and the
+    /// advice would have destroyed the deploy.
+    ///
+    /// What went wrong: the rule compared build sha against HEAD with a plain
+    /// string inequality and no ancestry check, so any difference in either
+    /// direction produced "running a stale build ... Rebuild and restart".
+    ///
+    /// Impact, measured on the live fleet 2026-07-30: the checkout the servers
+    /// are compared against sat 599 commits behind main, so a binary freshly
+    /// built from main's tip was reported stale on every `open_session`. Acting
+    /// on that advice rebuilds from the older checkout and replaces the binary
+    /// with one 599 commits older -- which would have reverted an ingest guard
+    /// merged minutes earlier. A warning whose remedy undoes the fix is worse
+    /// than silence, because it is followed.
+    ///
+    /// The fix: staleness now requires evidence that the build is behind. When
+    /// the build descends from HEAD, the checkout is what is behind and the
+    /// notice says so instead.
+    #[test]
+    fn a_build_ahead_of_head_is_not_reported_stale() {
+        let notice = notice_with_lineage(LOCAL, "999999999999", Some(HEAD), Some(true))
+            .expect("it should still say which build is answering");
+
+        assert!(
+            !notice.stale,
+            "a build that has HEAD in its history is ahead, not stale: {}",
+            notice.message
+        );
+        assert!(
+            !notice.message.contains("Rebuild and restart"),
+            "must not advise rebuilding backwards: {}",
+            notice.message
+        );
+        // "Which build is answering" is the question this notice exists for, so
+        // both shas must survive the change of verdict.
+        assert!(
+            notice.message.contains("999999999999"),
+            "{}",
+            notice.message
+        );
+        assert!(notice.message.contains(&HEAD[..12]), "{}", notice.message);
+    }
+
+    #[test]
+    fn a_build_genuinely_behind_head_is_still_stale() {
+        // The original regression must keep working: evidence that the build
+        // does NOT contain HEAD is exactly the case the warning is for.
+        let notice = notice_with_lineage(LOCAL, "999999999999", Some(HEAD), Some(false))
+            .expect("should warn");
+
+        assert!(notice.stale, "{}", notice.message);
+        assert!(
+            notice.message.contains("Rebuild and restart"),
+            "{}",
+            notice.message
+        );
+    }
+
+    #[test]
+    fn an_unanswerable_lineage_is_not_treated_as_ahead() {
+        // `None` is ignorance, not evidence. Silently treating it as "ahead"
+        // would trade a false alarm for a missed one, which is the worse half
+        // of the trade: the stale build then serves verdicts unannounced.
+        let notice =
+            notice_with_lineage(LOCAL, "999999999999", Some(HEAD), None).expect("should warn");
+
+        assert!(notice.stale, "{}", notice.message);
     }
 
     #[test]
