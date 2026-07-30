@@ -405,6 +405,63 @@ pub fn call_with_storage(
         if !awaiting.is_empty() {
             body["awaiting_a_human"] = json!(awaiting);
         }
+        // A dead owner cannot read an addressed question or a pull-request
+        // comment. Deliver objectively rescuable work on the one call every
+        // replacement agent makes. This is visibility only: no ownership or
+        // task state changes here.
+        let rescue = engine
+            .work_needing_rescue()
+            .map_err(|error| error.to_string())?;
+        if !rescue.is_empty() {
+            let mut entries = Vec::with_capacity(rescue.len());
+            for stall in rescue {
+                let task = engine
+                    .store()
+                    .get_task(&stall.task_id)
+                    .map_err(|error| error.to_string())?;
+                let next = match stall.kind.as_str() {
+                    "lapsed_lease" => json!({
+                        "inspect": {
+                            "tool": "task_query",
+                            "view": "scope",
+                            "task_id": stall.task_id,
+                        },
+                        "take": {
+                            "tool": "task_claim",
+                            "step": "claim",
+                            "task_id": stall.task_id,
+                        },
+                    }),
+                    "deadlocked" => json!({
+                        "inspect": {
+                            "tool": "task_query",
+                            "view": "thread",
+                            "task_id": stall.task_id,
+                        },
+                        "coordinate": {
+                            "tool": "task_query",
+                            "view": "drafts",
+                            "task_id": stall.task_id,
+                        },
+                    }),
+                    other => {
+                        unreachable!("work_needing_rescue returned unexpected stall kind {other}")
+                    }
+                };
+                entries.push(json!({
+                    "task_id": stall.task_id,
+                    "title": stall.title,
+                    "kind": stall.kind.as_str(),
+                    "since": stall.since,
+                    "stalled_seconds": stall.stalled_seconds,
+                    "detail": stall.detail,
+                    "owner": task.as_ref().and_then(|task| task.owner.as_deref()),
+                    "branch": task.as_ref().and_then(|task| task.branch.as_deref()),
+                    "next": next,
+                }));
+            }
+            body["rescue_work"] = Value::Array(entries);
+        }
         executive::attach_owner_attention(engine, &args, &mut body)?;
         return ok(&body);
     }
@@ -557,7 +614,7 @@ fn is_heartbeat(name: &str, args: &Value) -> bool {
 fn session_definition() -> Value {
     json!({
         "name": "open_session",
-        "description": "Register one client-minted 128-bit session id and return its stable cross-plane agent identity. Optionally declare where this session is working (branch, head_sha, base, dirty); the server records what you declare and never inspects Git itself. Reuse the same session_id on every identity-bearing tool call and after server restarts.",
+        "description": "Register one client-minted 128-bit session id and return its stable cross-plane agent identity. Optionally declare where this session is working (branch, head_sha, base, dirty); the server records what you declare and never inspects Git itself. Non-empty attention fields are delivered here because every agent calls it: awaiting_a_human for completed work needing a person, rescue_work for lapsed claims or deadlocks another agent can inspect and take, waiting_on_you for addressed questions, and paused_by_you for owned suspended work. All are read-only; opening a session never transfers or closes work. Reuse the same session_id on every identity-bearing tool call and after server restarts.",
         "inputSchema": session_input_schema()
     })
 }
@@ -1496,6 +1553,144 @@ mod tests {
         assert_eq!(queue.len(), 1);
         assert_eq!(queue[0]["task_id"], task.id);
         assert_eq!(queue[0]["kind"], "awaiting_human");
+        assert!(
+            reported.get("rescue_work").is_none(),
+            "human-review work is not offered for agent rescue"
+        );
+    }
+
+    /// A dead owner cannot read a PR comment or answer an addressed question.
+    /// Once its lease lapses, the next agent must receive the rescue candidate
+    /// on the one call every session makes, without that read stealing the task.
+    #[test]
+    fn open_session_delivers_lapsed_work_without_transferring_it() {
+        let engine = Lodestar::open_in_memory().expect("in-memory engine");
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        const TOKEN: &str = "11223344556677889900aabbccddeeff";
+        let body = || -> Value {
+            let params = json!({ "name": "open_session", "arguments": { "session_id": TOKEN } });
+            let bound = bind_session(&params, &sessions).expect("session binds");
+            let result = call(&engine, &bound).expect("open_session succeeds");
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap())
+                .expect("body is JSON")
+        };
+
+        assert!(
+            body().get("rescue_work").is_none(),
+            "an empty rescue queue says nothing at all"
+        );
+
+        let goal = engine
+            .define_goal(
+                lodestar_core::GoalKind::Objective,
+                "Rescue",
+                "rescue work",
+                None,
+            )
+            .unwrap();
+        let task = engine
+            .create_task(&goal.id, "owner disappeared", "done")
+            .unwrap();
+        let owner = "session:v1:dead-owner";
+        engine
+            .declare_session_context(
+                owner,
+                &SessionContext {
+                    branch: Some("fix/unfinished-work".to_string()),
+                    head_sha: Some("abc1234".to_string()),
+                    base: Some("origin/main".to_string()),
+                    dirty: Some(false),
+                    behind: Some(0),
+                },
+            )
+            .unwrap();
+        engine
+            .store()
+            .claim_task_with_scope(
+                &task.id,
+                owner,
+                1,
+                &lodestar_core::TaskScope::default(),
+                lodestar_core::now_unix() - 10,
+            )
+            .unwrap();
+
+        let reported = body();
+        let rescue = reported["rescue_work"]
+            .as_array()
+            .expect("lapsed work is delivered for rescue");
+        assert!(
+            reported.get("awaiting_a_human").is_none(),
+            "an expired claim is agent-rescuable, not a human decision"
+        );
+        assert_eq!(rescue.len(), 1);
+        assert_eq!(rescue[0]["task_id"], task.id);
+        assert_eq!(rescue[0]["kind"], "lapsed_lease");
+        assert!(rescue[0]["detail"].as_str().unwrap().contains(owner));
+        assert_eq!(rescue[0]["owner"], owner);
+        assert_eq!(rescue[0]["branch"], "fix/unfinished-work");
+        assert_eq!(rescue[0]["next"]["inspect"]["tool"], "task_query");
+        assert_eq!(rescue[0]["next"]["inspect"]["view"], "scope");
+        assert_eq!(rescue[0]["next"]["take"]["tool"], "task_claim");
+        assert_eq!(rescue[0]["next"]["take"]["step"], "claim");
+
+        let unchanged = engine.store().get_task(&task.id).unwrap().unwrap();
+        assert_eq!(unchanged.status, lodestar_core::TaskStatus::Claimed);
+        assert_eq!(unchanged.owner.as_deref(), Some(owner));
+    }
+
+    #[test]
+    fn open_session_delivers_deadlocks_as_coordination_not_claims() {
+        let engine = Lodestar::open_in_memory().expect("in-memory engine");
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        const TOKEN: &str = "22334455667788990011aabbccddeeff";
+        let goal = engine
+            .define_goal(
+                lodestar_core::GoalKind::Objective,
+                "Coordinate",
+                "coordinate",
+                None,
+            )
+            .unwrap();
+        let first = engine.create_task(&goal.id, "First", "done").unwrap();
+        let second = engine.create_task(&goal.id, "Second", "done").unwrap();
+        engine.claim_task(&first.id, "agent-a", 600).unwrap();
+        engine.claim_task(&second.id, "agent-b", 600).unwrap();
+        engine
+            .ask_question(
+                &first.id,
+                "agent-a",
+                "Are you changing this?",
+                Some("agent-b"),
+            )
+            .unwrap();
+        engine
+            .ask_question(
+                &second.id,
+                "agent-b",
+                "Are you changing this?",
+                Some("agent-a"),
+            )
+            .unwrap();
+
+        let params = json!({ "name": "open_session", "arguments": { "session_id": TOKEN } });
+        let bound = bind_session(&params, &sessions).expect("session binds");
+        let result = call(&engine, &bound).expect("open_session succeeds");
+        let body: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap())
+            .expect("body is JSON");
+        let rescue = body["rescue_work"].as_array().unwrap();
+
+        assert_eq!(rescue.len(), 2);
+        assert!(rescue.iter().all(|entry| entry["kind"] == "deadlocked"));
+        assert!(rescue
+            .iter()
+            .all(|entry| entry["next"].get("take").is_none()));
+        assert!(rescue
+            .iter()
+            .all(|entry| entry["next"]["inspect"]["view"] == "thread"));
+        assert!(rescue
+            .iter()
+            .all(|entry| entry["next"]["coordinate"]["view"] == "drafts"));
     }
 
     #[test]
