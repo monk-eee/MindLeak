@@ -618,6 +618,11 @@ fn claim(engine: &Lodestar, task_id: &str, args: &Value) -> Result<Value, String
             if let Some(obj) = response.as_object_mut() {
                 obj.insert("claim_started_at".to_string(), json!(task.claim_started_at));
                 obj.insert("lease_expires_at".to_string(), json!(task.lease_expires_at));
+                // The branch this claim's window is being done on, confirmed
+                // back at the decision point (ADR-0035 d5). Joined at claim time
+                // from what the session told open_session, so it is null when
+                // none was declared rather than guessed.
+                obj.insert("branch".to_string(), json!(task.branch));
             }
         }
     } else {
@@ -641,6 +646,11 @@ fn claim(engine: &Lodestar, task_id: &str, args: &Value) -> Result<Value, String
             if let Some(task) = task.as_ref() {
                 obj.insert("status".to_string(), json!(task.status.as_str()));
                 obj.insert("owner".to_string(), json!(task.owner));
+                // Not just who holds it but the branch they hold it on
+                // (ADR-0035 d5): the fact a colliding agent needs to tell a
+                // merge risk from the same work twice. Pinned to the owner's
+                // window at claim time, null when they declared no branch.
+                obj.insert("owner_branch".to_string(), json!(task.branch));
                 obj.insert("lease_expires_at".to_string(), json!(task.lease_expires_at));
                 obj.insert("blocked_by".to_string(), json!(task.blocked_by));
             }
@@ -1242,6 +1252,110 @@ mod tests {
             rows[0]["scope"]["symbols"][0],
             "symbol:crates/mindleak-core/src/lib.rs:MindLeak"
         );
+    }
+
+    /// ADR-0035 decision 5: the claim decision surfaces the branch. A won claim
+    /// confirms the branch its window was pinned to; a lost claim names not just
+    /// who holds the task but the branch they hold it on — the fact a colliding
+    /// agent needs to tell a merge risk from the same work twice. Both come from
+    /// what the owner declared to `open_session`.
+    #[test]
+    fn the_claim_decision_surfaces_the_branch_when_declared() {
+        use mindleak_session::SessionContext;
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(
+                GoalKind::Objective,
+                "Surface branch",
+                "fleet feedback",
+                None,
+            )
+            .unwrap();
+        let task = engine
+            .create_task(&goal.id, "Edit executive", "done")
+            .unwrap();
+        let task_id = task.id.clone();
+
+        // The owner declared a branch at open_session; the claim pins it.
+        engine
+            .declare_session_context(
+                "alice",
+                &SessionContext {
+                    branch: Some("fleet/surface".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let won = call(
+            &engine,
+            &json!({
+                "name": "task_claim",
+                "arguments": {
+                    "task_id": task_id,
+                    "step": "claim",
+                    "agent": "alice",
+                    "lease_secs": 300
+                }
+            }),
+        )
+        .unwrap();
+        let won_body: Value =
+            serde_json::from_str(won["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(won_body["won"], true);
+        // The won claim confirms the branch its window was pinned to.
+        assert_eq!(won_body["branch"], "fleet/surface");
+
+        // A different agent loses, and learns which branch the holder is on.
+        let lost = call(
+            &engine,
+            &json!({
+                "name": "task_claim",
+                "arguments": {
+                    "task_id": task_id,
+                    "step": "claim",
+                    "agent": "bob",
+                    "lease_secs": 300
+                }
+            }),
+        )
+        .unwrap();
+        let lost_body: Value =
+            serde_json::from_str(lost["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(lost_body["won"], false);
+        assert_eq!(lost_body["owner"], "alice");
+        assert_eq!(lost_body["owner_branch"], "fleet/surface");
+    }
+
+    /// The surfacing omits cleanly when no branch was declared, rather than
+    /// guessing one — the server never inspects Git (ADR-0044). Carried as an
+    /// explicit null, the way board rows carry `owner: null`: "declared
+    /// nothing", not "the key is missing".
+    #[test]
+    fn the_claim_decision_omits_the_branch_when_none_was_declared() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "No branch", "fleet feedback", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Edit", "done").unwrap();
+
+        let won = call(
+            &engine,
+            &json!({
+                "name": "task_claim",
+                "arguments": {
+                    "task_id": task.id,
+                    "step": "claim",
+                    "agent": "carol",
+                    "lease_secs": 300
+                }
+            }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(won["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["won"], true);
+        assert!(body["branch"].is_null());
     }
 
     #[test]
