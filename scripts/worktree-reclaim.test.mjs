@@ -34,6 +34,19 @@ test("never takes the primary checkout", () => {
   assert.match(verdict.reason, /primary checkout/);
 });
 
+/**
+ * Found on the first live run against 94 real worktrees. This tool's own
+ * worktree was merged, clean and idle, so every other rule said yes — it would
+ * have deleted `target/` out from under the running process and then tried to
+ * remove the checkout it was executing in. A cleanup tool must not be its own
+ * first casualty.
+ */
+test("never takes the worktree it is running in", () => {
+  const verdict = classifyWorktree({ ...idle, current: true }, {});
+  assert.equal(verdict.reclaim, false);
+  assert.match(verdict.reason, /running here/);
+});
+
 test("never takes a protected branch, however merged it looks", () => {
   for (const branch of PROTECTED_BRANCHES) {
     const verdict = classifyWorktree({ ...idle, branch }, {});
