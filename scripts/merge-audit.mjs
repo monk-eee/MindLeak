@@ -60,6 +60,49 @@ export const classifyCommits = (cwd, baseRef, branchRef) => {
 };
 
 /**
+ * The open pull request whose head still carries this commit, or null.
+ *
+ * A commit pushed onto a branch after its pull request merged is not
+ * automatically lost: it is lost only if no open pull request would bring it
+ * in. When one would, the work is in review, and the audit's own instruction —
+ * open a follow-up pull request — is unactionable, because that is exactly what
+ * already exists. An audit that demands something already done is the same
+ * failure this file was written to remove, wearing a different costume: it
+ * cannot be satisfied, so it gets switched off, taking the check that catches
+ * genuinely stranded work with it.
+ *
+ * Measured on 2026-07-30 with main red on precisely this: commit ffab86ea, held
+ * against PR #213's merged branch, is an ancestor of the open PR #231.
+ */
+export const reviewingRef = (cwd, sha, openRefs) =>
+  openRefs.find((ref) => {
+    try {
+      capture("git", ["merge-base", "--is-ancestor", sha, ref], { cwd });
+      return true;
+    } catch {
+      return false;
+    }
+  }) ?? null;
+
+/**
+ * Split commits that never reached the base into those an open pull request
+ * still carries and those nothing carries.
+ *
+ * `missing` entries are `git cherry -v` lines, so the sha is the first token.
+ */
+export const splitByReview = (cwd, missing, openRefs) => {
+  const stranded = [];
+  const inReview = [];
+  for (const commit of missing) {
+    const sha = commit.split(/\s+/)[0];
+    const ref = openRefs.length ? reviewingRef(cwd, sha, openRefs) : null;
+    if (ref) inReview.push({ commit, ref });
+    else stranded.push(commit);
+  }
+  return { stranded, inReview };
+};
+
+/**
  * Audit each merged branch against the base.
  *
  * A branch whose tip is already an ancestor of the base is clean by
@@ -128,6 +171,36 @@ if (invokedDirectly) {
   for (const pr of merged) {
     if (!byBranch.has(pr.headRefName)) byBranch.set(pr.headRefName, pr.number);
   }
+
+  // The open pull requests, so a commit still on its way in is not mistaken for
+  // one that was left behind. Failing to list them degrades to the old, noisier
+  // behaviour rather than to a false all-clear: an unreachable `gh` must not be
+  // able to silence the audit.
+  let openRefs = [];
+  const openByRef = new Map();
+  try {
+    const open = JSON.parse(
+      capture(gh, [
+        "pr",
+        "list",
+        "--state",
+        "open",
+        "--limit",
+        limit,
+        "--json",
+        "number,headRefName",
+      ]),
+    );
+    for (const pr of open) {
+      const ref = `origin/${pr.headRefName}`;
+      if (!openByRef.has(ref)) openByRef.set(ref, pr.number);
+    }
+    openRefs = [...openByRef.keys()];
+  } catch {
+    console.error(
+      "merge-audit: could not list open pull requests; every missing commit will be reported as stranded",
+    );
+  }
   const branches = [...byBranch.keys()];
   const results = auditBranches(
     cwd,
@@ -137,16 +210,32 @@ if (invokedDirectly) {
 
   let lost = 0;
   let rewritten = 0;
+  let waiting = 0;
   for (const result of results) {
     const name = result.branchRef.replace(/^origin\//, "");
     if (!result.verifiable) continue;
     if (result.missing.length) {
-      lost += 1;
-      console.error(
-        `merge-audit: PR #${byBranch.get(name)} (${name}) merged, but ${result.missing.length} commit(s) never reached ${base}:`,
+      const { stranded, inReview } = splitByReview(
+        cwd,
+        result.missing,
+        openRefs,
       );
-      for (const commit of result.missing) console.error(`    ${commit}`);
-      continue;
+      for (const { commit, ref } of inReview) {
+        waiting += 1;
+        console.log(
+          `merge-audit: PR #${byBranch.get(name)} (${name}) has a commit that landed after it merged, ` +
+            `now in review on PR #${openByRef.get(ref)}:`,
+        );
+        console.log(`    ${commit}`);
+      }
+      if (stranded.length) {
+        lost += 1;
+        console.error(
+          `merge-audit: PR #${byBranch.get(name)} (${name}) merged, but ${stranded.length} commit(s) never reached ${base}:`,
+        );
+        for (const commit of stranded) console.error(`    ${commit}`);
+      }
+      if (stranded.length) continue;
     }
     if (result.replaced.length) {
       rewritten += 1;
@@ -175,6 +264,18 @@ if (invokedDirectly) {
       `\nmerge-audit: ${rewritten} merged branch(es) landed as rewritten commits. No work was lost, and\n` +
         "nothing can be done about it now. AGENTS.md asks for merge commits so a commit id stays\n" +
         "evidence; disable squash and rebase merging on the repository to enforce it at the button.",
+    );
+  }
+  if (waiting) {
+    // Stated rather than passed over in silence. Pushing onto a branch whose
+    // pull request has merged is still a mistake worth seeing — that pull
+    // request will never reopen, so the commit depends entirely on the open one
+    // that happens to carry it. It is just not lost, and not the build's
+    // business to fail on.
+    console.log(
+      `\nmerge-audit: ${waiting} commit(s) landed on an already-merged branch and are in review elsewhere.\n` +
+        "Nothing is lost. Push to the open pull request's branch instead: a merged pull request never\n" +
+        "reopens, so a commit pushed there survives only for as long as something else carries it.",
     );
   }
   console.log(
