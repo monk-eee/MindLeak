@@ -34,6 +34,7 @@ import {
   pendingQuestion,
   resolveBinaryPath,
   resolveServerPath,
+  shouldPollTelemetry,
   TaskQaEntry,
   telemetryDashboard,
   TelemetrySnapshot,
@@ -139,7 +140,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   );
   const telemetryRefreshMs = Math.max(1, config.get<number>("telemetryRefreshSecs", 3)) * 1000;
   const telemetryTimer = setInterval(() => {
-    if (telemetry?.isVisible()) {
+    if (telemetry && shouldPollTelemetry(telemetry.isVisible(), telemetry.isLive())) {
       void refreshTelemetry();
     }
   }, telemetryRefreshMs);
