@@ -9,59 +9,6 @@ to [Semantic Versioning](https://semver.org/).
 ## [0.1.4] - 2026-07-30
 
 ### Added
-- A decider label that is one edit from one already in the ledger is now flagged
-  at the moment it is recorded. Attribution labels are free text and
-  deliberately unverified — ADR-0071 is explicit that they are attributed, not
-  authenticated — so a typo cannot be detected by checking it against anything.
-  It can only be compared with what is already there.
-  This matters because the moment of writing is the *only* moment a slip is
-  fixable. Afterwards every verb that could correct one refuses by design:
-  `attribute` answers "a recorded human act is not rewritten here" and `reopen`
-  answers "a recorded decision is not undone here". Both refusals are right —
-  an agent that could rewrite who decided something would make attribution
-  worthless — but together they mean a mistyped name is permanent.
-  Measured on the live ledger: 73 rows carried 70 decisions by `monk-eee`, one
-  by `Lyndon Swan`, and one by `monk-ee`, which is a typo for the first and can
-  never be corrected. This is what would have caught it.
-  The check is advisory and never refuses. Two people can legitimately have
-  similar names, and rejecting a genuine new reviewer to catch a typo is the
-  worse failure; the response carries the recorded label, what it resembles, and
-  what to do about it, and the decision itself proceeds untouched.
-- **The recall ranking change is measured against a real index, including the
-  part of it that did not work.** ADR-0075 shipped on deterministic unit tests
-  whose fields were synthetic and uniform. A real index is neither, so it was
-  measured against this repository's own — 19,317 embedded nodes, ten queries,
-  the pre-change algorithm as the control arm and the built binary as the
-  treatment arm.
-
-  Two claims held. Hits naming a node the graph no longer holds fell from **24
-  of 50 to 0 of 49**: nearly half of what recall used to hand back was an id the
-  caller could not open. Recorded conclusions rose from **14% of hits served to
-  96%**, where they had been outnumbered five to one by symbols, executions and
-  dangling references.
-
-  One did not, and it is recorded with equal weight because the fixtures could
-  not see it: **a nonsense query is still answered rather than met with
-  silence.** Top-hit distance above the field is 3.11–3.90 standard deviations
-  for nonsense controls and 3.71–6.21 for real questions, so the bands overlap
-  by 0.19σ and no single threshold rejects one while keeping the other. The
-  shipped 1σ cut sits far below both. The reasoning that failed was that
-  nonsense lifts a field uniformly — true of the fixture, false of a diverse
-  19,000-node index, where even nonsense has relative outliers.
-
-  The constant is deliberately **not** tuned in response: three samples
-  separated by a negative margin is the same global constant the floor
-  measurement already warned against, one level up. ADR-0075 is still Proposed
-  and carries a correction saying so.
-
-  New: `scripts/evaluate-recall.mjs`, with unit tests, reproducing all of the
-  above. It needs a populated index and a reachable embeddings server — both
-  optional parts of the product (ADR-0008) — and reports rather than fails when
-  either is absent.
-
-## [0.1.4] - 2026-07-30
-
-### Added
 - **Shell-specific plumbing is now refused at the commit.** The project already
   required platform-agnostic operation, but that rule is stated as an outcome,
   so it was only ever noticed after something had broken on someone else's
@@ -152,6 +99,24 @@ to [Semantic Versioning](https://semver.org/).
   would otherwise serve as a receipt.
   It does not complete the task: conformance still judges the result and
   somebody still has to submit it.
+- A decider label that is one edit from one already in the ledger is now flagged
+  at the moment it is recorded. Attribution labels are free text and
+  deliberately unverified — ADR-0071 is explicit that they are attributed, not
+  authenticated — so a typo cannot be detected by checking it against anything.
+  It can only be compared with what is already there.
+  This matters because the moment of writing is the *only* moment a slip is
+  fixable. Afterwards every verb that could correct one refuses by design:
+  `attribute` answers "a recorded human act is not rewritten here" and `reopen`
+  answers "a recorded decision is not undone here". Both refusals are right —
+  an agent that could rewrite who decided something would make attribution
+  worthless — but together they mean a mistyped name is permanent.
+  Measured on the live ledger: 73 rows carried 70 decisions by `monk-eee`, one
+  by `Lyndon Swan`, and one by `monk-ee`, which is a typo for the first and can
+  never be corrected. This is what would have caught it.
+  The check is advisory and never refuses. Two people can legitimately have
+  similar names, and rejecting a genuine new reviewer to catch a typo is the
+  worse failure; the response carries the recorded label, what it resembles, and
+  what to do about it, and the decision itself proceeds untouched.
 - **Policy can grow: a new clause can be written into an amendment.** Two
   correct rules met in a corner. `define_goal` states a rule that is live the
   moment it is written, and `complete_clause_contract` refuses to give a live
@@ -554,6 +519,34 @@ to [Semantic Versioning](https://semver.org/).
   The allowlist is deliberate: a tool added anywhere else is specialist until
   someone puts its name on the common path, so the surface an agent pays for
   every session grows by decision rather than by default.
+- The fleet can now reclaim its own disk. `scripts/worktree-reclaim.mjs` reports
+  worktrees whose commits have landed on `origin/main` and, when told to,
+  removes them along with their local branch, their merged remote branch, and
+  their build output. `make reclaim` reports; `make reclaim ARGS="--reclaim
+  --remote"` acts.
+  This exists because cleanup never happens on goodwill. The agent that created
+  a worktree has finished and moved on by the time it is safe to remove, so the
+  mess is always somebody else's and it grows every time the fleet works
+  correctly. Measured 2026-07-30: 88 worktrees, 86 carrying `target/`, 61
+  carrying `node_modules`, one sampled `target/` holding 82,891 entries. On the
+  first real run the tool found 22 reclaimable worktrees holding **62.32 GiB**
+  of build output.
+  Reporting is the default and acting is explicit, because the failure mode of a
+  cleanup tool is deleting work somebody still needed and no report can be
+  un-deleted. It refuses the bare primary, protected branches, any tree with
+  uncommitted **or untracked** changes, any tree mid-build, any tree whose
+  ownership marker names another session, and any branch whose commits have not
+  landed. Every refusal names the rule that stopped it, so a worktree that is
+  kept does not read like one the tool failed to notice.
+  Landing is judged by patch equivalence (`git cherry`), not commit identity. A
+  squash or rebase merge lands every line under a new commit id, so
+  `git merge-base --is-ancestor` answers "no" for work that is fully merged —
+  the mistake that previously led an agent here to declare 245 merged lines lost
+  and queue a PR to restore code already on main.
+  The decision for each worktree is a pure function of gathered facts, so all
+  six refusals are tested without creating or destroying anything. The tests are
+  weighted toward what the tool must *not* take, because a cleanup tool tested
+  only on what it deletes has not been tested on what matters.
 - **The module-length ratchet is now observed, not merely registered.**
   `control:rust-module-length` had a reviewed baseline and a committed measurer
   and nothing ever told it anything — the same shape as the six script suites
@@ -571,6 +564,37 @@ to [Semantic Versioning](https://semver.org/).
   it does refuse is running blind: an unattributed session or an unreachable
   Intent Plane fails loudly, because a reporter that quietly says nothing is
   indistinguishable from one reporting a pass.
+- **The recall ranking change is measured against a real index, including the
+  part of it that did not work.** ADR-0075 shipped on deterministic unit tests
+  whose fields were synthetic and uniform. A real index is neither, so it was
+  measured against this repository's own — 19,317 embedded nodes, ten queries,
+  the pre-change algorithm as the control arm and the built binary as the
+  treatment arm.
+
+  Two claims held. Hits naming a node the graph no longer holds fell from **24
+  of 50 to 0 of 49**: nearly half of what recall used to hand back was an id the
+  caller could not open. Recorded conclusions rose from **14% of hits served to
+  96%**, where they had been outnumbered five to one by symbols, executions and
+  dangling references.
+
+  One did not, and it is recorded with equal weight because the fixtures could
+  not see it: **a nonsense query is still answered rather than met with
+  silence.** Top-hit distance above the field is 3.11–3.90 standard deviations
+  for nonsense controls and 3.71–6.21 for real questions, so the bands overlap
+  by 0.19σ and no single threshold rejects one while keeping the other. The
+  shipped 1σ cut sits far below both. The reasoning that failed was that
+  nonsense lifts a field uniformly — true of the fixture, false of a diverse
+  19,000-node index, where even nonsense has relative outliers.
+
+  The constant is deliberately **not** tuned in response: three samples
+  separated by a negative margin is the same global constant the floor
+  measurement already warned against, one level up. ADR-0075 is still Proposed
+  and carries a correction saying so.
+
+  New: `scripts/evaluate-recall.mjs`, with unit tests, reproducing all of the
+  above. It needs a populated index and a reachable embeddings server — both
+  optional parts of the product (ADR-0008) — and reports rather than fails when
+  either is absent.
 - **The advertised MCP tool surface is now a measured number, so growth can no
   longer pass unnoticed.**
   `scripts/measure-tool-surface.mjs` asks both servers for `tools/list` over
@@ -2444,6 +2468,29 @@ to [Semantic Versioning](https://semver.org/).
   call. Bounded to 8 comment lines and 400 characters so a licence header never
   becomes a symbol's meaning, and Rust attributes between a doc comment and its
   declaration are stepped over rather than treated as the end of the comment.
+- **The ADR record is read from main, not from whichever worktree asked.**
+  `readAdrFiles` listed `docs/adr` on disk, so the design record it reported was
+  whatever the asking checkout happened to hold. Under ADR-0038 that is a
+  different subset in every worktree, while the design ledger it is compared
+  against is one shared per-repository database — so `design-audit` manufactured
+  drift that did not exist, reporting every ADR present on main but absent
+  locally as a ledger row with no file. Measured across 84 attached worktrees:
+  75 ADRs on `origin/main`, and the union across all 196 remote branches also
+  75, so main is the complete record and nothing is ever branch-only. Yet 65 of
+  those worktrees were missing between 1 and 26 ADRs, and the checkout the
+  extension itself reads was 904 commits behind and held 49 of 75 — a third of
+  the design record absent, with no error of any kind. `design-audit` now reads
+  the record from `origin/main` and names the source in its output. It falls
+  back to the working tree only when the ref cannot be resolved, as in a fresh
+  clone with no remote, and says so when it does: falling back silently is the
+  failure being fixed, because a partial record that reports itself as complete
+  makes every tool downstream state confident nonsense. `adr-index` deliberately
+  still reads the working tree — it generates the index for the commit being
+  made, so a newly authored ADR must appear in it. The blobs are read through a
+  single `git cat-file --batch` rather than a `git show` each: the obvious
+  spelling costs one process spawn per ADR and measured 10.7s for 75 ADRs
+  against 0.36s to read them from disk, which would have made the record correct
+  and the tools unusable. Batched, it is 0.33s.
 - The design audit's remediation advice now names verbs the server has, and the
   right one. For a row the ledger accepts but credits to nobody it said
   "reopen_undecided_design then accept_design": both names were retired when the
@@ -2534,6 +2581,29 @@ to [Semantic Versioning](https://semver.org/).
   save, focus, delete and commit paths skip what they cannot place instead of
   asking. A placeable path is sent exactly as before — the rule rejects the id
   shape, not the file.
+- The editor no longer watches or searches build output, which is what made this
+  repository slow to work in. `files.watcherExclude` and `search.exclude` were
+  absent from the committed `.vscode/settings.json` and from user settings, so
+  VS Code watched and indexed everything under every open workspace folder.
+  Measured 2026-07-30: 88 worktrees, 86 carrying a `target/` directory, 61
+  carrying `editors/vscode/node_modules`, and one sampled `target/` holding
+  82,891 entries — on the order of seven million watched files that nobody ever
+  edits. At the same moment: 7.0 GB free of 55.6 GB, 39 VS Code processes
+  holding 17.1 GB across 8 renderers and 10 utility processes, CPU at 52% of 16
+  cores. Every `cargo build` rewrites thousands of files inside a watched tree,
+  and every window whose workspace contains it is notified.
+  The MCP servers were measured too and are not the cause — four processes,
+  55 MB, under 40 seconds of CPU between them. Recorded because the obvious
+  suspect was wrong, and the measurement is what said so.
+  `target`, `node_modules`, `.vscode-test`, `out`, `dist`, `coverage` and the
+  local state directories are now excluded from watching and from search. The
+  settings file is tracked, so every worktree and every fresh clone inherits it
+  rather than each machine being configured by hand.
+  `files.exclude` is deliberately not set: it hides entries from the explorer
+  rather than reducing work, and hiding a directory someone may need to open is
+  a real cost for no measured gain.
+  Takes effect for a window when that window reloads. It does not shrink the 88
+  worktrees or the disk they occupy, which is a larger and separate problem.
 - **The `evidence_for` false alarm did not recur.** The Known gaps entry
   recording it asked to be revisited if it were seen again; it was not. Four
   `evidence_for` calls across four tasks on 2026-07-29, in a session independent
@@ -2668,6 +2738,16 @@ to [Semantic Versioning](https://semver.org/).
   longer be silently wedged by the one thing it cannot fix itself. A branch
   that is merely behind is still updated regardless of its rollup, because that
   update is what triggers the run it is missing.
+- The silent-knowledge audit counted one of the two ways a lesson reaches an
+  agent, so it reported records as dead that were arriving: it called 68 of 210
+  unreachable, where 12 are. Reachability now has a single definition —
+  `Lodestar::knowledge_reach` — and `record_knowledge`, `active_knowledge` and
+  `scripts/silent-knowledge.mjs` all ask it rather than each deciding for
+  themselves, which is how three readers of one rule came to be falsified
+  together by a single commit. The report now separates records reaching agents
+  by the nodes they name from those reaching only the goal they were learned
+  under, and says how many of the latter are crowded out by that path's
+  per-check cap.
 - **A guard that forbids closing a task had stopped being able to fail.**
   ADR-0065 says the completion offer *offers* and never closes, and the test
   asserting it watched for `complete_task` — a name ADR-0059 retired into
