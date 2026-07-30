@@ -6,10 +6,9 @@ use super::*;
 
 impl Lodestar {
     /// Score evidence against governing intent, then layer ADR-0022 advisory
-    /// knowledge on top. The base pass owns all hard verdicts (Drift / Violation /
-    /// NeedsHuman / Aligned from goals and the Constitution); the knowledge pass
-    /// may only add advisory findings and, at most, nudge an otherwise-`Aligned`
-    /// verdict to `NeedsHuman` — it can never harden a verdict or emit `Violation`.
+    /// knowledge on top. The base pass owns every verdict; the knowledge pass may
+    /// only add advisory findings. It cannot harden a verdict, emit `Violation`,
+    /// or downgrade an otherwise-`Aligned` one (ADR-0072).
     pub(super) fn evaluate_conformance(
         &self,
         evidence: &ConformanceEvidence,
@@ -22,11 +21,11 @@ impl Lodestar {
 
     /// Consult learned knowledge (ADR-0022). When the evidence's changed nodes
     /// intersect the nodes a proven regularity references, attach an ADVISORY
-    /// finding and, at most, escalate an `Aligned` verdict to `NeedsHuman` so a
-    /// human looks. Knowledge is revalidated and decaying, so it MUST NOT emit a
-    /// `Violation` or otherwise harden the verdict — only the Constitution
-    /// (constraint / invariant goals) hard-fails. This read path stays
-    /// deterministic: no LLM.
+    /// finding so the agent sees the lesson at the moment it is relevant. The
+    /// verdict is left alone: knowledge is revalidated and decaying, and topical
+    /// overlap is relevance rather than a problem signal (ADR-0072, amending
+    /// ADR-0022 §4). Only the Constitution (constraint / invariant goals) and the
+    /// base pass decide verdicts. This read path stays deterministic: no LLM.
     pub(super) fn apply_knowledge_advisory(
         &self,
         evidence: &ConformanceEvidence,
@@ -40,38 +39,36 @@ impl Lodestar {
             .iter()
             .map(String::as_str)
             .collect();
-        let mut nudged_by: Vec<String> = Vec::new();
         for knowledge in self.store.active_knowledge(now_unix())? {
             if knowledge
                 .referenced_nodes()
                 .iter()
                 .any(|node| changed.contains(node.as_str()))
             {
-                nudged_by.push(knowledge.id.clone());
                 result.findings.push(format!(
                     "advisory: learned knowledge {} — {}",
                     knowledge.id, knowledge.statement
                 ));
             }
         }
-        // The nudge is ADR-0022 §4: knowledge is revalidated and decaying, so it
-        // may attach an advisory and at most move an otherwise-aligned verdict to
-        // `needs_human` — never a violation, never a silent hard fail.
+        // The advisory informs; it does not cap (ADR-0072, amending ADR-0022 §4).
         //
-        // It has to say that it did. Every other route to `needs_human` pushes a
-        // finding naming its own reason; this one changed the verdict and left
-        // only lines labelled "advisory", which read as information rather than
-        // as the cause. The receipt then showed a positive result that had
-        // inexplicably failed, and the honest reading — "the work is fine, the
-        // verdict is wrong" — was unavailable to anyone holding it.
-        if !nudged_by.is_empty() && result.verdict == Verdict::Aligned {
-            result.verdict = Verdict::NeedsHuman;
-            result.findings.push(format!(
-                "nudged to needs_human by learned knowledge, which a human confirms: {}. \
-                 Nothing else in this evidence is a problem signal (ADR-0022 §4).",
-                nudged_by.join(", ")
-            ));
-        }
+        // This used to move an otherwise-aligned verdict to `needs_human`
+        // whenever any active knowledge merely *referenced* a changed node.
+        // Knowledge only accumulates, so the referenced set only grows, and the
+        // nudge became unconditional: measured on 2026-07-30, 28 of 28
+        // completions affirmed on 07-23, 3 of 34 on 07-28, and 1 of 13 that day
+        // — the one survivor earning it only because nothing governed the file
+        // it touched. A cap that fires on almost every task carries no
+        // information, and it is not free: `blocked_by` successors open only on
+        // an aligned completion, so a permanent cap freezes dependent work.
+        //
+        // ADR-0060 item 2 already held the principle: only a positive signal of
+        // a *problem* may downgrade. Topical overlap between a changed node and
+        // a recorded lesson is relevance, not a problem signal — exactly the
+        // case for showing the agent the lesson, and exactly not the case for
+        // doubting the work. The findings above still do that, which is the
+        // whole value ADR-0022 was reaching for.
         Ok(())
     }
 

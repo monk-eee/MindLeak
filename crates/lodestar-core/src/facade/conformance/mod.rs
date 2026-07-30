@@ -1087,8 +1087,22 @@ mod tests {
         assert_ne!(during.token, after.token, "revoking changed it again");
     }
 
+    /// The advisory informs; it does not cap (ADR-0072, amending ADR-0022 §4).
+    ///
+    /// This asserted the opposite: that matching knowledge moved an otherwise
+    /// aligned verdict to `NeedsHuman`. Knowledge only accumulates, so the set
+    /// of referenced nodes only grows and the nudge became unconditional —
+    /// measured on the live board on 2026-07-30, 28 of 28 completions affirmed
+    /// on 07-23, 3 of 34 on 07-28, and 1 of 13 that day, the survivor earning
+    /// it only because nothing governed the file it touched. A cap that fires
+    /// on nearly every task carries no information, and `blocked_by` successors
+    /// open only on an aligned completion, so it froze dependent work.
+    ///
+    /// The finding still attaches, because showing the agent the lesson at the
+    /// moment it is relevant is the whole point of ADR-0022. What is gone is
+    /// the claim that relevance is evidence of a problem.
     #[test]
-    fn learned_knowledge_adds_advisory_and_nudges_aligned_to_needs_human() {
+    fn learned_knowledge_advises_without_capping_an_aligned_verdict() {
         let e = engine();
         // A proven regularity referencing a node (ADR-0022).
         e.consolidate(
@@ -1103,29 +1117,27 @@ mod tests {
         )
         .unwrap();
 
-        // Ungoverned change would be Aligned on its own, but it touches a node a
-        // learned regularity references, so an advisory finding attaches and the
-        // verdict is nudged to NeedsHuman — never Violation.
+        // An ungoverned change that touches a node a learned regularity
+        // references: the advisory attaches, and the verdict is left alone.
         let evidence = test_evidence(None, "agent-a", "artifact:src/gizmo.rs");
         let res = e.check_conformance(&evidence, None).unwrap();
-        assert_eq!(res.verdict, Verdict::NeedsHuman);
-        assert_ne!(res.verdict, Verdict::Violation);
+        assert_eq!(
+            res.verdict,
+            Verdict::Aligned,
+            "relevance is not a problem signal (ADR-0060 item 2): {:?}",
+            res.findings
+        );
         assert!(res
             .findings
             .iter()
             .any(|f| f.contains("advisory: learned knowledge")));
 
-        // And the nudge names itself. Every other route to needs_human pushes a
-        // finding saying why; this one changed the verdict while leaving only
-        // lines labelled "advisory", so a receipt whose every other signal was
-        // positive read as an inexplicable failure. A verdict nobody can read
-        // backwards to its reason cannot be argued with, which is the same
-        // defect the semantic judge had.
+        // Nothing may claim to have moved a verdict it no longer moves.
         assert!(
-            res.findings
+            !res.findings
                 .iter()
-                .any(|f| f.contains("nudged to needs_human by learned knowledge")),
-            "the nudge must state that it is the reason: {:?}",
+                .any(|f| f.contains("nudged to needs_human")),
+            "the cap is gone, so nothing should announce one: {:?}",
             res.findings
         );
     }

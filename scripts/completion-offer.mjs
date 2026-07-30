@@ -134,5 +134,5 @@ export const persistCompletionOffer = ({
 export const completionOfferNotice = (offer, path) =>
   `completion is ready for ${offer.task_id} (${offer.check.verdict})\n` +
   `  exact evidence + check: ${path}\n` +
-  "  submit explicitly with complete_task(task_id, evidence, check, learned?)\n" +
+  '  submit explicitly with task_transition(task_id, to="complete", evidence, check, learned?)\n' +
   "  or ignore this offer; the push has already succeeded";
