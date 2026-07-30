@@ -1,5 +1,6 @@
 - **New silent knowledge is guarded; a node-less lesson now reaches the goal it
-  was learned under; 12 records remain unreachable — MEASURED, MOSTLY FIXED,
+  was learned under; the 12 unreachable records are dispositioned, and what
+  remains is that the audit's count cannot reach zero — MEASURED, MOSTLY FIXED,
   OPEN.** The conformance advisory matched recorded knowledge on
   referenced nodes and nothing else, so a record whose evidence carries no
   `nodes` array was stored, counted, decayed, and structurally incapable of
@@ -52,13 +53,35 @@
   busiest goals, so an uncapped version would have rebuilt that noise in a new
   place.
 
-  **Still open: the 12 that name nothing at all.** They carry neither nodes, nor
-  a goal, nor a resolvable task, so no amount of reading their provenance can
-  place them. They remain stored, counted, decaying, and undeliverable, and the
-  honest options for them are unchanged: re-record with proper provenance after
-  re-verifying the claim, or let them decay. Their statements are still readable
-  through `active_knowledge` by anyone who goes looking; what they cannot do is
-  arrive unprompted.
+  **The 12 that name nothing at all are now dispositioned, and it was not 12
+  rescues.** Worked through on 2026-07-31, verifying each claim against the tree
+  before carrying it anywhere (`knowledge:ed42ab2dfe3c` is the index). Four had
+  already been rescued and their replacements cite them. Four were rescued in
+  that pass: the self-scanning-guard finding, the evidence-window clamp, and two
+  PowerShell 5.1 hazards merged into one record because they are one class with
+  one remedy. **Three were stale and must not be rescued at all** — the phantom
+  `merge=union` conflict, the silent stale-build notice, and the manual
+  disarm/push/re-arm around auto-merge had each been fixed since being written,
+  so carrying them forward would have put false advice into the advisory
+  (`knowledge:a2071ddb7223`). The twelfth is not a lesson: it reads "probe: does
+  the new build warn when a record can never be read", left by someone testing
+  the write-time warning against the live ledger. That a third of the remaining
+  set was stale is the finding worth keeping — an unreachable record is not
+  automatically a lesson owed a rescue, because the reason many were written is
+  a problem somebody then went and fixed.
+
+  **Still open, and it is not the backlog: the count cannot reach zero.**
+  Knowledge is append-only and there is no delete — `reconfirm_knowledge` only
+  refreshes the clock, `prune_knowledge` prunes by decay rather than by id — so
+  a record that has been superseded, corrected, or written as a throwaway probe
+  stays in the table and stays counted until it decays. The audit will therefore
+  keep reporting 12 after every one of them has been dealt with, and
+  `silent-knowledge --check` can never gate CI, because the number it gates on
+  is not reducible by doing the work. A check that cannot go green is one people
+  learn to ignore. Closing this needs a decision rather than a patch: either a
+  tombstone verb so a superseded record can be retired explicitly, or the audit
+  learns to exclude records something newer supersedes. Both are maintainer
+  calls; recording the choice matters more than which one is taken.
 
   The uncomfortable reading is the one worth keeping. This is not a backlog of
   missing notes. The repository had already learned nearly everything that was
