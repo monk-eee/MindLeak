@@ -383,7 +383,7 @@ fn backoff(attempt: u32) -> Duration {
 #[cfg(test)]
 mod tests {
     use std::io::{Read as _, Write as _};
-    use std::net::TcpListener;
+    use std::net::{Shutdown, TcpListener};
 
     use super::*;
 
@@ -401,13 +401,36 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0; 1024];
-            let _ = stream.read(&mut request);
+
+            // Read the request out of the receive buffer before answering, and
+            // close the write half rather than dropping the socket.
+            //
+            // Windows RESETS a connection closed while bytes remain unread, so
+            // the client saw `os error 10054` - a transport failure - instead of
+            // the invalid JSON this test exists to exercise. It failed on every
+            // Windows run, blocking three pull requests at once, and looked
+            // flaky only because the platform that reproduced it was not the one
+            // people developed on.
+            let mut buffer = [0; 1024];
+            let mut request = Vec::new();
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                match stream.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => request.extend_from_slice(&buffer[..read]),
+                }
+            }
+
             stream
                 .write_all(
                     b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 8\r\nConnection: close\r\n\r\nnot json",
                 )
                 .unwrap();
+            let _ = stream.flush();
+            let _ = stream.shutdown(Shutdown::Write);
+
+            // Drain whatever is left so the socket is torn down gracefully:
+            // the client reads the body, closes, and this read reaches EOF.
+            while matches!(stream.read(&mut buffer), Ok(read) if read > 0) {}
         });
         (format!("http://{address}/v1/test"), server)
     }
@@ -487,7 +510,10 @@ mod tests {
         let config = threshold_one_config();
 
         let first = post_json(&config, &url, "", &serde_json::json!({})).unwrap_err();
-        assert!(first.to_string().contains("json error"));
+        assert!(
+            first.to_string().contains("json error"),
+            "expected a decode failure, got: {first}"
+        );
         server.join().unwrap();
 
         let second = post_json(&config, &url, "", &serde_json::json!({})).unwrap_err();
