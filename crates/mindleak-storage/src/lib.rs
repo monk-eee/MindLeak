@@ -4,7 +4,7 @@
 mod build_identity;
 mod repository;
 
-pub use build_identity::{build_notice, head_sha, BuildNotice};
+pub use build_identity::{build_notice, head_sha, is_ancestor, BuildNotice};
 pub use repository::{
     platform_state_root, resolve_database, resolve_database_in, resolve_workspace_path,
     DatabaseKind, DatabaseOrigin, RepositoryStorageError, ResolvedDatabase, StorageStatus,
