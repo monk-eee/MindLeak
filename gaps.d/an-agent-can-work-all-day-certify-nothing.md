@@ -37,3 +37,31 @@
   hand-ingesting after the verdict: ingesting in order to satisfy a gate that
   has just reported no evidence produces a receipt that proves nothing, and a
   green conformance chain that means less than the refusal it replaced.
+  — *A second cause with the same symptom and none of the same remedies,
+  measured 30 Jul 2026.* Everything above assumes the work left a trace
+  somewhere and the trace failed to reach the graph, so every remedy is some
+  form of "ingest it". A **ledger-only act** produces the identical refusal for
+  the opposite reason: it mutated nothing. `design_register`, `attribute`,
+  `supersede`, `grant_waiver` and `resolve` all land entirely in the Lodestar
+  ledger, so there is no commit, no execution and no changed node — the bundle
+  is empty because the work genuinely changed no file, and no amount of
+  ingestion can populate it. `task:680b14565a8f` registered ADR-0073 in the
+  design ledger; check 369 answered `needs_human` with exactly
+  `evidence contains no provenance-bearing mutation`, and the task rests in
+  `in_review` awaiting a human `resolve`. Under the current model that is the
+  only terminus available to it: a ledger-only task can never certify, however
+  correctly it is claimed.
+  — *Why this needs saying separately.* An agent that hits this refusal and
+  reads only the paragraphs above will conclude it forgot to ingest, and go
+  looking for an ingestion step that would not have helped. The two causes are
+  distinguishable at the point of failure — absent ingestion means git has a
+  commit the graph lacks, a ledger act means git has nothing to find.
+  — *Do not manufacture a commit to clear it.* Touching a file so the bundle
+  has something in it launders a ledger act as a code change, and defeats the
+  same guard this entry already argues is correct. Submit the empty bundle,
+  take the `needs_human`, and let a person resolve it. Not fixed this run, and
+  deliberately not fixed here: admitting a first-class ledger-act evidence kind
+  is a design question for an ADR, not a change to smuggle in beside a gap
+  entry. Worth deciding only if these become common — today the honest routing
+  to human review is also the substantively right answer, since ADR-0023 keeps
+  an agent from accepting its own design in any case.
