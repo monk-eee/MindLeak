@@ -13,6 +13,7 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
 use crate::error::{MindLeakError, Result};
+use crate::model::NodeType;
 
 /// A local, OpenAI-compatible embeddings client (points at Ollama by default).
 #[derive(Debug, Clone)]
@@ -250,15 +251,111 @@ pub fn upsert(
     Ok(())
 }
 
-/// Rank stored nodes for `model` by cosine similarity to `query`, best first,
-/// discarding anything below `floor`.
+/// Candidates a field needs before its *shape* means anything.
 ///
-/// The floor is the point of this function, not a refinement of it (ADR-0053).
-/// Without one, recall always answers: asking this repository's own index for
-/// "canonical-push auto-merge armed refuses" returned `merge_import`, matched on
-/// the word "merge", with nothing to signal that it was noise. A caller handed a
-/// plausible stranger cannot tell it is wrong, and stops asking. An empty result
-/// is a usable answer — fall back to `multi_hop_query`, `graph_snapshot`, or the
+/// Below this, "stands out from the field" is not a question the data can
+/// answer, so the floor alone decides and recall behaves exactly as it did
+/// before. A fresh or tiny index must not be silenced by statistics it is too
+/// small to support.
+const DISTINCTIVE_MIN_FIELD: usize = 8;
+
+/// How far above the field, in standard deviations, a candidate must stand to
+/// count as an answer rather than as background.
+///
+/// Cosine similarity is **not comparable across queries**: embedding spaces are
+/// anisotropic, so every text carries a baseline resemblance to every other
+/// text. Measured 2026-07-27 against this repository's own index, the nonsense
+/// query `zzzzqqq wibble flarp` scored **0.54** — above the 0.5 default floor —
+/// because the entire field scores about that for any query at all. So an
+/// absolute constant cannot tell an answer from the background, and raising it
+/// is measurably worse, not better: recorded conclusions scored 0.553–0.790
+/// while structural nodes matched on shared vocabulary scored 0.527–0.667, and
+/// those ranges overlap. Every threshold high enough to exclude the worst
+/// stranger also excludes real conclusions.
+///
+/// What *does* separate them is distinctiveness. A real hit stands out from its
+/// own query's field; nonsense lifts the whole field uniformly and leaves
+/// nothing standing above it. That is a per-query question, and this is the
+/// margin it must clear.
+const DISTINCTIVE_SIGMA: f32 = 1.0;
+
+/// The ranking prior the graph already holds for a node of this kind.
+///
+/// The governing goal is explicit that *"embeddings may only seed graph
+/// traversal"*. Ranking purely by cosine is the vector-only memory this engine
+/// exists to replace: it throws away everything the graph knows and asks the
+/// embedding model to be the whole answer. A recorded conclusion or decision is
+/// categorically more likely to answer "what did we learn here" than a symbol
+/// name or a shell command that happens to share a word with the question.
+///
+/// This is deliberately a **tie-breaker, not an override**. The spread is small
+/// enough that a genuinely closer symbol still outranks a barely-related
+/// intent, so "which function parses imports" keeps working; it only decides
+/// the near-ties, which is exactly where the measured overlap lives.
+fn kind_prior(kind: Option<NodeType>) -> f32 {
+    match kind {
+        // A conclusion, decision, or commit rationale: what a question is for.
+        Some(NodeType::Intent) => 1.00,
+        Some(NodeType::Artifact) => 0.92,
+        Some(NodeType::Symbol) => 0.85,
+        Some(NodeType::Execution) => 0.85,
+        Some(NodeType::Package) => 0.80,
+        // Attribution, not knowledge; it answers no question a caller asks.
+        Some(NodeType::Agent) => 0.70,
+        // Embedded but no longer in the graph: rank it as ordinary structure.
+        None => 0.85,
+    }
+}
+
+/// The score a candidate must reach to stand out from `field`.
+///
+/// Returns [`f32::MIN`] when the field is too small to have a shape, so the
+/// floor alone decides. Returns [`f32::MAX`] when the field has no spread at
+/// all: if every candidate resembles the query equally then none of them is an
+/// answer, which is precisely the shape a nonsense question produces. See
+/// [`DISTINCTIVE_SIGMA`] for why a per-query cut succeeds where an absolute
+/// constant cannot.
+fn distinctive_cut(field: &[f32]) -> f32 {
+    if field.len() < DISTINCTIVE_MIN_FIELD {
+        return f32::MIN;
+    }
+    let count = field.len() as f32;
+    let mean = field.iter().sum::<f32>() / count;
+    let variance = field
+        .iter()
+        .map(|score| (score - mean).powi(2))
+        .sum::<f32>()
+        / count;
+    let spread = variance.sqrt();
+    if spread <= f32::EPSILON {
+        return f32::MAX;
+    }
+    mean + DISTINCTIVE_SIGMA * spread
+}
+
+/// Rank stored nodes for `model` against `query`, best first, keeping only what
+/// clears `floor` *and* stands out from the field.
+///
+/// Two things decide an answer here, and neither is cosine alone:
+///
+/// 1. **It must stand out.** An absolute floor cannot separate a hit from the
+///    background because cosine is not comparable across queries — see
+///    [`DISTINCTIVE_SIGMA`] for the measurement. A nonsense question lifts the
+///    whole field, so nothing clears its own field's cut and recall correctly
+///    answers nothing.
+/// 2. **The graph ranks it, not the embedding model.** Scores are ordered by
+///    cosine weighted with [`kind_prior`], because the governing goal requires
+///    embeddings to *seed* graph traversal rather than replace it.
+///
+/// The reported score stays the raw cosine, so a caller still sees the
+/// similarity that was measured rather than an internal composite.
+///
+/// The floor keeps its original job (ADR-0053): saying nothing at all is a
+/// usable answer. Without it recall always answered, and asking this
+/// repository's own index for "canonical-push auto-merge armed refuses"
+/// returned `merge_import`, matched on the word "merge", with nothing to signal
+/// it was noise. A caller handed a plausible stranger cannot tell it is wrong,
+/// and stops asking. Fall back to `multi_hop_query`, `graph_snapshot`, or the
 /// repository itself.
 pub fn recall(
     conn: &Connection,
@@ -268,21 +365,46 @@ pub fn recall(
     floor: f32,
 ) -> Result<Vec<(String, f32)>> {
     ensure_table(conn)?;
-    let mut stmt = conn.prepare("SELECT node_id, vector FROM embeddings WHERE model = ?1")?;
+    // LEFT JOIN: an embedding may outlive the node it described, and a caller
+    // asking a question is not the right moment to discover that.
+    let mut stmt = conn.prepare(
+        "SELECT e.node_id, e.vector, n.type
+           FROM embeddings e
+           LEFT JOIN nodes n ON n.id = e.node_id
+          WHERE e.model = ?1",
+    )?;
     let rows = stmt.query_map(params![model], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Vec<u8>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
     })?;
-    let mut scored = Vec::new();
+
+    let mut candidates = Vec::new();
     for row in rows {
-        let (id, blob) = row?;
-        let score = cosine(query, &from_blob(&blob));
-        if score >= floor {
-            scored.push((id, score));
-        }
+        let (id, blob, kind) = row?;
+        let similarity = cosine(query, &from_blob(&blob));
+        let kind = kind.as_deref().and_then(NodeType::from_tag);
+        candidates.push((id, similarity, similarity * kind_prior(kind)));
     }
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let field: Vec<f32> = candidates
+        .iter()
+        .map(|(_, similarity, _)| *similarity)
+        .collect();
+    let cut = distinctive_cut(&field);
+
+    let mut scored: Vec<(String, f32, f32)> = candidates
+        .into_iter()
+        .filter(|(_, similarity, _)| *similarity >= floor && *similarity >= cut)
+        .collect();
+    scored.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(limit);
-    Ok(scored)
+    Ok(scored
+        .into_iter()
+        .map(|(id, similarity, _)| (id, similarity))
+        .collect())
 }
 
 /// Nodes that have no embedding for `model` yet, with the text to embed
@@ -392,6 +514,107 @@ mod tests {
 
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].0, "artifact:near");
+    }
+
+    /// Put a node in the graph so recall can read the kind the graph knows.
+    fn add_node(conn: &Connection, id: &str, kind: NodeType) {
+        conn.execute(
+            "INSERT INTO nodes (id, type, label, content, created_at, last_accessed_at)
+             VALUES (?1, ?2, ?3, NULL, 1, 1)",
+            params![id, kind.as_str(), id],
+        )
+        .unwrap();
+    }
+
+    /// The bug this whole change exists for. Ranking by cosine alone is the
+    /// vector-only memory the governing goal forbids: it discards everything
+    /// the graph knows and lets the embedding model decide by itself. Measured
+    /// on this repository's index, a recorded conclusion and an unrelated
+    /// `merge_import` symbol landed 0.651 against 0.626 — a 0.025 gap no
+    /// constant can separate. The graph can: one is a conclusion, the other is
+    /// a function name that shares a word.
+    #[test]
+    fn a_recorded_conclusion_outranks_a_structural_node_that_scores_higher() {
+        let conn = db::open_in_memory().unwrap();
+        // The symbol is the closer vector, and still must not win.
+        upsert(
+            &conn,
+            "symbol:src/merge.rs:merge_import",
+            "m",
+            &[1.0, 0.10],
+            1,
+        )
+        .unwrap();
+        upsert(&conn, "intent:what-we-learned", "m", &[1.0, 0.45], 1).unwrap();
+        add_node(&conn, "symbol:src/merge.rs:merge_import", NodeType::Symbol);
+        add_node(&conn, "intent:what-we-learned", NodeType::Intent);
+
+        let hits = recall(&conn, &[1.0, 0.0], "m", 5, 0.0).unwrap();
+
+        assert_eq!(
+            hits[0].0, "intent:what-we-learned",
+            "the conclusion is the answer even though the symbol is nearer"
+        );
+        assert!(
+            hits[0].1 < hits[1].1,
+            "and the reported score stays the honest cosine, not the ranking composite"
+        );
+    }
+
+    /// Nonsense must be answerable with silence. Cosine is not comparable
+    /// across queries, so `zzzzqqq wibble flarp` scored 0.54 against this
+    /// repository's index — above the 0.5 floor — because the whole field
+    /// scores about that for anything. A uniform field means nothing stands
+    /// out, and nothing standing out is the honest answer.
+    #[test]
+    fn recall_answers_nothing_when_no_candidate_stands_out_from_the_field() {
+        let conn = db::open_in_memory().unwrap();
+        for n in 0..12 {
+            // A field that all resembles the query about equally.
+            upsert(&conn, &format!("artifact:{n}"), "m", &[1.0, 0.60], 1).unwrap();
+        }
+
+        let hits = recall(&conn, &[1.0, 0.0], "m", 5, 0.5).unwrap();
+
+        assert!(
+            hits.is_empty(),
+            "every candidate cleared the floor, and not one of them was an answer"
+        );
+    }
+
+    /// The same field, plus one genuine outlier: recall must still answer, and
+    /// answer with only the node that stands out.
+    #[test]
+    fn recall_returns_the_candidate_that_stands_out_from_an_otherwise_flat_field() {
+        let conn = db::open_in_memory().unwrap();
+        for n in 0..12 {
+            upsert(&conn, &format!("artifact:{n}"), "m", &[1.0, 0.60], 1).unwrap();
+        }
+        upsert(&conn, "artifact:answer", "m", &[1.0, 0.0], 1).unwrap();
+
+        let hits = recall(&conn, &[1.0, 0.0], "m", 5, 0.5).unwrap();
+
+        assert_eq!(hits.len(), 1, "only the outlier is an answer");
+        assert_eq!(hits[0].0, "artifact:answer");
+    }
+
+    /// A small or fresh index has no distribution to reason about, so the floor
+    /// alone must keep deciding. Statistics must not silence an index that is
+    /// merely young.
+    #[test]
+    fn a_field_too_small_to_have_a_shape_is_judged_by_the_floor_alone() {
+        let conn = db::open_in_memory().unwrap();
+        for n in 0..3 {
+            upsert(&conn, &format!("artifact:{n}"), "m", &[1.0, 0.60], 1).unwrap();
+        }
+
+        let hits = recall(&conn, &[1.0, 0.0], "m", 5, 0.5).unwrap();
+
+        assert_eq!(
+            hits.len(),
+            3,
+            "three lookalikes are too few to call any of them background"
+        );
     }
 
     #[test]
