@@ -1,6 +1,9 @@
 # ADR-0075: A hit must stand out from its own query's field
 
 - Status: Proposed
+- Corrected: 2026-07-30, after measurement — see "Correction" at the foot. The
+  decision stands; one claimed consequence did not survive contact with a real
+  index and is restated there rather than left standing.
 - Date: 2026-07-30
 - Related: [ADR-0008](0008-semantic-recall-embedding-index.md) (the optional
   semantic recall index), [ADR-0053](0053-the-graph-records-events-not-conclusions.md)
@@ -96,7 +99,8 @@ uncomparable across queries.
 
 - A question with no answer in the index is answered with silence rather than
   with a confident stranger, which is the outcome ADR-0053 intended and could
-  not reach with an absolute threshold alone.
+  not reach with an absolute threshold alone. **This did not survive
+  measurement — see the Correction below.**
 - Recall's precision now improves by improving the ranking signal -- the graph --
   rather than by tuning a constant. The floor is not a relevance knob and should
   not be used as one.
@@ -108,3 +112,34 @@ uncomparable across queries.
 - The kind prior is a policy embedded in code. If recall is later asked to serve
   a caller whose questions are mostly structural, that prior is the thing to
   revisit, not the floor.
+
+## Correction (2026-07-30, measured)
+
+This decision was accepted on deterministic unit tests whose fields were
+synthetic and uniform. Measured afterwards against this repository's real index
+(19,317 embedded nodes), two of its claims held and one did not. It is corrected
+here rather than left standing because the record is still Proposed, and a
+decision record that overstates its own result is worse than none.
+
+**Held.** Hits naming a node the graph no longer holds fell from 24 of 50 to 0
+of 49, and recorded conclusions rose from 14% of what the caller is handed to
+96%. The ranking change does what it claimed.
+
+**Did not hold: "a question with no answer is answered with silence."** On a
+real index a nonsense query still returns hits. Distance of the top hit above
+its own field is 3.11–3.90 standard deviations for nonsense controls and
+3.71–6.21 for real questions: the bands overlap by 0.19σ, so no single value of
+`DISTINCTIVE_SIGMA` rejects nonsense while keeping every real answer. The
+shipped 1σ cut sits far below both bands and trims almost nothing.
+
+The error was in the reasoning quoted above — that "a nonsense question lifts
+the whole field uniformly". It does so only in a uniform field, which is what
+the fixture built and what a 19,000-node index is not. In a diverse field even
+nonsense has relative outliers.
+
+The constant is deliberately not tuned in response: three nonsense samples
+separated by a negative margin is exactly the global constant this ADR's own
+Context rejects, one level up. What the measurement establishes is narrower than
+what was claimed — distinctiveness improves *ranking*, but it is the wrong shape
+for deciding *whether a query has any answer at all*, and that question is open.
+Recorded in [EVALUATION.md](../EVALUATION.md) with a reproducible harness.
