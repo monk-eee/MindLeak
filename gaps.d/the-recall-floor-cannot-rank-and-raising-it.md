@@ -14,3 +14,15 @@
   precision needs improving, the lever is the ranking or the embedding model,
   not the threshold. Reproduce with a `recall` sweep and compare the score
   ranges before changing the default.
+
+  **The ranking lever has since been taken; the floor advice above stands
+  unchanged.** ADR-0075 stopped recall ordering by raw cosine: similarity is now
+  weighted by node kind, so a recorded conclusion outranks a symbol that merely
+  shares a word, which is exactly the 0.651-versus-0.626 case above that no
+  constant could separate. The same change added a per-query distinctiveness cut
+  for the reason this fragment gives — an absolute number cannot judge a score
+  whose baseline moves with the query. Neither touched
+  `MINDLEAK_RECALL_FLOOR`, and its default is deliberately unchanged. This is
+  recorded so the next reader does not re-derive the measurement or re-implement
+  the fix; what remains open is the *other* lever, the embedding model, which
+  nothing here has tested.
