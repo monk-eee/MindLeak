@@ -1064,6 +1064,50 @@ mod tests {
         );
     }
 
+    /// The declaration this scan looks for, assembled at run time.
+    ///
+    /// A guard that finds its target by searching for a literal matches its own
+    /// source and then reads its own body as data. That has happened here
+    /// before — `every_tool_the_server_answers_to_is_advertised` located
+    /// dispatch by searching for a string that, in this file, occurred only
+    /// inside its own search call. Building the needle from parts keeps the
+    /// literal out of the file being scanned.
+    fn tool_act_declaration() -> String {
+        format!(": [{};", "ToolAct")
+    }
+
+    /// Every `ToolAct` table declared in this file, found by reading the source
+    /// rather than by being told about it.
+    ///
+    /// Registration is the thing that fails. The previous guard took a list of
+    /// tables to check, so it protected exactly the tables somebody remembered
+    /// to add to it — and forgetting is the entire failure mode it exists to
+    /// catch. Discovery makes a new table guarded the moment it is declared.
+    ///
+    /// Returns each table's constant name with the tools it references, so a
+    /// failure can say which table is stale and the count can be checked
+    /// per-table rather than in total.
+    fn tool_act_tables(source: &str) -> Vec<(&str, Vec<&str>)> {
+        let mut tables = Vec::new();
+        for (marker, _) in source.match_indices(&tool_act_declaration()) {
+            let declaration = source[..marker].rfind("const ").expect("a const");
+            let name = source[declaration + "const ".len()..marker].trim();
+            let body_start = marker + source[marker..].find('[').expect("the array opens");
+            let body_end = body_start + source[body_start..].find("];").expect("the array closes");
+            let tools = source[body_start..body_end]
+                .match_indices("tool:")
+                .filter_map(|(at, _)| {
+                    let rest = &source[body_start + at..body_end];
+                    let open = rest.find('"')? + 1;
+                    let close = open + rest[open..].find('"')?;
+                    Some(&rest[open..close])
+                })
+                .collect();
+            tables.push((name, tools));
+        }
+        tables
+    }
+
     /// Every tool named by a server-side table is a tool that exists.
     ///
     /// This is the guard that would have caught the rename. A table entry
@@ -1074,8 +1118,11 @@ mod tests {
     /// named nothing after the cluster collapse, and all three tables were
     /// stale, because from inside a list a dead entry and a live one look
     /// identical.
-    /// `requires_session` is read out of the source rather than restated here,
-    /// since a hand-copied second list is the same staleness one level up.
+    ///
+    /// Both halves are read out of the source rather than restated here. A
+    /// hand-copied second list is the same staleness one level up, and a guard
+    /// that has to be told which tables exist stops covering the next one
+    /// somebody adds — which is how a table gets missed in the first place.
     #[test]
     fn every_table_names_a_tool_that_exists() {
         let source = include_str!("mod.rs");
@@ -1093,9 +1140,25 @@ mod tests {
             named.len() > 5,
             "parsed only {named:?} from requires_session — the guard stopped reading the real list"
         );
-        named.extend(REQUIRED_SESSION_ACTS.iter().map(|act| act.tool));
-        named.extend(OPTIONAL_SESSION_ACTS.iter().map(|act| act.tool));
-        named.extend(HEARTBEAT_ACTS.iter().map(|act| act.tool));
+
+        // Anti-silence, per table rather than in total: a scan that quietly
+        // stopped reading one table still satisfies a total, and that is
+        // exactly the shape of failure being guarded against.
+        let tables = tool_act_tables(source);
+        assert_eq!(
+            tables.len(),
+            source.matches(&tool_act_declaration()).count(),
+            "the scan did not read every ToolAct table it can see"
+        );
+        assert!(
+            tables.len() >= 3,
+            "found only {:?} — this file declares more ToolAct tables than that",
+            tables.iter().map(|(name, _)| name).collect::<Vec<_>>()
+        );
+        for (table, tools) in &tables {
+            assert!(!tools.is_empty(), "{table} parsed as empty");
+            named.extend(tools.iter().copied());
+        }
 
         let advertised: Vec<String> = list()
             .into_iter()

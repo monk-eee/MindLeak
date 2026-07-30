@@ -80,6 +80,30 @@ describe("GitSensor", () => {
     sensor.dispose();
   });
 
+  it("leaves out a changed file this workspace cannot place", async () => {
+    // Regression: `asRelativePath` returns its input unchanged for a file
+    // outside every workspace folder, and that absolute path used to be sent
+    // as a node id — giving one file a second identity per checkout. A commit's
+    // file list is not the place to invent an id, so it is dropped instead.
+    gitMock.repository.diffBetween.mockResolvedValueOnce([
+      { uri: { fsPath: "/workspace/src/app.ts" } },
+      { uri: { fsPath: "/elsewhere/other-worktree/src/stray.ts" } },
+    ]);
+    const callTool = vi.fn().mockResolvedValue({});
+    const sensor = new GitSensor({ isReady: () => true, callTool }, () => true, vi.fn(), vi.fn());
+    await sensor.start();
+
+    gitMock.state.HEAD.commit = "new-sha";
+    gitMock.repositoryHandlers.commit();
+
+    await vi.waitFor(() => expect(callTool).toHaveBeenCalledOnce());
+    expect(callTool).toHaveBeenCalledWith(
+      "ingest_commit",
+      expect.objectContaining({ changed_files: ["src/app.ts"] })
+    );
+    sensor.dispose();
+  });
+
   it("retries an unseen commit after the MCP client becomes ready", async () => {
     let ready = false;
     const callTool = vi.fn().mockResolvedValue({});
