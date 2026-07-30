@@ -13,6 +13,16 @@ use serde_json::json;
 use super::config::MaintenanceConfig;
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const WORKER_TEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkerEvent {
+    WaitingForIdle,
+    Pruned,
+    Consolidated,
+}
 
 #[derive(Clone)]
 pub(crate) struct ActivitySignal {
@@ -23,6 +33,8 @@ struct ActivityState {
     last_request: Instant,
     active_requests: usize,
     shutdown: bool,
+    #[cfg(test)]
+    worker_events: Vec<WorkerEvent>,
 }
 
 impl ActivitySignal {
@@ -33,6 +45,8 @@ impl ActivitySignal {
                     last_request: Instant::now(),
                     active_requests: 0,
                     shutdown: false,
+                    #[cfg(test)]
+                    worker_events: Vec::new(),
                 }),
                 Condvar::new(),
             )),
@@ -63,6 +77,41 @@ impl ActivitySignal {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .shutdown
+    }
+
+    #[cfg(test)]
+    fn record_worker_event(&self, event: WorkerEvent) {
+        let (state, condition) = &*self.shared;
+        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+        state.worker_events.push(event);
+        condition.notify_all();
+    }
+
+    #[cfg(test)]
+    fn wait_for_worker_event(&self, expected: WorkerEvent) {
+        let deadline = Instant::now() + WORKER_TEST_TIMEOUT;
+        let (state, condition) = &*self.shared;
+        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+        loop {
+            if let Some(index) = state
+                .worker_events
+                .iter()
+                .position(|event| *event == expected)
+            {
+                state.worker_events.swap_remove(index);
+                return;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "worker did not report {expected:?}");
+            let result = condition
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|error| error.into_inner());
+            state = result.0;
+            assert!(
+                !result.1.timed_out() || state.worker_events.contains(&expected),
+                "worker did not report {expected:?}"
+            );
+        }
     }
 }
 
@@ -226,6 +275,11 @@ fn run_worker(engine: MindLeak, activity: ActivitySignal, config: MaintenanceCon
             .min(consolidation_wait)
             .min(MAX_WAIT);
         if !wait.is_zero() {
+            #[cfg(test)]
+            if config.enabled && state.active_requests > 0 {
+                state.worker_events.push(WorkerEvent::WaitingForIdle);
+                condition.notify_all();
+            }
             let result = condition
                 .wait_timeout(state, wait)
                 .unwrap_or_else(|error| error.into_inner());
@@ -245,6 +299,8 @@ fn run_worker(engine: MindLeak, activity: ActivitySignal, config: MaintenanceCon
         if prune_due {
             run_prune(&engine);
             last_prune = Some(Instant::now());
+            #[cfg(test)]
+            activity.record_worker_event(WorkerEvent::Pruned);
         }
         if index_due && !activity.is_shutdown() {
             run_index(&engine, config.index_batch);
@@ -258,6 +314,8 @@ fn run_worker(engine: MindLeak, activity: ActivitySignal, config: MaintenanceCon
                 &activity,
             );
             last_consolidation = Some(Instant::now());
+            #[cfg(test)]
+            activity.record_worker_event(WorkerEvent::Consolidated);
         }
     }
 }
@@ -590,18 +648,10 @@ mod tests {
         )
         .unwrap();
         let inspector = MindLeak::open(path.to_str().unwrap()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            if inspector.telemetry_snapshot(1).unwrap().total_events > 0 {
-                break;
-            }
-            assert!(Instant::now() < deadline, "idle worker did not run");
-            let (state, condition) = &*runtime.activity.shared;
-            let guard = state.lock().unwrap();
-            let _ = condition
-                .wait_timeout(guard, Duration::from_millis(5))
-                .unwrap();
-        }
+        runtime
+            .activity
+            .wait_for_worker_event(WorkerEvent::Consolidated);
+        assert!(inspector.telemetry_snapshot(1).unwrap().total_events > 0);
 
         runtime.shutdown();
         drop(inspector);
@@ -633,28 +683,12 @@ mod tests {
                 },
             );
         });
-        {
-            let (state, condition) = &*activity.shared;
-            let guard = state.lock().unwrap();
-            let _ = condition
-                .wait_timeout(guard, Duration::from_millis(30))
-                .unwrap();
-        }
+        activity.wait_for_worker_event(WorkerEvent::WaitingForIdle);
         assert_eq!(inspector.telemetry_snapshot(1).unwrap().total_events, 0);
 
         drop(request);
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while inspector.telemetry_snapshot(1).unwrap().total_events == 0 {
-            assert!(
-                Instant::now() < deadline,
-                "worker did not run after request"
-            );
-            let (state, condition) = &*activity.shared;
-            let guard = state.lock().unwrap();
-            let _ = condition
-                .wait_timeout(guard, Duration::from_millis(5))
-                .unwrap();
-        }
+        activity.wait_for_worker_event(WorkerEvent::Consolidated);
+        assert!(inspector.telemetry_snapshot(1).unwrap().total_events > 0);
 
         activity.shutdown();
         worker.join().unwrap();
@@ -675,6 +709,7 @@ mod tests {
         let engine = MindLeak::open(path.to_str().unwrap()).unwrap();
         let inspector = MindLeak::open(path.to_str().unwrap()).unwrap();
         let activity = ActivitySignal::new();
+        let request = activity.begin_request();
         let worker_activity = activity.clone();
         let worker = std::thread::spawn(move || {
             run_worker(
@@ -694,25 +729,15 @@ mod tests {
             );
         });
 
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let mut pruned = false;
-        while Instant::now() < deadline {
-            // Simulate a polling UI: each request refreshes last_request, so the
-            // consolidation idle window would never be reached.
-            drop(activity.begin_request());
-            if inspector
-                .telemetry_snapshot(5)
-                .unwrap()
-                .recent
-                .iter()
-                .any(|event| event.kind == "maintenance" && event.name == "autonomous_prune")
-            {
-                pruned = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        activity.wait_for_worker_event(WorkerEvent::Pruned);
+        let pruned = inspector
+            .telemetry_snapshot(5)
+            .unwrap()
+            .recent
+            .iter()
+            .any(|event| event.kind == "maintenance" && event.name == "autonomous_prune");
 
+        drop(request);
         activity.shutdown();
         worker.join().unwrap();
         drop(inspector);

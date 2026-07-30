@@ -52,7 +52,7 @@ Run these checks before writing any helper, method, or "small" function:
    not fork a parallel helper.
 3. **Check the facade and the shared modules.** The `MindLeak` facade in
    [`lib.rs`](crates/mindleak-core/src/lib.rs) is the public surface; graph reads
-   /writes belong on `GraphStore` ([`graph.rs`](crates/mindleak-core/src/graph.rs));
+   /writes belong on `GraphStore` ([`graph/mod.rs`](crates/mindleak-core/src/graph/mod.rs));
    deterministic ingestion helpers (`short_hash`, `normalize_path`, `clamp`) live
    in [`ingest/mod.rs`](crates/mindleak-core/src/ingest/mod.rs). Add there and
    call it — don't paste the same three lines into a fourth module.
