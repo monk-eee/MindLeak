@@ -285,7 +285,7 @@ describe("canonical-push", () => {
 
     expect(result.status).toBe(2);
     expect(result.stderr).toMatch(/no live Lodestar claim/);
-    expect(result.stderr).toMatch(/claim_task/);
+    expect(result.stderr).toMatch(/task_claim/);
   }, 30_000);
 
   // An unreachable ledger must not become the way past the gate, unlike the

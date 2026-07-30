@@ -38,6 +38,7 @@ import {
   taskLeaseState,
   telemetryDashboard,
   TelemetrySnapshot,
+  repoRelativePath,
   toArtifactId,
   verdictIconId,
 } from "./util";
@@ -1012,5 +1013,28 @@ describe("logLines", () => {
 
   it("caps the number of lines", () => {
     expect(logLines(SNAPSHOT, true, 1)).toEqual(["22:13:25 error tool_call:recall 90ms"]);
+  });
+});
+
+describe("repoRelativePath", () => {
+  it("keeps a path this workspace can place, normalising separators", () => {
+    expect(repoRelativePath("crates/mindleak-core/src/lib.rs")).toBe(
+      "crates/mindleak-core/src/lib.rs"
+    );
+    expect(repoRelativePath("editors\\vscode\\src\\util.ts")).toBe("editors/vscode/src/util.ts");
+    // Traversal forms are relative even though they leave the folder.
+    expect(repoRelativePath("./x.ts")).toBe("./x.ts");
+    expect(repoRelativePath("../sibling/x.ts")).toBe("../sibling/x.ts");
+  });
+
+  it("refuses a path asRelativePath could not place", () => {
+    // The regression: asRelativePath returns its input UNCHANGED for a file
+    // outside every workspace folder, and that absolute path used to be sent as
+    // a node id, giving one file a second identity per checkout.
+    expect(repoRelativePath("c:/Users/agent/Repos/MindLeak-build/crates/x.rs")).toBeNull();
+    expect(repoRelativePath("C:\\Users\\agent\\Repos\\MindLeak-build\\crates\\x.rs")).toBeNull();
+    expect(repoRelativePath("/home/agent/checkout/src/lib.rs")).toBeNull();
+    expect(repoRelativePath("//fileserver/share/src/x.ts")).toBeNull();
+    expect(repoRelativePath("")).toBeNull();
   });
 });
