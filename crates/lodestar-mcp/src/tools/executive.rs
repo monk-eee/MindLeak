@@ -623,6 +623,22 @@ fn claim(engine: &Lodestar, task_id: &str, args: &Value) -> Result<Value, String
                 // from what the session told open_session, so it is null when
                 // none was declared rather than guessed.
                 obj.insert("branch".to_string(), json!(task.branch));
+                if !scope.paths.is_empty() || !scope.symbols.is_empty() {
+                    obj.insert(
+                        "memory_preflight".to_string(),
+                        json!({
+                            "plane": "mindleak",
+                            "tool": "check_overlap",
+                            "when": "before the first edit",
+                            "advisory": true,
+                            "arguments": {
+                                "paths": scope.paths,
+                                "symbols": scope.symbols,
+                            },
+                            "reason": "ADR-0066 retrieval is a separate cross-plane read; this claim has not performed it.",
+                        }),
+                    );
+                }
             }
         }
     } else {
@@ -1252,6 +1268,80 @@ mod tests {
             rows[0]["scope"]["symbols"][0],
             "symbol:crates/mindleak-core/src/lib.rs:MindLeak"
         );
+    }
+
+    #[test]
+    fn won_scoped_claim_carries_the_memory_preflight_and_other_claims_stay_quiet() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Memory", "read before editing", None)
+            .unwrap();
+        let scoped = engine.create_task(&goal.id, "Scoped", "done").unwrap();
+
+        let claimed = call(
+            &engine,
+            &json!({
+                "name": "task_claim",
+                "arguments": {
+                    "task_id": scoped.id,
+                    "step": "claim",
+                    "agent": "alice",
+                    "paths": ["src/auth.rs"],
+                    "symbols": ["symbol:src/auth.rs:verify"]
+                }
+            }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(claimed["content"][0]["text"].as_str().unwrap()).unwrap();
+
+        // ADR-0066's separate call was routinely skipped. The claim agents do
+        // make must hand them the exact cross-plane read without pretending it ran.
+        assert_eq!(body["memory_preflight"]["plane"], "mindleak");
+        assert_eq!(body["memory_preflight"]["tool"], "check_overlap");
+        assert_eq!(body["memory_preflight"]["when"], "before the first edit");
+        assert_eq!(body["memory_preflight"]["advisory"], true);
+        assert_eq!(
+            body["memory_preflight"]["arguments"]["paths"],
+            json!(["src/auth.rs"])
+        );
+        assert_eq!(
+            body["memory_preflight"]["arguments"]["symbols"],
+            json!(["symbol:src/auth.rs:verify"])
+        );
+
+        let unscoped = engine.create_task(&goal.id, "Unscoped", "done").unwrap();
+        let unscoped_claim = call(
+            &engine,
+            &json!({
+                "name": "task_claim",
+                "arguments": { "task_id": unscoped.id, "step": "claim", "agent": "bob" }
+            }),
+        )
+        .unwrap();
+        let unscoped_body: Value =
+            serde_json::from_str(unscoped_claim["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(unscoped_body.get("memory_preflight").is_none());
+
+        let held = engine.create_task(&goal.id, "Held", "done").unwrap();
+        assert!(engine.claim_task(&held.id, "alice", 300).unwrap());
+        let lost = call(
+            &engine,
+            &json!({
+                "name": "task_claim",
+                "arguments": {
+                    "task_id": held.id,
+                    "step": "claim",
+                    "agent": "bob",
+                    "paths": ["src/auth.rs"]
+                }
+            }),
+        )
+        .unwrap();
+        let lost_body: Value =
+            serde_json::from_str(lost["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(lost_body["won"], false);
+        assert!(lost_body.get("memory_preflight").is_none());
     }
 
     /// ADR-0035 decision 5: the claim decision surfaces the branch. A won claim

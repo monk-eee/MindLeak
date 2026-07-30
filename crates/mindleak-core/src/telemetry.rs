@@ -141,7 +141,7 @@ pub struct Snapshot {
 fn is_memory_read(name: &str) -> bool {
     matches!(
         name,
-        "working_set" | "recall" | "get_impact_radius" | "graph_multi_hop_query"
+        "working_set" | "recall" | "get_impact_radius" | "graph_multi_hop_query" | "check_overlap"
     )
 }
 
@@ -651,6 +651,55 @@ mod tests {
         assert_eq!(a.read_before_first_write, Some(true));
         assert_eq!((b.memory_reads, b.attributed_writes), (1, 1));
         assert_eq!(b.read_before_first_write, Some(false));
+    }
+
+    #[test]
+    fn successful_overlap_preflight_counts_as_memory_read_before_first_write() {
+        let c = conn();
+        let session = json!({ "agent_id": "session:preflight" });
+
+        record(
+            &c,
+            1,
+            "tool_call",
+            "open_session",
+            "ok",
+            Some(0),
+            Some(&session),
+        )
+        .unwrap();
+        record(
+            &c,
+            2,
+            "tool_call",
+            "check_overlap",
+            "ok",
+            Some(1),
+            Some(&session),
+        )
+        .unwrap();
+        record(
+            &c,
+            3,
+            "tool_call",
+            "ingest_file",
+            "ok",
+            Some(1),
+            Some(&session),
+        )
+        .unwrap();
+
+        let snapshot = snapshot(&c, 1).unwrap();
+        let habit = snapshot
+            .memory_habits
+            .iter()
+            .find(|habit| habit.agent_id == "session:preflight")
+            .unwrap();
+
+        // ADR-0066 moved impact retrieval into check_overlap; excluding it made
+        // a successful preflight look identical to writing without memory.
+        assert_eq!(habit.memory_reads, 1);
+        assert_eq!(habit.read_before_first_write, Some(true));
     }
 
     #[test]
