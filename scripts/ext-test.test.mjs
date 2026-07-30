@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { coveringSuite, suitesFor } from "./ext-test.mjs";
+import { coveringSuite, scrubbedEnvironment, suitesFor } from "./ext-test.mjs";
 
 /** An extension tree advertising the given vitest suites. */
 const extensionWith = (suites) => {
@@ -107,4 +107,50 @@ test("one suite is selected once, however many of its modules changed", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+/// Observed: `canonical-push` sets MINDLEAK_CANONICAL_PUBLISH while running the
+/// pre-push hooks, so the suite asserting that a *direct* invocation is refused
+/// inherited the flag, saw the direct call allowed, and failed � while passing
+/// when run by hand. A runner whose answer depends on who invoked it makes a
+/// real guard look broken and sends the author chasing their own tooling.
+test("the publisher's own flag never reaches the suite it runs", () => {
+  const environment = scrubbedEnvironment({
+    MINDLEAK_CANONICAL_PUBLISH: "1",
+    PRE_COMMIT_REMOTE_BRANCH: "refs/heads/main",
+    PATH: "/usr/bin",
+  });
+
+  assert.equal(environment.MINDLEAK_CANONICAL_PUBLISH, undefined);
+  assert.equal(environment.PRE_COMMIT_REMOTE_BRANCH, undefined);
+  assert.equal(environment.PATH, "/usr/bin", "unrelated variables survive");
+});
+
+/// Git hands its hooks GIT_DIR and friends, and they outrank `cwd`. A suite
+/// driving git in a temp directory would otherwise read the fixture's files and
+/// write to the real repository � which has happened here before.
+test("git's hook variables never reach the suite it runs", () => {
+  const environment = scrubbedEnvironment({
+    GIT_DIR: "/repo/.git",
+    GIT_WORK_TREE: "/repo",
+    GIT_INDEX_FILE: "/repo/.git/index",
+    HOME: "/home/agent",
+  });
+
+  for (const leaked of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"]) {
+    assert.equal(environment[leaked], undefined, `${leaked} must not survive`);
+  }
+  assert.equal(environment.HOME, "/home/agent");
+});
+
+test("scrubbing copies rather than mutating the caller's environment", () => {
+  const source = { GIT_DIR: "/repo/.git", MINDLEAK_CANONICAL_PUBLISH: "1" };
+  scrubbedEnvironment(source);
+
+  assert.equal(
+    source.GIT_DIR,
+    "/repo/.git",
+    "the caller's own env is untouched",
+  );
+  assert.equal(source.MINDLEAK_CANONICAL_PUBLISH, "1");
 });

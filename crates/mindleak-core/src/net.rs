@@ -219,7 +219,8 @@ where
         return Err(MindLeakError::Http(format!("circuit open for {url}")));
     }
 
-    let (expected_netloc, resolved_addresses) = resolve_endpoint(url, cfg.timeout)?;
+    let (expected_netloc, resolved_addresses) =
+        record_failure_on_error(url, cfg, resolve_endpoint(url, cfg.timeout))?;
     let agent = ureq::builder()
         .timeout(cfg.timeout)
         .timeout_connect(cfg.timeout)
@@ -250,7 +251,8 @@ where
         }
         match req.send_json(body) {
             Ok(resp) => {
-                let value = read_bounded_json(resp.into_reader())?;
+                let value =
+                    record_failure_on_error(url, cfg, read_bounded_json(resp.into_reader()))?;
                 record_success(url);
                 return Ok(value);
             }
@@ -343,6 +345,12 @@ fn record_success(url: &str) {
     }
 }
 
+fn record_failure_on_error<T>(url: &str, cfg: &HttpConfig, result: Result<T>) -> Result<T> {
+    result.inspect_err(|_| {
+        record_failure(url, cfg);
+    })
+}
+
 fn record_failure(url: &str, cfg: &HttpConfig) {
     if let Ok(mut map) = breakers().lock() {
         let cb = map
@@ -374,7 +382,35 @@ fn backoff(attempt: u32) -> Duration {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+
     use super::*;
+
+    fn threshold_one_config() -> HttpConfig {
+        HttpConfig {
+            timeout: Duration::from_secs(1),
+            retries: 0,
+            breaker_threshold: 1,
+            breaker_cooldown: Duration::from_secs(60),
+        }
+    }
+
+    fn invalid_json_endpoint() -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 8\r\nConnection: close\r\n\r\nnot json",
+                )
+                .unwrap();
+        });
+        (format!("http://{address}/v1/test"), server)
+    }
 
     // Regression: a slow-but-working local model call was retried like a network
     // blip. Because a read timeout is a Transport error (classified transient),
@@ -427,6 +463,35 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(error, MindLeakError::Cancelled(_)));
+    }
+
+    // Regression: endpoint resolution used to return before recording a failure,
+    // so a permanently invalid endpoint consumed work forever without opening.
+    #[test]
+    fn resolution_failure_opens_the_circuit() {
+        let url = "not a valid endpoint";
+        let config = threshold_one_config();
+
+        let first = post_json(&config, url, "", &serde_json::json!({})).unwrap_err();
+        assert!(first.to_string().contains("invalid URL"));
+
+        let second = post_json(&config, url, "", &serde_json::json!({})).unwrap_err();
+        assert!(second.to_string().contains("circuit open"));
+    }
+
+    // Regression: a successful HTTP status with invalid JSON also returned before
+    // breaker accounting, repeatedly reaching the same broken optional endpoint.
+    #[test]
+    fn response_decode_failure_opens_the_circuit() {
+        let (url, server) = invalid_json_endpoint();
+        let config = threshold_one_config();
+
+        let first = post_json(&config, &url, "", &serde_json::json!({})).unwrap_err();
+        assert!(first.to_string().contains("json error"));
+        server.join().unwrap();
+
+        let second = post_json(&config, &url, "", &serde_json::json!({})).unwrap_err();
+        assert!(second.to_string().contains("circuit open"));
     }
 
     #[test]

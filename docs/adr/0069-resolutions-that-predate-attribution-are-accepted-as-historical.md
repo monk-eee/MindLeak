@@ -4,7 +4,7 @@
 - Date: 2026-07-29
 - Deciders: monk-eee
 - Related: [ADR-0009](0009-evidence-backed-conformance.md) (evidence is the basis
-  of every verdict), [ADR-0031](0031-portable-proof-of-work.md) (a receipt must
+  of every verdict), [ADR-0031](0031-exportable-conformance-evidence.md) (a receipt must
   resolve), [ADR-0048](0048-a-lapsed-lease-holes-the-window-it-does-not-move-it.md)
   (a window survives a lapse, holes and all)
 

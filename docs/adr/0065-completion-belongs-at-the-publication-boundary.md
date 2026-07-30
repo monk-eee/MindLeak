@@ -5,11 +5,11 @@
 - Related: [ADR-0009](0009-evidence-backed-conformance.md) (evidence-backed
   conformance),
   [ADR-0045](0045-armed-means-finished.md) (armed means finished),
-  [ADR-0046](0046-a-question-nobody-is-asked-is-not-a-question.md) (a question
+  [ADR-0046](0046-agents-talk-through-the-durable-thread.md) (a question
   nobody is asked),
   [ADR-0048](0048-a-lapsed-lease-holes-the-window-it-does-not-move-it.md) (a
   lapsed lease holes the window),
-  [ADR-0049](0049-the-ledger-is-not-optional-at-the-publication-boundary.md)
+  [ADR-0049](0049-publication-requires-a-claim.md)
   (the ledger is not optional at the publication boundary),
   [ADR-0052](0052-a-lease-is-a-heartbeat-not-a-deadline.md) (a lease is a
   heartbeat)

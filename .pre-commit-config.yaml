@@ -193,13 +193,19 @@ repos:
       # extension suite, which also reports vitest worker timeouts under fleet
       # load. A gate that intermittently blocks a push is worse than none — it
       # teaches people to reach for `--no-verify`.
-      - id: ext-test
-        name: extension tests (the other runner over the same modules)
-        entry: node scripts/ext-test.mjs
-        language: system
-        files: ^scripts/.*\.mjs$
-        exclude: \.test\.mjs$
-        stages: [pre-push]
+      #
+      # WITHDRAWN FROM pre-push, 2026-07-30. That last sentence turned out to
+      # describe this hook. Under fleet load vitest reports
+      # `[vitest-worker]: Timeout calling "onTaskUpdate"` and exits non-zero
+      # with every test passing — "14 passed, 1 error" — and the runner cannot
+      # tell that from a real failure. It blocked pushes across the fleet on
+      # tests that had in fact passed, which is worse than the rename breakage
+      # it was added to catch: that fails one branch's CI, this stops everyone.
+      #
+      # The capability is kept, not the gate. `make ext-test` and
+      # `node scripts/ext-test.mjs <changed files>` still run it, and CI still
+      # runs the full suite. It comes back to pre-push when it can distinguish
+      # a worker timeout from a failed assertion, and not before.
 
       # Evidence exists because you committed, not because you remembered.
       # Forty conformance audits on this repository reported "evidence contains
