@@ -1,5 +1,5 @@
-- **Commit provenance still depends on an observing editor because the
-  post-commit hook is not installed — PARTIALLY FIXED.** The earlier version of
+- **Commit provenance outside an observing editor remains incomplete — OPEN.**
+  The earlier version of
   this gap said commits landed with no provenance at all. That was false: the
   VS Code extension's passive Git sensor (`editors/vscode/src/gitSensor.ts`)
   watches `repository.state.HEAD` and calls `ingest_commit` with the full commit
