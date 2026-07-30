@@ -1,27 +1,52 @@
 #!/usr/bin/env node
-// Report recorded knowledge that can never be read.
+// Report recorded knowledge that cannot reach an agent.
 //
-// The conformance advisory matches knowledge on referenced nodes and nothing
-// else, so a record whose evidence carries no `nodes` array is stored, counted,
-// decayed — and structurally incapable of reaching any agent. The failure is
-// silent in the one direction that matters: the record looks fine from the
-// writer's side and simply never arrives.
+// The conformance advisory consults learned knowledge along TWO paths, and an
+// audit that knows about one of them misreports the other:
 //
-// `record_knowledge` now warns at write time, which stops the population
-// growing. This reports the ones already there, because a heap of 63 is not a
-// backlog anybody can work: ranked by how much is at stake, it becomes a list.
+//   By node. When the evidence carries a `nodes` array and those ids intersect
+//   the evidence's changed nodes, the lesson attaches. Unconditional: any task
+//   touching those files sees it.
+//
+//   By goal. A lesson naming no node is not therefore anonymous. If its
+//   evidence declares a `goal`, or names a task from which a goal is
+//   reachable, it attaches to work under that same goal — but only the
+//   strongest GOAL_ADVISORY_LIMIT of them do, so this path is contended.
+//
+// This audit counted the node path alone. That was correct when it was written
+// and stopped being correct when the goal path landed (7e38571, "a lesson
+// reaches the goal it was learned under"). It reported every node-less record
+// as unreachable: 68 of 210 here, against 12 that genuinely are. Overstating by
+// that much is not a rounding error — it invents a backlog, and the records it
+// tells you to go and re-record are already arriving.
+//
+// So the report separates three populations, because they need different
+// things done to them:
+//   - reachable by node     — nothing to do
+//   - reachable by goal     — arrives, but competes for a capped number of
+//                             slots; naming nodes is how a lesson stops
+//                             competing
+//   - reachable by neither  — the real backlog
 //
 // Usage:
 //   node scripts/silent-knowledge.mjs [--db <path>] [--check] [--top <n>]
 //
-// --check exits 1 when any silent record remains, so this can gate CI once the
-// backlog is cleared. It is deliberately not wired into CI yet: the repository
-// is not clean, and a check that fails on day one gets switched off.
+// --check exits 1 when any record is reachable by neither path.
 
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+
+/**
+ * How many goal-matched lessons the advisory attaches to a single check.
+ *
+ * Mirrors GOAL_ADVISORY_LIMIT in
+ * crates/lodestar-core/src/facade/conformance/verdict.rs. If that constant
+ * moves and this does not, the contention figure is what goes quietly wrong —
+ * the same shape of failure this rewrite exists to correct.
+ */
+export const GOAL_ADVISORY_LIMIT = 3;
 
 /**
  * The sqlite driver, loaded only when this actually reads the ledger.
@@ -98,33 +123,94 @@ function resolveDb() {
   return found[0];
 }
 
+const parseEvidence = (evidence) => {
+  if (!evidence) return null;
+  try {
+    return JSON.parse(evidence);
+  } catch {
+    // Evidence is free-form, so a record whose evidence never parsed simply
+    // references nothing. Throwing here would make the audit fail on the very
+    // records it exists to find.
+    return null;
+  }
+};
+
 /**
- * The nodes a record references, read the way the advisory reads them.
- *
- * Evidence is free-form JSON, so this must not assume it parses: a record whose
- * evidence is not JSON at all references nothing, which is exactly the silent
- * case rather than an error to throw on.
+ * The nodes a record references, read the way the advisory reads them
+ * (`{"nodes": [...]}`).
  */
 export const referencedNodes = (evidence) => {
-  if (!evidence) return [];
-  let parsed;
-  try {
-    parsed = JSON.parse(evidence);
-  } catch {
-    return [];
-  }
-  const nodes = parsed?.nodes;
+  const nodes = parseEvidence(evidence)?.nodes;
   return Array.isArray(nodes) ? nodes.filter((n) => typeof n === "string") : [];
 };
 
-/** A record can be read only if it names at least one node. */
-export const isSilent = (record) =>
-  referencedNodes(record.evidence).length === 0;
+/** The goal a record says it was learned under (`{"goal": "goal:..."}`). */
+export const declaredGoal = (evidence) => {
+  const goal = parseEvidence(evidence)?.goal;
+  return typeof goal === "string" ? goal : null;
+};
 
 /**
- * Ranked so the list is workable. Length stands in for how much was invested in
- * writing it down, and a heavier, more recently confirmed record is one the
- * repository still believes — those are the ones worth rescuing first.
+ * Every task id named anywhere in the evidence.
+ *
+ * Scanned as text rather than parsed, mirroring the Rust deliberately: this
+ * provenance was written by many hands and appears as a JSON field, inside
+ * nested arrays, and as a bare `task:{id}` that is not JSON at all. A reader
+ * understanding only one shape would silence the records written in the others
+ * — and would then report them as a backlog to redo.
+ */
+export const referencedTasks = (evidence) => [
+  ...new Set(
+    [...String(evidence ?? "").matchAll(/task:([0-9a-fA-F]+)/g)].map(
+      (match) => `task:${match[1]}`,
+    ),
+  ),
+];
+
+/**
+ * A goal id without its constitution version, so a lesson learned under v2
+ * still reaches work governed by v3. Mirrors `goal_slug` in the Rust.
+ */
+export const goalSlug = (goalId) => String(goalId ?? "").split("@")[0];
+
+/**
+ * The goal a lesson can reach, or null. Declared goal first, then the goal of
+ * the first task it names that the ledger still knows — a lesson may cite a
+ * task that has since been pruned, which is not an error, it simply teaches
+ * nothing about the goal.
+ *
+ * `taskGoals` maps task id to goal id.
+ */
+export const reachableGoal = (record, taskGoals = new Map()) => {
+  const declared = declaredGoal(record.evidence);
+  if (declared) return goalSlug(declared);
+  for (const id of referencedTasks(record.evidence)) {
+    const goal = taskGoals.get(id);
+    if (goal) return goalSlug(goal);
+  }
+  return null;
+};
+
+/**
+ * Which path, if any, carries this record to an agent.
+ *
+ * `"node"` and `"goal"` are not equivalent: a node match is unconditional,
+ * while a goal match competes for GOAL_ADVISORY_LIMIT slots against every other
+ * lesson under the same goal.
+ */
+export const classify = (record, taskGoals = new Map()) => {
+  if (referencedNodes(record.evidence).length > 0) return "node";
+  return reachableGoal(record, taskGoals) ? "goal" : "unreachable";
+};
+
+/** A record reaches nobody at all: it names no node and no resolvable goal. */
+export const isUnreachable = (record, taskGoals = new Map()) =>
+  classify(record, taskGoals) === "unreachable";
+
+/**
+ * Ranked so the list is workable. Weight leads because it is what the
+ * repository still believes; a heavier, more recently confirmed record is the
+ * one worth rescuing first.
  */
 export const rank = (records) =>
   [...records].sort(
@@ -134,13 +220,46 @@ export const rank = (records) =>
       (b.statement?.length ?? 0) - (a.statement?.length ?? 0),
   );
 
-export const summarise = (records) => {
-  const silent = records.filter(isSilent);
+/**
+ * How many goal-reachable lessons actually attach, and how many are crowded out
+ * by the cap. Reported because "reachable by goal" on its own would overstate
+ * the good news exactly as the old count overstated the bad.
+ */
+export const goalContention = (records, taskGoals = new Map()) => {
+  const perGoal = new Map();
+  for (const record of records) {
+    if (classify(record, taskGoals) !== "goal") continue;
+    const goal = reachableGoal(record, taskGoals);
+    perGoal.set(goal, (perGoal.get(goal) ?? 0) + 1);
+  }
+  let attaching = 0;
+  let crowdedOut = 0;
+  for (const count of perGoal.values()) {
+    const attach = Math.min(count, GOAL_ADVISORY_LIMIT);
+    attaching += attach;
+    crowdedOut += count - attach;
+  }
+  return { perGoal, attaching, crowdedOut };
+};
+
+export const summarise = (records, taskGoals = new Map()) => {
+  const byNode = [];
+  const byGoal = [];
+  const unreachable = [];
+  for (const record of records) {
+    const where = classify(record, taskGoals);
+    if (where === "node") byNode.push(record);
+    else if (where === "goal") byGoal.push(record);
+    else unreachable.push(record);
+  }
   return {
     total: records.length,
-    silent: silent.length,
-    share: records.length ? silent.length / records.length : 0,
-    records: rank(silent),
+    byNode: byNode.length,
+    byGoal: byGoal.length,
+    unreachable: unreachable.length,
+    share: records.length ? unreachable.length / records.length : 0,
+    contention: goalContention(records, taskGoals),
+    records: rank(unreachable),
   };
 };
 
@@ -153,16 +272,30 @@ if (import.meta.filename === process.argv[1]) {
     )
     .all();
 
-  const report = summarise(records);
+  const taskGoals = new Map(
+    db
+      .prepare("select id, goal_id from tasks")
+      .all()
+      .map((task) => [task.id, task.goal_id]),
+  );
+
+  const report = summarise(records, taskGoals);
   const percent = (report.share * 100).toFixed(0);
 
   console.log(
-    `silent-knowledge: ${report.silent} of ${report.total} records (${percent}%) can never be read`,
+    `silent-knowledge: ${report.unreachable} of ${report.total} records (${percent}%) can reach nobody`,
   );
-  if (report.silent > 0) {
+  console.log(
+    `  ${report.byNode} reach agents by the nodes they name;\n` +
+      `  ${report.byGoal} name no node but reach work under the goal they were learned under,\n` +
+      `    of which ${report.contention.attaching} can attach on any one check and ${report.contention.crowdedOut} are crowded\n` +
+      `    out by the cap of ${GOAL_ADVISORY_LIMIT} per goal — naming nodes is how a lesson stops competing.`,
+  );
+
+  if (report.unreachable > 0) {
     console.log(
-      "\nThe advisory matches on referenced nodes and nothing else. These name none,\n" +
-        "so they are stored, counted, decayed, and can reach nobody.\n",
+      "\nThese name no node, and no goal or task from which one is reachable, so\n" +
+        "they are stored, counted, decayed, and arrive nowhere.\n",
     );
     for (const record of report.records.slice(0, top)) {
       const first = (record.statement ?? "").replace(/\s+/g, " ").slice(0, 110);
@@ -181,5 +314,5 @@ if (import.meta.filename === process.argv[1]) {
     );
   }
 
-  if (check && report.silent > 0) process.exit(1);
+  if (check && report.unreachable > 0) process.exit(1);
 }
