@@ -1,6 +1,6 @@
 # ADR-0062: The delivery queue is ours to run
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-28
 - Related: [ADR-0061](0061-delivery-is-queued-not-raced.md) (delivery is queued,
   not raced),
