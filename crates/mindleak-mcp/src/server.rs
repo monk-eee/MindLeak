@@ -4,7 +4,7 @@ use std::io::{self, BufRead, Write};
 
 use mindleak_core::MindLeak;
 use mindleak_session::SessionRegistry;
-use mindleak_storage::StorageStatus;
+use mindleak_storage::{RunningBinary, StorageStatus};
 use serde_json::{json, Value};
 
 use crate::maintenance::ActivitySignal;
@@ -16,12 +16,15 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 ///
 /// `stale_build` carries the notice when this binary is behind the checkout it
 /// serves, so `open_session` can tell the agent rather than only the log.
+/// `running` answers the different question of whether the file this process
+/// started from has since been replaced, which can only be asked per call.
 pub fn run(
     engine: MindLeak,
     sessions: SessionRegistry,
     activity: ActivitySignal,
     storage: StorageStatus,
     stale_build: Option<String>,
+    running: RunningBinary,
 ) -> anyhow::Result<()> {
     let stdin = io::stdin();
     let mut reader = stdin.lock();
@@ -57,6 +60,7 @@ pub fn run(
             &sessions,
             &storage,
             stale_build.as_deref(),
+            &running,
             &request,
         ) {
             write_message(&mut out, &response)?;
@@ -70,6 +74,7 @@ fn handle(
     sessions: &SessionRegistry,
     storage: &StorageStatus,
     stale_build: Option<&str>,
+    running: &RunningBinary,
     req: &Value,
 ) -> Option<Value> {
     let id = req.get("id").cloned();
@@ -84,7 +89,7 @@ fn handle(
         "tools/call" => {
             let id = id?;
             let response = match tools::bind_session(&params, sessions).and_then(|bound| {
-                tools::call_with_storage(engine, &bound, Some(storage), stale_build)
+                tools::call_with_storage(engine, &bound, Some(storage), stale_build, running)
             }) {
                 Ok(content) => content,
                 Err(msg) => tool_error(&msg),
@@ -161,7 +166,14 @@ mod tests {
         storage: &StorageStatus,
         req: &Value,
     ) -> Option<Value> {
-        super::handle(engine, sessions, storage, None, req)
+        super::handle(
+            engine,
+            sessions,
+            storage,
+            None,
+            &RunningBinary::from_parts(None, None),
+            req,
+        )
     }
 
     fn sessions() -> SessionRegistry {
