@@ -1,3 +1,26 @@
 {
-  "unittestMcp.customCommand": "cargo test --all"
+  "unittestMcp.customCommand": "cargo test --all",
+  "//": "Build output and dependencies are never hand-edited, and watching them is what makes this repository slow to work in. Measured 2026-07-30: 88 worktrees, 86 carrying target/, 61 carrying node_modules, one sampled target/ holding 82,891 entries - roughly seven million watched files, with 7.0 GB of 55.6 GB free and 39 VS Code processes holding 17.1 GB. Every cargo build rewrites thousands of files inside a watched tree, and every window whose workspace contains it is notified. files.exclude is deliberately not set: it hides entries from the explorer rather than reducing work.",
+  "files.watcherExclude": {
+    "**/target/**": true,
+    "**/node_modules/**": true,
+    "**/.vscode-test/**": true,
+    "**/out/**": true,
+    "**/dist/**": true,
+    "**/coverage/**": true,
+    "**/.mindleak/**": true,
+    "**/.lodestar/**": true,
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true
+  },
+  "search.exclude": {
+    "**/target": true,
+    "**/node_modules": true,
+    "**/.vscode-test": true,
+    "**/out": true,
+    "**/dist": true,
+    "**/coverage": true,
+    "**/.mindleak": true,
+    "**/.lodestar": true
+  }
 }
