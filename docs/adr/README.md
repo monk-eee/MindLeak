@@ -82,6 +82,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0072](0072-an-advisory-informs-it-does-not-cap-the-verdict.md) | An advisory informs; it does not cap the verdict | Proposed |
 | [0073](0073-each-window-roots-its-servers-at-the-worktree-it-edits.md) | Each window roots its servers at the worktree it edits | Accepted |
 | [0074](0074-coverage-is-a-prediction-until-conformance-speaks.md) | Coverage is a prediction until conformance speaks | Accepted |
+| [0075](0075-a-hit-must-stand-out-from-its-own-querys-field.md) | A hit must stand out from its own query's field | Proposed |
 
 ## Writing a new ADR
 
