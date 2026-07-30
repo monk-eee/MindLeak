@@ -44,16 +44,25 @@ edits cannot place those files, so they are refused and never reach the graph �
 measured at 4% of all `ingest_file` calls while every window was rooted at the
 primary checkout.
 
-So open the worktree itself as the workspace folder. `.vscode/mcp.json` points
-`cwd` and `MINDLEAK_WORKSPACE` at `${workspaceFolder}`, so the servers follow the
-window. All worktrees still share one graph and one board — the repository id
-comes from the git common dir, not from the folder you opened.
+So open the worktree itself as the workspace folder. The extension contributes
+both servers to that window and roots each one at the folder the window opened,
+so the servers follow the window. All worktrees still share one graph and one
+board — the repository id comes from the git common dir, not from the folder you
+opened.
 
 The servers are deliberately **not** built per worktree. They are installed once
-at `~/.mindleak/bin`, which is what `.vscode/mcp.json` spells as
-`${userHome}/.mindleak/bin`. If a server fails to start with a missing
-executable there, run `make install-servers`. After installing a new build,
-restart the servers (or reload the window) so clients pick it up.
+at `~/.mindleak/bin`, which the extension prefers over any worktree build. If a
+server fails to start with a missing executable there, run `make install-servers`.
+After installing a new build, restart the servers (or reload the window) so
+clients pick it up.
+
+There is no committed `.vscode/mcp.json`. The extension provides both planes
+through `mcpServerDefinitionProviders` (ADR-0073), so where a binary lives is
+decided by one rule — `resolveBinaryPath` in editors/vscode/src/util.ts — rather
+than by a config file carrying a second copy of it. This needs the extension
+installed and VS Code 1.101 or newer; `npm --prefix editors/vscode run
+package:vsix` then `code --install-extension` after pulling a build that changes
+the provider.
 
 Never copy the binaries into a worktree's own `target/release`: cargo's
 fingerprints would still read fresh, so that worktree would never rebuild and
