@@ -24,7 +24,8 @@ pub mod model;
 pub mod net;
 pub mod telemetry;
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Mutex, RwLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub use embed::{Embedder, TextEmbedder};
 pub use error::{MindLeakError, Result};
@@ -59,7 +60,34 @@ pub struct MindLeak {
     /// The other worktrees of this same repository. All of them share one graph
     /// (ADR-0038), so a file saved in any of them has the one repo-relative id;
     /// without these, a sibling checkout's path cannot be placed and is refused.
-    worktree_roots: Vec<String>,
+    ///
+    /// Behind a lock because the set is not fixed for the life of the process:
+    /// this fleet creates worktrees hourly, and one resolved at startup goes
+    /// stale the moment the next `git worktree add` runs.
+    worktree_roots: RwLock<Vec<String>>,
+    /// How to re-resolve the roots when a path lands outside all of them.
+    ///
+    /// Injected for the same reason the roots are: the core has no business
+    /// spawning git, and a test must be able to make a new root appear without
+    /// one. Absent, the behaviour is exactly what it was before - a miss is a
+    /// refusal.
+    worktree_refresh: Option<Box<dyn Fn() -> Vec<String> + Send + Sync>>,
+    /// When the roots were last re-resolved, so a genuinely foreign path cannot
+    /// make every refusal pay for a git subprocess.
+    last_refresh: Mutex<Option<Instant>>,
+}
+
+/// The shortest gap between two root re-resolutions.
+///
+/// A path outside the repository is refused on every ingest a badly-configured
+/// sensor makes, and each refusal would otherwise spawn git. Long enough that a
+/// storm costs one subprocess, short enough that a worktree created mid-session
+/// is picked up while the agent is still working in it.
+const WORKTREE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Borrow a resolved root list for the placing helpers, which take `&[&str]`.
+fn borrowed(roots: &[String]) -> Vec<&str> {
+    roots.iter().map(String::as_str).collect()
 }
 
 // The async maintenance worker (`mindleak-mcp`) moves a `MindLeak` into
@@ -80,7 +108,9 @@ impl MindLeak {
             embedder: Box::new(embed::Embedder::default()),
             recall_floor: config::DEFAULT_RECALL_FLOOR,
             workspace_root: None,
-            worktree_roots: Vec::new(),
+            worktree_roots: RwLock::new(Vec::new()),
+            worktree_refresh: None,
+            last_refresh: Mutex::new(None),
         })
     }
 
@@ -92,7 +122,9 @@ impl MindLeak {
             embedder: Box::new(embed::Embedder::default()),
             recall_floor: config::DEFAULT_RECALL_FLOOR,
             workspace_root: None,
-            worktree_roots: Vec::new(),
+            worktree_roots: RwLock::new(Vec::new()),
+            worktree_refresh: None,
+            last_refresh: Mutex::new(None),
         })
     }
 
@@ -119,10 +151,29 @@ impl MindLeak {
     /// and testable, and so an unavailable git degrades to the single-root
     /// behaviour instead of to a wrong answer.
     pub fn with_worktree_roots(mut self, roots: impl IntoIterator<Item = String>) -> Self {
-        self.worktree_roots = roots
-            .into_iter()
-            .filter(|root| !root.trim().is_empty())
-            .collect();
+        self.worktree_roots = RwLock::new(
+            roots
+                .into_iter()
+                .filter(|root| !root.trim().is_empty())
+                .collect(),
+        );
+        self
+    }
+
+    /// How to re-resolve the worktree roots when a path lands outside them all.
+    ///
+    /// Without this a root set is frozen at construction, so a worktree created
+    /// after the server started is invisible to it forever. This fleet creates
+    /// worktrees hourly, which means the frozen set decays from the moment it is
+    /// resolved, and fastest exactly when the fleet is busiest.
+    ///
+    /// Injected for the same reason the roots are: the core does not spawn git,
+    /// and a test must be able to make a new root appear without one.
+    pub fn with_worktree_refresh(
+        mut self,
+        refresh: impl Fn() -> Vec<String> + Send + Sync + 'static,
+    ) -> Self {
+        self.worktree_refresh = Some(Box::new(refresh));
         self
     }
 
@@ -130,19 +181,73 @@ impl MindLeak {
     /// checkout first, then the repository's other worktrees. One list, so the
     /// save path, the commit sensor and the execution sensor cannot disagree
     /// about which files belong to this repository.
-    pub(crate) fn roots(&self) -> Vec<&str> {
-        let mut roots: Vec<&str> = Vec::with_capacity(self.worktree_roots.len() + 1);
-        roots.extend(self.workspace_root.as_deref());
-        roots.extend(self.worktree_roots.iter().map(String::as_str));
+    pub(crate) fn roots(&self) -> Vec<String> {
+        let mut roots: Vec<String> = Vec::new();
+        roots.extend(self.workspace_root.clone());
+        if let Ok(known) = self.worktree_roots.read() {
+            roots.extend(known.iter().cloned());
+        }
         roots
+    }
+
+    /// Re-resolve the roots, at most once per interval and never concurrently.
+    ///
+    /// Returns whether the set changed, so the caller only retries a placement
+    /// that now has something new to succeed against. The interval is what stops
+    /// a genuinely foreign path - a misconfigured sensor sending the same path
+    /// repeatedly - from paying for a git subprocess on every refusal.
+    fn refresh_worktree_roots(&self) -> bool {
+        let Some(refresh) = self.worktree_refresh.as_ref() else {
+            return false;
+        };
+        // `try_lock` rather than `lock`: if another thread is already refreshing,
+        // this one should refuse now rather than queue behind a subprocess to
+        // discover the same answer.
+        let Ok(mut last) = self.last_refresh.try_lock() else {
+            return false;
+        };
+        if let Some(at) = *last {
+            if at.elapsed() < WORKTREE_REFRESH_INTERVAL {
+                return false;
+            }
+        }
+        *last = Some(Instant::now());
+
+        let resolved: Vec<String> = refresh()
+            .into_iter()
+            .filter(|root| !root.trim().is_empty())
+            .collect();
+        let Ok(mut known) = self.worktree_roots.write() else {
+            return false;
+        };
+        if *known == resolved {
+            return false;
+        }
+        *known = resolved;
+        true
     }
 
     /// Make a caller-supplied path repo-relative for stable node ids.
     ///
     /// Every known worktree root of this repository is a candidate, so a file
     /// saved in a sibling checkout resolves to the same id as one saved here.
+    ///
+    /// A path that matches no root re-resolves the set once and tries again: the
+    /// likeliest reason for a miss is a worktree created after this server
+    /// started, and refusing it would make the fix decay the moment it deployed.
+    /// A path under no worktree of this repository is still refused - the retry
+    /// changes when the answer is computed, never what counts as belonging.
     pub(crate) fn repo_relative(&self, path: &str) -> String {
-        ingest::repo_relative(path, &self.roots())
+        let roots = self.roots();
+        let placed = ingest::repo_relative(path, &borrowed(&roots));
+        if !ingest::is_absolute_path(&placed) {
+            return placed;
+        }
+        if !self.refresh_worktree_roots() {
+            return placed;
+        }
+        let roots = self.roots();
+        ingest::repo_relative(path, &borrowed(&roots))
     }
 
     /// Collapse node ids that spell their path absolutely onto the repo-relative
@@ -206,8 +311,77 @@ impl MindLeak {
 #[cfg(test)]
 mod tests {
     use super::MindLeak;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     fn assert_send<T: Send>() {}
+
+    /// The regression: `worktree_roots` was resolved once, at engine
+    /// construction, so a worktree created afterwards was invisible to that
+    /// server for the rest of its life. Observed 2026-07-30 on servers started
+    /// hours earlier, refusing paths from four worktrees that appeared during
+    /// the session. A fleet that creates worktrees hourly makes a frozen root
+    /// set decay from the moment it is resolved.
+    #[test]
+    fn a_worktree_that_appears_after_startup_is_picked_up() {
+        let engine = MindLeak::open_in_memory()
+            .unwrap()
+            .with_workspace_root("C:/repo/main")
+            .with_worktree_refresh(|| vec!["C:/repo/sibling".to_string()]);
+
+        // Before the refresh the sibling is unknown, and the path is refused by
+        // coming back still absolute.
+        let placed = engine.repo_relative("C:/repo/sibling/crates/core/src/lib.rs");
+
+        assert_eq!(
+            placed, "crates/core/src/lib.rs",
+            "the miss re-resolved the roots and placed it on the retry"
+        );
+    }
+
+    /// The bound. A misconfigured sensor sends the same foreign path on every
+    /// call, and each refusal would otherwise pay for a git subprocess. The
+    /// refresh rides on the failure that needs it, and only the first one.
+    #[test]
+    fn a_foreign_path_refreshes_once_not_on_every_refusal() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let engine = MindLeak::open_in_memory()
+            .unwrap()
+            .with_workspace_root("C:/repo/main")
+            .with_worktree_refresh(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Vec::new()
+            });
+
+        for _ in 0..5 {
+            let placed = engine.repo_relative("D:/somewhere/else/file.rs");
+            assert!(
+                crate::ingest::is_absolute_path(&placed),
+                "a path under no worktree of this repository is still refused"
+            );
+        }
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "five refusals cost one refresh, not five"
+        );
+    }
+
+    /// Without a refresher the behaviour is exactly what it was: a miss is a
+    /// refusal, and nothing reaches for git. This is what keeps every existing
+    /// caller and test unaffected.
+    #[test]
+    fn without_a_refresher_a_miss_is_still_simply_refused() {
+        let engine = MindLeak::open_in_memory()
+            .unwrap()
+            .with_workspace_root("C:/repo/main");
+
+        let placed = engine.repo_relative("C:/repo/sibling/src/lib.rs");
+
+        assert!(crate::ingest::is_absolute_path(&placed));
+    }
 
     // Regression: an injected trait object without Send made MindLeak unusable
     // by the maintenance worker's std::thread::spawn boundary.

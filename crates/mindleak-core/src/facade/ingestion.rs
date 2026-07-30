@@ -43,7 +43,8 @@ impl MindLeak {
 
     pub fn ingest_execution(&self, rec: &ExecutionRecord) -> Result<WriteOutcome> {
         let now = now_unix();
-        ingest::execution::ingest_execution(&self.store, rec, now, &self.roots())
+        let roots = self.roots();
+        ingest::execution::ingest_execution(&self.store, rec, now, &crate::borrowed(&roots))
     }
 
     pub fn ingest_execution_for_agent(
@@ -52,19 +53,23 @@ impl MindLeak {
         rec: &ExecutionRecord,
     ) -> Result<WriteOutcome> {
         let now = now_unix();
-        let outcome = ingest::execution::ingest_execution(&self.store, rec, now, &self.roots())?;
+        let roots = self.roots();
+        let outcome =
+            ingest::execution::ingest_execution(&self.store, rec, now, &crate::borrowed(&roots))?;
         self.observe(agent, &outcome.node_ids, now)?;
         Ok(outcome)
     }
 
     pub fn ingest_commit(&self, rec: &CommitRecord) -> Result<WriteOutcome> {
         let now = now_unix();
-        ingest::git::ingest_commit(&self.store, rec, now, &self.roots())
+        let roots = self.roots();
+        ingest::git::ingest_commit(&self.store, rec, now, &crate::borrowed(&roots))
     }
 
     pub fn ingest_commit_for_agent(&self, agent: &str, rec: &CommitRecord) -> Result<WriteOutcome> {
         let now = now_unix();
-        let outcome = ingest::git::ingest_commit(&self.store, rec, now, &self.roots())?;
+        let roots = self.roots();
+        let outcome = ingest::git::ingest_commit(&self.store, rec, now, &crate::borrowed(&roots))?;
         self.observe(agent, &outcome.node_ids, now)?;
         Ok(outcome)
     }
