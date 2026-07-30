@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-30",
+  "source_revision": "bb269ca",
+  "model": "nomic-embed-text",
+  "indexed_nodes": 19317,
+  "floor": 0.5,
+  "limit": 5,
+  "served_by_kind": {
+    "before": {
+      "intent": 7,
+      "gone": 24,
+      "symbol": 13,
+      "artifact": 1,
+      "execution": 4,
+      "package": 1
+    },
+    "after": {
+      "intent": 47,
+      "symbol": 2
+    }
+  },
+  "hits_naming_a_node_the_graph_no_longer_holds": {
+    "before": 24,
+    "before_of": 50,
+    "after": 0,
+    "after_of": 49
+  },
+  "nonsense_rejection": {
+    "separable_by_one_sigma_threshold": false,
+    "highest_nonsense_sigma": 3.9014484126229756,
+    "lowest_real_sigma": 3.710408280849817,
+    "margin": -0.1910401317731587
+  },
+  "per_query": [
+    {
+      "query": "zzzzqqq wibble flarp",
+      "label": "nonsense",
+      "field_mean": 0.42452784095291135,
+      "field_sd": 0.03673161790342404,
+      "top_score": 0.5388731635772009,
+      "top_sigma_above_field": 3.1129944486771595,
+      "before_hits": 5,
+      "after_hits": 4
+    },
+    {
+      "query": "qwertyuiop asdfghjkl zxcvbnm",
+      "label": "nonsense",
+      "field_mean": 0.48027800273461785,
+      "field_sd": 0.02970616525516172,
+      "top_score": 0.5909164652000575,
+      "top_sigma_above_field": 3.7244276235289293,
+      "before_hits": 5,
+      "after_hits": 5
+    },
+    {
+      "query": "flurb glorp snizzle wexpo",
+      "label": "nonsense",
+      "field_mean": 0.45457351075514546,
+      "field_sd": 0.036608563227090905,
+      "top_score": 0.5973999316458871,
+      "top_sigma_above_field": 3.9014484126229756,
+      "before_hits": 5,
+      "after_hits": 5
+    },
+    {
+      "query": "canonical-push auto-merge armed refuses",
+      "label": "real",
+      "field_mean": 0.5074623444511144,
+      "field_sd": 0.04366466126616586,
+      "top_score": 0.7058015861810757,
+      "top_sigma_above_field": 4.542328646979499,
+      "before_hits": 5,
+      "after_hits": 5
+    },
+    {
+      "query": "what breaks when an agent commits before claiming the task",
+      "label": "real",
+      "field_mean": 0.5240653223738742,
+      "field_sd": 0.04606905373837493,
+      "top_score": 0.704900755368027,
+      "top_sigma_above_field": 3.925312510673933,
+      "before_hits": 5,
+      "after_hits": 5
+    },
+    {
+      "query": "why does a lapsed lease stop the work certifying",
+      "label": "real",
+      "field_mean": 0.4326126600464936,
+      "field_sd": 0.04932049670829411,
+      "top_score": 0.7390768456996468,
+      "top_sigma_above_field": 6.213728695104886,
+      "before_hits": 5,
+      "after_hits": 5
+    },
+    {
+      "query": "why does PowerShell report failure for a command that succeeded",
+      "label": "real",
+      "field_mean": 0.4867137055775037,
+      "field_sd": 0.046538238557491646,
+      "top_score": 0.659389571297385,
+      "top_sigma_above_field": 3.710408280849817,
+      "before_hits": 5,
+      "after_hits": 5
+    },
+    {
+      "query": "a test that passes locally but is red only on windows",
+      "label": "real",
+      "field_mean": 0.45716906022450493,
+      "field_sd": 0.03403286461365131,
+      "top_score": 0.6138399482969615,
+      "top_sigma_above_field": 4.6035175072982994,
+      "before_hits": 5,
+      "after_hits": 5
+    },
+    {
+      "query": "why can a recorded lesson never reach another agent",
+      "label": "real",
+      "field_mean": 0.4382761667573872,
+      "field_sd": 0.04097530797090391,
+      "top_score": 0.6571591858545743,
+      "top_sigma_above_field": 5.341827308597984,
+      "before_hits": 5,
+      "after_hits": 5
+    },
+    {
+      "query": "the running server is behind the source it reports on",
+      "label": "real",
+      "field_mean": 0.4535510767067654,
+      "field_sd": 0.03800821496691726,
+      "top_score": 0.6268134929921998,
+      "top_sigma_above_field": 4.558551787718622,
+      "before_hits": 5,
+      "after_hits": 5
+    }
+  ]
+}
