@@ -173,7 +173,7 @@ export function resolveBinaryPath(
   return configured || binaryName;
 }
 
-/** A task as returned by the Lodestar `board` tool (subset used by the UI). */
+/** A task from Lodestar `task_query(view=board)` (subset used by the UI). */
 export interface LodestarTask {
   id: string;
   goal_id: string;
@@ -666,7 +666,7 @@ function remainingLease(task: LodestarTask, nowUnix: number): string {
   return `${Math.ceil(seconds / 60)}m left`;
 }
 
-/** One entry in a task's durable question/answer thread (Lodestar `task_qa`). */
+/** One entry in a task's durable thread (`task_query(view=thread)`). */
 export interface TaskQaEntry {
   id: number;
   task_id: string;
