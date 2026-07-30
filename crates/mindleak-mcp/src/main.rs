@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use mindleak_core::MindLeak;
 use mindleak_session::SessionRegistry;
 use mindleak_storage::{
-    build_notice, head_sha, resolve_database, resolve_workspace_path, DatabaseKind,
+    build_notice, head_sha, is_ancestor, resolve_database, resolve_workspace_path, DatabaseKind,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -117,11 +117,18 @@ fn main() -> anyhow::Result<()> {
 /// running, while every call still looked normal.
 fn report_build_identity(workspace: &Path) -> Option<String> {
     let executable = std::env::current_exe().ok()?;
+    let head = head_sha(workspace);
+    // Whether the build has HEAD in its history. Answered here rather than
+    // inside the rule so the decision stays pure and testable.
+    let descends = head
+        .as_deref()
+        .and_then(|head| is_ancestor(workspace, head, env!("MINDLEAK_BUILD_SHA")));
     let notice = build_notice(
         &executable,
         workspace,
         env!("MINDLEAK_BUILD_SHA"),
-        head_sha(workspace).as_deref(),
+        head.as_deref(),
+        descends,
     )?;
     // Only a build behind the checkout it was built from is a warning.
     // Naming an installed build is information, and logging it louder than

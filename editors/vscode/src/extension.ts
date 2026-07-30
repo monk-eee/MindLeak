@@ -32,6 +32,7 @@ import {
   LodestarTask,
   logLines,
   pendingQuestion,
+  repoRelativePath,
   resolveBinaryPath,
   resolveServerPath,
   shouldPollTelemetry,
@@ -474,8 +475,9 @@ function currentHealth(): RuntimeHealth {
   return { ...health };
 }
 
-function artifactId(doc: vscode.TextDocument): string {
-  return toArtifactId(vscode.workspace.asRelativePath(doc.uri, false));
+function artifactId(doc: vscode.TextDocument): string | null {
+  const rel = repoRelativePath(vscode.workspace.asRelativePath(doc.uri, false));
+  return rel === null ? null : toArtifactId(rel);
 }
 
 async function onFocus(doc: vscode.TextDocument): Promise<void> {
@@ -483,6 +485,10 @@ async function onFocus(doc: vscode.TextDocument): Promise<void> {
     return;
   }
   const id = artifactId(doc);
+  if (id === null) {
+    // No repo-relative id, so there is no node in this graph to boost.
+    return;
+  }
   try {
     await client.callTool("boost_entity", { id });
     await refresh(id);
@@ -495,7 +501,12 @@ async function onSave(doc: vscode.TextDocument): Promise<void> {
   if (!client?.isReady() || doc.uri.scheme !== "file") {
     return;
   }
-  const rel = vscode.workspace.asRelativePath(doc.uri, false).replace(/\\/g, "/");
+  const rel = repoRelativePath(vscode.workspace.asRelativePath(doc.uri, false));
+  if (rel === null) {
+    // Outside every workspace folder, so there is no repo-relative id for it.
+    // Sending it anyway is a guaranteed server-side refusal on every save.
+    return;
+  }
   try {
     await client.callTool("ingest_file", { path: rel, content: doc.getText() });
     await refresh(`artifact:${rel}`);
@@ -508,7 +519,11 @@ async function onDelete(uri: vscode.Uri): Promise<void> {
   if (!client?.isReady() || uri.scheme !== "file") {
     return;
   }
-  const rel = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, "/");
+  const rel = repoRelativePath(vscode.workspace.asRelativePath(uri, false));
+  if (rel === null) {
+    // Never ingested under this id, so there is nothing here to forget.
+    return;
+  }
   try {
     await client.callTool("forget_file", { path: rel });
     await refresh();
