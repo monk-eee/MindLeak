@@ -316,6 +316,67 @@ impl LodestarStore {
         goal_coverage_on(&self.conn, task_id)
     }
 
+    /// Declare further goals this work serves, while the claim is live.
+    ///
+    /// Coverage is a prediction the evidence can contradict — but only while
+    /// there is still evidence to gather. Goals bind to files, so an agent
+    /// usually learns the true governing set part-way through a change, after
+    /// touching a file nobody predicted. Fixing coverage at creation left that
+    /// agent no honest move: abandoning and recreating the task cannot rescue it
+    /// either, because a claim opened after the work cannot own that work's
+    /// evidence, and re-claiming to collect a cleaner verdict is precisely the
+    /// manufactured receipt this plane exists to prevent.
+    ///
+    /// So the boundary is not creation, it is the first verdict. Once any
+    /// conformance record exists for the task, the same declaration would be a
+    /// rationalisation for a finding already raised, and is refused.
+    ///
+    /// Owner-guarded and claimed-only: what a claim serves is the claim
+    /// holder's statement, and a task in `in_review` is not claimable at all, so
+    /// work whose verdict already landed cannot reach this path.
+    pub fn declare_coverage(
+        &self,
+        id: &str,
+        agent: &str,
+        also_serves: &[String],
+        now: i64,
+    ) -> Result<Vec<String>> {
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let task = get_task_on(&transaction, id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
+        if task.status != TaskStatus::Claimed || task.owner.as_deref() != Some(agent) {
+            return Err(LodestarError::Invalid(format!(
+                "{id} is not claimed by {agent}; what a claim serves is declared \
+                 by the agent holding it"
+            )));
+        }
+        let judged: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM conformance WHERE task_id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        if judged > 0 {
+            return Err(LodestarError::Invalid(format!(
+                "conformance has already judged {id}; coverage declared after a \
+                 finding is raised is a rationalisation, not a plan. Complete \
+                 this task with the verdict it earned and carry what you learned \
+                 into the next one"
+            )));
+        }
+        insert_coverage_on(&transaction, id, &task.goal_id, also_serves, now)?;
+        events::record(
+            &transaction,
+            id,
+            TaskEventKind::CoverageDeclared,
+            Some(agent),
+            now,
+            &serde_json::json!({ "also_serves": also_serves }).to_string(),
+        )?;
+        let covered = goal_coverage_on(&transaction, id)?;
+        transaction.commit()?;
+        Ok(covered)
+    }
+
     /// Extend a still-live lease on a task the caller owns (heartbeat). Once a
     /// lease lapses it cannot be renewed: the owner must re-claim, which keeps
     /// the evidence window open but records the lapse (ADR-0048).
@@ -1286,6 +1347,29 @@ fn create_task_after_on(
             params![predecessor_id, task.id, now],
         )?;
     }
+    insert_coverage_on(connection, &task.id, goal_id, also_serves, now)?;
+    // Appended last, so a creation that is about to be rejected for a bad
+    // coverage declaration never leaves a birth certificate behind. The whole
+    // call runs inside the caller's transaction, so this either lands with the
+    // row or not at all.
+    events::append(connection, TaskEventKind::Created, None, now, &task, "")?;
+    Ok(task)
+}
+
+/// Validate and record the additional goals a task serves (ADR-0041).
+///
+/// Shared by creation and by a live claim's later declaration so the two cannot
+/// drift apart on what a valid declaration is. `INSERT OR IGNORE` makes this a
+/// union: a declaration adds goals and can never silently drop one already
+/// declared, so an agent naming only what it just learned does not erase what it
+/// knew at the start.
+fn insert_coverage_on(
+    connection: &Connection,
+    task_id: &str,
+    goal_id: &str,
+    also_serves: &[String],
+    now: i64,
+) -> Result<()> {
     for covered in also_serves {
         if covered == goal_id {
             return Err(LodestarError::Invalid(format!(
@@ -1299,20 +1383,16 @@ fn create_task_after_on(
         connection.execute(
             "INSERT OR IGNORE INTO task_goal_coverage (task_id, goal_id, declared_at)
              VALUES (?1, ?2, ?3)",
-            params![task.id, covered, now],
+            params![task_id, covered, now],
         )?;
     }
-    // Appended last, so a creation that is about to be rejected for a bad
-    // coverage declaration never leaves a birth certificate behind. The whole
-    // call runs inside the caller's transaction, so this either lands with the
-    // row or not at all.
-    events::append(connection, TaskEventKind::Created, None, now, &task, "")?;
-    Ok(task)
+    Ok(())
 }
 
-/// The additional goals a task declared it serves (ADR-0041). Read-only: there
-/// is deliberately no verb that adds coverage after creation, because coverage
-/// added once conformance has complained is a rationalisation, not a plan.
+/// The additional goals a task declared it serves (ADR-0041). Declarable at
+/// creation and by the claim holder while the claim is live, but never once a
+/// conformance record exists: coverage added after a finding has been raised is
+/// a rationalisation, not a plan. See [`LodestarStore::declare_coverage`].
 pub(super) fn goal_coverage_on(connection: &Connection, task_id: &str) -> Result<Vec<String>> {
     let mut statement = connection
         .prepare("SELECT goal_id FROM task_goal_coverage WHERE task_id = ?1 ORDER BY goal_id")?;

@@ -23,9 +23,10 @@ impl Lodestar {
     }
 
     /// Create a task that declares, up front, the additional goals it serves
-    /// (ADR-0041). Coverage is fixed here and has no later mutator: declared
-    /// before the work it is a prediction the evidence can contradict, declared
-    /// afterwards it is a rationalisation for a finding already raised.
+    /// (ADR-0041). Declared before the work it is a prediction the evidence can
+    /// contradict; the same declaration after a finding has been raised would be
+    /// a rationalisation, which is why [`Lodestar::declare_coverage`] closes at
+    /// the first verdict rather than at creation.
     pub fn create_task_covering(
         &self,
         goal_id: &str,
@@ -43,6 +44,24 @@ impl Lodestar {
             also_serves,
             now_unix(),
         )
+    }
+
+    /// Declare further goals the held claim serves, before conformance speaks.
+    ///
+    /// Goals bind to files, so the governing set is usually learned while
+    /// working rather than predicted at creation. This lets the agent say so
+    /// while its declaration is still a prediction; once any conformance record
+    /// exists for the task it is refused, because coverage widened after a
+    /// finding is an excuse for that finding. Unions with what was already
+    /// declared, so naming what you just learned never drops what you knew.
+    pub fn declare_coverage(
+        &self,
+        task_id: &str,
+        agent: &str,
+        also_serves: &[String],
+    ) -> Result<Vec<String>> {
+        self.store
+            .declare_coverage(task_id, agent, also_serves, now_unix())
     }
 
     /// The additional goals a task declared it serves (ADR-0041).
@@ -486,17 +505,22 @@ impl Lodestar {
     }
 
     /// Work a newly arrived agent can rescue because waiting for the current
-    /// owner cannot make progress: an expired claim or a wait cycle.
+    /// owner cannot make progress: an expired claim, a pause beyond its
+    /// protection grace, or a wait cycle.
     ///
-    /// Addressed peer waits remain private to the addressed agent, paused work
-    /// remains with its owner, and human decisions stay in
+    /// Addressed peer waits remain private to the addressed agent, healthy
+    /// pauses remain with their owner, and human decisions stay in
     /// [`Self::work_awaiting_a_human`]. This filter changes no task state; it
     /// only makes the existing stalled-work facts unavoidable at session start.
     pub fn work_needing_rescue(&self) -> Result<Vec<Stall>> {
         Ok(self
             .stalled_work()?
             .into_iter()
-            .filter(|stall| matches!(stall.kind, StallKind::LapsedLease | StallKind::Deadlocked))
+            .filter(|stall| {
+                matches!(stall.kind, StallKind::LapsedLease | StallKind::Deadlocked)
+                    || (stall.kind == StallKind::Paused
+                        && stall.stalled_seconds > crate::store::PARKING_GRACE_SECS)
+            })
             .collect())
     }
 }
@@ -985,6 +1009,40 @@ mod tests {
         assert!(rescue
             .iter()
             .all(|stall| stall.kind == crate::stalls::StallKind::Deadlocked));
+    }
+
+    #[test]
+    fn work_needing_rescue_reports_paused_work_only_after_the_parking_grace() {
+        let e = engine();
+        let goal = e
+            .define_goal(GoalKind::Objective, "Pause", "pause work", None)
+            .unwrap();
+        let protected = e.create_task(&goal.id, "Protected pause", "done").unwrap();
+        let overdue = e
+            .create_task(&goal.id, "Owner disappeared", "done")
+            .unwrap();
+        e.claim_task(&protected.id, "agent-a", 600).unwrap();
+        e.claim_task(&overdue.id, "agent-b", 600).unwrap();
+        e.pause_task(&protected.id, "agent-a", Some("back soon"))
+            .unwrap();
+        e.store
+            .pause_task(
+                &overdue.id,
+                "agent-b",
+                Some("owner never returned"),
+                crate::now_unix() - (7 * 24 * 3600) - 1,
+            )
+            .unwrap();
+
+        let rescue = e.work_needing_rescue().unwrap();
+        assert_eq!(rescue.len(), 1, "only the overdue pause is rescuable");
+        assert_eq!(rescue[0].task_id, overdue.id);
+        assert_eq!(rescue[0].kind, crate::stalls::StallKind::Paused);
+        for (task, owner) in [(&protected, "agent-a"), (&overdue, "agent-b")] {
+            let unchanged = e.store.get_task(&task.id).unwrap().unwrap();
+            assert_eq!(unchanged.status, TaskStatus::Paused);
+            assert_eq!(unchanged.owner.as_deref(), Some(owner));
+        }
     }
 
     /// Drive a fresh task all the way to `in_review` through a real
