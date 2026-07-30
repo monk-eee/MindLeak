@@ -277,15 +277,8 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
     // The session tables describe acts, so they are read against the call as it
     // will actually be dispatched. Argument validation already followed the
     // ADR-0059 collapse; session binding did not, and that asymmetry was the
-    // defect. `requires_session` went on naming `claim_task`, `complete_task`,
-    // `pause_task` and seven more that had stopped existing, so the verbs that
-    // replaced them bound no session at all. That is worse than
-    // unauthenticated: `apply_session_contract` only strips `agent` from a
-    // bound tool, so each one advertised `agent` for the caller to fill in, and
-    // naming yourself is the one thing resolving a session exists to prevent.
-    //
-    // `name` is kept as the caller wrote it, so a deprecated call is still
-    // reported in the name it used.
+    // defect. `name` is kept as the caller wrote it, so a deprecated call is
+    // still reported in the name it used.
     let (contract, contract_args) = resolved_call(
         name,
         &params.get("arguments").cloned().unwrap_or(Value::Null),
@@ -312,7 +305,11 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
         }
         return Ok(bound);
     }
-    if requires_session(contract) {
+    let required = requires_session(contract)
+        || REQUIRED_SESSION_ACTS
+            .iter()
+            .any(|act| act.covers(contract, &contract_args));
+    if required {
         let token = args
             .get("session_id")
             .and_then(Value::as_str)
@@ -329,11 +326,8 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
     {
         // A session sharpens the answer but is not the price of asking. An
         // unresolvable token binds nothing and the tool still answers, because
-        // this is a read-only advisory that must degrade rather than refuse:
-        // the registry is per-process, so requiring resolution would turn a
-        // server restart into a hard failure on a call that worked a moment
-        // earlier. The degraded result says so — every signal reads
-        // `undeclared` and `requester_branch` is null.
+        // advisory reads and open answers must degrade rather than fail after a
+        // server restart.
         if let Some(identity) = args
             .get("session_id")
             .and_then(Value::as_str)
@@ -535,6 +529,12 @@ fn touch_named_task(engine: &Lodestar, name: &str, args: &Value) {
     let _ = engine.touch_lease(task_id, agent, HEARTBEAT_LEASE_SECS);
 }
 
+#[cfg(test)]
+fn is_heartbeat(name: &str, args: &Value) -> bool {
+    let (tool, args) = resolved_call(name, args);
+    HEARTBEAT_ACTS.iter().any(|act| act.covers(tool, &args))
+}
+
 fn session_definition() -> Value {
     json!({
         "name": "open_session",
@@ -551,23 +551,60 @@ fn storage_definition() -> Value {
     })
 }
 
-/// Acts that use a session when one is offered but never require one.
-///
-/// The overlap view is a read-only advisory: with a session it can classify
-/// each intersection against the branch that session declared (ADR-0035), and
-/// without one it must still give the answer it always gave. Requiring a
-/// session would be the cheap way to get the branch and the wrong one — it
-/// would make an advisory check refusable, which is exactly the property
-/// ADR-0024 says overlap detection must not have.
-///
-/// Narrowed to the one view rather than to `task_query` whole: the cluster it
-/// collapsed into also answers `board` and `next`, and quietly binding an agent
-/// into those would change what they return for reasons no caller asked for.
-const OPTIONAL_SESSION_ACTS: [ToolAct; 1] = [ToolAct {
-    tool: "task_query",
-    key: "view",
-    value: "overlap",
-}];
+const REQUIRED_SESSION_ACTS: [ToolAct; 5] = [
+    ToolAct {
+        tool: "task_transition",
+        key: "to",
+        value: "complete",
+    },
+    ToolAct {
+        tool: "task_transition",
+        key: "to",
+        value: "pause",
+    },
+    ToolAct {
+        tool: "task_transition",
+        key: "to",
+        value: "resume",
+    },
+    ToolAct {
+        tool: "task_transition",
+        key: "to",
+        value: "ask",
+    },
+    ToolAct {
+        tool: "task_query",
+        key: "view",
+        value: "pending_questions",
+    },
+];
+
+/// These calls use a registered session when one is offered but remain valid
+/// without one. Overlap is advisory, scope/history are read-only, and ADR-0046
+/// explicitly allows anyone to answer. A resolved session still supplies the
+/// identity needed for branch context or an ADR-0052 heartbeat.
+const OPTIONAL_SESSION_ACTS: [ToolAct; 4] = [
+    ToolAct {
+        tool: "task_query",
+        key: "view",
+        value: "overlap",
+    },
+    ToolAct {
+        tool: "task_query",
+        key: "view",
+        value: "scope",
+    },
+    ToolAct {
+        tool: "task_transition",
+        key: "to",
+        value: "answer",
+    },
+    ToolAct {
+        tool: "conformance_history",
+        key: "",
+        value: "",
+    },
+];
 
 fn requires_session(name: &str) -> bool {
     matches!(
@@ -577,17 +614,7 @@ fn requires_session(name: &str) -> bool {
             | "policy_pack_decide"
             | "propose_constitution"
             | "activate_constitution"
-            // Ownership, the task lifecycle, and constitutional law. This list
-            // held the pre-collapse names — `claim_task`, `complete_task`,
-            // `pause_task` and the rest — which stopped existing when the
-            // clusters were renamed. Ten entries named nothing, and the three
-            // verbs that replaced them were bound to no session: every one
-            // answered "a registered session agent is required", and because
-            // `apply_session_contract` only strips `agent` from a bound tool,
-            // each advertised `agent` for the caller to fill in. Naming
-            // yourself is exactly what resolving a session exists to prevent.
             | "task_claim"
-            | "task_transition"
             | "constitution_decide"
             | "check_conformance"
             | "accept_ratchet_baseline"
@@ -596,18 +623,20 @@ fn requires_session(name: &str) -> bool {
             | "revoke_waiver"
             | "propose_amendment"
             | "amend_constitution"
-            // A merge proves who shipped the work, so this one compares the caller
-            // against the task's owner. Without the binding it received the raw
-            // session token and compared it to a `session:v1:` agent id, which
-            // can never match — the tool refused every caller, including the
-            // holder of the task.
             | "merge_evidence"
     )
 }
 
+fn advertises_session(name: &str) -> bool {
+    requires_session(name)
+        || REQUIRED_SESSION_ACTS.iter().any(|act| act.tool == name)
+        || OPTIONAL_SESSION_ACTS.iter().any(|act| act.tool == name)
+}
+
 fn apply_session_contract(mut tool: Value) -> Value {
     let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
-    if !requires_session(name) {
+    let required = requires_session(name);
+    if !required && !advertises_session(name) {
         return tool;
     }
     if let Some(properties) = tool
@@ -624,6 +653,9 @@ fn apply_session_contract(mut tool: Value) -> Value {
                 "description": "Session id previously registered with open_session."
             }),
         );
+    }
+    if !required {
+        return tool;
     }
     if let Some(required) = tool
         .get_mut("inputSchema")
@@ -818,7 +850,7 @@ mod tests {
     #[test]
     fn advise_is_not_a_heartbeat_while_adr_0029_calls_it_state_free() {
         assert!(
-            !HEARTBEAT_ACTS.iter().any(|act| act.tool == "advise"),
+            !is_heartbeat("advise", &Value::Null),
             "advise renews a lease, which is task state; ADR-0029 documents it \
              as state-free. Amend ADR-0029 before adding it back."
         );
@@ -838,6 +870,30 @@ mod tests {
                 "{tool} is proof the owner is still working (ADR-0052)"
             );
         }
+    }
+
+    #[test]
+    fn advertised_task_heartbeats_match_their_legacy_aliases() {
+        for (legacy, advertised, arguments) in [
+            ("task_scope", "task_query", json!({ "view": "scope" })),
+            ("ask_question", "task_transition", json!({ "to": "ask" })),
+            ("answer", "task_transition", json!({ "to": "answer" })),
+        ] {
+            assert!(
+                is_heartbeat(legacy, &Value::Null),
+                "{legacy} is a heartbeat"
+            );
+            assert!(
+                is_heartbeat(advertised, &arguments),
+                "{advertised} must preserve {legacy}'s heartbeat"
+            );
+        }
+
+        assert!(!is_heartbeat(
+            "task_transition",
+            &json!({ "to": "complete" })
+        ));
+        assert!(!is_heartbeat("task_query", &json!({ "view": "board" })));
     }
 
     /// A tool that compares its caller against a task's owner must be
@@ -874,6 +930,111 @@ mod tests {
             properties["agent"].is_null(),
             "a caller naming its own agent could certify another agent's merge"
         );
+    }
+
+    /// Bug regression: ADR-0059 renamed the task tools but the session policies
+    /// still recognized only their aliases. Advertised calls reached dispatch
+    /// without an agent, so claims and owner-guarded transitions were unusable.
+    #[test]
+    fn advertised_task_cluster_keeps_its_session_contract() {
+        const TOKEN: &str = "00112233445566778899aabbccddeeff";
+        let sessions = SessionRegistry::new("test").unwrap();
+        let opened = bind_session(
+            &json!({ "name": "open_session", "arguments": { "session_id": TOKEN } }),
+            &sessions,
+        )
+        .unwrap();
+        let agent = opened["arguments"]["resolved_agent"].clone();
+        let bind = |name: &str, arguments: Value| {
+            bind_session(&json!({ "name": name, "arguments": arguments }), &sessions)
+        };
+
+        for (name, arguments) in [
+            (
+                "task_claim",
+                json!({ "task_id": "task:1", "step": "claim", "session_id": TOKEN }),
+            ),
+            (
+                "task_transition",
+                json!({ "task_id": "task:1", "to": "complete", "evidence": {}, "session_id": TOKEN }),
+            ),
+            (
+                "task_query",
+                json!({ "view": "pending_questions", "session_id": TOKEN }),
+            ),
+        ] {
+            let bound = bind(name, arguments).unwrap();
+            assert_eq!(
+                bound["arguments"]["agent"], agent,
+                "{name} resolves its session"
+            );
+        }
+
+        for (name, arguments) in [
+            (
+                "task_query",
+                json!({ "view": "overlap", "session_id": TOKEN }),
+            ),
+            (
+                "task_query",
+                json!({ "view": "scope", "task_id": "task:1", "session_id": TOKEN }),
+            ),
+            (
+                "task_transition",
+                json!({ "task_id": "task:1", "to": "answer", "answer": "use sqlite", "session_id": TOKEN }),
+            ),
+            (
+                "conformance_history",
+                json!({ "task_id": "task:1", "session_id": TOKEN }),
+            ),
+        ] {
+            assert_eq!(bind(name, arguments).unwrap()["arguments"]["agent"], agent);
+        }
+        for (name, arguments) in [
+            ("task_query", json!({ "view": "overlap" })),
+            (
+                "task_transition",
+                json!({ "task_id": "task:1", "to": "resolve", "human": "reviewer" }),
+            ),
+            (
+                "task_transition",
+                json!({ "task_id": "task:1", "to": "answer", "answer": "use sqlite" }),
+            ),
+        ] {
+            assert!(bind(name, arguments).unwrap()["arguments"]["agent"].is_null());
+        }
+
+        for (name, required) in [
+            ("task_claim", true),
+            ("task_transition", false),
+            ("task_query", false),
+        ] {
+            let tool = list()
+                .into_iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap_or_else(|| panic!("{name} is advertised"));
+            let schema = &tool["inputSchema"];
+            assert!(schema["properties"]["session_id"].is_object());
+            assert!(schema["properties"]["agent"].is_null());
+            assert_eq!(
+                schema["required"]
+                    .as_array()
+                    .is_some_and(|keys| keys.iter().any(|key| key == "session_id")),
+                required,
+                "{name} advertises the operation-level contract"
+            );
+        }
+
+        for (name, arguments) in [
+            (
+                "task_transition",
+                json!({ "task_id": "task:1", "to": "complete" }),
+            ),
+            ("task_query", json!({ "view": "pending_questions" })),
+        ] {
+            let error = bind(name, arguments).expect_err("this operation needs a session");
+            assert!(error.contains("session_id"), "actionable refusal: {error}");
+        }
     }
 
     /// No advertised tool may declare `agent`.
@@ -913,7 +1074,6 @@ mod tests {
     /// named nothing after the cluster collapse, and all three tables were
     /// stale, because from inside a list a dead entry and a live one look
     /// identical.
-    ///
     /// `requires_session` is read out of the source rather than restated here,
     /// since a hand-copied second list is the same staleness one level up.
     #[test]
@@ -933,6 +1093,7 @@ mod tests {
             named.len() > 5,
             "parsed only {named:?} from requires_session — the guard stopped reading the real list"
         );
+        named.extend(REQUIRED_SESSION_ACTS.iter().map(|act| act.tool));
         named.extend(OPTIONAL_SESSION_ACTS.iter().map(|act| act.tool));
         named.extend(HEARTBEAT_ACTS.iter().map(|act| act.tool));
 
