@@ -27,9 +27,37 @@ pre-commit install --hook-type pre-push
 
 # Extension dependencies
 npm --prefix editors/vscode install
+
+# MCP servers, installed once per machine outside every worktree (ADR-0073)
+cargo build --release -p mindleak-mcp -p lodestar-mcp
+node scripts/install-servers.mjs
 ```
 
-On systems with `make`, `make setup` does the hook + extension steps.
+On systems with `make`, `make setup` does the hook + extension steps, and
+`make install-servers` does the last one.
+
+### Open a window on the worktree you are editing (ADR-0073)
+
+Node ids are repository-relative, and a file is made relative against the
+server's workspace root. A window rooted somewhere other than the worktree it
+edits cannot place those files, so they are refused and never reach the graph —
+measured at 4% of all `ingest_file` calls while every window was rooted at the
+primary checkout.
+
+So open the worktree itself as the workspace folder. `.vscode/mcp.json` points
+`cwd` and `MINDLEAK_WORKSPACE` at `${workspaceFolder}`, so the servers follow the
+window. All worktrees still share one graph and one board — the repository id
+comes from the git common dir, not from the folder you opened.
+
+The servers are deliberately **not** built per worktree. They are installed once
+at `~/.mindleak/bin`, which is what `.vscode/mcp.json` spells as
+`${userHome}/.mindleak/bin`. If a server fails to start with a missing
+executable there, run `make install-servers`. After installing a new build,
+restart the servers (or reload the window) so clients pick it up.
+
+Never copy the binaries into a worktree's own `target/release`: cargo's
+fingerprints would still read fresh, so that worktree would never rebuild and
+would silently serve a binary that does not match its source.
 
 The cargo hooks are **scoped and committed-snapshot aware**
 (`scripts/cargo-precommit.mjs`): they run `cargo fmt/clippy/test` only for the
