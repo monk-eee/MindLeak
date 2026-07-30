@@ -3,6 +3,30 @@
 
 use serde::{Deserialize, Serialize};
 
+/// How a recorded lesson can reach an agent, if at all.
+///
+/// The two reaching paths are not equivalent, and collapsing them to a boolean
+/// is what let every reader of reachability drift out of date at once. A node
+/// match is unconditional: any evidence touching those ids carries the lesson.
+/// A goal match is contended, capped per check, so it arrives only while the
+/// lesson is among the strongest under that goal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KnowledgeReach {
+    /// Reaches any work touching the nodes it names.
+    ByNode,
+    /// Names no node, but reaches work under this goal.
+    ByGoal(String),
+    /// Names neither a node nor a goal any task can resolve.
+    Unreachable,
+}
+
+impl KnowledgeReach {
+    /// Whether this lesson can arrive anywhere at all.
+    pub fn reaches(&self) -> bool {
+        !matches!(self, KnowledgeReach::Unreachable)
+    }
+}
+
 /// A learned-knowledge row: a consolidated regularity with provenance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Knowledge {
