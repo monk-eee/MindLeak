@@ -27,6 +27,7 @@ import {
   parseToolResult,
   parseTaskScope,
   pendingQuestion,
+  planMcpServers,
   redactTerminalOutput,
   releaseTaskRequest,
   renewTaskRequest,
@@ -203,6 +204,111 @@ describe("resolveBinaryPath", () => {
     expect(
       resolveBinaryPath("/opt/lodestar-mcp", "/ws", "lodestar-mcp", { exists: () => true })
     ).toBe("/opt/lodestar-mcp");
+  });
+
+  it("prefers the shared install over a worktree build (ADR-0073)", () => {
+    // ADR-0073 installs one binary per machine precisely so 56 worktrees do not
+    // each carry their own. Preferring a worktree build here would quietly undo
+    // that and reintroduce the stale-binary problem it was chosen to avoid.
+    const resolved = resolveBinaryPath("lodestar-mcp", "/ws", "lodestar-mcp", {
+      platform: "linux",
+      homeDir: "/home/dev",
+      exists: () => true,
+    });
+    expect(resolved).toContain(".mindleak");
+    expect(resolved).not.toContain("target");
+  });
+
+  it("still falls back to a worktree build when nothing is installed", () => {
+    const resolved = resolveBinaryPath("lodestar-mcp", "/ws", "lodestar-mcp", {
+      platform: "linux",
+      homeDir: "/home/dev",
+      exists: (p) => p.includes("target"),
+    });
+    expect(resolved).toContain("release");
+  });
+
+  it("prefers the packaged binary over everything else", () => {
+    const resolved = resolveBinaryPath("lodestar-mcp", "/ws", "lodestar-mcp", {
+      platform: "linux",
+      homeDir: "/home/dev",
+      extensionPath: "/ext",
+      exists: () => true,
+    });
+    expect(resolved).toBe("/ext/bin/lodestar-mcp".replace(/\//g, path.sep));
+  });
+});
+
+describe("planMcpServers", () => {
+  const configured = { memory: "mindleak-mcp", intent: "lodestar-mcp" };
+
+  it("contributes both planes", () => {
+    const plans = planMcpServers("/ws", "copilot", configured, { exists: () => false });
+    expect(plans.map((p) => p.id)).toEqual(["mindleak", "lodestar"]);
+  });
+
+  it("roots every server at the workspace folder that provides it", () => {
+    // ADR-0073: a window edits its own worktree, so a server started for that
+    // window must resolve repo-relative ids against that worktree and no other.
+    const plans = planMcpServers("/ws/sibling", "copilot", configured, { exists: () => false });
+    for (const plan of plans) {
+      expect(plan.cwd).toBe("/ws/sibling");
+      expect(plan.env.MINDLEAK_WORKSPACE).toBe("/ws/sibling");
+    }
+  });
+
+  it("reuses the extension's binary resolution instead of a second rule", () => {
+    const plans = planMcpServers("/ws", "copilot", configured, {
+      platform: "linux",
+      exists: (p) => p.includes("release"),
+    });
+    expect(plans[0].command).toContain("release");
+    expect(plans[0].command.endsWith("mindleak-mcp")).toBe(true);
+    expect(plans[1].command).toContain("release");
+    expect(plans[1].command.endsWith("lodestar-mcp")).toBe(true);
+  });
+
+  it("honours an explicitly configured binary path", () => {
+    const plans = planMcpServers(
+      "/ws",
+      "copilot",
+      { memory: "/opt/mindleak-mcp", intent: "/opt/lodestar-mcp" },
+      { exists: () => false }
+    );
+    expect(plans.map((p) => p.command)).toEqual(["/opt/mindleak-mcp", "/opt/lodestar-mcp"]);
+  });
+
+  it("gives each plane its own attribution variable", () => {
+    const plans = planMcpServers("/ws", "copilot", configured, { exists: () => false });
+    expect(plans[0].env.MINDLEAK_AGENT).toBe("copilot");
+    expect(plans[0].env.LODESTAR_AGENT).toBeUndefined();
+    expect(plans[1].env.LODESTAR_AGENT).toBe("copilot");
+    expect(plans[1].env.MINDLEAK_AGENT).toBeUndefined();
+  });
+
+  it("emits a database override only when one is configured", () => {
+    const bare = planMcpServers("/ws", "copilot", configured, { exists: () => false });
+    expect(bare[0].env.MINDLEAK_DB).toBeUndefined();
+    expect(bare[1].env.LODESTAR_DB).toBeUndefined();
+
+    const overridden = planMcpServers(
+      "/ws",
+      "copilot",
+      { ...configured, memoryDatabase: "/tmp/m.db", intentDatabase: "/tmp/i.db" },
+      { exists: () => false }
+    );
+    expect(overridden[0].env.MINDLEAK_DB).toBe("/tmp/m.db");
+    expect(overridden[1].env.LODESTAR_DB).toBe("/tmp/i.db");
+  });
+
+  it("resolves both planes to the shared install when one is present", () => {
+    const plans = planMcpServers("/ws", "copilot", configured, {
+      platform: "linux",
+      homeDir: "/home/dev",
+      exists: () => true,
+    });
+    expect(plans[0].command).toContain(".mindleak");
+    expect(plans[1].command).toContain(".mindleak");
   });
 });
 

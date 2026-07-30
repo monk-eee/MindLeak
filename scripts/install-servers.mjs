@@ -2,16 +2,15 @@
 //
 // A window must be rooted at the worktree it edits, or the path a save reports
 // cannot be made repository-relative and the file never reaches the graph
-// (ADR-0073). But `.vscode/mcp.json` is committed and shared, so it cannot name
-// a machine path, and pointing it at `${workspaceFolder}/target/release` would
+// (ADR-0073). Binding the servers to `${workspaceFolder}/target/release` would
 // demand a release build in every worktree — measured at 56 worktrees and 184 GB
 // of build output already, with only 15 holding a server binary.
 //
 // So the servers are installed once per machine, outside every worktree, at a
-// stable version-independent path that `${userHome}` can spell. Copying them
-// into each worktree's own `target/` is deliberately NOT done: cargo's
-// fingerprints would still read fresh, so that worktree would never rebuild and
-// would silently serve a binary that does not match its source.
+// stable version-independent path. Copying them into each worktree's own
+// `target/` is deliberately NOT done: cargo's fingerprints would still read
+// fresh, so that worktree would never rebuild and would silently serve a binary
+// that does not match its source.
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -28,9 +27,9 @@ export function executableName(name, platform = process.platform) {
 }
 
 /**
- * Where the servers are installed. Must match the `command` in
- * `.vscode/mcp.json`, which spells this same path as
- * `${userHome}/.mindleak/bin`.
+ * Where the servers are installed. Must match the shared-install location that
+ * `resolveBinaryPath` in editors/vscode/src/util.ts prefers over a worktree
+ * build, so the extension and this installer agree on one path.
  */
 export function installDirectory(home = os.homedir()) {
   return path.join(home, ".mindleak", "bin");
