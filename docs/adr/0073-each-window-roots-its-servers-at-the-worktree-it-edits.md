@@ -46,9 +46,11 @@ Two things were verified before deciding, because both are load-bearing:
 
 ## Decision
 
-A window is opened on the worktree it edits, and `.vscode/mcp.json` keeps `cwd`
-and `MINDLEAK_WORKSPACE` following `${workspaceFolder}` so the servers are rooted
-there.
+A window is opened on the worktree it edits, and the servers are rooted there.
+The mechanism that roots them was originally `.vscode/mcp.json` following
+`${workspaceFolder}`; since the amendment below it is the extension's server
+definition provider, which roots each server at the workspace folder of the
+window that provides it. The rooting rule is unchanged either way.
 
 The servers themselves are installed **once per machine, outside every
 worktree**, at `${userHome}/.mindleak/bin`. `make install-servers` builds and
@@ -87,7 +89,51 @@ must not name one machine.
 command and a failure that names nothing, across every window at once.
 
 **An extension-provided MCP server** via `mcpServerDefinitionProviders`, reusing
-the binary resolution the extension already has. This is the better long-term
-shape, and it is deferred rather than dismissed: the API postdates the
-`^1.93.0` engine floor that the extension declares and the Extension Host smoke
-job pins, so adopting it is an engine-support decision of its own.
+the binary resolution the extension already has. **Adopted on 2026-07-30** — see
+"Amendment" below. It was deferred rather than dismissed at first because the
+API postdates the `^1.93.0` engine floor that the extension declared and the
+Extension Host smoke job pinned, so adopting it was an engine-support decision
+of its own.
+
+## Amendment (2026-07-30): the extension provides the servers
+
+- Decider: MindLeak maintainer (engine floor move approved explicitly)
+
+The deferred alternative above is now in force. The extension contributes both
+planes through `contributes.mcpServerDefinitionProviders` and
+`vscode.lm.registerMcpServerDefinitionProvider`, and there is no committed
+`.vscode/mcp.json` in this repository.
+
+**The engine floor moves `^1.93.0` → `^1.101.0`.** The API shipped in VS Code
+1.101 (May 2025). `engines.vscode`, `@types/vscode`, the pinned Extension Host
+smoke version, and the CI job name all move together: leaving the smoke job on
+1.93 while the code needs a later API is a green build that proves nothing.
+`@types/vscode` is pinned **exactly** to `1.101.0` rather than carried on a
+caret, because a caret resolves forward (it picked 1.125.0 when tried) and would
+let code compile against APIs the declared floor does not have — reintroducing
+the same class of failure at a different version.
+
+This is a real support cut and is recorded as one. The extension speaks MCP
+itself through its own `McpClient`, so the graph views and the passive sensor
+did work on 1.93. What could never work there is the editor's own MCP support:
+1.93 shipped in August 2024 and MCP was announced that November, so a floor of
+1.93 advertised a version on which this product's stated purpose — giving coding
+agents durable context through MCP — was impossible. Moving the floor stops
+claiming support that never existed.
+
+Two consequences worth naming:
+
+- **Binary resolution had to learn the shared install.** `resolveBinaryPath`
+  searched the packaged binary, then `workspace/target/{release,debug}`, then
+  `PATH` — it did not know about `~/.mindleak/bin`, because `.vscode/mcp.json`
+  named that path directly. Reusing the resolution unchanged would therefore
+  have reinstated the per-worktree binary this ADR rejected on measurement. The
+  shared install now outranks a worktree build. A side effect is that the
+  extension's own client and the servers offered to chat agents can no longer
+  resolve to *different* builds, which they previously could.
+- **The provider is the only VS Code path in this repository, so the extension
+  must be installed.** For users outside it, `editors/vscode/scripts/install.mjs`
+  still writes a `.vscode/mcp.json`, which remains the path for editors and for
+  the Copilot CLI (which cannot read that file anyway — ADR-0033). Running both
+  the installer and the extension in one workspace would register each server
+  twice.

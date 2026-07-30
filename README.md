@@ -274,7 +274,7 @@ flowchart TD
 
 ## Build
 
-Requires Rust 1.75+, Node 18+, and VS Code 1.93+ for the extension.
+Requires Rust 1.75+, Node 18+, and VS Code 1.101+ for the extension.
 
 ```bash
 # Both MCP servers

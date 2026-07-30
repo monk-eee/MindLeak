@@ -6,7 +6,12 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { auditBranches, classifyCommits } from "../../../scripts/merge-audit.mjs";
+import {
+  auditBranches,
+  classifyCommits,
+  reviewingRef,
+  splitByReview,
+} from "../../../scripts/merge-audit.mjs";
 
 const temporaryDirectories = [];
 const gitRepositoryVariables = [
@@ -165,5 +170,85 @@ describe("merge-audit", () => {
     expect(results[0].missing).toEqual([]);
     expect(results[1].missing).toHaveLength(1);
     expect(results[1].missing[0]).toMatch(/stranded work/);
+  }, 30_000);
+
+  // The false alarm that turned main red on 2026-07-30. A commit pushed onto a
+  // branch after its pull request merged is not lost if an open pull request
+  // still carries it — and telling the reader to "open a follow-up pull
+  // request" is unactionable when that is exactly what already exists. An
+  // audit nobody can satisfy gets switched off, taking the check that catches
+  // genuinely stranded work with it.
+  it("a commit an open pull request still carries is in review, not lost", () => {
+    const { repo } = sandbox();
+    git(repo, ["checkout", "-b", "merged-already"]);
+    commitFile(repo, "a.txt", "a\n", "landed before the merge");
+    git(repo, ["checkout", "main"]);
+    git(repo, ["merge", "--no-ff", "--no-edit", "merged-already"]);
+
+    // Pushed onto the merged branch afterwards, then carried by an open one.
+    git(repo, ["checkout", "merged-already"]);
+    commitFile(repo, "b.txt", "b\n", "the late commit");
+    git(repo, ["checkout", "-b", "still-open"]);
+
+    const { missing } = classifyCommits(repo, "main", "merged-already");
+    expect(missing).toHaveLength(1);
+
+    const { stranded, inReview } = splitByReview(repo, missing, ["still-open"]);
+
+    expect(stranded).toEqual([]);
+    expect(inReview).toHaveLength(1);
+    expect(inReview[0].ref).toBe("still-open");
+    expect(inReview[0].commit).toMatch(/the late commit/);
+  }, 30_000);
+
+  // The check must keep earning its place: making the false alarm quiet by
+  // reporting nothing would delete the whole point.
+  it("a commit no open pull request carries is still stranded", () => {
+    const { repo } = sandbox();
+    git(repo, ["checkout", "-b", "merged-already"]);
+    commitFile(repo, "a.txt", "a\n", "landed before the merge");
+    git(repo, ["checkout", "main"]);
+    git(repo, ["merge", "--no-ff", "--no-edit", "merged-already"]);
+    git(repo, ["checkout", "merged-already"]);
+    commitFile(repo, "b.txt", "b\n", "nobody is carrying this");
+
+    // An unrelated open branch that does not contain it.
+    git(repo, ["checkout", "-b", "elsewhere", "main"]);
+
+    const { missing } = classifyCommits(repo, "main", "merged-already");
+    const { stranded, inReview } = splitByReview(repo, missing, ["elsewhere"]);
+
+    expect(inReview).toEqual([]);
+    expect(stranded).toHaveLength(1);
+    expect(stranded[0]).toMatch(/nobody is carrying this/);
+  }, 30_000);
+
+  // Degrading to the noisier answer is correct; degrading to a clean bill of
+  // health would let an unreachable `gh` silence the audit.
+  it("with no open pull requests known, every missing commit is stranded", () => {
+    const { repo } = sandbox();
+    git(repo, ["checkout", "-b", "merged-already"]);
+    commitFile(repo, "a.txt", "a\n", "landed before the merge");
+    git(repo, ["checkout", "main"]);
+    git(repo, ["merge", "--no-ff", "--no-edit", "merged-already"]);
+    git(repo, ["checkout", "merged-already"]);
+    commitFile(repo, "b.txt", "b\n", "unclassifiable");
+
+    const { missing } = classifyCommits(repo, "main", "merged-already");
+    const { stranded, inReview } = splitByReview(repo, missing, []);
+
+    expect(inReview).toEqual([]);
+    expect(stranded).toHaveLength(1);
+  }, 30_000);
+
+  it("reviewingRef names the carrying ref, and null when none carries it", () => {
+    const { repo } = sandbox();
+    git(repo, ["checkout", "-b", "carrier"]);
+    commitFile(repo, "a.txt", "a\n", "the work");
+    const sha = git(repo, ["rev-parse", "HEAD"]);
+    git(repo, ["checkout", "-b", "bystander", "main"]);
+
+    expect(reviewingRef(repo, sha, ["bystander", "carrier"])).toBe("carrier");
+    expect(reviewingRef(repo, sha, ["bystander"])).toBeNull();
   }, 30_000);
 });

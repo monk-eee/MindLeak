@@ -32,6 +32,7 @@ import {
   LodestarTask,
   logLines,
   pendingQuestion,
+  planMcpServers,
   repoRelativePath,
   resolveBinaryPath,
   resolveServerPath,
@@ -94,6 +95,58 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   const agentId = config.get<string>("agentId", "vscode");
   const sessionId = randomBytes(16).toString("hex");
   configuredAgentId = sessionAgentIdentity(sessionId);
+
+  // Contribute both planes to the editor so chat agents reach the same servers
+  // this window already talks to, resolved by the same rule. Before this, a
+  // committed `.vscode/mcp.json` named the binaries independently, so the
+  // extension and the agent could disagree about which build was in force.
+  // Rooting each server at this window's workspace folder is what preserves
+  // ADR-0073 across sibling worktrees.
+  const mcpServersChanged = new vscode.EventEmitter<void>();
+  context.subscriptions.push(mcpServersChanged);
+  context.subscriptions.push(
+    vscode.lm.registerMcpServerDefinitionProvider("mindleak.servers", {
+      onDidChangeMcpServerDefinitions: mcpServersChanged.event,
+      provideMcpServerDefinitions: () =>
+        planMcpServers(
+          workspace,
+          agentId,
+          {
+            memory: config.get<string>("serverPath", "mindleak-mcp"),
+            intent: config.get<string>("lodestarServerPath", "lodestar-mcp"),
+            memoryDatabase: config.get<string>("databasePath", ""),
+            intentDatabase: config.get<string>("lodestarDatabasePath", ""),
+          },
+          { exists: fs.existsSync, extensionPath: context.extensionPath }
+        ).map((plan) => {
+          const definition = new vscode.McpStdioServerDefinition(
+            plan.label,
+            plan.command,
+            [],
+            plan.env
+          );
+          definition.cwd = vscode.Uri.file(plan.cwd);
+          return definition;
+        }),
+    })
+  );
+  // A server path or database override changes where a server should run, so the
+  // editor has to be told to re-read the definitions rather than keep a stale one.
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (
+        [
+          "serverPath",
+          "lodestarServerPath",
+          "databasePath",
+          "lodestarDatabasePath",
+          "agentId",
+        ].some((key) => event.affectsConfiguration(`mindleak.${key}`))
+      ) {
+        mcpServersChanged.fire();
+      }
+    })
+  );
 
   client = new McpClient(
     serverPath,

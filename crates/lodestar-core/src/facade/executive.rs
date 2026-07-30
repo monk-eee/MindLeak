@@ -503,6 +503,21 @@ impl Lodestar {
             .filter(|stall| stall.kind == StallKind::AwaitingHuman)
             .collect())
     }
+
+    /// Work a newly arrived agent can rescue because waiting for the current
+    /// owner cannot make progress: an expired claim or a wait cycle.
+    ///
+    /// Addressed peer waits remain private to the addressed agent, paused work
+    /// remains with its owner, and human decisions stay in
+    /// [`Self::work_awaiting_a_human`]. This filter changes no task state; it
+    /// only makes the existing stalled-work facts unavoidable at session start.
+    pub fn work_needing_rescue(&self) -> Result<Vec<Stall>> {
+        Ok(self
+            .stalled_work()?
+            .into_iter()
+            .filter(|stall| matches!(stall.kind, StallKind::LapsedLease | StallKind::Deadlocked))
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -944,6 +959,51 @@ mod tests {
         e.claim_task(&task.id, "agent-a", 3600).unwrap();
 
         assert!(e.work_awaiting_a_human().unwrap().is_empty());
+    }
+
+    #[test]
+    fn work_needing_rescue_includes_wait_cycles_but_not_ordinary_peer_waits() {
+        let e = engine();
+        let goal = e
+            .define_goal(GoalKind::Objective, "Coordinate", "coordinate work", None)
+            .unwrap();
+        let first = e.create_task(&goal.id, "First", "done").unwrap();
+        let second = e.create_task(&goal.id, "Second", "done").unwrap();
+        let ordinary = e.create_task(&goal.id, "Ordinary wait", "done").unwrap();
+        e.claim_task(&first.id, "agent-a", 600).unwrap();
+        e.claim_task(&second.id, "agent-b", 600).unwrap();
+        e.claim_task(&ordinary.id, "agent-c", 600).unwrap();
+        e.ask_question(
+            &first.id,
+            "agent-a",
+            "Are you changing this?",
+            Some("agent-b"),
+        )
+        .unwrap();
+        e.ask_question(
+            &second.id,
+            "agent-b",
+            "Are you changing this?",
+            Some("agent-a"),
+        )
+        .unwrap();
+        e.ask_question(
+            &ordinary.id,
+            "agent-c",
+            "Are you changing this?",
+            Some("agent-d"),
+        )
+        .unwrap();
+
+        let rescue = e.work_needing_rescue().unwrap();
+        let mut ids: Vec<&str> = rescue.iter().map(|stall| stall.task_id.as_str()).collect();
+        ids.sort_unstable();
+        let mut expected = vec![first.id.as_str(), second.id.as_str()];
+        expected.sort_unstable();
+        assert_eq!(ids, expected);
+        assert!(rescue
+            .iter()
+            .all(|stall| stall.kind == crate::stalls::StallKind::Deadlocked));
     }
 
     /// Drive a fresh task all the way to `in_review` through a real

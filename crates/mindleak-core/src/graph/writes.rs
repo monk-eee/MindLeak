@@ -134,9 +134,6 @@ impl GraphStore {
                 outcome.nodes_created += 1;
             }
         }
-        for alias in aliases {
-            promote_artifact_stub(&transaction, &alias, owner_id)?;
-        }
         for stub in artifact_stubs {
             if !real_artifacts.contains(&stub.node_id) {
                 transaction.execute(
@@ -164,6 +161,9 @@ impl GraphStore {
             if upsert_edge_on(&transaction, edge, Some(owner_id))? {
                 outcome.edges_created += 1;
             }
+        }
+        for alias in aliases {
+            promote_artifact_stub(&transaction, &alias, owner_id)?;
         }
 
         for node_id in stale_node_ids {
