@@ -76,6 +76,10 @@ pub enum TaskEventKind {
     Resumed,
     /// Ownership moved by audited recovery rather than by claim (ADR-0030).
     ClaimRecovered,
+    /// The claim holder declared further goals this work serves (ADR-0041).
+    /// Logged because a task that grew its scope must show when and by whom;
+    /// a wider claim with no history is indistinguishable from a rewritten one.
+    CoverageDeclared,
     /// A conformance verdict moved the task out of `claimed` (ADR-0009).
     ConformanceRecorded,
     /// A human accepted work out of `in_review`, overruling the verdict.
@@ -98,6 +102,7 @@ impl TaskEventKind {
             TaskEventKind::Paused => "paused",
             TaskEventKind::Resumed => "resumed",
             TaskEventKind::ClaimRecovered => "claim_recovered",
+            TaskEventKind::CoverageDeclared => "coverage_declared",
             TaskEventKind::ConformanceRecorded => "conformance_recorded",
             TaskEventKind::Resolved => "resolved",
         }
@@ -118,6 +123,7 @@ impl TaskEventKind {
             "paused" => Some(TaskEventKind::Paused),
             "resumed" => Some(TaskEventKind::Resumed),
             "claim_recovered" => Some(TaskEventKind::ClaimRecovered),
+            "coverage_declared" => Some(TaskEventKind::CoverageDeclared),
             "conformance_recorded" => Some(TaskEventKind::ConformanceRecorded),
             "resolved" => Some(TaskEventKind::Resolved),
             _ => None,
