@@ -194,8 +194,8 @@ export const publishVerdict = ({
       ok: false,
       message:
         `no live Lodestar claim for ${agent}; publishing ${branch} would leave no record of what this work was for.\n` +
-        "  Claim existing work:  claim_task(task_id)\n" +
-        "  Or declare it first:  create_task(goal_id, title, acceptance) then claim_task\n" +
+        '  Claim existing work:  task_claim(task_id, step="claim")\n' +
+        "  Or declare it first:  task_create(goal_id, title, acceptance) then task_claim\n" +
         "  A lapsed lease cannot be renewed — re-claim to open a fresh evidence window.\n" +
         "  " +
         missingClaimAdvice(tasks, agent, now),

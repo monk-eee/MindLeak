@@ -10,6 +10,17 @@ import {
 
 const SESSION = "0123456789abcdef0123456789abcdef";
 const NOW = 1_000_000;
+
+/// Every name that could close a task, not just the one that used to.
+///
+/// ADR-0065 says this module offers and never closes, and the guard asserting
+/// it named `complete_task` — which ADR-0059 retired into
+/// `task_transition(to="complete")`. A guard watching a name nothing can call
+/// any more cannot fail: the module could have closed a task through the new
+/// verb and this test would still have passed. The deprecated alias stays in
+/// the set because it still answers for one minor version, so closing through
+/// it is equally forbidden.
+const CLOSING_VERBS = new Set(["task_transition", "complete_task"]);
 const claim = (overrides = {}) => ({
   id: "task:1",
   status: "claimed",
@@ -76,7 +87,7 @@ test("an aligned check becomes an exact offer without completing the task", () =
     "check_conformance",
   ]);
   assert.equal(
-    names.includes("complete_task"),
+    names.some((name) => CLOSING_VERBS.has(name)),
     false,
     "ADR-0065 offers; it never closes",
   );
@@ -102,11 +113,19 @@ test("a needs_human check is still offered rather than disguised as success", ()
     completionOfferNotice(offer, "target/offer.json"),
     /needs_human/,
   );
+  // The notice is the instruction an agent follows next, so it has to name a
+  // verb the server still advertises. Retired names in guidance are invisible
+  // to every other check: nothing imports a sentence.
+  assert.match(
+    completionOfferNotice(offer, "target/offer.json"),
+    /task_transition\(task_id, to="complete"/,
+  );
   assert.equal(
     fake.calls
       .flatMap(({ requested }) => requested)
-      .some(({ name }) => name === "complete_task"),
+      .some(({ name }) => CLOSING_VERBS.has(name)),
     false,
+    "ADR-0065 offers; it never closes, whichever verb would do the closing",
   );
 });
 
