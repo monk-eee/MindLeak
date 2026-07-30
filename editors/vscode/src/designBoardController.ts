@@ -12,6 +12,7 @@ import {
   DesignTask,
   formatDesignPromotion,
   formatMaterializationPlan,
+  isAdrFile,
   parseAdrMetadata,
   rawAdrStatus,
   replaceAdrStatus,
@@ -543,6 +544,12 @@ export async function readWorkspaceAdrMetadata(proposedBy: string): Promise<Work
       continue;
     }
     const relativePath = path.relative(folder.uri.fsPath, uri.fsPath).replace(/\\/g, "/");
+    // The glob matches every `.md` under docs/adr, including the index that
+    // scripts/adr-index.mjs generates. That is not a decision, and reporting it
+    // as an unreadable ADR on every load is noise that hides the real skips.
+    if (!isAdrFile(relativePath)) {
+      continue;
+    }
     const content = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("utf8");
     const parsed = parseAdrMetadata(relativePath, content, proposedBy);
     if (parsed) {
