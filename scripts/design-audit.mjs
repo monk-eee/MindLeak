@@ -2,13 +2,14 @@
 //
 // The two drift. An ADR merges without ever being registered; a design is
 // accepted in the ledger while its file still says Proposed; a reconciled
-// import lands `accepted` with no decider, which freezes the row against
-// accept_design (ADR-0047). Each of those was found by hand this far, one
+// import lands `accepted` with no decider, which no acceptance can repair
+// because deciding twice is not an undo (ADR-0047) — only `attribute` can
+// (ADR-0051). Each of those was found by hand this far, one
 // ad-hoc query at a time, and each was invisible until someone went looking.
 //
 // It reads the ledger through the lodestar MCP surface rather than opening
 // spec.db, for two reasons: the server already resolves its own per-repository
-// database (ADR-0038), so this does not fork that path rule; and list_designs
+// database (ADR-0038), so this does not fork that path rule; and design_query
 // already omits retired records, so a retired row cannot masquerade as an
 // orphan.
 //
@@ -42,7 +43,7 @@ const LEDGER_EQUIVALENT = {
  * is testable without a server or a database.
  *
  * @param files  from readAdrFiles()
- * @param designs  list_designs rows (retired already excluded by the server)
+ * @param designs  design_query rows (retired already excluded by the server)
  */
 export const auditDesigns = (files, designs) => {
   const byPath = new Map(designs.map((d) => [d.adr_path, d]));
@@ -70,7 +71,7 @@ export const auditDesigns = (files, designs) => {
         findings.push({
           kind: "supersession",
           adr: file.number,
-          detail: `file says "${file.status}"; the ledger has no supersession recorded. A person runs supersede_design; it is never inferred from the file`,
+          detail: `file says "${file.status}"; the ledger has no supersession recorded. A person runs design_decide with decision "supersede"; it is never inferred from the file`,
         });
       }
       continue;
@@ -94,14 +95,20 @@ export const auditDesigns = (files, designs) => {
       });
     }
 
-    // A decision nobody made. reconcile_designs imports a status out of the
-    // file, so an accepted row can arrive with no decider — and accept_design
-    // then refuses it, because deciding twice is not an undo.
+    // A decision nobody made. A reconciled import takes a status out of the
+    // file, so an accepted row can arrive with no decider.
+    //
+    // The remedy is `attribute`, not `reopen` then accept. ADR-0051 added
+    // `attribute` precisely for a decision the ledger already asserts but
+    // credits to nobody: it records the decider and leaves status, reason and
+    // promotion state untouched, and it takes exactly the rows `reopen`
+    // refuses. Reopening would throw away an acceptance that already holds and
+    // send the row back to proposed, which is a bigger act than the defect.
     if (design.status !== "proposed" && !design.decided_by) {
       findings.push({
         kind: "undecided",
         adr: file.number,
-        detail: `ledger says ${design.status} but names no decider; reopen_undecided_design then accept_design`,
+        detail: `ledger says ${design.status} but names no decider; design_decide with decision "attribute" and the human who decided it (ADR-0051)`,
       });
     }
   }
@@ -190,7 +197,7 @@ const readLedger = () =>
       });
       const text = result?.content?.[0]?.text;
       if (typeof text !== "string")
-        throw new Error("list_designs returned no payload");
+        throw new Error("design_query returned no payload");
       return JSON.parse(text);
     })()
       .then(resolve, reject)
