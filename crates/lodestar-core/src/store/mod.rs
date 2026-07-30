@@ -30,7 +30,7 @@ mod test_support;
 mod waivers;
 
 pub(crate) use claim_transfer::RecoveringSession;
-pub(crate) use coordination::ConformanceAudit;
+pub(crate) use coordination::{ConformanceAudit, PARKING_GRACE_SECS};
 pub(crate) use events::import_genesis;
 
 /// Where a recorded ownership recovery came from (ADR-0064 d5).
