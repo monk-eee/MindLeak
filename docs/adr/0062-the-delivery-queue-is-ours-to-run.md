@@ -7,7 +7,7 @@
   [ADR-0045](0045-armed-means-finished.md) (armed means finished),
   [ADR-0038](0038-isolated-worktrees-shared-repository-state.md) (isolated
   worktrees, shared repository state),
-  [ADR-0049](0049-the-ledger-is-not-optional-at-the-publication-boundary.md)
+  [ADR-0049](0049-publication-requires-a-claim.md)
   (the ledger is not optional at the publication boundary)
 
 ## Context
