@@ -295,7 +295,7 @@ async function main() {
   );
   await call("open_session", { session_id: session });
 
-  const board = await call("board", {});
+  const board = await call("task_query", { view: "board" });
   const tasks = Array.isArray(board) ? board : Object.values(board);
   const entries = [];
   for (const task of tasks) {
