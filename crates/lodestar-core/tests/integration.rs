@@ -891,7 +891,10 @@ fn learned_knowledge_loop_promotes_then_advises_conformance_without_violation() 
         ],
     };
     let res = engine.check_conformance(&evidence, None).unwrap();
-    assert_eq!(res.verdict, Verdict::NeedsHuman);
+    // The advisory attaches; the verdict is the base pass's to decide
+    // (ADR-0072, amending ADR-0022 §4). Knowledge referencing a changed node is
+    // relevance, not a problem signal, so it informs without capping.
+    assert_eq!(res.verdict, Verdict::Aligned);
     assert_ne!(res.verdict, Verdict::Violation);
     assert!(res
         .findings
