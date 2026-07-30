@@ -639,7 +639,7 @@
             "default": 3,
             "minimum": 1,
             "maximum": 300,
-            "description": "Seconds between real-time refreshes of the Telemetry pane while it is visible."
+            "description": "Seconds between real-time refreshes while the Telemetry pane is visible and Live is enabled."
           }
         }
       }

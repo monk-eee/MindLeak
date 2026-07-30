@@ -181,6 +181,13 @@ export interface LodestarTask {
   acceptance?: string;
   status: string;
   owner?: string | null;
+  /**
+   * The branch this task's current evidence window is being done on
+   * (ADR-0035 d5), pinned at claim time from what the owner declared to
+   * `open_session`. `null`/absent when none was declared — surfaced only when
+   * present, never guessed.
+   */
+  branch?: string | null;
   claim_started_at?: number | null;
   lease_expires_at?: number | null;
   blocked_by?: string | null;
@@ -600,16 +607,22 @@ export function boardRows(
 
 function taskDescription(task: LodestarTask, nowUnix: number): string {
   const state = taskLeaseState(task, nowUnix);
+  const branch = task.branch?.trim();
+  const owner = task.owner ?? "unknown";
+  // Who holds it and the branch they hold it on, at the decision point: enough
+  // for a colliding agent to tell a merge risk from the same work twice
+  // (ADR-0035 d5). Omitted cleanly when no branch was declared.
+  const who = branch ? `${owner} on ${branch}` : owner;
   let description: string;
   if (state === "expired") {
-    description = `Claim expired · ${task.owner ?? "unknown"} · Ready`;
+    description = `Claim expired · ${who} · Ready`;
   } else if (state === "live") {
-    description = `In progress · ${task.owner ?? "unknown"} · ${remainingLease(task, nowUnix)}`;
+    description = `In progress · ${who} · ${remainingLease(task, nowUnix)}`;
   } else if (state === "claimable") {
     description = "Ready";
   } else {
     const status = taskStatusLabel(task.status);
-    description = task.owner ? `${status} · ${task.owner}` : status;
+    description = task.owner ? `${status} · ${who}` : status;
   }
   const scopedItems = (task.scope?.paths.length ?? 0) + (task.scope?.symbols.length ?? 0);
   return scopedItems > 0 ? `${description} · ${scopedItems} scoped` : description;
@@ -619,6 +632,9 @@ function taskTooltip(task: LodestarTask, nowUnix: number): string {
   const lines = [task.title, `goal: ${task.goal_id}`, `status: ${taskStatusLabel(task.status)}`];
   if (task.owner) {
     lines.push(`owner: ${task.owner}`);
+  }
+  if (task.branch?.trim()) {
+    lines.push(`branch: ${task.branch.trim()}`);
   }
   if (typeof task.claim_started_at === "number") {
     lines.push(`claim started: ${formatUnixSeconds(task.claim_started_at)}`);
@@ -868,6 +884,10 @@ export function verdictIconId(verdict: string): string {
 }
 
 // ---- Telemetry & effectiveness (real-time observability pane) ---------------
+
+export function shouldPollTelemetry(visible: boolean, live: boolean): boolean {
+  return visible && live;
+}
 
 /**
  * Aggregate metrics for one tool, as returned by `telemetry_snapshot`.
