@@ -101,9 +101,15 @@ const stubLedger = (root, { claims = [], overlaps = [] } = {}) => {
     "  const message = JSON.parse(line);",
     '  if (message.method === "initialize") return;',
     "  const name = message.params?.name;",
+    "  const view = message.params?.arguments?.view;",
     `  if (name === "open_session") reply(message.id, { agent_id: ${JSON.stringify(AGENT)} });`,
-    '  else if (name === "board") reply(message.id, board);',
-    '  else if (name === "check_overlap") reply(message.id, { claims: overlaps });',
+    // The task cluster collapsed to one verb per stage, so the board and the
+    // overlap report are views of `task_query` rather than tools of their own.
+    // A stub answering only the retired names leaves every call unanswered, and
+    // canonical-push then reports "the Lodestar ledger is unreachable" — true
+    // about this stub, and a lie about the change under test.
+    '  else if (name === "task_query" && view === "overlap") reply(message.id, { claims: overlaps });',
+    '  else if (name === "task_query") reply(message.id, board);',
     "});",
     "",
   ].join("\n");
