@@ -1,8 +1,24 @@
 - **An agent can work all day and certify nothing, and the board cannot tell the
   difference between unfinished and unclosed — MEASURED, OPEN.**
-  — *The measurement.* 48 of 101 `done` tasks rest on a `needs_human` receipt
-  rather than an affirmed one (`knowledge:d9ad8b8911d7`). Thirty-three claims sit
-  lapsed on the board. An audit against `origin/main` on 29 Jul 2026 found at
+  — *The measurement, and how it held.* Just under half of all `done` tasks rest
+  on a `needs_human` receipt rather than an affirmed one: 48 of 101 when first
+  measured (`knowledge:d9ad8b8911d7`), and 119 of 247 on re-measurement 30 Jul
+  2026 — 48% both times, across 146 further completions. The full split now is
+  90 `aligned`, 119 `needs_human`, 38 `drift`, taking each task's resolved
+  receipt where it has one and its latest check otherwise. Two things follow.
+  The first figure was the steady state and not a transient, so this does not
+  correct itself as more work lands. And a bare count states a measurement in
+  the one form guaranteed to go stale — the proportion is what survives, so
+  read the ratio and re-derive the counts.
+  — *The lapsed-claim half has since resolved, and is recorded here rather than
+  quietly dropped.* This entry originally reported **thirty-three** claims
+  sitting lapsed on the board. Re-measured 30 Jul 2026: **0 lapsed, of 3 claims
+  live**. That symptom is gone; the `needs_human` proportion beside it did not
+  move at all. Worth separating, because the two were recorded together as one
+  problem and only one of them was: an unaffirmed receipt is a conformance
+  question, while a lapsed claim was a lease-hygiene one, and fixing the second
+  did nothing for the first.
+  An audit against `origin/main` on 29 Jul 2026 found at
   least **nine** of those tasks already fully implemented in main — all five
   module-split tasks, plus PRs #100, #110, #114 and #116 — while still showing as
   open or free to re-claim (`knowledge:93679dfca687`). This session added a

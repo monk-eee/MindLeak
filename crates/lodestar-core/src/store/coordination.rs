@@ -10,7 +10,7 @@ use crate::model::{
     ClaimOverlap, ClaimOverlapReport, ConformanceRecord, HumanQuestion, OverlapSignal, Task,
     TaskEventKind, TaskQa, TaskScope, TaskStatus, Verdict,
 };
-use crate::util::short_hash;
+use crate::util::{goal_slug, short_hash};
 
 use super::{collect, events, goals, LodestarStore};
 
@@ -1021,17 +1021,26 @@ impl LodestarStore {
     /// Path matching reuses `intersect_paths`, the same glob comparison
     /// `check_overlap` uses, so "does this scope cover that file" has one answer
     /// in this codebase rather than two that drift apart.
+    ///
+    /// Goal matching reuses `goal_slug` for the same reason. An amendment
+    /// re-issues a clause as `goal:<slug>@constitution:vN` while tasks go on
+    /// naming whichever form they were created under, so an exact compare
+    /// answers "nothing exists" for work that plainly does — precisely when the
+    /// question is being asked in order not to repeat it. The comparison lives
+    /// in Rust rather than in a SQL `LIKE` so there is one implementation of
+    /// "same goal" and not a second one to drift from it; this runs when a task
+    /// is created, not in a hot loop.
     pub fn existing_work(&self, goal_id: Option<&str>, paths: &[String]) -> Result<Vec<Task>> {
         let mut found: Vec<Task> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
 
         if let Some(goal_id) = goal_id {
-            let sql =
-                format!("SELECT {TASK_COLS} FROM tasks WHERE goal_id = ?1 ORDER BY created_at ASC");
+            let slug = goal_slug(goal_id);
+            let sql = format!("SELECT {TASK_COLS} FROM tasks ORDER BY created_at ASC");
             let mut stmt = self.conn.prepare(&sql)?;
-            let rows = stmt.query_map(params![goal_id], row_to_task)?;
+            let rows = stmt.query_map([], row_to_task)?;
             for task in collect(rows)? {
-                if seen.insert(task.id.clone()) {
+                if goal_slug(&task.goal_id) == slug && seen.insert(task.id.clone()) {
                     found.push(task);
                 }
             }

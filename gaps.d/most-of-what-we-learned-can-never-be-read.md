@@ -1,7 +1,8 @@
-- **New silent knowledge is guarded; 63 existing records remain unreadable —
-  MEASURED, PARTLY FIXED, OPEN.** The conformance advisory matches recorded knowledge on
+- **New silent knowledge is guarded; a node-less lesson now reaches the goal it
+  was learned under; 12 records remain unreachable — MEASURED, MOSTLY FIXED,
+  OPEN.** The conformance advisory matched recorded knowledge on
   referenced nodes and nothing else, so a record whose evidence carries no
-  `nodes` array is stored, counted, decayed, and structurally incapable of
+  `nodes` array was stored, counted, decayed, and structurally incapable of
   reaching any agent. Measured 2026-07-30 with `active_knowledge`: **63 of 149
   active records report `surfaces: false`**. They are not marginal notes. They
   are among the most expensive lessons in the ledger, and the cost of their
@@ -36,6 +37,28 @@
   re-verifying that it is still true first; several of these describe code that
   has since changed, and copying a stale claim forward would be worse than
   leaving it silent.
+
+  **The reach is now recovered by reading, not rewriting.** Re-measured
+  2026-07-30 over the whole table: 191 records, 124 carrying nodes, **67
+  silent** — and 55 of those 67 still name the goal they were learned under, or
+  a task from which the goal is reachable. The advisory therefore gained a
+  second, narrower matching dimension: a node-less lesson may surface on work
+  whose task shares its goal. Nothing is copied forward and no possibly-stale
+  claim is restated, which is exactly what made rewriting the records the wrong
+  move. Goal identity compares by slug, so an amendment does not sever a lesson
+  from its own goal. The path is capped at three per check, ranked by effective
+  weight, because ADR-0072 established that an advisory firing on almost every
+  task carries no information — 20 and 18 silent records sit under the two
+  busiest goals, so an uncapped version would have rebuilt that noise in a new
+  place.
+
+  **Still open: the 12 that name nothing at all.** They carry neither nodes, nor
+  a goal, nor a resolvable task, so no amount of reading their provenance can
+  place them. They remain stored, counted, decaying, and undeliverable, and the
+  honest options for them are unchanged: re-record with proper provenance after
+  re-verifying the claim, or let them decay. Their statements are still readable
+  through `active_knowledge` by anyone who goes looking; what they cannot do is
+  arrive unprompted.
 
   The uncomfortable reading is the one worth keeping. This is not a backlog of
   missing notes. The repository had already learned nearly everything that was
