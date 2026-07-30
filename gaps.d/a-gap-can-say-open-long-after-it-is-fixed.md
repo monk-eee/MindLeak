@@ -49,7 +49,39 @@
   worth stating as a rule — read the intake, not the count, because a backlog
   being worked and refilled is indistinguishable from one nobody has touched.
 
-  **Mechanising the detection was attempted and does not work.** Two passes over
+  **Scheduling the re-verification by date is closed too, and it was measured
+  rather than argued.** The obvious next move after three manual passes is to
+  stop remembering and start scheduling: report which fragments are overdue for
+  a re-check. Three measurements on 2026-07-31 close that avenue.
+  *An age report would read all-fresh:* only **18 of 49** fragments carry a
+  parseable date, and every one of those is 0–3 days old, so the report would
+  say nothing is due while the **31** with no date at all — the ones whose
+  freshness is genuinely unknowable — are invisible to it by construction. That
+  is a false green of the same family this catalogue keeps recording.
+  *The door-rule cannot be adopted today:* requiring a date on any fragment that
+  claims to be measured is the right shape, but **13** current fragments claim
+  measurement without one, and a check that fails on day one is a check people
+  switch off.
+  *And the dates cannot be backfilled honestly:* **9 of those 13** were added by
+  one commit, the ADR-0056 migration that moved gaps out of `DEVELOPERS.md`, so
+  git knows when the file appeared and not when the claim was measured. Writing
+  that date in would look like provenance while being an artefact of a file move.
+  What remains is a maintainer's call, and a cheap one: date new measured
+  fragments from now on, and let the undated 31 be re-dated only by whoever
+  re-verifies them. Nothing else recovers the information, because the only
+  person who knows when a measurement was taken is the one who took it.
+
+  **A near-duplicate pair survived three audits, including one of mine.**
+  `the-conformance-chain-governs-8-code-nodes-none.md` and
+  `the-engine-was-ungoverned-and-the-gate-that-would-enforce-it.md` recorded the
+  same gap, and on 2026-07-31 I re-measured one and corrected it without noticing
+  the other already carried the correction, taken hours earlier. Duplicate
+  entries do not just waste the reader's time: they make the catalogue look
+  staler than it is, because a fix recorded in one copy leaves the other
+  standing. The pre-flight that would have caught it is the near-miss check
+  AGENTS.md already asks for — search the catalogue for a fragment covering the
+  same gap before correcting one, not just the open pull requests for a file
+  collision.
   every fragment: the first flagged any fragment naming a live symbol near a
   negation word (39 of them), the second required the negation to sit adjacent
   to the symbol (11). Reading the 11 showed essentially all were false
