@@ -17,6 +17,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import { summarizeEvents } from "./agent-loop-events.mjs";
 
 const root = process.cwd();
 const model = "claude-haiku-4.5";
@@ -445,7 +446,7 @@ async function seedLodestar(directory, database, sessionId) {
       ],
       mode: "governed",
     });
-    const taskResult = await server.tool("create_task", {
+    const taskResult = await server.tool("task_create", {
       goal_id: goalId,
       title: "Repair typed session validation regression",
       acceptance:
@@ -456,8 +457,9 @@ async function seedLodestar(directory, database, sessionId) {
       throw new Error(
         `could not find task id in ${JSON.stringify(taskResult)}`,
       );
-    await server.tool("claim_task", {
+    await server.tool("task_claim", {
       task_id: taskId,
+      step: "claim",
       lease_secs: 3600,
     });
   } finally {
@@ -670,41 +672,6 @@ async function evaluateWorkspace(directory) {
       recall,
       f1,
     },
-  };
-}
-
-function summarizeEvents(events) {
-  const starts = events.filter(
-    (event) => event.type === "tool.execution_start",
-  );
-  const toolNames = starts.map((event) => event.data?.toolName ?? "unknown");
-  const exploration = toolNames.filter((name) => {
-    if (
-      ["view", "grep", "glob", "shell", "bash", "powershell"].includes(name)
-    ) {
-      return true;
-    }
-    if (name.startsWith("mindleak-eval-")) {
-      return /(graph_|impact_radius|recall|evidence_for)/.test(name);
-    }
-    if (name.startsWith("lodestar-eval-")) {
-      return /(constitution|board|next_task|active_knowledge)/.test(name);
-    }
-    return false;
-  });
-  const outputTokens = events
-    .filter((event) => event.type === "assistant.message")
-    .reduce((sum, event) => sum + (event.data?.outputTokens ?? 0), 0);
-  const final = [...events].reverse().find((event) => event.type === "result");
-  return {
-    model: events.find((event) => event.type === "session.tools_updated")?.data
-      ?.model,
-    total_tool_calls: toolNames.length,
-    exploration_tool_calls: exploration.length,
-    tool_names: toolNames,
-    output_tokens: outputTokens,
-    premium_requests: final?.usage?.premiumRequests ?? null,
-    api_duration_ms: final?.usage?.totalApiDurationMs ?? null,
   };
 }
 
