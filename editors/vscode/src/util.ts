@@ -869,6 +869,10 @@ export function verdictIconId(verdict: string): string {
 
 // ---- Telemetry & effectiveness (real-time observability pane) ---------------
 
+export function shouldPollTelemetry(visible: boolean, live: boolean): boolean {
+  return visible && live;
+}
+
 /**
  * Aggregate metrics for one tool, as returned by `telemetry_snapshot`.
  *
