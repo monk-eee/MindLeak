@@ -396,18 +396,66 @@ mod tests {
         }
     }
 
+    /// An endpoint that answers 200 with a body that is not JSON.
+    ///
+    /// The request is consumed in full before the response is written, and the
+    /// write side is shut down before the socket is dropped. Both matter, and
+    /// only on Windows. A single `read` can return just the headers, because a
+    /// POST body may arrive in a later segment; dropping a socket that still
+    /// holds unread inbound data makes Windows answer with RST rather than FIN,
+    /// which discards the response the client has not read yet. The client then
+    /// reports a transport error — `os error 10054` or `10053` — instead of the
+    /// decode error this test is about, and the failure looks like a flaky
+    /// network rather than a racing fixture. Measured before this: 4 failures
+    /// in 12 local runs, green on ubuntu, red on the windows-latest CI leg.
     fn invalid_json_endpoint() -> (String, thread::JoinHandle<()>) {
+        const BODY: &[u8] = b"not json";
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0; 1024];
-            let _ = stream.read(&mut request);
-            stream
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 8\r\nConnection: close\r\n\r\nnot json",
-                )
-                .unwrap();
+
+            // Read until the headers end, then the body the request declared.
+            // Anything left unread at close is what triggers the reset.
+            let mut request = Vec::new();
+            let mut buffer = [0; 512];
+            loop {
+                let read = match stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(read) => read,
+                    Err(_) => break,
+                };
+                request.extend_from_slice(&buffer[..read]);
+                let Some(head) = request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|at| at + 4)
+                else {
+                    continue;
+                };
+                let declared = String::from_utf8_lossy(&request[..head])
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.trim()
+                            .eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())?
+                    })
+                    .unwrap_or(0);
+                if request.len() >= head + declared {
+                    break;
+                }
+            }
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                BODY.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.write_all(BODY).unwrap();
+            stream.flush().unwrap();
+            // FIN rather than RST, so the client is free to read what was sent.
+            let _ = stream.shutdown(std::net::Shutdown::Write);
         });
         (format!("http://{address}/v1/test"), server)
     }
