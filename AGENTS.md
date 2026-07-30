@@ -206,6 +206,17 @@ style nit.
   and proof; MindLeak shares repository learning. Sharing one writable checkout
   is a reviewed exception, not the default. Do not cherry-pick, rebase, or squash
   routine work: those operations replace evidence-bearing commit identities.
+- **Reclaim the worktree you finished with.** A worktree costs disk and, far
+  worse, editor attention: measured 2026-07-30 at 88 worktrees, 86 carrying
+  `target/`, one holding 82,891 files, which is what made this repository slow
+  enough to be unusable. The agent that made the mess is always the one who has
+  moved on, so cleaning up is part of finishing, not a separate chore. After your
+  PR merges, run `make reclaim` to see what is safe to remove and
+  `make reclaim ARGS="--reclaim --remote"` to take it — worktrees whose commits
+  have landed, their local and remote branches, and their build output. It
+  refuses anything dirty, unlanded, mid-build, protected, or owned by another
+  session, and says which rule stopped it, so running it is not a risk you have
+  to assess each time.
 - **Never commit in a worktree you do not own.** Git isolates files, the index,
   and branch selection — but not *who may type in a checkout*. A linked worktree
   has exactly one writer: the session that first commits in it. Committing in a
