@@ -27,7 +27,7 @@ import {
   rmSync,
   statSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { MARKER_NAME } from "./worktree-owner.mjs";
 
@@ -196,13 +196,22 @@ export function planArtefactSweep(candidates, options = {}) {
  * on what it must refuse to delete.
  */
 export function classifyWorktree(worktree, { session } = {}) {
-  const { path, branch, bare, dirty, landed, owner, building } = worktree;
+  const { path, branch, bare, dirty, landed, owner, building, current } =
+    worktree;
 
   if (bare) {
     return {
       reclaim: false,
       reason: "the primary checkout hosts every worktree",
     };
+  }
+  if (current) {
+    // Found on the first live run: this tool's own worktree was merged, clean
+    // and idle, so every other rule said yes. Reclaiming it would delete the
+    // target/ directory out from under the running process and then try to
+    // remove the checkout it is executing in. A cleanup tool must not be its
+    // own first casualty.
+    return { reclaim: false, reason: "this tool is running here" };
   }
   if (!branch) {
     // A detached HEAD names no branch, so "has it landed" has no answer here.
@@ -319,7 +328,11 @@ export function readWorktrees(anchor) {
 }
 
 function gatherFacts(worktree, anchor) {
-  if (worktree.bare || !worktree.branch) return worktree;
+  // Compared before the cheap exits: the tool can be run from the primary
+  // checkout or from a detached worktree too, and "am I standing here" must be
+  // answered for those as well.
+  const current = resolve(worktree.path) === resolve(anchor);
+  if (worktree.bare || !worktree.branch) return { ...worktree, current };
   const status = tryGit(
     ["status", "--porcelain", "--untracked-files=normal"],
     worktree.path,
@@ -329,6 +342,7 @@ function gatherFacts(worktree, anchor) {
   const markerPath = gitDir.ok ? join(gitDir.out.trim(), MARKER_NAME) : null;
   return {
     ...worktree,
+    current,
     // A status that cannot be read is treated as dirty. Guessing "clean" from a
     // failure is how a cleanup tool deletes a tree it could not inspect.
     dirty: !status.ok || status.out.trim().length > 0,
