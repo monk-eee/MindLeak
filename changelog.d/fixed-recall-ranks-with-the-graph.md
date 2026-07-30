@@ -27,4 +27,6 @@
   alone, so a young index is never silenced by statistics it cannot support.
   The reported score stays the raw cosine rather than the internal ranking
   composite. No LLM call joins the read path and the zero-token write path is
-  untouched.
+  untouched. Recorded as ADR-0075, including the two rejected alternatives
+  (raise the floor; change the embedding model) and the measurement that
+  rejects each, so the next reader does not re-derive them.
