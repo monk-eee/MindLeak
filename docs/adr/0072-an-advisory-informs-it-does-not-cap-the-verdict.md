@@ -2,10 +2,10 @@
 
 - Status: Proposed
 - Date: 2026-07-30
-- Amends: [ADR-0022](0022-consolidated-knowledge-advises-conformance.md) §4
+- Amends: [ADR-0022](0022-learned-knowledge-loop.md) §4
   (consolidated knowledge advises conformance)
-- Related: [ADR-0060](0060-a-finding-is-not-a-verdict.md) (a finding is not a
-  verdict), [ADR-0048](0048-a-holed-window-cannot-certify-itself.md) (a holed
+- Related: [ADR-0060](0060-work-whose-product-is-not-code-must-still-conform.md) (a finding is not a
+  verdict), [ADR-0048](0048-a-lapsed-lease-holes-the-window-it-does-not-move-it.md) (a holed
   window cannot certify itself), [ADR-0009](0009-evidence-backed-conformance.md)
   (evidence-backed conformance)
 

@@ -98,7 +98,7 @@ is gitignored and absent in CI:
 
 ### Why exportable proof is load-bearing (README / ARCHITECTURE)
 
-[README.md](../../README.md) and [ARCHITECTURE.md](ARCHITECTURE.md) gain a short,
+[README.md](../../README.md) and [ARCHITECTURE.md](../ARCHITECTURE.md) gain a short,
 prominent explanation that this is the point of the intent plane: in an agentic
 fleet the **conformance evidence chain is the proof-of-work** — provenance-anchored
 to real executions and commits, bounded by the claim, token-sealed, and now
