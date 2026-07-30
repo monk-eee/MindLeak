@@ -13,7 +13,21 @@ pub(super) fn definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "statement": { "type": "string" },
-                    "evidence": { "type": "string", "description": "JSON provenance." },
+                    // Said here rather than only in the reply, because this is
+                    // where the caller decides what to send. The advisory
+                    // matches on referenced nodes and nothing else, so evidence
+                    // without a `nodes` array produces a record that is stored,
+                    // counted, decayed, and unreachable — and the call looks
+                    // exactly like one that worked. Describing this field as
+                    // "JSON provenance" was true and told nobody the one thing
+                    // that decides whether the lesson ever arrives: measured
+                    // when this was written, 67 of 170 active records named no
+                    // nodes, among them the ones about skipping the ADR-0029
+                    // pre-flight and about facade tests missing MCP wiring.
+                    "evidence": {
+                        "type": "string",
+                        "description": "JSON provenance. MUST carry a `nodes` array of the artifact:/symbol: ids this is about, e.g. {\"nodes\":[\"artifact:src/a.rs\"],\"method\":\"how you know\"} — the conformance advisory matches on those ids and nothing else, so a record naming none can never reach another agent. The reply's `surfaces` field tells you which you got."
+                    },
                     "half_life_hours": { "type": "number" }
                 },
                 "required": ["statement"]
@@ -251,6 +265,38 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    /// The advertised schema tells a caller what evidence must carry.
+    ///
+    /// The reply's `surfaces` warning is a backstop, and it arrives after the
+    /// record exists. The schema is where the caller decides what to send, so
+    /// it has to name the `nodes` array and say what omitting it costs.
+    /// Describing the field as "JSON provenance" was accurate and useless:
+    /// measured when this landed, 67 of 170 active records named no nodes and
+    /// could reach nobody.
+    #[test]
+    fn the_schema_says_evidence_must_name_nodes() {
+        let record = super::definitions()
+            .into_iter()
+            .find(|tool| tool["name"] == json!("record_knowledge"))
+            .expect("record_knowledge is advertised");
+        let described = record["inputSchema"]["properties"]["evidence"]["description"]
+            .as_str()
+            .expect("evidence documents itself");
+
+        assert!(
+            described.contains("nodes"),
+            "the caller must be told which field carries the ids: {described}"
+        );
+        assert!(
+            described.contains("artifact:"),
+            "and what an id looks like: {described}"
+        );
+        assert!(
+            described.contains("never"),
+            "and that omitting it makes the record unreachable: {described}"
+        );
     }
 
     /// Recording knowledge that names no nodes says so, at the moment of

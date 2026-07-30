@@ -104,7 +104,7 @@ jobs:
         working-directory: .
 
   extension-host:
-    name: VS Code 1.93 Extension Host smoke
+    name: VS Code 1.101 Extension Host smoke
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5

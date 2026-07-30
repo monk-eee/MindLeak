@@ -1,4 +1,5 @@
 // Pure, dependency-free helpers (no vscode / fs imports) so they can be unit-tested.
+import * as os from "os";
 import * as path from "path";
 
 /** Convert a workspace-relative path to a MindLeak artifact node id. */
@@ -132,6 +133,7 @@ export interface ResolveServerOptions {
   platform?: NodeJS.Platform;
   exists?: (candidate: string) => boolean;
   extensionPath?: string;
+  homeDir?: string;
 }
 
 /** Stable, scan-friendly status text for both planes and passive sensors. */
@@ -166,9 +168,16 @@ export function resolveServerPath(
 }
 
 /**
- * Prefer the packaged binary, then a workspace build, when the configured path
- * is the bare default name. Generic over both MCP server binaries; filesystem
- * inputs are injectable so this stays pure and testable.
+ * Prefer the packaged binary, then the shared per-machine install, then a
+ * workspace build, when the configured path is the bare default name. Generic
+ * over both MCP server binaries; filesystem inputs are injectable so this stays
+ * pure and testable.
+ *
+ * The shared install at `~/.mindleak/bin` outranks a worktree's own
+ * `target/release` deliberately. ADR-0073 chose one binary per machine after
+ * measuring 56 worktrees holding 184 GB of `target/`, and searching the
+ * worktree first would quietly reinstate the per-worktree binary — and its
+ * stale-build problem — for every window.
  */
 export function resolveBinaryPath(
   configured: string,
@@ -188,6 +197,13 @@ export function resolveBinaryPath(
       return packaged;
     }
   }
+  const home = opts.homeDir ?? os.homedir();
+  if (home) {
+    const installed = path.join(home, ".mindleak", "bin", exe);
+    if (exists(installed)) {
+      return installed;
+    }
+  }
   for (const profile of ["release", "debug"]) {
     const candidate = path.join(workspace, "target", profile, exe);
     if (exists(candidate)) {
@@ -195,6 +211,71 @@ export function resolveBinaryPath(
     }
   }
   return configured || binaryName;
+}
+
+/** One MCP server the extension contributes to the editor, resolved and rooted. */
+export interface McpServerPlan {
+  readonly id: string;
+  readonly label: string;
+  readonly command: string;
+  readonly cwd: string;
+  readonly env: Record<string, string>;
+}
+
+/** The server paths and database overrides a window has configured. */
+export interface ConfiguredServers {
+  readonly memory: string;
+  readonly intent: string;
+  readonly memoryDatabase?: string;
+  readonly intentDatabase?: string;
+}
+
+/**
+ * Both planes as the editor should launch them for this window.
+ *
+ * The extension contributes the servers itself rather than a committed
+ * `.vscode/mcp.json` naming them, so there is one rule for where a binary lives
+ * — {@link resolveBinaryPath}, already covered by tests — instead of a config
+ * file carrying a second, untested copy of it that only drifts.
+ *
+ * Every server is rooted at the workspace folder of the window that provides
+ * it, which is what keeps ADR-0073 true: an agent editing a sibling worktree
+ * must have its files resolve against *that* worktree, or one file acquires a
+ * second identity in the graph.
+ *
+ * Pure by design: filesystem and platform come in through `opts`, so what the
+ * editor would be told is assertable without launching an editor.
+ */
+export function planMcpServers(
+  workspace: string,
+  agentId: string,
+  configured: ConfiguredServers,
+  opts: ResolveServerOptions = {}
+): McpServerPlan[] {
+  return [
+    {
+      id: "mindleak",
+      label: "MindLeak memory",
+      command: resolveBinaryPath(configured.memory, workspace, "mindleak-mcp", opts),
+      cwd: workspace,
+      env: {
+        ...configuredPathEnvironment("MINDLEAK_DB", configured.memoryDatabase),
+        MINDLEAK_AGENT: agentId,
+        MINDLEAK_WORKSPACE: workspace,
+      },
+    },
+    {
+      id: "lodestar",
+      label: "Lodestar intent",
+      command: resolveBinaryPath(configured.intent, workspace, "lodestar-mcp", opts),
+      cwd: workspace,
+      env: {
+        ...configuredPathEnvironment("LODESTAR_DB", configured.intentDatabase),
+        LODESTAR_AGENT: agentId,
+        MINDLEAK_WORKSPACE: workspace,
+      },
+    },
+  ];
 }
 
 /** A task from Lodestar `task_query(view=board)` (subset used by the UI). */
