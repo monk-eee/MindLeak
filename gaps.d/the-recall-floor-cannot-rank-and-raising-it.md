@@ -26,3 +26,17 @@
   recorded so the next reader does not re-derive the measurement or re-implement
   the fix; what remains open is the *other* lever, the embedding model, which
   nothing here has tested.
+
+  **Measured afterwards, and the overlap repeated itself one level up.** On the
+  live 19,317-node index the ranking change did what it claimed — hits naming a
+  node the graph no longer holds fell from 24 of 50 to 0 of 49, and recorded
+  conclusions rose from 14% of what the caller is handed to 96%. But the
+  distinctiveness cut does **not** let recall reject a question it has no answer
+  for: top-hit distance above the field is 3.11–3.90 standard deviations for
+  nonsense controls against 3.71–6.21 for real questions, so those bands overlap
+  by 0.19σ exactly as the score ranges above do. A threshold in σ is still a
+  global constant; moving from cosine to σ changed the units, not the shape of
+  the problem. So the warning in this fragment generalises further than it was
+  written: **the lever for "is there an answer here at all" is not a constant in
+  any unit**, and nothing has yet found one that works. Numbers and harness in
+  [EVALUATION.md](../docs/EVALUATION.md).

@@ -110,6 +110,22 @@ impl LodestarStore {
         Ok(changed == 1)
     }
 
+    /// Every distinct decider label the ledger has recorded.
+    ///
+    /// Read so a new label can be compared against the ones already in use
+    /// before it becomes permanent. A label is never validated — it is an
+    /// unverifiable declaration (ADR-0071) — but it can be compared, and the
+    /// comparison is the only chance to catch a typo while it is still fixable.
+    pub fn recorded_deciders(&self) -> Result<Vec<String>> {
+        let mut statement = self.conn.prepare(
+            "SELECT DISTINCT decided_by FROM design_items
+              WHERE decided_by IS NOT NULL AND TRIM(decided_by) <> ''
+              ORDER BY decided_by",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        collect(rows)
+    }
+
     /// Guarded CAS: move a *proposed* item to accepted/rejected. Returns `false`
     /// when the item is not currently proposed (missing or already decided), so
     /// a concurrent second decider cannot overwrite the first.

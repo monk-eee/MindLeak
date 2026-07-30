@@ -157,6 +157,53 @@ Machine-readable result:
 [2026-07-22-signal-weighted-decay.json](../benchmarks/results/2026-07-22-signal-weighted-decay.json).
 Reproduce with `node scripts/evaluate-signal.mjs` or `make bench`.
 
+## Recall ranking, and what it did not fix
+
+ADR-0075 stopped `recall` ordering by raw cosine: similarity is now weighted by
+node kind, and a candidate must stand out from its own query's field. It shipped
+on deterministic unit tests whose fields were synthetic and uniform. A real index
+is neither, so it was measured against this repository's own: **19,317 embedded
+nodes**, `nomic-embed-text`, ten queries — seven the repository genuinely had to
+answer, three nonsense controls. The control arm replicates the pre-change
+algorithm; the treatment arm drives the built `mindleak-mcp` binary over stdio,
+so what is measured is the shipped path rather than a second implementation of
+it.
+
+| Metric | Gate | Before | After | Result |
+|---|---|---:|---:|---|
+| Hits naming a node the graph no longer holds | Report | 24 of 50 | **0 of 49** | Pass |
+| Recorded conclusions as a share of hits served | Report | 14% | **96%** | Pass |
+| A nonsense query is answered with silence | Required | No | **No** | **Fail** |
+
+The first two are the change working as intended. Nearly half of what the caller
+used to be handed was an id that could no longer be opened, and conclusions were
+outnumbered five to one by symbols, executions and dangling references; now the
+caller is handed conclusions and nothing stale.
+
+The third is a negative result, and it is recorded because the fixture tests
+could not see it. **A nonsense query is not answered with silence on a real
+index.** Distance of the top hit above its own field is 3.11–3.90 standard
+deviations for the nonsense controls and 3.71–6.21 for the real questions, so
+the bands **overlap by 0.19σ** and no single threshold rejects nonsense while
+keeping every real answer. The shipped cut is 1σ, far below both bands, so it
+trims almost nothing on a field this diverse. The synthetic field was uniform,
+which made outlier detection trivial in a way a 19,000-node index is not.
+
+The constant is deliberately **not** tuned in response. Three nonsense samples
+separated from real questions by a negative margin is precisely the "global
+constant" that
+[the recall floor's own measurement](../gaps.d/the-recall-floor-cannot-rank-and-raising-it.md)
+warns against, and tuning to it would repeat that mistake one level up. What the
+result actually says is that distinctiveness-as-a-threshold is the wrong shape
+for "does this query have an answer at all", and that question remains open.
+
+Machine-readable result:
+[2026-07-30-recall-ranking.json](../benchmarks/results/2026-07-30-recall-ranking.json).
+Reproduce with
+`node scripts/evaluate-recall.mjs --bin <mindleak-mcp> --db <graph.db>`. It needs
+a populated index and a reachable embeddings server, both optional parts of the
+product (ADR-0008), and reports rather than fails when either is absent.
+
 ## Reproduce
 
 From the repository root:
