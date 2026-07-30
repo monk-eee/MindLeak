@@ -179,6 +179,28 @@ repos:
         always_run: true
         stages: [pre-push]
 
+      # The same modules, the other runner. `scripts/*.test.mjs` are node:test
+      # suites; `editors/vscode/scripts/*.test.mjs` are vitest suites importing
+      # the very same modules through `../../../scripts/`. Only the first ran
+      # before a push, so renaming an export or a guidance string passed every
+      # local check and failed in CI on assertions the author had no reason to
+      # run. Three pull requests were blocked on exactly that at once —
+      # `droppedCommits` -> `classifyCommits`, and `claim_task` -> `task_claim`
+      # — each an owner discovering their own rename from a red build.
+      #
+      # Filenames are passed so it runs only the suite covering a module that
+      # actually changed: about 18s for one, against ~120s for the whole
+      # extension suite, which also reports vitest worker timeouts under fleet
+      # load. A gate that intermittently blocks a push is worse than none — it
+      # teaches people to reach for `--no-verify`.
+      - id: ext-test
+        name: extension tests (the other runner over the same modules)
+        entry: node scripts/ext-test.mjs
+        language: system
+        files: ^scripts/.*\.mjs$
+        exclude: \.test\.mjs$
+        stages: [pre-push]
+
       # Evidence exists because you committed, not because you remembered.
       # Forty conformance audits on this repository reported "evidence contains
       # no provenance-bearing mutation" -- every bundle empty, because

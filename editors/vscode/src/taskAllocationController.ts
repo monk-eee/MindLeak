@@ -50,7 +50,7 @@ export class TaskAllocationController {
     }
     try {
       const request = renewTaskRequest(item.task, leaseSeconds, nowUnix());
-      const result = await this.client.callTool("renew_lease", { ...request });
+      const result = await this.client.callTool("task_claim", { ...request, step: "renew" });
       if (!result?.renewed) {
         throw new Error("the lease changed or expired before renewal");
       }
@@ -86,7 +86,7 @@ export class TaskAllocationController {
       return;
     }
     try {
-      const result = await this.client.callTool("release_task", { ...request });
+      const result = await this.client.callTool("task_claim", { ...request, step: "release" });
       if (!result?.released) {
         throw new Error("the owner or task state changed before release");
       }
@@ -122,8 +122,9 @@ export class TaskAllocationController {
       return;
     }
     try {
-      const result = await this.client.callTool("recover_claim", {
+      const result = await this.client.callTool("task_claim", {
         task_id: item.task.id,
+        step: "recover",
         expected_owner: owner,
         reason: reason.trim(),
         lease_secs: leaseSeconds,
@@ -165,8 +166,9 @@ export class TaskAllocationController {
       return;
     }
     try {
-      const result = await this.client.callTool("resolve_task", {
+      const result = await this.client.callTool("task_transition", {
         task_id: item.task.id,
+        to: "resolve",
         human: reviewerLabel.trim(),
       });
       if (!result?.resolved) {
@@ -196,8 +198,9 @@ export class TaskAllocationController {
       return;
     }
     try {
-      const result = await this.client.callTool("reopen_task", {
+      const result = await this.client.callTool("task_transition", {
         task_id: item.task.id,
+        to: "reopen",
       });
       if (!result?.reopened) {
         throw new Error("the task state changed before it could be reopened");
@@ -215,7 +218,7 @@ export class TaskAllocationController {
       return;
     }
     try {
-      const next = await this.client.callTool("next_task", {});
+      const next = await this.client.callTool("task_query", { view: "next" });
       if (!next || typeof next === "string" || typeof next.id !== "string") {
         vscode.window.showInformationMessage("No claimable Lodestar task is available.");
         return;
@@ -246,7 +249,7 @@ export class TaskAllocationController {
         return;
       }
       const request = claimTaskRequest(item.task, leaseSeconds, nowUnix(), scope);
-      const result = await this.client.callTool("claim_task", { ...request });
+      const result = await this.client.callTool("task_claim", { ...request, step: "claim" });
       if (!result?.won) {
         vscode.window.showWarningMessage(
           `Allocation lost: ${item.task.title} was claimed or changed by another agent.`
@@ -271,9 +274,11 @@ export class TaskAllocationController {
       if (!this.memoryClient.isReady()) {
         throw new Error("MindLeak memory plane is unavailable");
       }
+      // Lodestar collapsed its task verbs; MindLeak's footprint query remains a separate tool.
       const [claimResult, footprintResult] = await Promise.all([
-        this.client.callTool("check_overlap", {
+        this.client.callTool("task_query", {
           ...scope,
+          view: "overlap",
           exclude_task_id: item.task.id,
         }),
         this.memoryClient.callTool("check_overlap", {

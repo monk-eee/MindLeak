@@ -21,7 +21,7 @@ export class BoardItem extends vscode.TreeItem {
 
 /**
  * A tree view of the Lodestar task board — who owns what, at a glance. Fed from
- * the `board` MCP tool; rendering order/format is the pure {@link boardRows}.
+ * `task_query(view=board)`; rendering order/format is the pure {@link boardRows}.
  */
 export class BoardViewProvider implements vscode.TreeDataProvider<BoardItem> {
   static readonly viewType = "mindleak.boardView";

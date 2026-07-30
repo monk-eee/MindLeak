@@ -55,8 +55,9 @@ describe("TaskAllocationController review actions", () => {
         prompt: expect.stringContaining("attributed, not authenticated"),
       })
     );
-    expect(callTool).toHaveBeenCalledWith("resolve_task", {
+    expect(callTool).toHaveBeenCalledWith("task_transition", {
       task_id: "task:review",
+      to: "resolve",
       human: "Lyndon Swan",
     });
     expect(vscodeMock.showInformationMessage).toHaveBeenCalledWith("Accepted Review the result.");
@@ -70,7 +71,10 @@ describe("TaskAllocationController review actions", () => {
 
     await instance.retry(reviewItem());
 
-    expect(callTool).toHaveBeenCalledWith("reopen_task", { task_id: "task:review" });
+    expect(callTool).toHaveBeenCalledWith("task_transition", {
+      task_id: "task:review",
+      to: "reopen",
+    });
     expect(vscodeMock.showInformationMessage).toHaveBeenCalledWith(
       "Returned Review the result to ready work."
     );
