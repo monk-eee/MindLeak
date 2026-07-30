@@ -1,14 +1,18 @@
 {
   "servers": {
     "mindleak": {
-      "command": "${workspaceFolder}/target/release/mindleak-mcp",
+      "type": "stdio",
+      "command": "${userHome}/.mindleak/bin/mindleak-mcp",
+      "cwd": "${workspaceFolder}",
       "env": {
         "MINDLEAK_AGENT": "copilot",
         "MINDLEAK_WORKSPACE": "${workspaceFolder}"
       }
     },
     "lodestar": {
-      "command": "${workspaceFolder}/target/release/lodestar-mcp",
+      "type": "stdio",
+      "command": "${userHome}/.mindleak/bin/lodestar-mcp",
+      "cwd": "${workspaceFolder}",
       "env": {
         "LODESTAR_AGENT": "copilot",
         "MINDLEAK_WORKSPACE": "${workspaceFolder}"
