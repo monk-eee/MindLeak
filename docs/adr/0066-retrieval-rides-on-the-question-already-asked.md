@@ -99,3 +99,40 @@ it, with its real limitation stated.
 Retrieval volume becomes measurable against write volume for the first time. If
 the read-to-write ratio does not move, this decision failed and should be
 revisited rather than supplemented with a seventh tool.
+
+## Measured outcome and amendment (2026-07-30)
+
+The declared adoption gate failed. After the pre-flight shipped, tool
+descriptions gained explicit trigger cues, and per-session habit telemetry was
+added, the live store still showed five writing sessions making 1,033
+attributed writes without one successful standalone memory read or
+`check_overlap` before the first write. Counting `check_overlap` in the
+calculation did not change that result: none of those sessions called it in its
+current observation window.
+
+The first telemetry implementation also omitted `check_overlap` from the set of
+memory reads, even though this decision moved deterministic impact retrieval
+into that tool. That made the metric wrong whenever an agent did comply. The
+classifier now counts a successful `check_overlap`; failed calls still do not
+count.
+
+The behavioral failure is the same one this ADR set out to avoid: the memory
+read remained a separate action an agent had to remember. The checklist and
+tool descriptions named the moment, but direct MCP agents routinely claimed a
+task and began writing without making the cross-plane call. The VS Code Work
+surface already combines both pre-flights before claiming, but direct agents do
+not pass through that client.
+
+The amended mechanism rides on the claim response instead. A successful
+Lodestar `task_claim(step = "claim")` with a non-empty scope returns a bounded
+`memory_preflight` object naming the MindLeak plane, `check_overlap`, the exact
+claimed paths and symbols, and `when = "before the first edit"`. It says that
+the read is advisory and has **not** been performed. Empty-scope claims, lost
+claims, renewals, releases, and recoveries stay quiet.
+
+This preserves ADR-0024's loose seam: Lodestar neither opens the graph database
+nor claims that another plane answered. It places the existing cross-plane
+obligation in the result of the action agents demonstrably perform. The next
+production cohort must move corrected read-before-first-write above zero. If it
+does not, a response cue has failed too, and the next design must be first-party
+client orchestration rather than another tool or another reminder.
