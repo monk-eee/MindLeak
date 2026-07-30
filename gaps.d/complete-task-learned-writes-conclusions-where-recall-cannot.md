@@ -23,15 +23,18 @@
   aligned completion (check 350 on `task:9aac89a91b00`'s predecessor), having
   been unreachable an hour earlier.
 
-  That does not answer the design question; it sharpens it. The working path is
-  **node-matched, not semantic**. It reaches an agent who is already about to
-  touch the file the lesson names, and it reaches nobody who is asking a
-  question — which is what `recall` is for, and why ADR-0053 decision 4 is still
-  half delivered. It also has a measured cost of its own: 67 of 174 active
-  records carry no `nodes` array, so they can use neither path. `record_knowledge`
-  now reports `surfaces` when a record can never be read, and its schema states
-  what evidence must carry, so the population stops growing; the existing 67
-  need rescuing by hand, because nothing attaches nodes retrospectively.
+  That does not answer the design question; it sharpens it. The working paths
+  are **node-matched and goal-matched, not semantic**. They reach an agent who
+  is already about to touch the file the lesson names, or who is working under
+  the goal it was learned under; they reach nobody who is asking a question —
+  which is what `recall` is for, and why ADR-0053 decision 4 is still half
+  delivered. The measured cost here has shrunk and changed shape: of 214
+  records, 146 carry a `nodes` array, 56 more name no node but still reach work
+  under their goal, and **12 can use no path at all**. Only those 12 need
+  rescuing by hand. The earlier figure — 67 of 174 with no nodes, described as
+  reaching nobody — counted the node path alone, and was left standing after
+  the goal path landed. `record_knowledge` reports `reach` at write time and
+  its schema states what evidence must carry, so the population stops growing.
 
   The fix is a design question rather than a patch: either Lodestar gains an
   embedding index for knowledge, or `learned` also records a MindLeak node, or
