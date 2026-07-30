@@ -131,6 +131,67 @@ test("a check that never reports stops holding the queue after the stall thresho
   );
 });
 
+/// The sibling of the stalled check, and the more dangerous one because it is
+/// silent. A check that never *starts* leaves an empty rollup, and an empty
+/// rollup satisfies "nothing running" and "nothing failing" exactly as a fully
+/// green one does -- so the branch reads as up to date and idle, the tick
+/// returns wait, and no threshold ever ages it out. Observed live on 2026-07-30:
+/// two armed pull requests sat with no run against their head after a
+/// branch update, and the queue reported "waiting on GitHub to merge it" for
+/// both. That time CI fired a few minutes later; had it not, one pull request
+/// whose workflow never triggered would have held every branch behind it
+/// indefinitely, and the log would have read like a healthy queue throughout.
+test("a branch whose checks never started stops holding the queue after the stall threshold", () => {
+  const silent = pr(1, {
+    mergeStateStatus: "BLOCKED",
+    statusCheckRollup: [],
+    updatedAt: ago(90),
+  });
+  const waiting = pr(2);
+
+  const stillWaiting = nextAction([silent, waiting], NOW, {
+    stalledAfterMs: 120 * 60_000,
+  });
+  assert.equal(
+    stillWaiting.kind,
+    "wait",
+    "a run can take minutes to appear, so a young branch is still worth waiting for",
+  );
+
+  const movedOn = nextAction([silent, waiting], NOW, {
+    stalledAfterMs: 45 * 60_000,
+  });
+  assert.equal(
+    movedOn.kind,
+    "update",
+    "past the threshold the queue must take a turn rather than wait forever",
+  );
+  assert.equal(
+    movedOn.pr.number,
+    2,
+    "the branch behind the silent one gets its turn",
+  );
+});
+
+/// "Waiting on GitHub to merge it" and "no workflow ever ran" are the same line
+/// today, which is why the wedge above is invisible while it happens. The queue
+/// cannot start the run itself -- but it can stop the state from reading as
+/// healthy.
+test("the tick names a branch whose checks never started", () => {
+  const silent = pr(1, {
+    mergeStateStatus: "BLOCKED",
+    statusCheckRollup: [],
+    updatedAt: ago(90),
+  });
+
+  const rendered = describe(nextAction([silent, pr(2)], NOW));
+  assert.match(
+    rendered,
+    /no check has reported/,
+    `the silent branch must be named, not left looking healthy:\n${rendered}`,
+  );
+});
+
 /// A branch git cannot merge cleanly needs reconciling in its own worktree
 /// (ADR-0038). Holding the whole queue behind it would let one conflict stop
 /// every other delivery.
