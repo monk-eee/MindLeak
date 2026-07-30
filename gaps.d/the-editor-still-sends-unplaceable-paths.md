@@ -1,6 +1,5 @@
-- **The editor still sends absolute paths for files outside the workspace root,
-  so those saves now fail loudly instead of corrupting — MEASURED, PARTLY
-  FIXED.** `editors/vscode/src/extension.ts` sends
+- **The extension cannot place files from unopened sibling worktrees — MEASURED,
+  OPEN.** `editors/vscode/src/extension.ts` sends
   `vscode.workspace.asRelativePath(doc.uri, false)`, and that API returns its
   input *unchanged* when the file sits outside every workspace folder. Agents
   routinely edit a sibling worktree (`MindLeak-build`, `MindLeak-telemetry-poll`,

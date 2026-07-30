@@ -1,5 +1,5 @@
-- **The design ledger could not say `Superseded` — FIXED; one row still needs a
-  decider first.** — ADR-0018 and ADR-0032 declare `Superseded by <ref>` while
+- **ADR-0032 cannot record its supersession until a decider is attributed —
+  OPEN.** ADR-0018 and ADR-0032 declare `Superseded by <ref>` while
   the ledger had only `proposed`, `accepted`, `rejected`, so both sat `accepted`
   and every ledger-driven view showed a withdrawn decision as live.
   [ADR-0050](docs/adr/0050-a-superseded-decision-is-not-a-stale-one.md) gives a
