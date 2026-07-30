@@ -1,7 +1,6 @@
-- **One session's agent id changed under a running server, silently resetting
-  its claim's evidence window and locking it out of its own task — OBSERVED,
-  FIXED by [ADR-0063](docs/adr/0063-a-migration-may-tidy-the-past-never-the-present.md);
-  one residual gap noted at the end.** Across a single session
+- **Identity migrations can still reset an evidence window invisibly — OPEN.**
+  [ADR-0063](docs/adr/0063-a-migration-may-tidy-the-past-never-the-present.md)
+  fixed live-claim ownership rewrites, but one residual remains. Across a single session
   holding one client-minted token, `open_session` (both planes) returned
   `session:v1:copilot:b4baf280…`, while `board` reported the task's owner as
   `session:v1:b4baf280…` — the same hash, with and without the label

@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-07-29
 - Related: [ADR-0020](0020-task-lifecycle-states.md) (paused and
-  `needs_input`), [ADR-0046](0046-a-question-nobody-is-asked-is-not-a-question.md)
+  `needs_input`), [ADR-0046](0046-agents-talk-through-the-durable-thread.md)
   (delivery on calls agents already make),
   [ADR-0052](0052-a-lease-is-a-heartbeat-not-a-deadline.md) (free heartbeat),
   [ADR-0064](0064-the-log-is-the-ledger.md) (transition history),

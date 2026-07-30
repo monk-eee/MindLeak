@@ -219,7 +219,8 @@ where
         return Err(MindLeakError::Http(format!("circuit open for {url}")));
     }
 
-    let (expected_netloc, resolved_addresses) = resolve_endpoint(url, cfg.timeout)?;
+    let (expected_netloc, resolved_addresses) =
+        record_failure_on_error(url, cfg, resolve_endpoint(url, cfg.timeout))?;
     let agent = ureq::builder()
         .timeout(cfg.timeout)
         .timeout_connect(cfg.timeout)
@@ -250,7 +251,8 @@ where
         }
         match req.send_json(body) {
             Ok(resp) => {
-                let value = read_bounded_json(resp.into_reader())?;
+                let value =
+                    record_failure_on_error(url, cfg, read_bounded_json(resp.into_reader()))?;
                 record_success(url);
                 return Ok(value);
             }
@@ -343,6 +345,12 @@ fn record_success(url: &str) {
     }
 }
 
+fn record_failure_on_error<T>(url: &str, cfg: &HttpConfig, result: Result<T>) -> Result<T> {
+    result.inspect_err(|_| {
+        record_failure(url, cfg);
+    })
+}
+
 fn record_failure(url: &str, cfg: &HttpConfig) {
     if let Ok(mut map) = breakers().lock() {
         let cb = map
@@ -374,7 +382,83 @@ fn backoff(attempt: u32) -> Duration {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+
     use super::*;
+
+    fn threshold_one_config() -> HttpConfig {
+        HttpConfig {
+            timeout: Duration::from_secs(1),
+            retries: 0,
+            breaker_threshold: 1,
+            breaker_cooldown: Duration::from_secs(60),
+        }
+    }
+
+    /// An endpoint that answers 200 with a body that is not JSON.
+    ///
+    /// The request is consumed in full before the response is written, and the
+    /// write side is shut down before the socket is dropped. Both matter, and
+    /// only on Windows. A single `read` can return just the headers, because a
+    /// POST body may arrive in a later segment; dropping a socket that still
+    /// holds unread inbound data makes Windows answer with RST rather than FIN,
+    /// which discards the response the client has not read yet. The client then
+    /// reports a transport error — `os error 10054` or `10053` — instead of the
+    /// decode error this test is about, and the failure looks like a flaky
+    /// network rather than a racing fixture. Measured before this: 4 failures
+    /// in 12 local runs, green on ubuntu, red on the windows-latest CI leg.
+    fn invalid_json_endpoint() -> (String, thread::JoinHandle<()>) {
+        const BODY: &[u8] = b"not json";
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+
+            // Read until the headers end, then the body the request declared.
+            // Anything left unread at close is what triggers the reset.
+            let mut request = Vec::new();
+            let mut buffer = [0; 512];
+            loop {
+                let read = match stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(read) => read,
+                    Err(_) => break,
+                };
+                request.extend_from_slice(&buffer[..read]);
+                let Some(head) = request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|at| at + 4)
+                else {
+                    continue;
+                };
+                let declared = String::from_utf8_lossy(&request[..head])
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.trim()
+                            .eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())?
+                    })
+                    .unwrap_or(0);
+                if request.len() >= head + declared {
+                    break;
+                }
+            }
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                BODY.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.write_all(BODY).unwrap();
+            stream.flush().unwrap();
+            // FIN rather than RST, so the client is free to read what was sent.
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+        });
+        (format!("http://{address}/v1/test"), server)
+    }
 
     // Regression: a slow-but-working local model call was retried like a network
     // blip. Because a read timeout is a Transport error (classified transient),
@@ -427,6 +511,35 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(error, MindLeakError::Cancelled(_)));
+    }
+
+    // Regression: endpoint resolution used to return before recording a failure,
+    // so a permanently invalid endpoint consumed work forever without opening.
+    #[test]
+    fn resolution_failure_opens_the_circuit() {
+        let url = "not a valid endpoint";
+        let config = threshold_one_config();
+
+        let first = post_json(&config, url, "", &serde_json::json!({})).unwrap_err();
+        assert!(first.to_string().contains("invalid URL"));
+
+        let second = post_json(&config, url, "", &serde_json::json!({})).unwrap_err();
+        assert!(second.to_string().contains("circuit open"));
+    }
+
+    // Regression: a successful HTTP status with invalid JSON also returned before
+    // breaker accounting, repeatedly reaching the same broken optional endpoint.
+    #[test]
+    fn response_decode_failure_opens_the_circuit() {
+        let (url, server) = invalid_json_endpoint();
+        let config = threshold_one_config();
+
+        let first = post_json(&config, &url, "", &serde_json::json!({})).unwrap_err();
+        assert!(first.to_string().contains("json error"));
+        server.join().unwrap();
+
+        let second = post_json(&config, &url, "", &serde_json::json!({})).unwrap_err();
+        assert!(second.to_string().contains("circuit open"));
     }
 
     #[test]

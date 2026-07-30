@@ -59,7 +59,7 @@ pub fn ingest_commit(
     store: &GraphStore,
     rec: &CommitRecord,
     now: i64,
-    root: Option<&str>,
+    roots: &[&str],
 ) -> Result<crate::graph::WriteOutcome> {
     let key = match rec.sha.as_deref() {
         Some(sha) => {
@@ -95,7 +95,7 @@ pub fn ingest_commit(
     let mut changed_files: Vec<String> = rec
         .changed_files
         .iter()
-        .map(|file| repo_relative(file, root))
+        .map(|file| repo_relative(file, roots))
         .collect();
     changed_files.sort();
     changed_files.dedup();
@@ -142,7 +142,7 @@ mod tests {
             changed_files: vec!["src/lib.rs".to_string()],
             timestamp: 123,
         };
-        ingest_commit(&store, &record, 999, None).unwrap();
+        ingest_commit(&store, &record, 999, &[]).unwrap();
 
         let graph = store
             .traverse(
@@ -180,13 +180,13 @@ mod tests {
             changed_files: vec!["src/lib.rs".to_string()],
             timestamp: 100,
         };
-        ingest_commit(&store, &full, 100, None).unwrap();
+        ingest_commit(&store, &full, 100, &[]).unwrap();
 
         let abbreviated = CommitRecord {
             sha: Some(FULL_SHA[..7].to_string()),
             ..full.clone()
         };
-        let error = ingest_commit(&store, &abbreviated, 100, None)
+        let error = ingest_commit(&store, &abbreviated, 100, &[])
             .expect_err("an abbreviated sha must be refused, not silently forked");
 
         assert!(
@@ -222,13 +222,13 @@ mod tests {
             changed_files: vec!["src/lib.rs".to_string()],
             timestamp: 100,
         };
-        ingest_commit(&store, &lower, 100, None).unwrap();
+        ingest_commit(&store, &lower, 100, &[]).unwrap();
 
         let upper = CommitRecord {
             sha: Some(FULL_SHA.to_ascii_uppercase()),
             ..lower.clone()
         };
-        ingest_commit(&store, &upper, 100, None).unwrap();
+        ingest_commit(&store, &upper, 100, &[]).unwrap();
 
         assert!(store
             .get_node(&format!("intent:{}", FULL_SHA.to_ascii_uppercase()))
@@ -251,7 +251,7 @@ mod tests {
             changed_files: vec!["src/lib.rs".to_string()],
             timestamp: 100,
         };
-        let outcome = ingest_commit(&store, &record, 100, None).unwrap();
+        let outcome = ingest_commit(&store, &record, 100, &[]).unwrap();
         assert!(outcome.node_ids.iter().any(|id| id.starts_with("intent:")));
     }
 }
