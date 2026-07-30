@@ -168,7 +168,7 @@ Live coordination state. Not versioned; churny.
 | `blocked_by` | optional task id |
 | `created_at` / `updated_at` | unix seconds |
 
-`create_task(..., blocked_by=<task>)` creates a blocked successor unless the
+`task_create(..., blocked_by=<task>)` creates a blocked successor unless the
 predecessor is already done. Only an evidence-backed aligned completion to
 `done` clears direct dependencies, transactionally with the conformance record.
 Dependencies are same-goal, acyclic, and one-to-one, forming linear handoff
@@ -287,9 +287,10 @@ UPDATE tasks
   compare-and-swap. Two agents racing for the same task → one `changes()==1`, the
   rest `0`. No collisions, no double work.
 - **Leases with TTL.** A crashed agent's claim expires and the task becomes
-  reclaimable — no work is stranded. `renew_lease` is a heartbeat for a
-  still-live lease only and preserves `claim_started_at`. Once the lease lapses,
-  renewal fails and the owner uses `claim_task` like any other contender.
+  reclaimable — no work is stranded. `task_claim` (`step="renew"`) is a heartbeat
+  for a still-live lease only and preserves `claim_started_at`. Once the lease
+  lapses, renewal fails and the owner uses `task_claim` (`step="claim"`) like any
+  other contender.
 - **A lapse holes the evidence window; it does not move it (ADR-0048).** A
   re-claim by the *same* owner keeps `claim_started_at`, so work done before the
   lapse stays provable, and the hole is recorded in the task log. A claim by a
@@ -343,9 +344,9 @@ pretend to, per [ADR-0015](adr/0015-advisory-symbol-leases.md)).
 - **Loose seam.** The cross-plane read crosses by opaque MindLeak node id only —
   no shared tables or transactions
   ([ADR-0004](adr/0004-intent-plane-spec-brain.md)).
-- **Visible hint.** `task_scope` reads one declaration, `board` includes scope in
-  each task row, and the VS Code allocator calls both checks before claiming and
-  presents an overridable warning.
+- **Visible hint.** `task_query` (`view="scope"`) reads one declaration, and
+  `task_query` (`view="board"`) includes scope in each task row, and the VS Code
+  allocator calls both checks before claiming and presents an overridable warning.
 
 The deterministic two-agent gate in [EVALUATION.md](EVALUATION.md) demonstrates
 the blind collision, live claim + footprint detection, a decayed control, and a
@@ -381,7 +382,7 @@ Only `aligned` completes a task. `drift` and `needs_human` remain `in_review`;
 `violation` moves the task to `blocked`. `check_conformance` evaluates once and
 persists an authoritative `{ id, token, verdict, findings }` result. The token
 covers the exact evidence and relevant current intent/knowledge state.
-`complete_task` verifies and consumes that checked result without invoking the
+`task_transition` (`to="complete"`) verifies and consumes that checked result without invoking the
 optional semantic judge again; changed evidence or state requires a new check.
 The checked audit row is the sole durable evidence link controlling the atomic
 transition. Full contract: [ADR-0009](adr/0009-evidence-backed-conformance.md),
@@ -401,7 +402,7 @@ hot path, nothing leaves the machine.
 | `LODESTAR_MODEL` | `glm4:9b` | model name |
 | `LODESTAR_LLM_API_KEY` | *(empty)* | bearer token for hosted servers |
 
-Used only for `decompose_goal` (goal → candidate tasks) and semantic conformance.
+Used only for `task_create` without a title (goal → candidate tasks) and semantic conformance.
 Both have deterministic fallbacks; the plane is fully functional with no model.
 
 ---
@@ -428,28 +429,34 @@ Caller-selected `agent`/`agent_id` values are not part of the public schema.
 
 **Executive**
 
-6. `create_task(goal_id, title, acceptance, blocked_by?)` → `task_id`; a
+Four verbs (ADR-0059): `task_create`, `task_claim` (with `step`),
+`task_transition` (with `to`), and `task_query` (with `view`). The numbered
+operations below name the invocation each maps to.
+
+6. `task_create(goal_id, title, acceptance, blocked_by?)` → `task_id`; a
   dependency opens automatically only after aligned predecessor completion.
-7. `decompose_goal(goal_id)` → candidate tasks (SLM-assisted; deterministic stub
-   otherwise). Objective goals only — constraints and invariants are enforced
-   continuously by conformance, not broken into completable tasks.
-8. `next_task(capabilities?)` → a suggested unclaimed, unblocked task.
-9. `claim_task(task_id, lease_secs, paths?, symbols?, session_id)` → `{ won }` (§6);
+7. `task_create(goal_id)` with no title → candidate tasks (SLM-assisted;
+   deterministic stub otherwise). Objective goals only — constraints and
+   invariants are enforced continuously by conformance, not broken into
+   completable tasks.
+8. `task_query(view="next", capabilities?)` → a suggested unclaimed, unblocked task.
+9. `task_claim(task_id, step="claim", lease_secs, paths?, symbols?, session_id)` → `{ won }` (§6);
   path globs and opaque symbol ids are stored atomically only for the winning
   claim.
-10. `task_scope(task_id)` → the advisory declaration; `check_overlap(paths[],
-  symbols[], exclude_task_id?)` → live claim intersections for concrete paths
-  and exact symbol ids. Combine with MindLeak's same-named footprint tool.
-11. `renew_lease(task_id, lease_secs, session_id)` → heartbeat.
-12. `complete_task(task_id, evidence, check, session_id)` → `blocked` /
+10. `task_query(view="scope", task_id)` → the advisory declaration;
+  `task_query(view="overlap", paths[], symbols[], exclude_task_id?)` → live claim
+  intersections for concrete paths and exact symbol ids. Combine with MindLeak's
+  `check_overlap` footprint tool.
+11. `task_claim(task_id, step="renew", lease_secs, session_id)` → heartbeat.
+12. `task_transition(task_id, to="complete", evidence, check, session_id)` → `blocked` /
   `in_review` / `done`; consumes the exact authoritative check and rejects it
   if evidence or relevant intent state changed.
-13. `release_task(task_id, session_id)` / `block_task(task_id, reason, blocked_by?)` /
-  `reopen_task(task_id)` → return a stranded task (`in_review`, or a manual
-  hold with no live predecessor gate) to claimable `open`; `abandon_task`
+13. `task_claim(task_id, step="release", session_id)` / `task_transition(task_id, to="block", reason, blocked_by?)` /
+  `task_transition(task_id, to="reopen")` → return a stranded task (`in_review`, or a manual
+  hold with no live predecessor gate) to claimable `open`; `task_transition(task_id, to="abandon")`
   durably retires open/review/blocked or expired-claim work without deleting
   its audit history. Both refuse to disturb live or parked ownership.
-  `resolve_task(task_id, human)` → the task-level mirror of `accept_design`:
+  `task_transition(task_id, to="resolve", human)` → the task-level mirror of `design_decide` (accept):
   accepts an `in_review` task (a `drift`/`needs_human` completion) to `done`
   with no code-conformance re-run, opening any blocked successor. `human` is a
   non-empty reviewer label recorded in `resolved_by` for attribution; it is
@@ -457,9 +464,9 @@ Caller-selected `agent`/`agent_id` values are not part of the public schema.
   task's conformance evidence is refused, but any other label is accepted, so
   a docs-only task in an objective's chain has a review path to terminal `done`
   without pretending the local stdio plane verified a person's identity.
-  `recover_claim(task_id, expected_owner, reason, lease_secs, session_id)` is the
+  `task_claim(task_id, step="recover", expected_owner, reason, lease_secs, session_id)` is the
   only transition from an expired compatible legacy owner into a registered
-  session; `claim_transfer_history(task_id)` returns its append-only audit. That
+  session; `task_query(view="claim_transfers", task_id)` returns its append-only audit. That
 audit has two sources and each row names its own (ADR-0064 d5): recoveries
 since the task log exists are `claim_recovered` events, while the
 `task_claim_transfers` table is a **closed archive** of the ones that predate
@@ -535,7 +542,7 @@ ADR-0059 names.
     work **before acting**. It records no verdict, changes no task state, needs no
     model, and never gates the compare-and-swap claim. `governing_for_task(task_id)`
     returns the clauses governing a task's linked scope — the same set surfaced on
-    `claim_task` / `next_task` and the VS Code Work view.
+    `task_claim` / `task_query` (`view="next"`) and the VS Code Work view.
 
 ---
 
@@ -568,13 +575,13 @@ expose remotely; doing so would require an auth layer and its own ADR.
 
 - **Phase 0 — MVP (shared intent + collision-free claiming).** `lodestar-core`
   crate + schema (`goals`, `tasks`, `goal_code`); `lodestar-mcp` with
-  `define_goal`, `get_constitution`, `create_task`, `claim_task` (CAS + lease),
-  `renew_lease`, `complete_task`, `board`. **Deterministic only, no LLM.** This
+  `define_goal`, `get_constitution`, `task_create`, `task_claim` (CAS + lease +
+  renew), `task_transition`, `task_query`. **Deterministic only, no LLM.** This
   alone lets parallel agents across worktrees share one spec and partition work
   without colliding.
 - **Phase 1 — conformance + seam.** `link_goal_to_artifact`, deterministic
-  `check_conformance`, `next_task` allocator, `export_constitution`.
-- **Phase 2 — optional SLM.** `decompose_goal` and semantic conformance over the
+  `check_conformance`, the `task_query` (`view="next"`) allocator, `export_constitution`.
+- **Phase 2 — optional SLM.** `task_create` decomposition and semantic conformance over the
   local model, with deterministic fallbacks.
 - **Phase 3 — editor surface.** A VS Code board view (who owns what) and inline
   conformance warnings when a save touches goal-bound code.
@@ -611,7 +618,7 @@ demands specifically:
 1. **Name:** Lodestar vs Canon (vs something else).
 2. **Constitution source of truth:** primary-in-DB with markdown export (current
    plan), or primary-in-committed-file loaded into the DB?
-3. **Task priority / ordering** model for `next_task` (FIFO, explicit priority,
+3. **Task priority / ordering** model for `task_query` (`view="next"`) (FIFO, explicit priority,
    or goal-weighted).
 4. **Semantic-violation policy:** does a low-confidence SLM `violation` hard-block
    completion, or only warn pending human review?

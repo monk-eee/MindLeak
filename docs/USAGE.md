@@ -47,7 +47,7 @@ graph_stats()
 graph_snapshot(seed = "artifact:src/main.ts", limit = 60)
 
 # 4. Surface coordination only when durable work exists.
-board(include_terminal = false)
+task_query(view = "board", include_terminal = false)
 design_query(view = "board")
 ```
 
@@ -176,39 +176,40 @@ Typical flow:
 open_session(session_id)                     # once per client session, on both planes
 define_goal(kind, title, statement)          # write the constitution
 get_constitution()                           # read this BEFORE acting
-decompose_goal(goal_id)  /  create_task(...) # produce claimable work
-next_task()                                  # what should I pick up?
-claim_task(task_id, paths?, symbols?, session_id) # atomic session claim + optional scope
+task_create(goal_id)  /  task_create(goal_id, title, ...) # decompose, or one named task
+task_query(view = "next")                    # what should I pick up?
+task_claim(task_id, step = "claim", paths?, symbols?, session_id) # atomic session claim + optional scope
 advise(task_id, node_ids)                    # ADR-0029: what governs this change? (advise/review/block) — before acting
-renew_lease(task_id, session_id)             # keep your claim alive while working
-complete_task(task_id, evidence, check, session_id) # owner-guarded; consumes checked conformance
-board()                                      # live who-owns-what
+task_claim(task_id, step = "renew", session_id) # keep your claim alive while working
+task_transition(task_id, to = "complete", evidence, check, session_id) # owner-guarded; consumes checked conformance
+task_query(view = "board")                   # live who-owns-what
 ```
 
-`claim_task` is a compare-and-swap: parallel worktrees coordinate through one
-shared repository-id `spec.db` with **no duplicate winners**. `complete_task` runs a
-conformance check (aligned / drift / violation) and a violation blocks the
-transition.
+`task_claim` is a compare-and-swap: parallel worktrees coordinate through one
+shared repository-id `spec.db` with **no duplicate winners**. `task_transition`
+(`to="complete"`) runs a conformance check (aligned / drift / violation) and a
+violation blocks the transition.
 
 ### Where `evidence` and `check` actually come from
 
-The flow above hides the step people get wrong. `complete_task` will not accept
-a summary of what you did — it consumes a bounded, provenance-bearing bundle
-built by the **memory** plane and scored by the intent plane:
+The flow above hides the step people get wrong. Completing (`task_transition`
+with `to="complete"`) will not accept a summary of what you did — it consumes a
+bounded, provenance-bearing bundle built by the **memory** plane and scored by
+the intent plane:
 
 ```text
 # ... you do the work, and commit it ...
 ingest_commit(...)                                   # mindleak: the work enters the graph
 evidence_for(task_id, paths, started_at, ended_at, session_id)   # mindleak: build the bundle
 check_conformance(task_id, evidence, session_id)     # lodestar: score it -> { id, token, verdict }
-complete_task(task_id, evidence, check, session_id)  # lodestar: consume the checked result
+task_transition(task_id, to = "complete", evidence, check, session_id) # lodestar: consume the checked result
 ```
 
 Three rules that are easy to violate and produce unhelpful errors:
 
 - **`ended_at` must not be in the future.** A window ending even a second ahead
   of the server clock is rejected as outside the live claim.
-- **The window must sit inside the current claim.** `claim_task` starts a fresh
+- **The window must sit inside the current claim.** `task_claim` starts a fresh
   window; a window that begins before it is refused.
 - **`evidence.task_id` must name the task you are completing**, or the check is
   rejected as identifying a different task.
@@ -223,16 +224,17 @@ it goes green is the one thing you must not do.
 | Verdict | Meaning | Who unblocks it |
 |---|---|---|
 | `aligned` | The change matched the goal's code bindings. | Nobody — the task completes. |
-| `drift` | Governed code changed without a covering task, naming the goals it belongs to. | A human. Declare breadth **at creation** with `create_task(also_serves=...)`; it cannot be added afterwards (ADR-0041). |
+| `drift` | Governed code changed without a covering task, naming the goals it belongs to. | A human. Declare breadth **at creation** with `task_create(also_serves=...)`; it cannot be added afterwards (ADR-0041). |
 | `violation` | A constitutional clause was breached. | A human, or a bounded `grant_waiver`. Blocks completion. |
-| `needs_human` | The check could not certify — commonly an empty window, or a verdict that leaned on declared breadth. | A human, via `resolve_task` (or `reopen_task` to send it back). |
+| `needs_human` | The check could not certify — commonly an empty window, or a verdict that leaned on declared breadth. | A human, via `task_transition` (`to="resolve"`, or `to="reopen"` to send it back). |
 
-`complete_task` returning `completed: false` is **not** a failure to record — the
-task moves to `in_review` with its verdict attached and waits for a person.
+`task_transition` (`to="complete"`) returning `completed: false` is **not** a
+failure to record — the task moves to `in_review` with its verdict attached and
+waits for a person.
 
 ### When nothing seems to be moving
 
-`stalled_work` answers "why is the board stuck?" — lapsed leases, work awaiting a
+`task_query` (`view="stalled"`) answers "why is the board stuck?" — lapsed leases, work awaiting a
 human or a peer agent, deadlocked waits, blocks behind something no agent will
 advance, and paused work. It reports how long each stall has been true and
 deliberately does not decide whether that is too long.
@@ -264,17 +266,19 @@ Two distinctions worth knowing before you start:
 
 ### Which verbs you actually need
 
-Lodestar exposes 85 tools. Almost none are needed on day one:
+Almost none of Lodestar's tools are needed on day one:
 
-- **Day one:** `open_session`, `get_constitution`, `next_task`, `claim_task`,
-  `advise`, `renew_lease`, `evidence_for`, `check_conformance`, `complete_task`,
-  `board`.
-- **When coordinating:** `check_overlap`, `task_scope`, `stalled_work`,
-  `ask_question` / `answer`, `pause_task` / `resume_task`.
+- **Day one:** `open_session`, `get_constitution`, `task_query`, `task_claim`,
+  `advise`, `evidence_for`, `check_conformance`, `task_transition`. `task_query`
+  answers `next` and `board`; `task_claim` covers claim and renew; completing is
+  `task_transition` with `to="complete"`.
+- **When coordinating:** `task_query` (its `overlap`, `scope` and `stalled`
+  views), and `task_transition` with `to="ask"` / `"answer"` / `"pause"` /
+  `"resume"`.
 - **When governing:** the constitution, controls, ratchet, amendment, and waiver
   families above.
 - **When auditing:** `conformance_history`, `export_evidence`,
-  `export_conformance_manifest`, `claim_transfer_history`.
+  `export_conformance_manifest`, and `task_query` (`view="claim_transfers"`).
 
 The [`TOOLS.md`](TOOLS.md) tool tables describe every verb individually;
 this page is the order to call them in.
@@ -285,9 +289,9 @@ Before claiming work with known files or symbols, query both planes and combine
 their results:
 
 ```text
-lodestar.check_overlap(paths=["src/auth.ts"], symbols=[...]) # live declared claims
+lodestar.task_query(view="overlap", paths=["src/auth.ts"], symbols=[...]) # live declared claims
 mindleak.check_overlap(paths=["src/auth.ts"], symbols=[...], session_id) # excludes this session
-claim_task(task_id, paths=["src/auth.ts"], symbols=[...], session_id)
+task_claim(task_id, step="claim", paths=["src/auth.ts"], symbols=[...], session_id)
 ```
 
 Lodestar compares concrete requested paths with path globs declared by active
@@ -326,12 +330,12 @@ Do not assign different symbols in one file to concurrent writers: symbol
 boundaries are not text locks. Serialize them with task dependencies instead:
 
 ```text
-first  = create_task(goal_id, "Edit Router", acceptance = "...")
-second = create_task(goal_id, "Edit helper", acceptance = "...", blocked_by = first.id)
+first  = task_create(goal_id, "Edit Router", acceptance = "...")
+second = task_create(goal_id, "Edit helper", acceptance = "...", blocked_by = first.id)
 
-claim_task(first.id, session_id)
-complete_task(first.id, evidence, check, session_id) # aligned completion opens second
-claim_task(second.id, session_id)
+task_claim(first.id, step = "claim", session_id)
+task_transition(first.id, to = "complete", evidence, check, session_id) # aligned completion opens second
+task_claim(second.id, step = "claim", session_id)
 ```
 
 Only an aligned `done` transition opens the successor; review/violation leaves it
@@ -343,9 +347,9 @@ not a filesystem mutex (ADR-0015).
 
 An expired legacy owner (`<base>` or `<base>-<8hex>`) cannot be silently
 reclaimed by a session-qualified owner. Use
-`recover_claim(task_id, expected_owner, reason, lease_secs, session_id)` after
-the lease/grace window; inspect `claim_transfer_history(task_id)` for the
-append-only prior-owner and evidence-window audit.
+`task_claim(task_id, step="recover", expected_owner, reason, lease_secs, session_id)`
+after the lease/grace window; inspect `task_query(view="claim_transfers", task_id)`
+for the append-only prior-owner and evidence-window audit.
 
 Full tool list: see the **Intent Plane tools** table in
 [../README.md](../README.md); design in
@@ -414,7 +418,7 @@ selecting a default.
 |---|---|---|
 | `LODESTAR_DB` | repository-id store, or workspace-local outside Git | explicit intent database override |
 | `LODESTAR_AGENT` | `agent` | display name only; both planes derive the same identity from the session token alone (ADR-0030, amended by ADR-0054) |
-| `LODESTAR_LLM_URL` | `http://localhost:11434/v1` | OpenAI-compatible server for `decompose_goal` / semantic conformance |
+| `LODESTAR_LLM_URL` | `http://localhost:11434/v1` | OpenAI-compatible server for `task_create` decomposition / semantic conformance |
 | `LODESTAR_MODEL` | `glm4:9b` | model |
 | `LODESTAR_LLM_API_KEY` | *(empty)* | bearer token for hosted servers |
 | `MINDLEAK_HTTP_TIMEOUT_MS` | `30000` | shared HTTP timeout (also honoured here) |
