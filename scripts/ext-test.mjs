@@ -43,6 +43,39 @@ export const suitesFor = (changedPaths, extensionRoot = extension) =>
     ),
   ].sort();
 
+/**
+ * The environment a suite should see, with the caller's context removed.
+ *
+ * Git exports GIT_DIR, GIT_INDEX_FILE and friends to its hooks, and this runs
+ * from pre-push. Inherited by a test that drives git in a temp directory those
+ * variables outrank `cwd`, so git reads the fixture's files and writes to the
+ * REAL repository. The merge-audit suite drives git in exactly that way.
+ *
+ * The publisher's own variables go for the same reason, and that failure is
+ * subtler. `canonical-push` sets MINDLEAK_CANONICAL_PUBLISH while it runs the
+ * pre-push hooks, so a suite asserting that a *direct* invocation is refused
+ * inherits the flag, sees the direct call allowed, and fails — while passing
+ * when run by hand. A runner that changes the answer depending on who invoked
+ * it is worse than one that does not run: it makes a real guard look broken and
+ * sends an author chasing their own tooling.
+ */
+export const scrubbedEnvironment = (source) => {
+  const environment = { ...source };
+  for (const variable of [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "MINDLEAK_CANONICAL_PUBLISH",
+    "PRE_COMMIT_REMOTE_BRANCH",
+  ]) {
+    delete environment[variable];
+  }
+  return environment;
+};
+
 // Importable for its own tests without launching vitest.
 if (process.argv[1] && process.argv[1].endsWith("ext-test.mjs")) {
   const changed = process.argv.slice(2);
@@ -71,21 +104,7 @@ if (process.argv[1] && process.argv[1].endsWith("ext-test.mjs")) {
     process.exit(1);
   }
 
-  // Git exports GIT_DIR, GIT_INDEX_FILE and friends to its hooks, and this runs
-  // from pre-push. Inherited by a test that drives git in a temp directory those
-  // variables outrank `cwd`, so git reads the fixture's files and writes to the
-  // REAL repository. The merge-audit suite drives git in exactly that way.
-  const environment = { ...process.env };
-  for (const variable of [
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_COMMON_DIR",
-    "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-  ]) {
-    delete environment[variable];
-  }
+  const environment = scrubbedEnvironment(process.env);
 
   console.log(
     `ext-test: running ${suites.length} extension suite(s) over the changed modules`,
