@@ -82,7 +82,7 @@ impl GraphStore {
                 },
                 _ => (rest.to_string(), String::new()),
             };
-            let relative = repo_relative(&path, Some(root));
+            let relative = repo_relative(&path, &[root]);
             if relative != path {
                 out.push((id.clone(), format!("{prefix}:{relative}{suffix}")));
             }

@@ -45,6 +45,45 @@ test("a link to a missing file is broken, and names its location", () => {
   assert.match(broken[0].target, /graph\.rs/);
 });
 
+test("a link inside an inline code span is an example, not a broken link", () => {
+  // The exact case that blocked #234: an illustrative rename written as a link.
+  const broken = brokenLinksIn(
+    "changelog.d/x.md",
+    "Renaming orphaned every `[ADR-00NN](00NN-old-slug.md)` inbound link.",
+    tree,
+  );
+  assert.equal(broken.length, 0);
+});
+
+test("a real link outside the code span on the same line is still checked", () => {
+  const broken = brokenLinksIn(
+    "docs/USAGE.md",
+    "example `[x](00NN-old-slug.md)`, but see [gone](missing-file.md) too",
+    tree,
+  );
+  assert.equal(broken.length, 1);
+  assert.match(broken[0].target, /missing-file\.md/);
+});
+
+test("a link inside a fenced code block is skipped", () => {
+  const broken = brokenLinksIn(
+    "docs/USAGE.md",
+    ["Example:", "```md", "[x](does-not-exist.md)", "```", "done"].join("\n"),
+    tree,
+  );
+  assert.equal(broken.length, 0);
+});
+
+test("a broken link after a closed fence is still caught", () => {
+  const broken = brokenLinksIn(
+    "docs/USAGE.md",
+    ["```", "[x](in-fence.md)", "```", "[y](out-of-fence.md)"].join("\n"),
+    tree,
+  );
+  assert.equal(broken.length, 1);
+  assert.match(broken[0].target, /out-of-fence\.md/);
+});
+
 test("a root-relative target that exists from the repo root is accepted", () => {
   // From docs/USAGE.md this does not resolve file-relative, but the repo mixes
   // conventions and it resolves from root; flagging that would be noise.

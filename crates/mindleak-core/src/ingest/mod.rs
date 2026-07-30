@@ -24,31 +24,45 @@ pub(crate) fn normalize_path(path: &str) -> String {
     path.replace('\\', "/")
 }
 
-/// Normalise a path *and* make it relative to `root` when it sits inside it.
+/// Normalise a path *and* make it relative to whichever `root` contains it.
 ///
 /// Node ids are repo-relative by contract. Editor sensors report absolute
 /// paths, and every worktree of a repository shares one graph (ADR-0038), so an
 /// absolute id splits a single file across as many identities as there are
 /// checkouts -- fragmenting its history, its reinforcement, and its governance.
 ///
-/// A path outside `root`, or a root that was never declared, is returned
+/// All of a repository's worktree roots are candidates, not just the server's
+/// own. A file saved in a sibling checkout is the same file, and refusing it
+/// loses it entirely: measured 2026-07-30, 203 of 291 ingest calls were refused
+/// for exactly that reason. Rooting each window at its own worktree (ADR-0073)
+/// is the cheaper fix, but it depends on an operational habit; this makes the
+/// answer the same whichever window did the saving.
+///
+/// The longest matching root wins, and a root only matches on a path boundary,
+/// so `.../MindLeak` never swallows a path under `.../MindLeak-build`.
+///
+/// A path outside every root, or a call with no roots at all, is returned
 /// normalised but otherwise untouched: guessing a relative form for something
 /// that is genuinely elsewhere would invent a file that does not exist.
-pub(crate) fn repo_relative(path: &str, root: Option<&str>) -> String {
+pub(crate) fn repo_relative(path: &str, roots: &[&str]) -> String {
     let normalized = normalize_path(path);
-    let Some(root) = root.map(normalize_path) else {
-        return normalized;
-    };
-    let root = root.trim_end_matches('/');
-    if root.is_empty() {
-        return normalized;
-    }
     // Windows paths are case-insensitive and arrive with either drive casing,
     // so compare case-insensitively while keeping the caller's own spelling.
     let candidate = normalized.to_ascii_lowercase();
-    let prefix = format!("{}/", root.to_ascii_lowercase());
-    match candidate.strip_prefix(&prefix) {
-        Some(_) => normalized[prefix.len()..].to_string(),
+    let mut matched = None;
+    for root in roots {
+        let root = normalize_path(root);
+        let root = root.trim_end_matches('/');
+        if root.is_empty() {
+            continue;
+        }
+        let prefix = format!("{}/", root.to_ascii_lowercase());
+        if candidate.starts_with(&prefix) && matched.is_none_or(|best| prefix.len() > best) {
+            matched = Some(prefix.len());
+        }
+    }
+    match matched {
+        Some(len) => normalized[len..].to_string(),
         None => normalized,
     }
 }
@@ -118,39 +132,95 @@ mod tests {
         // absolute id splits a file across as many identities as there are
         // checkouts. Measured before the fix: 871 absolute ids across 7
         // worktrees, 590 files living under two identities at once.
-        let build = Some("C:/Users/lyndonswan/Repos/MindLeak-build");
-        let gap = Some("C:/Users/lyndonswan/Repos/MindLeak-gap");
+        let build = ["C:/Users/lyndonswan/Repos/MindLeak-build"];
+        let gap = ["C:/Users/lyndonswan/Repos/MindLeak-gap"];
 
         assert_eq!(
-            repo_relative("C:/Users/lyndonswan/Repos/MindLeak-build/AGENTS.md", build),
+            repo_relative("C:/Users/lyndonswan/Repos/MindLeak-build/AGENTS.md", &build),
             "AGENTS.md"
         );
         // Two different checkouts must resolve to the same node id.
         assert_eq!(
-            repo_relative("C:\\Users\\lyndonswan\\Repos\\MindLeak-gap\\AGENTS.md", gap),
-            repo_relative("C:/Users/lyndonswan/Repos/MindLeak-build/AGENTS.md", build)
+            repo_relative(
+                "C:\\Users\\lyndonswan\\Repos\\MindLeak-gap\\AGENTS.md",
+                &gap
+            ),
+            repo_relative("C:/Users/lyndonswan/Repos/MindLeak-build/AGENTS.md", &build)
+        );
+    }
+
+    /// Regression: a file saved in a sibling worktree was refused, so it never
+    /// reached the graph at all.
+    ///
+    /// What went wrong: only the server's own workspace root was a candidate, so
+    /// a path under any other worktree of the SAME repository stayed absolute
+    /// and the ingest guard then refused it.
+    ///
+    /// Impact, measured 2026-07-30: 203 of 291 `ingest_file` calls were refused
+    /// (69.8%), naming paths like
+    /// `c:/Users/lyndonswan/Repos/MindLeak-rustimports/scripts/silent-knowledge.mjs`.
+    /// Every worktree of a repository shares one graph (ADR-0038), so those were
+    /// files this graph should hold, dropped on the floor. Rooting each window
+    /// at its own worktree (ADR-0073) fixes it at the source, but that depends on
+    /// an operational habit; this makes the answer the same either way.
+    #[test]
+    fn a_path_from_a_sibling_worktree_resolves_to_the_same_id() {
+        let roots = [
+            "C:/Users/lyndonswan/Repos/MindLeak",
+            "C:/Users/lyndonswan/Repos/MindLeak-rustimports",
+            "C:/Users/lyndonswan/Repos/MindLeak-build",
+        ];
+
+        // The server is rooted at the primary checkout; the file was saved in a
+        // sibling. It is still this repository's file.
+        assert_eq!(
+            repo_relative(
+                "c:/Users/lyndonswan/Repos/MindLeak-rustimports/scripts/silent-knowledge.mjs",
+                &roots
+            ),
+            "scripts/silent-knowledge.mjs"
+        );
+
+        // Every worktree agrees on the id, which is the whole point.
+        assert_eq!(
+            repo_relative("C:/Users/lyndonswan/Repos/MindLeak-build/AGENTS.md", &roots),
+            repo_relative("C:/Users/lyndonswan/Repos/MindLeak/AGENTS.md", &roots)
+        );
+
+        // The longest match wins on a path boundary, so the primary checkout
+        // never swallows a sibling whose name merely extends it. Getting this
+        // wrong would silently produce `-rustimports/scripts/...` as an id.
+        assert_eq!(
+            repo_relative("C:/Users/lyndonswan/Repos/MindLeak-build/x.rs", &roots),
+            "x.rs"
+        );
+
+        // A path under no root of this repository is still not placeable.
+        assert_eq!(
+            repo_relative("C:/Users/lyndonswan/Repos/SomethingElse/x.rs", &roots),
+            "C:/Users/lyndonswan/Repos/SomethingElse/x.rs"
         );
     }
 
     #[test]
     fn repo_relative_leaves_alone_what_it_cannot_place() {
-        let root = Some("C:/Users/lyndonswan/Repos/MindLeak-build");
+        let root = ["C:/Users/lyndonswan/Repos/MindLeak-build"];
 
         // Already relative: untouched apart from separators.
-        assert_eq!(repo_relative("crates\\x\\lib.rs", root), "crates/x/lib.rs");
+        assert_eq!(repo_relative("crates\\x\\lib.rs", &root), "crates/x/lib.rs");
         // Genuinely outside the checkout: inventing a relative form would name a
         // file that does not exist.
         assert_eq!(
-            repo_relative("D:/other/thing.rs", root),
+            repo_relative("D:/other/thing.rs", &root),
             "D:/other/thing.rs"
         );
         // A sibling whose name merely starts the same way is not inside it.
         assert_eq!(
-            repo_relative("C:/Users/lyndonswan/Repos/MindLeak-build-2/x.rs", root),
+            repo_relative("C:/Users/lyndonswan/Repos/MindLeak-build-2/x.rs", &root),
             "C:/Users/lyndonswan/Repos/MindLeak-build-2/x.rs"
         );
         // No declared root: nothing to strip.
-        assert_eq!(repo_relative("C:/anywhere/x.rs", None), "C:/anywhere/x.rs");
+        assert_eq!(repo_relative("C:/anywhere/x.rs", &[]), "C:/anywhere/x.rs");
     }
 
     #[test]
@@ -186,7 +256,7 @@ mod tests {
         assert_eq!(
             repo_relative(
                 "c:/users/lyndonswan/Repos/MindLeak-build/src/x.rs",
-                Some("C:/Users/lyndonswan/Repos/MindLeak-build/")
+                &["C:/Users/lyndonswan/Repos/MindLeak-build/"]
             ),
             "src/x.rs"
         );
