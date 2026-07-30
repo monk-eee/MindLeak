@@ -14,7 +14,7 @@ New here? Start with **[QUICKSTART.md](QUICKSTART.md)** to get running, then
 
 | Tool | Purpose |
 |---|---|
-| `open_session` | Register a client-minted 128-bit session id and return its stable cross-plane agent identity; required before identity-bearing calls (ADR-0030). Optionally declares the session's `branch` / `head_sha` / `base` / `dirty` working context (ADR-0035). |
+| `open_session` | Register a client-minted 128-bit session id and return its stable cross-plane agent identity; required before identity-bearing calls (ADR-0030). Optionally declares the session's `branch` / `head_sha` / `base` / `dirty` working context (ADR-0035). Also carries what the agent should know on pickup: `stale_build` when this binary is behind its checkout, `waiting_on_you` and `paused_by_you` for work addressed to this agent, and `awaiting_a_human` — work that completed into `in_review` and can only be moved by a person. That last one is fleet-level rather than addressed, because completing clears the owner and a human has no agent id (ADR-0046), so it belongs to nobody; the agent is told because the agent is the only thing the human talks to. Each field appears only when it has something to say. |
 | `graph_multi_hop_query` | Traverse N hops from a seed node/phrase, decay-filtered. |
 | `get_impact_radius` | Blast radius of editing a file/symbol. |
 | `check_overlap` | Read-only, decay-aware footprint of other agents on concrete paths / symbol ids; combine with Lodestar's same-named claim check (ADR-0024). |
