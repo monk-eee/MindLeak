@@ -1,5 +1,5 @@
 - **Five tasks are finished and waiting on a human, and nothing tells the
-  human — MEASURED, OPEN.** A conformance verdict of `drift` or `needs_human`
+  human — FIXED.** A conformance verdict of `drift` or `needs_human`
   completes a task into `in_review` rather than `done`, which is the honest
   outcome and by design (ADR-0009). Only a person can finish it, with
   `task_transition to:"resolve"` under a reviewer label that must differ from
@@ -22,3 +22,10 @@
   would cost nothing and close it. Until then the review queue grows silently,
   and the failure mode is not a wrong verdict but an accurate one that no one
   ever acts on.
+
+  Closed by `awaiting_a_human` on `open_session`. It is a filter over
+  `stalled_work`'s existing `awaiting_human` rule rather than a second query,
+  so the two surfaces cannot disagree about what waiting on a person means, and
+  it lives on the facade so the fact is available to any caller rather than
+  only to that response. It says nothing when the queue is empty, because a
+  field that always appears is one readers learn to scroll past.
