@@ -350,6 +350,7 @@ export function smokeServer(
         MINDLEAK_LOG: "off",
         MINDLEAK_AUTONOMOUS_PRUNE: "false",
         MINDLEAK_AUTONOMOUS_CONSOLIDATION: "false",
+        MINDLEAK_AUTONOMOUS_INDEX: "false",
       },
       stdio: ["pipe", "pipe", "pipe"],
     });
