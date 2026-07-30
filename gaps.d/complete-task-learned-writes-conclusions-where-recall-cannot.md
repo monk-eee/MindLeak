@@ -37,3 +37,22 @@
   embedding index for knowledge, or `learned` also records a MindLeak node, or
   the two stores are deliberately different things and ADR-0053 decision 4
   should be narrowed to say so. Recorded rather than guessed at.
+
+  **The constraint that decides between them, measured from the manifests.**
+  `mindleak-core` is a **dev-dependency only** of `lodestar-core`, so Lodestar's
+  runtime cannot write a MindLeak node or reach its embedder. That decoupling is
+  deliberate under ADR-0004, not an oversight to patch around.
+  So the second option is infeasible as written — having `learned` record a
+  MindLeak node means promoting that dependency and coupling the Intent Plane to
+  the Memory Plane. There is a variant this entry did not consider that costs no
+  coupling at all: the **client** calls `record_architectural_decision` after
+  completing, which is a convention rather than an architectural change, and has
+  a working precedent in the one verb that is already recallable.
+  The first option is cheaper than it reads. Embeddings are produced over HTTP
+  against an OpenAI-compatible endpoint (`MINDLEAK_EMBED_URL`, default
+  `http://localhost:11434/v1`) rather than by a linked-in model, and Lodestar
+  already depends on `ureq` — so it needs no new dependency. Its real cost is a
+  second vector store to keep honest, and a second thing that degrades when no
+  embedder is reachable.
+  Still not selected here: this narrows the choice to two viable shapes and
+  leaves the judgement where it belongs.
