@@ -86,7 +86,7 @@ test("an answer without a tools array is an error", () => {
 test("both planes are measured and summed", () => {
   const surfaces = {
     "mindleak-mcp": [tool("recall"), tool("index")],
-    "lodestar-mcp": [tool("next_task")],
+    "lodestar-mcp": [tool("task_query")],
   };
   const measured = measure("/repo", {
     locate: (_root, plane) => `${plane}-mcp`,
