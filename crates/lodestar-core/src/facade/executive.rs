@@ -631,6 +631,79 @@ mod tests {
         assert!(e.existing_work(None, &[]).unwrap().is_empty());
     }
 
+    /// An amendment re-issues every clause as `goal:<slug>@constitution:vN`,
+    /// so the id a task was created under yesterday is not the id its successor
+    /// is created under today. Matching goals with an exact string compare
+    /// therefore hides the completed work from the retry, and reports
+    /// `already_serving_this_goal: 0` for work that plainly exists — which is
+    /// the same defect as the binding comparison fixed earlier, in a second
+    /// place that was never migrated. `goal_slug` already exists and
+    /// `store::goals` already uses it.
+    ///
+    /// Measured on the live board: 11 titles were created more than once across
+    /// 29 tasks, and 5 of those spread their attempts across ids sharing one
+    /// slug. "Carry controls across an amendment" was created six times — the
+    /// one that finished under `@constitution:v2`, and five abandoned retries
+    /// under the bare slug, every one of them blind to the finished work.
+    #[test]
+    fn existing_work_finds_prior_work_across_a_constitution_amendment() {
+        let e = engine();
+        let goal = e
+            .define_goal(GoalKind::Objective, "Carry controls", "carry them", None)
+            .unwrap();
+        // The same clause re-issued into an amendment: same slug, versioned id.
+        let carried = e
+            .store
+            .define_clause_in_version(
+                GoalKind::Constraint,
+                "Carry controls",
+                "carry them",
+                "constitution:v2",
+                1_000,
+            )
+            .unwrap();
+        assert_eq!(carried.slug, goal.slug, "the amendment keeps the slug");
+        assert_ne!(carried.id, goal.id, "and changes the id");
+
+        let finished = e
+            .store
+            .create_task(
+                &carried.id,
+                "Carry controls across an amendment",
+                "done",
+                None,
+                1_000,
+            )
+            .unwrap();
+
+        // The retry names the bare slug, which is what an agent reaching for
+        // the goal by name actually passes.
+        let found = e.existing_work(Some(&goal.id), &[]).unwrap();
+        assert!(
+            found.iter().any(|t| t.id == finished.id),
+            "the retry must see the work already finished under the versioned id"
+        );
+
+        // And the reverse: work created under the bare slug is visible to a
+        // task asking under the versioned id.
+        let bare = e
+            .store
+            .create_task(
+                &goal.id,
+                "Carry controls across an amendment",
+                "done",
+                None,
+                1_001,
+            )
+            .unwrap();
+        let both = e.existing_work(Some(&carried.id), &[]).unwrap();
+        let ids: Vec<&str> = both.iter().map(|t| t.id.as_str()).collect();
+        assert!(
+            ids.contains(&finished.id.as_str()) && ids.contains(&bare.id.as_str()),
+            "both forms of the same goal are the same goal: {ids:?}"
+        );
+    }
+
     /// ADR-0046 gave agents a way to address a peer and nothing ever used it:
     /// in an eight-hour session `pending_questions` stayed empty while five
     /// tasks waited on a human. Nothing surfaced that there *was* a question to
