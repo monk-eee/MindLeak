@@ -68,8 +68,16 @@ export class DesignBoardController {
       return;
     }
     try {
+      // The actionable view, not the durable record: proposed ADRs awaiting a
+      // human decision plus accepted designs awaiting or retrying promotion.
+      // `ledger` returns everything ever decided, and the decoration below then
+      // costs one further call per finished design. Measured against the live
+      // ledger: 75 rows rendered of which 5 were actionable, at 70 MCP calls a
+      // refresh — and the refresh is wired to a file watcher over docs/adr, so
+      // every ADR touch paid it again. This is the board those 5 belong to; the
+      // durable record is still `view: "ledger"` for anything auditing it.
       const designs = (await this.client.callTool("design_query", {
-        view: "ledger",
+        view: "board",
       })) as DesignItem[];
       const materialized = designs.filter((design) => design.promotion_status === "materialized");
       // One unreadable promotion must not blank the whole board. `Promise.all`
