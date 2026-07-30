@@ -1,5 +1,5 @@
-- **42% of what this repository has learned can never be read — MEASURED,
-  PARTLY FIXED.** The conformance advisory matches recorded knowledge on
+- **New silent knowledge is guarded; 63 existing records remain unreadable —
+  MEASURED, PARTLY FIXED, OPEN.** The conformance advisory matches recorded knowledge on
   referenced nodes and nothing else, so a record whose evidence carries no
   `nodes` array is stored, counted, decayed, and structurally incapable of
   reaching any agent. Measured 2026-07-30 with `active_knowledge`: **63 of 149
