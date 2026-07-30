@@ -23,15 +23,29 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-let DatabaseSync;
-try {
-  ({ DatabaseSync } = await import("node:sqlite"));
-} catch {
-  console.error(
-    "silent-knowledge: this needs Node's built-in sqlite (Node 22.5+). Upgrade Node, or pass --db to a build that has it.",
-  );
-  process.exit(2);
-}
+/**
+ * The sqlite driver, loaded only when this actually reads the ledger.
+ *
+ * It used to be imported at the top of the module, with `process.exit(2)` in
+ * the catch. That runs on *import*, so merely importing the pure helpers to
+ * test them killed the process on any Node without built-in sqlite — green on
+ * Node 24 here, exit 1 on the Node 20 CI pins, and the failure named the test
+ * file rather than the cause. A module that ends the process as a side effect
+ * of being loaded cannot be tested, and the environment decides whether you
+ * find out.
+ */
+const openLedger = async (dbPath) => {
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = await import("node:sqlite"));
+  } catch {
+    console.error(
+      "silent-knowledge: this needs Node's built-in sqlite (Node 22.5+). Upgrade Node, or pass --db to a build that has it.",
+    );
+    process.exit(2);
+  }
+  return new DatabaseSync(dbPath, { readOnly: true });
+};
 
 const argv = process.argv.slice(2);
 const check = argv.includes("--check");
@@ -132,7 +146,7 @@ export const summarise = (records) => {
 
 if (import.meta.filename === process.argv[1]) {
   const dbPath = resolveDb();
-  const db = new DatabaseSync(dbPath, { readOnly: true });
+  const db = await openLedger(dbPath);
   const records = db
     .prepare(
       "select id, statement, evidence, weight, half_life_hours, confirmed_at from knowledge",

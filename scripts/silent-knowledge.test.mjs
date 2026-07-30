@@ -8,6 +8,7 @@
 // pre-flight, which is precisely the lesson that would have prevented several
 // of the day's drift verdicts.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { test } from "node:test";
 
 import {
@@ -16,6 +17,36 @@ import {
   referencedNodes,
   summarise,
 } from "./silent-knowledge.mjs";
+
+/// Importing this module must not end the process.
+///
+/// The sqlite driver was imported at the top of the module with
+/// `process.exit(2)` in the catch, which runs on *import*. So loading the pure
+/// helpers to test them killed the process on any Node without built-in
+/// sqlite: green on Node 24 locally, exit 1 on the Node 20 that CI pins, and
+/// the failure named this test file rather than the cause. The driver is now
+/// loaded only on the path that reads the ledger.
+///
+/// Checked in a child process with the module's own import stripped of
+/// anything sqlite-shaped, because a test that has already imported the module
+/// cannot observe what importing it does.
+test("importing the module never ends the process, with or without sqlite", () => {
+  const probe =
+    "import('./scripts/silent-knowledge.mjs')" +
+    ".then((m) => { if (typeof m.isSilent !== 'function') { process.exit(9); } })";
+
+  const output = execFileSync(
+    process.execPath,
+    ["--input-type=module", "-e", probe],
+    { encoding: "utf8", stdio: "pipe" },
+  );
+
+  assert.equal(
+    output.includes("needs Node's built-in sqlite"),
+    false,
+    "importing must not print the CLI's driver error",
+  );
+});
 
 test("a record naming nodes is readable", () => {
   const evidence = JSON.stringify({ nodes: ["artifact:src/a.rs"] });
