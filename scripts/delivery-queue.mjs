@@ -51,6 +51,22 @@ export const checksRunning = (pr) =>
 export const checksFailing = (pr) =>
   (pr.statusCheckRollup ?? []).filter(isFailing);
 
+/**
+ * A head no check run has reported against at all.
+ *
+ * This has to be its own question because an empty rollup answers "anything
+ * running?" and "anything failing?" exactly as a fully green one does, so a
+ * branch whose workflow never fired is otherwise indistinguishable from a
+ * branch that passed everything.
+ */
+export const checksAbsent = (pr) => (pr.statusCheckRollup ?? []).length === 0;
+
+/**
+ * No verdict yet, for either reason: a check is still running, or none has
+ * started. Both are worth waiting for, and both must age out.
+ */
+export const verdictPending = (pr) => checksRunning(pr) || checksAbsent(pr);
+
 /** A pull request is in the queue when its author has armed it (ADR-0045). */
 export const isQueued = (pr) => Boolean(pr.autoMergeRequest);
 
@@ -103,7 +119,10 @@ export function nextAction(prs, now, { stalledAfterMs = 45 * 60 * 1000 } = {}) {
   // the day this was written three of five open pull requests were invisible
   // here, and no change to the ordering could ever have reached them.
   const unqueued = prs.filter((pr) => !isQueued(pr));
-  const context = { queued, blocked, failing, unqueued };
+  // Armed, current, and carrying no check runs at all. The queue cannot start a
+  // workflow, but it can stop this reading as an ordinary wait.
+  const silent = queued.filter((pr) => isUpToDate(pr) && checksAbsent(pr));
+  const context = { queued, blocked, failing, unqueued, silent };
 
   if (queued.length === 0) {
     return { kind: "idle", reason: "nothing armed", ...context };
@@ -126,7 +145,7 @@ export function nextAction(prs, now, { stalledAfterMs = 45 * 60 * 1000 } = {}) {
   // land. Updating anything now would only make it stale behind that merge.
   const landing = queued.find(
     (pr) =>
-      isUpToDate(pr) && checksRunning(pr) && checksFailing(pr).length === 0,
+      isUpToDate(pr) && verdictPending(pr) && checksFailing(pr).length === 0,
   );
   if (landing) {
     const since = Date.parse(landing.updatedAt ?? landing.createdAt ?? 0) || 0;
@@ -146,11 +165,17 @@ export function nextAction(prs, now, { stalledAfterMs = 45 * 60 * 1000 } = {}) {
   // agent; it must not hold up everything behind it. A branch whose checks are
   // still running is skipped too — updating it again would only restart the run
   // we just decided to stop waiting for.
+  // A branch still behind the base is updated whatever its rollup says -- the
+  // update is itself what triggers the run it is missing. Only the up-to-date
+  // arm excludes a silent head, because there the queue has nothing left to do
+  // that could produce one, and falling through to `wait` is the wedge.
   const next = queued.find(
     (pr) =>
       !checksRunning(pr) &&
       (pr.mergeStateStatus === "BEHIND" ||
-        (isUpToDate(pr) && checksFailing(pr).length === 0)),
+        (isUpToDate(pr) &&
+          !checksAbsent(pr) &&
+          checksFailing(pr).length === 0)),
   );
   if (!next) {
     return {
@@ -192,6 +217,13 @@ export function describe(action) {
   for (const pr of action.blocked) {
     lines.push(
       `   #${pr.number} has a real conflict; it needs its own worktree, not the queue`,
+    );
+  }
+  // "Waiting on GitHub to merge it" and "no workflow ever ran" were the same
+  // line, which is what made a silent head able to hold the queue unnoticed.
+  for (const pr of action.silent ?? []) {
+    lines.push(
+      `   #${pr.number} is armed and up to date but no check has reported; nothing will merge it until one does`,
     );
   }
   // An unarmed pull request is not last in the queue, it is absent from it, and
