@@ -185,8 +185,8 @@ const readLedger = () =>
         `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`,
       );
       const result = await send("tools/call", {
-        name: "list_designs",
-        arguments: {},
+        name: "design_query",
+        arguments: { view: "ledger" },
       });
       const text = result?.content?.[0]?.text;
       if (typeof text !== "string")
