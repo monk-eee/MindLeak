@@ -1,32 +1,35 @@
-- **Goal-to-code bindings are file-level and fixed to the tree as it was, so
-  correct work reports as ungoverned — MEASURED, OPEN.** `link_goal_to_artifact`
-  binds a whole file, and bindings are applied to the files that existed when
-  somebody ran the binding. Two consequences, both of which make a conformance
-  verdict say something other than what it means.
+- **Newly added modules arrive bound to no goal, and nothing reports it —
+  MEASURED, OPEN.** `link_goal_to_artifact` binds whole files, and bindings are
+  applied to the files that existed when somebody last ran the binding. So the
+  ungoverned set grows with the codebase: `scripts/binding-audit.mjs` reports
+  12 unbound source files today, among them
+  `crates/mindleak-core/src/ingest/structure/rust.rs` and
+  `crates/mindleak-core/src/graph/repair/collapse.rs`, both added recently.
+  Nothing surfaces that until a person runs the audit by hand, and a file bound
+  to nothing produces receipts that cover nothing. The honest options are
+  symbol-level bindings or a binding step that runs against new files as they
+  land; both are design decisions rather than backlog items.
 
-  A file bound to one goal reports *any* change to it as touching that goal.
-  `crates/lodestar-mcp/src/tools/mod.rs` carries a binding to
-  `goal:durable-intent-plane`, so a task serving a different goal that edits
-  the session tables in that file lands `drift` — "governed code changed
-  without a covering task" — even though the change is exactly what the task
-  asked for. There is no verb that adds coverage after a claim; `also_serves`
-  must be declared at `task_create` (ADR-0041), so by the time the verdict
-  explains the problem it is already too late to fix it on that task.
+  **CORRECTION.** An earlier version of this entry also blamed `drift` and
+  `needs_human` verdicts on binding granularity, and said work that "plainly
+  served its goal" was being reported wrongly. That was false, and it was
+  recorded before it was checked. Running `advise` on the same files afterwards
+  predicted the exact verdict *before any work had happened*: "this change is
+  governed by `goal:durable-intent-plane...` but no covering task claims it —
+  it would drift; get a covering task or review before acting", naming both
+  `crates/lodestar-mcp/src/tools/mod.rs` and `knowledge.rs`. The engine was
+  right every time. Those tasks carried the wrong `goal_id` because the
+  ADR-0029 pre-flight, which AGENTS.md marks non-negotiable, was skipped.
 
-  And a file bound to nothing reports as covering nothing. Measured across four
-  task closures on 2026-07-30, two came back `needs_human` with "evidence does
-  not touch code bound to the task goal" for work that plainly served its goal.
-  An earlier measurement in this file recorded the scale: 8 governed nodes at
-  03:37Z rising to 161 by 09:29Z, with 72 of 172 receipts still covering
-  nothing. `scripts/binding-audit.mjs` re-measures it.
-
-  The structural half is the part that will not fix itself: because bindings
-  are applied to the tree as it was, **every newly added module arrives
-  ungoverned**, and nothing reports that until a person runs the audit by hand.
-  So the ungoverned set grows with the codebase while the receipts quietly get
-  weaker. The honest options are symbol-level bindings, or a binding step that
-  runs against new files as they land. Both are design decisions rather than
-  backlog items, which is why this is recorded rather than patched: raising
-  each verdict individually would only teach agents that `needs_human` is
-  noise to be worked around, and that is the one reading that must not become
-  true.
+  What survives from that half is one structural finding a reader can act on:
+  the warning is not reachable at the moment it can be used. `advise` computes
+  the drifting set, but `task_claim` cannot — it answers through
+  `code_for_goal(task.goal_id)`, so it lists what your *own* goal binds and
+  structurally cannot report that a declared path is bound to another goal,
+  which is the only set that drifts you. A quiet claim therefore reads as
+  "nothing governs this". And `also_serves` is fixed at `task_create`
+  (ADR-0041) with no verb to add it later, while `paths` are only declared at
+  claim — so even a perfect warning at claim time arrives after the last moment
+  it could have been acted on, leaving abandon-and-recreate as the only repair.
+  Note also that `drift` and `needs_human` both land `in_review`, so
+  reclassifying the verdict would change nothing; only `aligned` completes.

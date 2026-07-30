@@ -1,6 +1,6 @@
 # ADR-0060: Work whose product is not code must still be able to conform
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-29
 - Related: [ADR-0009](0009-evidence-backed-conformance.md) (evidence-backed
   conformance),

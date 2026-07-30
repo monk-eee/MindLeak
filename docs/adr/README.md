@@ -67,19 +67,20 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0057](0057-work-already-done-is-a-collision.md) | Work already done is a collision the fleet cannot see | Accepted |
 | [0058](0058-work-that-shipped-must-leave-the-board.md) | Work that shipped must be able to leave the board | Accepted |
 | [0059](0059-the-tool-surface-is-a-vocabulary.md) | The tool surface is a vocabulary, not an inventory | Accepted |
-| [0060](0060-work-whose-product-is-not-code-must-still-conform.md) | Work whose product is not code must still be able to conform | Proposed |
+| [0060](0060-work-whose-product-is-not-code-must-still-conform.md) | Work whose product is not code must still be able to conform | Accepted |
 | [0061](0061-delivery-is-queued-not-raced.md) | Delivery is queued, not raced | Accepted (remedy blocked) |
-| [0062](0062-the-delivery-queue-is-ours-to-run.md) | The delivery queue is ours to run | Proposed |
+| [0062](0062-the-delivery-queue-is-ours-to-run.md) | The delivery queue is ours to run | Accepted |
 | [0063](0063-a-migration-may-tidy-the-past-never-the-present.md) | A migration may tidy the past, never the present | Accepted |
 | [0064](0064-the-log-is-the-ledger.md) | The log is the ledger | Accepted |
 | [0065](0065-completion-belongs-at-the-publication-boundary.md) | Completion belongs at the publication boundary | Accepted |
-| [0066](0066-retrieval-rides-on-the-question-already-asked.md) | Retrieval rides on the question already asked | Proposed |
+| [0066](0066-retrieval-rides-on-the-question-already-asked.md) | Retrieval rides on the question already asked | Accepted |
 | [0067](0067-a-claim-is-a-statement-that-you-are-working-on-something.md) | A claim is a statement that you are working on something | Accepted |
-| [0068](0068-an-amendment-carries-the-work-it-renames.md) | An amendment carries the work it renames | Proposed |
+| [0068](0068-an-amendment-carries-the-work-it-renames.md) | An amendment carries the work it renames | Accepted |
 | [0069](0069-resolutions-that-predate-attribution-are-accepted-as-historical.md) | Resolutions that predate attribution are accepted as historical | Accepted |
 | [0070](0070-paused-work-must-find-its-owner-or-a-successor.md) | Paused work must find its owner or a successor | Accepted |
 | [0071](0071-task-resolution-records-an-unverified-reviewer-label.md) | Task resolution records an unverified reviewer label | Accepted |
 | [0072](0072-an-advisory-informs-it-does-not-cap-the-verdict.md) | An advisory informs; it does not cap the verdict | Proposed |
+| [0073](0073-each-window-roots-its-servers-at-the-worktree-it-edits.md) | Each window roots its servers at the worktree it edits | Accepted |
 
 ## Writing a new ADR
 
