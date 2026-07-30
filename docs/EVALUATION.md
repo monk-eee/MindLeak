@@ -404,3 +404,48 @@ That platform gap is task:4cef8e361fc7; task:8000f45e0dfd will register the
 reviewed budget after it lands. Until then the number is measured and published
 but not enforced, rather than being papered over by binding the ratchet to an
 unrelated clause.
+
+## PR effectiveness telemetry
+
+`scripts/evaluate-pr-effectiveness.mjs` turns the earlier one-off production
+audit into a bounded, repeatable report. It reads the latest pull-request cohort
+from GitHub, reads task/thread/conformance projections from Lodestar, and reads
+one MindLeak telemetry snapshot. It writes timestamped JSON plus a concise
+Markdown summary under `target/telemetry/`.
+
+```bash
+node scripts/evaluate-pr-effectiveness.mjs --limit=50
+```
+
+The script requires an authenticated `gh` CLI and reachable MindLeak/Lodestar
+servers. `--limit` accepts 1-100 and bounds GitHub collection. Nested PR commits
+and checks are fetched per PR so the default 50-item cohort stays below GitHub's
+GraphQL node budget on every platform. Override the output directory with
+`--output-dir=<path>`.
+
+The report keeps three evidence tiers separate:
+
+1. **Runtime health** reports lifetime event/error counts, current failing-tool
+  count, recent latency and redacted recent errors, dashboard polling share,
+  and per-session memory-read-before-first-write adoption.
+2. **Production PR correlation** links a PR to tasks only through explicit
+  branch equality, a PR reference in the durable task thread, or a conformance
+  evidence commit present in the PR. It reports check completeness, claim
+  timing, conformance receipt categories/causes, human-resolution rate, and
+  reconciliation merge churn. Missing required checks are unknown, never
+  green.
+3. **Controlled synthetic** exercises those linkage and missing-data rules with
+  deterministic fixtures. It proves aggregation behavior, not product efficacy.
+
+MindLeak tool events do **not** carry PR ids. The production tier therefore
+reports unlinked PRs and unknown claim timing rather than inferring attribution.
+Historical tasks written before evidence-window timestamps commonly remain
+unknown. A live validation on 2026-07-30 linked 48 of 50 PRs with zero collection
+warnings, zero self-validation failures, and all three synthetic gates green;
+that moving cohort is an operational sample, not a committed benchmark baseline.
+
+The harness stores no prompts, secrets, source, or model reasoning. It does not
+emit task-thread text or raw conformance evidence. Recent telemetry errors retain
+only timestamp, tool name, and an explicit category. MCP reads do append the
+server's normal tool-call telemetry after the snapshot; the report names that
+observer effect and describes the instant immediately before it.
