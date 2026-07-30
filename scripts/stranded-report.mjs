@@ -208,7 +208,7 @@ async function main() {
   );
   await call("open_session", { session_id: session });
 
-  const board = await call("board", {});
+  const board = await call("task_query", { view: "board" });
   const now = Math.floor(Date.now() / 1000);
   const stranded = (Array.isArray(board) ? board : Object.values(board)).filter(
     (t) => t.status === "claimed" && (t.lease_expires_at ?? 0) < now,
