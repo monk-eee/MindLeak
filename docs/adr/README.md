@@ -79,6 +79,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0069](0069-resolutions-that-predate-attribution-are-accepted-as-historical.md) | Resolutions that predate attribution are accepted as historical | Accepted |
 | [0070](0070-paused-work-must-find-its-owner-or-a-successor.md) | Paused work must find its owner or a successor | Accepted |
 | [0071](0071-task-resolution-records-an-unverified-reviewer-label.md) | Task resolution records an unverified reviewer label | Accepted |
+| [0072](0072-an-advisory-informs-it-does-not-cap-the-verdict.md) | An advisory informs; it does not cap the verdict | Proposed |
 
 ## Writing a new ADR
 

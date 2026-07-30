@@ -7,6 +7,30 @@ export function toArtifactId(relPath: string): string {
 }
 
 /**
+ * The repository-relative form of a path the editor produced, or `null` when it
+ * cannot be placed in this workspace.
+ *
+ * `vscode.workspace.asRelativePath` returns its input *unchanged* when the file
+ * sits outside every workspace folder, and node ids are repo-relative by
+ * contract. Agents routinely edit a sibling worktree from a window rooted
+ * elsewhere, so that unchanged absolute path used to go on the wire and become a
+ * second identity for a file the graph already tracked — one file was measured
+ * holding 117 structural edges under its absolute id and 43 under its relative
+ * one. The server refuses such a path now; this stops the editor asking.
+ *
+ * Mirrors the server's rule so the two agree on what "relative" means: a POSIX
+ * or UNC root and a Windows drive are absolute, while `./x` and `../x` are
+ * relative even though they leave the folder.
+ */
+export function repoRelativePath(raw: string): string | null {
+  const normalized = raw.replace(/\\/g, "/");
+  if (normalized === "" || normalized.startsWith("/") || /^[a-zA-Z]:/.test(normalized)) {
+    return null;
+  }
+  return normalized;
+}
+
+/**
  * Parse an MCP tool result. Prefers the machine-readable `structuredContent`
  * (present when a tool renders Markdown for chat but still exposes JSON for
  * programmatic consumers); otherwise parses the first text-content block as JSON,
@@ -173,7 +197,7 @@ export function resolveBinaryPath(
   return configured || binaryName;
 }
 
-/** A task as returned by the Lodestar `board` tool (subset used by the UI). */
+/** A task from Lodestar `task_query(view=board)` (subset used by the UI). */
 export interface LodestarTask {
   id: string;
   goal_id: string;
@@ -666,7 +690,7 @@ function remainingLease(task: LodestarTask, nowUnix: number): string {
   return `${Math.ceil(seconds / 60)}m left`;
 }
 
-/** One entry in a task's durable question/answer thread (Lodestar `task_qa`). */
+/** One entry in a task's durable thread (`task_query(view=thread)`). */
 export interface TaskQaEntry {
   id: number;
   task_id: string;

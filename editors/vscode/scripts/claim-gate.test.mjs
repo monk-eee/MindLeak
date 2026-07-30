@@ -32,8 +32,8 @@ describe("claim-gate", () => {
 
     expect(verdict.ok).toBe(false);
     expect(verdict.message).toContain("no live Lodestar claim");
-    expect(verdict.message).toContain("claim_task");
-    expect(verdict.message).toContain("create_task");
+    expect(verdict.message).toContain("task_claim");
+    expect(verdict.message).toContain("task_create");
   });
 
   it("allows a publication backed by a live claim", () => {

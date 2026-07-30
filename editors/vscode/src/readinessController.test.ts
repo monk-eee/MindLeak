@@ -18,8 +18,8 @@ describe("ReadinessController", () => {
     const memory = fakeClient({ graph_stats: { nodes: 9, active_edges: 11 } }, "mindleak-mcp");
     const intent = fakeClient(
       {
-        board: [{ id: "task:one" }],
-        design_board: [{ id: "design:one" }],
+        task_query: [{ id: "task:one" }],
+        design_query: [{ id: "design:one" }],
       },
       "lodestar-mcp"
     );
@@ -37,8 +37,11 @@ describe("ReadinessController", () => {
     const snapshot = await controller.refresh();
 
     expect(memory.callTool).toHaveBeenCalledWith("graph_stats", {});
-    expect(intent.callTool).toHaveBeenCalledWith("board", { include_terminal: false });
-    expect(intent.callTool).toHaveBeenCalledWith("design_board", {});
+    expect(intent.callTool).toHaveBeenCalledWith("task_query", {
+      view: "board",
+      include_terminal: false,
+    });
+    expect(intent.callTool).toHaveBeenCalledWith("design_query", { view: "board" });
     expect(snapshot.state).toBe("coordinating");
     expect(snapshot.action.command).toBe("mindleak.designView.focus");
     expect(snapshot.memory).toContain("0.1.1+test");
@@ -48,7 +51,7 @@ describe("ReadinessController", () => {
   it("keeps optional sensor failures distinct from a core tool failure", async () => {
     const memory = fakeClient({}, "mindleak-mcp");
     memory.callTool.mockRejectedValueOnce(new Error("graph_stats failed"));
-    const intent = fakeClient({ board: [], design_board: [] }, "lodestar-mcp");
+    const intent = fakeClient({ task_query: [], design_query: [] }, "lodestar-mcp");
     const logs: string[] = [];
     const controller = new ReadinessController(
       memory,
@@ -70,7 +73,7 @@ describe("ReadinessController", () => {
 
   it("re-derives from health callbacks without another MCP read", async () => {
     const memory = fakeClient({ graph_stats: { nodes: 3, active_edges: 2 } }, "mindleak-mcp");
-    const intent = fakeClient({ board: [], design_board: [] }, "lodestar-mcp");
+    const intent = fakeClient({ task_query: [], design_query: [] }, "lodestar-mcp");
     const controller = new ReadinessController(
       memory,
       intent,

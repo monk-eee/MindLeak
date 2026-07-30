@@ -32,6 +32,7 @@ import {
   LodestarTask,
   logLines,
   pendingQuestion,
+  repoRelativePath,
   resolveBinaryPath,
   resolveServerPath,
   shouldPollTelemetry,
@@ -474,8 +475,9 @@ function currentHealth(): RuntimeHealth {
   return { ...health };
 }
 
-function artifactId(doc: vscode.TextDocument): string {
-  return toArtifactId(vscode.workspace.asRelativePath(doc.uri, false));
+function artifactId(doc: vscode.TextDocument): string | null {
+  const rel = repoRelativePath(vscode.workspace.asRelativePath(doc.uri, false));
+  return rel === null ? null : toArtifactId(rel);
 }
 
 async function onFocus(doc: vscode.TextDocument): Promise<void> {
@@ -483,6 +485,10 @@ async function onFocus(doc: vscode.TextDocument): Promise<void> {
     return;
   }
   const id = artifactId(doc);
+  if (id === null) {
+    // No repo-relative id, so there is no node in this graph to boost.
+    return;
+  }
   try {
     await client.callTool("boost_entity", { id });
     await refresh(id);
@@ -495,7 +501,12 @@ async function onSave(doc: vscode.TextDocument): Promise<void> {
   if (!client?.isReady() || doc.uri.scheme !== "file") {
     return;
   }
-  const rel = vscode.workspace.asRelativePath(doc.uri, false).replace(/\\/g, "/");
+  const rel = repoRelativePath(vscode.workspace.asRelativePath(doc.uri, false));
+  if (rel === null) {
+    // Outside every workspace folder, so there is no repo-relative id for it.
+    // Sending it anyway is a guaranteed server-side refusal on every save.
+    return;
+  }
   try {
     await client.callTool("ingest_file", { path: rel, content: doc.getText() });
     await refresh(`artifact:${rel}`);
@@ -508,7 +519,11 @@ async function onDelete(uri: vscode.Uri): Promise<void> {
   if (!client?.isReady() || uri.scheme !== "file") {
     return;
   }
-  const rel = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, "/");
+  const rel = repoRelativePath(vscode.workspace.asRelativePath(uri, false));
+  if (rel === null) {
+    // Never ingested under this id, so there is nothing here to forget.
+    return;
+  }
   try {
     await client.callTool("forget_file", { path: rel });
     await refresh();
@@ -659,7 +674,10 @@ async function refreshBoard(): Promise<void> {
     return;
   }
   try {
-    const tasks = await lodestar.callTool("board", { include_terminal: false });
+    const tasks = await lodestar.callTool("task_query", {
+      view: "board",
+      include_terminal: false,
+    });
     const list: LodestarTask[] = Array.isArray(tasks) ? tasks : [];
     // Enrich claimed tasks with the clauses governing their scope so the board
     // shows what governs the work an agent picked up (ADR-0029). Best-effort:
@@ -690,7 +708,10 @@ async function refreshEvidence(): Promise<void> {
     return;
   }
   try {
-    const tasks = await lodestar.callTool("board", { include_terminal: true });
+    const tasks = await lodestar.callTool("task_query", {
+      view: "board",
+      include_terminal: true,
+    });
     const list: LodestarTask[] = Array.isArray(tasks) ? tasks : [];
     // Only completed/reviewed/blocked work carries conformance proof; skip the
     // rest so the board is one bounded pass, not a lookup per open task.
@@ -788,8 +809,9 @@ async function completeWithEvidence(item?: BoardItem): Promise<void> {
       Math.floor(Date.now() / 1000)
     );
     const evidence = await client.callTool("evidence_for", { ...request });
-    const result = await lodestar.callTool("complete_task", {
+    const result = await lodestar.callTool("task_transition", {
       task_id: item.task.id,
+      to: "complete",
       evidence,
     });
     const conformance = result.conformance ?? result;
@@ -858,8 +880,9 @@ async function answerTaskQuestion(item?: BoardItem): Promise<void> {
     return;
   }
   try {
-    const thread = (await lodestar.callTool("task_qa", {
+    const thread = (await lodestar.callTool("task_query", {
       task_id: item.task.id,
+      view: "thread",
     })) as TaskQaEntry[];
     const question = pendingQuestion(Array.isArray(thread) ? thread : []);
     const answer = await vscode.window.showInputBox({
@@ -871,8 +894,9 @@ async function answerTaskQuestion(item?: BoardItem): Promise<void> {
     if (answer === undefined) {
       return; // cancelled
     }
-    await lodestar.callTool("answer", {
+    await lodestar.callTool("task_transition", {
       task_id: item.task.id,
+      to: "answer",
       answer,
       author: "human",
     });
@@ -908,7 +932,10 @@ async function retireTask(item?: BoardItem): Promise<void> {
     return;
   }
   try {
-    const result = await lodestar.callTool("abandon_task", { task_id: item.task.id });
+    const result = await lodestar.callTool("task_transition", {
+      task_id: item.task.id,
+      to: "abandon",
+    });
     if (!result?.abandoned) {
       throw new Error("task state changed before it could be retired");
     }
@@ -935,8 +962,9 @@ async function changeTaskLease(action: "pause" | "resume", item?: BoardItem): Pr
     return;
   }
   try {
-    await lodestar.callTool(`${action}_task`, {
+    await lodestar.callTool("task_transition", {
       task_id: item.task.id,
+      to: action,
       ...(item.task.owner ? { agent: item.task.owner } : {}),
     });
     vscode.window.showInformationMessage(
