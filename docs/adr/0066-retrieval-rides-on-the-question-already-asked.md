@@ -1,6 +1,6 @@
 # ADR-0066: Retrieval rides on the question already asked
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-29
 - Related: [ADR-0024](0024-preflight-overlap-detection.md) (pre-flight overlap
   detection), [ADR-0029](0029-proactive-constitutional-advice.md) (proactive
