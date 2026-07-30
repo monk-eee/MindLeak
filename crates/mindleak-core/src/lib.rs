@@ -56,6 +56,10 @@ pub struct MindLeak {
     /// repo-relative. Injected rather than reached for: the core has no business
     /// knowing where on disk it is, and tests must be able to set it.
     workspace_root: Option<String>,
+    /// The other worktrees of this same repository. All of them share one graph
+    /// (ADR-0038), so a file saved in any of them has the one repo-relative id;
+    /// without these, a sibling checkout's path cannot be placed and is refused.
+    worktree_roots: Vec<String>,
 }
 
 // The async maintenance worker (`mindleak-mcp`) moves a `MindLeak` into
@@ -76,6 +80,7 @@ impl MindLeak {
             embedder: Box::new(embed::Embedder::default()),
             recall_floor: config::DEFAULT_RECALL_FLOOR,
             workspace_root: None,
+            worktree_roots: Vec::new(),
         })
     }
 
@@ -87,6 +92,7 @@ impl MindLeak {
             embedder: Box::new(embed::Embedder::default()),
             recall_floor: config::DEFAULT_RECALL_FLOOR,
             workspace_root: None,
+            worktree_roots: Vec::new(),
         })
     }
 
@@ -107,9 +113,36 @@ impl MindLeak {
         self
     }
 
+    /// Declare the other worktree roots of this same repository.
+    ///
+    /// Passed in rather than discovered here so the placing decision stays pure
+    /// and testable, and so an unavailable git degrades to the single-root
+    /// behaviour instead of to a wrong answer.
+    pub fn with_worktree_roots(mut self, roots: impl IntoIterator<Item = String>) -> Self {
+        self.worktree_roots = roots
+            .into_iter()
+            .filter(|root| !root.trim().is_empty())
+            .collect();
+        self
+    }
+
+    /// Every root a caller-supplied path may be made relative against: this
+    /// checkout first, then the repository's other worktrees. One list, so the
+    /// save path, the commit sensor and the execution sensor cannot disagree
+    /// about which files belong to this repository.
+    pub(crate) fn roots(&self) -> Vec<&str> {
+        let mut roots: Vec<&str> = Vec::with_capacity(self.worktree_roots.len() + 1);
+        roots.extend(self.workspace_root.as_deref());
+        roots.extend(self.worktree_roots.iter().map(String::as_str));
+        roots
+    }
+
     /// Make a caller-supplied path repo-relative for stable node ids.
+    ///
+    /// Every known worktree root of this repository is a candidate, so a file
+    /// saved in a sibling checkout resolves to the same id as one saved here.
     pub(crate) fn repo_relative(&self, path: &str) -> String {
-        ingest::repo_relative(path, self.workspace_root.as_deref())
+        ingest::repo_relative(path, &self.roots())
     }
 
     /// Collapse node ids that spell their path absolutely onto the repo-relative
