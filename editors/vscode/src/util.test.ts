@@ -33,6 +33,7 @@ import {
   resolveBinaryPath,
   resolveServerPath,
   shouldCaptureCommand,
+  shouldPollTelemetry,
   taskContextValue,
   taskLeaseState,
   telemetryDashboard,
@@ -335,6 +336,45 @@ describe("boardRows", () => {
     expect(rows[1].description).toBe("Ready");
     expect(rows[2].description).toBe("Verified");
     expect(rows[0].tooltip).toContain("status: Review needed");
+  });
+
+  // ADR-0035 decision 5: the board row carries not just who holds a task but
+  // the branch they hold it on — what a colliding agent needs to tell a merge
+  // risk from the same work twice. Omitted cleanly when none was declared,
+  // never guessed.
+  it("surfaces the owner's branch on the row, and omits it cleanly when none was declared", () => {
+    const rows = boardRows(
+      [
+        {
+          id: "onbranch",
+          goal_id: "g",
+          title: "onbranch",
+          status: "claimed",
+          owner: "alice",
+          branch: "fleet/surface",
+          lease_expires_at: 900,
+        },
+        {
+          id: "nobranch",
+          goal_id: "g",
+          title: "nobranch",
+          status: "claimed",
+          owner: "bob",
+          lease_expires_at: 900,
+        },
+      ],
+      false,
+      100
+    );
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    // The branch a colliding agent needs, right in the row and its tooltip.
+    expect(byId.get("onbranch")!.description).toContain("alice on fleet/surface");
+    expect(byId.get("onbranch")!.tooltip).toContain("branch: fleet/surface");
+    // No branch declared: the owner still shows, the branch does not, and
+    // nothing is invented.
+    expect(byId.get("nobranch")!.description).toContain("bob");
+    expect(byId.get("nobranch")!.description).not.toContain(" on ");
+    expect(byId.get("nobranch")!.tooltip).not.toContain("branch:");
   });
 });
 
@@ -835,6 +875,16 @@ describe("workspace change filtering", () => {
 });
 
 describe("telemetryDashboard", () => {
+  // Bug: a visible telemetry pane polled every three seconds with Live off,
+  // dominating telemetry and wasting compute. Only the opt-in live stream
+  // should run the timer; open, toggle and manual refresh remain event-driven.
+  it("polls periodically only when the visible pane has Live enabled", () => {
+    expect(shouldPollTelemetry(false, false)).toBe(false);
+    expect(shouldPollTelemetry(false, true)).toBe(false);
+    expect(shouldPollTelemetry(true, false)).toBe(false);
+    expect(shouldPollTelemetry(true, true)).toBe(true);
+  });
+
   it("derives success/error rates, weighted latency, and sorted tool rows", () => {
     const dashboard = telemetryDashboard(SNAPSHOT, { nodes: 42, active_edges: 17 });
     expect(dashboard.nodes).toBe(42);

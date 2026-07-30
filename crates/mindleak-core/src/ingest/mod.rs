@@ -53,6 +53,27 @@ pub(crate) fn repo_relative(path: &str, root: Option<&str>) -> String {
     }
 }
 
+/// True when a normalised path still names an absolute location: a POSIX or
+/// UNC root (`/usr/...`, `//host/share`) or a Windows drive (`c:/...`).
+///
+/// `repo_relative` deliberately returns a path it cannot place untouched, which
+/// is right for a helper but wrong for a node id. A path that survives
+/// `repo_relative` still absolute belongs to *another* checkout of this
+/// repository, and minting an id from it is what splits one file across as many
+/// identities as there are worktrees. Callers on the write path use this to
+/// refuse that id rather than create the duplicate the repair pass then has to
+/// find and merge.
+pub(crate) fn is_absolute_path(path: &str) -> bool {
+    let path = normalize_path(path);
+    if path.starts_with('/') {
+        return true;
+    }
+    // `c:/x`, `c:x` and a bare `c:` are all drive-relative or drive-absolute;
+    // none of them is a repo-relative path.
+    let mut chars = path.chars();
+    matches!((chars.next(), chars.next()), (Some(drive), Some(':')) if drive.is_ascii_alphabetic())
+}
+
 /// Directory segments that never belong in a code-context graph: VCS internals,
 /// dependency caches, and build/test output. They are regenerated or deleted
 /// constantly, so ingesting them (via a passive save sensor, or a build/git
@@ -130,6 +151,34 @@ mod tests {
         );
         // No declared root: nothing to strip.
         assert_eq!(repo_relative("C:/anywhere/x.rs", None), "C:/anywhere/x.rs");
+    }
+
+    #[test]
+    fn absolute_paths_are_recognised_in_every_spelling_a_sensor_emits() {
+        for absolute in [
+            "c:/Users/agent/Repos/MindLeak/src/x.rs",
+            "C:\\Users\\agent\\Repos\\MindLeak\\src\\x.rs",
+            "/home/agent/checkout/src/x.rs",
+            "//fileserver/share/src/x.rs",
+            "d:relative-to-drive-cwd.rs",
+        ] {
+            assert!(is_absolute_path(absolute), "should be absolute: {absolute}");
+        }
+
+        // Repo-relative spellings are what node ids are made of, including the
+        // traversal forms, which are relative even though they leave the folder.
+        for relative in [
+            "crates/mindleak-core/src/lib.rs",
+            "src\\x.rs",
+            "./x.rs",
+            "../sibling/x.rs",
+            "x.rs",
+        ] {
+            assert!(
+                !is_absolute_path(relative),
+                "should be relative: {relative}"
+            );
+        }
     }
 
     #[test]

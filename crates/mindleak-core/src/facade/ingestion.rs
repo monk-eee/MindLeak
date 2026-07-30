@@ -5,7 +5,7 @@ use crate::ingest::execution::ExecutionRecord;
 use crate::ingest::git::CommitRecord;
 use crate::ingest::structure::{HierarchyRelation, ImportTarget};
 use crate::{
-    ingest, now_unix, ArtifactStub, Edge, ForgetOutcome, MindLeak, Node, NodeType,
+    ingest, now_unix, ArtifactStub, Edge, ForgetOutcome, MindLeak, MindLeakError, Node, NodeType,
     ReconcileOutcome, RelationType, Result, WriteOutcome,
 };
 
@@ -140,6 +140,19 @@ impl MindLeak {
         // and only pollute the graph with structure for paths that vanish.
         if ingest::is_ignored_path(&norm) {
             return Ok(WriteOutcome::default());
+        }
+        // Still absolute after `repo_relative` means this file belongs to another
+        // checkout of the repository. Every worktree shares one graph (ADR-0038),
+        // so minting an id here would give one file a second identity and split
+        // its history, reinforcement, overlap detection, and governance. Refuse
+        // loudly: the caller knows its own root and can send a relative path,
+        // whereas a duplicate id is silent and only the repair pass ever sees it.
+        if ingest::is_absolute_path(&norm) {
+            return Err(MindLeakError::Other(format!(
+                "ingest path must be repository-relative, got {norm}; it resolves \
+                 outside this server's workspace root, so it would create a second \
+                 identity for a file this graph already tracks"
+            )));
         }
         let art_id = format!("artifact:{norm}");
         let art = Node::new(&art_id, NodeType::Artifact, norm.clone(), now);
