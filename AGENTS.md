@@ -206,6 +206,19 @@ style nit.
   and proof; MindLeak shares repository learning. Sharing one writable checkout
   is a reviewed exception, not the default. Do not cherry-pick, rebase, or squash
   routine work: those operations replace evidence-bearing commit identities.
+  The repository now enforces this rather than asking: squash and rebase merging
+  are disabled on `monk-eee/MindLeak`, so the merge commit is the only button.
+- **Ask `git cherry`, never `merge-base --is-ancestor`, whether work landed.**
+  Ancestry is a question about commit *identity*, and any merge that rewrites a
+  commit — a squash, a rebase, a cherry-pick — lands every line under a new id,
+  so ancestry answers "no" for work that is fully present. `git cherry -v
+  origin/main <branch>` compares *patches*: `-` means an equivalent patch is
+  already upstream, `+` means it genuinely never landed. This is not a style
+  preference. Using ancestry led an agent here to report 245 merged lines as
+  lost, write that into durable knowledge as fact, and queue a pull request to
+  restore code already on `main` — into the one file three agents were editing.
+  History still holds rewritten ids from before the button was closed, so the
+  distinction stays load-bearing even now that new ones cannot be created.
 - **Reclaim the worktree you finished with.** A worktree costs disk and, far
   worse, editor attention: measured 2026-07-30 at 88 worktrees, 86 carrying
   `target/`, one holding 82,891 files, which is what made this repository slow
