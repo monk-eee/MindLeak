@@ -29,7 +29,7 @@ fs.writeFileSync(
 
 try {
   await runTests({
-    version: "1.93.1",
+    version: "1.101.0",
     extensionDevelopmentPath,
     extensionTestsPath,
     extensionTestsEnv: {
