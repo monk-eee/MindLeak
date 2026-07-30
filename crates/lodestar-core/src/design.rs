@@ -264,9 +264,143 @@ pub fn design_id_from_path(adr_path: &str) -> String {
     format!("design:{stem}")
 }
 
+/// Recorded decider labels that are one edit away from `candidate`, which is
+/// almost always a typo for one of them.
+///
+/// A decider label is an unverifiable declaration (ADR-0071), so it cannot be
+/// validated — only compared against the labels already recorded. That leaves a
+/// narrow but real failure: a slip is accepted in silence, and afterwards every
+/// verb that could correct it refuses on purpose (`attribute` answers "already
+/// attributed to X", `reopen` answers "a recorded decision is not undone
+/// here"). Both refusals are load-bearing, so the only moment a typo can be
+/// fixed is the moment it is made.
+///
+/// Measured on 2026-07-30: the ledger carried `monk-eee` on seventy rows and
+/// `monk-ee` on one — a single deletion, unnoticed for days, now permanent.
+///
+/// Deliberately advisory. Refusing a decision because the decider's name
+/// resembles an existing one would reject genuinely new reviewers, which is a
+/// worse failure than the typo. An exact match — or one differing only by case
+/// or surrounding space — is the normal path and reports nothing, because a
+/// warning on every ordinary decision is one nobody reads.
+///
+/// The threshold is one edit and not two: short names sit close together, and
+/// at two `alice` and `alina` would collide, which is how a check earns itself
+/// a reputation for crying wolf and gets turned off.
+pub fn resembling_deciders<'a>(
+    candidate: &str,
+    known: impl IntoIterator<Item = &'a str>,
+) -> Vec<String> {
+    let candidate = candidate.trim();
+    if candidate.is_empty() {
+        return Vec::new();
+    }
+    let mut matches: Vec<String> = known
+        .into_iter()
+        .filter(|label| {
+            let label = label.trim();
+            !label.eq_ignore_ascii_case(candidate) && differs_by_one_edit(candidate, label)
+        })
+        .map(|label| label.trim().to_string())
+        .collect();
+    matches.sort();
+    matches.dedup();
+    matches
+}
+
+/// Whether one insertion, deletion or substitution turns `left` into `right`.
+///
+/// Written directly rather than as a general Levenshtein distance: the only
+/// question asked is "is this one edit away", and answering exactly that needs
+/// a single pass and no matrix.
+fn differs_by_one_edit(left: &str, right: &str) -> bool {
+    let left: Vec<char> = left.chars().flat_map(char::to_lowercase).collect();
+    let right: Vec<char> = right.chars().flat_map(char::to_lowercase).collect();
+    let (shorter, longer) = if left.len() <= right.len() {
+        (&left, &right)
+    } else {
+        (&right, &left)
+    };
+    if longer.len() - shorter.len() > 1 {
+        return false;
+    }
+
+    let mut short_index = 0;
+    let mut long_index = 0;
+    let mut edited = false;
+    while short_index < shorter.len() && long_index < longer.len() {
+        if shorter[short_index] == longer[long_index] {
+            short_index += 1;
+            long_index += 1;
+            continue;
+        }
+        if edited {
+            return false;
+        }
+        edited = true;
+        // Same length means the differing character was substituted; otherwise
+        // the longer string carries an extra character, so only it advances.
+        if shorter.len() == longer.len() {
+            short_index += 1;
+        }
+        long_index += 1;
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A decider label is free text and unverifiable (ADR-0071), and every verb
+    /// that could correct one refuses on purpose: `attribute` answers "already
+    /// attributed", `reopen` answers "a recorded decision is not undone here".
+    /// So the only moment a slip can be fixed is the moment it is made, and
+    /// nothing was watching then. Measured 2026-07-30: `monk-ee` on ADR-0034,
+    /// one deletion from the `monk-eee` on seventy other rows, now permanent.
+    #[test]
+    fn a_label_one_edit_from_a_known_one_is_reported() {
+        let known = ["monk-eee", "Lyndon Swan"];
+        assert_eq!(resembling_deciders("monk-ee", known), vec!["monk-eee"]);
+        assert_eq!(resembling_deciders("monk-eeee", known), vec!["monk-eee"]);
+        assert_eq!(resembling_deciders("monk-eef", known), vec!["monk-eee"]);
+    }
+
+    /// The normal case must stay silent. A warning on every ordinary decision
+    /// is a warning nobody reads, which costs more than the typo it prevents.
+    #[test]
+    fn an_exact_or_merely_cased_match_is_the_normal_case_and_says_nothing() {
+        let known = ["monk-eee"];
+        assert!(resembling_deciders("monk-eee", known).is_empty());
+        assert!(resembling_deciders("MONK-EEE", known).is_empty());
+        assert!(resembling_deciders("  monk-eee  ", known).is_empty());
+    }
+
+    /// A genuinely new reviewer is not a typo. Refusing or nagging about one
+    /// would be worse than the defect: an unverifiable identity can only be
+    /// compared, never validated.
+    #[test]
+    fn a_different_person_is_not_a_near_miss() {
+        let known = ["monk-eee", "Lyndon Swan"];
+        assert!(resembling_deciders("alice", known).is_empty());
+        assert!(resembling_deciders("monk-team", known).is_empty());
+        assert!(resembling_deciders("", known).is_empty());
+    }
+
+    /// Short unrelated names sit close together, so the threshold is one edit
+    /// and not two: at two, `alice`/`alina` would warn and the check would be
+    /// switched off, taking the real signal with it.
+    #[test]
+    fn the_threshold_is_one_edit_so_short_names_do_not_collide() {
+        assert!(resembling_deciders("alina", ["alice"]).is_empty());
+        assert_eq!(resembling_deciders("alicf", ["alice"]), vec!["alice"]);
+    }
+
+    #[test]
+    fn every_resembling_label_is_reported_not_just_the_first() {
+        let matches = resembling_deciders("mon-eee", ["monk-eee", "mona-eee", "alice"]);
+        assert_eq!(matches, vec!["mona-eee", "monk-eee"]);
+    }
 
     #[test]
     fn design_id_is_the_adr_stem_regardless_of_path_convention() {
