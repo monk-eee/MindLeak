@@ -1,5 +1,5 @@
-- **The post-commit ingest hook is not installed, so commits land with no
-  provenance at all — VERIFIED, not yet fixed.** `.pre-commit-config.yaml`
+- **Existing setups lack the post-commit ingest hook, so unobserved commits have
+  no provenance — VERIFIED, OPEN.** `.pre-commit-config.yaml`
   declares `default_install_hook_types: [pre-commit, pre-push, post-commit]`,
   but the shared `.git/hooks` directory contains only `pre-commit` and
   `pre-push`. `default_install_hook_types` only takes effect when
