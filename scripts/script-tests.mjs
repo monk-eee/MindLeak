@@ -17,6 +17,7 @@ import { spawn } from "node:child_process";
 import { readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { siblingSuiteCount, siblingSuiteNotice } from "./script-suites.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -35,6 +36,13 @@ if (tests.length === 0) {
 }
 
 console.log(`script-tests: running ${tests.length} test files`);
+
+// This runner is not the whole suite over these modules, and must say so.
+// See `script-suites.mjs` for why it names the gap rather than failing on it.
+const notice = siblingSuiteNotice(siblingSuiteCount(path.join(here, "..")));
+if (notice) {
+  console.log(notice);
+}
 
 // Git exports GIT_DIR, GIT_INDEX_FILE and friends to its hooks, and this suite
 // runs from pre-push. Inherited by a test that drives git in a temp directory,
