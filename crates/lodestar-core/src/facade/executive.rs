@@ -23,9 +23,10 @@ impl Lodestar {
     }
 
     /// Create a task that declares, up front, the additional goals it serves
-    /// (ADR-0041). Coverage is fixed here and has no later mutator: declared
-    /// before the work it is a prediction the evidence can contradict, declared
-    /// afterwards it is a rationalisation for a finding already raised.
+    /// (ADR-0041). Declared before the work it is a prediction the evidence can
+    /// contradict; the same declaration after a finding has been raised would be
+    /// a rationalisation, which is why [`Lodestar::declare_coverage`] closes at
+    /// the first verdict rather than at creation.
     pub fn create_task_covering(
         &self,
         goal_id: &str,
@@ -43,6 +44,24 @@ impl Lodestar {
             also_serves,
             now_unix(),
         )
+    }
+
+    /// Declare further goals the held claim serves, before conformance speaks.
+    ///
+    /// Goals bind to files, so the governing set is usually learned while
+    /// working rather than predicted at creation. This lets the agent say so
+    /// while its declaration is still a prediction; once any conformance record
+    /// exists for the task it is refused, because coverage widened after a
+    /// finding is an excuse for that finding. Unions with what was already
+    /// declared, so naming what you just learned never drops what you knew.
+    pub fn declare_coverage(
+        &self,
+        task_id: &str,
+        agent: &str,
+        also_serves: &[String],
+    ) -> Result<Vec<String>> {
+        self.store
+            .declare_coverage(task_id, agent, also_serves, now_unix())
     }
 
     /// The additional goals a task declared it serves (ADR-0041).
