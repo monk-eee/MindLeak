@@ -127,7 +127,7 @@ style nit.
 ### Ask before acting (NON-NEGOTIABLE, ADR-0029)
 - **Consult the constitution before you touch code.** At claim time, and before
   editing any `governed`/`forbid_change` file, call Lodestar's `advise` (or read
-  the governing clauses surfaced on `claim_task` / `next_task`) with the
+  the governing clauses surfaced on `task_claim` / `task_query`) with the
   `artifact:`/`symbol:` ids you intend to change. It returns the clauses that
   govern that scope and a proportional disposition — `advise` (proceed, honour
   the clauses), `review` (you would drift outside a covering task — get one
@@ -136,12 +136,12 @@ style nit.
 - **`advise` informs; it never gates.** It is evidence-free, records no verdict,
   changes no task state, needs no model, and never blocks a compare-and-swap
   claim. Skipping it does not dodge the verdict — retrospective conformance at
-  `complete_task` (ADR-0009/0025) is still the backstop that lands drift or a
+  `task_transition` (`to="complete"`, ADR-0009/0025) is still the backstop that lands drift or a
   violation in review or blocked. The point is to catch it *before* you do the
   work, not after.
 - **Hold the claim you took — a lease is a heartbeat, not a deadline
   (ADR-0048).** A claim expires while you are still working; the default lease
-  is minutes and real work is longer. Call `renew_lease(task_id, session_id)`
+  is minutes and real work is longer. Call `task_claim(task_id, step="renew", session_id)`
   whenever you finish a step and are about to start another — after a build,
   between files, before a long test run. Measured on this board: **27 lapses
   across 24 tasks, and roughly 100 hours of work sitting under a dead lease.**
