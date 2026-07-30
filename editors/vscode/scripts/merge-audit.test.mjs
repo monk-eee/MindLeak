@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { auditBranches, droppedCommits } from "../../../scripts/merge-audit.mjs";
+import { auditBranches, classifyCommits } from "../../../scripts/merge-audit.mjs";
 
 const temporaryDirectories = [];
 const gitRepositoryVariables = [
@@ -72,10 +72,10 @@ describe("merge-audit", () => {
     git(repo, ["checkout", "feature"]);
     commitFile(repo, "b.txt", "b\n", "the commit that was left behind");
 
-    const dropped = droppedCommits(repo, "main", "feature");
+    const { missing } = classifyCommits(repo, "main", "feature");
 
-    expect(dropped).toHaveLength(1);
-    expect(dropped[0]).toMatch(/the commit that was left behind/);
+    expect(missing).toHaveLength(1);
+    expect(missing[0]).toMatch(/the commit that was left behind/);
   }, 30_000);
 
   // The ordinary case must be silent, or the audit becomes noise and stops
@@ -87,7 +87,54 @@ describe("merge-audit", () => {
     git(repo, ["checkout", "main"]);
     git(repo, ["merge", "--no-ff", "--no-edit", "feature"]);
 
-    expect(droppedCommits(repo, "main", "feature")).toEqual([]);
+    expect(classifyCommits(repo, "main", "feature")).toEqual({
+      missing: [],
+      replaced: [],
+    });
+  }, 30_000);
+
+  // The regression that made the audit unsatisfiable. A squash or rebase merge
+  // lands every line under a new commit id, which ancestry cannot distinguish
+  // from a branch that never merged at all. The audit then reported the work as
+  // lost and asked for a follow-up pull request for changes already on main —
+  // an instruction nobody can carry out. An audit with no green move available
+  // gets switched off, taking the check that catches real loss with it.
+  it("reports a squash-merged branch as landed, not as lost work", () => {
+    const { repo } = sandbox();
+    git(repo, ["checkout", "-b", "feature"]);
+    commitFile(repo, "a.txt", "the whole feature\n", "feat: the whole feature");
+
+    // The squash: main gains the same patch under a different commit id.
+    git(repo, ["checkout", "main"]);
+    commitFile(repo, "a.txt", "the whole feature\n", "feat: the whole feature (#1)");
+
+    const { missing, replaced } = classifyCommits(repo, "main", "feature");
+
+    expect(missing).toEqual([]);
+    expect(replaced).toHaveLength(1);
+    expect(replaced[0]).toMatch(/feat: the whole feature$/);
+  }, 30_000);
+
+  // Merging the base into a long-running branch carries no work of its own, so
+  // reporting it as lost is noise — and it was noise that padded the real
+  // report, listing a "Merge branch 'main' into ..." commit beside the one
+  // genuine finding.
+  it("does not report merging the base in as work left behind", () => {
+    const { repo } = sandbox();
+    git(repo, ["checkout", "-b", "long-running"]);
+    commitFile(repo, "a.txt", "branch work\n", "feat: branch work");
+
+    git(repo, ["checkout", "main"]);
+    commitFile(repo, "elsewhere.txt", "main work\n", "chore: unrelated");
+
+    git(repo, ["checkout", "long-running"]);
+    git(repo, ["merge", "main", "--no-edit"]);
+
+    const { missing, replaced } = classifyCommits(repo, "main", "long-running");
+
+    expect(missing).toHaveLength(1);
+    expect(missing[0]).toMatch(/branch work$/);
+    expect([...missing, ...replaced].some((c) => c.startsWith("Merge "))).toBe(false);
   }, 30_000);
 
   // "We cannot tell" and "nothing was lost" are different answers. A deleted
@@ -99,7 +146,8 @@ describe("merge-audit", () => {
     const [result] = auditBranches(repo, "main", ["origin/never-existed"]);
 
     expect(result.verifiable).toBe(false);
-    expect(result.dropped).toEqual([]);
+    expect(result.missing).toEqual([]);
+    expect(result.replaced).toEqual([]);
   }, 30_000);
 
   it("audits several branches independently", () => {
@@ -114,8 +162,8 @@ describe("merge-audit", () => {
 
     const results = auditBranches(repo, "main", ["clean", "leaky"]);
 
-    expect(results[0].dropped).toEqual([]);
-    expect(results[1].dropped).toHaveLength(1);
-    expect(results[1].dropped[0]).toMatch(/stranded work/);
+    expect(results[0].missing).toEqual([]);
+    expect(results[1].missing).toHaveLength(1);
+    expect(results[1].missing[0]).toMatch(/stranded work/);
   }, 30_000);
 });
