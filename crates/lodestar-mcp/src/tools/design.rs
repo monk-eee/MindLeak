@@ -145,6 +145,15 @@ pub(super) fn dispatch(
         "design_decide" => Some((|| {
             let id = req_str(args, "id")?;
             let decision = one_of(args, "decision", &DECISIONS)?;
+            // Compared *before* the write. Afterwards the label is itself a
+            // recorded human act, and every verb that could correct one refuses
+            // by design — so this is the only moment a slip is still fixable.
+            let resembling = match opt_str(args, "human") {
+                Some(human) => engine
+                    .deciders_resembling(&human)
+                    .map_err(|error| error.to_string())?,
+                None => Vec::new(),
+            };
             let item = match decision {
                 "accept" => engine.accept_design(
                     id,
@@ -192,7 +201,28 @@ pub(super) fn dispatch(
                 ),
                 other => unreachable!("one_of refused every value but {DECISIONS:?}, not {other}"),
             };
-            ok(&item.map_err(|error| error.to_string())?)
+            let item = item.map_err(|error| error.to_string())?;
+            if resembling.is_empty() {
+                return ok(&item);
+            }
+            // Advisory, never a refusal: an unverifiable identity can only be
+            // compared, and rejecting a genuinely new reviewer whose name
+            // resembles an existing one is worse than the typo it would catch.
+            let mut value = serde_json::to_value(&item).map_err(|error| error.to_string())?;
+            if let Some(object) = value.as_object_mut() {
+                object.insert(
+                    "attribution_warning".to_string(),
+                    json!({
+                        "recorded": opt_str(args, "human"),
+                        "resembles": resembling,
+                        "advice": "this decider label is one edit from one already in the ledger, \
+                                   which is usually a typo for it. Nothing rewrites a recorded \
+                                   human act afterwards, so correct it now or accept it as a \
+                                   distinct person.",
+                    }),
+                );
+            }
+            ok(&value)
         })()),
         "design_promote" => Some((|| {
             let id = req_str(args, "id")?;

@@ -19,14 +19,21 @@
   that choice — so the failure mode is no longer "confident noise" but a
   silence that is only as complete as the last agent's diligence.
 
-  **(b) Fixed.** `recall` scored every embedded node, sorted, truncated to
-  `limit`, and so always answered however unrelated the field was; the nonsense
-  query `zzzzqqq wibble flarp` scored **0.54**, higher than any of the four real
-  questions. ADR-0053 added the floor, and ADR-0075 added a per-query
-  distinctiveness cut built on exactly that measurement — an absolute constant
-  cannot judge a score whose baseline moves with the query, so a candidate must
-  now stand out from its own query's field. A question with no answer in the
-  index is answered with silence.
+  **(b) Half fixed, and the other half measured.** `recall` scored every
+  embedded node, sorted, truncated to `limit`, and so always answered however
+  unrelated the field was; the nonsense query `zzzzqqq wibble flarp` scored
+  **0.54**, higher than any of the four real questions. ADR-0053 added the
+  floor, and ADR-0075 added a per-query distinctiveness cut. What that fixed is
+  *what gets ranked first*, measured on the live 19,317-node index: hits naming
+  a node the graph no longer holds fell from 24 of 50 to **0 of 49**, and
+  recorded conclusions rose from 14% of what the caller is handed to **96%**.
+  What it did **not** fix is this fragment's actual headline. A nonsense query
+  is still answered, not met with silence. Top-hit distance above the field runs
+  3.11–3.90 standard deviations for nonsense controls and 3.71–6.21 for real
+  questions, so the bands overlap by 0.19σ and no single threshold separates
+  them — the same shape as the floor problem, one level up. The constant is
+  deliberately not tuned to three samples. Recall now ranks well and still
+  cannot say "I do not know".
 
   **(c) Narrowed from absence to latency.** A node was invisible to `recall`
   until the offline `index_nodes` pass embedded it —
