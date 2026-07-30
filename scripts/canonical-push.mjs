@@ -224,8 +224,11 @@ if (server && /^[0-9a-f]{32}$/.test(sessionId)) {
         name: "open_session",
         arguments: { session_id: sessionId, ...context },
       },
-      { name: "board", arguments: { include_terminal: false } },
-      { name: "check_overlap", arguments: { paths: changed } },
+      {
+        name: "task_query",
+        arguments: { view: "board", include_terminal: false },
+      },
+      { name: "task_query", arguments: { view: "overlap", paths: changed } },
     ]);
     // Identity is whatever the ledger says this session is, never what the
     // caller asserts: a claim is recorded against the resolved agent id, so
