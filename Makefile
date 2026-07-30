@@ -1,7 +1,7 @@
 # MindLeak developer commands. On Windows, run the underlying commands directly
 # (see DEVELOPERS.md) if `make` is unavailable.
 
-.PHONY: setup worktree-setup install-servers adr-index changelog design-audit merge-audit queue queue-watch board-health stranded-report reingest tool-surface build test script-test ratchet coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
+.PHONY: setup worktree-setup install-servers adr-index changelog design-audit merge-audit queue queue-watch sweep board-health stranded-report reingest tool-surface build test script-test ratchet coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
 
 setup: ## Install pre-commit hooks and extension deps
 	pip install pre-commit
@@ -25,6 +25,14 @@ reclaim: ## Report reclaimable worktrees, branches and build output (add ARGS=--
 	# because no report can be un-deleted. ARGS="--reclaim --remote" also deletes
 	# merged remote branches.
 	node scripts/worktree-reclaim.mjs $(ARGS)
+
+sweep: ## Report reclaimable build artefacts (add ARGS=--apply to act)
+	# Diagnosis only. The sweep already runs continuously from the delivery
+	# watcher (`make queue-watch`), which is what stops caches accumulating; this
+	# answers "what would it remove, and why did it skip that one". Reports by
+	# default for the same reason `reclaim` does. Both take the same lock in the
+	# common Git directory, so a manual run cannot race the watcher's sweep.
+	node scripts/artefact-sweep.mjs $(ARGS)
 
 worktree-setup: ## Prepare a freshly created linked worktree (ADR-0038)
 	# Hooks and cargo tools are shared through the common .git dir and the user's

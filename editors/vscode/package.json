@@ -2,7 +2,7 @@
   "name": "mindleak",
   "displayName": "MindLeak — Temporal Context Graph",
   "description": "Live, decay-weighted context graph for coding agents. Visualizes the MindLeak MCP memory engine and passively feeds editor focus into it.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "monk-eee",
   "license": "MIT",
   "repository": {

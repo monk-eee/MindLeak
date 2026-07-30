@@ -1,28 +1,59 @@
-# MindLeak 0.1.2 Release Notes
+# MindLeak 0.1.4 Release Notes
 
-MindLeak 0.1.2 fixes identity at the boundary where local multi-agent work
-actually happens: one stdio process may serve several logical client sessions.
-The release adds an explicit cross-plane session handshake, audited recovery for
-legacy claims, reviewed design materialization, exportable conformance evidence,
-first-value Workspace guidance, and first-class GitHub Copilot CLI registration.
+MindLeak 0.1.4 turns the local memory and intent planes into a more dependable
+multi-agent work surface. It makes worktree identity and server rooting explicit,
+bounds concurrent ownership, carries memory retrieval onto the claim path agents
+already use, and makes completion, conformance, review, and rescue state visible
+instead of relying on somebody remembering a second call.
 
 ## Highlights
 
-- **Session-scoped identity** — clients register one opaque 128-bit token with
-  both planes. The servers derive the same stable owner, reject unknown tokens,
-  and overwrite caller-selected identity fields. Concurrent chats through one
-  process now retain distinct claims, attention, and evidence (ADR-0030).
-- **Audited legacy recovery** — `recover_claim` transfers only an expired
-  compatible legacy owner into the registered session, starts a fresh evidence
-  window, preserves task scope/Q&A, and appends the complete prior claim state.
-- **Reviewed design materialization** — acceptance no longer creates work.
-  Humans review explicit create/link/no-work plans; repairs append a new revision
-  without deleting the original plan or its tasks.
-- **Evidence as proof-of-work** — the Evidence Board, `export_evidence`, and the
-  conformance manifest make the checked task history portable for review and CI.
-- **One first-value path** — the Workspace view guides connection, first ingest,
-  and first useful graph result; the installer also emits a Copilot CLI-ready
-  config that uses the same local databases as VS Code.
+- **One repository, every linked worktree** — all worktrees still share one
+  repository-id store, while each editor window roots file ingestion at the
+  checkout it actually edits. Paths from sibling worktrees resolve to the same
+  repository-relative artifact, and unplaceable foreign paths fail visibly
+  instead of creating a second identity (ADR-0038, ADR-0073).
+- **The extension provides both MCP servers** — VS Code 1.101+ discovers the
+  packaged MindLeak and Lodestar servers through the extension's MCP provider.
+  The supported editor path no longer depends on a committed `.vscode/mcp.json`;
+  headless clients continue to use the release installer and generated config.
+- **Fleet coordination has a bounded shape** — one logical agent can hold at
+  most three concurrent claims, lapsed ownership is visible, overlap is graded
+  by same-branch collision versus cross-branch merge risk, and branch context is
+  carried at claim and board decision points. Claims remain advisory rather than
+  filesystem locks.
+- **Memory retrieval rides on the claim** — a successful scoped claim returns a
+  bounded MindLeak `check_overlap` preflight with the exact paths and symbols.
+  Telemetry counts that bundled retrieval as a memory read, so adoption is
+  measured against the workflow rather than against an optional standalone call
+  (ADR-0066).
+- **Completion and review are explicit** — publication can offer the exact
+  evidence/check payload; verified merge evidence can close already-landed work
+  without manufacturing an execution receipt; non-aligned work enters a visible
+  human-review queue with attributed reviewer labels (ADR-0058, ADR-0065,
+  ADR-0071).
+- **The task lifecycle is auditable** — task events form an append-only history,
+  paused/lapsed work reaches its owner or a reviewed successor, and `open_session`
+  can surface rescue work, addressed questions, paused ownership, and work waiting
+  on a person without transferring anything implicitly.
+- **The graph is harder to corrupt silently** — Rust `mod`/`use` structure can be
+  re-ingested across the existing graph, real artifacts safely replace importer-
+  created stubs, optional HTTP/embedding responses fail closed, and build identity
+  notices distinguish a stale binary from a checkout that is merely behind.
+
+## Compatibility and migration
+
+- **VS Code 1.101 or newer is required.** This is the first editor release floor
+  with the MCP server-provider API used by the extension. Reinstall or upgrade
+  the targeted VSIX so the provider and native servers move together.
+- **At most three concurrent Lodestar claims per logical agent.** Lapsed claims
+  count until they are reclaimed, released, completed, or retired.
+- **The canonical task/design/constitution tool vocabulary is smaller.** Legacy
+  aliases remain a transition aid, but clients and scripts should use the
+  currently advertised grouped verbs and discriminators.
+- **Repository paths are fail-closed.** Files under any worktree of the same
+  repository are accepted and canonicalized; paths outside every known root are
+  refused.
 
 ## Install
 
@@ -42,11 +73,13 @@ and registers its own session token; the label is not an owner credential.
 
 For the editor experience, install the matching platform-targeted `.vsix` from
 VS Code's **Extensions: Install from VSIX** command. The VSIX contains both
-native servers; no Rust toolchain or global `PATH` change is required.
+native servers and contributes them through the VS Code MCP provider; no
+workspace MCP config, Rust toolchain, or global `PATH` change is required.
 
 ## Measured outcomes
 
-The product gate used GitHub Copilot CLI 1.0.63 with pinned
+The controlled productization baseline remains the 0.1.2 GitHub Copilot CLI
+experiment with pinned
 `claude-haiku-4.5`, three randomized fresh runs per arm, isolated Copilot homes,
 hidden correctness checks, and one composite typed-session repair scenario.
 
@@ -59,9 +92,9 @@ hidden correctness checks, and one composite typed-session repair scenario.
 
 MindLeak reduced median exploration by 18.2%, crossing the declared 15% gate.
 MindLeak + Lodestar passed all three runs with no measured regression. This is a
-productization decision for the measured composite scenario, not a universal
-efficacy claim. Broader repositories, models, and two-agent duplicate-work
-scenarios remain to be replicated.
+productization decision for that measured composite scenario, not a new 0.1.4
+benchmark or a universal efficacy claim. The scenario was not rerun merely to
+produce a larger release number.
 
 Other validated results:
 
@@ -72,8 +105,12 @@ Other validated results:
 - Signal benchmark: consequence/corroboration retains resolved failure evidence
   while same-session repetition earns no multiplier; 200-edge snapshot p95 was
   16.757 ms.
-- Pinned VS Code 1.93.1 Extension Host smoke: both packaged servers connect,
+- Pinned VS Code 1.101 Extension Host smoke: both packaged servers connect,
   graph ingestion and both view refresh paths execute, and both databases open.
+- Production PR telemetry now has a reproducible read-only harness that keeps
+  GitHub delivery outcomes, Lodestar task/conformance history, MindLeak runtime
+  health, and the controlled benchmark in separate evidence tiers. It reports
+  incomplete attribution and missing checks rather than inferring success.
 
 Full provenance and reproduction details are in [EVALUATION.md](EVALUATION.md).
 The premium agent benchmark is not part of routine CI.
@@ -98,14 +135,15 @@ so operating-system trust prompts may appear.
 |---|---|---|
 | Symbol extraction | Rust; JavaScript/TypeScript (`js`, `jsx`, `mjs`, `cjs`, `ts`, `tsx`); Python; C#; Go; Java; Kotlin | Deterministic heuristic definitions |
 | In-file calls | Rust, JavaScript/TypeScript, Python, Go | Calls between symbols defined in one file |
-| Cross-file imports/calls | JavaScript/TypeScript | Static named imports and `require`; named imported calls |
+| Cross-file imports | Rust; JavaScript/TypeScript | Rust `mod`/`use`; static JS/TS imports and `require` |
+| Cross-file calls | JavaScript/TypeScript | Named imported calls |
 | Type hierarchy | JavaScript/TypeScript | Simple named `extends`/`implements`, same-file or named import |
 | Failure locations | Generic `path:line`; Python `File "path", line N` | Failed execution to artifact evidence |
 | Direct dependencies | Cargo.toml, package.json, go.mod, requirements.txt / PEP 508 | Direct declarations only; fail closed when malformed |
 
-Not supported in 0.1.2: transitive/lockfile dependency resolution; TypeScript
+Not supported in 0.1.4: transitive/lockfile dependency resolution; TypeScript
 path aliases, re-exports, namespace/default cross-file calls, or expression-based
-mixins; precise cross-file structure for languages other than JavaScript and
+mixins; precise cross-file calls for languages other than JavaScript and
 TypeScript; shared graph databases across unrelated repositories.
 
 ## Data and privacy
@@ -127,6 +165,16 @@ backup, export, and reset procedures.
 
 ## Known limitations
 
+- Coordination remains advisory. Claim scopes, overlap grades, rescue notices,
+  and deadlock reports inform agents and reviewers; they do not lock files or
+  silently transfer ownership.
+- The memory preflight now rides on scoped claims, but post-change adoption has
+  not yet been measured across an independent cohort. Earlier telemetry showed
+  agents routinely wrote before reading memory; 0.1.4 changes the mechanism, not
+  the evidence retroactively.
+- Structural and symbol extraction is deterministic and deliberately heuristic.
+  JavaScript/TypeScript has the richest cross-file model; Rust imports are
+  supported, while other languages remain primarily file-local.
 - Passive terminal capture requires VS Code shell integration; unsupported shells
   report a visible degraded status instead of inferring commands from text.
 - The optional consolidation and embedding features require an external
@@ -142,5 +190,5 @@ backup, export, and reset procedures.
 - The measured agent result has one model, one runner, one engineered composite
   task, and three repetitions per arm. Do not generalize the percentages beyond
   that scope.
-- The independent-developer v0.1.2 pilot starts only after public assets exist.
-  No external-adoption or retention claim is made by these release notes.
+- Independent-developer recruitment remains open; no external-adoption,
+  retention, or causal productivity claim is made by these release notes.
