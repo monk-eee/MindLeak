@@ -318,6 +318,7 @@ describe("smokeServer", () => {
           MINDLEAK_DB: ":memory:",
           MINDLEAK_AUTONOMOUS_PRUNE: "false",
           MINDLEAK_AUTONOMOUS_CONSOLIDATION: "false",
+          MINDLEAK_AUTONOMOUS_INDEX: "false",
         }),
       })
     );

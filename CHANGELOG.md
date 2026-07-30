@@ -6,45 +6,7 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Changed
-- **`check_overlap` grades the collision instead of just reporting one
-  (ADR-0035 heuristic 4).** Every intersecting claim came back as the same
-  undifferentiated "overlap", so the caller had to guess which kind it had —
-  and advice you have to guess at is advice you learn to skip. Each claim now
-  carries the branch its owner declared at `open_session` and one of three
-  signals: `same_branch_collision` (both sessions on one branch, the edits
-  collide now), `cross_branch_merge_risk` (different branches, paid at merge),
-  or `undeclared`. The result also echoes `requester_branch`, because an
-  `undeclared` signal is ambiguous without knowing which side went quiet. The
-  branch is never a call argument: it is declared once per session, and a
-  second place to state it could disagree with the first — pass the optional
-  `session_id` and the server reads the branch that session already declared.
-  Still advisory and still never blocks a claim: no session, an unregistered
-  token, or a session that declared no branch all fall back to exactly the
-  answer this tool gave before, and say so rather than implying a verdict. The
-  VS Code pre-flight warning names the cost in the same terms, and adds nothing
-  when the context is undeclared.
-### Fixed
-- **A skipped commit-ingest now says so instead of losing provenance in
-  silence.** The post-commit hook could give up without a word: on timeout, on
-  an unstartable server, or on a transport error. The symptom — an empty
-  evidence bundle — is indistinguishable from an agent who simply forgot to
-  ingest, which is the exact failure the hook exists to eliminate, so the
-  diagnosis lands on the wrong cause. It still never fails a commit; it now
-  names the sha, says the commit succeeded, and says to backfill with the
-  commit's *own* timestamp, because a node keeps whatever timestamp it was first
-  given. The budget is configurable via `MINDLEAK_INGEST_TIMEOUT_MS`, and an
-  unstartable server no longer throws an unhandled `error` event at the
-  committer. Never blocking and never reporting turned out to be different
-  promises; only the first one was load-bearing.
-  Separately and more seriously, the hook is **not installed** in environments
-  set up before `default_install_hook_types` was added, because that setting
-  only takes effect when `pre-commit install` is re-run — so it reports nothing
-  because it never runs. Recorded in Known gaps; the fix touches the shared
-  hooks directory and therefore every agent at once, so it is not applied here.
-- Three script test headers advertised `node --test scripts/`, which fails on
-  Node 24 — the portable runner `node scripts/script-tests.mjs` already existed
-  and already documented that trap.
+## [0.1.4] - 2026-07-30
 
 ### Added
 - **Shell-specific plumbing is now refused at the commit.** The project already
@@ -102,8 +64,593 @@ to [Semantic Versioning](https://semver.org/).
   claimable by anyone — `claim_task`, `next_task` and `stalled_work` all handle
   it — so a sweep would fix nothing, and `release_task` nulls `claim_started_at`,
   which would destroy the evidence window ADR-0048 exists to preserve.
+- **A control can now be stood down through the tool surface.**
+  `register_control` and `register_ratchet` were exposed and `retire_control`
+  was not, so a control registered under the wrong id was permanent: its
+  version can never move backwards, which means re-registering the id is
+  refused, and there was no supported way to withdraw it. Dead and duplicate
+  mechanisms accumulated against live clauses and went on reporting.
+  `retire_control` is now an MCP tool. Retirement is deliberately not deletion —
+  the control keeps recording what it once enforced, so an observation naming it
+  resolves as `unknown` rather than quietly disappearing, which is the honest
+  answer to "this measurement came from a mechanism we have since stood down".
+- **A link checker now guards the living documentation, and the one dead link
+  it found is fixed.**
+  `scripts/link-check.mjs` validates every relative markdown link in the living
+  docs (README, AGENTS, DEVELOPERS, `docs/*.md`, the extension README) against
+  the working tree, and its test runs from pre-push via `script-tests`, so a doc
+  that starts pointing at a moved, renamed, or deleted file fails the push
+  instead of rotting unnoticed. It resolves a target file-relative or
+  root-relative (the repo mixes both), treats a directory target as valid, and
+  exempts the `media/screenshots/` images the capture checklist tracks. It found
+  AGENTS.md still pointing `GraphStore` at `graph.rs` after that module was split
+  into `graph/`; the link now points at `graph/mod.rs`. `docs/adr/` is out of
+  scope on purpose — an ADR's cross-references are historical, number-identified,
+  and some point at decisions since renamed or never given their own file;
+  repairing those is a maintainer's call about intent, tracked separately.
+- `merge_evidence` builds a conformance evidence bundle from a merge that
+  already landed (ADR-0058), instead of the agent assembling one by hand.
+  Name the commit that carried the work; the plane verifies deterministically
+  that git can resolve it, that it is reachable from `main`, and that it touched
+  paths inside the task's declared scope, then derives the bundle from what git
+  reports. It refuses a commit that never merged, one outside the task's scope,
+  one the calling agent does not hold the task for, and a task that declared no
+  scope at all — with nothing to match on, any merged commit in the repository
+  would otherwise serve as a receipt.
+  It does not complete the task: conformance still judges the result and
+  somebody still has to submit it.
+- A decider label that is one edit from one already in the ledger is now flagged
+  at the moment it is recorded. Attribution labels are free text and
+  deliberately unverified — ADR-0071 is explicit that they are attributed, not
+  authenticated — so a typo cannot be detected by checking it against anything.
+  It can only be compared with what is already there.
+  This matters because the moment of writing is the *only* moment a slip is
+  fixable. Afterwards every verb that could correct one refuses by design:
+  `attribute` answers "a recorded human act is not rewritten here" and `reopen`
+  answers "a recorded decision is not undone here". Both refusals are right —
+  an agent that could rewrite who decided something would make attribution
+  worthless — but together they mean a mistyped name is permanent.
+  Measured on the live ledger: 73 rows carried 70 decisions by `monk-eee`, one
+  by `Lyndon Swan`, and one by `monk-ee`, which is a typo for the first and can
+  never be corrected. This is what would have caught it.
+  The check is advisory and never refuses. Two people can legitimately have
+  similar names, and rejecting a genuine new reviewer to catch a typo is the
+  worse failure; the response carries the recorded label, what it resembles, and
+  what to do about it, and the decision itself proceeds untouched.
+- **Policy can grow: a new clause can be written into an amendment.** Two
+  correct rules met in a corner. `define_goal` states a rule that is live the
+  moment it is written, and `complete_clause_contract` refuses to give a live
+  rule a contract, because hardening what people are already working under is
+  precisely what an amendment is for. But `propose_amendment` only carried
+  existing clauses forward and nothing could add one — so the clause that most
+  needed an enforcement contract was the one clause that could never be given
+  one, and belonging to no constitutional version it never appeared in
+  `constitution_diff` either. The only route into a version was
+  `register_policy_pack`, which records immutable *upstream* provenance: minting
+  a pack to carry a rule this project wrote itself would have put a fabricated
+  source in the record. Measured impact — this blocked registering a ratchet
+  over the MCP tool surface, because `register_ratchet` needs an active clause
+  that authorises it and none of the 25 clauses mentioned the tool surface.
+  `draft_clause` authors a clause into an open draft: it enters as part of the
+  draft rather than as live policy, reads as `added` in the diff a reviewer
+  sees, and carries the same id shape as a clause copied forward, so nothing
+  downstream can tell an authored clause from an inherited one once promoted.
+- A task now records the branch its evidence window is being done on (ADR-0057).
+  The value is joined at claim time from what the claiming session already
+  declared to `open_session`, so nobody is asked to declare anything twice, and
+  a session that declared no branch records nothing rather than a guess — the
+  server never inspects Git (ADR-0044). It follows the window rather than the
+  agent: a same-owner re-claim keeps it, so an agent that has since moved on
+  cannot silently rename the branch its earlier commits were made on, while a
+  claim by a different owner opens a fresh window and re-reads it. Existing
+  databases gain the column as NULL, which is the honest record of a branch that
+  was never captured. This is the fact a verified merge will be checked against
+  (ADR-0058).
+- **ADR-0064 records that the task lifecycle becomes an append-only log, with
+  `tasks` as its projection.** The schema had already improvised this primitive
+  three times: `claim_lapses` and `unleased_seconds` are aggregates of events
+  nobody wrote down, `task_claim_transfers` is a single-verb log with a
+  hand-written before-image, and `conformance` is append-only already. The cost
+  showed up on 2026-07-29 — diagnosing board growth across 220 tasks produced a
+  **wrong** first answer, reading 29 expired-lease tasks as abandoned when four
+  agents were actively working them; a sweep on that reading would have stripped
+  live work from all four. The same gap makes ADR-0048's `needs_human` cap fire
+  on healthy work, because two integers cannot tell "lapsed while idle" from
+  "lapsed mid-build with commits landing in the hole", and the 300-second default
+  lease is shorter than `cargo test --all`.
+  Decision only; no behaviour changes in this commit. Per ADR-0063 the migration
+  never rebuilds `tasks` destructively — live claims are not ours to touch — and
+  imports each existing task as a genesis event that honestly declares it carries
+  no prior history. Verdict recomputation and forking are explicitly deferred,
+  and this does **not** shrink the board: that growth is agent fan-out (69
+  created against 36 closed in a day), which the log makes legible, not smaller.
+- **`make reingest` lets an extractor improvement reach the graph that already
+  exists.** Structural extraction happens once, at ingest time, and nothing
+  revisited it: `reconcile_workspace` only forgets files that vanished, `index`
+  only fills embeddings, and the editor sensor re-ingests a file only when
+  somebody saves it. So when the extractor learned Rust `mod`/`use` edges, the
+  3,703 artifact nodes already in the graph did not learn anything — each would
+  have caught up only on its next save, silently, over months.
+  Measured 2026-07-29, immediately after Rust import extraction shipped:
+  `get_impact_radius` on `crates/mindleak-core/src/model.rs`, which nearly every
+  module in the crate imports, returned 11 nodes, 11 edges and **zero** imports
+  edges. The improvement was real and completely invisible. After one pass:
+
+  | `model.rs` impact | before | after |
+  |---|--:|--:|
+  | nodes | 11 | 189 |
+  | edges | 11 | 216 |
+  | `imports` edges | 0 | 41 |
+  | dependent `.rs` files reached | 0 | 25 |
+
+  The pass enumerates tracked files with `git ls-files`, skips what the
+  extractor cannot read, and drives `ingest_file` through a server it builds and
+  spawns itself — deliberately not whichever server an editor is running, since
+  a rebuilt binary does not change an already-running process, and that stale
+  process is exactly what the pass exists to get past. Re-ingesting is safe by
+  construction: `replace_structure` atomically replaces everything an artifact
+  emitted.
+  The cost is stated rather than hidden: re-asserting a structural edge resets
+  its decay clock, so the structural tier reads as uniformly fresh afterwards.
+  That is defensible for structure, which is true exactly as long as the file
+  says so, and attention (`observed`) edges are not written by this pass.
+  The first run also surfaced that 43 of 247 tracked files cannot be re-ingested
+  at all, because an absolute id from a sibling worktree owns their structural
+  edges. Recorded in the Known gaps of `DEVELOPERS.md`; it is an ownership
+  decision rather than a patch.
+- `scripts/binding-audit.mjs` reports Lodestar goal/code binding coverage: source
+  files no goal binds, bindings naming a path that no longer exists, and
+  bindings stranded on superseded goals. `--check` exits non-zero on the first
+  two, so it can gate CI. Cross-platform, read-only, no model.
+- **`make board-health` separates work a human must decide from work nobody
+  can.** ADR-0058 decision 4 says the board should report what it cannot close;
+  this is that report. `needs_human` was one verdict covering two unrelated
+  situations — conformance found something arguable, or the evidence bundle was
+  empty and there is nothing to rule on at all. It also names stranded claims:
+  a lapsed lease still holding scope against other agents (ADR-0048).
+  Measured on this repository, 207 tasks: **0 decidable, 0 unresolvable, 27
+  stranded**. The first draft of this report said 51 parked instead of 0,
+  because a task keeps its conformance audits after it finishes and classifying
+  by "latest audit" alone counted completed work as pending — every one of
+  those 51 was already `done` or `abandoned`. Inflating a backlog is not a
+  milder failure than hiding one; it sends people looking for work that does
+  not exist. Terminal tasks are now excluded, with a test.
+  Reporting only: nothing here closes, abandons, or reassigns anything, because
+  ADR-0058 decision 5 is explicit that nothing closes automatically.
+- **Known gaps now records that an agent can work all day and certify nothing.**
+  48 of 101 `done` tasks rest on a `needs_human` receipt rather than an affirmed
+  one, thirty-three claims sit lapsed, and an audit against `origin/main` found
+  at least nine of those tasks already fully implemented in main — so the board
+  cannot distinguish unfinished work from unclosed work, and an agent that
+  trusts it re-implements what already shipped. The entry names the measurement,
+  the impact, why `check_conformance`'s refusal is correct and must not be
+  loosened, and the three candidate repairs. It also corrects the older
+  "a lapsed claim can never certify the work it was claimed for" entry, which
+  ADR-0048 has since made untrue: a same-owner re-claim keeps `claim_started_at`
+  and records the hole, verified end to end on a task whose lease lapsed twice.
+- **Publishing offers the task's exact completion evidence and check (ADR-0065).** `canonical-push` now uses the one moment the claim is guaranteed live and the published commits are already ingested to assemble `evidence_for`, run `check_conformance`, and write the exact `{ task_id, evidence, check }` payload under ignored `target/completion-offers/`. It prints one bounded instruction for the explicit `complete_task` call; it never calls `complete_task` itself. Ignoring the offer is the entire decline path, and every offer-side failure is silent because the push has already succeeded. Multiple live claims are left unoffered rather than guessing which task the branch served.
+- **Delivery has a queue again, and we run it ourselves.** ADR-0061 chose
+  GitHub's merge queue; the `merge_queue` ruleset rule is refused on this
+  repository, because merge queue requires an organisation-owned repo and this
+  one belongs to a user account. The same endpoint accepts other rules with the
+  same credentials, so it is the feature that is unavailable, not the request.
+  `make queue` (ADR-0062) serialises the step that was actually contended:
+  with eleven armed pull requests and up-to-dateness required, every merge makes
+  the other ten stale, and each one that refreshes itself burns a full check run
+  against a `main` the next merge invalidates — O(N²) runs that never drain. The
+  queue brings exactly one branch up to date at a time, in the order they were
+  armed, which makes it O(N). It **never merges**: merging stays with GitHub's
+  auto-merge behind the same five required checks, so it cannot become a second
+  route into `main` that branch protection does not govern. `make queue-watch`
+  runs it as an agent.
+- **Work that finished and is waiting on a person now says so where the human's
+  agent already looks.** A `drift` or `needs_human` verdict completes a task
+  into `in_review` rather than `done` — the honest outcome, and by design
+  (ADR-0009). Only a person can finish it. But nothing told anyone: completing
+  into `in_review` clears the owner, and a human has no agent id (ADR-0046), so
+  there was no agent to notify and no queue to read. Measured on 2026-07-30,
+  five tasks were sitting finished from at least three sessions, three of them
+  more than a day old, surfaced nowhere but a board query somebody had to think
+  to run.
+  `open_session` now carries `awaiting_a_human` alongside the `stale_build`,
+  `waiting_on_you` and `paused_by_you` it already reports. The agent is told
+  because the agent is the only thing the human talks to.
+  It is a **filter over `stalled_work`'s existing `awaiting_human` rule**, not a
+  second query. Deriving "waiting on a person" twice would let the two surfaces
+  disagree about what that means, and the one that drifted would be the one
+  nobody tested. The query lives on the facade rather than in the response, so
+  the fact is available to any caller.
+  Read-only and advisory: it reports and can never refuse. It says **nothing**
+  when the queue is empty, because a field that always appears is one readers
+  learn to scroll past — the same reason `stale_build` stays quiet on a current
+  build. Both the reporting and the silence are tested.
+### Added
+
+- **`existing_work` answers whether this has already been done.** Six identical
+  "carry controls across an amendment" tasks and four identical "run the merge
+  queue ourselves" tasks reached the board because nothing could answer that
+  question: `check_overlap` reports who is touching a file *right now*, and
+  `board` hides finished work — so completed and abandoned work, the answers
+  that matter most, were invisible. `existing_work(goal_id | paths)` returns
+  the tasks already serving a goal or already declaring those paths in their
+  scope, terminal states included. Path matching reuses `check_overlap`'s glob
+  comparison so the two cannot drift, and asking about nothing is refused
+  rather than answered "nothing exists" — a clean bill of health for a question
+  never asked is the failure this exists to prevent.
+
+  `create_task` now names the prior work serving the same goal and still
+  creates the task: a second task against one goal is often legitimate, and a
+  gate here would be wrong more often than right (ADR-0015).
+
+  Not yet answered: which branch that prior work is on, and whether it is
+  merged. `Task` has no branch field — that is a separate open task, and
+  reporting a branch before one is recorded would be a guess.
+- **A lease about to die, or already dead, says so.** A lapse was silent until
+  `complete_task`, which is far too late: closing a lapsed claim means
+  re-claiming it, re-claiming records the lapse, and conformance then refuses to
+  certify across the hole (ADR-0048), so the only warning arrived after the cost
+  had become unrecoverable. Twenty-nine claims on this repository are stuck
+  behind exactly that. `complete_task` now reports a claim within ninety seconds
+  of expiry — the default lease is five minutes and `cargo test --all` alone can
+  outlast it — and separately reports one that has already lapsed, with
+  different advice, because renewing cannot repair a window that already has a
+  hole in it. A comfortable lease says nothing at all: a warning on every call
+  is a warning nobody reads.
+- **ADR-0065 proposes that completion belongs at the publication boundary.**
+  Everything in this project that relies on remembering has failed — ADR-0046
+  measured zero adoption for a capability needing its own call — and everything
+  hung off an action already being taken has held, from the publication ledger
+  to the delivery queue. Completion is the last obligation still waiting to be
+  remembered, and the cost of forgetting it is unrecoverable rather than merely
+  untidy. `Proposed`: it gives publishing a second meaning, which is a real cost
+  and deserves argument.
+- **Telemetry now says whether each registered agent session read memory before
+  its first attributed write.** `telemetry_snapshot` reports a bounded list of
+  the 32 most-recent sessions with successful memory-read and write counts plus
+  `yes`, `no`, or `unknown` when no write exists yet. The metric is derived from
+  the existing append-only audit trail and scans at most 10,000 recent
+  attributed events; no stored verdict or new MCP tool was added. Identity comes
+  only from `SessionRegistry`: callers may still use session-less read tools,
+  but cannot forge `resolved_agent` to improve the result. Failed reads do not
+  count, and opening the same session again starts a fresh observation window.
+  This turns memory adoption into an outcome metric rather than treating raw
+  recall call volume as proof of a habit.
+- **Module length is now measured by a committed script, so the number the
+  constitution ratchets against can be reproduced by anyone.**
+  `scripts/measure-module-length.mjs` counts Rust source modules under
+  `crates/` whose non-test length exceeds 450 lines — measuring above the
+  colocated test block, so a well-tested module is not mistaken for a bloated
+  one, and excluding integration suites and `tests.rs` modules outright,
+  because splitting those pays nothing. The count is deliberately an advisory
+  signal rather than a verdict: the governing clause says file length is
+  "resolved by human judgment", and a genuinely cohesive module may sit above
+  the line. What the bound ratchet prevents is the count drifting upward
+  unnoticed — a module crossing the threshold surfaces at review, where it is
+  either split or a new baseline is accepted, and an accepted baseline is
+  attributed and version-bumped, which is how the cohesion exception ends up
+  stated and justified instead of forgotten.
+- **Paused work now finds its owner or an accountable successor (ADR-0070).**
+  `open_session`, `claim_task` and `renew_lease` return `paused_by_you` with the
+  task, parked time and exact pause reason, plus the `resume_task` action; empty
+  reminders are omitted. A paused task whose owner is known gone may now be
+  transferred before the seven-day grace through the existing `recover_claim`
+  path when a distinct human reviewer, expected owner and reason are supplied.
+  The reviewer and reason are recorded in the task event/thread history and the
+  successor starts a fresh evidence window. Agent-only takeover, `needs_input`
+  recovery and the ordinary grace-based fallback are unchanged. The reviewer
+  label is explicitly an attributable declaration, not authentication.
+- **Policy pack authoring and upgrading is documented (SPEC-CONSTITUTION §6,
+  §12.1 task 6).** `docs/POLICY-PACKS.md` covers the pack and clause schema,
+  namespacing and why a clause without a scope, evidence contract and
+  consequence is deliberately review-only, the adoption sequence, and the
+  upgrade path. The organising rule is stated first because everything else
+  follows from it: composition happens at proposal time, never through live
+  inheritance, so an adopted clause is copied into the project with its source
+  pack id, version, digest and key, and re-publishing upstream cannot change
+  local law. The guide ends by naming the tests that enforce each limit rather
+  than asserting good behaviour, so a reader can check the claims instead of
+  trusting them.
+- **PR effectiveness telemetry is now reproducible instead of a one-off
+  analysis.** `node scripts/evaluate-pr-effectiveness.mjs --limit=50` joins a
+  bounded GitHub cohort to Lodestar tasks through branch, durable thread, and
+  evidence-commit provenance, then reports conformance coverage/causes, claim
+  timing, human resolution, reconciliation churn, required-check completeness,
+  runtime latency/errors, polling share, and memory-read-before-write adoption.
+  Timestamped JSON and Markdown land under `target/telemetry`; deterministic
+  controls keep missing checks and incomplete attribution visible. Reports
+  contain no prompts, secrets, source, model reasoning, raw task threads, or raw
+  conformance evidence.
+- **`scripts/mcp-build-probe.mjs` asks each MCP build what it writes, instead of
+  guessing from dates or git distance.** A stale server that still writes
+  absolute node ids is not detectable from either. Measured across ten
+  worktrees: two that were only **five commits behind `main`** wrote absolute
+  ids, while others 17 and 38 behind wrote correct ones — and every worktree was
+  behind on `crates/`, so any threshold-based warning would have fired on all
+  ten. A warning that always fires is one people learn to skip, which is how the
+  original defect survived three days; that design was measured, rejected, and
+  is recorded here so it is not proposed again.
+  What separates them is behaviour. Node ids are repo-relative by contract
+  (ADR-0038), so the probe hands each binary one file by absolute path against a
+  throwaway database and reads the id it produces. No heuristics, no false
+  positives, and no live data touched. On first run it found **6 of 15 builds**
+  still writing absolute ids — the same six a manual sweep had found, in one
+  command. `--check` exits non-zero for CI or a pre-flight before trusting a
+  fleet-wide result.
+- **The delivery queue now names the open work it is not managing.** Arming a
+  pull request is what puts it in the queue (ADR-0045), so an unarmed one is not
+  last in line — it is not in the line at all. The tick reported only the armed
+  entries, which made "nothing is waiting" and "three pull requests are waiting
+  and nobody armed them" print identically. Measured on the day this landed:
+  three of five open pull requests were invisible to the queue, and no change to
+  the ordering could have reached them, because ordering only ever applies to
+  what is in the queue. Each unmanaged pull request is now listed with its merge
+  state and the reason — `not queued: nobody armed it`. This is reporting, not
+  policy: arming still decides membership and the first-in-first-out order by
+  arming time is unchanged.
+- **Rust files now declare what they import, so impact can say what breaks.**
+  The impact traversal is the deterministic half of MindLeak's memory — the part
+  that answers "what depends on the file I am about to change" — and for Rust it
+  had nothing to work with. Measured on this repository, the impact of a real
+  `.rs` file (`crates/mindleak-core/src/facade/query.rs`) was 15 nodes over 15
+  edges: its own commits, its own symbols, and not one other file, because Rust
+  ingestion emitted no inter-file edges at all. Meanwhile `docs/EVALUATION.md`
+  reported 1.00 precision on the impact question — measured on a **JS/TS**
+  fixture where those edges exist. The benchmark and the experience were both
+  honest and described different languages.
+  Rust ingestion now recovers the module graph without compiling anything and
+  without spending a token: `mod x;` resolves to the declaring module's
+  directory (which for a non-root file is a directory named after the file, not
+  the file's own directory — getting that backwards silently points every child
+  module somewhere wrong), and `use crate::`/`self::`/`super::` resolve through
+  a longest-first candidate ladder the store picks a known file from. That
+  ladder is the same mechanism the JavaScript arm already used, reused rather
+  than reinvented, because a `use` path cannot be split into module part and
+  item part by looking at it: `crate::graph::GraphStore` and
+  `crate::graph::query` are the same shape.
+  Deliberately conservative where certainty runs out. Another workspace crate
+  records as `package:<name>` rather than a guessed `crates/<name>/src/lib.rs`,
+  because that mapping is a convention this code cannot verify; an inline
+  `mod x { .. }` produces nothing, because no file is behind it; and comments
+  and string literals are masked before parsing, so the prose in this
+  repository's doc comments cannot fabricate an edge. All of these under-report,
+  which is the safe direction — a missing edge is a smaller lie than an invented
+  one.
+  This is the follow-up ADR-0066 named: the pre-flight was put on the mandatory
+  checklist with this limit stated rather than left unused, and closing it meant
+  emitting the edges, not rewording the docs. `impact_radius` and the
+  `check_overlap` pre-flight both return a Rust dependent end to end.
+- **`silent-knowledge` reports the recorded lessons that can never be read.**
+  The conformance advisory matches recorded knowledge on referenced nodes and
+  nothing else, so a record whose evidence carries no `nodes` array is stored,
+  counted, decayed on schedule, and can reach nobody. Nothing measured that.
+  `active_knowledge` reports `surfaces` per record, but only for whatever
+  filter you happened to ask for — reading it as a repository-wide number
+  required already suspecting the problem and then constructing the query,
+  which is why an early spot check of a filtered subset read as "3 of 17" and
+  the real figure went unnoticed. Measured across the whole ledger: **65 of 153
+  records, 42%, cannot be read.** Among them are the lessons most worth having
+  — that testing a facade method proves the logic and says nothing about the
+  wiring, which is precisely how `merge_evidence` shipped refusing every
+  caller; that a guard asserting over a retired name silently stops guarding;
+  and one recording the cost of skipping the mandatory ADR-0029 pre-flight,
+  which is exactly the mistake it could not warn anybody about. The audit ranks
+  by weight and confirmation so the list is workable rather than a heap, takes
+  `--top N`, and `--check` exits non-zero for a hook or a pipeline. It only
+  reports: knowledge is append-only and nothing attaches nodes retrospectively,
+  so the repair is to re-record the content with an evidence `nodes` array
+  after re-verifying that it is still true. Copying a stale claim forward would
+  be worse than leaving it silent, which is why this does not attempt to do it
+  automatically.
+- **`make stranded-report` turns a lapsed claim into a judgement rather than an
+  investigation, and `board-health` stops implying an agent could close one.**
+  A lapsed claim cannot be closed by an agent, and the reason is structural
+  rather than a gap: closing one means re-claiming it, and re-claiming after a
+  lapse records the lapse, whereupon conformance returns `needs_human` for a
+  discontinuous evidence window and refuses to certify across the hole.
+  Narrowing the window around the gap is exactly the laundering ADR-0048 exists
+  to stop, so the refusal is the guarantee working. Measured while trying: a
+  task showing `0 lapse(s)` reported `the lease lapsed 1 time(s), leaving
+  85730s unleased` the moment it was claimed in order to close it. Calling them
+  "stranded claims" invited precisely the response that cannot work, so the
+  report now says `awaiting confirmation` and names who can act. The new report
+  proposes the commit that most likely shipped each one, graded strong / likely
+  / weak / none — a close second downgrades the confidence, because a coin toss
+  presented as a finding turns a judgement into a rubber stamp.
+- **The task lifecycle now has an append-only log (`task_events`), seeded with
+  the present.** ADR-0064's first step: the table, the `TaskEvent` model, and a
+  once-per-database genesis import. Each event carries the full after-image of
+  the task the transition produced, so replaying the log is a deterministic
+  assignment rather than a re-derivation that could drift from the guarded
+  UPDATE it mirrors. `append` takes a connection rather than `&self`
+  specifically so callers pass the transaction already open for the state
+  write — an event committed separately from the row it describes could exist
+  without it, and the projection would stop being checkable.
+  Two deliberate choices. There is **no** foreign key to `tasks`:
+  `task_claim_transfers` cascades on delete, which is right for an audit of a
+  row that must exist, but a record of what happened must outlive its subject
+  rather than vanish with it. And the genesis import writes state only, with no
+  invented history before it — the claims and lapses that produced each current
+  row were never recorded, and manufacturing plausible ones would put fiction
+  in an audit ledger. Per ADR-0063 it is registered by name in
+  `schema_migrations` and touches no task row, so no live claim moves.
+  Nothing emits events yet; the write path is unchanged.
+- **The board now reports the claims it cannot close.** Work that shipped and
+  never closed stays on the board indefinitely, and a board that understates what
+  is finished is expensive in a way an overstated one is not: `next_task` offers
+  work that already exists and an agent rebuilds it. Observed repeatedly on this
+  repository — a task was offered whose branch was sitting in an open pull
+  request, and four separate open tasks turned out to be already delivered, each
+  costing a fresh investigation to discover.
+  `make board-health` now names any non-terminal task whose recorded branch has
+  merged into `main`, with the merge commit, so a person can check it in seconds.
+  Branches are read from merge subjects rather than `git branch --merged`,
+  because a branch is usually deleted the moment it merges — the ref is gone
+  while the history proving it landed is not.
+  It reports and never closes. Completing one of these would manufacture a
+  receipt for work the script did not witness, which ADR-0009 refuses.
+  The count distinguishes **`unknown` from `0`**, which matters more than the
+  feature: a task claimed before the branch column existed records none, and a
+  server built before it does not return the column at all. Both produce an empty
+  result that reads as "nothing shipped unclosed" while actually meaning "nothing
+  to check against". The first live run produced exactly that false zero. A bare
+  count there would have been the same falsely-reassuring signal this report
+  exists to remove.
+- **The claim decision now surfaces the branch, on both the `claim_task`
+  response and the VS Code board row (ADR-0035 decision 5).**
+  A won claim confirms the branch its evidence window was pinned to; a lost
+  claim names not just who holds the task (`owner`) but the branch they hold it
+  on (`owner_branch`) — the fact a colliding agent needs to tell a merge risk
+  from the same work twice. The board row shows the owner's branch beside the
+  owner (`alice on fleet/x`) and in its tooltip. Both come from what the owner
+  declared to `open_session`, pinned to the task's window at claim time, and are
+  `null`/omitted cleanly when no branch was declared — never guessed, because
+  the server never inspects Git (ADR-0044).
+- **The Lodestar tool surface is now tiered: the default profile is the common
+  path, and the specialist machinery is advertised only when asked for.**
+  Every agent loads `tools/list` before its first question, so an unspent
+  minute of governance authoring — the constitution, amendments, policy packs,
+  waivers, ratchets, the design board, database admin — was a tax paid in every
+  session of every worktree (ADR-0059 rule 2). The default profile now
+  advertises the seventeen tools an agent uses to find, claim, do, prove and
+  hand off work, plus the ones it reads to know what governs it: 17 tools,
+  ~4,513 tokens, down from 67 tools, ~13,757 tokens. Nothing became
+  unreachable — dispatch is unchanged, so a specialist tool called by name
+  still runs. Set `LODESTAR_TOOL_PROFILE=full` to advertise the whole surface.
+  The allowlist is deliberate: a tool added anywhere else is specialist until
+  someone puts its name on the common path, so the surface an agent pays for
+  every session grows by decision rather than by default.
+- The fleet can now reclaim its own disk. `scripts/worktree-reclaim.mjs` reports
+  worktrees whose commits have landed on `origin/main` and, when told to,
+  removes them along with their local branch, their merged remote branch, and
+  their build output. `make reclaim` reports; `make reclaim ARGS="--reclaim
+  --remote"` acts.
+  This exists because cleanup never happens on goodwill. The agent that created
+  a worktree has finished and moved on by the time it is safe to remove, so the
+  mess is always somebody else's and it grows every time the fleet works
+  correctly. Measured 2026-07-30: 88 worktrees, 86 carrying `target/`, 61
+  carrying `node_modules`, one sampled `target/` holding 82,891 entries. On the
+  first real run the tool found 22 reclaimable worktrees holding **62.32 GiB**
+  of build output.
+  Reporting is the default and acting is explicit, because the failure mode of a
+  cleanup tool is deleting work somebody still needed and no report can be
+  un-deleted. It refuses the bare primary, protected branches, any tree with
+  uncommitted **or untracked** changes, any tree mid-build, any tree whose
+  ownership marker names another session, and any branch whose commits have not
+  landed. Every refusal names the rule that stopped it, so a worktree that is
+  kept does not read like one the tool failed to notice.
+  Landing is judged by patch equivalence (`git cherry`), not commit identity. A
+  squash or rebase merge lands every line under a new commit id, so
+  `git merge-base --is-ancestor` answers "no" for work that is fully merged —
+  the mistake that previously led an agent here to declare 245 merged lines lost
+  and queue a PR to restore code already on main.
+  The decision for each worktree is a pure function of gathered facts, so all
+  six refusals are tested without creating or destroying anything. The tests are
+  weighted toward what the tool must *not* take, because a cleanup tool tested
+  only on what it deletes has not been tested on what matters.
+- **The module-length ratchet is now observed, not merely registered.**
+  `control:rust-module-length` had a reviewed baseline and a committed measurer
+  and nothing ever told it anything — the same shape as the six script suites
+  and the merged-branch audit found earlier the same day: a mechanism that
+  exists, works, and runs nowhere. `scripts/observe-module-length.mjs` measures
+  the governed modules and reports the count through `observe_ratchet`, and it
+  runs on every publication, because publication is when the work becomes
+  visible to the fleet and therefore the honest moment to measure what the fleet
+  now has to live with. It reports locally rather than in CI on purpose: the
+  Intent Plane is a per-developer store, so an observation recorded on a
+  throwaway runner is recorded nowhere. It never blocks a push — the clause
+  resolves at `review` and the control's power is `observed`, so failing a push
+  on a regression would enforce harder than the rule it serves (ADR-0034); a
+  rising count is a question for a human, and cohesion still outranks size. What
+  it does refuse is running blind: an unattributed session or an unreachable
+  Intent Plane fails loudly, because a reporter that quietly says nothing is
+  indistinguishable from one reporting a pass.
+- **The recall ranking change is measured against a real index, including the
+  part of it that did not work.** ADR-0075 shipped on deterministic unit tests
+  whose fields were synthetic and uniform. A real index is neither, so it was
+  measured against this repository's own — 19,317 embedded nodes, ten queries,
+  the pre-change algorithm as the control arm and the built binary as the
+  treatment arm.
+
+  Two claims held. Hits naming a node the graph no longer holds fell from **24
+  of 50 to 0 of 49**: nearly half of what recall used to hand back was an id the
+  caller could not open. Recorded conclusions rose from **14% of hits served to
+  96%**, where they had been outnumbered five to one by symbols, executions and
+  dangling references.
+
+  One did not, and it is recorded with equal weight because the fixtures could
+  not see it: **a nonsense query is still answered rather than met with
+  silence.** Top-hit distance above the field is 3.11–3.90 standard deviations
+  for nonsense controls and 3.71–6.21 for real questions, so the bands overlap
+  by 0.19σ and no single threshold rejects one while keeping the other. The
+  shipped 1σ cut sits far below both. The reasoning that failed was that
+  nonsense lifts a field uniformly — true of the fixture, false of a diverse
+  19,000-node index, where even nonsense has relative outliers.
+
+  The constant is deliberately **not** tuned in response: three samples
+  separated by a negative margin is the same global constant the floor
+  measurement already warned against, one level up. ADR-0075 is still Proposed
+  and carries a correction saying so.
+
+  New: `scripts/evaluate-recall.mjs`, with unit tests, reproducing all of the
+  above. It needs a populated index and a reachable embeddings server — both
+  optional parts of the product (ADR-0008) — and reports rather than fails when
+  either is absent.
+- **The advertised MCP tool surface is now a measured number, so growth can no
+  longer pass unnoticed.**
+  `scripts/measure-tool-surface.mjs` asks both servers for `tools/list` over
+  MCP stdio and reports what a session pays to load them: 118 tools, 63.7 KB,
+  roughly 16,316 tokens spent before the first question. It asks the servers
+  rather than counting definitions in the Rust source, because the number that
+  matters is what a client is actually served; the unit is the compact JSON
+  that crosses the wire, and the token figure is bytes/4 and says so, since
+  only the count is exact. A server it cannot reach fails the run instead of
+  being left out — half a surface reported as the whole one reads as an
+  improvement and is a missing build. Measuring cost is not judging worth, so
+  the number is meant to be held by a ratchet reporting at review: whether a
+  tool earns its place in the context window is a decision for a human, and
+  what was missing was never the judgment but the prompt to make it. That
+  ratchet is not yet registered — no active clause authorises one and a new
+  clause cannot currently be given an enforcement contract (see Known gaps) —
+  so for now the surface is measured and published rather than enforced. The
+  ratchet is tracked separately as task:8000f45e0dfd. ADR-0059 recorded 89
+  `lodestar-mcp` tools; the first run recorded 90, and the reconciled run
+  recorded 91.
+- **A task's evidence-window continuity is now derivable from the log.**
+  `claim_window()` replays the recorded transitions to compute the lapses and
+  unleased seconds that `tasks.claim_lapses` and `tasks.unleased_seconds`
+  currently carry as running totals (ADR-0064 decisions 5 and 6). Nothing is
+  removed yet: the derivation is asserted **against** those columns across
+  every shape they take — never claimed, clean claim with renewals, one lapse,
+  two lapses, handover to a new owner, and park/resume — because that agreement
+  can only be proved while both still exist. After the columns go there is
+  nothing left to disagree with.
+  The genesis event now carries the counters it imported. Deriving continuity
+  from in-log transitions alone would report zero lapses for any window that
+  opened before the log did, and under ADR-0048 a window with no lapses may
+  certify itself as `aligned` — so a migration would have quietly laundered a
+  discontinuous window clean and handed out a receipt for work with holes in
+  it. Derivation is therefore genesis seed plus in-log transitions, with a test
+  that a pre-log window keeps the three lapses it had and accumulates a fourth
+  on top.
 
 ### Changed
+- **`check_overlap` grades the collision instead of just reporting one
+  (ADR-0035 heuristic 4).** Every intersecting claim came back as the same
+  undifferentiated "overlap", so the caller had to guess which kind it had —
+  and advice you have to guess at is advice you learn to skip. Each claim now
+  carries the branch its owner declared at `open_session` and one of three
+  signals: `same_branch_collision` (both sessions on one branch, the edits
+  collide now), `cross_branch_merge_risk` (different branches, paid at merge),
+  or `undeclared`. The result also echoes `requester_branch`, because an
+  `undeclared` signal is ambiguous without knowing which side went quiet. The
+  branch is never a call argument: it is declared once per session, and a
+  second place to state it could disagree with the first — pass the optional
+  `session_id` and the server reads the branch that session already declared.
+  Still advisory and still never blocks a claim: no session, an unregistered
+  token, or a session that declared no branch all fall back to exactly the
+  answer this tool gave before, and say so rather than implying a verdict. The
+  VS Code pre-flight warning names the cost in the same terms, and adds nothing
+  when the context is undeclared.
 - **A completion now says whether its evidence affirmed anything.** Reaching
   `done` said nothing about whether the conformance receipt behind it proved
   the work. Measured over this repository: **57 of 101 `done` tasks** rested on
@@ -118,8 +665,733 @@ to [Semantic Versioning](https://semver.org/).
   `needs_human` one. Derived at read time from the durable record — nothing is
   stored twice — and a task with no record at all reports no receipt, which is
   distinct from one that proved nothing.
+- **A conformance gate that checked nothing no longer reports OK.**
+  `scripts/conformance-gate.mjs` printed `OK — N changed path(s), no governed
+  gaps` whether it had verified every governed change or had inspected nothing
+  at all. Those are not the same result, and on this repository it is nearly
+  always the second: measured 2026-07-29, the constitution binds **8 code nodes
+  and none of them are under `crates/`**, so a pull request touching fifty Rust
+  files passed the gate having checked none of them — and said so in the words
+  of a pass.
+  That is the same shape as a conformance receipt that is `aligned` over an
+  empty bundle, which this repository has already corrected once: agreement
+  about nothing is not proof. The gate now returns what it was able to inspect
+  (`inScope`, `ungoverned`, `governedNodes`) and reports `CHECKED NOTHING —
+  none of N changed code path(s) are governed` when no changed path was in
+  scope, naming how few nodes the constitution binds. Documentation is excluded
+  from the ungoverned count, so a docs-only change does not read as a gap
+  governance never claimed.
+  Reporting only. Nothing new fails, and the dangling-binding check is
+  unchanged. Two larger findings are recorded in the Known gaps of
+  `DEVELOPERS.md` rather than acted on: 127 of 131 receipts cover zero governed
+  nodes, and the gate cannot currently run in CI at all, because it reads an
+  exported manifest that `.gitignore` excludes by policy.
+- **A guard that has to be told what to check stops covering the next thing
+  added.** The check that catches a server-side table naming a tool that no
+  longer exists was given the tables to inspect, so it protected exactly the
+  ones somebody had remembered to register with it — and forgetting is the
+  entire failure it exists to prevent. That was not hypothetical: a fourth
+  table, `REQUIRED_SESSION_ACTS`, was added after the guard was written and
+  covered only because its author happened to also edit the guard. The next one
+  would have been invisible, in the same silence that let ten stale session
+  bindings survive a rename. The guard now discovers every `ToolAct` table by
+  reading the source, so a table is covered the moment it is declared rather
+  than when someone thinks to mention it. Proven by declaring a new table that
+  names a tool which does not exist and is referenced nowhere else: the guard
+  fails and names it. Two details carry the honesty of the scan. Emptiness is
+  asserted per table rather than in total, because a scan that quietly stopped
+  reading one table still satisfies a total — that is how a scan in this file
+  passed on its own source for weeks. And the string the scan searches for is
+  built at run time, so this file does not contain the literal being looked
+  for; a guard that searches for text matches itself and then reads its own
+  body as data, which has happened here before and did again while writing
+  this one.
+- **Every constitution acceptance property now names the test that proves it,
+  and a guard fails if that test stops existing.** SPEC-CONSTITUTION §13 lists
+  ten properties the constitutional machinery must satisfy; §13.1 now maps each
+  to the tests that fail when it stops holding, so acceptance is re-checked by
+  the suite on every change rather than by re-reading a list. Building the map
+  found the one property with no proof at all: learned knowledge staying out of
+  the constitution held only because knowledge and clauses live in unconnected
+  stores, and "true because nothing links them" is precisely what a later
+  convenience removes without anyone noticing it was load-bearing. That boundary
+  is now pinned — a promoted signal becomes knowledge, creates no clause, and
+  leaves an ungoverned repository ungoverned.
+- **ADR-0061's merge queue is not available for this repository, and the ADR now
+  says so.** GitHub's merge queue requires an organization-owned repository;
+  this one is owned by a user account, so the "Require merge queue" checkbox is
+  absent from branch protection rather than merely unticked, and no REST or
+  GraphQL field exists behind it. The measurement that motivated the ADR stands —
+  65% of CI in twenty-four hours spent re-running unchanged code — but the
+  remedy is out of reach, so the status is now `Accepted (remedy blocked)` and
+  the three genuinely available options are recorded: move the repository to an
+  organisation, accept the churn, or reduce contention by arming fewer branches
+  at once. Attempting the change also proved the ADR's own warning that its two
+  halves must move together: unticking "require branches to be up to date"
+  succeeded while ticking the queue was impossible, leaving `main` briefly able
+  to accept two individually-green branches that break it together. The
+  protection was restored with required checks unchanged. `merge_group` stays in
+  `ci.yml` — inert without a queue, and it makes the organisation option a
+  single settings change rather than a prerequisite to rediscover.
+- **Agents are told about the delivery queue, and told not to fight it.**
+  `AGENTS.md` gained a git-discipline rule: arm a pull request and leave it
+  alone. The queue (ADR-0062) only removes contention if agents stop refreshing
+  their own branches — if each one runs `gh pr update-branch` the moment it goes
+  behind, they collide continuously and nothing drains, which is how eleven
+  armed, green pull requests once sat unmerged for two hours. Merging `main` in
+  by hand is now reserved for the one case the queue hands back: a real
+  conflict. `scripts/delivery-queue.mjs --help` explains the same thing at the
+  point of use.
+- **Publishing to a branch with auto-merge armed now cycles the promise instead
+  of refusing the push.** Arming auto-merge is a promise to merge whatever is on
+  the branch the moment checks go green, so pushing afterwards races it — PR #37
+  stranded four commits that way, and PR #134 later stranded five more. Refusing
+  the push held the invariant but made every follow-up commit a manual
+  disarm/re-arm dance, and the escape it pushed people toward was arming late,
+  which means somebody sitting and watching a pull request instead. The
+  publisher now withdraws the promise, pushes, and re-makes it about the tip
+  that was actually published: at no point is there an armed promise about a
+  branch being written to, and nobody merges or disarms by hand. A push that
+  fails still restores the promise, because a failed push leaves the branch
+  exactly as the promise already described it; a re-arm that fails leaves the
+  pull request disarmed and says so, which is the safe direction — work sits
+  unmerged and visible rather than merging something nobody promised. The guard
+  module also has tests now, having been written with the stated purpose of
+  being testable without a network and then shipped with none.
+- **CI now triggers on `merge_group`, the prerequisite for a merge queue
+  (ADR-0061).** Enabling a queue without it would have deadlocked delivery
+  completely: the queue runs the required checks against a temporary
+  `merge_group` ref holding the prospective merged result, and a required check
+  that does not trigger on that event never reports — so the queue waits for it
+  forever and nothing merges at all. All five required checks come from
+  `ci.yml`, which triggered only on `push` to `main` and on `pull_request`. The
+  trigger is inert until a queue exists, which is exactly why it lands first and
+  on its own.
+- **`DEVELOPERS.md` records what closing a stranded claim after the fact
+  actually costs.** Most stranded claims are work that shipped and was never
+  closed, so reconstructing the receipt is a natural move — and it has four
+  traps that were all hit in one sitting, transitioning two live tasks to
+  `in_review` in the process. `check_conformance` is not a dry run: it records
+  an audit and moves the task, after which re-claiming fails. The whole claim
+  window is too wide and produces `drift` from unrelated commits. `ingest_commit`
+  defaults its `timestamp` to now, and because the node is upserted, one
+  careless call fixes that commit at the wrong time permanently. The intent node
+  is keyed by the sha string as passed, so comparing against `git rev-parse`
+  reads a clean window as contaminated. And after all four are handled, a
+  correctly bounded bundle for a documentation commit still returns
+  `needs_human` — so until ADR-0060 is implemented the list cannot be worked to
+  completion at all.
+- **The command palette lists 8 commands instead of 34.** Typing "MindLeak"
+  returned every contributed command, and 26 of them could do nothing from
+  there: 20 are driven by a row in a view — from the palette they only answer
+  "Run *X* from an Intent Board row" — and 6 are per-view refresh, which belongs
+  on the view title where it already is. Those 26 are hidden from the palette
+  and unchanged everywhere else: view title buttons and right-click menus behave
+  exactly as before. What remains is the set that does something when invoked by
+  name: prune, reconcile, export, back up, reset, ingest the active file, next
+  task, sync ADRs. A test enforces the rule rather than the list, so a new
+  row-driven command is caught instead of quietly rejoining the wall, and a
+  budget assertion fails if the palette grows past ten without anyone deciding
+  it should.
+- **The constitution export is self-contained, so policy can actually be audited
+  from it (SPEC-CONSTITUTION §13).** It rendered clause statements grouped by
+  kind and nothing else: a reviewer handed the file could not tell which
+  constitutional version it was, where a clause came from, what mechanically
+  enforced it, or which exceptions were live — the four things an audit consists
+  of. It now carries a `## Version` section (id, version, status, created and
+  activated attribution, project identity, purpose, preamble), per-clause
+  provenance, declared consequence, waivability and bound controls, and a
+  `## Active waivers` section. Absent values render as `_not recorded_` rather
+  than being omitted, because the migration that creates the first version
+  deliberately invents neither rationale nor authority, and a document that drops
+  its empty fields disguises that as completeness. On this repository the export
+  grew from 7,133 to 10,674 bytes and immediately showed something the old one
+  hid: the split between what enforces and what does not. Measured again after
+  the fleet-discipline clauses were adopted, that split is **thirty active
+  clauses, thirteen carrying a complete contract, and four binding any control
+  at all — two of them mechanical**. The four are the source-file length
+  ratchet and commit-provenance ingestion (both `observed`), and the
+  shell-plumbing and worktree-ownership hooks (both `mechanical`).
+  The earlier reading of this fragment — that six workflow rules bound
+  mechanical controls — no longer holds, and the reason is worth knowing rather
+  than quietly restating a number. Those delivery clauses were amended, and an
+  amendment used to leave its controls pointing at the superseded clause id, so
+  they were orphaned: `clause_controls` now reports `one-publishing-owner-per-task-branch`
+  and `a-commit-stays-inside-its-declared-scope` as unguarded, though both still
+  declare `block`. The mechanisms themselves never stopped working — the
+  pre-commit hooks still exit non-zero — but the ledger can no longer resolve
+  those clauses above `advise`, which is precisely the "a control that has
+  stopped enforcing reads exactly like one that works" failure. Carrying active
+  controls across an amendment by slug fixes it going forward and re-adopts the
+  stranded ones at the next amendment; until then the count above is the honest
+  one.
+  The clauses that enforce nothing still include every locally-migrated clause,
+  which is to say every invariant the project wrote about itself: the zero-token
+  hot path, decay, derived effective weight, the local-only security boundary.
+  Borrowed rules about how work is delivered are the ones that acquired
+  mechanisms; the project's own rules about what it must never do have none.
+  That much is correct behaviour — migration invents no authority (§10) and
+  broad principles route to review (§13) — and it was invisible while the export
+  rendered enforcing and inert clauses identically.
+- **`tasks.claim_lapses` and `tasks.unleased_seconds` are gone; continuity is
+  derived from the log.** ADR-0064 decision 5. The two running totals the claim
+  compare-and-swap maintained are replaced by `claim_window`, which replays the
+  recorded transitions. Their agreement was proved in the preceding commit while
+  both still existed; the migration drops the columns only *after* the genesis
+  import has carried their values into the log, because they are the sole
+  surviving trace of a window that opened before the log did.
+  `ALTER TABLE ... DROP COLUMN`, never a table rebuild: a rebuild rewrites every
+  row including `owner` on live claims, and ADR-0063 is explicit that a live
+  claim is not ours to touch. Dropping an unrelated column moves nothing.
+  The fields are **not** kept on `Task` as derived values. Zero lapses means
+  "this window may certify itself as aligned", so a field any read path could
+  leave unpopulated would fail *open* — quietly handing out a clean receipt for
+  work with holes in it. Conformance and the conformance token now ask for the
+  window explicitly; there is no field to forget.
+  Board rows carry `claim_window` instead, so the continuity a reader needs is
+  still beside the status rather than a query away. `scripts/stranded-report.mjs`
+  reads it from there.
+- Goal coverage can now be declared while a claim is live, and is refused once
+  conformance has judged the task (ADR-0074). `also_serves` was fixed at task
+  creation, on the sound reasoning that coverage added after conformance
+  complains is a rationalisation. But goals bind to files, so the governing set
+  is learned while working, not predicted at creation — and after the first
+  commit the previous remedy did not work at all: a task created to gain
+  coverage cannot own the earlier work's evidence
+  ("evidence interval falls outside the live claim"). Measured on 2026-07-30,
+  one change took three task creations and still shipped a drift receipt.
+  The boundary moves from creation to the first verdict, which is the
+  distinction the original rationale already named — a rationalisation is for a
+  finding *already raised*. Before any finding, a declaration is still a
+  prediction the evidence can contradict.
+  Declaring is owner-guarded and claimed-only, unions rather than replaces so it
+  can never drop a goal declared earlier, and appends a `coverage_declared` task
+  event so a task that grew its scope shows when and by whom. Work already in
+  `in_review` cannot be re-claimed, so a verdict cannot be widened and re-judged.
+  No new tool verb: the declaration rides on `task_claim`, which already says
+  what a task expects to touch, and a same-owner re-claim keeps the evidence
+  window open.
+- Each window now roots its MCP servers at the worktree it is editing (ADR-0073).
+  `.vscode/mcp.json` bound both servers to `${workspaceFolder}/target/release`,
+  and every window's workspace folder was the primary checkout, so a file edited
+  in any other worktree could not be made repository-relative. Measured on
+  2026-07-30: `ingest_file` refused 257 of 6450 calls (4.0%), roughly two per
+  minute, and those files never entered the graph at all.
+  `cwd` and `MINDLEAK_WORKSPACE` still follow `${workspaceFolder}`, so opening
+  the worktree as the workspace folder is now enough to make saves land under the
+  canonical id. Worktrees continue to share one graph and one board — the
+  repository id derives from the git common dir, not from the folder opened,
+  which was verified across three worktrees before the change.
+  The servers are installed once per machine at `~/.mindleak/bin` by
+  `make install-servers`, rather than being built into all 56 worktrees (184 GB
+  of build output already on disk, only 15 holding a server binary). Because the
+  binary now sits outside the workspace, the build notice reports it as an
+  installed binary — identity without a staleness claim it cannot support.
+- **Every task transition now records itself in the log.** ADR-0064 step two:
+  the sixteen verbs that mutate task state — claim, renew, heartbeat, block,
+  reopen, abandon, resolve, ask, answer, pause, resume, release, both
+  conformance transitions, claim recovery, and creation itself — append a typed
+  event inside the same transaction as the guarded write they perform. Four
+  verbs that previously wrote outside a transaction (`renew_lease`,
+  `touch_lease`, `resume_task`, `release_task`) now open one, because a record
+  that can commit separately from the row it describes is not a record.
+  The claim compare-and-swap is untouched. It is a single guarded UPDATE inside
+  an Immediate transaction and it was already right; the event is appended
+  beside it rather than atomicity being rebuilt on top of a log.
+  `open_blocked_successor_on` resolves the successor before updating it instead
+  of updating through a subquery, so a predecessor-driven unblocking can be
+  recorded against the task it actually moved. That event has no actor by
+  design: nobody asked for it, the gate simply lifted, and naming a caller would
+  attribute a decision no agent made.
+  `project_tasks` replays the log into task state, and a test walks a task
+  through most of its lifecycle and asserts the replay reproduces the live board
+  exactly. That test is the point: `tasks` is written through rather than
+  rebuilt (ADR-0063 forbids a migration from touching a live claim), so "the
+  projection is derivable from the log" is a property that would otherwise
+  quietly stop holding the first time a verb forgot to record itself.
+- **An expired claim no longer wears the owner's icon on the board.** The sort
+  already knew a lapsed claim is ready work — the store's compare-and-swap
+  admits it and the row says "Claim expired · Ready" — but every claimed row,
+  live or lapsed, still drew `account`, the icon that means *someone is holding
+  this*. So the one row that means "abandoned, take it" looked exactly like the
+  rows that mean "hands off", and a board carrying fifteen of them read as a
+  fleet at capacity when most of it was free. An expired claim now draws
+  `watch`: a lease is a timer, and this one ran out. Derived from the clock at
+  render time in `boardIconId`, never reaped or written back, so nothing is
+  mutated to make the picture true.
+- **A goal may now bind the artefact it actually delivers, and the verb is named
+  for it.** `link_goal_to_code` bound code, and a `governed` binding to a
+  documentation node was discarded before it could be classified — so a goal
+  whose delivery *is* an ADR, a doc, a benchmark or a build script had no way to
+  say so. `touched_task_goal` was vacuously false for that work, and the finding
+  "does not touch code bound to the task goal" was attached to tasks that had
+  touched precisely the artefact their goal named; the only way to silence it was
+  to bind an unrelated source file. The documentation exclusion now applies only
+  to the *drift* branch, which is the case it was written for: an honest
+  changelog touch still never drifts against a goal that merely bound it, but a
+  doc bound to a task's own goal (or to a goal the task declared it covers)
+  counts in scope. `link_goal_to_code` and `unlink_goal_from_code` are renamed to
+  `link_goal_to_artifact` and `unlink_goal_from_artifact`, with every caller
+  migrated in the same change and no alias shipped beside them (ADR-0059,
+  ADR-0060).
+- **The conformance gate now reports governed bindings that name no file
+  (ADR-0031).** Splitting, renaming, or deleting a governed file moves the code
+  and leaves the binding pointing at a path that no longer exists. Nothing
+  failed when that happened: the constitution simply stopped governing the code,
+  `advise` found no clauses for the new paths, and the loss was invisible —
+  an orphaned binding looks exactly like code that was never governed. Measured
+  on this repository after a refactor campaign: **7 governed ids named files
+  that no longer existed**, including `graph/query.rs` and `graph/signal.rs`,
+  split hours earlier by the very campaign that unbound them. The gate cannot
+  catch this by watching diffs, because an orphaned id never appears in one; it
+  now checks every governed binding against the working tree and reports the
+  ones that resolve to nothing. Advisory alongside the existing receipt check,
+  and failing under `--strict`.
+- **`graph_stats` now reports what is silently broken, not just what exists.**
+  Four capabilities were built correctly and left mute, and each cost hours: the
+  publisher enforced claims but recorded no evidence, `AGENTS.md` never named the
+  read tools it depended on, the embedding index existed but nothing refreshed
+  it, and the build sha was reported but never compared. The common failure was
+  not missing capability — it was capability that never speaks up.
+  `graph_stats` is the call the fleet already makes constantly, so it is where a
+  regression has to announce itself. It now also reports **nodes `recall` cannot
+  see** (no embedding for the active model) and **nodes still carrying a split
+  identity** (an absolute path in the id). Both rows appear only when the count
+  is non-zero: a health row that is always present is one readers learn to skip,
+  which is how these stayed invisible in the first place.
+  The value was immediate. On first run against the live graph it reported 110
+  unembedded nodes and **235 split identities that had reappeared since the
+  repair**, because other agents' servers are still running binaries built before
+  paths were made repo-relative. That regression was already underway and nothing
+  would have said so. A missing embedding index reports every node as
+  unrecallable rather than failing, because taking `graph_stats` down would
+  remove the one health signal the fleet reads.
+### Changed
+
+- **Known gaps are fragments, so recording one never conflicts.** The Known gaps
+  section of `DEVELOPERS.md` was a single shared append-only list of 81 entries,
+  so every branch that recorded a gap edited the same lines. Almost every pull
+  request collided there, and each conflict expressed no disagreement whatever —
+  two agents adding two unrelated observations to the same paragraph. It was
+  hand-resolved four times in one session.
+
+  ADR-0056 already solved this shape for `CHANGELOG.md`: a fragment is a new
+  file per item, and two branches never write the same path. Gaps now live in
+  `gaps.d/`, one file per gap, with `node scripts/gaps.mjs --list` to read them
+  and `--check` in the pre-commit hook to refuse a malformed one.
+
+  One deliberate difference from `changelog.d/`: a changelog fragment folds into
+  the file at release and is deleted, but a gap has no release event — it is
+  open until it is fixed. Folding would put the shared list, and the conflict,
+  straight back, so the fragments are the source of truth permanently and
+  `DEVELOPERS.md` points at them instead of holding a generated copy. Closing a
+  gap deletes its fragment in the commit that fixes it, so the fix and the
+  retraction are one reviewable change.
+
+  `--check` fails on an empty `gaps.d/` rather than reporting success. An empty
+  Known Gaps section is almost always a lie, and a validator that passed over a
+  directory which had quietly lost every gap ever recorded would give the one
+  answer it must never give.
+- **A scoped task claim now carries the memory pre-flight agents were
+  skipping.** Live telemetry showed ADR-0066's adoption gate had failed: five
+  writing sessions made 1,033 attributed writes without a successful memory
+  read or MindLeak `check_overlap` before the first write. A won Lodestar
+  `task_claim(step = "claim")` now returns a structured `memory_preflight` for
+  the exact claimed paths and symbols, naming MindLeak `check_overlap` and the
+  requirement to call it before the first edit. The response remains advisory
+  and explicitly does not claim the cross-plane read already ran; unscoped or
+  lost claims remain quiet. Memory-habit telemetry now counts a successful
+  `check_overlap` as the deterministic retrieval ADR-0066 made it.
+- **Memory tools now tell the model when to use them, without adding another
+  tool or growing their advertised surface.** Telemetry measured the adoption
+  failure on 2026-07-29: `ingest_execution`, `ingest_file`, and `ingest_commit`
+  had run 10,122 times, while `recall`, `working_set`, `get_impact_radius`, and
+  `graph_multi_hop_query` had run only 70 times between them. Their
+  `tools/list` descriptions previously defined mechanisms but supplied no cue,
+  so writing became habitual and reading did not. The four existing tools now
+  name the moments already present in an agent's work: resume or task switch,
+  before the first edit, questions about why/prior decisions/regressions, and
+  deterministic task-text traversal when semantic recall is unavailable. A
+  contract test reads the actual advertised definitions and preserves those
+  cues while holding their combined compact JSON at or below the measured
+  2,072-byte baseline.
+- **The merged-branch audit now runs on every push to `main` instead of only
+  when someone remembers.** A merged pull request whose commits never reached
+  `main` fails nothing anywhere: the pull request reads merged, the branch reads
+  ahead, and CI is green on both — the only signal is an ancestry check nobody
+  was running. `scripts/merge-audit.mjs` is that check, and it identifies both
+  known incidents correctly after the fact, naming the pull request and each
+  commit that was left behind. It was reachable only through `make merge-audit`,
+  a command with no reason to be typed on a good day, which is precisely when
+  this failure happens. It now runs in CI on pushes to `main` — the moment when
+  "did the thing that just merged leave work behind?" is a live question — and
+  not on pull requests, where it is not yet a question at all.
+- **ADR-0060 proposes that work whose product is not code must still be able to
+  conform.** Conformance ends with two rules that look symmetric and are not:
+  evidence touching no governed code with no task attached is `aligned`, while
+  the same evidence with a task attached is `needs_human`. Attaching a task
+  makes the verdict worse, so a task whose product is documentation, an ADR, a
+  benchmark, or a build script can never reach `aligned`. Measured across this
+  repository's 169 tasks (90 with an audit): 45 aligned, 34 `needs_human`, 11
+  drift — and the 34 have exactly two causes, neither of them human judgement.
+  24 are the `ingest_commit` argument-drop defect and 10 are this rule, so 38%
+  of audited work is parked structurally.
+- **A newly started agent now receives work whose owner disappeared.**
+  `open_session` conditionally returns `rescue_work` for expired claims and
+  deadlocked wait cycles already identified by Lodestar's durable
+  `stalled_work` projection. Each entry names the prior owner and branch when
+  known, explains the stall, and includes the canonical `task_query` action to
+  inspect it plus the `task_claim` action that can take an expired claim.
+  The field is absent when there is nothing to rescue. It is read-only: opening
+  a session never steals, closes, or otherwise mutates work. Ordinary
+  peer-addressed questions remain in `waiting_on_you`, deliberate pauses remain
+  with their owner, and completed work awaiting a person remains in
+  `awaiting_a_human`, so the rescue signal does not become another noisy board.
+- **The README is a router again, and the tool reference has its own page.** The
+  front door carried 90 rows of tool tables and put architecture and build
+  instructions ahead of "how do I try this", so the fastest path for a new
+  reader was to scroll past the design of the system to reach the install. The
+  tables move to `docs/TOOLS.md` — a reference is for looking things up in, not
+  for reading — and the getting-started sections now come before the ones that
+  explain how it works. README drops from 436 lines to 316. Every pointer moved
+  with it: `AGENTS.md`, `DEVELOPERS.md`, `docs/ARCHITECTURE.md`, `docs/USAGE.md`
+  and the pull-request template all named the README table as the thing to
+  update when a tool is added, and would otherwise have sent the next
+  contributor to a table that is no longer there.
+- **Both "adding an MCP tool" worked paths pointed at a file that does not
+  exist.** `crates/mindleak-mcp/src/tools.rs` became a directory when the tools
+  were split into modules, and the instruction to add a `CHANGELOG.md` line
+  predates fragments (ADR-0056). A worked path that names the wrong file is
+  worse than none: it is followed confidently.
+- **`DEVELOPERS.md` now says what to do when a generated file conflicts.**
+  `docs/adr/README.md` is derived from the ADR files, so every branch that adds
+  an ADR appends a row at the same place and conflicts on every merge from
+  `main` — three separate branches hit it in one session with nothing in the
+  docs to say the resolution is `make adr-index`, not a hand-merge. Keeping
+  "both sides" of a generated table produces a duplicated index that the
+  pre-commit check then rejects, so hand-resolving it is discarded work.
+- One-off data repairs move out of `db/migrations.rs` into `db/repairs.rs`. A
+  schema migration changes shape and is cheap to re-run; a repair rewrites rows
+  to undo damage a defect already did, and firing twice can undo work someone
+  did in between. Filing them together made that distinction invisible. The
+  split also returns `migrations.rs` below the module-length clause: adding the
+  stranded-clause repair had pushed it from roughly 416 to 476 non-test lines,
+  past the 450 the clause allows, taking the repository from 7 oversized modules
+  to 8. It is back to 7.
+- **A required tool argument must now be reachable — declared in the schema or
+  injected by the session — and a guard fails if one is neither.** Two ways an
+  argument gets to a handler: the caller reads it in the schema and sends it, or
+  `bind_session` resolves the session and injects it. `agent` is the second kind
+  — it is deliberately stripped from every session-bound tool and replaced by
+  `session_id`, so attribution on the verbs that amend the constitution, grant
+  waivers and accept ratchet baselines is *resolved from the session*, never
+  asserted by the caller. A tool that declared `agent` would let a caller name
+  itself anything it liked. But a handler reading `agent` beside a schema that
+  never mentions it looks exactly like the `lease_secs` typo incident, and the
+  symptom if it ever were one is identical: `missing required string arg`
+  naming a field the tool does not advertise. The rule is now pinned across the
+  constitution, amendment, control, waiver, executive and design tools, with a
+  floor on how many arguments the check inspects — a source scan that quietly
+  stops matching anything is a green tick over an empty set.
+- **A paused task whose owner disappears now reaches new agents after its
+  seven-day protection grace.** `open_session` keeps healthy pauses private to
+  their owner, then includes overdue paused work in `rescue_work` with the
+  former owner, branch, and canonical scope/claim actions once normal recovery
+  is allowed. Reading the queue never transfers or mutates the task.
+  Core and MCP regressions pin both sides of the boundary so deliberate short
+  pauses stay quiet while abandoned pauses cannot remain invisible forever.
+- **Completions that predate resolver attribution are accepted as historical
+  (ADR-0069).** `resolve_task` validated the `human` argument and then discarded
+  it, so for most of this project's life a human acceptance overriding a
+  conformance verdict recorded that it happened but never by whom. The columns
+  now exist and populate. Measured on the live board: **268 tasks, 147 `done`,
+  17 carrying a resolver, 130 carrying none**, with the earliest recorded
+  resolution at unix `1785285644`. Those 130 will not be reconstructed,
+  annotated, or re-attested — the identity was never written anywhere, so there
+  is nothing to recover, and re-accepting them now would manufacture attribution
+  for judgements nobody can verify. `resolved_by IS NULL` on a completed task
+  therefore means *predates attribution*, not *accepted by nobody*; a report
+  rendering it as an absence of authority is wrong about what happened. The
+  boundary is sharp from `1785285644` onward. Supersedes the earlier "57 of 101"
+  figure, which measured a different cut (the verdict on the receipt rather than
+  the presence of a resolver) on 28 July.
+- **Retiring a control is now attributed.** Standing a control down is the one
+  act that reduces what a clause can enforce without changing a word of the
+  clause — closer to granting a waiver than to editing a configuration file —
+  and it was recorded as a bare status flip with no author. The store now keeps
+  `retired_by` and `retired_at`, the tool is session-bound so the author is
+  resolved from the session rather than supplied by the caller, and an
+  unattributed retirement is refused outright. Controls retired before this was
+  recorded carry no author: those retirements cannot be reconstructed, and
+  inventing one would be worse than admitting the gap.
+- **The 18 extension settings are grouped instead of one flat list.** "Where is
+  the server binary" sat beside "how many characters of terminal output to
+  retain" with nothing to say which one a first-time user needs to touch. They
+  are now four titled sections — Servers, Capture, Consolidation, Views — which
+  VS Code renders as separate blocks in the settings UI. Setting ids are
+  unchanged, so no existing configuration moves and nothing about behaviour
+  changes; this is presentation only. A test asserts each setting belongs to
+  exactly one non-empty titled group, and — the failure that actually costs
+  someone an afternoon — that every setting the code reads is declared in the
+  manifest. An undeclared setting silently returns its inline fallback, so it
+  cannot be found in the settings UI and appears to do nothing when set by hand.
+- **Task resolution now says what its reviewer field actually proves
+  (ADR-0071).** `resolve_task` records a non-empty reviewer label in
+  `resolved_by`; the label is attributable but not authenticated. Lodestar has
+  no human identity provider, so core errors/docs and the MCP contract no longer
+  call the value a verified identity. The same-string self-review guard remains,
+  but any other label is accepted and stored unchanged. A regression pins that
+  behavior with a deliberately non-credential label so the API cannot quietly
+  regain stronger wording than its mechanism supports.
+- **The Telemetry pane now polls periodically only after the user enables
+  Live.** The three-second timer previously ran whenever the pane was visible,
+  even with Live off. Lifetime telemetry measured 16,522 `graph_stats` calls
+  and 12,567 `telemetry_snapshot` calls against 66 reads that could change a
+  decision; `graph_stats` alone spent 57 cumulative minutes answering the
+  dashboard. That wasted compute and made the telemetry record mostly describe
+  its own observer.
+  Opening the pane, clicking Refresh, and toggling Live still refresh
+  immediately. The configured cadence is unchanged and applies only to the
+  opt-in live stream. A pure four-state regression test pins hidden,
+  visible-non-live, and visible-live behavior.
+- The constitution and policy-pack tools collapse to a vocabulary (ADR-0059):
+  `constitution_define`, `constitution_decide` and `constitution_query`, beside
+  the already-collapsed `policy_pack_register`, `policy_pack_decide` and
+  `policy_pack_query`. Each names its transition in an `action` argument rather
+  than in a tool name.
+  Every superseded name still answers for one minor version and its description
+  names the call to make instead — a caller mid-task cannot read a changelog, so
+  the deprecation has to teach rather than simply break. No guard was lost: each
+  refusal a separate tool name used to encode is now an argument validation
+  carrying the same message, including the attribution required to adopt policy.
+- **The fifteen-tool design cluster is now four verbs.** Registering a design,
+  deciding it, promoting it and reading the ledger each had their own tool
+  name — fifteen entries on the surface for four things an agent actually
+  does, and an agent choosing between `reopen_undecided_design` and
+  `attribute_design_decision` had to know which one its row belonged to before
+  it could ask. They are now `design_register`, `design_decide`,
+  `design_promote` and `design_query`, with the act named as an argument
+  (`decision`, `step`, `view`). Nothing was relaxed to make them fit: every
+  refusal a separate name used to encode is now argument validation carrying
+  the same message, and the ADR-0051 guards survive intact — `attribute` still
+  refuses to overwrite a `decided_by` the ledger already holds, and `reopen`
+  still defers to materialisation, refusing a row whose promotion has created
+  work. The two therefore continue to partition the undecided rows rather than
+  overlap. The old fifteen names still answer for one minor version, and each
+  reply names the call to make instead, so the deprecation teaches rather than
+  merely failing; removal ships with the release train named in ADR-0059.
+
+- **The guard that checks the server advertises everything it answers to was
+  reading its own source.** `every_tool_the_server_answers_to_is_advertised`
+  scans dispatch blocks by searching for the text `match name {` — and
+  `mod.rs`, which delegates to every other module and dispatches nothing
+  itself, contains that text only inside the test's own search call. The scan
+  therefore treated the rest of its own file as if it were tool dispatch. It
+  now reads only the modules that answer to a name, and only the arms of the
+  dispatch itself rather than the nested matches that parse arguments, since
+  reporting an argument value as an unadvertised tool trains people to ignore
+  the guard. Because that narrowing is exactly the kind that can stop reading a
+  module without failing anything, the test now asserts it found dispatch in
+  every module it claims to cover, not merely in total.
+- The VS Code extension now provides both MCP servers itself, and the committed
+  `.vscode/mcp.json` is gone (ADR-0073). The extension contributes them through
+  `mcpServerDefinitionProviders`, rooting each server at the workspace folder of
+  the window that provides it, so the rooting behaviour ADR-0073 established is
+  unchanged. Where a binary lives is now decided by one tested rule —
+  `resolveBinaryPath` — instead of a config file carrying a second, untested copy
+  of it, and a new machine no longer needs a hand-edited config to reach the
+  servers.
+- **The extension now requires VS Code 1.101 or newer**, up from 1.93. The MCP
+  extension API shipped in 1.101 (May 2025). `engines.vscode`, `@types/vscode`,
+  the pinned Extension Host smoke version and its CI job name all move together,
+  because a smoke job on 1.93 testing code that needs a later API is a green
+  build that proves nothing. `@types/vscode` is pinned exactly to `1.101.0`
+  rather than a caret, which resolves forward and would let code compile against
+  APIs the declared floor does not have.
+  This is a real support cut: the graph views and the passive sensor did work on
+  1.93, because the extension speaks MCP through its own client. What never
+  worked there is the editor's own MCP support — 1.93 shipped in August 2024 and
+  MCP was announced that November — so the old floor advertised a version on
+  which MindLeak's purpose was impossible.
+- Server resolution now prefers the shared install at `~/.mindleak/bin` over a
+  worktree's own `target/` build. Reusing the previous order would have
+  reinstated the per-worktree binary ADR-0073 rejected on measurement (56
+  worktrees, 184 GB of build output, only 15 holding a server binary). A side
+  effect: the extension's own client and the servers offered to chat agents can
+  no longer resolve to different builds, which they previously could.
+- Action required in this repository: install the extension build that contains
+  the provider (`npm --prefix editors/vscode run package:vsix`, then
+  `code --install-extension`). There is no committed config to fall back on.
+  Outside this repository, `editors/vscode/scripts/install.mjs` still writes a
+  `.vscode/mcp.json` for editors without the extension and for the Copilot CLI;
+  running both mechanisms in one workspace would register each server twice.
+- **The pre-flight now answers the whole pre-flight question.**
+  `check_overlap` already takes the paths and symbols an agent is about to
+  touch, and the before-you-write checklist already mandates it — but it
+  reported only which other agents were there. On a file nobody else was
+  touching it returned an empty list, which reads as all-clear, while the graph
+  already held that file's commit rationale and any execution that had failed
+  on it. Learning that needed `get_impact_radius`, a second call at the moment
+  attention has already moved on.
+  Measured over this repository's lifetime telemetry: **8,109 ingests against
+  66 reads at decision time** — `recall` 49, `graph_multi_hop_query` 10,
+  `working_set` 4, `get_impact_radius` 3. Roughly 123 writes per read, plus
+  32,980 dashboard polls (`graph_stats` alone has spent 57 minutes of compute
+  answering "how many nodes are there"). The retrieval benchmarks were never
+  wrong — `docs/EVALUATION.md` measures mean F1 0.77 against 0.44 for a vector
+  arm — they answer *if you ask, is the answer good*, and never *does anyone
+  ask*.
+  So the answer now rides on the question agents already ask. `check_overlap`
+  returns `impact` (dependents, previously failing executions, related
+  intents), `unknown` (ids the graph has never seen), and `requested` alongside
+  the existing `footprints`. No new tool: adding a sixth retrieval tool beside
+  five that are already unused would repeat the failure, not fix it.
+  `unknown` is reported separately from an empty `impact` on purpose. "The
+  graph has never seen this file" and "nothing depends on this file" are
+  different facts, and a caller that cannot tell them apart reads silence as
+  reassurance.
+  Deterministic and zero-token throughout; the ingest and query hot paths are
+  untouched. See ADR-0066.
+- **The prose docs now speak the current tool vocabulary.**
+  The task-lifecycle and design clusters collapsed into four verbs each
+  (`task_create` / `task_claim` with `step` / `task_transition` with `to` /
+  `task_query` with `view`, and `design_register` / `design_decide` /
+  `design_promote` / `design_query`), but USAGE, SPEC-INTENT, WALKTHROUGH,
+  QUICKSTART, ARCHITECTURE, TOOLS, SPEC-CONSTITUTION, AGENTS, and the extension
+  README still called the retired names — actively misdirecting any agent
+  reading them. Every worked flow, the §9 wire-tool contract, and the inline
+  references now name the current verb and its real argument shape (e.g.
+  `complete_task(...)` → `task_transition(task_id, to="complete", ...)`,
+  `next_task()` → `task_query(view="next")`, `renew_lease(...)` →
+  `task_claim(task_id, step="renew", ...)`). References to the Rust **facade
+  methods** (e.g. `Lodestar::complete_task` in ARCHITECTURE) and to `task_query`
+  **view** names are unchanged, because those are current — only the client-facing
+  MCP tool names had moved.
+- **The README layout diagram no longer states a per-server tool count.**
+  It read `mindleak-mcp (23 tools)` / `lodestar-mcp (49 tools)` — both stale
+  after the cluster collapses (ADR-0059) and the default/full profile split
+  (ADR-0059 rule 2), where a single number is neither current nor meaningful (17
+  in the default profile, more under `LODESTAR_TOOL_PROFILE=full`). A layout
+  diagram is not the place a count can be kept honest, so it no longer claims
+  one; `docs/TOOLS.md` and `scripts/measure-tool-surface.mjs` are where the
+  surface is stated and measured.
+- **`record_knowledge` now says what evidence must carry, before the record is
+  written.** The conformance advisory matches recorded knowledge on referenced
+  nodes and nothing else, so evidence without a `nodes` array produces a record
+  that is stored, counted, decayed on schedule, and can reach nobody. The
+  schema described that field as "JSON provenance" — accurate, and silent about
+  the one thing that decides whether the lesson ever arrives. It now names the
+  `nodes` array, shows the shape, and states the consequence of omitting it.
+  This is where the caller decides what to send; the `surfaces` warning added
+  in the reply is the backstop for getting it wrong anyway, and it necessarily
+  arrives after the record already exists. Measured when this landed: 67 of 170
+  active records, 39%, name no nodes. Among them are the lessons most worth
+  having — that skipping the ADR-0029 pre-flight causes the drift verdicts
+  people then blame on goal bindings, and that testing a facade method proves
+  the logic and says nothing about the MCP wiring, which is exactly how
+  `merge_evidence` shipped refusing every caller. Both were written so the next
+  agent would not repeat the mistake, and neither could be delivered to anyone.
+  `consolidate` was never affected: it requires `evidence_node_ids` outright,
+  which is why only the free-form path grew a backlog. A test pins the
+  description so the guidance cannot quietly regress to something true and
+  useless.
+- **The twenty-six-tool task cluster is now four verbs.** Creating work,
+  owning it, moving it through the lifecycle and reading the board each had
+  several tool names — twenty-six entries for four things an agent does, in the
+  cluster every session touches. They are now `task_create`, `task_claim`,
+  `task_transition` and `task_query`, with the act named as an argument
+  (`step`, `to`, `view`), following the same rule ADR-0059 applied to the design
+  cluster: where a cluster moves one entity through a state machine, the tool
+  surface should reflect the machine rather than enumerate it. Every guard is
+  now an argument validation carrying the same message, and each refusal names
+  the transition that wanted the argument, which the old flat `missing required
+  string arg: reason` could not. The twenty-six old names answer for one minor
+  version and each reply names the call to make instead; removal ships with the
+  release train ADR-0059 names.
+
+  Two guidance strings changed with them, because they name a call an agent is
+  expected to make next: a lost claim now says `task_claim with step="recover"`
+  can take it over, and an expiring lease says to call `task_claim with
+  step="renew"`. Advice that names a verb nobody will find is worse than no
+  advice.
+
+- **A deprecated tool name silently lost its argument checking.** Argument
+  validation looks a tool up by name to find the schema to check against, and a
+  collapsed cluster's old names are deliberately absent from that list — so for
+  every caller still using an old name, `validate_arguments` found no schema and
+  returned "fine". That is precisely backwards: the callers on the old names are
+  the ones most likely to get an argument wrong, and the window lasts a whole
+  minor version. The incident this guard exists to prevent — `lease_seconds`
+  passed where the tool declares `lease_secs`, silently dropped, the default
+  applied, and the claim lapsed mid-work — was reachable again through the old
+  name. Deprecated names are now validated against the schema that actually
+  answers them, which is also the schema whose argument list the error message
+  should be quoting. This shipped broken with the design cluster in the previous
+  release and is fixed for both.
+
+- **The three collapsed clusters now share one deprecation implementation.** The
+  rename table, its "call this instead" notice, and the two argument helpers
+  every collapsed tool needs (`one_of`, and the conditional-requirement message
+  that names which transition wanted the argument) were written for the design
+  cluster and about to be copied a third time. They live in `tools/mod.rs` now,
+  with each cluster owning only its own table of names — which is also what lets
+  argument validation find every rename from one place instead of asking each
+  module in turn.
+- **The claim-transfer archive is closed to writes, and kept.** ADR-0064
+  decision 5, second half. `recover_claim` no longer writes
+  `task_claim_transfers`; a recovery is recorded once, as a `claim_recovered`
+  event in the task log, beside every other transition it has to be read
+  alongside. Two records of one act could disagree, and the disagreement would
+  surface exactly when the ledger was being used to settle who held what.
+  The table is **not** dropped. It holds ownership recoveries that happened
+  before the log existed — real, accurate, and nowhere else — so
+  `claim_transfer_history` now reads both and each row carries a `source` of
+  `archive` or `log`. That is stated rather than implied because `id` means
+  different things in each: an archive row id, or a position in the task log.
+  The prior claim's window is reconstructed from the after-image of the event
+  the recovery interrupted, so it is read back from the log rather than copied
+  into a second table.
+- **Named what actually records commit provenance, and what it silently skips.**
+  A Known gap recorded the question as unexplained: commits were getting
+  provenance with no post-commit hook installed, and two guesses at the cause —
+  that the hook ran and timed out, and that `canonical-push` ingests — were both
+  wrong. The answer is the VS Code extension's passive git sensor:
+  `editors/vscode/src/gitSensor.ts` watches `repository.state.HEAD` and calls
+  `ingest_commit` with `commit.hash` and the commit's own date. That also
+  explains why re-ingesting a commit by hand returns `nodes_created: 0` — the
+  sensor got there first.
+  The more useful half is what it does *not* record. It ingests only when the new
+  HEAD is a child of the previous one, so a branch switch, a checkout, or any
+  non-linear HEAD move records nothing. In a fleet where every unit of work gets
+  its own branch that is the common path rather than an edge case, and it is the
+  true cause of the empty evidence bundles that were repeatedly read as
+  ingestion being broken. Provenance also depends on the workspace being open in
+  an editor at all: an agent working through a terminal in a worktree nobody has
+  open records nothing, silently.
+  Documentation only. Whether that skip is the right behaviour is a separate
+  decision and is deliberately not settled here.
 
 ### Fixed
+- **A skipped commit-ingest now says so instead of losing provenance in
+  silence.** The post-commit hook could give up without a word: on timeout, on
+  an unstartable server, or on a transport error. The symptom — an empty
+  evidence bundle — is indistinguishable from an agent who simply forgot to
+  ingest, which is the exact failure the hook exists to eliminate, so the
+  diagnosis lands on the wrong cause. It still never fails a commit; it now
+  names the sha, says the commit succeeded, and says to backfill with the
+  commit's *own* timestamp, because a node keeps whatever timestamp it was first
+  given. The budget is configurable via `MINDLEAK_INGEST_TIMEOUT_MS`, and an
+  unstartable server no longer throws an unhandled `error` event at the
+  committer. Never blocking and never reporting turned out to be different
+  promises; only the first one was load-bearing.
+  Separately and more seriously, the hook is **not installed** in environments
+  set up before `default_install_hook_types` was added, because that setting
+  only takes effect when `pre-commit install` is re-run — so it reports nothing
+  because it never runs. Recorded in Known gaps; the fix touches the shared
+  hooks directory and therefore every agent at once, so it is not applied here.
+- Three script test headers advertised `node --test scripts/`, which fails on
+  Node 24 — the portable runner `node scripts/script-tests.mjs` already existed
+  and already documented that trap.
 - **A migration no longer re-owns a live claim (ADR-0063).** The ADR-0054
   identity collapse rewrote `tasks.owner` for every labelled row and re-fired on
   every database open, because its idempotence was by *pattern* — "rewrite
@@ -158,6 +1430,1403 @@ to [Semantic Versioning](https://semver.org/).
   overruled to the task's append-only thread. Existing rows keep `NULL`: those
   acceptances were not recorded and inventing a resolver for them would be the
   same defect in a new coat.
+- A binary built *ahead* of the checkout is no longer reported as a stale build.
+  The notice compared build sha against `HEAD` with a plain string inequality and
+  no ancestry check, so any difference in either direction produced the same
+  advice: "Rebuild and restart". Measured on 2026-07-30, the checkout the fleet's
+  servers are compared against sat 599 commits behind `main`, so a binary built
+  from `main`'s tip was reported stale on every `open_session` — and following
+  that advice would have rebuilt from the older checkout and reverted an ingest
+  guard merged minutes earlier. A warning whose remedy undoes the fix is worse
+  than silence, because it gets followed.
+  Staleness now requires evidence that the build is actually behind: when the
+  build has `HEAD` in its history, the notice says the checkout is behind the
+  binary and to update the checkout instead. A build genuinely behind `HEAD`
+  still warns exactly as before, and an unanswerable lineage — git unavailable,
+  or a commit this checkout does not have — is treated as ignorance rather than
+  as proof the build is fine, so it keeps warning. Both cases still name the
+  build sha, because "which build is answering" is the question the notice
+  exists to answer.
+- **A Known gap that reported 8 governed nodes now reports 161, and says when
+  each figure was taken.** The entry claiming the conformance chain governed 8
+  code nodes — none of them Rust — with 127 of 131 receipts covering nothing was
+  measured at 03:37Z and was already wrong by 09:29Z: 161 governed nodes, 133 of
+  them `.rs` under `crates/`, and 72 of 172 receipts covering zero nodes. The
+  gap was real and another agent closed it within the day.
+  Corrected rather than deleted, because the shape of the mistake is the useful
+  part: the number was right when taken and stale within hours, and a Known gap
+  that records a measurement without its timestamp keeps being read as current
+  long after it stops being. Both measurements are now shown side by side with
+  their times.
+  It also names `scripts/binding-audit.mjs` as the way to re-measure, which
+  already existed and which the original entry did not mention — leaving the
+  next reader to rebuild an audit that was sitting in `scripts/`. As of 09:29Z
+  it reports 131 of 136 source files bound and names the five that are not,
+  every one of them recently added. That is the residual gap worth watching: a
+  binding is applied to the tree as it was, so a new module arrives ungoverned
+  and nothing says so.
+  The half of the entry that is still true is re-verified and kept:
+  `conformance-gate.mjs` still cannot run, because `.gitignore` still excludes
+  the manifest it reads and nothing is tracked under `.lodestar/`.
+- **A conflicted merge keeps the provenance of what it resolved.** Every merge
+  commit was treated as noise on the grounds that its content already arrived on
+  the branches it joins — true of a clean merge, and false of a conflicted one,
+  where the resolution is genuinely authored. The cost was that reconcile-shaped
+  work could not be certified at all: a reconcile's entire product *is* the merge
+  commit, so the evidence window came back empty however much conflict
+  resolution it contained, and `check_conformance` had nothing to judge.
+  Git already draws the line in the right place. `git show --name-only` on a
+  merge reports the combined diff — only files differing from *every* parent,
+  which is exactly what the merge itself introduced. Measured across 25 merge
+  commits in this repository, that set matched "differs from every parent" in
+  25 of 25 cases and was empty for all 18 clean merges, so the parent count was
+  never needed: an empty changed-file list already means the commit authored
+  nothing. A clean merge is still skipped, one git call disappears from a hook
+  that runs on every commit, and the claim about git's behaviour is now covered
+  by a test against real git rather than a fake, because a clean merge wrongly
+  ingested would attribute another agent's whole branch to whoever ran it.
+- **The script test runner no longer hands git's hook environment to the tests
+  it runs.** Git exports `GIT_DIR`, `GIT_INDEX_FILE` and friends to its hooks,
+  and this suite runs from pre-push. Inherited by a test that drives git inside a
+  temporary directory, those variables outrank `cwd`: git reads the fixture's
+  files and writes to the *real* repository. A test doing exactly that committed
+  its fixtures onto the branch being pushed and left the worktree checked out on
+  a branch named after the fixture — with every symptom pointing at the test
+  rather than at the environment. The runner now scrubs them once, so a test
+  written later gets this for free; remembering per test is the discipline that
+  failed.
+### Fixed
+
+- **A covering task is recognised again after a constitution amendment.** Every
+  task touching governed code completed as `drift`, however correct it was, and
+  `claim_task` / `governing_for_task` reported that nothing governed the change
+  — so an agent was waved through on governed code and only found out at
+  completion.
+
+  A clause carried into a new constitution is re-issued as
+  `goal:<slug>@constitution:vN`, while a task keeps naming the bare
+  `goal:<slug>`. Coverage was decided by string equality on those two ids, and
+  binding lookup by exact goal id, so from the *first amendment onwards* neither
+  could ever match. Both now compare by slug — the identity a clause keeps
+  across versions, which the amendment carry-forward and `diff_clauses` already
+  use.
+
+  The empty binding list was the worse half: it is indistinguishable from "this
+  goal governs no code", so the failure reported itself as a clean bill of
+  health. A verdict that comes back the same for every input has stopped
+  carrying information, which is the failure mode this project keeps finding.
+
+  Regression tests cover a clause that has actually been through an amendment
+  (a freshly adopted v1 clause id is bare, which is why this stayed hidden until
+  v2), and the mirror case: a clause from a different goal is still not
+  coverage, so the fix cannot pass everything.
+### Fixed
+
+- **A delivered branch can be reconciled again.** Completing a task releases its
+  claim, and publication requires one — so once a task was done, its pull
+  request could never be brought up to date. `main` moved, the branch went
+  stale, and the delivery queue stepped over it forever. #168 needed hand
+  rescuing three times, and each rescue invented a throwaway task purely to get
+  past the gate. Minting a task per republish is exactly how six duplicate tasks
+  reached the board.
+
+  A task now records the branch it was claimed on, so a delivered branch is
+  already attributed; re-attributing it to a fresh task records a fiction.
+  `canonical-push` publishes it as a reconciliation and says whose work it was.
+
+  Deliberately narrow: **every** new commit must be a merge. A reconciliation
+  merges the base in and nothing else, so this cannot decay into "finish a task,
+  then push anything to that branch forever" — the moment real work appears, a
+  claim is required again. That case is tested, because an exemption without one
+  is a bypass wearing a fix's clothes.
+- A file saved in any worktree of this repository now reaches the graph under its
+  canonical repository-relative id, instead of being refused because it came from
+  a checkout the server was not rooted at. Measured 2026-07-30: of the 291
+  `ingest_file` calls after the ingest guard landed, **203 were refused (69.8%)**,
+  naming paths like
+  `c:/Users/.../MindLeak-rustimports/scripts/silent-knowledge.mjs`. The graph was
+  clean of duplicate identities partly because those files were not arriving at
+  all — the guard had converted silent corruption into visible loss, and the loss
+  was larger than the corruption.
+  Every worktree of a repository shares one graph (ADR-0038), so a path under any
+  of its worktrees is unambiguously the same file. The server now resolves those
+  roots with `git worktree list` and treats every one of them as a candidate when
+  placing a path; the longest match wins, and a root only matches on a path
+  boundary, so `.../MindLeak` never swallows a path under `.../MindLeak-build`.
+  Commit and execution sensors place their changed files the same way, so a
+  commit touching a sibling checkout no longer drops those files either.
+  Rooting each window at its own worktree (ADR-0073) remains the cheaper, more
+  direct fix. This makes the answer the same whichever window did the saving,
+  rather than leaving correctness to an operational habit. A path under no root
+  of this repository is still refused, and when git cannot answer the behaviour
+  degrades to the previous single-root placement rather than to a wrong id.
+- **A green local test run meant half of what it said.** `script-tests.mjs` runs
+  `scripts/*.test.mjs` under `node:test`. A second suite —
+  `editors/vscode/scripts/*.test.mjs`, run by vitest from the extension job —
+  covers the same scripts, and the runner neither ran it nor mentioned it. A
+  full green run therefore reported success over 18 of 33 test files while
+  naming none of the gap.
+  It was acted on: the claim-gate and completion-offer guidance fix passed every
+  local assertion, then failed CI on the mirrored ones — twice, across two pull
+  requests, on work that was correct. The mirrors asserted the retired verbs in
+  the message text, and one of them builds a fake MCP server that answers by
+  tool name, so a collapsed verb reaches a fixture that replies to nothing.
+  The runner now names what it does not run and the command that does run it.
+  Failing instead was considered and rejected: driving vitest from here would
+  make a pre-push hook depend on the extension's `node_modules`, which is not
+  always installed. The defect was never the missing execution — it was a green
+  result that quietly meant "half", and one honest line repairs that.
+  The check moved into `scripts/script-suites.mjs` so it can be tested at all:
+  importing the runner executes it, which is why this had no test and why it
+  went unnoticed. A test also asserts the mirror is still discoverable, so if it
+  moves the notice cannot silently stop appearing — the same rot it exists to
+  report.
+- **Every lesson an agent recorded on completing a task was invisible, and the
+  tool that could have shown you was never advertised.** `complete_task` stored
+  its `learned` note with the bare string `task:{id}` as provenance. That is not
+  JSON, so it parsed to no referenced nodes — and referenced nodes are the only
+  thing `apply_knowledge_advisory` matches on. Every lesson was written,
+  counted in `lodestar_stats`, and delivered to nobody. Measured on this
+  repository the moment it became measurable: **34 of 35 active knowledge
+  records referenced nothing.** The note now carries the nodes the work changed,
+  so a lesson learned while changing a file reaches the next agent who changes
+  that file — the moment it is useful, and the moment it was written for.
+- **`active_knowledge` is now advertised, and reports whether each record can
+  ever surface.** The tool dispatched all along and appeared in no `definitions()`
+  list, so from the tool surface the knowledge base looked write-only: record,
+  promote, reconfirm, prune, and no way to see what was already known. It now
+  takes an optional `node` (what is known about the thing you are about to
+  change) or `contains` filter, and every entry reports `surfaces`, because a
+  record that names no nodes is stored and silent and that should not have to be
+  inferred from an empty array.
+- **A tool the server answers to must be a tool it advertises.** A guard walks
+  every dispatch block and fails on any name absent from the advertised list.
+  This is the mirror of the undeclared-argument guard: there the contract asked
+  for something it never mentioned, here the server answered to something it
+  never mentioned, and both fail the same quiet way — the code is right, the
+  advertisement is wrong, and nothing breaks loudly enough to be found.
+- **A lesson that names no code now reaches the goal it was learned under.** The
+  conformance advisory matched recorded knowledge on referenced nodes and
+  nothing else, so a record whose evidence carried no `nodes` array was stored,
+  counted, decayed, and structurally incapable of reaching any agent. Measured
+  over the whole ledger: 191 records, 124 carrying nodes, **67 silent**. They
+  were not marginal notes — several were among the most expensive lessons the
+  repository had, and were then re-learned from scratch, at length, by agents
+  with no way to know they existed.
+
+  The reach is recovered by reading the provenance those records already carry,
+  not by rewriting them: 55 of the 67 still name the goal they were learned
+  under, or a task from which the goal is reachable. The advisory gained a
+  second, narrower matching dimension for exactly that case. Nothing is copied
+  forward and no possibly-stale claim is restated, which is what made rewriting
+  the records the wrong repair.
+
+  Three details decide whether this helps or merely adds noise:
+
+  - It is **capped** at three lessons per check, ranked by effective weight.
+    ADR-0072 established that an advisory firing on almost every task carries no
+    information, and a goal accumulates everything ever learned serving it — 20
+    and 18 silent records sit under the two busiest goals here.
+  - Goal identity compares by **slug**, so a constitution amendment does not
+    sever a lesson from the intent it belongs to.
+  - Task provenance is read in every spelling it was written in — a JSON field,
+    a nested array, or the bare string that is not JSON at all — because a
+    reader that understood only one shape would silence the records written in
+    the others.
+
+  The advisory still only informs. It adds findings and can never harden a
+  verdict, emit a violation, or downgrade an aligned one. No LLM joins the read
+  path. Twelve records that name nothing at all remain undeliverable and are
+  recorded as still open.
+- **A lost claim says why, and what to do about it.** `claim_task` returned a
+  bare `won: false`. The reasons a compare-and-swap can miss call for opposite
+  responses — wait for a live lease, pick different work because the task is
+  finished, unblock a predecessor, or rebuild a stale server binary — so one
+  boolean covering all of them is not terse, it is unusable. It also meant
+  `scripts/claim-gate.mjs` had to exist: a whole diagnostic written to
+  reconstruct, after the fact, what the plane knew at the moment it refused.
+  A refusal now names the holder and the remaining lease, points at
+  `recover_claim` when the lease has lapsed, distinguishes finished work and
+  missing work from contended work, and — the expensive one — recognises a
+  claim held under a pre-session identity as a stale binary (ADR-0054) rather
+  than a live claim, saying so and warning that re-claiming will not help.
+  `owner`, `status`, `lease_expires_at` and `blocked_by` come back alongside,
+  so a caller can branch on the outcome instead of parsing prose.
+- **The mandatory pre-flight is bounded, so it can actually be read.**
+  ADR-0066 put `check_overlap` on the before-you-write checklist and had it
+  carry the impact radius. Two later changes landed on top of that — Rust
+  `mod`/`use` extraction, which gave `.rs` files real cross-file structure for
+  the first time, and a re-ingest pass that populated all of it at once. Each
+  was right on its own; together they made the thing every agent is required to
+  read too large to read.
+  Measured 2026-07-29 on `crates/lodestar-mcp/src/tools/mod.rs`, a single path
+  returned **196 nodes over 295 edges — 351 KB**, with 185 of those nodes
+  carrying their full text. `impact_radius` traverses at zero minimum weight,
+  depth two, with no node cap; that was harmless while Rust files had almost no
+  cross-file edges, and stopped being harmless the moment they did.
+  A decision aid that displaces the decision fails the same way an unread one
+  does, which is the failure ADR-0066 was written to fix.
+  The pre-flight now carries the 32 most relevant nodes without their content,
+  only the edges among them, and `impact_total` so a trimmed answer cannot be
+  mistaken for a complete one — the same reason `unknown` is reported separately
+  from an empty impact. Ranking by traversal score keeps the cut meaningful
+  rather than arbitrary. Same path, after: **47 KB**.
+  The cap matches the existing hard cap on `working_set`, which bounds the same
+  kind of view for the same reason. `get_impact_radius` is unchanged for callers
+  that genuinely want the whole neighbourhood.
+- **A rename left its verbs unbound, and unbound verbs let a caller name
+  itself.** `requires_session`, the optional-session list and the heartbeat list
+  are keyed by tool name, and the ADR-0059 task and design collapses moved the
+  names out from under all three. Ten of twenty-three session bindings pointed
+  at tools that no longer existed — `claim_task`, `complete_task`, `pause_task`,
+  `resume_task`, `release_task`, `renew_lease`, `recover_claim`, `ask_question`,
+  `pending_questions`, `register_design` — so `task_claim`, `task_transition`
+  and `constitution_decide` bound no session at all. That is worse than
+  unauthenticated: `apply_session_contract` strips `agent` only from a bound
+  tool, so all three advertised `agent` for the caller to supply, and the
+  server took it. Taking a claim, completing work and changing constitutional
+  law could each be performed in another agent's name, which is the one thing
+  resolving a session exists to prevent; the ledger's attribution was
+  unenforced for the whole window. The heartbeat list broke the same way and
+  more quietly: renewal-on-activity (ADR-0052) stopped firing for reading a
+  task's scope and for asking or answering a question, so a lease could lapse
+  while its owner was working and the next call told the rightful owner the task
+  was not held by it. All three tables are now read against the call as it will
+  actually be dispatched, so a rename carries its behaviour with it, and the two
+  that had to distinguish acts within a collapsed cluster name the act rather
+  than the tool. Two guards make the class un-repeatable: no advertised tool may
+  declare `agent`, and every tool named by a server-side table must be one that
+  is actually advertised — so the next rename fails a test instead of silently
+  unbinding the verb.
+- **Three reports that could not be run now run.** `board-health`,
+  `stranded-report` and `design-audit` each resolved the server binary with
+  their own release-only path instead of the shared `resolveServer`, which
+  honours `LODESTAR_MCP_BIN`, accepts a debug build, and returns nothing rather
+  than a path that is not there. On a debug build — the normal state for a
+  developer — `board-health` died with an unhandled `spawn ENOENT` and
+  `stranded-report` with it. So the two reports written to explain the board's
+  stranded claims could not be executed by most of the people they were written
+  for, which is why the board's state kept being reconstructed by hand. They now
+  resolve like every other script and say plainly when no binary exists. Running
+  them immediately separated four lapsed claims into two whose shipping commit
+  can be named and two that look genuinely unfinished — a distinction that had
+  been made by guesswork.
+- **A guard was watching two names the server had stopped answering to under
+  their own contract.** The test that proves the session envelope is tolerated
+  rather than validated as a tool argument — the regression that once made the
+  VS Code extension report `disconnected` instead of `ready_empty`, and which
+  only the Extension Host smoke noticed — asserted over `board` and
+  `design_board`. ADR-0059 retired both. The server no longer advertises them
+  and answers them only through the deprecation table, so the guard was
+  exercising the *aliases* while the advertised readiness path (`task_query`,
+  `design_query`) went unwatched: the same regression could have returned
+  through the new names without failing anything, and when the aliases are
+  removed the guard would have vanished with them.
+  Its own comment had predicted this — *"a whitelist entry is easy to drop in a
+  refactor, and the unit that catches it must be the call the client actually
+  makes"* — and the whitelist had quietly stopped being that call. It now
+  asserts each name it mentions is a tool the server actually advertises, so
+  the next rename fails here instead of hollowing the guard out in silence.
+  This is the same defect class as `requires_session`: a list keyed by tool
+  name that a rename left pointing at nothing. Finding it twice by hand is what
+  the fence is for.
+
+- **Two more retired names were still in live guidance and a second guard.**
+  Reconnecting with paused work advised the owner to *"Call resume_task"* — a
+  verb the server no longer advertises, offered to an agent at exactly the
+  moment it is trying to get back to work. It now names `task_transition` with
+  `to="resume"`, and says which argument answers a `needs_input` task instead.
+  The guard proving an offered session sharpens the overlap read while its
+  absence never refuses (ADR-0024) was driven through `check_overlap`; it now
+  goes through `task_query` with `view="overlap"`, because the alias resolves
+  to the same handler and so proved only that the deprecation table works.
+- **A sibling worktree is not a foreign path, and structural ownership now
+  follows a merged identity.** Two defects, one symptom: 43 of 247 tracked files
+  could not be re-ingested at all, so every future extractor improvement would
+  have missed them silently.
+  Repair was prefix-scoped, which assumes every worktree eventually hosts a
+  server that heals its own ids. A worktree an agent works in without ever
+  starting a server there leaves its ids orphaned permanently. Since ADR-0038
+  gives every worktree of a repository one shared graph, an absolute id written
+  from a sibling checkout names the *same file* as the repo-relative id — so it
+  is now merged into it, whichever checkout spelled it.
+  The warrant is evidence, not a guess about where a checkout begins: the merge
+  target must be a repo-relative id **the graph already holds**, taken as the
+  longest matching suffix so a full path always beats a bare filename that
+  happens to collide. A path with no such twin is still left exactly alone, so
+  repair never invents a file — the rule the prefix pass was protecting, and the
+  existing `repair_is_idempotent_and_leaves_foreign_paths_alone` test, both
+  stand unchanged.
+  The second defect only surfaced when the first was fixed and the files stayed
+  blocked. `edges.owner_id` records which artifact owns a structural snapshot
+  (ADR-0007), and merging a node rewrote the edge *endpoints* but never the
+  *ownership* — a hole that predates this change and affected same-root repairs
+  too. Ownership is not an endpoint, so it survives the node it names being
+  deleted, and `replace_structure` then refuses every later ingest of that file
+  with "structural edge is owned by <absolute id>, not <relative id>". With the
+  absolute node already collapsed there is nothing left for a node-level repair
+  to find, and the file is permanently un-re-extractable. Ownership is now
+  carried across a merge, and reclaimed separately by scanning ownership rather
+  than nodes, so the already-orphaned state heals too.
+  Repair also no longer needs a declared workspace root to do this. The prefix
+  pass still does and is still skipped without one; collapsing ids whose twin
+  the graph already holds does not, and a server that never declares a workspace
+  was exactly the case that left sibling ids stranded, because no root ever
+  matched them.
+  Verified against the live graph: all five sampled blocked files now ingest.
+- **A stale server now says so to the agent using it, not only to a log the
+  agent cannot see.** `build_notice` already decided this correctly and
+  `BuildNotice` already carried a `stale` flag — but the answer went to stderr
+  at startup, and an MCP client shows that to nobody. The comment above the
+  check had already recorded the same failure one level up: the version *"has
+  always been reported at `initialize`; nobody compared it, and a two-day-old
+  local build cost a night of misdirected debugging"*. Moving it to stderr fixed
+  where it was written, not whether it was read.
+  Measured over a full session on 2026-07-29: every call ran against a binary
+  built from `f9a549c4211a` while the checkout had moved on, and nothing in the
+  tool surface said so. The consequences were diagnosed as tool defects rather
+  than as a stale build — `propose_amendment` and `amend_constitution` were
+  "missing from the tool list" because the binary predated them, and the sha
+  validation that refuses a fabricated commit id was not running at all while
+  every call still looked normal.
+  `open_session` now carries the notice, on both planes, because it is the one
+  call every agent already makes before anything else — the same reasoning that
+  put commit provenance on the commit rather than on remembering to record it.
+  Only when the binary is genuinely behind the checkout it serves: a current
+  build says nothing, so the field keeps its meaning instead of becoming a line
+  to scroll past. It reports and never refuses, because a server that stopped
+  serving because it was behind would halt a fleet mid-flight, which is worse
+  than the staleness it is complaining about.
+- **A test server that raced its client turned `main` red on Windows only.**
+  `response_decode_failure_opens_the_circuit` checks that a 200 response with a
+  body that is not JSON opens the circuit breaker. Its fake endpoint issued a
+  single `read` of the request and then let the socket drop. Both halves are
+  wrong, and only on Windows does it show. One `read` can return just the
+  headers, because a POST body may arrive in a later segment; and dropping a
+  socket that still holds unread inbound data makes Windows answer with RST
+  rather than FIN, discarding the response the client has not yet read. The
+  client then reported a transport failure — `An existing connection was
+  forcibly closed by the remote host (os error 10054)`, or `10053` — instead of
+  the decode error the test names, so the assertion failed for a reason that
+  had nothing to do with the behaviour under test. Measured before the fix: 4
+  failures in 12 local runs, green on the ubuntu CI leg and red on
+  windows-latest, three consecutive red builds on `main`, and unrelated pull
+  requests blocked behind it. The endpoint now reads the request in full,
+  honouring the declared `Content-Length`, writes and flushes the response, and
+  shuts the write side down before dropping, so the client always gets to read
+  what was sent. Verified by running the test 30 times rather than once: 30
+  passes, against 8 of 12 before. A single green run cannot tell a fix from
+  luck, and for a race that is the only evidence that means anything.
+  Production code is untouched — the change is confined to the `#[cfg(test)]`
+  helper, so what the breaker does in the field is exactly what it did before.
+### Fixed
+
+- **A worktree created after a server started is no longer invisible to it.**
+  PR #239 made every worktree root a candidate when placing a path, which
+  stopped most ingest calls being refused — but the root set was resolved once,
+  at engine construction, so it was frozen for the life of the process.
+
+  This fleet creates worktrees hourly, so a frozen set decayed from the moment
+  it was resolved, and fastest exactly when the fleet was busiest. Observed
+  2026-07-30: servers started at 03:55Z refusing paths from four worktrees that
+  appeared later in the same session.
+
+  A path that lands outside every known root now re-resolves the set once and
+  retries the placement, so a worktree born after startup is picked up without
+  restarting the server. The refresh rides on the failure that needs it rather
+  than a timer, and is bounded — at most one per interval, never more than one
+  in flight — so a genuinely foreign path from a misconfigured sensor cannot
+  make every refusal pay for a git subprocess.
+
+  A path under no worktree of this repository is still refused: the retry
+  changes *when* the answer is computed, never what counts as belonging. The
+  refresher is injected, like the roots themselves, so the core still does not
+  spawn git and a test can make a new root appear without one.
+- **ADR-0059 now says what the ledger decided nine hours earlier.**
+  `design:0059-the-tool-surface-is-a-vocabulary` was accepted by `monk-eee` and
+  materialized — it is what spawned the four tool-collapse tasks — while the ADR
+  file still read `Status: Proposed`. Nothing reconciles those two directions:
+  the Design Board sync reads files into the ledger, and no step writes a ledger
+  decision back into the file.
+  That gap stopped work, not just confused a reader. Surveying the board the
+  same day, an agent read the file, concluded the four collapse tasks were
+  implementing an undecided design, and declined to claim any of them. The file
+  is now `Accepted` and names the decision that made it so.
+  Known gaps also records what the sweep behind this found: **69 ADR files on
+  main, 63 registered as design items.** `0063`, `0064`, `0066`, `0067`, `0068`
+  and `0069` have no design item, which is why `design_board` reads empty — the
+  undecided ADRs are precisely the ones missing from it. Four of those six
+  assert `Status: Accepted` in the file without a recorded decision, so
+  registering them is a maintainer's call rather than a sweep.
+- **The resolvable ADR cross-links reach the right file again.**
+  Renaming an ADR orphaned every inbound `ADR-00NN` link — the href kept the
+  target's `00NN-old-slug.md` name as it was when written, and 404'd once that
+  name changed. Twelve such links across nine ADRs now point at the real `00NN-*.md`
+  file for their number (href only; the decisions and the parenthetical
+  descriptions are untouched), and ADR-0031's `ARCHITECTURE.md` link becomes the
+  correct `../ARCHITECTURE.md`. Three references to a phantom `ADR-0045 "armed
+  means finished"` are left as-is and flagged for a maintainer: no ADR ever bore
+  that name (0045 is "a fleet is a distributed system"), so pointing them
+  anywhere would fabricate a target — that needs the author's intent, not a
+  mechanical rewrite.
+- **The ADR files and the design ledger agree again.** `make design-audit`
+  reported seven items of drift: five ADRs the ledger had never seen (0054,
+  0055, 0060, 0061, 0062) and two whose file said `Proposed` while the ledger
+  recorded them accepted by a person (0057, 0058). An unregistered ADR is a
+  decision the ledger cannot reason about — it never appears on the design
+  board and cannot be reconciled — and a file that disagrees with the ledger
+  means one of the two is lying about whether a decision was made. All five are
+  registered and the two status lines now match the ledger. Two remain
+  deliberately unresolved: 0054 and 0055 claim `Accepted` in their files with no
+  decision recorded, and inventing a decider for them is exactly what the check
+  exists to prevent.
+- **Advertised task verbs keep their session contract.** The task-cluster
+  collapse renamed twenty-six tools to `task_claim`, `task_transition` and
+  `task_query`, but the server policies that resolve session identity and renew
+  an active lease still recognized only the deprecated names. The replacement
+  calls therefore reached dispatch without their registered agent:
+  `task_claim` could not claim anything, session-bearing transitions such as
+  `complete` were refused, and overlap queries lost their branch context. The
+  server now canonicalizes deprecated calls before applying one
+  operation-aware policy. Every ownership step is session-bound; only the
+  transition and query variants that need identity require it; overlap remains
+  an anonymous advisory when no resolvable session is offered; `answer` remains
+  open to anyone as ADR-0046 requires; and heartbeat behavior is identical
+  through either vocabulary during the deprecation window. The advertised
+  schemas expose `session_id` without accepting a caller-asserted `agent`.
+- **`advise` no longer renews a lease, so ADR-0029 and ADR-0052 stop
+  contradicting each other.** Renewal-on-activity (ADR-0052) lets any call that
+  names a task prove its owner is still working, which is what stops a claim
+  expiring during a long build. Its own consequences section flagged one member
+  of that list as unsettled: *"`advise` should be excluded, or ADR-0029 amended —
+  this decision does not get to quietly redefine another one."* The
+  implementation included it and ADR-0029 was not amended, so `advise` — which
+  ADR-0029 documents as evidence-free and state-free, recording no verdict and
+  changing **no task state** — was writing `lease_expires_at`. Both ADRs still
+  read as authoritative while the code could only satisfy one. `advise` is now
+  excluded, answering the open question in the direction that keeps the existing
+  contract intact; the cost is negligible, because an agent calling `advise`
+  before it edits is about to call something task-bearing anyway. A test guards
+  the array, so re-adding `advise` fails until someone amends ADR-0029 on
+  purpose and with reasoning.
+- **An advisory nudge now says that it is the reason.** Learned knowledge may
+  attach an advisory and move an otherwise-aligned verdict to `needs_human` so a
+  person looks — ADR-0022 §4, deliberately bounded so a decaying regularity can
+  never hard-fail correct work. But the nudge changed the verdict and left only
+  lines labelled `advisory:`, which read as information rather than as the
+  cause. Every other route to `needs_human` pushes a finding naming its own
+  reason; this one did not, so a receipt whose every other signal was positive —
+  coverage confirmed, provenance intact, no drift, no lapse — reported an
+  inexplicable failure, and the honest reading was unavailable to whoever held
+  it. The nudge now records itself, naming the knowledge ids responsible and
+  stating that nothing else in the evidence is a problem signal. The rule is
+  unchanged; only its silence is fixed. A verdict knowledge did **not** move
+  still carries no nudge line, so a drift is never blamed on an advisory.
+- An amendment now records where each clause went and carries the work with it.
+  Superseding a clause used to leave `superseded_by` NULL, and because an
+  amendment renames every clause it carries forward (`goal:{slug}@{version}`),
+  nothing could follow the rename: code bindings and open tasks kept naming a
+  clause no active constitution contained. `amend_constitution` now names the
+  successor by slug and moves goal/code bindings and non-terminal tasks onto it
+  in the same transaction. Terminal tasks keep their original clause, because a
+  finished audit must keep naming what it was judged under.
+- A migration reconnects clauses already stranded this way. On this repository
+  that moved 156 bindings and 53 tasks onto the active constitution and recorded
+  26 successors, leaving all 178 finished tasks untouched. A task held under an
+  unexpired lease is skipped: its goal is what conformance judges the holder's
+  evidence against, so moving it mid-claim would change the rule beneath someone
+  doing the work (ADR-0063). Those move at the next amendment instead. Recorded
+  in ADR-0068.
+- **Conformance had stopped affirming anything, and the receipts said so if you
+  counted them.** Consolidated knowledge could nudge an otherwise-`aligned`
+  verdict to `needs_human` whenever any active knowledge node merely
+  *referenced* one of the evidence's changed nodes (ADR-0022 §4). Knowledge only
+  accumulates, so the referenced set only grows, and the nudge became
+  unconditional.
+  Measured on the live board on 2026-07-30: of 190 `done` tasks only **58 (31%)**
+  carried a receipt that affirms the work — and the shape is a collapse, not
+  accumulated debt. The fleet affirmed **28 of 28** completions on 23 July and
+  **1 of 13** on 30 July. That one survivor earned it because `advise` reported
+  *"no active clause governs this change"*, so nothing could fire: **the only
+  reliable way to get an affirming receipt had become changing code that nothing
+  governs.**
+  It was not cosmetic. A `blocked_by` successor opens only on an *aligned*
+  completion, so a permanent cap froze dependent work. And a receipt whose only
+  substantive finding is positive, capped anyway, teaches every reader that the
+  verdict does not track the work — which is how a gate stops being read.
+  The advisory findings still attach, because showing an agent the relevant
+  lesson at the moment of change is the whole value of ADR-0022. What is gone is
+  the claim that relevance is evidence of a problem. ADR-0060 item 2 already held
+  the line this crossed: only a positive signal of a *problem* may downgrade a
+  verdict. Recorded as ADR-0072, amending ADR-0022 §4, with the measurement as
+  its evidence.
+  The trade is deliberate and worth naming: a second look is no longer forced. A
+  class of knowledge that genuinely should stop a completion now has to say so as
+  a constraint or invariant clause with a declared consequence — machinery that
+  already exists and that carries an attributable human decision.
+- **Amending the constitution no longer disarms the controls enforcing it.** A
+  clause copy takes a new id (`goal:{slug}@{version}`), and controls store the
+  clause id they were registered against, so every amendment used to leave its
+  controls pointing at a row that had just been superseded. Nothing refused
+  that. The orphaned control went on accepting observations and went on
+  answering `pass` and `fail` — only the effective consequence quietly
+  collapsed to `advise`, and `clause_controls` reported the live clause as
+  unguarded. A control that has stopped enforcing reads exactly like one that
+  works, and it happened at the moment somebody was strengthening a rule, which
+  is the worst possible time to silently stop enforcing it. Active controls are
+  now carried across with the clause inside the amendment transaction, matched
+  on slug rather than on the outgoing version's ids — so a control stranded by
+  an earlier amendment is adopted by the next one rather than staying orphaned
+  forever. Retired controls are deliberately left where they are: they are a
+  record of what once enforced a rule, and moving them would rewrite that record
+  onto a clause they never guarded.
+- **The merged-branch audit failed on work that had fully landed.** It compared
+  ancestry, so a squash or rebase merge — which lands every line under a new
+  commit id — was indistinguishable from a branch whose commits never merged at
+  all. It then reported the work as lost and instructed the reader to open a
+  follow-up pull request for changes already on `main`, which is not something
+  anyone can do. That is the failure mode worth naming: an audit with no green
+  move available gets switched off, and switching this one off would take the
+  check that catches genuinely lost work with it. It also cost real time before
+  it was fixed — PR #205's work was recorded in durable knowledge as lost, and a
+  follow-up to restore 245 lines that were already on `main` was queued against
+  the one file three agents were editing. `git merge-base --is-ancestor` answers
+  a question about commit identity, not about whether the work arrived. The
+  audit now uses `git cherry`, which compares patches: a commit whose changes
+  never reached the base still fails the build, while one that landed under a
+  rewritten id is reported as landed-but-rewritten and does not. Merge commits
+  are in neither list, since merging the base into a branch carries no work of
+  its own and reporting it as lost was noise obscuring the one real finding.
+  Nothing weakens: the report says plainly that a squash or rebase merge
+  destroyed a commit identity AGENTS.md asks to keep, and points at the
+  repository setting that prevents it, because the only durable fix is at the
+  merge button rather than in an audit that runs afterwards. The existing suite
+  in `editors/vscode/scripts/merge-audit.test.mjs` gains the squash case and the
+  merge-commit case, and its four original tests are kept unchanged so the
+  behaviour that was already correct is proven not to have regressed.
+- Ingesting a file whose path cannot be made repository-relative is now refused
+  instead of quietly creating a second identity for it. Every worktree of a
+  repository shares one graph (ADR-0038), and `repo_relative` returns a path it
+  cannot place untouched — correct for a helper, wrong for a node id — so a file
+  saved in a sibling checkout arrived still absolute and became
+  `artifact:c:/Users/.../MindLeak-build/crates/x.rs` alongside
+  `artifact:crates/x.rs`. Splitting a file's identity splits everything derived
+  from it: reinforcement decays corroborated signal like a one-off (ADR-0005),
+  `check_overlap` never collides two agents on one file, a governance binding
+  covers only one spelling, and recall returns the same file twice.
+  Measured on the live graph on 2026-07-29:
+  `crates/lodestar-mcp/src/tools/mod.rs` held 117 structural edges under its
+  absolute id and 43 under its relative one. Those rows were unreachable rather
+  than merely stale — `replace_structure` matches on the relative `owner_id`, so
+  re-ingesting the file could never see them. `repair_workspace_paths` still
+  merges duplicates that already exist; this stops new ones being made.
+- **A won claim now reports the evidence window it opened.** `complete_task`
+  refuses evidence whose `started_at` precedes the claim's `claim_started_at`
+  with *"evidence interval falls outside the live claim"*, and no tool returned
+  that value — `claim_task` gave back only `won` and `governing`, and
+  `task_scope` only `paths` and `symbols`. The one number needed to construct
+  acceptable evidence was unobtainable, so an agent had to guess a `started_at`,
+  and a wrong guess read as a policy refusal rather than a missing accessor.
+  `claim_task` now returns `claim_started_at` and `lease_expires_at` on a won
+  claim, and reports neither on a lost one (ADR-0060 decision 4).
+- **Eleven closed Known gaps no longer read as open work.** Current code and
+  regression coverage already prove the design-status, ADR parsing, duplicate
+  goal, Design Board isolation, task lifecycle, embedder thread-safety, and
+  actionable-task fixes. The optional recall failure was repaired operator
+  configuration, not a product defect. A fresh valid `graph_multi_hop_query`
+  also cleared that tool's stale failure state in telemetry. Their fragments
+  are deleted from the open-gap source of truth; unresolved limitations remain.
+- The Known Gaps validator now rejects terminal `FIXED`, `RESOLVED`, or
+  `CLOSED` headings unless they explicitly name an `OPEN` residual. The catalog
+  no longer presents completed work as actionable debt: fully closed fragments
+  were deleted, while partial fixes were retitled around the limitation that
+  still remains.
+- **Duplicate node identities are collapsed, and the survivor keeps the history
+  both halves earned.** Making paths repo-relative stopped new splits; it did
+  nothing about the 590 files already living under two identities. A repair pass
+  now rewrites node ids that spell their path absolutely under the served
+  checkout onto the repo-relative id, **merging** rather than choosing a winner:
+  reinforcement counts add, weight carries the write path's own `+0.05` per
+  reinforcement, the earliest `first_seen` and latest `updated_at` survive, and
+  the longer-lived half-life follows the more recent edge. Picking a winner
+  would have been the expedient choice and would have silently discarded real
+  corroboration — the thing signal-weighted decay (ADR-0005) exists to reward.
+  Measured on this repository: **871 absolute ids across 8 worktrees collapsed to
+  0, and 590 duplicated files to 0**, taking the graph from 6,144 nodes to 5,106
+  without losing an edge's history. The pass runs at startup, is idempotent, and
+  is scoped to the checkout the process serves, so each worktree heals its own
+  ids and the graph keeps healing if any producer ever regresses — one worktree
+  running an older binary during the migration was found and healed exactly this
+  way. A repair failure logs and never blocks startup: a graph with split ids is
+  still usable, and refusing to start would be the larger outage.
+- **Creating an identical task in the same second now returns a typed domain
+  error instead of leaking SQLite.** Task ids are derived from goal id, title,
+  and a whole-second timestamp. Two identical creates inside that second used
+  to let the second `INSERT` hit the primary key and return `UNIQUE constraint
+  failed: tasks.id` — an implementation detail for what is plainly a duplicate
+  request. `create_task_after_on` now checks the derived id before dependency
+  validation or insertion and returns `LodestarError::Invalid`, identifying the
+  existing task and telling the caller to reuse it or choose a distinct title.
+  The first task remains unchanged and no second row is written. A focused
+  regression test was proven red against the previous implementation and green
+  with the pre-check.
+- **`evidence_for` refuses an empty window instead of returning nothing as
+  evidence.** Measured on the board: forty audits carried *"evidence contains
+  no provenance-bearing mutation"*, and sixteen of them were raised **after**
+  the argument guard that was supposed to have fixed that cause — by two
+  different agents. Every one of those bundles was completely empty: no
+  commits, no changed nodes, no executions, no provenance. The misspelt
+  argument was *a* cause, not *the* cause; the dominant one is asking for
+  evidence over a window nothing was ingested into, receiving a well-formed
+  envelope containing nothing, and submitting it. Conformance then records
+  `needs_human`, which reads as "a human must judge this" when in fact nobody
+  can — the work was never recorded, and no amount of adjudication will
+  conjure it. The call now fails with the window, the agent, and the remedy
+  (`ingest_commit` with `changed_files`, or `ingest_execution`) rather than
+  succeeding emptily. A window that caught real work is unaffected.
+- **The VS Code extension no longer depends on Lodestar's deprecated tool-name
+  compatibility window.** Design workflows now call `design_register`,
+  `design_decide`, `design_promote`, and `design_query`; task workflows call
+  `task_claim`, `task_transition`, and `task_query`, with the former verb
+  encoded explicitly as `step`, `to`, or `view`. The migration covers board
+  refresh, evidence completion, question handling, lease changes, overlap
+  checks, and every Design Board operation while leaving MindLeak's separate
+  `check_overlap` tool unchanged.
+  A TypeScript-AST regression audits every Lodestar `callTool` site, rejects
+  retired aliases and dynamically constructed tool names, and verifies that
+  each clustered call carries its discriminator. This includes the former
+  runtime-only `` `${action}_task` `` pause/resume path that literal searches
+  could not see.
+- **Passive Git capture now distinguishes checking out work from authoring it.**
+  The sensor inferred intent from ancestry: if the new HEAD named the previous
+  HEAD as a parent, it was ingested. That misattributed a checkout to a
+  descendant branch as a commit by whoever viewed it, while event ordering
+  could lose an explicit non-linear commit such as amend behind an in-flight
+  state refresh.
+  The sensor now tracks branch name as well as commit and consumes the built-in
+  Git API's explicit `onDidCheckout` and `onDidCommit` events. A checkout is
+  remembered without attribution; the next real commit on that branch is
+  captured. An explicit commit upgrades a state refresh already in flight, so a
+  non-linear commit is not dropped as a duplicate. A state-only non-linear move
+  remains un-attributed and becomes the next baseline, because it may be reset,
+  rebase, or checkout and attaching it would be worse than a visible gap.
+  Eight focused tests cover descendant checkout, first commit after checkout,
+  coalesced branch creation and commit, amend/event ordering, terminal-style
+  linear advance, and state-only non-linear movement. The new tests fail four
+  of eight against the previous implementation and pass eight of eight with the
+  fix.
+- **An installed binary now says which build it is.** The startup notice only
+  ever spoke when the running binary lived inside the workspace it served, on
+  the reasoning that an installed release is not built from that checkout so a
+  difference means nothing. That rules out calling it *stale* — it does not
+  excuse saying nothing at all. The VS Code extension binaries are the ones the
+  fleet actually runs, and they reported no identity, so three servers served a
+  build predating a merged fix for most of a day, deciding conformance verdicts
+  with it, while every surface read healthy. An out-of-workspace binary now logs
+  the sha it was built from and explicitly does not claim staleness; a binary
+  inside the workspace keeps the existing comparison. `stale_build_notice` is
+  renamed to `build_notice` and returns a `BuildNotice` carrying a `stale` flag,
+  so a genuine staleness warning stays a warning and identity is logged as
+  information — a notice that cries wolf is how the real one gets ignored.
+- **Knowledge that can never be read now says so when it is written.** The
+  conformance advisory matches recorded knowledge on referenced nodes and
+  nothing else, so a record whose evidence carries no `nodes` array is stored,
+  counted, and permanently unreachable — it can never arrive in front of the
+  agent it was written for. Nothing reported that at the point it happened.
+  `active_knowledge` already exposes a `surfaces` field, but reading it requires
+  already suspecting the problem, and an agent recording a lesson for a
+  colleague has no reason to suspect anything: the call succeeds, returns an id,
+  and looks exactly like one that worked. Measured before this landed, 3 of 17
+  active records were invisible, among them one recording the cost of skipping
+  the mandatory `advise` pre-flight — written precisely so the next agent would
+  not repeat that mistake, and structurally incapable of reaching them.
+  `record_knowledge` now reports `surfaces` in its own response, and when it is
+  false it says which field is missing and what to put in it. Write time is the
+  only moment this is worth saying, because it is the only moment the caller
+  still has the node ids to hand; afterwards the information needed to fix the
+  record is gone along with the context that produced it. The record is kept
+  either way and is not refused, since losing an agent's stated lesson to a
+  formatting mistake is worse than storing one that cannot yet be matched.
+- **A lapsed claim no longer buries the work someone is actually holding.** The
+  Work board ranked rows by stored status, so a claim whose lease expired nine
+  hours ago sorted identically to one being worked on right now. One session
+  left fifteen such rows behind in a day and the board became unreadable: three
+  live tasks scattered among twenty-five dead ones, distinguishable only by
+  reading a timestamp on every row. An expired claim is claimable — the store's
+  compare-and-swap already admits `status = 'claimed' AND lease_expires_at <
+  now`, and the row already described itself as "Claim expired · Ready" — so it
+  now ranks as ready work, below tasks nobody has started, and live claims sort
+  to the top where they belong. Nothing is reaped, rewritten or transitioned to
+  achieve it: expiry is a function of `lease_expires_at` and the clock, derived
+  at render time the way effective edge weight is derived at query time.
+- **Maintenance-runtime tests now wait for worker progress instead of polling
+  SQLite against a two-second wall clock.** A test-only event queue on the
+  existing activity condition variable reports when the worker is waiting for
+  idle, completes consolidation, or completes pruning. Production state and
+  scheduling are unchanged.
+  The active-request regression now proves the worker observed the held request
+  before release, and the prune-cadence regression holds a request active for
+  the entire prune pass. A centralized 30-second wait remains only as a
+  deadlock guard when expected progress never arrives, rather than as the
+  behavior under test.
+- **The Memory Plane refuses an argument it does not declare, instead of
+  dropping it.** The Intent Plane gained this guard when a misspelt
+  `lease_seconds` produced a silently defaulted lease; the Memory Plane went
+  without it, and the cost was concrete. `ingest_commit` takes `changed_files`; an agent passed `files`; the argument was dropped in silence.
+  No `refactored` edges were written, so `evidence_for` counted zero commits, so
+  conformance reported "no provenance-bearing mutation", so `complete_task`
+  returned `needs_human` and the task never reached `done` — thirteen claims sat
+  lapsed-but-still-held on the work board, and nothing in the symptom pointed
+  within a mile of the typo. The same mistake on the Intent Plane is caught in
+  seconds, because it names the argument, names what the tool actually accepts,
+  and says that a misspelt argument is dropped rather than defaulted. Envelope
+  keys the server injects, and the `session_id` every client sends on every
+  call, are not treated as the caller's mistake.
+- **`merge_evidence` could not succeed for anyone, in three independent ways.**
+  ADR-0058's promise is that a merge which passed review and CI is stronger
+  evidence than a hand-assembled bundle. The verb shipped unable to accept a
+  single one. Found by being its first user, trying to certify five tasks that
+  were parked precisely because their work had merged and could not be proven.
+  1. **It compared the raw session token against a resolved agent id.** The
+     dispatch read `req_str(args, "session_id")` and handed that straight to the
+     facade as the agent, while `resolve_agent` is a pass-through and
+     `task.owner` is a `session:v1:` id. The comparison could never match, so
+     every caller was refused — and the message accused the rightful holder of
+     claiming credit for someone else's work. `merge_evidence` is now in
+     `requires_session`, so `bind_session` resolves the token and injects the
+     agent the facade actually compares.
+  2. **It measured reachability against the local `main`.** Under ADR-0038
+     nobody checks `main` out, so it sits wherever the clone left it — measured
+     294 commits behind here, which refused a commit that was demonstrably on
+     the integration branch. The ref is now resolved, preferring `origin/main`
+     and falling back to `main` where there is no remote. That is still not the
+     "whatever branch I am on" trust ADR-0058 removes: it is the protected
+     branch's remote-tracking ref, which is the thing the ADR is about.
+  3. **It could not see what a merge changed.** `git show --name-only` prints
+     nothing for a two-parent commit unless asked with `-m`, `-c` or
+     `--first-parent`, so the verb whose whole premise is "a merge is evidence"
+     read an empty file list for exactly the commits it exists for, and rejected
+     them as touching nothing in scope. Now `diff-tree -m --first-parent`, which
+     is also correct for an ordinary commit, so one command serves both shapes.
+  The tests missed all three for one reason worth keeping: the fixture built a
+  real merge but captured the *feature* commit and named it `merged`, while its
+  doc comment called it "the merge commit on `main`" — the shape the tool asks
+  callers for was the one shape never exercised. The fixture now returns both,
+  and a test asserts the merge really has two parents before verifying it.
+  Verified end to end against the live ledger: `merge_evidence` now returns a
+  bundle naming the merge and all five changed nodes.
+- **A merge driver can no longer return to `.gitattributes`.** A driver runs
+  only in a local checkout. GitHub's "Update branch", the merge queue, and the
+  merge itself all run server-side with no driver configured — so an attribute
+  promising "keep both sides" silently does not apply, and the branch reports a
+  conflict in the very file the driver was supposed to keep conflict-free. That
+  is worse than having no driver: an ordinary conflict is expected and resolved,
+  while this one contradicts the repository's own configuration, in a file
+  everybody edits, and invites you to distrust the merge rather than the
+  attribute. `merge=union` on `CHANGELOG.md` cost an evening of phantom
+  conflicts before the cause was found, and deleting it was only half the fix —
+  nothing stopped the next reader from acting on the same "keep both" wish.
+  A pre-commit guard now refuses any `merge=` declaration, naming the file and
+  line, and points at per-change fragment files instead: two changes never write
+  the same path, so they never collide. Comments are exempt, so `.gitattributes`
+  can still record why the rule exists.
+- Conformance no longer fails work whose product is not code (ADR-0060). Evidence
+  that touches no code bound to the task goal now resolves to `aligned` with the
+  fact recorded as a finding, matching the verdict the same evidence already got
+  when no task was attached. Previously the presence of a task made the verdict
+  worse, so a task delivering an ADR, documentation, a benchmark or a changelog
+  fragment could never reach `aligned` and parked in `in_review` awaiting a human
+  who had no queue to watch. Only a positive signal of a problem — drift, a
+  `forbid_change` lock, missing provenance, or governed code changed without a
+  covering task — may downgrade a verdict. An audit no longer claims "evidence
+  covers task goal" when it did not.
+- `ingest_commit` refuses an abbreviated commit hash instead of minting a second
+  intent node for a commit already ingested under its full hash. The node id is
+  derived from the hash, so `intent:007835a` and `intent:007835a1c979...` were
+  two nodes competing to represent one event, inflating commit counts in
+  conformance evidence and duplicating provenance edges. Pass all 40 (or 64) hex
+  characters; the error names the fix. Hash case is normalised for the same
+  reason. Ingestion cannot expand an abbreviation itself, because it never shells
+  out to git.
+- `MindLeakError::InvalidArgument` distinguishes a caller-supplied argument
+  problem from the `Other` catch-all.
+- **A file no longer splits into a separate node per worktree.** Node ids are
+  repo-relative by contract, but `normalize_path` only settled separators — it
+  never made an absolute path relative. Editor sensors report absolute paths, and
+  every worktree of a repository shares one graph (ADR-0038), so a single file
+  could occupy a different identity in each checkout. Measured on this
+  repository: **871 of 6,144 nodes carried absolute ids across 7 worktrees, and
+  590 files existed under two identities at once** — `AGENTS.md` and
+  `.pre-commit-config.yaml` among them. The damage is quiet and broad: edits
+  split across identities so genuine reinforcement decays like a one-off,
+  `check_overlap` cannot see two agents editing the same file from different
+  worktrees, governed bindings cover only one spelling of the path, and `recall`
+  returns the same file twice. The process now declares the checkout it serves
+  (`MindLeak::with_workspace_root`, wired from the resolved workspace), and paths
+  inside it are made repo-relative at every entry point that accepts one —
+  ingestion, deletion, reconciliation, and `check_overlap`. A path genuinely
+  outside the checkout is left alone rather than forced into a relative form that
+  would name a file that does not exist.
+### Fixed
+
+- **One push now runs both test runners.** `scripts/*.test.mjs` are `node:test`
+  suites and ran before every push; `editors/vscode/scripts/*.test.mjs` are
+  vitest suites importing the very same modules through `../../../scripts/`, and
+  ran only in CI. So renaming an export or a guidance string passed every local
+  check and failed after publishing, on assertions the author had no reason to
+  run.
+
+  It was not hypothetical: three pull requests were blocked on exactly this at
+  once — `droppedCommits` → `classifyCommits` in the merge audit, and
+  `claim_task` → `task_claim` in the claim gate — each author discovering their
+  own rename from a red build, while `main` stayed red behind them.
+
+  Measured against the real rename: `script-tests` reports **139 passed, 0
+  failed**, completely blind to it, while the hook reproduces CI's failure
+  exactly, down to the assertion text, in **12 seconds**.
+
+  Targeted rather than wholesale, and the difference matters. The full extension
+  suite takes ~120s here and reports vitest worker timeouts under fleet load; a
+  gate that intermittently blocks a push teaches people to reach for
+  `--no-verify`, which is worse than no gate. The hook receives the changed
+  files and runs only the suite covering a module that actually changed, so a
+  Rust or docs push pays nothing — and says so, rather than passing in silence.
+
+  It refuses rather than skipping when the extension's dependencies are absent:
+  a silent skip is indistinguishable from a green suite, which is the failure
+  this exists to prevent.
+- Optional HTTP circuit breakers now count failures that happen during endpoint
+  resolution or response decoding, so a broken embedding or consolidation
+  endpoint fast-fails after the configured threshold instead of repeatedly
+  consuming its timeout. Embedding responses now reject non-numeric,
+  non-finite, and inconsistent-dimension vectors before any index rows are
+  written, preventing malformed model output from silently disappearing from
+  semantic recall.
+- **Prior work is found across a constitution amendment.**
+  `existing_work` matched goals with an exact `goal_id` compare, but an
+  amendment re-issues every clause as `goal:<slug>@constitution:vN` while tasks
+  go on naming whichever form they were created under. A retry created under
+  the bare slug therefore could not see work already finished under the
+  versioned id, and `task_create` answered `already_serving_this_goal: 0` for
+  work that plainly existed — exactly when that question is being asked in
+  order not to repeat it. Measured on the live board: 11 titles had been
+  created more than once across 29 tasks, and 5 of those spread their attempts
+  across ids sharing a single slug. The worst, "Carry controls across an
+  amendment", was created six times: the attempt that finished sat under
+  `@constitution:v2`, and all five abandoned retries under the bare slug, every
+  one of them blind to the completed work. Goal matching now reuses
+  `goal_slug` — the same rule `store::goals` and the clause binding already
+  use — so the versioned and bare forms find each other.
+- **Publishing now records its own evidence, so work published through the gate
+  can be certified (ADR-0009).** `canonical-push` already refused to publish
+  without a live Lodestar claim, but wrote nothing to the Memory Plane — so
+  `evidence_for` returned an empty bundle for work that had just been validated
+  and pushed, `check_conformance` answered `needs_human` on
+  *"evidence contains no provenance-bearing mutation"*, and `complete_task`
+  refused. Measured on this repository, **18 of 21 human-blocked tasks stopped
+  for exactly that reason**: one defect wearing eighteen hats, each one costing
+  a human decision that had nothing to decide. The push is the right place to
+  record — it is where a commit stops being a draft and becomes a fact about the
+  world, and it is already the one path where the ledger is not optional. It
+  ingests the published sha, subject, and changed files under the same session
+  that holds the claim, after the push and never before. An unreachable graph
+  warns and does not fail the push: the commit is already on the remote by then,
+  and turning a missing record into a failed publication would trade one problem
+  for a worse one.
+- **The delivery queue no longer loses a minute on every merge.** Immediately
+  after a merge GitHub recomputes mergeability and every queued pull request
+  reads `UNKNOWN` for a few seconds. That was indistinguishable from a quiet
+  queue, so the tick did nothing and slept the full interval — once per merge,
+  on every delivery, which across a twelve-branch drain is roughly a fifth of
+  the elapsed time spent waiting for an answer GitHub already had. The state is
+  now named `settling` and the watcher comes back in five seconds instead of
+  sixty. It is safe to return early precisely because a settling tick has, by
+  construction, done nothing. One resolved entry is enough to stop settling and
+  take a turn, so the queue cannot sit in a recompute loop.
+- **A real source file can replace the import stub created before it.** When
+  importers were ingested first, their unresolved Rust candidates could leave the
+  eventual module root behind an alias. The real file then promoted that alias
+  before writing its own structural edges, so an edge still targeting the deleted
+  alias failed the transaction with a SQLite foreign-key error. Alias promotion
+  now runs after the real file's edges are inserted, allowing the same transaction
+  to retarget them safely. A fresh repository-wide re-ingest now processes all
+  280 extractable tracked files with zero failures; the previous ordering failed
+  on four `lib.rs` / `mod.rs` roots.
+- **Semantic recall was answering from a three-day-old snapshot, and nothing
+  said so (ADR-0008).** The embedding index is populated by `index_nodes`, an
+  explicit offline pass — and nothing ever called it. The maintenance worker ran
+  `autonomous_prune` **423 times** and the index pass **once, ever**, three days
+  earlier, by hand. Measured on this repository: **5,443 nodes carried no vector
+  at all**, and every `recall` result predated that single run. Asked *"ingest a
+  git commit as an intent node linked to changed files"*, recall returned nine
+  shell invocations of `git commit` and zero code symbols; after a refresh the
+  top hit is `ingest_commit` in `ingest/git.rs` at **0.770**. The graph knew; the
+  index could not see it.
+  A stale index is worse than a missing one. Without an embedding server recall
+  errors cleanly and you know where you stand; with a stale one it answers
+  confidently from whatever the last manual pass happened to cover, and nothing
+  in the result says how old that is. This is also why the recorded "recall floor
+  cannot rank" measurement was misleading — it compared score ranges drawn
+  entirely from stale nodes.
+  The worker now runs the index pass on the prune's activity-independent
+  cadence, in bounded batches, recording `autonomous_index` telemetry and
+  degrading cleanly when no embedding server is reachable. Indexing is now its
+  own switch, `MINDLEAK_AUTONOMOUS_INDEX` (default on, cadence
+  `MINDLEAK_INDEX_INTERVAL_SECS`, batch `MINDLEAK_INDEX_BATCH`), separate from
+  `MINDLEAK_AUTONOMOUS_CONSOLIDATION`: the two shared one default-off flag, which
+  conflated cheap local embedding with expensive generation and is precisely why
+  the pass never ran.
+- **`recall` ranks with the graph instead of by cosine alone, and can tell
+  background from an answer.** Two measured defects, one cause: ranking asked
+  the embedding model to be the whole answer, which is the vector-only memory
+  the engine exists to replace.
+  - _A plausible stranger read exactly like a hit._ Cosine similarity is not
+    comparable across queries — embedding spaces are anisotropic, so every text
+    carries a baseline resemblance to every other text. Measured against this
+    repository's own index, the nonsense query `zzzzqqq wibble flarp` scored
+    0.54, above the 0.5 default floor, because the whole field scores about
+    that for any question at all. Raising the floor is measurably worse, not
+    better: recorded conclusions scored 0.553-0.790 and structural nodes
+    matched on shared vocabulary scored 0.527-0.667, so every constant that
+    excludes the worst stranger also excludes real conclusions. Recall now asks
+    whether a candidate stands out from its own query's field, so a question
+    with no answer in the index is answered with silence.
+  - _A function name outranked a recorded conclusion._ One query returned the
+    right conclusion at 0.651 and an unrelated `merge_import` symbol at 0.626,
+    a gap no threshold can separate. The graph can separate it: one is a
+    recorded conclusion, the other is a symbol sharing a word. Ranking now
+    weights similarity by node kind, as the governing goal requires when it
+    says embeddings may only seed graph traversal. The weighting is a
+    tie-breaker rather than an override, so a genuinely closer symbol still
+    wins and structural questions keep working.
+
+  The similarity floor keeps its original job (ADR-0053) and its default is
+  unchanged. A field too small to have a shape is still judged by the floor
+  alone, so a young index is never silenced by statistics it cannot support.
+  The reported score stays the raw cosine rather than the internal ranking
+  composite. No LLM call joins the read path and the zero-token write path is
+  untouched. Recorded as ADR-0075, including the two rejected alternatives
+  (raise the floor; change the embedding model) and the measurement that
+  rejects each, so the next reader does not re-derive them.
+## Fixed
+
+- Release and archive-installer smoke tests now disable the default-on
+  autonomous recall indexer alongside pruning and consolidation. This keeps the
+  intentionally in-memory smoke database valid while still exercising MCP
+  initialization, tool discovery, and session registration.
+- **Pushing a release tag works again, which the documented release step
+  required and the guard had made impossible.** `canonical-push`'s pre-push hook
+  judged every push as a branch publication, so `git push origin vX.Y.Z` —
+  step 3 of the release procedure in `DEVELOPERS.md` — was rejected three ways
+  at once: `symbolic-ref` fails when tagging from a detached HEAD, tagging while
+  on `main` tripped the protected-branch refusal, and the publisher flag is only
+  set when the script pushes a branch. v0.1.3 could only be cut by setting an
+  undocumented environment variable, which is folklore rather than a procedure.
+  A tag is now judged on its own terms and against a single invariant: it must
+  name a commit already on `origin/main`, because tagging is how a release is
+  chosen and an unmerged commit would ship code that never passed review. Branch
+  pushes are unaffected and still require a live claim.
+- **A server now says when it is a stale build of the checkout it serves.** Both
+  servers have always reported `<version>+<git-sha>` at MCP `initialize`, and
+  comparing that against the checkout was left to whoever thought to look.
+  Nobody did. A binary in `target/release` built two days earlier served every
+  session in one workspace: it resolved a pre-ADR-0054 forked identity, so
+  `renew_lease` returned a silent `false` and two claims lapsed, and the symptom
+  was blamed on the VS Code extension **four separate times** across a session.
+  The extension was correct throughout; the binary being accused was never the
+  one answering, and no surface said which build was.
+  Startup now compares the compiled-in sha against `HEAD` and warns with both
+  values when they differ. The comparison is deliberately made only when the
+  binary lives inside the workspace it is serving: an installed release running
+  against an arbitrary repository is *expected* to differ, and warning about
+  that would be noise that teaches people to skip the line that matters.
+- **The settings guard now sees every way a setting is read.** A test already
+  failed when the extension read a setting the manifest never declared — an
+  undeclared setting silently returns its inline fallback, so it cannot be found
+  in the settings UI and appears to do nothing when a user sets it in JSON. But
+  the scrape matched only reads through a `config` variable, and the extension
+  also reads settings inline off `getConfiguration("mindleak")`. Two of the
+  eighteen — `captureCommits` and `snapshotLimit` — were therefore invisible to
+  it, so for those the guard could not have caught the mistake it exists to
+  catch. Both call shapes are now scanned. The "guards the guard" check was a
+  floor of "more than five", which 16 of 18 satisfied while two went unchecked;
+  it now names a read of each shape, so the blind spot cannot quietly reopen.
+- **Symbols now embed their declaration and doc comment, so `recall` finds code
+  instead of the tests that exercise it (ADR-0008).** A symbol node stored
+  `path:line` as its entire content, so the only thing an embedding could see
+  was the symbol's *name*. Terse implementation names (`effective_weight`,
+  `prune`, `recall`) embedded as near-noise, while long descriptive test names
+  embedded richly — so recall systematically returned the tests instead of the
+  code under test. Measured: asking *"how is effective edge weight computed from
+  half-life decay"* returned six test functions and not `effective_weight`, and
+  querying the literal identifier `effective_weight` did not return
+  `effective_weight` either. After the change the same question returns
+  `decay.rs:effective_weight` at **0.801**, top hit, with its doc comment
+  included in the result — the answer arrives without opening the file.
+  Extraction stays deterministic and zero-token: the declaration line and any
+  doc comment directly above it are text already parsed off disk, never a model
+  call. Bounded to 8 comment lines and 400 characters so a licence header never
+  becomes a symbol's meaning, and Rust attributes between a doc comment and its
+  declaration are stepped over rather than treated as the end of the comment.
+- **The ADR record is read from main, not from whichever worktree asked.**
+  `readAdrFiles` listed `docs/adr` on disk, so the design record it reported was
+  whatever the asking checkout happened to hold. Under ADR-0038 that is a
+  different subset in every worktree, while the design ledger it is compared
+  against is one shared per-repository database — so `design-audit` manufactured
+  drift that did not exist, reporting every ADR present on main but absent
+  locally as a ledger row with no file. Measured across 84 attached worktrees:
+  75 ADRs on `origin/main`, and the union across all 196 remote branches also
+  75, so main is the complete record and nothing is ever branch-only. Yet 65 of
+  those worktrees were missing between 1 and 26 ADRs, and the checkout the
+  extension itself reads was 904 commits behind and held 49 of 75 — a third of
+  the design record absent, with no error of any kind. `design-audit` now reads
+  the record from `origin/main` and names the source in its output. It falls
+  back to the working tree only when the ref cannot be resolved, as in a fresh
+  clone with no remote, and says so when it does: falling back silently is the
+  failure being fixed, because a partial record that reports itself as complete
+  makes every tool downstream state confident nonsense. `adr-index` deliberately
+  still reads the working tree — it generates the index for the commit being
+  made, so a newly authored ADR must appear in it. The blobs are read through a
+  single `git cat-file --batch` rather than a `git show` each: the obvious
+  spelling costs one process spawn per ADR and measured 10.7s for 75 ADRs
+  against 0.36s to read them from disk, which would have made the record correct
+  and the tools unusable. Batched, it is 0.33s.
+- The design audit's remediation advice now names verbs the server has, and the
+  right one. For a row the ledger accepts but credits to nobody it said
+  "reopen_undecided_design then accept_design": both names were retired when the
+  design cluster collapsed to `design_register` / `design_decide` /
+  `design_promote` / `design_query`, and the remedy was wrong as well. ADR-0051
+  added `attribute` for exactly that row — it records the decider and leaves
+  status, reason and promotion state untouched, and it takes precisely the rows
+  `reopen` refuses. Following the old advice would have discarded six
+  acceptances that already held and sent them back to proposed, which is a
+  bigger act than the defect being repaired. Supersession advice and two stale
+  `list_designs` references are corrected the same way.
+  A test now scans the audit for every retired design verb, so advice naming a
+  tool nobody can find fails the suite instead of misleading the next reader.
+- **The agent-loop benchmark stopped counting the thing it exists to measure.**
+  `summarizeEvents` classifies each tool call the agent under test actually
+  made, and for the Intent Plane it matched
+  `/(constitution|board|next_task|active_knowledge)/`. ADR-0059 collapsed that
+  vocabulary, so the server the agent talks to now advertises `task_query`,
+  `task_create`, `task_claim` and `task_transition` — names the classifier
+  could not match. Every coordination call the agent made was silently dropped
+  from the exploration count.
+  Nothing failed, and nothing could: a name-keyed classifier has no way to
+  report that it stopped matching. It returns `false`, the run completes, and
+  the exploration and cost figures simply come out lower and look ordinary.
+  Every agent-loop run since the collapse under-counted the **mindleak+lodestar
+  arm** — the one arm the benchmark exists to justify.
+
+  The classifier now recognises the collapsed verbs **and keeps the retired
+  ones**. That is deliberate: `benchmarks/results/2026-07-22-agent-loop-outcome.json`
+  was measured before the collapse, when the agent could only call the old
+  names, so dropping them would have re-defined the metric rather than repaired
+  it. Keeping the change a superset is what makes this a fix to a counter
+  instead of a silent re-baselining, and it means the published result stays
+  comparable to future runs.
+
+  The classifier moved into `scripts/agent-loop-events.mjs` so it can be
+  tested at all — `evaluate-agent-loop.mjs` spawns the Copilot CLI at import
+  time, so any test importing it would have started a real four-arm evaluation,
+  which is why this code had no test and why the rot went unnoticed. A
+  synthetic event stream in the current vocabulary now asserts those calls are
+  counted; restoring the old pattern fails it, naming `task_query`.
+- The Design Board now loads every ADR, including superseded ones. Three of the
+  75 files under `docs/adr` were being dropped on load: the generated
+  `README.md` index, and ADR-0018 and ADR-0032 because their status is
+  `Superseded by ...`, which the extension's parser could not map. Two real,
+  decided architectural decisions were therefore absent from the board and
+  could not be shown at all.
+  A superseded design is **accepted**. ADR-0050 was explicit that superseding
+  keeps the row accepted and adds a link to its successor, so a live design is
+  one with no `superseded_by`. Registering these rows as accepted is also the
+  precondition for ever recording their supersession, which is guarded on an
+  accepted row — until now they could not be superseded in the ledger because
+  they were not in it. The successor link is deliberately not derived from the
+  file: supersession is an attributed human act needing a recorded decider and a
+  registered replacement, and a scan that asserted it would repeat the mistake
+  ADR-0042 refuses when it declines to auto-retire a design whose file is merely
+  absent from the current checkout.
+  A `Status:` value that wraps onto a continuation line is now read whole.
+  ADR-0032 puts its successor on the next line, so the previous single-line
+  pattern read a bare "superseded by" and lost the reference. The ADR files were
+  not edited to suit the parser — they are historical records.
+  `docs/adr/README.md` is no longer scanned. It is generated by
+  `scripts/adr-index.mjs` and has no `Status:` line, so it produced a skip on
+  every load that inflated the count and made a working warning read like a
+  defect.
+  Root cause worth naming: `scripts/adr-files.mjs` already handled all of this,
+  and says in its own header that a second parser would drift from it the moment
+  either learned a new status. The extension is that second parser and it had
+  drifted. A test now reads the real ADR corpus and fails if any numbered ADR
+  becomes unreadable, so the two cannot silently diverge again.
+  This adds two `accepted` rows carrying no decider, which is the defect already
+  recorded in `gaps.d/accepted-design-rows-carry-no-decider.md`. That is stated
+  rather than hidden: an unattributed acceptance that is visible and countable is
+  better than a decision the board cannot show. No deciders are backfilled,
+  because assigning one would record a decision nobody made.
+- **The Design Board shows what needs a decision, and asks once.**
+  It read `design_query view=ledger` — the durable record, including every
+  historical and materialized item — and then issued one further
+  `view=promotion` call per materialized design to decorate rows nobody is being
+  asked to act on. Measured against the live ledger: one refresh rendered 75
+  rows of which 5 were actionable, at **70 MCP calls**, 69 of them fetching
+  detail for finished work. The refresh is wired to a file watcher over
+  `docs/adr`, so every ADR touch paid it again — which is most of why the server
+  felt slow while the board felt cluttered. `design_query` already named the
+  right question: its own description defines `view=board` as "actionable items:
+  proposed ADRs awaiting a human decision plus accepted designs awaiting or
+  retrying promotion", which is the board this view is named after. The board
+  now reads that view: **1 MCP call, 5 rows**. The promotion fan-out is
+  unchanged in kind but bounded by what is actually shown, and a test pins both
+  the view and the call count, because a fan-out is invisible from the UI and
+  would come back unnoticed. The durable record is still `view: "ledger"` for
+  anything auditing it.
+- The editor no longer sends the server a path it cannot place. `asRelativePath`
+  returns its input *unchanged* when a file sits outside every workspace folder,
+  and agents routinely edit a sibling worktree from a window rooted elsewhere, so
+  an absolute path went on the wire and became a second identity for a file the
+  graph already tracked — measured on 2026-07-30 as 34 absolute artifact nodes,
+  with one file holding 117 structural edges under its absolute id and 43 under
+  its relative one.
+  The server has refused such a path since the ingest guard landed, so these
+  calls were already failing loudly rather than corrupting; what remained was the
+  editor generating a doomed request on every save of an out-of-workspace file.
+  A single pure helper now decides whether a raw path is repository-relative,
+  mirroring the server's rule so the two agree on what "relative" means, and the
+  save, focus, delete and commit paths skip what they cannot place instead of
+  asking. A placeable path is sent exactly as before — the rule rejects the id
+  shape, not the file.
+- The editor no longer watches or searches build output, which is what made this
+  repository slow to work in. `files.watcherExclude` and `search.exclude` were
+  absent from the committed `.vscode/settings.json` and from user settings, so
+  VS Code watched and indexed everything under every open workspace folder.
+  Measured 2026-07-30: 88 worktrees, 86 carrying a `target/` directory, 61
+  carrying `editors/vscode/node_modules`, and one sampled `target/` holding
+  82,891 entries — on the order of seven million watched files that nobody ever
+  edits. At the same moment: 7.0 GB free of 55.6 GB, 39 VS Code processes
+  holding 17.1 GB across 8 renderers and 10 utility processes, CPU at 52% of 16
+  cores. Every `cargo build` rewrites thousands of files inside a watched tree,
+  and every window whose workspace contains it is notified.
+  The MCP servers were measured too and are not the cause — four processes,
+  55 MB, under 40 seconds of CPU between them. Recorded because the obvious
+  suspect was wrong, and the measurement is what said so.
+  `target`, `node_modules`, `.vscode-test`, `out`, `dist`, `coverage` and the
+  local state directories are now excluded from watching and from search. The
+  settings file is tracked, so every worktree and every fresh clone inherits it
+  rather than each machine being configured by hand.
+  `files.exclude` is deliberately not set: it hides entries from the explorer
+  rather than reducing work, and hiding a directory someone may need to open is
+  a real cost for no measured gain.
+  Takes effect for a window when that window reloads. It does not shrink the 88
+  worktrees or the disk they occupy, which is a larger and separate problem.
+- **The `evidence_for` false alarm did not recur.** The Known gaps entry
+  recording it asked to be revisited if it were seen again; it was not. Four
+  `evidence_for` calls across four tasks on 2026-07-29, in a session independent
+  of the one that raised it, each returned the commits they should.
+  The shape they shared is the useful part, and it is now written down: the
+  commit ingested by an explicit `ingest_commit` carrying its true author
+  timestamp, attributed to the session, and a window opened at
+  `claim_started_at` *before* the commit existed. Every case the original entry
+  was written about had the window opening *after* the work — which is a
+  claim-ordering problem, not an evidence-query one, and points at a different
+  fix from the one a reader of the original entry would have reached for.
+  Docs only. Nothing is retracted: the disproof already on record stands, and
+  this only settles the "until seen again" it left open.
+### Fixed
+
+- **The extension-test hook comes off pre-push.** It was added to catch a rename
+  landing without its consumer, and its own comment warned that "a gate that
+  intermittently blocks a push is worse than none — it teaches people to reach
+  for `--no-verify`". That sentence turned out to describe the hook.
+
+  Under fleet load vitest reports `[vitest-worker]: Timeout calling
+  "onTaskUpdate"` and exits non-zero **with every test passing** — `14 passed, 1
+  error` — and the runner cannot tell that from a real failure. It blocked
+  pushes across the fleet on tests that had in fact passed. That is worse than
+  the breakage it was added to catch: a missed rename fails one branch's CI,
+  this stopped everyone.
+
+  The capability is kept, not the gate. `make ext-test` and
+  `node scripts/ext-test.mjs <changed files>` still run it, and CI still runs the
+  full suite. It earns its way back to pre-push when it can distinguish a worker
+  timeout from a failed assertion, and not before.
+- **The repository's own guards are now tested by CI instead of by nobody.**
+  Six test files under `scripts/` — covering the conformance gate, the
+  merge-driver guard, the claim gate, the publication record, the delivery
+  queue and the board health report — carried a header saying `Run with: node
+  --test scripts/` and were wired into nothing: no CI job, no Makefile target,
+  no hook. Forty-five assertions about the machinery that decides whether work
+  is honest ran only when somebody remembered to type the command, which is to
+  say they had not run in a long time. Worse, the command in the header no
+  longer works: passing a directory to `node --test` fails on Node 24, and the
+  glob that replaces it fails on the Node 20 that CI pins, so a developer
+  following the instruction got a module-resolution error rather than a test
+  run. `make script-test` now enumerates the files and passes them explicitly,
+  which works on both versions and on every OS, and it runs in CI, in `make ci`
+  and on pre-push. The runner refuses to report success when it discovers no
+  test files at all — a runner that quietly finds nothing is indistinguishable
+  from a green suite.
+### Fixed
+
+- **The pre-push hook no longer contaminates the suites it runs.**
+  `canonical-push` sets `MINDLEAK_CANONICAL_PUBLISH` while running the pre-push
+  hooks, and the extension-test runner passed the environment straight through.
+  So the suite asserting that a *direct* invocation of the publisher is refused
+  inherited the flag, saw the direct call allowed, and failed — while passing
+  when run by hand.
+
+  A runner whose answer depends on who invoked it is worse than one that does
+  not run at all: it makes a real guard look broken, and sends the author
+  chasing their own tooling instead of the bug. Caught when the hook blocked its
+  own author's push on a suite that passed standalone.
+
+  `MINDLEAK_CANONICAL_PUBLISH` and `PRE_COMMIT_REMOTE_BRANCH` are now scrubbed
+  alongside git's `GIT_DIR` family, and the scrub is one exported function with
+  its own tests rather than a list copied inline — including that unrelated
+  variables survive and the caller's own environment is not mutated.
+- **The link checker no longer trips over illustrative links in code.**
+  A `[text](target)` written inside inline backticks or a fenced code block is
+  documentation about a link — an example, a former filename, a shape — not a
+  live link, so its target need not exist. The checker (added in the previous
+  change) treated them as real and flagged them, which blocked any PR whose
+  changed docs carried such an example. It now skips links inside code spans and
+  fenced blocks, while still catching a real link elsewhere on the same line.
+- **The pre-flight could not see the coverage the gate reads, and advised
+  against the one shape the constitution provides for cross-cutting work.**
+  `advise` resolved governing clauses from the task's own `goal_id` alone, while
+  `evaluate_base_conformance` resolves them through the task's recorded
+  `goal_coverage` (ADR-0041). The shared resolver exists precisely so the
+  forward-looking advice and the retrospective gate cannot fork the rule — its
+  own doc comment says so — and the `advise` call site forked it by passing no
+  coverage.
+  So a task that had correctly declared the governing goal in `also_serves` at
+  creation was still told its change *"would drift; get a covering task or
+  review before acting"*, while the gate it was predicting would have found it
+  in scope.
+  Wrong in the most expensive direction. An agent that believes the advice
+  re-declares the task; the replacement carries the same coverage; the answer
+  does not change. `also_serves` is fixed at creation with no verb that adds
+  coverage later, so the advice invites a loop with no exit — measured live on
+  2026-07-30, where a correctly covered replacement task was told the same
+  thing as the one it replaced.
+  `advise` now resolves through the same coverage. A task without the
+  declaration still reads as drift, so this is coverage-aware rather than a
+  blanket softening, and the test asserts both directions.
+- **The only sanctioned publish path called tool names the removal train will
+  delete.** `canonical-push.mjs` asked for `board` and `check_overlap`;
+  ADR-0059 retired both into `task_query` with `view="board"` and
+  `view="overlap"`, and they answered only because the deprecation window
+  answers them. Because canonical-push runs from a pre-push hook rather than a
+  terminal anyone is watching, the removal would not have surfaced as a tidy
+  error: publishing would have stopped for **every agent in the fleet at the
+  same moment**, as a tool-not-found from inside git, naming neither the cause
+  nor the fix. `board-health`, `stranded-report` and `design-audit` followed the
+  same path. All four now speak the current vocabulary, proven by publishing
+  this change through the migrated push rather than by reading the diff.
+
+- **A guard now refuses a retired name in the delivery scripts, and names the
+  file and line.** Migrating five call sites lasts until the next rename; the
+  point of the collapse was to stop finding this class by hand, and it has now
+  been found by hand four times — dispatch, `requires_session`, a test
+  whitelist, and the publish path. The new check reads the delivery scripts and
+  fails with `scripts/<file>:<line> calls <name>`, which is the whole value: it
+  arrives before the push instead of inside a hook, and it says where.
+  It reads **tool-name positions only**, never argument values. A collapsed
+  verb takes the retired name *as* an argument — `task_query` with
+  `view: "board"` — so a scan matching the bare quoted string would report the
+  migration itself as a violation, and a guard that cries wolf is one people
+  learn to skip. That is precisely how the guards it replaces went stale, so
+  the check also asserts it can still see the live call sites: a scan that
+  reads nothing passes, and passing is indistinguishable from working.
+- **The delivery queue no longer waits forever on a check that never started.**
+  An armed pull request whose head carries no check runs at all answered
+  "anything running?" and "anything failing?" exactly as a fully green one did,
+  so it read as up to date and idle: the tick returned `wait` with "waiting on
+  GitHub to merge it", and nothing aged it out — the stall threshold guarded
+  only a branch whose checks were already running. One pull request whose
+  workflow never fired could therefore hold every branch behind it
+  indefinitely, and the log read like a healthy queue the whole time. An absent
+  rollup is now its own state: it is still worth waiting for while it is young,
+  because a run can take minutes to appear, but it ages out on the same stall
+  threshold and the branch behind it takes its turn. The tick also names it —
+  `#N is armed and up to date but no check has reported` — so the queue can no
+  longer be silently wedged by the one thing it cannot fix itself. A branch
+  that is merely behind is still updated regardless of its rollup, because that
+  update is what triggers the run it is missing.
+- The silent-knowledge audit counted one of the two ways a lesson reaches an
+  agent, so it reported records as dead that were arriving: it called 68 of 210
+  unreachable, where 12 are. Reachability now has a single definition —
+  `Lodestar::knowledge_reach` — and `record_knowledge`, `active_knowledge` and
+  `scripts/silent-knowledge.mjs` all ask it rather than each deciding for
+  themselves, which is how three readers of one rule came to be falsified
+  together by a single commit. The report now separates records reaching agents
+  by the nodes they name from those reaching only the goal they were learned
+  under, and says how many of the latter are crowded out by that path's
+  per-check cap.
+- **A guard that forbids closing a task had stopped being able to fail.**
+  ADR-0065 says the completion offer *offers* and never closes, and the test
+  asserting it watched for `complete_task` — a name ADR-0059 retired into
+  `task_transition(to="complete")`. Proved by probe: with the module made to
+  close a task through the new verb, the guard still passed. It now watches
+  every verb that could close a task, including the deprecated alias, because
+  closing through the alias is equally forbidden while it still answers.
+  Only one of the two ADR-0065 assertions was actually vacuous — the other was
+  incidentally saved by an exact-call-list comparison that noticed the extra
+  call. That is luck, not coverage, and it is worth saying plainly: a guard
+  named after a verb dies quietly when the verb is renamed, and the only signal
+  is that it keeps passing.
+
+- **The two messages the fleet reads most often taught retired verbs.** The
+  claim gate's remediation — printed when a publish is refused, which is the
+  moment an agent is most likely to copy an instruction verbatim — said
+  *"Claim existing work: `claim_task(task_id)`"* and *"`create_task(goal_id,
+  title, acceptance)`"*. The completion offer, printed after every successful
+  push, said *"submit explicitly with `complete_task(...)`"*. All three are
+  retired names. Nothing was broken, because the deprecation window still
+  answers them, which is precisely why nothing noticed: advice is a string, so
+  no compiler, linter or type check can see it go stale. They now name
+  `task_claim`, `task_create` and `task_transition` with the argument that
+  selects the act, and tests assert the verbs rather than the wording so the
+  sentences stay free to improve.
+
+- **Two more guards were written against names the surface no longer
+  advertises** — the tool-surface benchmark's fixture (`next_task`) and the
+  completion-offer assertions above. Recorded in Known gaps: the agent-loop
+  benchmark still *drives* the retired vocabulary, so its published results
+  characterise the surface agents are being migrated away from, and the
+  committed scripts — including `canonical-push`, the only sanctioned publish
+  path — still call retired names at 17 sites that the removal train will
+  delete.
+- **An unreadable model answer no longer masquerades as a semantic verdict.**
+  `LlmClient::judge` used to turn a missing `verdict` into `needs_human` and a
+  missing `rationale` into empty text, so a protocol failure reached the durable
+  receipt as `semantic check needs human review: ` and sent a human to review
+  nothing. Missing fields now follow the existing `semantic check unavailable`
+  path, an unsupported verdict names the value the model returned, and a real
+  `needs_human` answer with a blank rationale says `judge gave no reason`.
+- **The merged-branch audit called work in review "lost", and turned `main`
+  red.** A commit pushed onto a branch after its pull request merged was
+  reported as never having reached `main`, with the instruction to open a
+  follow-up pull request — when the commit was already sitting in an open one.
+  That instruction cannot be carried out: the follow-up exists, and nothing
+  anybody does will satisfy the audit until that pull request merges. It is the
+  same defect this audit was rewritten to remove, in a new costume. An audit
+  with no green move available gets switched off, and switching this one off
+  takes the check that catches genuinely stranded work with it. Measured on the
+  live repository: commit `ffab86ea`, held against PR #213's merged branch, is
+  an ancestor of the open PR #231, and three consecutive `main` builds failed on
+  it. The audit now asks whether any open pull request still carries the commit.
+  If one does, the commit is reported as in review, named against that pull
+  request, and does not fail the build. If none does, it fails exactly as
+  before, so nothing is weakened — proven by a fixture where an unrelated open
+  branch does not rescue a stranded commit. Failing to list open pull requests
+  degrades to the old, noisier behaviour rather than to a clean bill of health,
+  because an unreachable `gh` must not be able to silence the audit. Pushing to
+  an already-merged branch is still reported and still a mistake: that pull
+  request will never reopen, so the commit survives only for as long as
+  something else happens to carry it.
 
 ## [0.1.3] - 2026-07-28
 
