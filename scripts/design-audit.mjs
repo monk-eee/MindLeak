@@ -1,4 +1,4 @@
-// Compare the ADR files on disk against the durable design ledger.
+// Compare the ADR record against the durable design ledger.
 //
 // The two drift. An ADR merges without ever being registered; a design is
 // accepted in the ledger while its file still says Proposed; a reconciled
@@ -6,6 +6,14 @@
 // because deciding twice is not an undo (ADR-0047) — only `attribute` can
 // (ADR-0051). Each of those was found by hand this far, one
 // ad-hoc query at a time, and each was invisible until someone went looking.
+//
+// The record is read from main, not from this worktree. The ledger is one
+// per-repository database shared by every worktree (ADR-0038), so comparing it
+// against whatever ADRs this checkout happens to hold manufactures drift that
+// does not exist: every ADR on main but absent here reads as a ledger row with
+// no file. Measured on 2026-07-30, 65 of 84 worktrees were missing between 1
+// and 26 ADRs that were on main, so this audit answered a different question in
+// almost every one of them.
 //
 // It reads the ledger through the lodestar MCP surface rather than opening
 // spec.db, for two reasons: the server already resolves its own per-repository
@@ -24,7 +32,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 
-import { isSuperseded, readAdrFiles } from "./adr-files.mjs";
+import { isSuperseded, readAdrFilesFromMain } from "./adr-files.mjs";
 import { resolveServer } from "./claim-gate.mjs";
 
 const repoRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], {
@@ -205,12 +213,12 @@ const readLedger = () =>
   });
 
 const main = async () => {
-  const files = readAdrFiles();
+  const { files, source } = readAdrFilesFromMain({ cwd: repoRoot });
   const designs = await readLedger();
   const findings = auditDesigns(files, designs);
 
   console.log(
-    `design-audit: ${files.length} ADR files, ${designs.length} ledger rows`,
+    `design-audit: ${files.length} ADR files on ${source}, ${designs.length} ledger rows`,
   );
   for (const finding of findings) {
     console.log(
