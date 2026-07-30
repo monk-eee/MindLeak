@@ -386,6 +386,25 @@ pub fn call_with_storage(
         if let Some(notice) = stale_build {
             body["stale_build"] = json!(notice);
         }
+        // Work that finished and is waiting on a person, told to the agent
+        // because the agent is the only thing the human talks to.
+        //
+        // Completing into `in_review` clears the owner, and a human has no
+        // agent id (ADR-0046), so this is a fleet-level fact with nobody to
+        // filter it by — unlike `waiting_on_you`, which is addressed. It was
+        // therefore visible nowhere except a board query somebody had to think
+        // to run: measured on 2026-07-30, five tasks in review from at least
+        // three sessions, three of them more than a day old.
+        //
+        // Only when non-empty. A field that always appears is one readers learn
+        // to scroll past, and this one is only worth anything on the day it is
+        // not empty.
+        let awaiting = engine
+            .work_awaiting_a_human()
+            .map_err(|error| error.to_string())?;
+        if !awaiting.is_empty() {
+            body["awaiting_a_human"] = json!(awaiting);
+        }
         executive::attach_owner_attention(engine, &args, &mut body)?;
         return ok(&body);
     }
@@ -1412,6 +1431,73 @@ mod tests {
     // registry and one input schema, so the risk is that only one of them is
     // actually wired; this proves the Lodestar side records and echoes what a
     // client declares, and stays silent when it declares nothing.
+    /// Finished work says so where the human's agent already looks.
+    ///
+    /// A task completing into `in_review` clears its owner, and a human has no
+    /// agent id (ADR-0046), so it lands in no addressed queue and appears in no
+    /// per-agent field. It was visible only to whoever thought to run a board
+    /// query — measured on 2026-07-30 as five tasks in review from at least
+    /// three sessions, three of them more than a day old.
+    ///
+    /// Delivered on `open_session` because that is the one call every agent
+    /// makes, and the agent is the only thing the human talks to.
+    #[test]
+    fn open_session_reports_work_waiting_on_a_human_and_stays_quiet_otherwise() {
+        let engine = Lodestar::open_in_memory().expect("in-memory engine");
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        const TOKEN: &str = "aabbccddeeff00112233445566778899";
+        let body = || -> Value {
+            let params = json!({ "name": "open_session", "arguments": { "session_id": TOKEN } });
+            let bound = bind_session(&params, &sessions).expect("session binds");
+            let result = call(&engine, &bound).expect("open_session succeeds");
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap())
+                .expect("body is JSON")
+        };
+
+        // Nothing is waiting, so the field must be absent rather than empty. A
+        // key that always appears is one readers learn to scroll past.
+        assert!(
+            body().get("awaiting_a_human").is_none(),
+            "an empty queue says nothing at all"
+        );
+
+        // Drive a task into review the way a real completion does.
+        let goal = engine
+            .define_goal(lodestar_core::GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = engine
+            .create_task(&goal.id, "needs a person", "done")
+            .unwrap();
+        engine.claim_task(&task.id, "agent-a", 300).unwrap();
+        let claimed = engine.store().get_task(&task.id).unwrap().unwrap();
+        let evidence = lodestar_core::ConformanceEvidence {
+            schema_version: 1,
+            task_id: Some(task.id.clone()),
+            agent_id: "agent-a".into(),
+            started_at: claimed.claim_started_at.unwrap(),
+            ended_at: lodestar_core::now_unix(),
+            changed_node_ids: Vec::new(),
+            failed_node_ids: Vec::new(),
+            execution_ids: Vec::new(),
+            successful_execution_ids: Vec::new(),
+            commit_ids: Vec::new(),
+            summary: "no mutation evidence".into(),
+            provenance: Vec::new(),
+        };
+        let checked = engine.check_conformance(&evidence, Some(&task.id)).unwrap();
+        engine
+            .complete_task(&task.id, "agent-a", &evidence, &checked, None)
+            .unwrap();
+
+        let reported = body();
+        let queue = reported["awaiting_a_human"]
+            .as_array()
+            .expect("work waiting on a person is reported");
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0]["task_id"], task.id);
+        assert_eq!(queue[0]["kind"], "awaiting_human");
+    }
+
     #[test]
     fn open_session_records_declared_context_and_omits_it_when_undeclared() {
         let engine = Lodestar::open_in_memory().expect("in-memory engine");
