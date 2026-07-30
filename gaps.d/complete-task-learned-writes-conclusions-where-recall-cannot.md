@@ -56,3 +56,29 @@
   embedder is reachable.
   Still not selected here: this narrows the choice to two viable shapes and
   leaves the judgement where it belongs.
+
+  **Chosen by the maintainer, 30 Jul 2026: option 1, with a condition.** Recorded
+  as a decision taken rather than one an agent drifted into — the entry sat
+  deliberately unselected until asked.
+  The basis is narrower than the option first reads. `active_knowledge` already
+  exists as a read surface with a `contains` substring filter, so this is an
+  **upgrade to a call agents already make**, not a new place to look. That
+  distinction is the whole reason to prefer it: every neighbouring defect in
+  this repository has been a correct answer written where nobody reads, and a
+  new search verb would have been one more.
+  *The condition.* Semantic matching stays **behind the existing call**. A
+  separate `search_knowledge` beside `active_knowledge` recreates the failure
+  this entry describes. And it must degrade honestly when no embedder is
+  reachable — fall back to substring and say so in the response, because
+  silently returning fewer results makes "it works" and "it ran and found
+  nothing" indistinguishable.
+  *Why not the client-side variant*, despite costing no coupling: writing
+  conclusions into MindLeak puts durable intent into the decaying episodic
+  plane, and splits knowledge across two stores by accident of which verb an
+  agent remembered to call — which is exactly how 67 records became unreachable.
+  *One honest weakening of that argument*, recorded so the next reader is not
+  misled: Lodestar knowledge decays too, on
+  `decay::KNOWLEDGE_DEFAULT_HALF_LIFE_HOURS` with `reconfirm` to revalidate. The
+  split is slower forgetting, not durable-versus-decaying, and the case for
+  option 1 rests on the single authoritative store and the existing read
+  surface rather than on permanence.
