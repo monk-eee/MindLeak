@@ -54,6 +54,20 @@ pub(crate) fn append(
 }
 
 /// Read events in application order, optionally narrowed to one task.
+///
+/// An event whose kind this binary cannot name is skipped, not fatal. The log
+/// is append-only and shared by binaries of different vintages, so the first
+/// write of a new kind would otherwise brick every older reader at once --
+/// measured on 2026-07-31, every `task_query view=board` call on the installed
+/// binary failed with `unknown task event kind: coverage_declared`, because the
+/// board enriches each row with `claim_window`, which reads this log.
+///
+/// Skipping is safe *here* because every caller of this function interprets
+/// kinds: an event it cannot name is one it could not have acted on. The
+/// projection deliberately does not come through here — see `project_tasks`.
+///
+/// Named on stderr rather than swallowed. The remedy is to rebuild, and nobody
+/// rebuilds to fix a symptom they were never shown.
 fn read(connection: &Connection, task_id: Option<&str>) -> Result<Vec<TaskEvent>> {
     let sql = match task_id {
         Some(_) => format!("SELECT {EVENT_COLS} FROM task_events WHERE task_id = ?1 ORDER BY seq"),
@@ -66,20 +80,29 @@ fn read(connection: &Connection, task_id: Option<&str>) -> Result<Vec<TaskEvent>
     };
 
     let mut out = Vec::new();
+    let mut unnameable: BTreeMap<String, usize> = BTreeMap::new();
     while let Some(row) = rows.next()? {
         let kind: String = row.get(2)?;
+        let Some(kind) = TaskEventKind::from_tag(&kind) else {
+            *unnameable.entry(kind).or_default() += 1;
+            continue;
+        };
         let after: String = row.get(5)?;
         out.push(TaskEvent {
             seq: row.get(0)?,
             task_id: row.get(1)?,
-            kind: TaskEventKind::from_tag(&kind).ok_or_else(|| {
-                LodestarError::Invalid(format!("unknown task event kind: {kind}"))
-            })?,
+            kind,
             actor: row.get(3)?,
             recorded_at: row.get(4)?,
             after: serde_json::from_str(&after)?,
             detail: row.get(6)?,
         });
+    }
+    for (kind, count) in unnameable {
+        eprintln!(
+            "lodestar: skipped {count} task event(s) of kind '{kind}', which this build \
+             cannot name. The log was written by a newer build; rebuild to read them."
+        );
     }
     Ok(out)
 }
@@ -107,10 +130,23 @@ impl LodestarStore {
     ///
     /// Each event carries the after-image its transition produced, so replay is
     /// an assignment in `seq` order and the last event per task wins.
+    ///
+    /// Reads after-images directly rather than through `task_log`, because the
+    /// replay never inspects `kind` and must not inherit its tolerance for an
+    /// unnameable one. `task_log` skips those; skipping here would drop a task's
+    /// latest state and make the check above report a hole in the log that is
+    /// not there — a false accusation that a transition went unrecorded, when
+    /// the only real fault is that this build is older than the writer.
     pub fn project_tasks(&self) -> Result<Vec<crate::model::Task>> {
         let mut projected: BTreeMap<String, crate::model::Task> = BTreeMap::new();
-        for event in self.task_log()? {
-            projected.insert(event.task_id.clone(), event.after);
+        let mut statement = self
+            .conn
+            .prepare("SELECT task_id, after FROM task_events ORDER BY seq")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let task_id: String = row.get(0)?;
+            let after: String = row.get(1)?;
+            projected.insert(task_id, serde_json::from_str(&after)?);
         }
         Ok(projected.into_values().collect())
     }
@@ -439,10 +475,26 @@ mod tests {
         );
     }
 
+    /// A newer writer must not blind an older reader.
+    ///
+    /// The log is append-only and shared by binaries of different vintages: an
+    /// agent running yesterday's build reads a database today's build writes to.
+    /// Refusing the whole read on an unrecognised kind meant the first write of
+    /// a new kind bricked every older reader at once. Measured on 2026-07-31,
+    /// hours after `coverage_declared` first landed: every `task_query
+    /// view=board` call on the installed binary returned
+    /// `unknown task event kind: coverage_declared` instead of the board,
+    /// because the board tool enriches every row with `claim_window`, which
+    /// reads the log. One event nobody could name took the whole board down.
+    ///
+    /// An event this binary cannot name is skipped rather than fatal, and named
+    /// on stderr so it is not silent -- the fix is to rebuild, and nobody can
+    /// act on a symptom they cannot see.
     #[test]
-    fn an_unrecognised_kind_is_refused_rather_than_silently_coerced() {
+    fn an_unrecognised_kind_is_skipped_rather_than_blinding_the_reader() {
         let s = store();
         let task = seeded(&s);
+        let known = s.task_events(&task.id).unwrap().len();
         s.conn
             .execute(
                 "INSERT INTO task_events (task_id, kind, actor, recorded_at, after, detail)
@@ -451,10 +503,43 @@ mod tests {
             )
             .unwrap();
 
-        let err = s.task_events(&task.id).unwrap_err();
-        assert!(
-            matches!(err, LodestarError::Invalid(ref m) if m.contains("teleported")),
-            "expected the unknown kind to be named, got: {err}"
+        let events = s
+            .task_events(&task.id)
+            .expect("an unnameable event must not fail the read");
+        assert_eq!(
+            events.len(),
+            known,
+            "the events this binary can name are still returned"
+        );
+    }
+
+    /// The projection replays `after`, never `kind`, so an event this binary
+    /// cannot name still carries a state it can. Dropping it would lose that
+    /// task's latest after-image and make the ADR-0064 check below report a hole
+    /// in the log that is not there -- turning a clear "rebuild me" into a false
+    /// accusation that a transition went unrecorded.
+    #[test]
+    fn an_unrecognised_kind_still_contributes_its_after_image() {
+        let s = store();
+        let task = seeded(&s);
+        let mut moved = task.clone();
+        moved.title = "the state the unnameable event left behind".to_string();
+        s.conn
+            .execute(
+                "INSERT INTO task_events (task_id, kind, actor, recorded_at, after, detail)
+                 VALUES (?1, 'teleported', NULL, 9999, ?2, '')",
+                params![task.id, serde_json::to_string(&moved).unwrap()],
+            )
+            .unwrap();
+
+        let projected = s.project_tasks().unwrap();
+        let found = projected
+            .iter()
+            .find(|t| t.id == task.id)
+            .expect("the task is still projected");
+        assert_eq!(
+            found.title, moved.title,
+            "the latest after-image wins even when its kind has no name here"
         );
     }
 
