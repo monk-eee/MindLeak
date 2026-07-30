@@ -108,6 +108,7 @@ crate, and `target/debug/mindleak-mcp` starts and prints
 | ADR safety | `make adr-guard` | `node scripts/adr-guard.mjs` — fails if any ADR is uncommitted or on no remote ref |
 | Merge audit | `make merge-audit` | `node scripts/merge-audit.mjs` — fails if a merged branch has commits that never reached `main` |
 | Delivery queue | `make queue` | `node scripts/delivery-queue.mjs` — show the queue and update the branch whose turn it is (ADR-0062). `make queue-watch` runs it as an agent |
+| Artefact hygiene | `make sweep` | `node scripts/artefact-sweep.mjs` — report reclaimable build output; `ARGS=--apply` acts. Diagnosis only: the sweep already runs from `make queue-watch` on a cadence, under a lock in the common Git directory |
 | Board health | `make board-health` | `node scripts/board-health.mjs` — separates parked work a human must decide from work nobody can resolve, and lists stranded claims (ADR-0058). Needs `LODESTAR_SESSION_ID` and a release `lodestar-mcp` |
 | Stranded report | `make stranded-report` | `node scripts/stranded-report.mjs` — for each lapsed claim, names the commit that most likely shipped it, with a confidence. An agent cannot close these (ADR-0048); this makes confirming them a judgement rather than an investigation |
 | Design audit | `make design-audit` | `node scripts/design-audit.mjs` — reports drift between the ADR files and the design ledger. Local only: it reads the ledger through a release `lodestar-mcp`, which CI has no database for |
@@ -189,6 +190,40 @@ Branches it will not touch, and reports instead:
 - **failing checks** — updating would only burn CI to fail again
 - **checks still running** — waiting is the point; a second update now would
   invalidate the first before it lands
+
+### Build-artefact hygiene rides on the watcher
+
+A fleet of worktrees builds the same crates over and over, and nothing ever
+removes the result: a measured 149 GiB across 124 cache directories, on clean
+branches already merged into `main`. Cleanup that depends on someone
+remembering does not happen, because the agent that filled a worktree has
+finished and moved on before it is safe to empty it.
+
+So the sweep has no schedule of its own. It rides on `make queue-watch`, which
+is already persistent and already single-owner: once at startup, then on a
+bounded cadence with the last run recorded in the common Git directory. It
+takes a lock there too, so two worktrees can never sweep at once.
+
+```bash
+node scripts/artefact-sweep.mjs           # what would be reclaimed, and why not
+node scripts/artefact-sweep.mjs --apply   # reclaim it now
+make sweep                                # the same, via make
+make queue-watch --no-sweep               # run the queue without hygiene
+```
+
+`make sweep` is for diagnosis; the watcher is the mechanism. Both report by
+default, because no report can be un-deleted, and both take the same lock.
+
+It removes only reproducible build output — `target/debug`, `target/release`,
+`target/llvm-cov-target`, and the extension's `node_modules`, `out`, `coverage`
+and `.vscode-test`. It never removes a worktree, source, Git state,
+`target/tmp`, telemetry, completion offers, release assets, or **the bare
+host's `target/release`, which serves the running MCP binaries**. It skips any
+worktree that is detached, dirty, unmerged, backing an open pull request, or
+active within the grace period, and re-checks every one of those immediately
+before deleting, so a plan that went stale while the disk was being walked is
+abandoned rather than acted on. Anything ambiguous is skipped and counted in
+the report.
 
 ## Publishing a binary release
 
