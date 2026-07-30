@@ -20,6 +20,26 @@
   receipt means anything. Every failure above is *upstream* of it — an orphaned
   goal, a stale server binary, commit-then-claim ordering — and each is fixable
   without touching the guard.
+  — *Two more upstream causes, measured 30 Jul 2026, both agent-side.*
+  **Skipping the ADR-0029 `advise` pre-flight**, so the task carries a `goal_id`
+  that does not govern the files it will touch. This is distinct from an
+  orphaned goal: the binding exists and the task simply names a different one.
+  Running `advise` on the same files afterwards predicted the exact verdict
+  before any work — *"governed by `goal:durable-intent-plane…` but no covering
+  task claims it — it would drift"* — and it cannot be repaired later, because
+  `also_serves` is fixed at `task_create` (ADR-0041). **A lapsed lease**, which
+  converts an already-aligned receipt into `needs_human` on identical work:
+  `task:bbffe496c880` carries check 330 `aligned` at push time and check 333
+  `needs_human` thirty-five minutes later, decided by *"the lease lapsed 1
+  time(s), leaving 565s unleased"*. Nothing about the work changed.
+  — *An agent-side remedy, proven rather than proposed.* Run `advise` before
+  `task_create` and adopt whatever goal it names as `goal_id` or in
+  `also_serves`; claim a lease sized for the work rather than the default; and
+  complete the moment `canonical-push` reports the completion is ready. Three
+  consecutive `aligned` completions in one session, on work that would
+  previously have landed `needs_human`. This does not displace the repairs
+  below — it only helps agents who follow it, and the board stays misleading
+  for everyone else.
   — *The candidate repair.* Three, in order of value. (1) Re-bind the 51 goals
   orphaned when constitution v2 dropped every goal-to-code link, so
   `touched_task_goal` is answerable at all; ADR-0060 item 3 now lets a goal bind
@@ -30,3 +50,5 @@
   capability is already in main before doing the work twice. Explicitly **not**
   a repair: raising the 300-second default lease — ADR-0052 considered and
   rejected that, and a longer lease only widens the window it fails to police.
+  That rejection stands: sizing a lease *per claim* to the work in hand is a
+  different act from raising the default for everyone.

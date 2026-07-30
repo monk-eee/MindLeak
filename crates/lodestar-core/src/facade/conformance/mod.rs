@@ -807,10 +807,11 @@ mod tests {
         assert_eq!(result.verdict, Verdict::Aligned);
     }
 
-    // ADR-0041 point 5: coverage is fixed at creation. Declaring an unknown
-    // goal, or the task's own goal, is refused rather than quietly ignored.
+    // ADR-0041 point 5: coverage is validated when it is declared. Declaring an
+    // unknown goal, or the task's own goal, is refused rather than quietly
+    // ignored.
     #[test]
-    fn coverage_is_validated_at_creation_and_has_no_later_mutator() {
+    fn coverage_is_validated_when_it_is_declared() {
         let e = engine();
         let goal = e
             .define_goal(GoalKind::Objective, "Intent plane", "intent", None)
@@ -831,6 +832,184 @@ mod tests {
 
         let plain = e.create_task(&goal.id, "Plain", "done").unwrap();
         assert!(e.task_goal_coverage(&plain.id).unwrap().is_empty());
+    }
+
+    /// Coverage is a prediction until conformance speaks.
+    ///
+    /// Goals bind to files, so an agent routinely learns the true governing set
+    /// only while working — after touching a file nobody predicted. Fixing
+    /// coverage at creation left that agent no honest move: abandoning and
+    /// recreating the task cannot work either, because a claim created after the
+    /// work cannot own that work's evidence. So the declaration is allowed while
+    /// the claim is live, and refused the moment a verdict exists.
+    fn two_goals(e: &Lodestar) -> (Goal, Goal) {
+        let primary = e
+            .define_goal(GoalKind::Objective, "Intent plane", "intent", None)
+            .unwrap();
+        let other = e
+            .define_goal(GoalKind::Objective, "Context graph", "graph", None)
+            .unwrap();
+        (primary, other)
+    }
+
+    #[test]
+    fn coverage_can_be_declared_while_the_claim_is_live() {
+        let e = engine();
+        let (primary, other) = two_goals(&e);
+        let task = e.create_task(&primary.id, "Grew", "done").unwrap();
+        assert!(e.claim_task(&task.id, "agent-a", 600).unwrap());
+
+        let covered = e
+            .declare_coverage(&task.id, "agent-a", std::slice::from_ref(&other.id))
+            .unwrap();
+
+        assert_eq!(covered, vec![other.id.clone()]);
+        assert_eq!(e.task_goal_coverage(&task.id).unwrap(), vec![other.id]);
+    }
+
+    #[test]
+    fn declaring_coverage_adds_and_never_drops_what_was_declared_before() {
+        let e = engine();
+        let (primary, other) = two_goals(&e);
+        let third = e
+            .define_goal(GoalKind::Objective, "Delivery", "delivery", None)
+            .unwrap();
+        let task = e
+            .create_task_covering(
+                &primary.id,
+                "Cross",
+                "done",
+                None,
+                std::slice::from_ref(&other.id),
+            )
+            .unwrap();
+        assert!(e.claim_task(&task.id, "agent-a", 600).unwrap());
+
+        // Declaring only the third goal must not silently drop the first.
+        e.declare_coverage(&task.id, "agent-a", std::slice::from_ref(&third.id))
+            .unwrap();
+
+        let mut covered = e.task_goal_coverage(&task.id).unwrap();
+        covered.sort();
+        let mut expected = vec![other.id, third.id];
+        expected.sort();
+        assert_eq!(covered, expected);
+    }
+
+    #[test]
+    fn only_the_agent_holding_the_claim_may_declare_what_it_serves() {
+        let e = engine();
+        let (primary, other) = two_goals(&e);
+        let task = e.create_task(&primary.id, "Held", "done").unwrap();
+        assert!(e.claim_task(&task.id, "agent-a", 600).unwrap());
+
+        assert!(e
+            .declare_coverage(&task.id, "agent-b", std::slice::from_ref(&other.id))
+            .is_err());
+        assert!(e.task_goal_coverage(&task.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_unclaimed_task_cannot_grow_its_coverage() {
+        let e = engine();
+        let (primary, other) = two_goals(&e);
+        let task = e.create_task(&primary.id, "Open", "done").unwrap();
+
+        assert!(e
+            .declare_coverage(&task.id, "agent-a", std::slice::from_ref(&other.id))
+            .is_err());
+    }
+
+    #[test]
+    fn coverage_declared_after_conformance_has_spoken_is_refused() {
+        let e = engine();
+        let (primary, other) = two_goals(&e);
+        e.link_goal_to_artifact(
+            &primary.id,
+            &["artifact:src/intent.rs".into()],
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
+        let task = e.create_task(&primary.id, "Judged", "done").unwrap();
+        assert!(e.claim_task(&task.id, "agent-a", 600).unwrap());
+
+        let claimed = e.store.get_task(&task.id).unwrap().unwrap();
+        let mut evidence =
+            test_evidence(Some(task.id.clone()), "agent-a", "artifact:src/intent.rs");
+        evidence.started_at = claimed.claim_started_at.unwrap();
+        evidence.ended_at = now_unix();
+        e.check_conformance(&evidence, Some(&task.id)).unwrap();
+
+        // The verdict exists now, so this declaration would be a rationalisation
+        // for a finding already raised, not a plan the evidence can contradict.
+        let refused = e
+            .declare_coverage(&task.id, "agent-a", std::slice::from_ref(&other.id))
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            refused.contains("conformance"),
+            "the refusal must say why, not just no: {refused}"
+        );
+        assert!(e.task_goal_coverage(&task.id).unwrap().is_empty());
+    }
+
+    /// The second door, proven rather than assumed.
+    ///
+    /// The conformance guard above stops a declaration on a task the agent still
+    /// holds. But a task whose verdict was not `aligned` lands in `in_review`
+    /// with its owner cleared, and if such a task could be re-claimed the agent
+    /// could take it back, widen its coverage and ask for a second opinion —
+    /// which is the same rationalisation by a longer route. It cannot, because
+    /// `in_review` is absent from the claim predicate; this pins that.
+    #[test]
+    fn work_already_in_review_cannot_be_reclaimed_to_widen_its_coverage() {
+        let e = engine();
+        let (primary, other) = two_goals(&e);
+        e.link_goal_to_artifact(
+            &primary.id,
+            &["artifact:src/intent.rs".into()],
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
+        e.link_goal_to_artifact(
+            &other.id,
+            &["artifact:src/graph.rs".into()],
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
+        let task = e.create_task(&primary.id, "Drifted", "done").unwrap();
+        assert!(e.claim_task(&task.id, "agent-a", 600).unwrap());
+
+        // Touch a file governed by a goal this task never declared: drift.
+        let claimed = e.store.get_task(&task.id).unwrap().unwrap();
+        let mut evidence =
+            test_evidence(Some(task.id.clone()), "agent-a", "artifact:src/intent.rs");
+        evidence.started_at = claimed.claim_started_at.unwrap();
+        evidence.ended_at = now_unix();
+        evidence
+            .changed_node_ids
+            .push("artifact:src/graph.rs".into());
+        evidence.provenance.push(EvidenceProvenance {
+            source_id: "execution:proof".into(),
+            target_id: "artifact:src/graph.rs".into(),
+            relation: "modified".into(),
+        });
+        let verdict = e.check_conformance(&evidence, Some(&task.id)).unwrap();
+        assert_eq!(verdict.verdict, Verdict::Drift);
+        e.complete_task(&task.id, "agent-a", &evidence, &verdict, None)
+            .unwrap();
+
+        let parked = e.store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(parked.status, TaskStatus::InReview);
+
+        // The task is unowned, but not claimable — so there is no route back to
+        // a live claim, and therefore none to a wider declaration.
+        assert!(!e.claim_task(&task.id, "agent-a", 600).unwrap());
+        assert!(e
+            .declare_coverage(&task.id, "agent-a", std::slice::from_ref(&other.id))
+            .is_err());
+        assert!(e.task_goal_coverage(&task.id).unwrap().is_empty());
     }
 
     #[test]
