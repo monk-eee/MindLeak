@@ -175,7 +175,7 @@ Then restart the client and confirm the connection — the next step.
 Restart your MCP client and open its tool list. You should see MindLeak's memory
 tools (`get_impact_radius`, `graph_multi_hop_query`, `recall`, the `ingest_*`
 family, …) and — if you registered it — Lodestar's intent tools (`define_goal`,
-`next_task`, `claim_task`, …). A headless client must call `open_session` before
+`task_query`, `task_claim`, …). A headless client must call `open_session` before
 using identity-bearing tools. If the tools appear, you're live.
 
 Call `storage_status` on both planes. Their `repository_id` values must match;
