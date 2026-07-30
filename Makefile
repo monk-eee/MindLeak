@@ -19,6 +19,13 @@ install-servers: ## Install the built MCP servers where every window can reach t
 	cargo build --release -p mindleak-mcp -p lodestar-mcp
 	node scripts/install-servers.mjs
 
+reclaim: ## Report reclaimable worktrees, branches and build output (add ARGS=--reclaim to act)
+	# Cleanup never happens on goodwill: the agent that created a worktree has
+	# finished and moved on by the time it is safe to remove. Reports by default,
+	# because no report can be un-deleted. ARGS="--reclaim --remote" also deletes
+	# merged remote branches.
+	node scripts/worktree-reclaim.mjs $(ARGS)
+
 worktree-setup: ## Prepare a freshly created linked worktree (ADR-0038)
 	# Hooks and cargo tools are shared through the common .git dir and the user's
 	# cargo bin, so a new worktree only needs its own node_modules. Without it the
