@@ -28,6 +28,8 @@
 
 import { execFileSync } from "node:child_process";
 
+import { describeSweep, sweepIfDue } from "./artefact-sweep.mjs";
+
 /** Fields the decision needs. Kept small so the core stays pure and testable. */
 export const PR_FIELDS =
   "number,title,headRefName,createdAt,mergeStateStatus,autoMergeRequest,statusCheckRollup";
@@ -267,6 +269,15 @@ const USAGE = `delivery-queue -- take branch-update turns in order (ADR-0062)
   (no flags)  one tick: show the queue, update whichever branch's turn it is
   --watch     keep ticking every 60s until stopped
   --dry-run   decide and explain, change nothing
+  --no-sweep  skip build-artefact hygiene entirely
+
+It also carries build-artefact hygiene, because that work has no home of its
+own: the agent that filled a cache has finished by the time it is safe to
+delete, so a CLI nobody remembers to run reclaims nothing. This process is
+already persistent and already single-owner, so the sweep rides on it -- once at
+startup, then every few hours, holding a lock in the common Git directory so two
+watchers cannot sweep at once. It reports by default and only deletes when this
+queue is applying rather than in --dry-run.
 
 A pull request with auto-merge armed is a queued one (ADR-0045), ordered by
 when it was armed. Exactly one branch is brought up to date at a time, because
@@ -292,6 +303,29 @@ function main() {
   }
   const apply = !process.argv.includes("--dry-run");
   const watch = process.argv.includes("--watch");
+  const sweeping = !process.argv.includes("--no-sweep");
+
+  // Hygiene is deliberately outside `tick`: a disk walk must never sit on the
+  // path that decides whose branch is updated next, and a sweep that throws
+  // must not stop the queue draining. Its own cadence and lock make calling it
+  // every tick cheap -- all but one call in several hours returns "not due".
+  const sweepNow = () => {
+    if (!sweeping) return;
+    try {
+      const outcome = sweepIfDue({
+        anchor: process.cwd(),
+        commonDir: execFileSync("git", ["rev-parse", "--git-common-dir"], {
+          encoding: "utf8",
+        }).trim(),
+        apply,
+      });
+      if (outcome.ran) console.log(describeSweep(outcome.result));
+    } catch (error) {
+      // Housekeeping failing is not the queue failing.
+      console.log(`artefact-sweep skipped: ${error.message.split("\n")[0]}`);
+    }
+  };
+
   const tick = () => {
     const action = nextAction(readQueue(), Date.now());
     console.log(describe(action));
@@ -317,6 +351,7 @@ function main() {
   };
 
   if (!watch) {
+    sweepNow();
     tick();
     return;
   }
@@ -346,6 +381,7 @@ function main() {
           `tick failed, retrying next interval: ${error.message.split("\n")[0]}`,
         );
       }
+      sweepNow();
       schedule(kind === "settling" ? settlingMs : intervalMs);
     }, delay);
   };

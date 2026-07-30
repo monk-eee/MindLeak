@@ -3,9 +3,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  ARTEFACT_KINDS,
+  classifyArtefact,
   classifyWorktree,
   formatBytes,
   hasLanded,
+  planArtefactSweep,
   PROTECTED_BRANCHES,
 } from "./worktree-reclaim.mjs";
 
@@ -112,4 +115,200 @@ test("treats a branch with no commits as landed", () => {
 test("reports sizes in a unit a human can decide on", () => {
   assert.equal(formatBytes(0), "0.00 GiB");
   assert.equal(formatBytes(1024 ** 3), "1.00 GiB");
+});
+
+// --- sweeping build output from trees that are STAYING -------------------
+//
+// A different question from reclaiming a whole worktree: these trees are alive
+// and keeping their caches is the default. Almost all of the 149.18 GiB
+// measured on 2026-07-30 sat in trees nobody was going to remove.
+
+const HOUR = 60 * 60 * 1000;
+const NOW = 1_700_000_000_000;
+
+/** A sweepable cache: merged, clean, unowned, idle for a week. */
+const cache = (over = {}) => ({
+  kind: "cargo-debug",
+  path: "C:/Repos/MindLeak-x/target/debug",
+  branch: "feat/x",
+  bare: false,
+  dirty: false,
+  landed: true,
+  owner: null,
+  building: false,
+  modifiedAt: NOW - 7 * 24 * HOUR,
+  bytes: 1024,
+  files: 10,
+  ...over,
+});
+
+test("sweeps a regenerable cache in a merged, clean, idle tree", () => {
+  assert.equal(classifyArtefact(cache(), { now: NOW }).sweep, true);
+});
+
+test("never sweeps the bare host's target/release, which serves the running servers", () => {
+  // Deleting this stops every agent mid-call, and the symptom (tools vanishing)
+  // points nowhere near the cause.
+  const verdict = classifyArtefact(
+    cache({ bare: true, branch: null, kind: "cargo-release" }),
+    { now: NOW },
+  );
+  assert.equal(verdict.sweep, false);
+  assert.match(verdict.reason, /serves the running MCP binaries/);
+});
+
+test("still sweeps the bare host's target/debug, the largest measured candidate", () => {
+  const verdict = classifyArtefact(
+    cache({ bare: true, branch: null, kind: "cargo-debug" }),
+    { now: NOW },
+  );
+  assert.equal(verdict.sweep, true);
+});
+
+test("never sweeps while a build is running", () => {
+  const verdict = classifyArtefact(cache({ building: true }), { now: NOW });
+  assert.equal(verdict.sweep, false);
+  assert.match(verdict.reason, /build is running/);
+});
+
+test("never sweeps a tree with uncommitted or untracked changes", () => {
+  const verdict = classifyArtefact(cache({ dirty: true }), { now: NOW });
+  assert.equal(verdict.sweep, false);
+  assert.match(verdict.reason, /uncommitted or untracked/);
+});
+
+test("never sweeps a detached HEAD, because nothing names what it holds", () => {
+  const verdict = classifyArtefact(cache({ branch: null }), { now: NOW });
+  assert.equal(verdict.sweep, false);
+  assert.match(verdict.reason, /detached HEAD/);
+});
+
+test("never sweeps work that has not landed on origin/main", () => {
+  const verdict = classifyArtefact(cache({ landed: false }), { now: NOW });
+  assert.equal(verdict.sweep, false);
+  assert.match(verdict.reason, /have not landed/);
+});
+
+test("never sweeps a branch an open pull request still points at", () => {
+  // Landed and still open means a follow-up commit is expected; rebuilding from
+  // cold to answer a review comment is a cost this tool would have imposed.
+  const verdict = classifyArtefact(cache(), {
+    now: NOW,
+    openPrBranches: new Set(["feat/x"]),
+  });
+  assert.equal(verdict.sweep, false);
+  assert.match(verdict.reason, /open pull request/);
+});
+
+test("never sweeps a cache another session owns", () => {
+  const verdict = classifyArtefact(cache({ owner: "session:v1:other" }), {
+    now: NOW,
+    session: "session:v1:me",
+  });
+  assert.equal(verdict.sweep, false);
+  assert.match(verdict.reason, /owned by session/);
+});
+
+test("sweeps a cache this session owns", () => {
+  const verdict = classifyArtefact(cache({ owner: "session:v1:me" }), {
+    now: NOW,
+    session: "session:v1:me",
+  });
+  assert.equal(verdict.sweep, true);
+});
+
+test("never sweeps inside the recent-activity grace period", () => {
+  const verdict = classifyArtefact(cache({ modifiedAt: NOW - HOUR }), {
+    now: NOW,
+    graceMs: 4 * HOUR,
+  });
+  assert.equal(verdict.sweep, false);
+  assert.match(verdict.reason, /grace period/);
+});
+
+test("never sweeps a cache newer than the age threshold", () => {
+  const verdict = classifyArtefact(cache({ modifiedAt: NOW - 2 * HOUR }), {
+    now: NOW,
+    minimumAgeMs: 24 * HOUR,
+  });
+  assert.equal(verdict.sweep, false);
+  assert.match(verdict.reason, /newer than the age threshold/);
+});
+
+test("treats an unreadable age as active rather than guessing it is old", () => {
+  const verdict = classifyArtefact(cache({ modifiedAt: null }), { now: NOW });
+  assert.equal(verdict.sweep, false);
+  assert.match(verdict.reason, /age could not be read/);
+});
+
+test("the plan reports every refusal with the rule that caused it", () => {
+  const { plan, skipped } = planArtefactSweep(
+    [
+      cache(),
+      cache({ path: "b", dirty: true }),
+      cache({ path: "c", landed: false }),
+    ],
+    { now: NOW },
+  );
+  assert.equal(plan.length, 1);
+  assert.equal(skipped.length, 2);
+  // A refused directory must never read as one the tool failed to notice.
+  assert.ok(
+    skipped.every((s) => typeof s.reason === "string" && s.reason.length > 0),
+  );
+});
+
+test("the plan totals the bytes and files it will actually reclaim", () => {
+  const { bytes, files } = planArtefactSweep(
+    [
+      cache({ bytes: 100, files: 2 }),
+      cache({ path: "b", bytes: 50, files: 3 }),
+      cache({ path: "c", dirty: true, bytes: 999, files: 99 }),
+    ],
+    { now: NOW },
+  );
+  assert.equal(bytes, 150);
+  assert.equal(files, 5);
+});
+
+test("a disk budget takes the oldest caches and leaves recent builds warm", () => {
+  const old = cache({
+    path: "old",
+    modifiedAt: NOW - 30 * 24 * HOUR,
+    bytes: 60,
+  });
+  const recent = cache({
+    path: "recent",
+    modifiedAt: NOW - 8 * 24 * HOUR,
+    bytes: 60,
+  });
+  const { plan } = planArtefactSweep([recent, old], {
+    now: NOW,
+    budgetBytes: 60,
+  });
+  assert.deepEqual(
+    plan.map((p) => p.path),
+    ["old"],
+  );
+});
+
+test("a disk already under budget plans nothing, and says so", () => {
+  const { plan, skipped } = planArtefactSweep([cache({ bytes: 10 })], {
+    now: NOW,
+    budgetBytes: 1000,
+  });
+  assert.equal(plan.length, 0);
+  assert.match(skipped[0].reason, /already under budget/);
+});
+
+test("no artefact kind is the bare target directory", () => {
+  // target/ also holds completion offers and scratch that nothing regenerates.
+  // This is the structural half of that exclusion: if a kind is ever added back
+  // as bare `target`, this fails rather than quietly sweeping them.
+  for (const { rel } of ARTEFACT_KINDS) {
+    assert.notEqual(rel, "target");
+  }
+  const swept = ARTEFACT_KINDS.map((k) => k.rel);
+  assert.ok(!swept.includes("target/tmp"));
+  assert.ok(!swept.includes("target/completion-offers"));
 });

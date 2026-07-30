@@ -34,14 +34,158 @@ import { MARKER_NAME } from "./worktree-owner.mjs";
 /** Branches that are never reclaimed whatever else is true of them. */
 export const PROTECTED_BRANCHES = new Set(["main", "master"]);
 
-/** Directories that hold build output and are never hand-edited. */
-export const ARTIFACT_DIRECTORIES = [
-  "target",
-  "editors/vscode/node_modules",
-  "editors/vscode/out",
-  "editors/vscode/coverage",
-  "editors/vscode/.vscode-test",
+/**
+ * Build output, named one directory at a time.
+ *
+ * Deliberately NOT the bare `target`. Cargo's output shares that parent with
+ * things nothing can regenerate: `target/completion-offers` holds the exact
+ * evidence bundle canonical-push computed for a task, and an aligned receipt
+ * that is thrown away cannot be recovered — the claim window has moved on.
+ * `target/tmp` holds the scratch a session is mid-way through using. Listing
+ * `target` swept both, so the safety of this tool rested on the caller never
+ * passing --artifacts-only to a tree it wanted to keep. Naming the
+ * regenerable children instead makes the exclusion structural rather than a
+ * habit somebody has to remember.
+ *
+ * Every kind here is reproducible from source by a command in the Makefile.
+ */
+export const ARTEFACT_KINDS = [
+  { kind: "cargo-debug", rel: "target/debug" },
+  { kind: "cargo-release", rel: "target/release" },
+  { kind: "cargo-llvm-cov", rel: "target/llvm-cov-target" },
+  { kind: "extension-node-modules", rel: "editors/vscode/node_modules" },
+  { kind: "extension-out", rel: "editors/vscode/out" },
+  { kind: "extension-coverage", rel: "editors/vscode/coverage" },
+  { kind: "extension-vscode-test", rel: "editors/vscode/.vscode-test" },
 ];
+
+/** Directories that hold build output and are never hand-edited. */
+export const ARTIFACT_DIRECTORIES = ARTEFACT_KINDS.map((k) => k.rel);
+
+/**
+ * Whether one artefact directory may be swept, and if not, which rule stopped
+ * it.
+ *
+ * Pure, and separate from `classifyWorktree` because the questions differ. That
+ * one asks whether a whole worktree may be removed; this asks whether a
+ * regenerable cache inside a tree that is *staying* may be deleted. A tree can
+ * be perfectly alive and still be carrying tens of gigabytes nobody will read
+ * again, which is where almost all of the 149.18 GiB measured on 2026-07-30
+ * actually sat.
+ *
+ * Every fact arrives from the caller so each refusal is testable without
+ * touching a disk. A cleanup tool tested only on what it deletes has not been
+ * tested at all.
+ */
+export function classifyArtefact(candidate, options = {}) {
+  const {
+    now = Date.now(),
+    minimumAgeMs = 0,
+    graceMs = 0,
+    session = null,
+    openPrBranches = new Set(),
+  } = options;
+  const { kind, bare, branch, dirty, landed, owner, building, modifiedAt } =
+    candidate;
+
+  // The bare host serves the MCP binaries the whole fleet is talking to right
+  // now. Deleting target/release there stops every agent mid-call, and the
+  // symptom (tools vanishing) points nowhere near the cause. Its target/debug
+  // is ordinary stale output and was the single largest candidate measured.
+  if (bare && kind === "cargo-release") {
+    return {
+      sweep: false,
+      reason: "the bare host's target/release serves the running MCP binaries",
+    };
+  }
+  if (building) {
+    return { sweep: false, reason: "a build is running here" };
+  }
+  if (dirty) {
+    return { sweep: false, reason: "uncommitted or untracked changes" };
+  }
+  // A detached HEAD names no branch, so "has this landed" has no answer. The
+  // bare host is the exception: it is detached by construction and never holds
+  // work of its own.
+  if (!bare && !branch) {
+    return {
+      sweep: false,
+      reason: "detached HEAD: nothing names what this holds",
+    };
+  }
+  if (!bare && !landed) {
+    return { sweep: false, reason: "commits have not landed on origin/main" };
+  }
+  if (!bare && branch && openPrBranches.has(branch)) {
+    // Landed and still open means a follow-up commit is expected: rebuilding
+    // from cold to answer a review comment is a cost this tool imposed.
+    return {
+      sweep: false,
+      reason: "an open pull request still points at this branch",
+    };
+  }
+  if (owner && session && owner !== session) {
+    return { sweep: false, reason: `owned by session ${owner.slice(0, 12)}` };
+  }
+  if (typeof modifiedAt !== "number") {
+    // Unreadable mtime is treated as active. Guessing "old" from a failure is
+    // how a sweep deletes the cache of the build that is running.
+    return { sweep: false, reason: "age could not be read" };
+  }
+  const ageMs = now - modifiedAt;
+  if (ageMs < graceMs) {
+    return { sweep: false, reason: "inside the recent-activity grace period" };
+  }
+  if (ageMs < minimumAgeMs) {
+    return { sweep: false, reason: "newer than the age threshold" };
+  }
+  return { sweep: true, reason: "regenerable and idle" };
+}
+
+/**
+ * The sweep plan, and everything refused with the rule that refused it.
+ *
+ * Oldest first, so a disk budget keeps the caches most likely to be reused
+ * warm and takes the ones nobody has touched. With no budget the plan is
+ * everything eligible; with one, it stops as soon as the projected total falls
+ * under it, which is what lets this run continuously without fighting the
+ * builds people are actually doing.
+ *
+ * Shared by dry-run and apply, so what a report promises is exactly what an
+ * apply performs — the two cannot drift into disagreeing.
+ */
+export function planArtefactSweep(candidates, options = {}) {
+  const { budgetBytes = null } = options;
+  const plan = [];
+  const skipped = [];
+
+  const eligible = [];
+  for (const candidate of candidates) {
+    const verdict = classifyArtefact(candidate, options);
+    if (verdict.sweep) eligible.push(candidate);
+    else skipped.push({ ...candidate, reason: verdict.reason });
+  }
+
+  eligible.sort((a, b) => a.modifiedAt - b.modifiedAt);
+
+  const total = candidates.reduce((sum, c) => sum + (c.bytes ?? 0), 0);
+  let remaining = total;
+  for (const candidate of eligible) {
+    if (budgetBytes !== null && remaining <= budgetBytes) {
+      skipped.push({ ...candidate, reason: "disk is already under budget" });
+      continue;
+    }
+    plan.push(candidate);
+    remaining -= candidate.bytes ?? 0;
+  }
+
+  return {
+    plan,
+    skipped,
+    bytes: plan.reduce((sum, c) => sum + (c.bytes ?? 0), 0),
+    files: plan.reduce((sum, c) => sum + (c.files ?? 0), 0),
+  };
+}
 
 /**
  * Whether a worktree can be reclaimed, and if not, which rule stopped it.
