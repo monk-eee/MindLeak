@@ -15,8 +15,7 @@ setup: ## Install pre-commit hooks and extension deps
 install-servers: ## Install the built MCP servers where every window can reach them (ADR-0073)
 	# Every window is rooted at the worktree it edits, so the servers cannot live
 	# inside any one worktree. They are installed once per machine instead, under
-	# the user's home directory, which .vscode/mcp.json spells with the userHome
-	# variable. Braces are avoided here because make would expand them itself.
+	# the user's home directory, which the extension prefers over a worktree build.
 	cargo build --release -p mindleak-mcp -p lodestar-mcp
 	node scripts/install-servers.mjs
 

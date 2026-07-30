@@ -112,7 +112,7 @@ materialization. Existing work and no-work decisions require a rationale.
 
 ## Requirements
 
-- VS Code 1.93 or newer.
+- VS Code 1.101 or newer.
 
 A platform-targeted release VSIX includes both MCP servers and prefers those
 packaged binaries automatically. No Rust toolchain or global `PATH` change is
