@@ -33,6 +33,7 @@ import {
   resolveBinaryPath,
   resolveServerPath,
   shouldCaptureCommand,
+  shouldPollTelemetry,
   taskContextValue,
   taskLeaseState,
   telemetryDashboard,
@@ -874,6 +875,16 @@ describe("workspace change filtering", () => {
 });
 
 describe("telemetryDashboard", () => {
+  // Bug: a visible telemetry pane polled every three seconds with Live off,
+  // dominating telemetry and wasting compute. Only the opt-in live stream
+  // should run the timer; open, toggle and manual refresh remain event-driven.
+  it("polls periodically only when the visible pane has Live enabled", () => {
+    expect(shouldPollTelemetry(false, false)).toBe(false);
+    expect(shouldPollTelemetry(false, true)).toBe(false);
+    expect(shouldPollTelemetry(true, false)).toBe(false);
+    expect(shouldPollTelemetry(true, true)).toBe(true);
+  });
+
   it("derives success/error rates, weighted latency, and sorted tool rows", () => {
     const dashboard = telemetryDashboard(SNAPSHOT, { nodes: 42, active_edges: 17 });
     expect(dashboard.nodes).toBe(42);
