@@ -4,7 +4,8 @@
 //! design work without code conformance.
 
 use crate::design::{
-    design_id_from_path, DesignItem, DesignMetadata, DesignPromotionStatus, DesignStatus,
+    design_id_from_path, resembling_deciders, DesignItem, DesignMetadata, DesignPromotionStatus,
+    DesignStatus,
 };
 use crate::{now_unix, Lodestar, LodestarError, Result};
 
@@ -120,6 +121,17 @@ impl Lodestar {
         }
         self.store
             .supersede_design_item(id, superseded_by.trim(), human, now_unix())
+    }
+
+    /// Recorded decider labels that resemble `human` closely enough to be a
+    /// typo for one of them (see [`resembling_deciders`]).
+    ///
+    /// Advisory, and returned alongside the act that wrote the label rather than
+    /// behind a separate query, because a warning that has to be asked for is
+    /// not a warning.
+    pub fn deciders_resembling(&self, human: &str) -> Result<Vec<String>> {
+        let known = self.store.recorded_deciders()?;
+        Ok(resembling_deciders(human, known.iter().map(String::as_str)))
     }
 
     /// Human acceptance — the attributed, guarded human decision *only*
@@ -298,6 +310,29 @@ mod tests {
     fn agent_engine(agent: &str) -> Lodestar {
         let _ = agent;
         engine()
+    }
+
+    /// The ledger read that makes the comparison possible: a new label is
+    /// checked against the ones already recorded, which is the only evidence
+    /// available for an identity nothing can authenticate.
+    #[test]
+    fn a_new_decider_is_compared_against_the_ones_already_recorded() {
+        let e = engine();
+        let decided = e
+            .register_design("docs/adr/0001-first.md", "First", "", None)
+            .unwrap();
+        e.accept_design(&decided.id, "monk-eee").unwrap();
+
+        // One deletion from the label seventy rows already carry.
+        assert_eq!(e.deciders_resembling("monk-ee").unwrap(), vec!["monk-eee"]);
+        // The normal case, and a genuinely different reviewer, both stay quiet.
+        assert!(e.deciders_resembling("monk-eee").unwrap().is_empty());
+        assert!(e.deciders_resembling("alice").unwrap().is_empty());
+    }
+
+    #[test]
+    fn nothing_resembles_anything_in_an_empty_ledger() {
+        assert!(engine().deciders_resembling("monk-eee").unwrap().is_empty());
     }
 
     fn create_plan(goal_id: &str, title: &str) -> DesignMaterializationPlan {
