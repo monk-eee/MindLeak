@@ -61,7 +61,7 @@ fixed id to both MCP planes, so attribution and claims agree. A fresh workspace
 opens this view once; afterward it stays an ordinary refreshable tree that can
 be collapsed or ignored.
 
-The state comes from `graph_stats`, `board`, `design_board`, MCP initialize
+The state comes from `graph_stats`, `task_query`, `design_query`, MCP initialize
 metadata, and sensor health. The extension never persists a parallel readiness,
 graph, goal, or task state.
 

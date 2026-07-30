@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 
 import type { SensorClient } from "./terminalSensor";
+import { repoRelativePath } from "./util";
 
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
@@ -186,7 +187,15 @@ export class GitSensor implements vscode.Disposable {
         return;
       }
       const changes = await repository.diffBetween(commit.parents[0] ?? EMPTY_TREE, head);
-      const changedFiles = [...new Set(changes.map((change) => relativePath(change.uri)))].sort();
+      const changedFiles = [
+        ...new Set(
+          changes
+            .map((change) => relativePath(change.uri))
+            // A file this workspace cannot place has no repo-relative id, and a
+            // commit's file list is not the place to invent one.
+            .filter((path): path is string => path !== null)
+        ),
+      ].sort();
       const date = commit.commitDate ?? commit.authorDate ?? new Date();
       await this.client.callTool("ingest_commit", {
         sha: commit.hash,
@@ -246,6 +255,6 @@ function sameHead(left: ObservedHead | undefined, right: ObservedHead): boolean 
   return left?.commit === right.commit && left.branch === right.branch;
 }
 
-function relativePath(uri: vscode.Uri): string {
-  return vscode.workspace.asRelativePath(uri, false).replace(/\\/g, "/");
+function relativePath(uri: vscode.Uri): string | null {
+  return repoRelativePath(vscode.workspace.asRelativePath(uri, false));
 }

@@ -7,6 +7,30 @@ export function toArtifactId(relPath: string): string {
 }
 
 /**
+ * The repository-relative form of a path the editor produced, or `null` when it
+ * cannot be placed in this workspace.
+ *
+ * `vscode.workspace.asRelativePath` returns its input *unchanged* when the file
+ * sits outside every workspace folder, and node ids are repo-relative by
+ * contract. Agents routinely edit a sibling worktree from a window rooted
+ * elsewhere, so that unchanged absolute path used to go on the wire and become a
+ * second identity for a file the graph already tracked — one file was measured
+ * holding 117 structural edges under its absolute id and 43 under its relative
+ * one. The server refuses such a path now; this stops the editor asking.
+ *
+ * Mirrors the server's rule so the two agree on what "relative" means: a POSIX
+ * or UNC root and a Windows drive are absolute, while `./x` and `../x` are
+ * relative even though they leave the folder.
+ */
+export function repoRelativePath(raw: string): string | null {
+  const normalized = raw.replace(/\\/g, "/");
+  if (normalized === "" || normalized.startsWith("/") || /^[a-zA-Z]:/.test(normalized)) {
+    return null;
+  }
+  return normalized;
+}
+
+/**
  * Parse an MCP tool result. Prefers the machine-readable `structuredContent`
  * (present when a tool renders Markdown for chat but still exposes JSON for
  * programmatic consumers); otherwise parses the first text-content block as JSON,
@@ -181,6 +205,13 @@ export interface LodestarTask {
   acceptance?: string;
   status: string;
   owner?: string | null;
+  /**
+   * The branch this task's current evidence window is being done on
+   * (ADR-0035 d5), pinned at claim time from what the owner declared to
+   * `open_session`. `null`/absent when none was declared — surfaced only when
+   * present, never guessed.
+   */
+  branch?: string | null;
   claim_started_at?: number | null;
   lease_expires_at?: number | null;
   blocked_by?: string | null;
@@ -600,16 +631,22 @@ export function boardRows(
 
 function taskDescription(task: LodestarTask, nowUnix: number): string {
   const state = taskLeaseState(task, nowUnix);
+  const branch = task.branch?.trim();
+  const owner = task.owner ?? "unknown";
+  // Who holds it and the branch they hold it on, at the decision point: enough
+  // for a colliding agent to tell a merge risk from the same work twice
+  // (ADR-0035 d5). Omitted cleanly when no branch was declared.
+  const who = branch ? `${owner} on ${branch}` : owner;
   let description: string;
   if (state === "expired") {
-    description = `Claim expired · ${task.owner ?? "unknown"} · Ready`;
+    description = `Claim expired · ${who} · Ready`;
   } else if (state === "live") {
-    description = `In progress · ${task.owner ?? "unknown"} · ${remainingLease(task, nowUnix)}`;
+    description = `In progress · ${who} · ${remainingLease(task, nowUnix)}`;
   } else if (state === "claimable") {
     description = "Ready";
   } else {
     const status = taskStatusLabel(task.status);
-    description = task.owner ? `${status} · ${task.owner}` : status;
+    description = task.owner ? `${status} · ${who}` : status;
   }
   const scopedItems = (task.scope?.paths.length ?? 0) + (task.scope?.symbols.length ?? 0);
   return scopedItems > 0 ? `${description} · ${scopedItems} scoped` : description;
@@ -619,6 +656,9 @@ function taskTooltip(task: LodestarTask, nowUnix: number): string {
   const lines = [task.title, `goal: ${task.goal_id}`, `status: ${taskStatusLabel(task.status)}`];
   if (task.owner) {
     lines.push(`owner: ${task.owner}`);
+  }
+  if (task.branch?.trim()) {
+    lines.push(`branch: ${task.branch.trim()}`);
   }
   if (typeof task.claim_started_at === "number") {
     lines.push(`claim started: ${formatUnixSeconds(task.claim_started_at)}`);
@@ -868,6 +908,10 @@ export function verdictIconId(verdict: string): string {
 }
 
 // ---- Telemetry & effectiveness (real-time observability pane) ---------------
+
+export function shouldPollTelemetry(visible: boolean, live: boolean): boolean {
+  return visible && live;
+}
 
 /**
  * Aggregate metrics for one tool, as returned by `telemetry_snapshot`.

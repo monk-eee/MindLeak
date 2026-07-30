@@ -145,6 +145,71 @@ fn reconcile_workspace_forgets_files_not_in_the_current_set() {
     assert_eq!(again.files_forgotten, 0);
 }
 
+/// Regression: ingesting a path that could not be made repo-relative minted an
+/// absolute node id instead of refusing.
+///
+/// What went wrong: `repo_relative` returns a path it cannot place untouched, so
+/// a file belonging to a *sibling* worktree arrived at `ingest_file` still
+/// absolute and became `artifact:c:/Users/.../MindLeak-build/crates/x.rs`.
+///
+/// Impact: every worktree of a repository shares one graph (ADR-0038), so the
+/// same file held one identity per checkout. Measured on the live graph on
+/// 2026-07-29: `crates/lodestar-mcp/src/tools/mod.rs` existed twice, with 117
+/// structural edges owned by the absolute id and 43 by the relative one. Because
+/// `replace_structure` only matches `owner_id = <relative id>`, re-ingesting the
+/// file could never reach the absolute rows -- they were unreachable, not stale.
+/// Splitting an identity also splits reinforcement, `check_overlap`, governance
+/// bindings, and recall.
+///
+/// The fix: a path that is still absolute after `repo_relative` is refused on the
+/// write path, so the duplicate identity is never created. Repairing duplicates
+/// after the fact (`repair_workspace_paths`) is the cleanup; this is the guard.
+#[test]
+fn ingesting_a_path_outside_the_workspace_root_is_refused() {
+    let engine = MindLeak::open_in_memory().unwrap();
+
+    // No workspace root is declared, so this stands in for the unplaceable case:
+    // a real file, in a real checkout, that this server cannot make relative.
+    let absolute = "c:/Users/agent/Repos/MindLeak-build/crates/lodestar-mcp/src/tools/mod.rs";
+    let refused = engine.ingest_file(absolute, "pub fn list() {}\n");
+
+    let message = match refused {
+        Err(error) => error.to_string(),
+        Ok(outcome) => panic!("absolute path was ingested instead of refused: {outcome:?}"),
+    };
+    assert!(
+        message.contains("repository-relative"),
+        "the refusal must name the contract it is enforcing, got: {message}"
+    );
+
+    // The point of refusing is that no second identity reaches the graph.
+    assert!(
+        engine
+            .store()
+            .get_node(&format!("artifact:{absolute}"))
+            .unwrap()
+            .is_none(),
+        "an absolute artifact id was created despite the refusal"
+    );
+
+    // A POSIX-rooted path is the same mistake with different spelling.
+    assert!(engine
+        .ingest_file("/home/agent/checkout/src/lib.rs", "pub fn a() {}\n")
+        .is_err());
+
+    // The relative spelling of the same file is still ingested normally, so the
+    // guard rejects the id shape and not the file.
+    let accepted = engine
+        .ingest_file("crates/lodestar-mcp/src/tools/mod.rs", "pub fn list() {}\n")
+        .unwrap();
+    assert!(accepted.nodes_created > 0);
+    assert!(engine
+        .store()
+        .get_node("artifact:crates/lodestar-mcp/src/tools/mod.rs")
+        .unwrap()
+        .is_some());
+}
+
 #[test]
 fn ingestion_rejects_vcs_and_build_output_paths() {
     let engine = MindLeak::open_in_memory().unwrap();
