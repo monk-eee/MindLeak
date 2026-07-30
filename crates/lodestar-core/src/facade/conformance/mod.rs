@@ -1321,6 +1321,174 @@ mod tests {
         );
     }
 
+    /// Set up a claimed task under a fresh goal, ready to be checked.
+    fn task_under_a_goal(e: &Lodestar, title: &str) -> (String, String) {
+        let goal = e
+            .define_goal(GoalKind::Objective, title, "why", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, title, "done").unwrap();
+        e.claim_task(&task.id, "agent-a", 300).unwrap();
+        (goal.id, task.id)
+    }
+
+    /// Evidence whose interval sits inside the task's live claim.
+    fn evidence_in_claim(e: &Lodestar, task_id: &str, node: &str) -> ConformanceEvidence {
+        let claimed = e.store.get_task(task_id).unwrap().unwrap();
+        let mut evidence = test_evidence(Some(task_id.to_string()), "agent-a", node);
+        evidence.started_at = claimed.claim_started_at.unwrap();
+        evidence.ended_at = now_unix();
+        evidence
+    }
+
+    /// The defect this exists to fix. The advisory matched on referenced nodes
+    /// and nothing else, so a lesson naming no node was stored, counted,
+    /// decayed, and structurally incapable of reaching anybody. Measured
+    /// 2026-07-30: 67 of 191 records were in exactly that state, and they were
+    /// among the most expensive lessons in the ledger — several were then
+    /// re-learned from scratch, at length, by agents with no way to know they
+    /// existed. Most were not anonymous; they still named the intent they were
+    /// learned serving.
+    #[test]
+    fn a_node_less_lesson_reaches_work_under_the_goal_it_was_learned_under() {
+        let e = engine();
+        let (goal_id, task_id) = task_under_a_goal(&e, "ship search");
+
+        // No `nodes` array anywhere: unreachable before this change.
+        e.record_knowledge(
+            "testing a facade method proves the logic and says nothing about the wiring",
+            &format!("{{\"goal\": \"{goal_id}\"}}"),
+            None,
+        )
+        .unwrap();
+
+        let evidence = evidence_in_claim(&e, &task_id, "artifact:src/search.rs");
+        let res = e.check_conformance(&evidence, Some(&task_id)).unwrap();
+
+        assert!(
+            res.findings.iter().any(|f| {
+                f.contains("advisory: learned under this goal")
+                    && f.contains("says nothing about the wiring")
+            }),
+            "a lesson learned under this goal must reach it: {:?}",
+            res.findings
+        );
+    }
+
+    /// Provenance in this repository was written by many hands: a lesson may
+    /// name its task as a JSON field, inside an array, or as the bare string
+    /// `task:{id}` that is not JSON at all. The goal is reachable through any
+    /// of them, so none of those spellings is silently dropped.
+    #[test]
+    fn a_lesson_that_names_only_its_task_still_finds_the_goal() {
+        let e = engine();
+        let (_goal, task_id) = task_under_a_goal(&e, "ship search");
+
+        e.record_knowledge(
+            "a guard is only as good as the name it names",
+            &task_id,
+            None,
+        )
+        .unwrap();
+
+        let evidence = evidence_in_claim(&e, &task_id, "artifact:src/search.rs");
+        let res = e.check_conformance(&evidence, Some(&task_id)).unwrap();
+
+        assert!(
+            res.findings
+                .iter()
+                .any(|f| f.contains("as good as the name it names")),
+            "the task names the goal, so the lesson is reachable: {:?}",
+            res.findings
+        );
+    }
+
+    /// A goal id carries the constitution version it was read under. Comparing
+    /// those by string equality would sever every lesson from its own goal the
+    /// moment an amendment landed, discarding what the repository had learned
+    /// serving it for a reason that has nothing to do with the lesson.
+    #[test]
+    fn a_constitution_bump_does_not_sever_a_lesson_from_its_goal() {
+        let e = engine();
+        let (goal_id, task_id) = task_under_a_goal(&e, "ship search");
+
+        e.record_knowledge(
+            "the running server can be an hour behind the source",
+            &format!("{{\"goal\": \"{goal_id}@constitution:v9\"}}"),
+            None,
+        )
+        .unwrap();
+
+        let evidence = evidence_in_claim(&e, &task_id, "artifact:src/search.rs");
+        let res = e.check_conformance(&evidence, Some(&task_id)).unwrap();
+
+        assert!(
+            res.findings
+                .iter()
+                .any(|f| f.contains("an hour behind the source")),
+            "same goal, different constitution version: {:?}",
+            res.findings
+        );
+    }
+
+    #[test]
+    fn a_lesson_learned_under_another_goal_stays_out_of_this_check() {
+        let e = engine();
+        let (_mine, task_id) = task_under_a_goal(&e, "ship search");
+        let (theirs, _other_task) = task_under_a_goal(&e, "ship billing");
+
+        e.record_knowledge(
+            "billing rounds half to even",
+            &format!("{{\"goal\": \"{theirs}\"}}"),
+            None,
+        )
+        .unwrap();
+
+        let evidence = evidence_in_claim(&e, &task_id, "artifact:src/search.rs");
+        let res = e.check_conformance(&evidence, Some(&task_id)).unwrap();
+
+        assert!(
+            !res.findings
+                .iter()
+                .any(|f| f.contains("billing rounds half to even")),
+            "another goal's lesson is not relevance, it is noise: {:?}",
+            res.findings
+        );
+    }
+
+    /// ADR-0072's lesson, applied to the path that could most easily repeat it:
+    /// an advisory that fires on almost every task carries no information. A
+    /// goal accumulates everything ever learned serving it — 20 and 18 node-less
+    /// records sit under this repository's two busiest goals — so the goal path
+    /// must be capped where the node path is naturally self-limiting.
+    #[test]
+    fn the_goal_advisory_is_bounded_so_it_keeps_carrying_information() {
+        let e = engine();
+        let (goal_id, task_id) = task_under_a_goal(&e, "ship search");
+        for n in 0..(super::verdict::GOAL_ADVISORY_LIMIT + 4) {
+            e.record_knowledge(
+                &format!("lesson number {n}"),
+                &format!("{{\"goal\": \"{goal_id}\"}}"),
+                None,
+            )
+            .unwrap();
+        }
+
+        let evidence = evidence_in_claim(&e, &task_id, "artifact:src/search.rs");
+        let res = e.check_conformance(&evidence, Some(&task_id)).unwrap();
+
+        let surfaced = res
+            .findings
+            .iter()
+            .filter(|f| f.contains("advisory: learned under this goal"))
+            .count();
+        assert_eq!(
+            surfaced,
+            super::verdict::GOAL_ADVISORY_LIMIT,
+            "seven lessons are available and the cap decides how many speak: {:?}",
+            res.findings
+        );
+    }
+
     #[test]
     fn learned_knowledge_never_hardens_a_verdict_or_emits_violation() {
         let e = engine();
