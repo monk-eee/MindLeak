@@ -30,12 +30,33 @@ const capture = (command, commandArgs, options = {}) =>
     ...options,
   }).trim();
 
-/** Commits reachable from `branchRef` that never reached `baseRef`. */
-export const droppedCommits = (cwd, baseRef, branchRef) => {
-  const log = capture("git", ["log", "--oneline", `${baseRef}..${branchRef}`], {
-    cwd,
-  });
-  return log ? log.split(/\r?\n/).filter(Boolean) : [];
+/**
+ * Commits on `branchRef` that are not ancestors of `baseRef`, split by whether
+ * their work actually reached the base.
+ *
+ * `git cherry` compares patches rather than commit ids, which is the only way
+ * to tell the two apart. Ancestry alone cannot: a squash or rebase merge lands
+ * every line and still leaves nothing on the branch reachable from the base, so
+ * an ancestry check calls that "work left behind" when the work is right there.
+ * That distinction decides whether anyone can act. `missing` is a follow-up
+ * pull request waiting to be opened; `replaced` is a fact about history that no
+ * commit can undo, because making it an ancestor now would mean rewriting the
+ * base.
+ *
+ * Merge commits are absent from both by construction — `git cherry` skips them,
+ * and correctly: merging the base into a branch carries no work of its own, so
+ * reporting it as lost work is noise that makes a real report harder to read.
+ */
+export const classifyCommits = (cwd, baseRef, branchRef) => {
+  const log = capture("git", ["cherry", "-v", baseRef, branchRef], { cwd });
+  const lines = log ? log.split(/\r?\n/).filter(Boolean) : [];
+  const missing = [];
+  const replaced = [];
+  for (const line of lines) {
+    const target = line.startsWith("+") ? missing : replaced;
+    target.push(line.slice(2).trim());
+  }
+  return { missing, replaced };
 };
 
 /**
@@ -62,12 +83,12 @@ export const auditBranches = (cwd, baseRef, branchRefs) =>
       exists = false;
     }
     if (!exists) {
-      return { branchRef, verifiable: false, dropped: [] };
+      return { branchRef, verifiable: false, missing: [], replaced: [] };
     }
     return {
       branchRef,
       verifiable: true,
-      dropped: droppedCommits(cwd, baseRef, branchRef),
+      ...classifyCommits(cwd, baseRef, branchRef),
     };
   });
 
@@ -115,15 +136,25 @@ if (invokedDirectly) {
   );
 
   let lost = 0;
+  let rewritten = 0;
   for (const result of results) {
     const name = result.branchRef.replace(/^origin\//, "");
     if (!result.verifiable) continue;
-    if (result.dropped.length === 0) continue;
-    lost += 1;
-    console.error(
-      `merge-audit: PR #${byBranch.get(name)} (${name}) merged, but ${result.dropped.length} commit(s) never reached ${base}:`,
-    );
-    for (const commit of result.dropped) console.error(`    ${commit}`);
+    if (result.missing.length) {
+      lost += 1;
+      console.error(
+        `merge-audit: PR #${byBranch.get(name)} (${name}) merged, but ${result.missing.length} commit(s) never reached ${base}:`,
+      );
+      for (const commit of result.missing) console.error(`    ${commit}`);
+      continue;
+    }
+    if (result.replaced.length) {
+      rewritten += 1;
+      console.warn(
+        `merge-audit: PR #${byBranch.get(name)} (${name}) landed every line, but as ${result.replaced.length} rewritten commit(s) — a squash or rebase merge:`,
+      );
+      for (const commit of result.replaced) console.warn(`    ${commit}`);
+    }
   }
 
   if (lost) {
@@ -132,6 +163,19 @@ if (invokedDirectly) {
         "do not push the missing commits onto the merged branch, because its pull request will never reopen.",
     );
     process.exit(1);
+  }
+  if (rewritten) {
+    // Reported, not failed. The commit identities are gone and no commit can
+    // bring them back, so failing here would mean a red build with no green
+    // move available — and an audit that cannot be satisfied gets switched off,
+    // taking the check that catches genuinely lost work with it. Prevention
+    // belongs where the merge button is: turn off squash and rebase merging on
+    // the repository, so the rule stops depending on which button was clicked.
+    console.warn(
+      `\nmerge-audit: ${rewritten} merged branch(es) landed as rewritten commits. No work was lost, and\n` +
+        "nothing can be done about it now. AGENTS.md asks for merge commits so a commit id stays\n" +
+        "evidence; disable squash and rebase merging on the repository to enforce it at the button.",
+    );
   }
   console.log(
     `merge-audit: ${results.filter((r) => r.verifiable).length} merged branch(es) fully landed on ${base}`,
