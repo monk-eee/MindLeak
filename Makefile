@@ -1,7 +1,7 @@
 # MindLeak developer commands. On Windows, run the underlying commands directly
 # (see DEVELOPERS.md) if `make` is unavailable.
 
-.PHONY: setup worktree-setup adr-index changelog design-audit merge-audit queue queue-watch board-health stranded-report reingest tool-surface build test script-test ratchet coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
+.PHONY: setup worktree-setup install-servers adr-index changelog design-audit merge-audit queue queue-watch board-health stranded-report reingest tool-surface build test script-test ratchet coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
 
 setup: ## Install pre-commit hooks and extension deps
 	pip install pre-commit
@@ -11,6 +11,14 @@ setup: ## Install pre-commit hooks and extension deps
 	pre-commit install --install-hooks
 	cargo install cargo-llvm-cov --locked
 	npm --prefix editors/vscode install
+
+install-servers: ## Install the built MCP servers where every window can reach them (ADR-0073)
+	# Every window is rooted at the worktree it edits, so the servers cannot live
+	# inside any one worktree. They are installed once per machine instead, under
+	# the user's home directory, which .vscode/mcp.json spells with the userHome
+	# variable. Braces are avoided here because make would expand them itself.
+	cargo build --release -p mindleak-mcp -p lodestar-mcp
+	node scripts/install-servers.mjs
 
 worktree-setup: ## Prepare a freshly created linked worktree (ADR-0038)
 	# Hooks and cargo tools are shared through the common .git dir and the user's
