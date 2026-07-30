@@ -217,7 +217,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "task_claim",
-            "description": "Ownership and the lease, with `step` naming the act. `claim` atomically takes a task with a lease and optional advisory path globs / MindLeak symbol ids (ADR-0024); it returns won=true only if this agent won, a losing claimant cannot overwrite scope, and a lost claim says which of the knowable reasons it was rather than a bare false. A won claim returns the evidence window it opened, because that window is what completion later validates evidence against. `renew` is the heartbeat: it extends a still-live lease owned by this agent, and after expiry only a fresh `claim` opens a new window. `release` hands a claim back to open, owner-guarded. `recover` takes an expired claim stranded under a compatible legacy identity, or transfers a paused task before its seven-day grace with an explicit human reviewer; it requires the exact current owner and a reason, writes append-only history, and opens a fresh window. A `human` label is an attributable declaration, not authentication, and must differ from both owners.",
+            "description": "Ownership and the lease, with `step` naming the act. `claim` atomically takes a task with a lease and optional advisory path globs / MindLeak symbol ids (ADR-0024); it returns won=true only if this agent won, a losing claimant cannot overwrite scope, and a lost claim says which of the knowable reasons it was rather than a bare false. A won claim returns the evidence window it opened, because that window is what completion later validates evidence against. A won claim also accepts `also_serves`: goals bind to files, so the governing set is usually learned while working rather than predicted at creation, and a claim you already hold is where you say so. That declaration is refused once conformance has judged the task, when it would be a rationalisation for a finding already raised rather than a prediction the evidence can still contradict. `renew` is the heartbeat: it extends a still-live lease owned by this agent, and after expiry only a fresh `claim` opens a new window. `release` hands a claim back to open, owner-guarded. `recover` takes an expired claim stranded under a compatible legacy identity, or transfers a paused task before its seven-day grace with an explicit human reviewer; it requires the exact current owner and a reason, writes append-only history, and opens a fresh window. A `human` label is an attributable declaration, not authentication, and must differ from both owners.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -227,6 +227,7 @@ pub(super) fn definitions() -> Vec<Value> {
                     "lease_secs": { "type": "integer", "default": 300, "description": "Lease length for claim, renew and recover." },
                     "paths": { "type": "array", "items": { "type": "string" }, "default": [], "description": "claim: workspace-relative path globs this work expects to touch." },
                     "symbols": { "type": "array", "items": { "type": "string" }, "default": [], "description": "claim: opaque MindLeak symbol ids this work expects to touch." },
+                    "also_serves": { "type": "array", "items": { "type": "string" }, "default": [], "description": "claim: further goal ids this work serves, for what advise reported over the files you are actually touching. Unions with what was declared at creation, so naming only what you just learned never drops what you knew. Refused once conformance has judged this task." },
                     "expected_owner": { "type": "string", "description": "recover: the exact current owner. A recovery that does not name who it is taking from is not a recovery." },
                     "reason": { "type": "string", "description": "recover: why ownership moved." },
                     "human": { "type": "string", "description": "recover: distinct human reviewer authorizing a paused-task transfer before the parking grace. An attributable declaration, not authentication." }
@@ -610,6 +611,20 @@ fn claim(engine: &Lodestar, task_id: &str, args: &Value) -> Result<Value, String
     // wrong guess reads as a policy refusal rather than a missing accessor
     // (ADR-0060).
     if won {
+        // Coverage rides on the claim rather than on a verb of its own: the
+        // claim is already where a task says what it will touch, and a
+        // same-owner re-claim keeps the evidence window open, so an agent that
+        // learns mid-change which goals actually govern its files can say so
+        // without opening a window that cannot own its own work (ADR-0041).
+        let also_serves = str_array(args, "also_serves");
+        if !also_serves.is_empty() {
+            let covered = engine
+                .declare_coverage(task_id, agent.as_str(), &also_serves)
+                .map_err(|e| e.to_string())?;
+            if let Some(obj) = response.as_object_mut() {
+                obj.insert("also_serves".to_string(), json!(covered));
+            }
+        }
         if let Some(task) = engine
             .store()
             .get_task(task_id)
