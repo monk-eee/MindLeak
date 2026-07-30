@@ -400,3 +400,37 @@ export function describeSweep(result) {
     : "";
   return skips ? `${head}\n${skips}${abandoned}` : `${head}${abandoned}`;
 }
+
+// The standalone diagnostic surface. The watcher is what makes this hygiene
+// continuous, so this exists to answer "what would it do, and why did it skip
+// that one" -- not as the mechanism. It reports by default for the same reason
+// `reclaim` does: no report can be un-deleted.
+//
+//   node scripts/artefact-sweep.mjs            report what is reclaimable
+//   node scripts/artefact-sweep.mjs --apply    delete it
+function main(argv) {
+  const apply = argv.includes("--apply");
+
+  // A run a person asked for is deliberate, so it ignores the cadence the
+  // watcher observes. It still takes the common-dir lock, so a manual run and
+  // the watcher's own sweep cannot act at the same time.
+  const outcome = sweepIfDue({
+    anchor: process.cwd(),
+    commonDir: execFileSync("git", ["rev-parse", "--git-common-dir"], {
+      encoding: "utf8",
+    }).trim(),
+    apply,
+    force: true,
+  });
+
+  if (!outcome.ran) {
+    console.log(`artefact-sweep: nothing done (${outcome.reason})`);
+    return 0;
+  }
+  console.log(describeSweep(outcome.result));
+  return 0;
+}
+
+if (import.meta.filename === process.argv[1]) {
+  process.exit(main(process.argv.slice(2)));
+}
