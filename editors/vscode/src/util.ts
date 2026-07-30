@@ -7,6 +7,30 @@ export function toArtifactId(relPath: string): string {
 }
 
 /**
+ * The repository-relative form of a path the editor produced, or `null` when it
+ * cannot be placed in this workspace.
+ *
+ * `vscode.workspace.asRelativePath` returns its input *unchanged* when the file
+ * sits outside every workspace folder, and node ids are repo-relative by
+ * contract. Agents routinely edit a sibling worktree from a window rooted
+ * elsewhere, so that unchanged absolute path used to go on the wire and become a
+ * second identity for a file the graph already tracked — one file was measured
+ * holding 117 structural edges under its absolute id and 43 under its relative
+ * one. The server refuses such a path now; this stops the editor asking.
+ *
+ * Mirrors the server's rule so the two agree on what "relative" means: a POSIX
+ * or UNC root and a Windows drive are absolute, while `./x` and `../x` are
+ * relative even though they leave the folder.
+ */
+export function repoRelativePath(raw: string): string | null {
+  const normalized = raw.replace(/\\/g, "/");
+  if (normalized === "" || normalized.startsWith("/") || /^[a-zA-Z]:/.test(normalized)) {
+    return null;
+  }
+  return normalized;
+}
+
+/**
  * Parse an MCP tool result. Prefers the machine-readable `structuredContent`
  * (present when a tool renders Markdown for chat but still exposes JSON for
  * programmatic consumers); otherwise parses the first text-content block as JSON,
