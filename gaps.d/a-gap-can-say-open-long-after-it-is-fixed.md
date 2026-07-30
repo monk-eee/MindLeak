@@ -34,6 +34,35 @@
   assuming it: `squash-merging-is-still-enabled-at-the-button.md` was checked the
   same way and holds — the repository still reports `allow_squash_merge: true`.
 
+  **Second pass, 2026-07-31, and the rate has not changed.** Re-audited against
+  the ledger. `the-design-ledger-could-not-say-superseded-fixed.md` claimed
+  ADR-0032's supersession "cannot be" recorded for want of an attributed
+  decider; `design_items` shows `decided_by=monk-eee` and
+  `superseded_by=design:0038-…`, and ADR-0018 → ADR-0032 likewise — so it was
+  removed. It had also carried a cross-reference to "the parser gap below",
+  which resolved to nothing: fragments became one-file-each under ADR-0056, and
+  "below" had no referent left. A stale fragment rots in its links as well as
+  its claims. `accepted-design-rows-carry-no-decider.md` was corrected rather
+  than removed, because there the *count* moved while the *finding* held: 6 of
+  72 became 3 of 76, all four ADRs it named by number are now decided, and
+  ADR-0074 arrived undecided on the very day the gap was written. That one is
+  worth stating as a rule — read the intake, not the count, because a backlog
+  being worked and refilled is indistinguishable from one nobody has touched.
+
+  **Mechanising the detection was attempted and does not work.** Two passes over
+  every fragment: the first flagged any fragment naming a live symbol near a
+  negation word (39 of them), the second required the negation to sit adjacent
+  to the symbol (11). Reading the 11 showed essentially all were false
+  positives, because the negation is almost always about *behaviour* rather than
+  existence — "`renew_lease` refuses outright", "`recall` cannot" — and those
+  fragments are correct. The four failures that motivated this entry were of the
+  form "there is no `retire_design`", which needs the checker to understand
+  negation over a claim, not to grep for a name. This is the same conclusion the
+  entry reached from the other direction, now with a measurement behind it: the
+  truth of a fragment lives in the code it describes, and nothing over its text
+  can decide it. Recorded so the next agent does not spend the afternoon
+  rebuilding the same two greps.
+
   No fix is proposed, because the obvious one is wrong. A status vocabulary rule
   would only ever check that a fragment agrees with itself. What the class needs
   is periodic re-verification against the tree — cheap for fragments naming a
