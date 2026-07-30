@@ -49,7 +49,25 @@ impl Lodestar {
         }
 
         let task_goal_id = task.as_ref().map(|t| t.goal_id.as_str());
-        let mut resolved = self.resolve_governing_clauses(node_ids, task_goal_id)?;
+        // Through the task's declared coverage, exactly as conformance does
+        // (ADR-0041). The shared resolver exists so the pre-flight and the gate
+        // cannot fork the rule, and this call site forked it: passing no
+        // coverage made `advise` blind to `also_serves`, so a task that had
+        // correctly declared the governing goal at creation was still told the
+        // change "would drift".
+        //
+        // Wrong in the most expensive direction. An agent that believes it
+        // re-declares the task, the new task carries the same coverage, and the
+        // answer does not change — the advice invites a loop. `also_serves` is
+        // the only mechanism for cross-cutting work and cannot be added after
+        // creation, so a pre-flight that cannot see it advises against the one
+        // shape the constitution provides for legitimate breadth.
+        let covered = match task.as_ref() {
+            Some(task) => self.store.goal_coverage(&task.id)?,
+            None => Vec::new(),
+        };
+        let mut resolved =
+            self.resolve_governing_clauses_covering(node_ids, task_goal_id, &covered)?;
         resolved.workflow = self.resolve_workflow_clauses(workflow)?;
 
         // Surface every clause governing the declared scope, forbids first.
@@ -150,6 +168,81 @@ mod tests {
     use crate::facade::test_support::engine;
     use crate::model::Consequence;
     use crate::{AdviceDisposition, CodeBindingMode, GoalKind};
+
+    /// The pre-flight must see the coverage the gate sees (ADR-0041).
+    ///
+    /// `advise` resolved clauses from the task's own `goal_id` alone while
+    /// `evaluate_base_conformance` resolved them through the task's recorded
+    /// coverage. A task that had correctly declared the governing goal in
+    /// `also_serves` at creation was therefore told its change "would drift",
+    /// while the gate it was predicting would have found it in scope.
+    ///
+    /// Wrong in the most expensive direction: an agent that believes the advice
+    /// re-declares the task, the replacement carries the same coverage, and the
+    /// answer does not change. `also_serves` cannot be added after creation, so
+    /// the advice invites a loop with no exit.
+    #[test]
+    fn declared_coverage_is_in_scope_for_the_pre_flight_too() {
+        let engine = engine();
+        let governing = engine
+            .define_goal(
+                GoalKind::Constraint,
+                "Owns the parser",
+                "The parser is delivered under this goal.",
+                None,
+            )
+            .unwrap();
+        let other = engine
+            .define_goal(
+                GoalKind::Objective,
+                "Some other work",
+                "Unrelated delivery.",
+                None,
+            )
+            .unwrap();
+        engine
+            .link_goal_to_artifact(
+                &governing.id,
+                &["artifact:src/parser.rs".to_string()],
+                CodeBindingMode::Governed,
+            )
+            .unwrap();
+
+        // The task hangs under a different goal and declares the governing one
+        // as additional breadth — exactly the ADR-0041 shape.
+        let covered = engine
+            .create_task_covering(
+                &other.id,
+                "Touch the parser",
+                "done",
+                None,
+                std::slice::from_ref(&governing.id),
+            )
+            .unwrap();
+        let advice = engine
+            .advise(
+                Some(&covered.id),
+                &["artifact:src/parser.rs".to_string()],
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            advice.disposition,
+            AdviceDisposition::Advise,
+            "a declared cover is in scope: {:?}",
+            advice.findings
+        );
+
+        // And the same task without the declaration still reads as drift, so
+        // the fix is coverage-aware rather than a blanket softening.
+        let bare = engine
+            .create_task(&other.id, "Touch the parser again", "done")
+            .unwrap();
+        let undeclared = engine
+            .advise(Some(&bare.id), &["artifact:src/parser.rs".to_string()], &[])
+            .unwrap();
+        assert_eq!(undeclared.disposition, AdviceDisposition::Review);
+    }
 
     #[test]
     fn absent_constitution_defers_to_a_human_never_blocks() {
