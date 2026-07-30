@@ -1,5 +1,5 @@
-- **A restored file with an older timestamp is silently not rebuilt — OBSERVED,
-  FIXED BY HABIT.** Cargo decides what to recompile by mtime, and PowerShell's
+- **Restoring a file by copy remains an mtime hazard — WORKAROUND ONLY, OPEN.**
+    Cargo decides what to recompile by mtime, and PowerShell's
   `Copy-Item` gives the destination the *source's* timestamp. Backing a file up
   before a red/green probe and copying it back therefore restores the content
   with an mtime older than the compiled artifact, so cargo keeps the previous
