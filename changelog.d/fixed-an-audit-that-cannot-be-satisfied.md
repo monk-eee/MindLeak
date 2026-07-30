@@ -18,6 +18,7 @@
   Nothing weakens: the report says plainly that a squash or rebase merge
   destroyed a commit identity AGENTS.md asks to keep, and points at the
   repository setting that prevents it, because the only durable fix is at the
-  merge button rather than in an audit that runs afterwards. The module's own
-  comment claimed its helpers were covered by tests and no test file existed;
-  there is one now.
+  merge button rather than in an audit that runs afterwards. The existing suite
+  in `editors/vscode/scripts/merge-audit.test.mjs` gains the squash case and the
+  merge-commit case, and its four original tests are kept unchanged so the
+  behaviour that was already correct is proven not to have regressed.
