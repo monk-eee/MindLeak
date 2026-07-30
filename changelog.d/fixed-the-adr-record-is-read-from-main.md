@@ -16,4 +16,8 @@
   failure being fixed, because a partial record that reports itself as complete
   makes every tool downstream state confident nonsense. `adr-index` deliberately
   still reads the working tree — it generates the index for the commit being
-  made, so a newly authored ADR must appear in it.
+  made, so a newly authored ADR must appear in it. The blobs are read through a
+  single `git cat-file --batch` rather than a `git show` each: the obvious
+  spelling costs one process spawn per ADR and measured 10.7s for 75 ADRs
+  against 0.36s to read them from disk, which would have made the record correct
+  and the tools unusable. Batched, it is 0.33s.

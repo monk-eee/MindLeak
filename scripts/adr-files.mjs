@@ -113,6 +113,45 @@ export const readAdrFiles = (dir = ADR_DIR) =>
     .map((f) => parse(dir, f));
 
 /**
+ * The contents of many blobs, in one git process.
+ *
+ * `git show` per file is the obvious spelling and costs a process spawn each:
+ * measured at 10.7s for the 75 ADRs on main against 0.36s to read the same
+ * files from disk, 30x. `cat-file --batch` streams every blob through a single
+ * process and brings that back under the disk read. The framing is
+ * `<sha> <type> <size>\n<size bytes>\n`, and it is parsed as bytes rather than
+ * text because the size is in bytes and a multi-byte character would otherwise
+ * shift every following record.
+ *
+ * @returns {Map<string, string>} sha -> contents
+ */
+const readBlobs = (shas, cwd) => {
+  if (shas.length === 0) return new Map();
+  const isolated = { ...process.env };
+  for (const variable of GIT_REPOSITORY_VARIABLES) delete isolated[variable];
+  const out = execFileSync("git", ["cat-file", "--batch"], {
+    cwd,
+    input: `${shas.join("\n")}\n`,
+    stdio: "pipe",
+    maxBuffer: 1 << 28,
+    env: isolated,
+  });
+
+  const blobs = new Map();
+  let at = 0;
+  while (at < out.length) {
+    const newline = out.indexOf(0x0a, at);
+    if (newline === -1) break;
+    const [sha, , size] = out.subarray(at, newline).toString("utf8").split(" ");
+    const start = newline + 1;
+    const end = start + Number(size);
+    blobs.set(sha, out.subarray(start, end).toString("utf8"));
+    at = end + 1; // the trailing newline git adds after each object
+  }
+  return blobs;
+};
+
+/**
  * Every ADR on `ref`, ordered by number — the whole record, whatever this
  * worktree happens to have checked out.
  *
@@ -129,10 +168,7 @@ export const readAdrFilesFromMain = ({
   ref = ADR_REF,
   warn = (message) => console.error(message),
 } = {}) => {
-  const listing = isolatedGit(
-    ["ls-tree", "-r", "--name-only", ref, "--", ADR_DIR],
-    cwd,
-  );
+  const listing = isolatedGit(["ls-tree", "-r", ref, "--", ADR_DIR], cwd);
   if (listing === null) {
     warn(
       `adr-files: cannot resolve ${ref}; reading the working tree instead. ` +
@@ -145,16 +181,24 @@ export const readAdrFilesFromMain = ({
     };
   }
 
-  const files = listing
+  // `<mode> blob <sha>\t<path>`
+  const entries = listing
     .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => /^docs\/adr\/\d{4}-.*\.md$/.test(line))
-    .sort()
-    .map((path) => {
-      const text = isolatedGit(["show", `${ref}:${path}`], cwd);
-      if (text === null) throw new Error(`${path}: unreadable on ${ref}`);
-      return parseAdrText(path, path.slice(ADR_DIR.length + 1), text);
-    });
+    .map((line) => /^\S+\s+blob\s+(\S+)\t(.+)$/.exec(line.trim()))
+    .filter((match) => match !== null)
+    .map(([, sha, path]) => ({ sha, path }))
+    .filter(({ path }) => /^docs\/adr\/\d{4}-.*\.md$/.test(path))
+    .sort((left, right) => left.path.localeCompare(right.path));
+
+  const blobs = readBlobs(
+    entries.map(({ sha }) => sha),
+    cwd,
+  );
+  const files = entries.map(({ sha, path }) => {
+    const text = blobs.get(sha);
+    if (text === undefined) throw new Error(`${path}: unreadable on ${ref}`);
+    return parseAdrText(path, path.slice(ADR_DIR.length + 1), text);
+  });
 
   return { files, source: ref, fellBack: false };
 };
