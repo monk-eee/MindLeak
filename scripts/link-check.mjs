@@ -21,6 +21,11 @@
 //     before a Marketplace publish (see the capture checklist beside them) and
 //     the docs deliberately reference them ahead of time, showing alt text
 //     until they land. Failing on them would fail on a documented plan.
+//   - Links inside inline code spans and fenced code blocks are skipped. A
+//     `[text](target)` in backticks or a ``` fence is documentation *about* a
+//     link — an example, a former filename, a shape — not a live link, so its
+//     target need not exist. A real link elsewhere on the same line still
+//     counts. (This is the case that blocked PR #234: an illustrative rename.)
 //
 // Cross-platform, dependency-free Node (toolchain rule). Reads the working tree
 // via `git ls-files`, so it validates the state you are about to commit.
@@ -67,6 +72,43 @@ const isSkippable = (target) =>
 
 const LINK_RE = /\[[^\]]*\]\(\s*([^)]+?)\s*\)/g;
 
+/** A line that opens or closes a fenced code block (``` or ~~~). */
+const FENCE_RE = /^\s*(`{3,}|~{3,})/;
+
+/**
+ * The index ranges on one line covered by inline code spans.
+ *
+ * A `[text](target)` inside backticks is documentation *about* a link, not a
+ * link — flagging its target as missing is the false positive this exists to
+ * avoid. Spans are matched CommonMark-style: a run of N backticks opens, the
+ * next run of exactly N closes, and everything between (inclusive of the
+ * fences) is code. An unmatched run is left alone.
+ */
+export function codeSpanRanges(line) {
+  const runs = [];
+  const runRe = /`+/g;
+  let r;
+  while ((r = runRe.exec(line)))
+    runs.push({ start: r.index, len: r[0].length });
+  const ranges = [];
+  let i = 0;
+  while (i < runs.length) {
+    const open = runs[i];
+    let j = i + 1;
+    while (j < runs.length && runs[j].len !== open.len) j++;
+    if (j < runs.length) {
+      ranges.push([open.start, runs[j].start + runs[j].len]);
+      i = j + 1;
+    } else {
+      i += 1;
+    }
+  }
+  return ranges;
+}
+
+const inSomeRange = (idx, ranges) =>
+  ranges.some(([a, b]) => idx >= a && idx < b);
+
 /** The broken relative links in one file's text, resolved against the tree. */
 export function brokenLinksIn(rel, text, { fileSet, dirSet }) {
   const exists = (p) => {
@@ -75,10 +117,21 @@ export function brokenLinksIn(rel, text, { fileSet, dirSet }) {
   };
   const dir = path.posix.dirname(rel);
   const out = [];
+  let inFence = false;
   text.split(/\r?\n/).forEach((line, i) => {
+    // A fenced code block is illustrative wholesale; its links are examples.
+    if (FENCE_RE.test(line)) {
+      inFence = !inFence;
+      return;
+    }
+    if (inFence) return;
+    const spans = codeSpanRanges(line);
     LINK_RE.lastIndex = 0;
     let m;
     while ((m = LINK_RE.exec(line))) {
+      // A link whose `[` sits inside an inline code span is an example, not a
+      // live link — but a real link elsewhere on the same line still counts.
+      if (inSomeRange(m.index, spans)) continue;
       let target = m[1].trim();
       const titled = target.search(/\s+["']/);
       if (titled !== -1) target = target.slice(0, titled).trim();
