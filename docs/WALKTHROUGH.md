@@ -108,7 +108,7 @@ Write the goal, break it down, and let each agent pull work:
 
 ```text
 define_goal(kind = "feature", title = "Token rotation", statement = "...")
-decompose_goal(goal_id)        # produces claimable tasks
+task_create(goal_id)           # no title decomposes into claimable tasks
 ```
 
 Each agent runs in its own branch/worktree while both planes resolve the same
@@ -116,19 +116,19 @@ repository-id state directory:
 
 ```text
 open_session(session_id)                 # one client-minted token, shared with MindLeak
-next_task()                          # what should I pick up?
-claim_task(task_id, session_id)       # compare-and-swap — no two sessions win the same task
-renew_lease(task_id, session_id)      # keep the claim alive while working
-complete_task(task_id, evidence, check, session_id) # owner-guarded checked completion
+task_query(view = "next")            # what should I pick up?
+task_claim(task_id, step = "claim", session_id) # compare-and-swap — no two sessions win the same task
+task_claim(task_id, step = "renew", session_id) # keep the claim alive while working
+task_transition(task_id, to = "complete", evidence, check, session_id) # owner-guarded checked completion
 ```
 
-`claim_task` is atomic: if `agent-b` races for the same task, exactly one wins.
+`task_claim` is atomic: if `agent-b` races for the same task, exactly one wins.
 When two tasks touch **the same file**, don't hand them out concurrently —
 serialize them so only an *aligned* completion opens the next:
 
 ```text
-first  = create_task(goal_id, "Edit Router", acceptance = "...")
-second = create_task(goal_id, "Edit helper", acceptance = "...", blocked_by = first.id)
+first  = task_create(goal_id, "Edit Router", acceptance = "...")
+second = task_create(goal_id, "Edit helper", acceptance = "...", blocked_by = first.id)
 ```
 
 Watch it in **Work**: each task shows its owner and lease; hover in-progress work

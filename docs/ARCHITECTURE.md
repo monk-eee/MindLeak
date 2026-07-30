@@ -195,8 +195,8 @@ Only the one-time teaching-view dismissal uses workspace state; no graph or
 intent authority is copied into the extension.
 The Work view's allocation flow collects optional concrete paths/symbol ids,
 combines both ADR-0024 overlap reads, and shows scoped work as a planning hint;
-warnings remain explicitly overridable. Review-needed rows call the existing
-`resolve_task`, `reopen_task`, and `conformance_history` tools in place; the
+warnings remain explicitly overridable. Review-needed rows call `task_transition`
+(`to="resolve"` / `to="reopen"`) and the `conformance_history` tool in place; the
 complete Evidence Board remains an advanced, hidden-by-default audit view
 (ADR-0040).
 
