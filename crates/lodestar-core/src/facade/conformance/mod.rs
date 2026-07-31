@@ -10,7 +10,7 @@ use crate::scope;
 use crate::store::ConformanceAudit;
 use crate::util::goal_slug;
 use crate::{
-    now_unix, CodeBindingMode, ConformanceCheck, ConformanceEvidence, ConformanceResult, Goal,
+    now_unix, ArtifactBindingMode, ConformanceCheck, ConformanceEvidence, ConformanceResult, Goal,
     GoalStatus, GoverningClause, Lodestar, LodestarError, Result, Task, TaskStatus, Verdict,
 };
 
@@ -73,21 +73,21 @@ impl GoverningClauses {
             out.push(GoverningClause {
                 node_id: node.clone(),
                 goal: goal.clone(),
-                mode: CodeBindingMode::ForbidChange,
+                mode: ArtifactBindingMode::ForbidChange,
             });
         }
         for (node, goal) in self.in_scope.iter().chain(self.other.iter()) {
             out.push(GoverningClause {
                 node_id: node.clone(),
                 goal: goal.clone(),
-                mode: CodeBindingMode::Governed,
+                mode: ArtifactBindingMode::Governed,
             });
         }
         for (scope, goal) in &self.workflow {
             out.push(GoverningClause {
                 node_id: scope.clone(),
                 goal: goal.clone(),
-                mode: CodeBindingMode::Governed,
+                mode: ArtifactBindingMode::Governed,
             });
         }
         out
@@ -295,7 +295,7 @@ mod tests {
             )
             .unwrap();
         let node_id = "artifact:src/delivery.rs";
-        e.link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], ArtifactBindingMode::Governed)
             .unwrap();
         let task = e
             .create_task(&goal.id, "fix delivery", "same evidence stays aligned")
@@ -338,7 +338,7 @@ mod tests {
             .define_goal(GoalKind::Objective, "Ship search", "add search", None)
             .unwrap();
         let node_id = "artifact:src/search.rs";
-        e.link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], ArtifactBindingMode::Governed)
             .unwrap();
         let task = e
             .create_task(&goal.id, "fix delivery", "learns something")
@@ -461,7 +461,7 @@ mod tests {
         let e = engine();
         let node = "artifact:crates/lodestar-core/src/store/coordination.rs";
         let clause = amended_clause(&e);
-        e.link_goal_to_artifact(&clause.id, &[node.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&clause.id, &[node.into()], ArtifactBindingMode::Governed)
             .unwrap();
         assert!(
             clause.id.contains("@constitution:"),
@@ -497,7 +497,7 @@ mod tests {
         let e = engine();
         let node = "artifact:src/auth.rs";
         let clause = amended_clause(&e);
-        e.link_goal_to_artifact(&clause.id, &[node.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&clause.id, &[node.into()], ArtifactBindingMode::Governed)
             .unwrap();
 
         let resolved = e
@@ -514,7 +514,7 @@ mod tests {
 
     /// The other half of the same bug, and the one an agent meets first:
     /// `claim_task` and `governing_for_task` both answer through
-    /// `code_for_goal`, which looked its bindings up by exact goal id. After an
+    /// `artifacts_for_goal`, which looked its bindings up by exact goal id. After an
     /// amendment that returns an empty list — indistinguishable from "nothing
     /// governs this", so an agent was told to proceed freely on code that was
     /// in fact governed, and only found out at completion.
@@ -523,12 +523,12 @@ mod tests {
         let e = engine();
         let node = "artifact:crates/lodestar-core/src/store/coordination.rs";
         let clause = amended_clause(&e);
-        e.link_goal_to_artifact(&clause.id, &[node.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&clause.id, &[node.into()], ArtifactBindingMode::Governed)
             .unwrap();
 
         let bound = e
             .store
-            .code_for_goal(&format!("goal:{}", clause.slug))
+            .artifacts_for_goal(&format!("goal:{}", clause.slug))
             .unwrap();
 
         assert_eq!(
@@ -545,7 +545,7 @@ mod tests {
             .define_goal(GoalKind::Objective, "Ship search", "add search", None)
             .unwrap();
         let node_id = "artifact:src/search.rs";
-        e.link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], ArtifactBindingMode::Governed)
             .unwrap();
 
         for (index, learned) in [None, Some("   ")].into_iter().enumerate() {
@@ -580,7 +580,7 @@ mod tests {
             .define_goal(GoalKind::Objective, "Ship search", "add search", None)
             .unwrap();
         let node_id = "artifact:src/search.rs";
-        e.link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], ArtifactBindingMode::Governed)
             .unwrap();
         let task = e.create_task(&goal.id, "wire search", "done").unwrap();
         e.claim_task(&task.id, "agent-a", 300).unwrap();
@@ -601,8 +601,12 @@ mod tests {
         let other_goal = e
             .define_goal(GoalKind::Objective, "Own search", "separate owner", None)
             .unwrap();
-        e.link_goal_to_artifact(&other_goal.id, &[node_id.into()], CodeBindingMode::Governed)
-            .unwrap();
+        e.link_goal_to_artifact(
+            &other_goal.id,
+            &[node_id.into()],
+            ArtifactBindingMode::Governed,
+        )
+        .unwrap();
         assert!(e
             .complete_task(&task.id, "agent-a", &evidence, &checked, None)
             .unwrap_err()
@@ -671,7 +675,7 @@ mod tests {
         e.link_goal_to_artifact(
             &g.id,
             &["artifact:src/auth.rs".into()],
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
 
@@ -701,13 +705,13 @@ mod tests {
         e.link_goal_to_artifact(
             &primary.id,
             &["artifact:src/intent.rs".into()],
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
         e.link_goal_to_artifact(
             &other.id,
             &["artifact:src/graph.rs".into()],
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
         let cross_cutting = |task_id: &str| {
@@ -783,7 +787,7 @@ mod tests {
         e.link_goal_to_artifact(
             &primary.id,
             &["artifact:src/intent.rs".into()],
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
 
@@ -829,7 +833,7 @@ mod tests {
         e.link_goal_to_artifact(
             &goal.id,
             &["artifact:src/intent.rs".into()],
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
         let task = e.create_task(&goal.id, "Stranded", "done").unwrap();
@@ -1041,7 +1045,7 @@ mod tests {
         e.link_goal_to_artifact(
             &primary.id,
             &["artifact:src/intent.rs".into()],
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
         let task = e.create_task(&primary.id, "Judged", "done").unwrap();
@@ -1083,13 +1087,13 @@ mod tests {
         e.link_goal_to_artifact(
             &primary.id,
             &["artifact:src/intent.rs".into()],
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
         e.link_goal_to_artifact(
             &other.id,
             &["artifact:src/graph.rs".into()],
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
         let task = e.create_task(&primary.id, "Drifted", "done").unwrap();
@@ -1144,7 +1148,7 @@ mod tests {
         e.link_goal_to_artifact(
             &goal.id,
             std::slice::from_ref(&node),
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
         let control = Control {
@@ -1201,7 +1205,7 @@ mod tests {
         e.link_goal_to_artifact(
             &goal.id,
             std::slice::from_ref(&node),
-            CodeBindingMode::ForbidChange,
+            ArtifactBindingMode::ForbidChange,
         )
         .unwrap();
 
@@ -1242,7 +1246,7 @@ mod tests {
         e.link_goal_to_artifact(
             &goal.id,
             std::slice::from_ref(&node.to_string()),
-            CodeBindingMode::ForbidChange,
+            ArtifactBindingMode::ForbidChange,
         )
         .unwrap();
         clause
@@ -1618,7 +1622,7 @@ mod tests {
         e.link_goal_to_artifact(
             &g.id,
             &["artifact:src/parser.rs".into()],
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
         // A regularity that also references the changed node.
@@ -1666,7 +1670,7 @@ mod tests {
         e.link_goal_to_artifact(
             &g.id,
             &["artifact:src/auth.rs".into()],
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
         let t = e.create_task(&g.id, "harden auth", "").unwrap();
@@ -1704,7 +1708,7 @@ mod tests {
         e.link_goal_to_artifact(
             &g.id,
             &["artifact:CHANGELOG.md".into()],
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
 
@@ -1736,7 +1740,7 @@ mod tests {
             )
             .unwrap();
         let node_id = "artifact:src/delivery.rs";
-        e.link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], ArtifactBindingMode::Governed)
             .unwrap();
 
         // A continuous window is the control: it still passes cleanly.
