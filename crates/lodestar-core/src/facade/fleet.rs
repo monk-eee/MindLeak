@@ -1,6 +1,9 @@
 use mindleak_session::SessionContext;
 
-use crate::fleet::{wait_cycles, Divergence, FleetSession, FleetView, Staleness, ADVISORY_NOTE};
+use crate::fleet::{
+    stale_waits, wait_cycles, Divergence, FleetSession, FleetView, Staleness, ADVISORY_NOTE,
+    STALE_WAIT_GRACE_SECS,
+};
 use crate::model::TaskStatus;
 use crate::{now_unix, Lodestar, Result};
 
@@ -78,9 +81,18 @@ impl Lodestar {
         sessions.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
 
         let waits = self.store.waits()?;
+        let cycles = wait_cycles(&waits);
+        let stale = stale_waits(
+            &waits,
+            &sessions,
+            &cycles,
+            now_unix(),
+            STALE_WAIT_GRACE_SECS,
+        );
         Ok(FleetView {
             divergence: divergence_of(&sessions),
-            wait_cycles: wait_cycles(&waits),
+            stale_waits: stale,
+            wait_cycles: cycles,
             waits,
             sessions,
             enforcement: ADVISORY_NOTE,
@@ -256,6 +268,10 @@ mod tests {
             one_sided.wait_cycles.is_empty(),
             "agent-b can still answer, so a one-way wait is not a deadlock"
         );
+        assert!(
+            one_sided.stale_waits.is_empty(),
+            "agent-b holds a live claim and the wait is fresh, so it is not stale"
+        );
 
         assert!(e
             .ask_question(&second.id, "agent-b", "did you?", Some("agent-a"))
@@ -269,6 +285,10 @@ mod tests {
         let mut expected = vec![first.id.clone(), second.id.clone()];
         expected.sort();
         assert_eq!(stuck.wait_cycles[0].task_ids, expected);
+        assert!(
+            stuck.stale_waits.is_empty(),
+            "a mutual cycle is reported as a cycle, never as a stale one-way wait"
+        );
 
         // Answering either question breaks it — the remedy the finding implies
         // must actually work, or the report is just an alarm.

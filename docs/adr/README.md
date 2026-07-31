@@ -85,6 +85,8 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0075](0075-a-hit-must-stand-out-from-its-own-querys-field.md) | A hit must stand out from its own query's field | Proposed |
 | [0076](0076-evidence-is-judged-against-the-window-that-authorised-it.md) | Evidence is judged against the window that authorised the work | Accepted |
 | [0077](0077-a-crowded-board-is-not-a-decision.md) | A crowded board is not a decision | Accepted |
+| [0078](0078-an-unbound-file-is-reported-at-publication.md) | An unbound file is reported at publication | Accepted |
+| [0079](0079-a-model-call-must-fail-loudly-or-it-fails-silently.md) | A model call must fail loudly, or it fails silently | Proposed |
 
 ## Writing a new ADR
 

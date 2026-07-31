@@ -518,6 +518,163 @@ fn a_rust_use_creates_a_cross_file_impact_edge() {
     );
 }
 
+#[test]
+fn a_nested_rust_use_group_reaches_each_module_branch() {
+    // Bug regression: `use crate::a::{b::{C, D}, E};` used to discard the
+    // nested `b` branch, so impact traversal omitted a/b.rs even though the
+    // source named it explicitly.
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file("crates/c/src/a/b.rs", "pub struct C;\npub struct D;\n")
+        .unwrap();
+    engine
+        .ingest_file("crates/c/src/a.rs", "pub struct E;\n")
+        .unwrap();
+    engine
+        .ingest_file(
+            "crates/c/src/lib.rs",
+            "use crate::a::{b::{C, D as Renamed}, E};\n",
+        )
+        .unwrap();
+
+    for dependency in ["crates/c/src/a/b.rs", "crates/c/src/a.rs"] {
+        let impact = engine
+            .impact_radius(&format!("artifact:{dependency}"))
+            .unwrap();
+        assert!(
+            impact.edges.iter().any(|edge| {
+                edge.relation == mindleak_core::RelationType::Imports
+                    && edge.source_id == "artifact:crates/c/src/lib.rs"
+                    && edge.target_id == format!("artifact:{dependency}")
+            }),
+            "the nested use must link lib.rs to {dependency}; got {:?}",
+            impact.edges
+        );
+    }
+}
+
+#[test]
+fn a_cargo_declared_crate_import_reaches_its_module_file() {
+    // Bug regression: every non-local Rust root became only a package node,
+    // even when an ingested Cargo manifest proved which workspace crate and
+    // source root it named. Impact therefore stopped at the crate boundary.
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file(
+            "crates/dependency/Cargo.toml",
+            "[package]\nname = \"dependency-crate\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+    engine
+        .ingest_file(
+            "crates/consumer/Cargo.toml",
+            "[package]\nname = \"consumer\"\nversion = \"0.1.0\"\n\
+               [dependencies]\nstorage = { package = \"dependency-crate\", path = \"../dependency\" }\n",
+        )
+        .unwrap();
+    engine
+        .ingest_file(
+            "crates/consumer/src/lib.rs",
+            "use storage::repository::resolve;\n",
+        )
+        .unwrap();
+    let unresolved = engine
+        .multi_hop_query("artifact:crates/consumer/src/lib.rs", 1, 0.0)
+        .unwrap();
+    assert!(unresolved.edges.iter().any(|edge| {
+        edge.relation == mindleak_core::RelationType::Imports && edge.target_id == "package:storage"
+    }));
+    engine
+        .ingest_file(
+            "crates/dependency/src/repository.rs",
+            "pub fn resolve() {}\n",
+        )
+        .unwrap();
+    engine
+        .ingest_file("crates/dependency/src/lib.rs", "pub mod repository;\n")
+        .unwrap();
+    engine
+        .ingest_file(
+            "crates/consumer/src/lib.rs",
+            "use storage::repository::resolve;\n",
+        )
+        .unwrap();
+    assert!(engine
+        .store()
+        .get_node("package:storage")
+        .unwrap()
+        .is_none());
+
+    let impact = engine
+        .impact_radius("artifact:crates/dependency/src/repository.rs")
+        .unwrap();
+    assert!(
+        impact.edges.iter().any(|edge| {
+            edge.relation == mindleak_core::RelationType::Imports
+                && edge.source_id == "artifact:crates/consumer/src/lib.rs"
+                && edge.target_id == "artifact:crates/dependency/src/repository.rs"
+        }),
+        "the verified workspace crate import must target repository.rs directly; got {:?}",
+        impact.edges
+    );
+
+    engine
+        .ingest_file(
+            "crates/consumer/src/external.rs",
+            "use external_crate::Thing;\n",
+        )
+        .unwrap();
+    let external = engine
+        .multi_hop_query("artifact:crates/consumer/src/external.rs", 1, 0.0)
+        .unwrap();
+    assert!(external.edges.iter().any(|edge| {
+        edge.relation == mindleak_core::RelationType::Imports
+            && edge.target_id == "package:external_crate"
+    }));
+}
+
+#[test]
+fn an_unrelated_local_crate_does_not_hijack_an_external_import() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file(
+            "crates/local/Cargo.toml",
+            "[package]\nname = \"shared-crate\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+    engine
+        .ingest_file("crates/local/src/lib.rs", "pub mod repository;\n")
+        .unwrap();
+    engine
+        .ingest_file("crates/local/src/repository.rs", "pub fn resolve() {}\n")
+        .unwrap();
+    engine
+        .ingest_file(
+            "crates/consumer/Cargo.toml",
+            "[package]\nname = \"consumer\"\nversion = \"0.1.0\"\n\
+             [dependencies]\nshared-crate = \"1\"\n",
+        )
+        .unwrap();
+    engine
+        .ingest_file(
+            "crates/consumer/src/lib.rs",
+            "use shared_crate::repository::resolve;\n",
+        )
+        .unwrap();
+
+    let consumer = engine
+        .multi_hop_query("artifact:crates/consumer/src/lib.rs", 1, 0.0)
+        .unwrap();
+    assert!(consumer.edges.iter().any(|edge| {
+        edge.relation == mindleak_core::RelationType::Imports
+            && edge.target_id == "package:shared_crate"
+    }));
+    assert!(consumer.edges.iter().all(|edge| {
+        edge.relation != mindleak_core::RelationType::Imports
+            || !edge.target_id.ends_with("/src/repository.rs")
+    }));
+}
+
 /// A `mod` declaration is the most precise dependency statement Rust has: it
 /// names exactly one file. It resolves to the declaring module's directory,
 /// which for a non-root file is a directory named after the file itself.

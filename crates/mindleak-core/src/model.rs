@@ -61,7 +61,7 @@ pub enum RelationType {
     Fixed,
     /// Weak semantic association.
     RelatesTo,
-    /// Artifact contains a symbol.
+    /// Artifact contains a symbol or a project component it declares.
     Contains,
     /// An agent ingested or focused this node (attribution; decays).
     Observed,

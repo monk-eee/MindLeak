@@ -1,0 +1,1 @@
+- **Semantic recall now stays silent when its own results cannot support the question.** Returned node text must ground a majority of the query's repository-specific information, preventing gibberish and coherent out-of-domain questions from producing plausible strangers without raising the similarity floor or adding an LLM call.
