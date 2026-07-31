@@ -208,7 +208,7 @@ takes a lock there too, so two worktrees can never sweep at once.
 node scripts/artefact-sweep.mjs           # what would be reclaimed, and why not
 node scripts/artefact-sweep.mjs --apply   # reclaim it now
 make sweep                                # the same, via make
-make queue-watch --no-sweep               # run the queue without hygiene
+node scripts/delivery-queue.mjs --watch --no-sweep   # the queue, without hygiene
 ```
 
 `make sweep` is for diagnosis; the watcher is the mechanism. Both report by
