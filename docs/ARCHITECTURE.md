@@ -22,6 +22,14 @@ Both planes resolve one per-clone id from shared Git config, so linked worktrees
 share state without sharing files, indexes, or branches. Reset and export remain
 plane-specific operations.
 
+The `repository` module is split by responsibility: `mod.rs` holds the data
+types (`DatabaseKind`, `DatabaseOrigin`, `StorageStatus`, `ResolvedDatabase`) and
+public re-exports; `resolve` picks the database and state root; `identity` owns
+the per-clone repository id and its marker bootstrap; `migrate` guards the
+one-shot legacy migration lock; `platform` resolves the OS state root;
+`worktree` lists sibling checkouts; and `fs` holds the git-process and
+filesystem helpers.
+
 ### `mindleak-session` (library)
 
 The shared ADR-0030 request identity contract. It validates client-minted
