@@ -1,7 +1,7 @@
 //! Constitution tool definitions and dispatch.
 
 use super::{constitution_packs as policy_packs, ok, opt_str, req_str, str_array, text};
-use lodestar_core::{CodeBindingMode, GoalKind, Lodestar};
+use lodestar_core::{ArtifactBindingMode, GoalKind, Lodestar};
 use serde_json::{json, Value};
 
 pub(super) fn definitions() -> Vec<Value> {
@@ -398,8 +398,9 @@ fn pack_complete_contract(engine: &Lodestar, args: &Value) -> Result<Value, Stri
     policy_packs::complete_contract(engine, args)
 }
 
-fn parse_binding_mode(value: &str) -> Result<CodeBindingMode, String> {
-    CodeBindingMode::from_tag(value).ok_or_else(|| format!("invalid code binding mode: {value}"))
+fn parse_binding_mode(value: &str) -> Result<ArtifactBindingMode, String> {
+    ArtifactBindingMode::from_tag(value)
+        .ok_or_else(|| format!("invalid code binding mode: {value}"))
 }
 
 #[cfg(test)]

@@ -18,6 +18,30 @@ pub(super) fn migrate(connection: &Connection) -> Result<()> {
 }
 
 fn migrate_locked(connection: &Connection) -> Result<()> {
+    // ADR-0060 renamed the binding verb to link_goal_to_artifact; the store it
+    // writes to follows. schema.sql has already ensured an (empty)
+    // goal_artifacts exists, so for an existing ledger this moves every binding
+    // across from the old goal_code and drops it — a pure RENAME would strand the
+    // real rows behind the empty table schema.sql just created. It runs before
+    // the column loop below refers to the table by its new name, and adds the
+    // `mode` column to a pre-mode goal_code first so the copy cannot fail.
+    // Recorded by name (ADR-0063): "has this run?" is a fact, not an inference
+    // from the rows it edits. Dropping goal_code drops its index with it.
+    run_once(connection, "rename_goal_code_to_goal_artifacts", || {
+        if table_exists(connection, "goal_code")? {
+            if !column_exists(connection, "goal_code", "mode")? {
+                connection.execute_batch(
+                    "ALTER TABLE goal_code ADD COLUMN mode TEXT NOT NULL DEFAULT 'governed'",
+                )?;
+            }
+            connection.execute_batch(
+                "INSERT OR IGNORE INTO goal_artifacts (goal_id, node_id, mode)
+                     SELECT goal_id, node_id, mode FROM goal_code;
+                 DROP TABLE goal_code;",
+            )?;
+        }
+        Ok(())
+    })?;
     let promotion_status_added = !column_exists(connection, "design_items", "promotion_status")?;
     for (table, column, definition) in [
         ("tasks", "claim_started_at", "INTEGER"),
@@ -28,7 +52,7 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
         ("tasks", "resolved_by", "TEXT"),
         ("tasks", "resolved_at", "INTEGER"),
         ("tasks", "resolved_conformance_id", "INTEGER"),
-        ("goal_code", "mode", "TEXT NOT NULL DEFAULT 'governed'"),
+        ("goal_artifacts", "mode", "TEXT NOT NULL DEFAULT 'governed'"),
         ("conformance", "evidence_schema_version", "INTEGER"),
         ("conformance", "evidence", "TEXT"),
         (
@@ -437,4 +461,12 @@ pub(crate) fn column_exists(connection: &Connection, table: &str, column: &str) 
         }
     }
     Ok(false)
+}
+
+pub(crate) fn table_exists(connection: &Connection, table: &str) -> Result<bool> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [table],
+        |row| row.get::<_, bool>(0),
+    )?)
 }

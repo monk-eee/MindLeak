@@ -193,7 +193,7 @@ grace distinct from the active lease. Coordination state, never decays
 
 ### Goal ↔ code (the seam)
 
-`goal_code(goal_id, node_id, mode)` — links a goal to the MindLeak `artifact:` /
+`goal_artifacts(goal_id, node_id, mode)` — links a goal to the MindLeak `artifact:` /
 `symbol:` nodes that realise it. `mode` is `governed` by default;
 `forbid_change` is available for constraints and invariants. Enables "which code
 serves goal G?" and, in reverse, "which intent governs the file I'm about to
@@ -575,7 +575,7 @@ expose remotely; doing so would require an auth layer and its own ADR.
 ## 12. Phased plan (start small)
 
 - **Phase 0 — MVP (shared intent + collision-free claiming).** `lodestar-core`
-  crate + schema (`goals`, `tasks`, `goal_code`); `lodestar-mcp` with
+  crate + schema (`goals`, `tasks`, `goal_artifacts`); `lodestar-mcp` with
   `define_goal`, `get_constitution`, `task_create`, `task_claim` (CAS + lease +
   renew), `task_transition`, `task_query`. **Deterministic only, no LLM.** This
   alone lets parallel agents across worktrees share one spec and partition work

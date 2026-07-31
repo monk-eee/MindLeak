@@ -154,7 +154,7 @@ async function main() {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
     const bindings = db
-      .prepare("select goal_id, node_id, mode from goal_code")
+      .prepare("select goal_id, node_id, mode from goal_artifacts")
       .all();
     const bound = new Set(bindings.map((binding) => binding.node_id));
 

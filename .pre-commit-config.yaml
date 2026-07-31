@@ -152,6 +152,20 @@ repos:
         always_run: true
         stages: [pre-push]
 
+      # A hook type declared in default_install_hook_types only installs when
+      # `pre-commit install` is re-run, and the hooks directory is shared across
+      # every worktree — so a checkout made before post-commit was added keeps
+      # committing with no provenance, and nothing says so, because the hook
+      # that would announce it is the one that is missing. Verify the full set
+      # on the way out, on a path (pre-push) that is itself installed.
+      - id: hook-health
+        name: the shared hooks directory has every declared hook
+        entry: node scripts/hook-health.mjs
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
       # An ADR left in the working tree is one `git clean -fd` from gone, and
       # nothing else reports it. Only the working-tree check runs here: the
       # unpublished check would fail the very push that publishes the ADR.

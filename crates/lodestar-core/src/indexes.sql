@@ -31,5 +31,5 @@ CREATE INDEX IF NOT EXISTS idx_task_scopes_value ON task_scopes(kind, value);
 CREATE INDEX IF NOT EXISTS idx_task_qa_task ON task_qa(task_id);
 CREATE INDEX IF NOT EXISTS idx_task_qa_audience ON task_qa(audience, kind);
 CREATE INDEX IF NOT EXISTS idx_task_goal_coverage_goal ON task_goal_coverage(goal_id);
-CREATE INDEX IF NOT EXISTS idx_goal_code_node ON goal_code(node_id);
+CREATE INDEX IF NOT EXISTS idx_goal_artifacts_node ON goal_artifacts(node_id);
 CREATE INDEX IF NOT EXISTS idx_session_context_base ON session_context(base);

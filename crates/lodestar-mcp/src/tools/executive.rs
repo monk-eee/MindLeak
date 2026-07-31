@@ -1100,7 +1100,7 @@ mod tests {
     use super::super::call;
     use super::*;
     use lodestar_core::llm::LlmClient;
-    use lodestar_core::{now_unix, CodeBindingMode, ConformanceEvidence, GoalKind};
+    use lodestar_core::{now_unix, ArtifactBindingMode, ConformanceEvidence, GoalKind};
     use mindleak_session::SessionRegistry;
 
     /// The deprecation window has to be worth having: an old name must answer,
@@ -1474,7 +1474,7 @@ mod tests {
             .unwrap();
         let node_id = "artifact:src/search.rs";
         engine
-            .link_goal_to_artifact(&goal.id, &[node_id.into()], CodeBindingMode::Governed)
+            .link_goal_to_artifact(&goal.id, &[node_id.into()], ArtifactBindingMode::Governed)
             .unwrap();
         let task = engine.create_task(&goal.id, "wire search", "done").unwrap();
         engine.claim_task(&task.id, "agent-a", 300).unwrap();
@@ -2358,7 +2358,7 @@ mod tests {
             .unwrap();
         let node = "artifact:src/search.rs";
         engine
-            .link_goal_to_artifact(&goal.id, &[node.into()], CodeBindingMode::Governed)
+            .link_goal_to_artifact(&goal.id, &[node.into()], ArtifactBindingMode::Governed)
             .unwrap();
         let task = engine.create_task(&goal.id, "wire search", "done").unwrap();
         let open_next = engine
