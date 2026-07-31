@@ -83,6 +83,8 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0073](0073-each-window-roots-its-servers-at-the-worktree-it-edits.md) | Each window roots its servers at the worktree it edits | Accepted |
 | [0074](0074-coverage-is-a-prediction-until-conformance-speaks.md) | Coverage is a prediction until conformance speaks | Accepted |
 | [0075](0075-a-hit-must-stand-out-from-its-own-querys-field.md) | A hit must stand out from its own query's field | Proposed |
+| [0076](0076-evidence-is-judged-against-the-window-that-authorised-it.md) | Evidence is judged against the window that authorised the work | Accepted |
+| [0077](0077-a-crowded-board-is-not-a-decision.md) | A crowded board is not a decision | Accepted |
 
 ## Writing a new ADR
 

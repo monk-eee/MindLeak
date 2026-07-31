@@ -403,7 +403,15 @@ CREATE TABLE IF NOT EXISTS knowledge (
     weight          REAL NOT NULL DEFAULT 1.0,
     half_life_hours REAL NOT NULL DEFAULT 720.0, -- ~30 days
     confirmed_at    INTEGER NOT NULL,      -- last reconfirmation (decay clock)
-    created_at      INTEGER NOT NULL
+    created_at      INTEGER NOT NULL,
+    -- Retirement: a lesson that is wrong or superseded stops being carried
+    -- without waiting out its half-life. Retiring is not deleting (ADR-0019):
+    -- the row keeps its statement, evidence and provenance, and gains who
+    -- ended it, when, and why.
+    retired_at      INTEGER,
+    retired_by      TEXT,
+    retired_reason  TEXT,
+    superseded_by   TEXT                   -- the knowledge id that replaced it
 );
 
 -- Where each agent session declared it is working (ADR-0035, amended by

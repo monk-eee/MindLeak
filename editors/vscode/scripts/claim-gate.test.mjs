@@ -23,6 +23,7 @@ describe("claim-gate", () => {
   it("refuses to publish without a live claim", () => {
     const verdict = publishVerdict({
       reachable: true,
+      boardReadable: true,
       sessionDeclared: true,
       agent: "agent-a",
       tasks: [],
@@ -39,6 +40,7 @@ describe("claim-gate", () => {
   it("allows a publication backed by a live claim", () => {
     const verdict = publishVerdict({
       reachable: true,
+      boardReadable: true,
       sessionDeclared: true,
       agent: "agent-a",
       tasks: [claimed("task:1", "agent-a", NOW + 300)],
@@ -86,12 +88,14 @@ describe("claim-gate", () => {
     expect(verdict.message).toContain("LODESTAR_SESSION_ID");
   });
 
-  // A session was declared but no identity came back, which means the ledger
-  // did not answer. Reporting that as a missing session would send the reader
-  // to fix the one thing that is not broken.
-  it("blames the ledger, not the session, when identity cannot be resolved", () => {
+  // A session was declared and the ledger answered, but it returned no agent
+  // id. The ledger is reachable, so reporting this as unreachable would send
+  // the reader to rebuild the one thing that is working. It names the answered-
+  // but-unidentified case instead, keeping it distinct from a dead ledger.
+  it("names an answered-but-unidentified session, not an unreachable ledger", () => {
     const verdict = publishVerdict({
       reachable: true,
+      boardReadable: true,
       sessionDeclared: true,
       agent: "",
       tasks: [],
@@ -100,8 +104,32 @@ describe("claim-gate", () => {
     });
 
     expect(verdict.ok).toBe(false);
-    expect(verdict.message).toContain("unreachable");
-    expect(verdict.message).not.toContain("LODESTAR_SESSION_ID");
+    expect(verdict.message).toContain("did not identify this session");
+    expect(verdict.message).not.toContain("is unreachable");
+    expect(verdict.message).not.toContain("cargo build");
+  });
+
+  // The incident the gap records: a stale binary answered open_session in 450ms
+  // but could not parse the board, and the gate reported an unreachable ledger
+  // and offered `cargo build` for a binary that was present and answering. A
+  // board that cannot be read is a different failure with a different remedy —
+  // a current binary, not a rebuild — and the refusal must name it.
+  it("names the board, not an unreachable ledger, when the board cannot be read", () => {
+    const verdict = publishVerdict({
+      reachable: true,
+      boardReadable: false,
+      sessionDeclared: true,
+      agent: "agent-a",
+      tasks: [],
+      branch: "fleet/thing",
+      now: NOW,
+    });
+
+    expect(verdict.ok).toBe(false);
+    expect(verdict.message).toContain("board could not be read");
+    expect(verdict.message).toContain("LODESTAR_MCP_BIN");
+    expect(verdict.message).not.toContain("cargo build");
+    expect(verdict.message).not.toContain("is unreachable");
   });
 
   // Another agent's claim is not this agent's licence to publish.
@@ -129,6 +157,7 @@ describe("claim-gate", () => {
     const agent = "session:v1:bff9bbe3968f16636cbc5522086114e3";
     const verdict = publishVerdict({
       reachable: true,
+      boardReadable: true,
       sessionDeclared: true,
       agent,
       tasks: [claimed("task:1", agent, NOW + 300)],
