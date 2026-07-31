@@ -4,7 +4,7 @@
 use mindleak_core::config::DecayPolicy;
 use mindleak_core::ingest::execution::ExecutionRecord;
 use mindleak_core::ingest::git::CommitRecord;
-use mindleak_core::{now_unix, MindLeak, NodeType};
+use mindleak_core::{now_unix, Edge, MindLeak, Node, NodeType, RelationType};
 
 fn exec(command: &str, exit: i32, output: &str, changed: &[&str]) -> ExecutionRecord {
     ExecutionRecord {
@@ -154,6 +154,25 @@ fn reconcile_reports_stale_structure_and_plain_refresh_preserves_attention() {
     engine
         .ingest_execution_for_agent("tester", &exec("cargo check", 0, "ok", &["src/stale.rs"]))
         .unwrap();
+    let observed_at = now_unix();
+    engine
+        .store()
+        .upsert_node(&Node::new(
+            "agent:tester",
+            NodeType::Agent,
+            "tester",
+            observed_at,
+        ))
+        .unwrap();
+    engine
+        .store()
+        .upsert_edge(&Edge::new(
+            "agent:tester",
+            "artifact:src/stale.rs",
+            RelationType::Observed,
+            observed_at,
+        ))
+        .unwrap();
     engine
         .ingest_file("src/current.rs", "pub fn current() {}\n")
         .unwrap();
@@ -166,8 +185,7 @@ fn reconcile_reports_stale_structure_and_plain_refresh_preserves_attention() {
         .edges
         .iter()
         .find(|edge| {
-            edge.relation == mindleak_core::RelationType::Observed
-                && edge.target_id == "artifact:src/stale.rs"
+            edge.relation == RelationType::Observed && edge.target_id == "artifact:src/stale.rs"
         })
         .expect("execution attribution should observe the touched artifact")
         .clone();
@@ -217,8 +235,7 @@ fn reconcile_reports_stale_structure_and_plain_refresh_preserves_attention() {
         .edges
         .iter()
         .find(|edge| {
-            edge.relation == mindleak_core::RelationType::Observed
-                && edge.target_id == "artifact:src/stale.rs"
+            edge.relation == RelationType::Observed && edge.target_id == "artifact:src/stale.rs"
         })
         .expect("structural refresh must retain the prior observation");
     assert_eq!(observed_after.updated_at, observed_before.updated_at);
