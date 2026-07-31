@@ -61,12 +61,53 @@ pub(super) fn next_punctuation(tokens: &[Token], start: usize, punctuation: char
     (start..tokens.len()).find(|index| tokens[*index].is_punctuation(punctuation))
 }
 
-pub(super) fn next_non_newline(tokens: &[Token], start: usize) -> Option<usize> {
+pub(crate) fn next_non_newline(tokens: &[Token], start: usize) -> Option<usize> {
     (start..tokens.len()).find(|index| !tokens[*index].is_newline())
 }
 
-pub(super) fn previous_non_newline(tokens: &[Token], index: usize) -> Option<usize> {
+pub(crate) fn previous_non_newline(tokens: &[Token], index: usize) -> Option<usize> {
     (0..index)
         .rev()
         .find(|previous| !tokens[*previous].is_newline())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ingest::javascript::tokenize;
+
+    #[test]
+    fn newline_skipping_is_directional_and_bounded() {
+        // `a`, newline, `b` — the only two identifiers sit either side of a newline.
+        let tokens = tokenize("a\nb");
+        let first = 0;
+        let last = tokens.len() - 1;
+        assert!(tokens[1].is_newline());
+
+        assert_eq!(next_non_newline(&tokens, 1), Some(last));
+        assert_eq!(next_non_newline(&tokens, first), Some(first));
+        assert_eq!(previous_non_newline(&tokens, last), Some(first));
+
+        // Both refuse to invent a token past the edge they are walking towards.
+        assert_eq!(next_non_newline(&tokens, tokens.len()), None);
+        assert_eq!(previous_non_newline(&tokens, 0), None);
+    }
+
+    #[test]
+    fn consecutive_newlines_are_skipped_as_one_run() {
+        let tokens = tokenize("a\n\n\nb");
+        let last = tokens.len() - 1;
+
+        assert_eq!(next_non_newline(&tokens, 1), Some(last));
+        assert_eq!(previous_non_newline(&tokens, last), Some(0));
+    }
+
+    #[test]
+    fn an_all_newline_stream_has_no_neighbour_in_either_direction() {
+        let tokens = tokenize("\n\n");
+
+        assert!(!tokens.is_empty());
+        assert_eq!(next_non_newline(&tokens, 0), None);
+        assert_eq!(previous_non_newline(&tokens, tokens.len()), None);
+    }
 }

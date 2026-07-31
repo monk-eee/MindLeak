@@ -14,7 +14,7 @@ use regex::Regex;
 
 use crate::ingest::javascript::{
     callable_for_definition, is_identifier_shadowed, is_identifier_shadowed_except, mask_non_code,
-    tokenize, Token,
+    next_non_newline, previous_non_newline, tokenize, Token,
 };
 
 /// A source symbol definition discovered in a file.
@@ -351,16 +351,6 @@ fn javascript_call_sites(tokens: &[Token]) -> Vec<(String, usize, Option<usize>)
         sites.push((name.to_string(), token.start, Some(index)));
     }
     sites
-}
-
-fn next_non_newline(tokens: &[Token], start: usize) -> Option<usize> {
-    (start..tokens.len()).find(|index| !tokens[*index].is_newline())
-}
-
-fn previous_non_newline(tokens: &[Token], index: usize) -> Option<usize> {
-    (0..index)
-        .rev()
-        .find(|previous| !tokens[*previous].is_newline())
 }
 
 /// Extract just the symbol definitions from `content` (convenience wrapper).
