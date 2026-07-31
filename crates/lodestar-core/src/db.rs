@@ -888,6 +888,52 @@ mod tests {
         connection.execute("DELETE FROM task_handoffs", []).unwrap();
     }
 
+    /// A database written before knowledge could be retired still opens, and
+    /// its existing lessons survive the upgrade.
+    ///
+    /// The retirement columns arrive by `ALTER TABLE ADD COLUMN`, so the table
+    /// must be the *old* one: `CREATE TABLE IF NOT EXISTS` in `schema.sql`
+    /// leaves a pre-existing table exactly as it found it, which is precisely
+    /// the shape a real upgrade meets. NULL on every pre-existing row is the
+    /// honest answer — nothing was retired before this existed.
+    #[test]
+    fn migration_adds_knowledge_retirement_to_a_pre_existing_database() {
+        let path = temporary_database("legacy-knowledge");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE knowledge (
+                         id              TEXT PRIMARY KEY,
+                         statement       TEXT NOT NULL,
+                         evidence        TEXT NOT NULL DEFAULT '',
+                         weight          REAL NOT NULL DEFAULT 1.0,
+                         half_life_hours REAL NOT NULL DEFAULT 720.0,
+                         confirmed_at    INTEGER NOT NULL,
+                         created_at      INTEGER NOT NULL
+                     );
+                     INSERT INTO knowledge
+                         (id, statement, evidence, weight, half_life_hours, confirmed_at, created_at)
+                     VALUES ('knowledge:old', 'learned before retirement', '{}', 1.0, 720.0, 100, 100);",
+                )
+                .unwrap();
+        }
+
+        let store = LodestarStore::new(open(path.to_str().unwrap()).unwrap());
+        let existing = store.get_knowledge("knowledge:old").unwrap().unwrap();
+        assert_eq!(existing.statement, "learned before retirement");
+        assert_eq!(existing.retired_at, None);
+        assert!(!existing.retired());
+
+        // And the new act works against the upgraded row.
+        let retired = store
+            .retire_knowledge("knowledge:old", "Reviewer", "superseded", None, 200)
+            .unwrap();
+        assert_eq!(retired.retired_at, Some(200));
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+
     fn temporary_database(name: &str) -> PathBuf {
         let path =
             std::env::temp_dir().join(format!("lodestar-db-{name}-{}.db", std::process::id()));

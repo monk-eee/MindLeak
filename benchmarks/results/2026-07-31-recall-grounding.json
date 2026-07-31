@@ -1,0 +1,201 @@
+{
+  "schema_version": 2,
+  "captured_at": "2026-07-31",
+  "source_revision": "f8d304d",
+  "source_worktree_dirty": false,
+  "binary_sha256": "9155b3228b52873a8fe4ac6d7fc45b04a61e093216d4d599165c0aedaf061af8",
+  "model": "nomic-embed-text",
+  "indexed_nodes": 21593,
+  "floor": 0.5,
+  "limit": 5,
+  "served_by_kind": {
+    "before": {
+      "intent": 7,
+      "gone": 31,
+      "symbol": 20,
+      "execution": 9,
+      "artifact": 2,
+      "package": 1
+    },
+    "after": {
+      "intent": 25
+    }
+  },
+  "hits_naming_a_node_the_graph_no_longer_holds": {
+    "before": 31,
+    "before_of": 70,
+    "after": 0,
+    "after_of": 25
+  },
+  "control_abstention": {
+    "controls": 7,
+    "abstained": 7
+  },
+  "real_answers": {
+    "queries": 7,
+    "nonempty": 5,
+    "relevant": 5
+  },
+  "nonsense_rejection": {
+    "separable_by_one_sigma_threshold": false,
+    "highest_nonsense_sigma": 3.983667156064406,
+    "lowest_real_sigma": 3.651942052243898,
+    "margin": -0.3317251038205078
+  },
+  "per_query": [
+    {
+      "query": "zzzzqqq wibble flarp",
+      "label": "nonsense",
+      "field_mean": 0.42380279637765933,
+      "field_sd": 0.03628469915131804,
+      "top_score": 0.5388731635772009,
+      "top_sigma_above_field": 3.171319313401602,
+      "before_hits": 5,
+      "after_hits": 0,
+      "after_relevant_hits": 0
+    },
+    {
+      "query": "qwertyuiop asdfghjkl zxcvbnm",
+      "label": "nonsense",
+      "field_mean": 0.4805849578337631,
+      "field_sd": 0.029781452813182847,
+      "top_score": 0.5909164652000575,
+      "top_sigma_above_field": 3.7047053432348274,
+      "before_hits": 5,
+      "after_hits": 0,
+      "after_relevant_hits": 0
+    },
+    {
+      "query": "flurb glorp snizzle wexpo",
+      "label": "nonsense",
+      "field_mean": 0.4535408970090598,
+      "field_sd": 0.03611221244170166,
+      "top_score": 0.5973999316458871,
+      "top_sigma_above_field": 3.983667156064406,
+      "before_hits": 5,
+      "after_hits": 0,
+      "after_relevant_hits": 0
+    },
+    {
+      "query": "how should PostgreSQL autovacuum be tuned for a billion row table",
+      "label": "absent",
+      "field_mean": 0.413086224136436,
+      "field_sd": 0.03767792333851405,
+      "top_score": 0.5678783117161916,
+      "top_sigma_above_field": 4.108296685808278,
+      "before_hits": 5,
+      "after_hits": 0,
+      "after_relevant_hits": 0
+    },
+    {
+      "query": "where is the payroll tax withholding calculation implemented",
+      "label": "absent",
+      "field_mean": 0.40215809247197043,
+      "field_sd": 0.03493922236564378,
+      "top_score": 0.5481121793872841,
+      "top_sigma_above_field": 4.177370789420669,
+      "before_hits": 5,
+      "after_hits": 0,
+      "after_relevant_hits": 0
+    },
+    {
+      "query": "why does a Kubernetes ingress return a 502 response",
+      "label": "absent",
+      "field_mean": 0.4751895998907005,
+      "field_sd": 0.03882692970627431,
+      "top_score": 0.6582891885808017,
+      "top_sigma_above_field": 4.715788502342302,
+      "before_hits": 5,
+      "after_hits": 0,
+      "after_relevant_hits": 0
+    },
+    {
+      "query": "how do I rotate an AWS access key without downtime",
+      "label": "absent",
+      "field_mean": 0.4059937820545596,
+      "field_sd": 0.03448849007624255,
+      "top_score": 0.527310862859554,
+      "top_sigma_above_field": 3.517610673497238,
+      "before_hits": 5,
+      "after_hits": 0,
+      "after_relevant_hits": 0
+    },
+    {
+      "query": "canonical-push auto-merge armed refuses",
+      "label": "real",
+      "field_mean": 0.5076582457889308,
+      "field_sd": 0.04358016834087848,
+      "top_score": 0.7058015861810757,
+      "top_sigma_above_field": 4.546640087351043,
+      "before_hits": 5,
+      "after_hits": 5,
+      "after_relevant_hits": 5
+    },
+    {
+      "query": "what breaks when an agent commits before claiming the task",
+      "label": "real",
+      "field_mean": 0.5237423202615851,
+      "field_sd": 0.04552252870967384,
+      "top_score": 0.704900755368027,
+      "top_sigma_above_field": 3.9795336560015073,
+      "before_hits": 5,
+      "after_hits": 5,
+      "after_relevant_hits": 4
+    },
+    {
+      "query": "why does a lapsed lease stop the work certifying",
+      "label": "real",
+      "field_mean": 0.4333842434220181,
+      "field_sd": 0.0486751340117258,
+      "top_score": 0.7390768456996468,
+      "top_sigma_above_field": 6.280262160223074,
+      "before_hits": 5,
+      "after_hits": 5,
+      "after_relevant_hits": 5
+    },
+    {
+      "query": "why does PowerShell report failure for a command that succeeded",
+      "label": "real",
+      "field_mean": 0.4881532717882697,
+      "field_sd": 0.0468891064150103,
+      "top_score": 0.659389571297385,
+      "top_sigma_above_field": 3.651942052243898,
+      "before_hits": 5,
+      "after_hits": 0,
+      "after_relevant_hits": 0
+    },
+    {
+      "query": "a test that passes locally but is red only on windows",
+      "label": "real",
+      "field_mean": 0.4572349426110579,
+      "field_sd": 0.03400280935752676,
+      "top_score": 0.6138399482969615,
+      "top_sigma_above_field": 4.605649022681063,
+      "before_hits": 5,
+      "after_hits": 5,
+      "after_relevant_hits": 1
+    },
+    {
+      "query": "why can a recorded lesson never reach another agent",
+      "label": "real",
+      "field_mean": 0.4384550435254182,
+      "field_sd": 0.040596779936798257,
+      "top_score": 0.6932040402760186,
+      "top_sigma_above_field": 6.27510352168812,
+      "before_hits": 5,
+      "after_hits": 5,
+      "after_relevant_hits": 2
+    },
+    {
+      "query": "the running server is behind the source it reports on",
+      "label": "real",
+      "field_mean": 0.45440473114675795,
+      "field_sd": 0.03772831010757571,
+      "top_score": 0.6268134929921998,
+      "top_sigma_above_field": 4.569745142410255,
+      "before_hits": 5,
+      "after_hits": 0,
+      "after_relevant_hits": 0
+    }
+  ]
+}

@@ -9,7 +9,8 @@ use crate::util::short_hash;
 use super::{collect, LodestarStore};
 
 const KNOWLEDGE_COLS: &str =
-    "id, statement, evidence, weight, half_life_hours, confirmed_at, created_at";
+    "id, statement, evidence, weight, half_life_hours, confirmed_at, created_at, \
+     retired_at, retired_by, retired_reason, superseded_by";
 
 impl LodestarStore {
     /// Insert or reconfirm a knowledge node. Re-recording the same statement
@@ -56,15 +57,71 @@ impl LodestarStore {
     }
 
     /// Knowledge still above the active threshold, strongest first.
+    ///
+    /// Retired lessons are excluded here rather than at each reader, because
+    /// this is the one query the conformance advisory and every other consumer
+    /// go through. A rule with several implementations is a rule with several
+    /// chances to go stale — which is exactly how `surfaces` was falsified in
+    /// three places at once.
     pub fn active_knowledge(&self, now: i64) -> Result<Vec<Knowledge>> {
         let sql = format!(
             "SELECT {KNOWLEDGE_COLS} FROM knowledge
-              WHERE effective_weight(weight, half_life_hours, confirmed_at, ?1) >= ?2
+              WHERE retired_at IS NULL
+                AND effective_weight(weight, half_life_hours, confirmed_at, ?1) >= ?2
               ORDER BY effective_weight(weight, half_life_hours, confirmed_at, ?1) DESC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![now, ACTIVE_THRESHOLD], row_to_knowledge)?;
         collect(rows)
+    }
+
+    /// Retire one lesson, attributed to whoever ended it (ADR-0019 shape).
+    ///
+    /// Knowledge was durable-but-decaying with no way to say "this is wrong" or
+    /// "this was replaced": a superseded record kept being counted and kept
+    /// competing for the capped goal-advisory slots until its half-life ran
+    /// out, so the silent-knowledge audit could never reach zero by doing the
+    /// work. Retiring says so explicitly.
+    ///
+    /// Guarded on `retired_at IS NULL` in a single statement so two concurrent
+    /// retirements cannot both claim to be the one that did it, and the
+    /// original actor and reason are never overwritten.
+    pub fn retire_knowledge(
+        &self,
+        id: &str,
+        human: &str,
+        reason: &str,
+        superseded_by: Option<&str>,
+        now: i64,
+    ) -> Result<Knowledge> {
+        if self.get_knowledge(id)?.is_none() {
+            return Err(LodestarError::NotFound(id.to_string()));
+        }
+        // A dangling replacement would leave a reader with a withdrawn lesson
+        // and nowhere to go, so the successor must already exist.
+        if let Some(successor) = superseded_by {
+            if successor == id {
+                return Err(LodestarError::Invalid(format!(
+                    "knowledge cannot supersede itself: {id}"
+                )));
+            }
+            if self.get_knowledge(successor)?.is_none() {
+                return Err(LodestarError::NotFound(successor.to_string()));
+            }
+        }
+        let changed = self.conn.execute(
+            "UPDATE knowledge
+             SET retired_at = ?2, retired_by = ?3, retired_reason = ?4, superseded_by = ?5
+             WHERE id = ?1 AND retired_at IS NULL",
+            params![id, now, human, reason, superseded_by],
+        )?;
+        if changed == 0 {
+            return Err(LodestarError::Invalid(format!(
+                "knowledge already retired: {id}"
+            )));
+        }
+        self.get_knowledge(id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))
     }
 
     /// Purge knowledge that decayed below the threshold without reconfirmation.
@@ -86,6 +143,10 @@ fn row_to_knowledge(row: &Row) -> rusqlite::Result<Knowledge> {
         half_life_hours: row.get(4)?,
         confirmed_at: row.get(5)?,
         created_at: row.get(6)?,
+        retired_at: row.get(7)?,
+        retired_by: row.get(8)?,
+        retired_reason: row.get(9)?,
+        superseded_by: row.get(10)?,
     })
 }
 
@@ -144,5 +205,88 @@ mod tests {
         assert_eq!(s.prune_knowledge(far).unwrap(), 1);
         assert!(s.get_knowledge(&stale.id).unwrap().is_none());
         assert!(s.get_knowledge(&fresh.id).unwrap().is_some());
+    }
+
+    // A lesson that is wrong or replaced leaves the active set at once, instead
+    // of competing for advisory slots until its half-life runs out. It is not
+    // deleted: the statement and its provenance stay readable, alongside who
+    // ended it and why.
+    #[test]
+    fn a_retired_lesson_leaves_the_active_set_but_keeps_its_record() {
+        let s = store();
+        let wrong = s
+            .record_knowledge("wrong lesson", "{}", 720.0, NOW)
+            .unwrap();
+        let kept = s.record_knowledge("kept lesson", "{}", 720.0, NOW).unwrap();
+        assert_eq!(s.active_knowledge(NOW).unwrap().len(), 2);
+
+        let retired = s
+            .retire_knowledge(&wrong.id, "Reviewer", "measured false", None, NOW)
+            .unwrap();
+
+        assert_eq!(retired.retired_at, Some(NOW));
+        assert_eq!(retired.retired_by.as_deref(), Some("Reviewer"));
+        assert_eq!(retired.retired_reason.as_deref(), Some("measured false"));
+        assert!(retired.retired());
+
+        let active = s.active_knowledge(NOW).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, kept.id);
+
+        // Retiring is not deleting (ADR-0019): the row is still readable.
+        let stored = s.get_knowledge(&wrong.id).unwrap().unwrap();
+        assert_eq!(stored.statement, "wrong lesson");
+    }
+
+    // Guarded in one statement, so the original actor and reason survive a
+    // second attempt rather than being quietly overwritten by it.
+    #[test]
+    fn retiring_refuses_an_unknown_id_and_a_second_retirement() {
+        let s = store();
+        let k = s.record_knowledge("a lesson", "{}", 720.0, NOW).unwrap();
+
+        let missing = s
+            .retire_knowledge("knowledge:nope", "Reviewer", "why", None, NOW)
+            .unwrap_err();
+        assert!(missing.to_string().contains("knowledge:nope"), "{missing}");
+
+        s.retire_knowledge(&k.id, "First", "the real reason", None, NOW)
+            .unwrap();
+        let again = s
+            .retire_knowledge(&k.id, "Second", "a later reason", None, NOW + HOUR)
+            .unwrap_err();
+        assert!(again.to_string().contains("already retired"), "{again}");
+
+        let stored = s.get_knowledge(&k.id).unwrap().unwrap();
+        assert_eq!(stored.retired_by.as_deref(), Some("First"));
+        assert_eq!(stored.retired_reason.as_deref(), Some("the real reason"));
+        assert_eq!(stored.retired_at, Some(NOW));
+    }
+
+    // A replacement must exist, or the reader is left with a withdrawn lesson
+    // and nowhere to go.
+    #[test]
+    fn superseding_records_the_successor_and_refuses_a_dangling_or_self_link() {
+        let s = store();
+        let old = s.record_knowledge("old lesson", "{}", 720.0, NOW).unwrap();
+        let new = s.record_knowledge("new lesson", "{}", 720.0, NOW).unwrap();
+
+        let dangling = s
+            .retire_knowledge(&old.id, "R", "replaced", Some("knowledge:ghost"), NOW)
+            .unwrap_err();
+        assert!(
+            dangling.to_string().contains("knowledge:ghost"),
+            "{dangling}"
+        );
+
+        let itself = s
+            .retire_knowledge(&old.id, "R", "replaced", Some(&old.id), NOW)
+            .unwrap_err();
+        assert!(itself.to_string().contains("supersede itself"), "{itself}");
+
+        let retired = s
+            .retire_knowledge(&old.id, "R", "replaced", Some(&new.id), NOW)
+            .unwrap();
+        assert_eq!(retired.superseded_by.as_deref(), Some(new.id.as_str()));
     }
 }

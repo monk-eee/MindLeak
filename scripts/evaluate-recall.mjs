@@ -1,22 +1,6 @@
-// Measured before/after for the recall ranking change (ADR-0075), against a
-// real populated index rather than a fixture.
-//
-// Why this exists: the change shipped on deterministic unit tests whose fields
-// were synthetic and uniform. A real index is neither, and the difference
-// turned out to matter — see the negative result this harness records.
-//
-// Arm "before" replicates the pre-fix algorithm: cosine over every embedded
-// node, keep what clears the floor, sort, truncate. Arm "after" drives the
-// built `mindleak-mcp` binary over stdio, so the measured path is the shipped
-// one rather than a second implementation that could flatter itself.
-//
+// Measure recall against a populated real index, never a synthetic fixture.
 // Usage:
 //   node scripts/evaluate-recall.mjs --bin <mindleak-mcp> --db <graph.db>
-//
-// Requires a reachable OpenAI-compatible embeddings server (MINDLEAK_EMBED_URL,
-// default http://localhost:11434/v1) and an index that has already been
-// populated. Both are optional parts of the product (ADR-0008), so this reports
-// and exits rather than failing when they are absent.
 
 /** Cosine similarity; 0 for empty or mismatched vectors. */
 export function cosine(a, b) {
@@ -63,6 +47,18 @@ export function separation(reject, keep) {
   };
 }
 
+export function relevantHits(results, anchors) {
+  return results.filter((result) => {
+    const terms = new Set(
+      `${result.label || ""} ${result.content || ""}`
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(Boolean),
+    );
+    return anchors.some((anchor) => terms.has(anchor.toLowerCase()));
+  });
+}
+
 /** Decode the f32 little-endian vector blob the index stores. */
 export function fromBlob(bytes) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -77,14 +73,42 @@ const NONSENSE = [
   "flurb glorp snizzle wexpo",
 ];
 
+const ABSENT = [
+  "how should PostgreSQL autovacuum be tuned for a billion row table",
+  "where is the payroll tax withholding calculation implemented",
+  "why does a Kubernetes ingress return a 502 response",
+  "how do I rotate an AWS access key without downtime",
+];
+
 const REAL = [
-  "canonical-push auto-merge armed refuses",
-  "what breaks when an agent commits before claiming the task",
-  "why does a lapsed lease stop the work certifying",
-  "why does PowerShell report failure for a command that succeeded",
-  "a test that passes locally but is red only on windows",
-  "why can a recorded lesson never reach another agent",
-  "the running server is behind the source it reports on",
+  {
+    query: "canonical-push auto-merge armed refuses",
+    anchors: ["armed", "merge"],
+  },
+  {
+    query: "what breaks when an agent commits before claiming the task",
+    anchors: ["agent", "commits", "claiming"],
+  },
+  {
+    query: "why does a lapsed lease stop the work certifying",
+    anchors: ["lapsed", "lease", "certifying"],
+  },
+  {
+    query: "why does PowerShell report failure for a command that succeeded",
+    anchors: ["powershell", "succeeded"],
+  },
+  {
+    query: "a test that passes locally but is red only on windows",
+    anchors: ["windows", "red"],
+  },
+  {
+    query: "why can a recorded lesson never reach another agent",
+    anchors: ["lesson", "reach"],
+  },
+  {
+    query: "the running server is behind the source it reports on",
+    anchors: ["server", "behind", "source", "stale", "binary"],
+  },
 ];
 
 async function main() {
@@ -93,6 +117,11 @@ async function main() {
   const { DatabaseSync } = await import("node:sqlite");
   const { spawn } = await import("node:child_process");
   const { execFileSync } = await import("node:child_process");
+  const { createHash } = await import("node:crypto");
+  const { readFileSync } = await import("node:fs");
+  const { dirname, resolve } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
   const argv = process.argv.slice(2);
   const arg = (name) => {
@@ -185,14 +214,19 @@ async function main() {
   const served = { before: {}, after: {} };
   const dangling = { before: 0, after: 0 };
   const total = { before: 0, after: 0 };
-  const sigmas = { nonsense: [], real: [] };
+  const sigmas = { nonsense: [], absent: [], real: [] };
+  const abstention = { controls: 0, abstained: 0 };
+  const realAnswers = { queries: 0, nonempty: 0, relevant: 0 };
   const perQuery = [];
 
   for (const [label, queries] of [
     ["nonsense", NONSENSE],
+    ["absent", ABSENT],
     ["real", REAL],
   ]) {
-    for (const query of queries) {
+    for (const item of queries) {
+      const query = typeof item === "string" ? item : item.query;
+      const anchors = typeof item === "string" ? [] : item.anchors;
       const qv = await embed(query);
       const scores = rows.map((r) => cosine(qv, r.v));
       const stats = fieldStats(scores);
@@ -204,6 +238,16 @@ async function main() {
         .sort((a, b) => b.score - a.score)
         .slice(0, limit);
       const after = (await askShipped(query)).results || [];
+      const relevantAfter = relevantHits(after, anchors);
+
+      if (label === "real") {
+        realAnswers.queries++;
+        if (after.length) realAnswers.nonempty++;
+        if (relevantAfter.length) realAnswers.relevant++;
+      } else {
+        abstention.controls++;
+        if (!after.length) abstention.abstained++;
+      }
 
       for (const hit of before) {
         const k = kind.get(hit.id);
@@ -227,6 +271,7 @@ async function main() {
         top_sigma_above_field: stats.sigma,
         before_hits: before.length,
         after_hits: after.length,
+        after_relevant_hits: relevantAfter.length,
       });
       console.log(
         label.padEnd(9) +
@@ -240,18 +285,30 @@ async function main() {
 
   const sep = separation(sigmas.nonsense, sigmas.real);
   let revision = "unknown";
+  let sourceWorktreeDirty = null;
   try {
-    revision = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
-      encoding: "utf8",
-    }).trim();
+    revision = execFileSync(
+      "git",
+      ["-C", repositoryRoot, "rev-parse", "--short", "HEAD"],
+      {
+        encoding: "utf8",
+      },
+    ).trim();
+    sourceWorktreeDirty = Boolean(
+      execFileSync("git", ["-C", repositoryRoot, "status", "--porcelain"], {
+        encoding: "utf8",
+      }).trim(),
+    );
   } catch {
     // Not a checkout; the artifact still records everything else.
   }
 
   const artifact = {
-    schema_version: 1,
+    schema_version: 2,
     captured_at: new Date().toISOString().slice(0, 10),
     source_revision: revision,
+    source_worktree_dirty: sourceWorktreeDirty,
+    binary_sha256: createHash("sha256").update(readFileSync(bin)).digest("hex"),
     model,
     indexed_nodes: rows.length,
     floor,
@@ -263,6 +320,8 @@ async function main() {
       after: dangling.after,
       after_of: total.after,
     },
+    control_abstention: abstention,
+    real_answers: realAnswers,
     nonsense_rejection: {
       separable_by_one_sigma_threshold: sep.separable,
       highest_nonsense_sigma: sep.highestReject,

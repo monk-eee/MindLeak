@@ -118,6 +118,20 @@ export function selectFiles(trackedPaths) {
     .sort();
 }
 
+/**
+ * Deterministic ingestion plan: metadata, one complete source pass, then Rust
+ * again after every Cargo-declared library root is a real artifact.
+ */
+export function planFiles(trackedPaths) {
+  const selected = selectFiles(trackedPaths);
+  const manifests = selected.filter((file) =>
+    MANIFESTS.has(file.split("/").pop() ?? file),
+  );
+  const sources = selected.filter((file) => !manifests.includes(file));
+  const rustSecondPass = sources.filter((file) => file.endsWith(".rs"));
+  return [...manifests, ...sources, ...rustSecondPass];
+}
+
 function parseArguments(argv) {
   const options = { dryRun: false, limit: Number.POSITIVE_INFINITY };
   for (let index = 0; index < argv.length; index += 1) {
@@ -156,10 +170,10 @@ async function main() {
   }
 
   const workspace = process.cwd();
-  const files = selectFiles(trackedFiles(workspace)).slice(0, options.limit);
+  const files = planFiles(trackedFiles(workspace)).slice(0, options.limit);
 
   if (options.dryRun) {
-    console.log(`reingest: ${files.length} file(s) would be re-ingested`);
+    console.log(`reingest: ${files.length} ingest operation(s) would run`);
     for (const file of files) {
       console.log(`  ${file}`);
     }
@@ -250,7 +264,7 @@ async function main() {
   }
 
   console.log(
-    `reingest: ${totals.files} file(s) re-ingested, ` +
+    `reingest: ${totals.files} ingest operation(s), ` +
       `${totals.nodes} node(s) and ${totals.edges} edge(s) created, ` +
       `${totals.skipped} unreadable, ${totals.failed} failed.`,
   );
