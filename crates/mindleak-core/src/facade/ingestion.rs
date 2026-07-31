@@ -192,7 +192,15 @@ impl MindLeak {
         }
 
         for import in ingest::structure::extract(path, content) {
-            let target_id = match import.target {
+            let target = match import.target {
+                ImportTarget::RustCrate { name, segments } => self
+                    .store
+                    .rust_crate_candidates(&norm, &name, &segments)?
+                    .map(ImportTarget::ArtifactCandidates)
+                    .unwrap_or(ImportTarget::Package(name)),
+                target => target,
+            };
+            let target_id = match target {
                 ImportTarget::ArtifactCandidates(candidates) => {
                     let known = self.store.resolve_artifact_candidate(&candidates)?;
                     let is_stub = known.is_none();
@@ -223,6 +231,7 @@ impl MindLeak {
                     }
                     target_id
                 }
+                ImportTarget::RustCrate { .. } => unreachable!("resolved above"),
                 ImportTarget::Package(package) => {
                     let target_id = format!("package:{package}");
                     nodes.push(Node::new(
@@ -265,16 +274,75 @@ impl MindLeak {
             edges.push(Edge::new(source_id, target_id, relation, now));
         }
 
+        if let Some(rust_crate) = ingest::manifest::rust_crate(path, content)? {
+            let package_id = format!("package:{}", rust_crate.name);
+            let root_id = format!("artifact:{}", rust_crate.root_path);
+            nodes.push(Node::new(
+                &package_id,
+                NodeType::Package,
+                rust_crate.name,
+                now,
+            ));
+            nodes.push(Node::new(
+                &root_id,
+                NodeType::Artifact,
+                rust_crate.root_path.clone(),
+                now,
+            ));
+            edges.push(Edge::new(&art_id, &package_id, RelationType::Contains, now));
+            edges.push(Edge::new(&art_id, &root_id, RelationType::Contains, now));
+            artifact_stubs.push(ArtifactStub {
+                node_id: root_id.clone(),
+                candidate_ids: vec![root_id],
+            });
+        }
+
         if let Some(dependencies) = ingest::manifest::extract(path, content)? {
             for dependency in dependencies {
                 let target_id = format!("package:{}", dependency.name);
                 nodes.push(Node::new(
                     &target_id,
                     NodeType::Package,
-                    dependency.name,
+                    dependency.name.clone(),
                     now,
                 ));
                 edges.push(Edge::new(&art_id, target_id, RelationType::DependsOn, now));
+                let Some(local_manifest) = dependency.local_manifest else {
+                    continue;
+                };
+                let declaration_id = format!("symbol:{norm}:dependency:{}", dependency.import_name);
+                let manifest_id = format!("artifact:{local_manifest}");
+                nodes.push(
+                    Node::new(
+                        &declaration_id,
+                        NodeType::Symbol,
+                        format!("{} (Cargo dependency)", dependency.import_name),
+                        now,
+                    )
+                    .with_content(dependency.name),
+                );
+                nodes.push(Node::new(
+                    &manifest_id,
+                    NodeType::Artifact,
+                    local_manifest.clone(),
+                    now,
+                ));
+                edges.push(Edge::new(
+                    &art_id,
+                    &declaration_id,
+                    RelationType::Contains,
+                    now,
+                ));
+                edges.push(Edge::new(
+                    &declaration_id,
+                    &manifest_id,
+                    RelationType::DependsOn,
+                    now,
+                ));
+                artifact_stubs.push(ArtifactStub {
+                    node_id: manifest_id.clone(),
+                    candidate_ids: vec![manifest_id],
+                });
             }
         }
 

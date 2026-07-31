@@ -1,0 +1,1 @@
+- Canonical publication now reports every Rust source file the branch adds as bound or unbound, so new modules cannot enter the repository with silent constitutional coverage gaps.

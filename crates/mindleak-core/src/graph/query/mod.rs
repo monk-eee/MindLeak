@@ -14,6 +14,7 @@ use crate::error::Result;
 use crate::model::{Node, NodeType, RelationType};
 
 mod agents;
+mod grounding;
 mod lookup;
 mod traversal;
 

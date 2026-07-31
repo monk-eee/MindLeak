@@ -204,6 +204,23 @@ Reproduce with
 a populated index and a reachable embeddings server, both optional parts of the
 product (ADR-0008), and reports rather than fails when either is absent.
 
+### Grounded abstention (2026-07-31)
+
+The negative result above ruled out another similarity threshold, not abstention itself. The follow-up gate asks whether the returned nodes support a majority of the query's IDF-weighted informative terms. It does not move the floor or sigma cut, invoke an LLM, or make another embedding request. Queries with fewer than three informative terms retain the old fuzzy behavior.
+
+The harness now includes four coherent natural-language questions absent from this repository alongside the three gibberish controls, and it checks explicit relevance anchors for the seven real-labelled questions. This corrects a weakness in the first measurement: a non-empty list was counted as success even when its labels were unrelated.
+
+| Metric | Before | After | Result |
+|---|---:|---:|---|
+| Negative controls answered with silence | 0 of 7 | **7 of 7** | Pass |
+| Genuinely relevant real-query sets retained | 5 of 5 | **5 of 5** | Pass |
+| Hits naming a node the graph no longer holds | 31 of 70 | **0 of 25** | Pass |
+| Served hits that are recorded intents | 7 of 70 | **25 of 25** | Pass |
+
+Two questions previously labelled real now abstain: the PowerShell query had returned generic report-script records, and the stale-server query had returned merge commits. Their non-empty result sets were not answers, so preserving them would preserve the defect. The measured binary is identified by SHA-256 in the artifact, which records clean source revision `f8d304d` rather than relying on a mutable filename or timestamp.
+
+Machine-readable result: [2026-07-31-recall-grounding.json](../benchmarks/results/2026-07-31-recall-grounding.json).
+
 ## Reproduce
 
 From the repository root:
