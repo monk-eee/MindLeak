@@ -39,6 +39,11 @@ pub fn extract(path: &str, content: &str) -> Vec<Import> {
         if tokens[index].identifier() == Some("import") {
             if let Some(next) = next_non_newline(&tokens, index + 1) {
                 if tokens[next].is_punctuation('(') {
+                    if is_bare_identifier(&tokens, index) {
+                        if let Some(specifier) = literal_call_specifier(&tokens, index) {
+                            merge_import(&mut imports, build_import(path, specifier, Vec::new()));
+                        }
+                    }
                     index += 1;
                     continue;
                 }
@@ -66,7 +71,7 @@ pub fn extract(path: &str, content: &str) -> Vec<Import> {
             && is_bare_identifier(&tokens, index)
             && !is_identifier_shadowed(&tokens, index, "require")
         {
-            if let Some(specifier) = require_specifier(&tokens, index) {
+            if let Some(specifier) = literal_call_specifier(&tokens, index) {
                 let bindings = require_binding(&tokens, index)
                     .map(parse_require_binding)
                     .unwrap_or_default();
@@ -191,8 +196,8 @@ fn find_import_from(tokens: &[Token], start: usize) -> Option<(usize, usize)> {
     None
 }
 
-fn require_specifier(tokens: &[Token], require: usize) -> Option<&str> {
-    let open = next_non_newline(tokens, require + 1)?;
+fn literal_call_specifier(tokens: &[Token], callee: usize) -> Option<&str> {
+    let open = next_non_newline(tokens, callee + 1)?;
     let specifier = next_non_newline(tokens, open + 1)?;
     let close = next_non_newline(tokens, specifier + 1)?;
     (tokens[open].is_punctuation('(') && tokens[close].is_punctuation(')'))
@@ -395,6 +400,39 @@ mod tests {
             imported: "helper".to_string(),
             local: "localHelper".to_string(),
         }));
+    }
+
+    #[test]
+    fn extracts_literal_dynamic_imports() {
+        let imports = extract(
+            "src/feature/consumer.ts",
+            "import(\n  '../dependency'\n);\nimport('@scope/ui/button');\n",
+        );
+
+        assert_eq!(imports.len(), 2);
+        let ImportTarget::ArtifactCandidates(candidates) = &imports[0].target else {
+            panic!("expected relative artifact candidates");
+        };
+        assert_eq!(candidates[0], "src/dependency.ts");
+        assert_eq!(
+            imports[1].target,
+            ImportTarget::Package("@scope/ui".to_string())
+        );
+        assert!(imports.iter().all(|import| import.bindings.is_empty()));
+    }
+
+    #[test]
+    fn ignores_unsupported_dynamic_import_forms() {
+        let source = r#"
+const dependency = "./dependency";
+import(dependency);
+import(`./template`);
+import("./with-options", options);
+import("./unterminated";
+loader.import("./member");
+"#;
+
+        assert!(extract("src/consumer.ts", source).is_empty());
     }
 
     #[test]
