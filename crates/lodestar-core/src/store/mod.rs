@@ -81,7 +81,7 @@ pub struct ResetOutcome {
     pub goals_removed: usize,
     pub tasks_removed: usize,
     pub design_items_removed: usize,
-    pub code_bindings_removed: usize,
+    pub artifact_bindings_removed: usize,
     pub conformance_records_removed: usize,
     pub knowledge_removed: usize,
 }

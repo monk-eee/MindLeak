@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn advise_tool_reports_disposition_and_clauses_over_the_boundary() {
-        use lodestar_core::CodeBindingMode;
+        use lodestar_core::ArtifactBindingMode;
         let engine = Lodestar::open_in_memory().unwrap();
         let goal = engine
             .define_goal(
@@ -165,7 +165,7 @@ mod tests {
             .link_goal_to_artifact(
                 &goal.id,
                 std::slice::from_ref(&node),
-                CodeBindingMode::Governed,
+                ArtifactBindingMode::Governed,
             )
             .unwrap();
 

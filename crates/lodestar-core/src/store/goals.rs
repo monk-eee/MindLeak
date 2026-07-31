@@ -4,8 +4,8 @@ use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, Transact
 use crate::discovery::{ProjectFact, ProjectFactKind};
 use crate::error::{LodestarError, Result};
 use crate::model::{
-    ClauseOrigin, CodeBinding, CodeBindingMode, Consequence, ConstitutionVersion, Goal, GoalKind,
-    GoalStatus,
+    ArtifactBinding, ArtifactBindingMode, ClauseOrigin, Consequence, ConstitutionVersion, Goal,
+    GoalKind, GoalStatus,
 };
 use crate::util::{goal_slug, short_hash, slugify};
 
@@ -455,12 +455,12 @@ impl LodestarStore {
         &self,
         goal_id: &str,
         node_ids: &[String],
-        mode: CodeBindingMode,
+        mode: ArtifactBindingMode,
     ) -> Result<usize> {
         let mut linked = 0;
         for node in node_ids {
             linked += self.conn.execute(
-                "INSERT INTO goal_code (goal_id, node_id, mode) VALUES (?1, ?2, ?3)
+                "INSERT INTO goal_artifacts (goal_id, node_id, mode) VALUES (?1, ?2, ?3)
                  ON CONFLICT(goal_id, node_id) DO UPDATE SET mode = excluded.mode",
                 params![goal_id, node, mode.as_str()],
             )?;
@@ -476,10 +476,10 @@ impl LodestarStore {
     /// up by exact id therefore returned nothing from the first amendment
     /// onwards — silently, as an empty list, which reads as "this goal governs
     /// no code" rather than as the lookup failure it is.
-    pub fn code_for_goal(&self, goal_id: &str) -> Result<Vec<String>> {
+    pub fn artifacts_for_goal(&self, goal_id: &str) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
-            "SELECT DISTINCT goal_code.node_id FROM goal_code
-               JOIN goals ON goals.id = goal_code.goal_id
+            "SELECT DISTINCT goal_artifacts.node_id FROM goal_artifacts
+               JOIN goals ON goals.id = goal_artifacts.goal_id
               WHERE goals.slug = ?1",
         )?;
         let rows = stmt.query_map(params![goal_slug(goal_id)], |r| r.get::<_, String>(0))?;
@@ -493,7 +493,7 @@ impl LodestarStore {
         let mut removed = 0;
         for node in node_ids {
             removed += self.conn.execute(
-                "DELETE FROM goal_code WHERE goal_id = ?1 AND node_id = ?2",
+                "DELETE FROM goal_artifacts WHERE goal_id = ?1 AND node_id = ?2",
                 params![goal_id, node],
             )?;
         }
@@ -501,9 +501,9 @@ impl LodestarStore {
     }
 
     /// Active goal policies governing a given code node.
-    pub fn active_bindings_for_node(&self, node_id: &str) -> Result<Vec<CodeBinding>> {
+    pub fn active_bindings_for_node(&self, node_id: &str) -> Result<Vec<ArtifactBinding>> {
         let sql = format!(
-            "SELECT {}, c.mode FROM goal_code c JOIN goals g ON g.id = c.goal_id
+            "SELECT {}, c.mode FROM goal_artifacts c JOIN goals g ON g.id = c.goal_id
              WHERE c.node_id = ?1 AND g.status = 'active'",
             GOAL_COLS
                 .split(", ")
@@ -514,9 +514,9 @@ impl LodestarStore {
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![node_id], |row| {
             let mode: String = row.get(19)?;
-            Ok(CodeBinding {
+            Ok(ArtifactBinding {
                 goal: row_to_goal(row)?,
-                mode: CodeBindingMode::from_tag(&mode).unwrap_or(CodeBindingMode::Governed),
+                mode: ArtifactBindingMode::from_tag(&mode).unwrap_or(ArtifactBindingMode::Governed),
             })
         })?;
         collect(rows)
@@ -526,7 +526,7 @@ impl LodestarStore {
     /// conformance manifest gates on (ADR-0031). Distinct node ids, ordered.
     pub fn governed_node_ids(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
-            "SELECT DISTINCT c.node_id FROM goal_code c
+            "SELECT DISTINCT c.node_id FROM goal_artifacts c
              JOIN goals g ON g.id = c.goal_id
              WHERE g.status = 'active'
              ORDER BY c.node_id",
@@ -803,18 +803,18 @@ mod tests {
     }
 
     #[test]
-    fn goal_code_seam_resolves_active_governors() {
+    fn goal_artifacts_seam_resolves_active_governors() {
         let s = store();
         let g = goal(&s);
         s.link_goal_to_artifact(
             &g.id,
             &["artifact:src/x.rs".into()],
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
         let bindings = s.active_bindings_for_node("artifact:src/x.rs").unwrap();
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].goal.id, g.id);
-        assert_eq!(bindings[0].mode, CodeBindingMode::Governed);
+        assert_eq!(bindings[0].mode, ArtifactBindingMode::Governed);
     }
 }
