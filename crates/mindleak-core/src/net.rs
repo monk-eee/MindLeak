@@ -22,100 +22,11 @@ use serde_json::Value;
 
 use crate::error::{MindLeakError, ModelFailureReason, Result};
 
-const MIN_TIMEOUT_MS: u64 = 100;
-const MAX_TIMEOUT_MS: u64 = 300_000;
-const MAX_RETRIES: u64 = 5;
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
-#[derive(Debug, Clone, Copy)]
-enum RetryPolicy {
-    Transient,
-    ReadTimeout,
-}
-
-/// Tunable network policy, read once from the environment (ADR-0010 defaults).
-#[derive(Debug, Clone)]
-pub struct HttpConfig {
-    pub connect_timeout: Duration,
-    pub read_timeout: Duration,
-    pub retries: u32,
-    pub breaker_threshold: u32,
-    pub breaker_cooldown: Duration,
-    retry_policy: RetryPolicy,
-}
-
-impl Default for HttpConfig {
-    fn default() -> Self {
-        HttpConfig {
-            connect_timeout: Duration::from_millis(env_bounded_u64(
-                "MINDLEAK_HTTP_CONNECT_TIMEOUT_MS",
-                1_000,
-                MIN_TIMEOUT_MS,
-                MAX_TIMEOUT_MS,
-            )),
-            read_timeout: Duration::from_millis(env_bounded_u64(
-                "MINDLEAK_HTTP_TIMEOUT_MS",
-                30_000,
-                MIN_TIMEOUT_MS,
-                MAX_TIMEOUT_MS,
-            )),
-            retries: env_bounded_u64("MINDLEAK_HTTP_RETRIES", 2, 0, MAX_RETRIES) as u32,
-            breaker_threshold: env_u64("MINDLEAK_BREAKER_THRESHOLD", 5) as u32,
-            breaker_cooldown: Duration::from_millis(env_u64(
-                "MINDLEAK_BREAKER_COOLDOWN_MS",
-                30_000,
-            )),
-            retry_policy: RetryPolicy::Transient,
-        }
-    }
-}
-
-impl HttpConfig {
-    /// Network policy for the optional local *model* calls (LLM consolidation and
-    /// embeddings). Generation is legitimately slow, so it gets a far more
-    /// generous read timeout than a normal request. A cold model gets one retry
-    /// after a read timeout; connection failures and HTTP rejections still fail
-    /// immediately. Tunable via `MINDLEAK_MODEL_TIMEOUT_MS`.
-    pub fn for_model() -> Self {
-        HttpConfig {
-            read_timeout: Duration::from_millis(env_bounded_u64(
-                "MINDLEAK_MODEL_TIMEOUT_MS",
-                120_000,
-                MIN_TIMEOUT_MS,
-                MAX_TIMEOUT_MS,
-            )),
-            retries: 1,
-            retry_policy: RetryPolicy::ReadTimeout,
-            ..HttpConfig::default()
-        }
-    }
-
-    /// Upper bound for all interruptible work in one retry sequence. DNS may
-    /// exceed ureq's deadline on platforms where resolver calls cannot cancel.
-    pub fn maximum_elapsed(&self) -> Duration {
-        let attempts = u32::saturating_add(self.retries, 1);
-        let dns_budget = self.connect_timeout;
-        let attempt_budget = self.connect_timeout.saturating_add(self.read_timeout);
-        let request_budget = attempt_budget.saturating_mul(attempts);
-        let retry_budget = (1..=self.retries)
-            .map(backoff)
-            .fold(Duration::ZERO, Duration::saturating_add);
-        dns_budget
-            .saturating_add(request_budget)
-            .saturating_add(retry_budget)
-    }
-}
-
-fn env_u64(key: &str, default: u64) -> u64 {
-    std::env::var(key)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
-}
-
-fn env_bounded_u64(key: &str, default: u64, minimum: u64, maximum: u64) -> u64 {
-    env_u64(key, default).clamp(minimum, maximum)
-}
+mod policy;
+pub use policy::HttpConfig;
+use policy::{backoff, RetryPolicy};
 
 /// Circuit-breaker state for one endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -465,13 +376,6 @@ fn model_error(
     detail: impl ToString,
 ) -> MindLeakError {
     failure(reason, reachable, detail).into()
-}
-
-/// Exponential backoff: 100ms, 200ms, 400ms, ... capped at 2s.
-fn backoff(attempt: u32) -> Duration {
-    let shift = attempt.clamp(1, 5) - 1;
-    let ms = 100u64.saturating_mul(1u64 << shift);
-    Duration::from_millis(ms.min(2000))
 }
 
 #[cfg(test)]
