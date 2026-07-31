@@ -384,3 +384,22 @@ try {
     "canonical-push: the module-length ratchet was not observed for this publication",
   );
 }
+
+// A new Rust module cannot participate in conformance until a goal binds it.
+// Report that fact at publication, when the branch first becomes visible to
+// the fleet, but do not invent a binding or turn an intent decision into a gate.
+try {
+  execFileSync(
+    process.execPath,
+    ["scripts/binding-audit.mjs", "--new-since", "origin/main"],
+    {
+      cwd: repoRoot,
+      stdio: "inherit",
+      env: process.env,
+    },
+  );
+} catch {
+  console.warn(
+    "canonical-push: binding coverage was not observed for this publication",
+  );
+}
