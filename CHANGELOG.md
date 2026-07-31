@@ -9,6 +9,24 @@ to [Semantic Versioning](https://semver.org/).
 ## [0.1.4] - 2026-07-30
 
 ### Added
+- Build-artefact hygiene now runs itself. A fleet of worktrees rebuilds the same
+  crates endlessly and nothing ever removed the result: a measured 149 GiB across
+  124 cache directories, on clean branches already merged into `main`. Cleanup
+  that depends on someone remembering does not happen, because the agent that
+  filled a worktree has finished and moved on before it is safe to empty it. So
+  the sweep has no schedule of its own — it rides on the delivery watcher
+  (`make queue-watch`), which is already persistent and already single-owner:
+  once at startup, then on a bounded cadence, with the last run and a lock both
+  held in the common Git directory so two worktrees can never sweep at once.
+  `make sweep` and `node scripts/artefact-sweep.mjs` report the same plan for
+  diagnosis, and `--apply` acts. Safety is the contract: it removes only
+  reproducible build output, never a worktree, source, Git state, `target/tmp`,
+  telemetry, completion offers, release assets, or the bare host's
+  `target/release`, which serves the running MCP binaries. It skips any worktree
+  that is detached, dirty, unmerged, backing an open pull request, or active
+  within the grace period, re-checks every one of those immediately before
+  deleting so a plan that went stale while the disk was walked is abandoned
+  rather than acted on, and counts every skip with its reason in the report.
 - **Shell-specific plumbing is now refused at the commit.** The project already
   required platform-agnostic operation, but that rule is stated as an outcome,
   so it was only ever noticed after something had broken on someone else's
@@ -634,6 +652,31 @@ to [Semantic Versioning](https://semver.org/).
   on top.
 
 ### Changed
+- Squash and rebase merging are now disabled on `monk-eee/MindLeak`, so the
+  merge commit is the only button available. AGENTS.md has always asked for
+  merge commits so that a commit id stays evidence, and ADR-0038 is explicit
+  that squashing, rebasing and cherry-picking replace evidence-bearing commit
+  identities — but nothing enforced it, so the rule depended on which button an
+  agent clicked. Verified by reading the repository settings back rather than by
+  intention: `allow_squash_merge` and `allow_rebase_merge` are both false and
+  `allow_merge_commit` is true.
+  This had already cost real time. PR #205 was armed with `--squash`, landing all
+  245 lines under a new commit id; the merge audit compared ancestry, could not
+  tell a squash from a branch that never merged, and reported the work as lost.
+  Another agent confirmed that with `git merge-base --is-ancestor`, wrote it into
+  durable knowledge as fact, and queued a pull request to restore code that was
+  already on `main`.
+  AGENTS.md now also states the test that distinguishes the two: `git cherry -v
+  origin/main <branch>` compares patches, where `-` means an equivalent patch is
+  already upstream and `+` means it never landed. Ancestry asks about commit
+  identity and therefore answers "no" for work that is fully present. History
+  still holds identities rewritten before the button was closed, so the
+  distinction remains load-bearing even though new ones can no longer be
+  created — `scripts/worktree-reclaim.mjs` depends on it to tell a merged
+  worktree from an unmerged one.
+  Checked before flipping: one pull request had auto-merge armed and it was
+  armed with `MERGE`, so nothing in flight was broken by removing the other two
+  methods.
 - **`check_overlap` grades the collision instead of just reporting one
   (ADR-0035 heuristic 4).** Every intersecting claim came back as the same
   undifferentiated "overlap", so the caller had to guess which kind it had —
@@ -1372,6 +1415,25 @@ to [Semantic Versioning](https://semver.org/).
   decision and is deliberately not settled here.
 
 ### Fixed
+- **A newer writer no longer blinds an older reader.**
+  The task event log is append-only and shared by binaries of different
+  vintages — an agent running yesterday's build reads a database today's build
+  writes to. The reader refused the whole read on any kind it could not name, so
+  the first write of a new kind bricked every older reader at once. Observed
+  live: hours after `coverage_declared` first landed, every
+  `task_query view=board` call on the installed binary returned
+  `invalid: unknown task event kind: coverage_declared` instead of the board,
+  because the board tool enriches every row with `claim_window`, which reads the
+  log. One event nobody could name took the whole board down — and with it the
+  Design Board's promote route, which reads the task board to offer existing
+  work to link. An unnameable kind is now skipped rather than fatal, and named
+  on stderr rather than swallowed, because the remedy is to rebuild and nobody
+  rebuilds to fix a symptom they were never shown. `project_tasks` now reads
+  after-images directly instead of going through the typed log: the replay never
+  inspects `kind`, and inheriting the skip would drop a task's latest state and
+  make the ADR-0064 projection check report a hole in the log that is not there
+  — a false accusation that a transition went unrecorded, when the only real
+  fault is that the reader is older than the writer.
 - **The Design Board reads the ADR record from main, not from the open
   checkout.** `readWorkspaceAdrMetadata` globbed `docs/adr` on disk and
   registered whatever it found, so the decisions the ledger was told about
