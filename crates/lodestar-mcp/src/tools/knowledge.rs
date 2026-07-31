@@ -96,6 +96,20 @@ pub(super) fn definitions() -> Vec<Value> {
                 }
             }
         }),
+        json!({
+            "name": "retire_knowledge",
+            "description": "Retire a lesson that is wrong or has been replaced, instead of waiting out its half-life. `prune_knowledge` only removes what decayed, so a superseded record kept being counted and kept competing for the capped goal-advisory slots until its clock ran out. Retiring is not deleting: the statement and its provenance stay readable, and the row records who ended it and why. A retired record leaves the active set, so the conformance advisory stops carrying it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "The knowledge id to retire, e.g. knowledge:1a2b3c." },
+                    "human": { "type": "string", "description": "Who is retiring it. Attributed, not authenticated." },
+                    "reason": { "type": "string", "description": "Why it is being retired, in your words." },
+                    "superseded_by": { "type": "string", "description": "Optional knowledge id that replaced it, when this is a replacement rather than a withdrawal. Must already exist." }
+                },
+                "required": ["id", "human", "reason"]
+            }
+        }),
     ]
 }
 
@@ -280,6 +294,17 @@ pub(super) fn dispatch(
             let pruned = engine.prune_knowledge().map_err(|e| e.to_string())?;
             ok(&json!({ "pruned": pruned }))
         })()),
+        "retire_knowledge" => Some((|| {
+            let retired = engine
+                .retire_knowledge(
+                    req_str(args, "id")?,
+                    req_str(args, "human")?,
+                    req_str(args, "reason")?,
+                    opt_str(args, "superseded_by").as_deref(),
+                )
+                .map_err(|e| e.to_string())?;
+            ok(&retired)
+        })()),
         _ => None,
     }
 }
@@ -447,6 +472,49 @@ mod tests {
         assert!(
             reachable["surfaces_advice"].is_null(),
             "a reachable record is not nagged: {reachable}"
+        );
+    }
+
+    /// Retiring is reachable from the tool surface, takes the record out of
+    /// the active set, and records who ended it and why. Without a tool the
+    /// facade method exists and no agent can call it.
+    #[test]
+    fn retire_knowledge_withdraws_a_record_through_the_tool_surface() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let doomed = record(&engine, "a lesson later found false", "{}");
+        let id = doomed["id"].as_str().unwrap().to_string();
+
+        let retired = payload(
+            call(
+                &engine,
+                &json!({
+                    "name": "retire_knowledge",
+                    "arguments": {
+                        "id": id,
+                        "human": "Reviewer",
+                        "reason": "measured false on 2026-07-31"
+                    }
+                }),
+            )
+            .unwrap(),
+        );
+        assert_eq!(retired["retired_by"], json!("Reviewer"));
+        assert_eq!(
+            retired["retired_reason"],
+            json!("measured false on 2026-07-31")
+        );
+        assert!(retired["retired_at"].is_i64(), "it records when: {retired}");
+
+        let active = payload(
+            call(
+                &engine,
+                &json!({ "name": "active_knowledge", "arguments": {} }),
+            )
+            .unwrap(),
+        );
+        assert!(
+            !active.to_string().contains("a lesson later found false"),
+            "a retired lesson is no longer carried: {active}"
         );
     }
 }

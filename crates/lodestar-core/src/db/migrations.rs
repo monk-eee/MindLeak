@@ -61,6 +61,13 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
         ("controls", "retired_by", "TEXT"),
         ("controls", "retired_at", "INTEGER"),
         ("task_qa", "audience", "TEXT"),
+        // A lesson can be retired rather than waited out (ADR-0019 shape, as
+        // design_items above). NULL on every pre-existing row is the honest
+        // answer: nothing was retired before this existed.
+        ("knowledge", "retired_at", "INTEGER"),
+        ("knowledge", "retired_by", "TEXT"),
+        ("knowledge", "retired_reason", "TEXT"),
+        ("knowledge", "superseded_by", "TEXT"),
         // ADR-0057. Backfills as NULL, which is the honest answer: the branch a
         // task was claimed on before this existed was never recorded, and
         // inferring one from where the agent happens to be now would invent a

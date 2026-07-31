@@ -242,23 +242,39 @@ export const goalContention = (records, taskGoals = new Map()) => {
   return { perGoal, attaching, crowdedOut };
 };
 
+/**
+ * Whether a record has been retired (`retire_knowledge`).
+ *
+ * A retired lesson is not a silent one. It was withdrawn or replaced on
+ * purpose, it has left the active set, and the advisory no longer carries it —
+ * so counting it as unreachable would report work that is already done, and
+ * would keep this audit's total above zero no matter how much of the real
+ * backlog was cleared. That is what made `--check` unable to gate.
+ */
+export const retired = (record) =>
+  record?.retired_at !== null && record?.retired_at !== undefined;
+
 export const summarise = (records, taskGoals = new Map()) => {
   const byNode = [];
   const byGoal = [];
   const unreachable = [];
-  for (const record of records) {
+  // Retired records are excluded before anything is counted, so `total` is the
+  // population this audit is actually about.
+  const live = records.filter((record) => !retired(record));
+  for (const record of live) {
     const where = classify(record, taskGoals);
     if (where === "node") byNode.push(record);
     else if (where === "goal") byGoal.push(record);
     else unreachable.push(record);
   }
   return {
-    total: records.length,
+    total: live.length,
     byNode: byNode.length,
     byGoal: byGoal.length,
     unreachable: unreachable.length,
-    share: records.length ? unreachable.length / records.length : 0,
-    contention: goalContention(records, taskGoals),
+    retired: records.length - live.length,
+    share: live.length ? unreachable.length / live.length : 0,
+    contention: goalContention(live, taskGoals),
     records: rank(unreachable),
   };
 };
@@ -266,9 +282,19 @@ export const summarise = (records, taskGoals = new Map()) => {
 if (import.meta.filename === process.argv[1]) {
   const dbPath = resolveDb();
   const db = await openLedger(dbPath);
+  // `retired_at` arrives by migration, and this script can be pointed at any
+  // spec.db — including one an older server has not opened yet. Asking the
+  // table what it has is cheaper than failing with a SQL error on a ledger
+  // that is simply older than this audit.
+  const hasRetired = db
+    .prepare("select name from pragma_table_info('knowledge')")
+    .all()
+    .some((column) => column.name === "retired_at");
   const records = db
     .prepare(
-      "select id, statement, evidence, weight, half_life_hours, confirmed_at from knowledge",
+      `select id, statement, evidence, weight, half_life_hours, confirmed_at${
+        hasRetired ? ", retired_at" : ""
+      } from knowledge`,
     )
     .all();
 
@@ -285,6 +311,11 @@ if (import.meta.filename === process.argv[1]) {
   console.log(
     `silent-knowledge: ${report.unreachable} of ${report.total} records (${percent}%) can reach nobody`,
   );
+  if (report.retired > 0) {
+    console.log(
+      `  ${report.retired} retired record(s) excluded — withdrawn or replaced on purpose.`,
+    );
+  }
   console.log(
     `  ${report.byNode} reach agents by the nodes they name;\n` +
       `  ${report.byGoal} name no node but reach work under the goal they were learned under,\n` +
@@ -310,7 +341,10 @@ if (import.meta.filename === process.argv[1]) {
     console.log(
       "\nRepair: knowledge is append-only and nothing attaches nodes retrospectively,\n" +
         "so re-record the content with an evidence `nodes` array — after re-verifying it\n" +
-        "is still true. Copying a stale claim forward is worse than leaving it silent.",
+        "is still true. Copying a stale claim forward is worse than leaving it silent.\n" +
+        "A record that is wrong or has been replaced is not a repair job: retire it with\n" +
+        "`retire_knowledge`, which records who ended it and why and takes it out of this\n" +
+        "count.",
     );
   }
 

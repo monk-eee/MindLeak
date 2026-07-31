@@ -37,9 +37,27 @@ pub struct Knowledge {
     pub half_life_hours: f64,
     pub confirmed_at: i64,
     pub created_at: i64,
+    /// When this lesson was retired, if it was.
+    pub retired_at: Option<i64>,
+    /// Who retired it. Attributed, not authenticated.
+    pub retired_by: Option<String>,
+    /// Why it was retired, in their words.
+    pub retired_reason: Option<String>,
+    /// The knowledge id that replaced it, when the retirement was a
+    /// replacement rather than a withdrawal.
+    pub superseded_by: Option<String>,
 }
 
 impl Knowledge {
+    /// Whether this lesson has been retired.
+    ///
+    /// Retiring is not deleting (ADR-0019): the row keeps its statement,
+    /// evidence and provenance, so what was once believed — and who stopped
+    /// believing it, and why — stays readable. It simply stops being carried.
+    pub fn retired(&self) -> bool {
+        self.retired_at.is_some()
+    }
+
     /// The MindLeak node ids this knowledge was consolidated from, parsed
     /// best-effort from the stored `evidence` JSON (`{"nodes": [...]}`). Empty
     /// when the evidence is hand-authored or not in that shape — so a hand-written

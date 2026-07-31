@@ -121,6 +121,7 @@ one intent plane and one memory graph by default.
 | `consolidate` / `record_knowledge` | Gated promotion of learned regularities. |
 | `promote_signals` | Promotion bridge (ADR-0022): batch-feed MindLeak `promotion_candidates` into the gated consolidator; deterministic, model-optional. |
 | `active_knowledge` / `reconfirm_knowledge` / `prune_knowledge` | Durable-but-revalidated knowledge. |
+| `retire_knowledge` | Withdraw a lesson that is wrong or has been replaced, instead of waiting out its half-life. Attributed and reasoned; the record stays readable. Retired records leave the active set, so the advisory stops carrying them. |
 | `lodestar_stats` | Goal / task / knowledge counts. |
 | `storage_status` | Resolved repository id, intent database path, storage origin, legacy migration source, and whether migration ran (ADR-0038). |
 | `backup_database` | Create an integrity-checked online SQLite backup of the intent plane. |
