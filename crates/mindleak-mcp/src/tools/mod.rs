@@ -10,7 +10,7 @@ mod telemetry;
 
 use mindleak_core::MindLeak;
 use mindleak_session::{session_input_schema, SessionContext, SessionRegistry};
-use mindleak_storage::StorageStatus;
+use mindleak_storage::{RunningBinary, StorageStatus};
 use serde_json::{json, Value};
 
 /// The advertised tool list (`tools/list`).
@@ -158,7 +158,13 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
 /// operator can confirm what ran and whether it succeeded (ADR-0010).
 #[cfg(test)]
 pub fn call(engine: &MindLeak, params: &Value) -> Result<Value, String> {
-    call_with_storage(engine, params, None, None)
+    call_with_storage(
+        engine,
+        params,
+        None,
+        None,
+        &RunningBinary::from_parts(None, None),
+    )
 }
 
 pub fn call_with_storage(
@@ -166,6 +172,7 @@ pub fn call_with_storage(
     params: &Value,
     storage: Option<&StorageStatus>,
     stale_build: Option<&str>,
+    running: &RunningBinary,
 ) -> Result<Value, String> {
     let name = params
         .get("name")
@@ -175,7 +182,7 @@ pub fn call_with_storage(
     let span = tracing::info_span!("tool_call", tool = %name);
     let _enter = span.enter();
     let start = std::time::Instant::now();
-    let result = dispatch(engine, params, storage, stale_build);
+    let result = dispatch(engine, params, storage, stale_build, running);
     let duration_ms = start.elapsed().as_millis() as i64;
     let detail = result.as_ref().err().map(|e| json!({ "error": e }));
     let agent_id = params
@@ -196,6 +203,7 @@ fn dispatch(
     params: &Value,
     storage: Option<&StorageStatus>,
     stale_build: Option<&str>,
+    running: &RunningBinary,
 ) -> Result<Value, String> {
     let name = params
         .get("name")
@@ -214,6 +222,14 @@ fn dispatch(
         // is not running at all while every call still looks normal.
         if let Some(notice) = stale_build {
             body["stale_build"] = json!(notice);
+        }
+        // A different fault, asked fresh on every call: the file this process
+        // started from may have been replaced since. `stale_build` cannot see
+        // that, because the running process keeps reporting the build sha it
+        // was compiled with -- which may match HEAD perfectly while the code
+        // actually executing has been superseded on disk.
+        if let Some(notice) = running.replaced_notice() {
+            body["replaced_binary"] = json!(notice);
         }
         return Ok(text_result(&body));
     }
@@ -609,7 +625,14 @@ mod tests {
         };
         let params = json!({ "name": "storage_status", "arguments": {} });
 
-        let result = call_with_storage(&engine, &params, Some(&status), None).unwrap();
+        let result = call_with_storage(
+            &engine,
+            &params,
+            Some(&status),
+            None,
+            &RunningBinary::from_parts(None, None),
+        )
+        .unwrap();
         let value: Value = serde_json::from_str(&content_text(&result)).unwrap();
         assert_eq!(value["plane"], "mindleak");
         assert_eq!(value["repository_id"], status.repository_id.unwrap());

@@ -17,7 +17,7 @@ mod waivers;
 
 use lodestar_core::Lodestar;
 use mindleak_session::{session_input_schema, SessionContext, SessionRegistry};
-use mindleak_storage::StorageStatus;
+use mindleak_storage::{RunningBinary, StorageStatus};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -343,7 +343,13 @@ pub fn bind_session(params: &Value, sessions: &SessionRegistry) -> Result<Value,
 /// Dispatch a `tools/call`. Returns the MCP `content` object or an error string.
 #[cfg(test)]
 pub fn call(engine: &Lodestar, params: &Value) -> Result<Value, String> {
-    call_with_storage(engine, params, None, None)
+    call_with_storage(
+        engine,
+        params,
+        None,
+        None,
+        &RunningBinary::from_parts(None, None),
+    )
 }
 
 pub fn call_with_storage(
@@ -351,6 +357,7 @@ pub fn call_with_storage(
     params: &Value,
     storage: Option<&StorageStatus>,
     stale_build: Option<&str>,
+    running: &RunningBinary,
 ) -> Result<Value, String> {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
@@ -385,6 +392,16 @@ pub fn call_with_storage(
         // field keeps its meaning and never becomes noise to scroll past.
         if let Some(notice) = stale_build {
             body["stale_build"] = json!(notice);
+        }
+        // A different fault, asked fresh on every call: the file this process
+        // started from may have been replaced since. `stale_build` cannot see
+        // it, because a running process keeps reporting the build sha it was
+        // compiled with -- which may match HEAD perfectly while the code
+        // actually executing has been superseded on disk. Measured cost of not
+        // saying so: most of a session spent diagnosing a stale deployment that
+        // did not exist, when restarting was the whole remedy.
+        if let Some(notice) = running.replaced_notice() {
+            body["replaced_binary"] = json!(notice);
         }
         // Work that finished and is waiting on a person, told to the agent
         // because the agent is the only thing the human talks to.
@@ -2328,7 +2345,14 @@ mod tests {
         };
         let params = json!({ "name": "storage_status", "arguments": {} });
 
-        let result = call_with_storage(&engine, &params, Some(&status), None).unwrap();
+        let result = call_with_storage(
+            &engine,
+            &params,
+            Some(&status),
+            None,
+            &RunningBinary::from_parts(None, None),
+        )
+        .unwrap();
         let value: Value =
             serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(value["plane"], "lodestar");
@@ -2357,6 +2381,7 @@ mod tests {
             &bound,
             None,
             Some("running a stale build of this checkout: binary was built from f9a549c4"),
+            &RunningBinary::from_parts(None, None),
         )
         .unwrap();
         let value: Value =
@@ -2383,7 +2408,14 @@ mod tests {
         });
         let bound = bind_session(&params, &sessions).unwrap();
 
-        let result = call_with_storage(&engine, &bound, None, None).unwrap();
+        let result = call_with_storage(
+            &engine,
+            &bound,
+            None,
+            None,
+            &RunningBinary::from_parts(None, None),
+        )
+        .unwrap();
         let value: Value =
             serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
 
@@ -2392,5 +2424,79 @@ mod tests {
             value.get("stale_build").is_none(),
             "a current build must stay silent, got {value}"
         );
+    }
+
+    /// Open a session against a server whose executable was replaced after it
+    /// started, without touching the filesystem.
+    fn open_session_with(running: &mindleak_storage::RunningBinary) -> Value {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        let params = json!({
+            "name": "open_session",
+            "arguments": { "session_id": "0f1e2d3c4b5a69788796a5b4c3d2e1f0" }
+        });
+        let bound = bind_session(&params, &sessions).unwrap();
+        let result = call_with_storage(&engine, &bound, None, None, running).unwrap();
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
+    fn at(seconds: u64) -> Option<std::time::SystemTime> {
+        Some(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+    }
+
+    /// The fault `stale_build` structurally cannot see. A running process keeps
+    /// reporting the build sha it was compiled with, so it can match HEAD
+    /// exactly while the file underneath it has been swapped and the code
+    /// actually answering is something else. Measured cost of the silence:
+    /// most of a session, spent diagnosing a stale deployment that did not
+    /// exist, when restarting was the whole remedy.
+    ///
+    /// Uses a real file because the point is the surfacing, not the arithmetic:
+    /// the rule itself is unit-tested in `mindleak-storage`.
+    #[test]
+    fn a_server_whose_binary_was_replaced_tells_the_session_that_opened_it() {
+        let path = std::env::temp_dir().join(format!(
+            "lodestar-replaced-{}-{:?}.bin",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(&path, b"the file this process started from").unwrap();
+        // Observed as if at startup, then the file is replaced underneath it.
+        let running = mindleak_storage::RunningBinary::from_parts(Some(path.clone()), at(1_000));
+
+        let value = open_session_with(&running);
+
+        assert!(
+            value["replaced_binary"]
+                .as_str()
+                .is_some_and(|notice| notice.contains("restart")),
+            "the session response must carry the restart notice, got {value}"
+        );
+        assert!(
+            value["replaced_binary"]
+                .as_str()
+                .is_some_and(|notice| notice.contains("Rebuilding changes nothing")),
+            "and must not send the reader to rebuild, which was the wrong fix"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// An unreadable path is ignorance, not evidence: a failed stat must never
+    /// manufacture a warning indistinguishable from a real one.
+    #[test]
+    fn an_unreadable_executable_never_manufactures_a_restart_notice() {
+        let running = mindleak_storage::RunningBinary::from_parts(
+            Some(std::path::PathBuf::from("/no/such/lodestar-mcp")),
+            at(1_000),
+        );
+        assert!(open_session_with(&running).get("replaced_binary").is_none());
+    }
+
+    /// And a server still running its own file says nothing, so the field keeps
+    /// its meaning for the session that really needs to see it.
+    #[test]
+    fn an_unreplaced_server_adds_no_restart_notice() {
+        let running = mindleak_storage::RunningBinary::from_parts(None, None);
+        assert!(open_session_with(&running).get("replaced_binary").is_none());
     }
 }
