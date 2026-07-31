@@ -214,10 +214,10 @@ The harness now includes four coherent natural-language questions absent from th
 |---|---:|---:|---|
 | Negative controls answered with silence | 0 of 7 | **7 of 7** | Pass |
 | Genuinely relevant real-query sets retained | 5 of 5 | **5 of 5** | Pass |
-| Hits naming a node the graph no longer holds | 32 of 70 | **0 of 25** | Pass |
+| Hits naming a node the graph no longer holds | 31 of 70 | **0 of 25** | Pass |
 | Served hits that are recorded intents | 7 of 70 | **25 of 25** | Pass |
 
-Two questions previously labelled real now abstain: the PowerShell query had returned generic report-script records, and the stale-server query had returned merge commits. Their non-empty result sets were not answers, so preserving them would preserve the defect. The measured binary is identified by SHA-256 in the artifact, which also records that it was built from the dirty `becbf6f` worktree rather than pretending the base revision alone identifies the evaluated code.
+Two questions previously labelled real now abstain: the PowerShell query had returned generic report-script records, and the stale-server query had returned merge commits. Their non-empty result sets were not answers, so preserving them would preserve the defect. The measured binary is identified by SHA-256 in the artifact, which records clean source revision `f8d304d` rather than relying on a mutable filename or timestamp.
 
 Machine-readable result: [2026-07-31-recall-grounding.json](../benchmarks/results/2026-07-31-recall-grounding.json).
 
