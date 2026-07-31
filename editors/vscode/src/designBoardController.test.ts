@@ -19,6 +19,7 @@ const vscodeMock = vi.hoisted(() => ({
   showErrorMessage: vi.fn(),
   showInformationMessage: vi.fn(),
   showWarningMessage: vi.fn(),
+  showInputBox: vi.fn(),
 }));
 
 vi.mock("vscode", () => ({ window: vscodeMock, workspace: { workspaceFolders: [] } }));
@@ -98,5 +99,53 @@ describe("DesignBoardController refresh", () => {
     expect(provider.update).toHaveBeenCalledTimes(1);
     const [designs] = provider.update.mock.calls[0];
     expect(designs).toHaveLength(2);
+  });
+});
+
+// A decision and the ADR file must move together. accept()/reject() used to
+// call design_decide first and only then write the file, so when the file could
+// not be resolved -- the ADR is on main but absent from the open checkout --
+// the ledger had already accepted while the file still said Proposed. That
+// drift is permanent and is the fingerprint ADR-0072 already carries. The fix
+// resolves and stages the file write before the decision, so a decision that
+// cannot be written is never recorded. These tests fail against the old order.
+describe("DesignBoardController does not record a decision it cannot write to the ADR", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const unresolvable = {
+    design: {
+      id: "design:0075",
+      title: "ADR-0075",
+      status: "proposed",
+      promotion_status: "not_required",
+      created_at: 1,
+      adr_path: "docs/adr/0075-example.md",
+    },
+  };
+
+  it("records no acceptance when the ADR file is not in the open workspace", async () => {
+    // No workspace folders, so the file cannot be resolved.
+    vscodeMock.showInputBox.mockResolvedValue("Reviewer");
+    const { instance, calls } = controller();
+
+    await instance.accept(unresolvable as never);
+
+    expect(calls.filter((c) => c.name === "design_decide")).toHaveLength(0);
+    // The failure names what to do, not only what is missing.
+    expect(vscodeMock.showErrorMessage).toHaveBeenCalledWith(
+      expect.stringContaining("open the checkout that contains it before deciding")
+    );
+  });
+
+  it("records no rejection when the ADR file is not in the open workspace", async () => {
+    vscodeMock.showInputBox.mockResolvedValue("Reviewer");
+    const { instance, calls } = controller();
+
+    await instance.reject(unresolvable as never);
+
+    expect(calls.filter((c) => c.name === "design_decide")).toHaveLength(0);
+    expect(vscodeMock.showErrorMessage).toHaveBeenCalledWith(
+      expect.stringContaining("open the checkout that contains it before deciding")
+    );
   });
 });
