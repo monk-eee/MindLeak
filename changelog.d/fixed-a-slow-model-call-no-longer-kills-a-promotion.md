@@ -10,7 +10,9 @@
   `MCP request "tools/call" timed out after 30000ms` and the promotion failed.
 
   The request timeout is now a setting, `mindleak.requestTimeoutMs`, defaulting
-  to 60000ms so the client budget outlasts the model budget by design. It is
-  wired into both MCP planes (memory and intent) and takes effect on window
-  reload. A settings-surface test now requires the default to exceed the 30000ms
-  model budget, so the two budgets cannot silently converge again.
+  to 300000ms so the client budget outlasts the bounded default model sequence,
+  including ADR-0079's one cold-start read-timeout retry. It is wired into both
+  MCP planes (memory and intent) and takes effect on window reload. A
+  settings-surface test calculates the full default sequence and requires the
+  manifest and activation defaults to agree above it, so the budgets cannot
+  silently converge again.

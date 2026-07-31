@@ -592,10 +592,10 @@
           },
           "mindleak.requestTimeoutMs": {
             "type": "integer",
-            "default": 60000,
+            "default": 300000,
             "minimum": 1000,
-            "maximum": 600000,
-            "description": "Milliseconds to wait for a single MCP request to be answered before giving up. Must exceed the server-side model budget (MINDLEAK_HTTP_TIMEOUT_MS, default 30000) so a model-backed tool call — such as design-promotion planning — can complete or fall back to its deterministic plan instead of being abandoned mid-flight. Takes effect on window reload."
+            "maximum": 1800000,
+            "description": "Milliseconds to wait for a single MCP request to be answered before giving up. The default outlasts the bounded default model sequence, including one cold-start read-timeout retry, so a model-backed tool call can complete or report its deterministic fallback instead of being abandoned mid-flight. Increase this too when configuring larger server-side model budgets. Takes effect on window reload."
           }
         }
       },

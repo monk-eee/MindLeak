@@ -226,7 +226,9 @@ export MINDLEAK_MODEL="glm4:9b"                        # or codegeex4:9b, qwen2.
 The consolidator ([`consolidate.rs`](crates/mindleak-core/src/consolidate.rs))
 uses a strict JSON `response_format` to compress raw logs into a single `intent`
 node via the `consolidate_session` tool. It is optional and never on the hot
-path — it errors cleanly when no model is reachable.
+path — it errors cleanly when no model is reachable. Model-backed results name
+whether the model or deterministic fallback answered; call `storage_status`
+with `include_model_health=true` for a one-shot reachability/JSON probe.
 
 Set `MINDLEAK_AUTONOMOUS_CONSOLIDATION=true` to opt in to ADR-0017's idle
 worker. It uses a separate SQLite connection, waits 300 idle seconds by default,

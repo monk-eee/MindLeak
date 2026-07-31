@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 const extensionRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const manifest = JSON.parse(readFileSync(join(extensionRoot, "package.json"), "utf8"));
+const extensionSource = readFileSync(join(extensionRoot, "src", "extension.ts"), "utf8");
 
 const groups: { title: string; properties: Record<string, unknown> }[] =
   manifest.contributes.configuration;
@@ -112,24 +113,25 @@ describe("settings surface", () => {
   });
 
   /**
-   * Regression: the MCP client request timeout was a flat 30000ms, exactly equal
-   * to the server-side model budget (MINDLEAK_HTTP_TIMEOUT_MS default). A
-   * model-backed tool call — design-promotion planning, goal decomposition —
-   * that ran near that budget was abandoned by the client at the same instant
-   * the server was still waiting, so the deterministic fallback never reached
-   * the user and promotion surfaced only `tools/call timed out after 30000ms`.
-   * The configurable client budget must outlast the model budget, so its default
-   * is required to exceed 30000ms.
+   * Regression: one model attempt originally had the same 30000ms budget as the
+   * MCP client. ADR-0079 then added one bounded read-timeout retry; checking only
+   * `> 30000` would allow the client and the full sequence to converge again.
+   * The largest default is MindLeak's model policy: one 1000ms DNS budget, two
+   * (1000ms connect + 120000ms read) attempts, and 100ms retry backoff.
    */
   it("gives the MCP request timeout headroom over the model budget", () => {
-    const MODEL_BUDGET_MS = 30000;
+    const DEFAULT_MODEL_SEQUENCE_MS = 1000 + 2 * (1000 + 120000) + 100;
     const timeout = groups
       .flatMap((group) => Object.entries(group.properties))
       .find(([key]) => key === "mindleak.requestTimeoutMs")?.[1] as
-      { default?: number; minimum?: number } | undefined;
+      { default?: number; minimum?: number; maximum?: number } | undefined;
 
     expect(timeout, "mindleak.requestTimeoutMs must be declared").toBeDefined();
-    expect(timeout!.default).toBeGreaterThan(MODEL_BUDGET_MS);
+    expect(timeout!.default).toBeGreaterThan(DEFAULT_MODEL_SEQUENCE_MS);
     expect(timeout!.minimum ?? 0).toBeGreaterThan(0);
+    expect(timeout!.maximum).toBeGreaterThan(timeout!.default ?? 0);
+    expect(extensionSource).toContain(
+      `config.get<number>("requestTimeoutMs", ${timeout!.default})`
+    );
   });
 });
