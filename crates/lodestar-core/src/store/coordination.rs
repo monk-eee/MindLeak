@@ -1160,18 +1160,6 @@ impl LodestarStore {
             )));
         }
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
-        if target_status == TaskStatus::Done {
-            let successors: i64 = transaction.query_row(
-                "SELECT COUNT(1) FROM task_handoffs WHERE predecessor_id = ?1",
-                params![task_id],
-                |row| row.get(0),
-            )?;
-            if successors > 1 {
-                return Err(LodestarError::Invalid(format!(
-                    "task {task_id} has {successors} successors; progressive handoff must be linear"
-                )));
-            }
-        }
         let changed = transaction.execute(
             "UPDATE tasks
                 SET status = ?3, owner = NULL, claim_started_at = NULL,
@@ -1214,6 +1202,9 @@ impl LodestarStore {
     /// Atomically transition a claimed task using one existing, authoritative
     /// conformance audit. No second audit row is written: the checked record is
     /// the durable evidence link that controls this transition.
+    ///
+    /// Handoff linearity needs no runtime check: `task_handoffs.predecessor_id`
+    /// is the primary key, so a predecessor can never have a second successor.
     pub(crate) fn transition_with_checked_conformance(
         &self,
         task_id: &str,
@@ -1250,19 +1241,6 @@ impl LodestarStore {
                 "conformance check {conformance_id} does not authorise verdict {}",
                 verdict.as_str()
             )));
-        }
-
-        if target_status == TaskStatus::Done {
-            let successors: i64 = transaction.query_row(
-                "SELECT COUNT(1) FROM task_handoffs WHERE predecessor_id = ?1",
-                params![task_id],
-                |row| row.get(0),
-            )?;
-            if successors > 1 {
-                return Err(LodestarError::Invalid(format!(
-                    "task {task_id} has {successors} successors; progressive handoff must be linear"
-                )));
-            }
         }
 
         let changed = transaction.execute(
