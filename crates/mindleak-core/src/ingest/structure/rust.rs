@@ -118,7 +118,7 @@ pub fn extract(path: &str, content: &str) -> Vec<Import> {
     }
 
     for capture in use_declaration().captures_iter(&code) {
-        if let Some(import) = resolve_use(&layout, &capture[1]) {
+        for import in resolve_use(&layout, &capture[1]) {
             merge(&mut imports, import);
         }
     }
@@ -145,8 +145,8 @@ fn use_declaration() -> &'static Regex {
     })
 }
 
-/// Turn one use-tree into an import, or `None` when it names the toolchain.
-fn resolve_use(layout: &ModuleLayout, tree: &str) -> Option<Import> {
+/// Turn one use-tree into imports, or no imports when it names the toolchain.
+fn resolve_use(layout: &ModuleLayout, tree: &str) -> Vec<Import> {
     let tree = tree.trim();
     let (head, group) = match tree.find('{') {
         Some(at) => (
@@ -163,23 +163,17 @@ fn resolve_use(layout: &ModuleLayout, tree: &str) -> Option<Import> {
         .map(str::to_string)
         .collect();
     if segments.is_empty() && group.is_none() {
-        return None;
+        return Vec::new();
     }
 
-    let leaves = match group {
-        Some(items) => group_leaves(items),
-        None => segments
-            .last()
-            .filter(|name| is_item_name(name))
-            .map(|name| vec![name.clone()])
-            .unwrap_or_default(),
+    let Some(root) = segments.first().cloned() else {
+        return Vec::new();
     };
-
-    let root = segments.first()?.clone();
     if TOOLCHAIN_ROOTS.contains(&root.as_str()) {
-        return None;
+        return Vec::new();
     }
 
+    let mut external_crate = None;
     let base = match root.as_str() {
         "crate" => {
             segments.remove(0);
@@ -199,33 +193,145 @@ fn resolve_use(layout: &ModuleLayout, tree: &str) -> Option<Import> {
             }
             dir
         }
-        // Anything else names another crate. The manifest ingester already
-        // records those as packages; reproducing them as a guessed file path
-        // would be a fabrication.
         _ => {
-            return Some(Import {
-                specifier: tree.to_string(),
-                target: ImportTarget::Package(root),
-                bindings: Vec::new(),
-            })
+            segments.remove(0);
+            external_crate = Some(root);
+            String::new()
         }
     };
 
-    let candidates = module_candidates(layout, &base, &segments);
-    if candidates.is_empty() {
-        return None;
+    let branches = match group {
+        Some(items) => grouped_branches(&segments, items),
+        None => vec![simple_branch(segments)],
+    };
+    let mut imports = Vec::new();
+    for branch in branches {
+        let target = match &external_crate {
+            Some(name) => ImportTarget::RustCrate {
+                name: name.clone(),
+                segments: branch.modules,
+            },
+            None => {
+                let candidates = module_candidates(layout, &base, &branch.modules);
+                if candidates.is_empty() {
+                    continue;
+                }
+                ImportTarget::ArtifactCandidates(candidates)
+            }
+        };
+        merge(
+            &mut imports,
+            Import {
+                specifier: tree.to_string(),
+                target,
+                bindings: branch.bindings,
+            },
+        );
     }
-    Some(Import {
-        specifier: tree.to_string(),
-        target: ImportTarget::ArtifactCandidates(candidates),
-        bindings: leaves
-            .into_iter()
-            .map(|name| ImportBinding {
-                imported: name.clone(),
-                local: name,
-            })
-            .collect(),
-    })
+    imports
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UseBranch {
+    modules: Vec<String>,
+    bindings: Vec<ImportBinding>,
+}
+
+fn simple_branch(mut segments: Vec<String>) -> UseBranch {
+    let mut bindings = Vec::new();
+    if let Some(last) = segments.last_mut() {
+        let (imported, local) = aliased_name(last);
+        if is_item_name(&imported) {
+            *last = imported.clone();
+            bindings.push(ImportBinding { imported, local });
+        }
+    }
+    UseBranch {
+        modules: segments,
+        bindings,
+    }
+}
+
+fn grouped_branches(prefix: &[String], items: &str) -> Vec<UseBranch> {
+    let mut branches = Vec::new();
+    for item in split_group(items) {
+        expand_group_item(prefix, item, &mut branches);
+    }
+    branches
+}
+
+fn expand_group_item(prefix: &[String], raw: &str, branches: &mut Vec<UseBranch>) {
+    let item = raw.trim();
+    if item.is_empty() {
+        return;
+    }
+    if let Some(open) = item.find('{') {
+        let mut nested_prefix = prefix.to_vec();
+        nested_prefix.extend(path_segments(&item[..open]));
+        let nested = item[open + 1..].trim_end().trim_end_matches('}');
+        for child in split_group(nested) {
+            expand_group_item(&nested_prefix, child, branches);
+        }
+        return;
+    }
+
+    let mut path = path_segments(item);
+    let Some(last) = path.pop() else {
+        return;
+    };
+    let (imported, local) = aliased_name(&last);
+    let mut modules = prefix.to_vec();
+    modules.extend(path);
+    let bindings = if is_item_name(&imported) {
+        vec![ImportBinding { imported, local }]
+    } else {
+        Vec::new()
+    };
+    if let Some(existing) = branches.iter_mut().find(|branch| branch.modules == modules) {
+        for binding in bindings {
+            if !existing.bindings.contains(&binding) {
+                existing.bindings.push(binding);
+            }
+        }
+    } else {
+        branches.push(UseBranch { modules, bindings });
+    }
+}
+
+fn split_group(items: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (index, ch) in items.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.push(&items[start..index]);
+                start = index + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    out.push(&items[start..]);
+    out
+}
+
+fn path_segments(path: &str) -> Vec<String> {
+    path.trim()
+        .trim_end_matches("::")
+        .split("::")
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn aliased_name(item: &str) -> (String, String) {
+    let mut parts = item.splitn(2, " as ");
+    let imported = parts.next().unwrap_or(item).trim().to_string();
+    let local = parts.next().unwrap_or(&imported).trim().to_string();
+    (imported, local)
 }
 
 /// Candidate files for a module path, most specific first.
@@ -248,52 +354,6 @@ fn module_candidates(layout: &ModuleLayout, base: &str, segments: &[String]) -> 
     out.push(format!("{base}mod.rs"));
     out.dedup();
     out
-}
-
-/// Leaf names from a braced group, ignoring `self`, `*`, and `as` aliases.
-fn group_leaves(items: &str) -> Vec<String> {
-    let mut leaves = Vec::new();
-    let mut depth = 0usize;
-    let mut current = String::new();
-    for ch in items.chars() {
-        match ch {
-            '{' => {
-                depth += 1;
-                current.push(ch);
-            }
-            '}' => {
-                depth = depth.saturating_sub(1);
-                current.push(ch);
-            }
-            ',' if depth == 0 => {
-                push_leaf(&mut leaves, &current);
-                current.clear();
-            }
-            _ => current.push(ch),
-        }
-    }
-    push_leaf(&mut leaves, &current);
-    leaves
-}
-
-fn push_leaf(leaves: &mut Vec<String>, raw: &str) {
-    let item = raw.trim();
-    if item.is_empty() {
-        return;
-    }
-    // `Thing as Other` binds the alias; the imported name is still `Thing`.
-    let name = item
-        .split(" as ")
-        .next()
-        .unwrap_or(item)
-        .trim()
-        .rsplit("::")
-        .next()
-        .unwrap_or("")
-        .trim();
-    if is_item_name(name) {
-        leaves.push(name.to_string());
-    }
 }
 
 fn is_item_name(name: &str) -> bool {
@@ -394,6 +454,7 @@ mod tests {
             .find(|import| import.specifier.contains(specifier_contains))
             .map(|import| match &import.target {
                 ImportTarget::ArtifactCandidates(list) => list.clone(),
+                ImportTarget::RustCrate { name, .. } => vec![format!("crate:{name}")],
                 ImportTarget::Package(name) => vec![format!("package:{name}")],
             })
             .unwrap_or_default()
@@ -503,6 +564,53 @@ mod tests {
             .map(|binding| binding.imported.as_str())
             .collect();
         assert_eq!(names, vec!["Edge", "Node", "ScoredNode"]);
+        assert_eq!(import.bindings[1].local, "Vertex");
+    }
+
+    #[test]
+    fn a_nested_grouped_use_resolves_every_module_branch() {
+        // Bug regression: the outer group parser treated `b::{C, D}` as one
+        // invalid leaf, so `a/b.rs` never received an import edge and impact
+        // traversal silently omitted its dependents.
+        let found = extract(
+            "crates/c/src/lib.rs",
+            "use crate::a::{b::{C, D as Renamed}, E};\n",
+        );
+
+        let nested = found
+            .iter()
+            .find(|import| match &import.target {
+                ImportTarget::ArtifactCandidates(paths) => {
+                    paths.contains(&"crates/c/src/a/b.rs".to_string())
+                }
+                ImportTarget::RustCrate { .. } | ImportTarget::Package(_) => false,
+            })
+            .expect("the nested b branch is extracted");
+        assert_eq!(
+            nested.bindings,
+            vec![
+                ImportBinding {
+                    imported: "C".to_string(),
+                    local: "C".to_string(),
+                },
+                ImportBinding {
+                    imported: "D".to_string(),
+                    local: "Renamed".to_string(),
+                },
+            ]
+        );
+
+        let outer = found
+            .iter()
+            .find(|import| match &import.target {
+                ImportTarget::ArtifactCandidates(paths) => {
+                    paths.contains(&"crates/c/src/a.rs".to_string())
+                        && !paths.contains(&"crates/c/src/a/b.rs".to_string())
+                }
+                ImportTarget::RustCrate { .. } | ImportTarget::Package(_) => false,
+            })
+            .expect("the outer a branch is extracted");
+        assert_eq!(outer.bindings[0].imported, "E");
     }
 
     #[test]
@@ -519,16 +627,17 @@ mod tests {
     }
 
     #[test]
-    fn another_crate_is_a_package_not_a_guessed_path() {
-        // Inventing `crates/mindleak_core/src/lib.rs` would be a fabricated
-        // file path; the manifest ingester already records real packages.
+    fn another_crate_stays_unresolved_until_its_manifest_proves_a_root() {
         let found = extract(
             "crates/lodestar-core/src/lib.rs",
             "use mindleak_storage::resolve_database;\n",
         );
         assert_eq!(
             found.first().map(|import| import.target.clone()),
-            Some(ImportTarget::Package("mindleak_storage".to_string()))
+            Some(ImportTarget::RustCrate {
+                name: "mindleak_storage".to_string(),
+                segments: vec!["resolve_database".to_string()],
+            })
         );
     }
 
