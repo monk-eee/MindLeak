@@ -1,8 +1,8 @@
 # ADR-0079: A model call must fail loudly, or it fails silently
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-31
-- Deciders: [pending — MindLeak maintainers]
+- Deciders: monk-eee
 - Related: [ADR-0002](0002-sqlite-decay-over-vector-llm.md) (SQLite/decay over a
   vector-LLM core), [ADR-0004](0004-intent-plane-spec-brain.md) (the optional
   OpenAI-compatible model), [ADR-0017](0017-working-memory-and-autonomous-consolidation.md)
