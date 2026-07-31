@@ -41,7 +41,7 @@
 // that actually misleads a reader today: a living doc linking to a moved,
 // renamed, or deleted file.
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -157,9 +157,10 @@ export function checkRepo(root) {
     .trim()
     .split(/\r?\n/)
     .filter(Boolean);
-  const sets = treeSets(tracked);
+  const present = tracked.filter((rel) => existsSync(path.join(root, rel)));
+  const sets = treeSets(present);
   const broken = [];
-  for (const rel of tracked.filter((f) => f.endsWith(".md"))) {
+  for (const rel of present.filter((f) => f.endsWith(".md"))) {
     if (EXCLUDED_SOURCES.some((re) => re.test(rel))) continue;
     const text = readFileSync(path.join(root, rel), "utf8");
     broken.push(...brokenLinksIn(rel, text, sets));

@@ -7,6 +7,7 @@ use crate::ingest::normalize_path;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportTarget {
     ArtifactCandidates(Vec<String>),
+    RustCrate { name: String, segments: Vec<String> },
     Package(String),
 }
 
