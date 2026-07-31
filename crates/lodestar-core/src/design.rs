@@ -81,6 +81,56 @@ impl DesignPromotionStatus {
     }
 }
 
+/// Why a proposed design was parked, and who parked it (ADR-0077).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Deferral {
+    pub at: i64,
+    pub by: String,
+    pub reason: String,
+}
+
+/// An attributed design-ledger act that may be applied in a batch (ADR-0077).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DesignActionKind {
+    Defer,
+    Resume,
+    Reject,
+    Retire,
+}
+
+impl DesignActionKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DesignActionKind::Defer => "defer",
+            DesignActionKind::Resume => "resume",
+            DesignActionKind::Reject => "reject",
+            DesignActionKind::Retire => "retire",
+        }
+    }
+
+    pub fn from_tag(value: &str) -> Option<Self> {
+        match value {
+            "defer" => Some(DesignActionKind::Defer),
+            "resume" => Some(DesignActionKind::Resume),
+            "reject" => Some(DesignActionKind::Reject),
+            "retire" => Some(DesignActionKind::Retire),
+            _ => None,
+        }
+    }
+}
+
+/// One immutable row in a design's attributed action history (ADR-0077).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignAction {
+    pub id: i64,
+    pub design_id: String,
+    pub action: DesignActionKind,
+    pub human: String,
+    pub reason: String,
+    pub created_at: i64,
+}
+
 /// Why a design record left the working board, and who said so (ADR-0042).
 ///
 /// One value object rather than three loose fields: retirement is a single
@@ -142,6 +192,10 @@ pub struct DesignItem {
     pub promotion_status: DesignPromotionStatus,
     /// Latest append-only materialization audit revision, or zero before one exists.
     pub materialization_revision: i64,
+    /// Set while a person has parked an undecided proposal (ADR-0077).
+    /// Deferral is orthogonal to `status`: the design remains proposed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred: Option<Deferral>,
     /// Set once a person retires the record (ADR-0042). Orthogonal to `status`:
     /// retirement says this row is no longer a live entry, and must not
     /// overwrite what a human decided about the design itself.

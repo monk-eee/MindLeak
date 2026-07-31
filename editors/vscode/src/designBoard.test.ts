@@ -16,6 +16,7 @@ import {
   isAdrFile,
   normalizeAdrStatus,
   parseAdrMetadata,
+  projectDesignBoard,
   rawAdrStatus,
   replaceAdrStatus,
 } from "./designBoard";
@@ -293,6 +294,43 @@ describe("designBoardRows", () => {
       "historical",
       "rejected",
     ]);
+  });
+
+  it("caps the rendered tail without disturbing proposed-before-pending grouping", () => {
+    const designs = [
+      ...Array.from({ length: 18 }, (_, index) =>
+        item({ id: `proposed-${index}`, created_at: index })
+      ),
+      ...Array.from({ length: 8 }, (_, index) =>
+        item({
+          id: `pending-${index}`,
+          status: "accepted",
+          promotion_status: "pending",
+          created_at: 100 + index,
+        })
+      ),
+    ];
+
+    const collapsed = projectDesignBoard(designs);
+    expect(collapsed.awaitingDecision).toBe(18);
+    expect(collapsed.rows).toHaveLength(20);
+    expect(collapsed.rows.slice(0, 18).every((row) => row.contextValue === "proposed")).toBe(true);
+    expect(collapsed.rows.slice(18).every((row) => row.contextValue === "pending")).toBe(true);
+    expect(collapsed.hidden).toBe(6);
+
+    const expanded = projectDesignBoard(designs, new Map(), true);
+    expect(expanded.rows).toHaveLength(26);
+    expect(expanded.hidden).toBe(0);
+  });
+
+  it("keeps deferred attribution available to audit rows", () => {
+    const rows = designBoardRows([
+      item({ deferred: { at: 11, by: "reviewer", reason: "not this quarter" } }),
+    ]);
+    expect(rows[0].contextValue).toBe("deferred");
+    expect(rows[0].tooltip).toContain("deferred by: reviewer");
+    expect(rows[0].tooltip).toContain("deferral reason: not this quarter");
+    expect(projectDesignBoard(rows.map((row) => row.item)).awaitingDecision).toBe(0);
   });
 
   it("shows materialized objective and task provenance", () => {

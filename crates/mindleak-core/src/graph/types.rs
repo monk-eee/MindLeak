@@ -5,6 +5,11 @@ use crate::decay::SignalEvidence;
 use crate::error::ModelCallProvenance;
 use crate::model::{Node, NodeType, RelationType};
 
+/// Version of the deterministic structural facts emitted by the extractor.
+/// Increment when extraction semantics change so existing artifact snapshots
+/// become explicitly stale instead of quietly retaining the old shape.
+pub const STRUCTURE_EXTRACTOR_VERSION: u32 = 1;
+
 /// Direction of edge expansion during traversal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -141,6 +146,9 @@ pub struct ReconcileOutcome {
     pub files_forgotten: usize,
     pub nodes_removed: usize,
     pub edges_removed: usize,
+    pub extractor_version: u32,
+    pub stale_paths: Vec<String>,
+    pub missing_paths: Vec<String>,
 }
 
 /// Complete, human-readable view of the active graph at one point in time.

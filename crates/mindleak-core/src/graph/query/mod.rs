@@ -46,6 +46,25 @@ impl GraphStore {
         }
     }
 
+    /// Artifacts whose structural snapshot predates `current_version`, including
+    /// legacy artifacts with no version row at all.
+    pub fn stale_artifact_ids(&self, current_version: u32) -> Result<Vec<String>> {
+        let mut statement = self.conn.prepare(
+            "SELECT n.id
+             FROM nodes n
+             LEFT JOIN artifact_structure_versions v ON v.artifact_id = n.id
+             WHERE n.type = 'artifact'
+               AND COALESCE(v.extractor_version, 0) < ?1
+             ORDER BY n.id",
+        )?;
+        let rows = statement.query_map(params![current_version], |row| row.get(0))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row?);
+        }
+        Ok(ids)
+    }
+
     /// Total node / edge counts (for status displays).
     pub fn counts(&self, now: i64) -> Result<(i64, i64)> {
         let nodes: i64 = self

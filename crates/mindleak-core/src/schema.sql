@@ -32,6 +32,14 @@ CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id, weight);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_type   ON nodes(type);
 
+-- The global deterministic extractor schema that last replaced each file's
+-- structural snapshot. Missing rows are legacy/unknown and therefore stale.
+CREATE TABLE IF NOT EXISTS artifact_structure_versions (
+    artifact_id      TEXT PRIMARY KEY,
+    extractor_version INTEGER NOT NULL,
+    FOREIGN KEY (artifact_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+
 -- Import resolution may need a best-guess artifact before that file is ingested.
 -- Provenance stays internal so a real ingest can promote the same artifact id.
 CREATE TABLE IF NOT EXISTS artifact_stubs (

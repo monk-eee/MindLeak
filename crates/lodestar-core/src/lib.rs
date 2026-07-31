@@ -32,19 +32,19 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use design::{
-    DesignConstraintDraft, DesignItem, DesignMaterializationMode, DesignMaterializationPlan,
-    DesignMaterializationRecord, DesignPromotion, DesignPromotionStatus, DesignStatus,
-    DesignTaskDraft,
+    DesignAction, DesignActionKind, DesignConstraintDraft, DesignItem, DesignMaterializationMode,
+    DesignMaterializationPlan, DesignMaterializationRecord, DesignPromotion, DesignPromotionStatus,
+    DesignStatus, DesignTaskDraft,
 };
 pub use error::{LodestarError, Result};
 pub use facade::{DecomposedTask, PlannedDesignMaterialization};
 pub use model::{
-    Advice, AdviceDisposition, ClaimOverlap, ClaimOverlapReport, ClaimWindow, CodeBinding,
-    CodeBindingMode, ConformanceCheck, ConformanceEvidence, ConformanceRecord, ConformanceResult,
-    ConstitutionProposal, ConstitutionState, ConstitutionStatus, ConstitutionVersion,
-    EvidenceProvenance, Goal, GoalKind, GoalStatus, GoverningClause, HumanQuestion, Knowledge,
-    KnowledgeReach, OverlapSignal, SignalPromotion, Task, TaskEvent, TaskEventKind, TaskQa,
-    TaskReceipt, TaskScope, TaskStatus, Verdict,
+    Advice, AdviceDisposition, ArtifactBinding, ArtifactBindingMode, ClaimOverlap,
+    ClaimOverlapReport, ClaimWindow, ConformanceCheck, ConformanceEvidence, ConformanceRecord,
+    ConformanceResult, ConstitutionProposal, ConstitutionState, ConstitutionStatus,
+    ConstitutionVersion, EvidenceProvenance, Goal, GoalKind, GoalStatus, GoverningClause,
+    HumanQuestion, Knowledge, KnowledgeReach, OverlapSignal, SignalPromotion, Task, TaskEvent,
+    TaskEventKind, TaskQa, TaskReceipt, TaskScope, TaskStatus, Verdict,
 };
 pub use policy::{
     common_core_pack, fleet_delivery_pack, ConstitutionPack, PackClause, PackClauseDisposition,

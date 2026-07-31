@@ -4,7 +4,7 @@ use crate::model::Consequence;
 use crate::waiver::Waiver;
 use crate::{
     common_core_pack, discovery::discover_project_facts, discovery::ProjectFact,
-    fleet_delivery_pack, now_unix, CodeBindingMode, ConstitutionPack, ConstitutionProposal,
+    fleet_delivery_pack, now_unix, ArtifactBindingMode, ConstitutionPack, ConstitutionProposal,
     ConstitutionState, ConstitutionStatus, ConstitutionVersion, Goal, GoalKind, GoalStatus,
     Lodestar, LodestarError, PackClause, PackClauseDisposition, PackClauseProposal,
     PackClauseProvenance, PackProposalBatch, PackReviewOutcome, Result,
@@ -296,7 +296,7 @@ impl Lodestar {
         &self,
         goal_id: &str,
         node_ids: &[String],
-        mode: CodeBindingMode,
+        mode: ArtifactBindingMode,
     ) -> Result<usize> {
         if !self.store.goal_exists(goal_id)? {
             return Err(LodestarError::NotFound(goal_id.to_string()));
@@ -305,7 +305,7 @@ impl Lodestar {
             .store
             .get_goal(goal_id)?
             .ok_or_else(|| LodestarError::NotFound(goal_id.to_string()))?;
-        if mode == CodeBindingMode::ForbidChange && !goal.kind.is_normative() {
+        if mode == ArtifactBindingMode::ForbidChange && !goal.kind.is_normative() {
             return Err(LodestarError::Invalid(
                 "forbid_change is valid only for constraints and invariants".to_string(),
             ));
@@ -329,7 +329,7 @@ impl Lodestar {
     /// Audit which active goals govern a code node, and how (governed /
     /// forbid_change) — the read that makes binding hygiene inspectable before
     /// pruning with `unlink_goal_from_artifact`.
-    pub fn governing_goals(&self, node_id: &str) -> Result<Vec<crate::CodeBinding>> {
+    pub fn governing_goals(&self, node_id: &str) -> Result<Vec<crate::ArtifactBinding>> {
         self.store.active_bindings_for_node(node_id)
     }
 

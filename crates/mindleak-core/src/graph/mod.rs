@@ -22,7 +22,7 @@ pub use types::{
     EvidenceProvenance, ForgetOutcome, GraphExport, Preflight, PreflightNode, PromotionCandidate,
     PruneOutcome, ReconcileOutcome, RepairOutcome, ResetOutcome, ScoredNode,
     SessionConsolidationOutcome, SignalCandidate, SignalConsolidationOutcome, Subgraph,
-    WeightedEdge, WorkingSetItem, WriteOutcome,
+    WeightedEdge, WorkingSetItem, WriteOutcome, STRUCTURE_EXTRACTOR_VERSION,
 };
 
 /// The persistent graph store.

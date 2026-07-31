@@ -192,6 +192,11 @@ CREATE TABLE IF NOT EXISTS design_items (
     updated_at   INTEGER NOT NULL,
     promotion_status TEXT NOT NULL DEFAULT 'not_required',
     materialization_revision INTEGER NOT NULL DEFAULT 0,
+    -- Deferral (ADR-0077): a proposed design parked by a person. Kept
+    -- separate from status so "not now" cannot masquerade as a decision.
+    deferred_at     INTEGER,
+    deferred_by     TEXT,
+    deferred_reason TEXT,
     -- Retirement (ADR-0042): a person, never a missing file. Kept separate from
     -- status so retiring a record cannot overwrite what a human decided about
     -- the design. Archived, never deleted (ADR-0019).
@@ -205,6 +210,19 @@ CREATE TABLE IF NOT EXISTS design_items (
     superseded_by  TEXT REFERENCES design_items(id),
     superseded_at  INTEGER,
     superseded_by_human TEXT
+);
+
+-- Every attributed backlog act, one immutable row per affected design
+-- (ADR-0077). The current design_items columns remain the working projection;
+-- this is the audit that survives resume clearing deferred_*.
+CREATE TABLE IF NOT EXISTS design_actions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    design_id  TEXT NOT NULL,
+    action     TEXT NOT NULL CHECK (action IN ('defer', 'resume', 'reject', 'retire')),
+    human      TEXT NOT NULL,
+    reason     TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (design_id) REFERENCES design_items(id) ON DELETE CASCADE
 );
 
 -- Append-only record of every reviewed materialization. The current link tables
@@ -366,7 +384,7 @@ CREATE TABLE IF NOT EXISTS task_handoffs (
 
 -- Seam to MindLeak: which code nodes realise a goal. node_id is an opaque
 -- MindLeak id string (e.g. "artifact:src/auth.rs"); no cross-DB FK.
-CREATE TABLE IF NOT EXISTS goal_code (
+CREATE TABLE IF NOT EXISTS goal_artifacts (
     goal_id TEXT NOT NULL,
     node_id TEXT NOT NULL,
     mode    TEXT NOT NULL DEFAULT 'governed', -- governed | forbid_change

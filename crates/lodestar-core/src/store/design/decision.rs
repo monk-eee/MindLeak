@@ -2,6 +2,7 @@
 //!
 //! Split out of `design.rs` (see `super`); the code is unchanged.
 
+use super::action::apply_design_action;
 use super::*;
 
 impl LodestarStore {
@@ -126,6 +127,44 @@ impl LodestarStore {
         collect(rows)
     }
 
+    /// Park an active proposal without deciding it (ADR-0077).
+    pub fn defer_design_item(
+        &self,
+        id: &str,
+        human: &str,
+        reason: &str,
+        now: i64,
+    ) -> Result<DesignItem> {
+        self.apply_design_actions(
+            &[id.to_string()],
+            DesignActionKind::Defer,
+            human,
+            reason,
+            now,
+        )?
+        .pop()
+        .ok_or_else(|| LodestarError::NotFound(id.to_string()))
+    }
+
+    /// Return a deferred proposal to the working board (ADR-0077).
+    pub fn resume_design_item(
+        &self,
+        id: &str,
+        human: &str,
+        reason: &str,
+        now: i64,
+    ) -> Result<DesignItem> {
+        self.apply_design_actions(
+            &[id.to_string()],
+            DesignActionKind::Resume,
+            human,
+            reason,
+            now,
+        )?
+        .pop()
+        .ok_or_else(|| LodestarError::NotFound(id.to_string()))
+    }
+
     /// Guarded CAS: move a *proposed* item to accepted/rejected. Returns `false`
     /// when the item is not currently proposed (missing or already decided), so
     /// a concurrent second decider cannot overwrite the first.
@@ -138,16 +177,31 @@ impl LodestarStore {
         now: i64,
     ) -> Result<bool> {
         // Accepting arms promotion (pending); any other decision leaves it off.
-        let promotion = if target == DesignStatus::Accepted {
-            DesignPromotionStatus::Pending
-        } else {
-            DesignPromotionStatus::NotRequired
-        };
-        let changed = self.conn.execute(
-            "UPDATE design_items SET status = ?2, decided_by = ?3, reason = ?4, promotion_status = ?5, updated_at = ?6
-             WHERE id = ?1 AND status = 'proposed'",
-            params![id, target.as_str(), decided_by, reason, promotion.as_str(), now],
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        if target == DesignStatus::Rejected {
+            let changed = apply_design_action(
+                &transaction,
+                id,
+                DesignActionKind::Reject,
+                decided_by,
+                reason.unwrap_or_default(),
+                now,
+            )?;
+            transaction.commit()?;
+            return Ok(changed);
+        }
+        let changed = transaction.execute(
+            "UPDATE design_items
+             SET status = ?2, decided_by = ?3, reason = ?4,
+                 promotion_status = 'pending', updated_at = ?5
+             WHERE id = ?1
+               AND status = 'proposed'
+               AND deferred_at IS NULL
+               AND retired_at IS NULL
+               AND superseded_by IS NULL",
+            params![id, target.as_str(), decided_by, reason, now],
         )?;
+        transaction.commit()?;
         Ok(changed == 1)
     }
 }

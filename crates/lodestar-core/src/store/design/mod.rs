@@ -6,9 +6,9 @@
 use rusqlite::{params, Row, Transaction, TransactionBehavior};
 
 use crate::design::{
-    design_id_from_path, DesignItem, DesignMaterializationMode, DesignMaterializationPlan,
-    DesignMaterializationRecord, DesignMetadata, DesignPromotion, DesignPromotionStatus,
-    DesignStatus, Retirement, Supersession,
+    design_id_from_path, Deferral, DesignAction, DesignActionKind, DesignItem,
+    DesignMaterializationMode, DesignMaterializationPlan, DesignMaterializationRecord,
+    DesignMetadata, DesignPromotion, DesignPromotionStatus, DesignStatus, Retirement, Supersession,
 };
 use crate::error::{LodestarError, Result};
 use crate::model::{Goal, Task};
@@ -20,8 +20,9 @@ use super::{
 };
 
 const DESIGN_COLS: &str =
-    "id, adr_path, title, summary, status, proposed_by, decided_by, reason, created_at, updated_at, promotion_status, materialization_revision, retired_at, retired_by, retired_reason, superseded_by, superseded_at, superseded_by_human";
+    "id, adr_path, title, summary, status, proposed_by, decided_by, reason, created_at, updated_at, promotion_status, materialization_revision, retired_at, retired_by, retired_reason, superseded_by, superseded_at, superseded_by_human, deferred_at, deferred_by, deferred_reason";
 
+mod action;
 mod decision;
 mod links;
 mod promotion;
@@ -68,22 +69,29 @@ impl LodestarStore {
     /// List design items, oldest first. `status = None` returns every item
     /// (durable audit view); `Some(Proposed)` is the Design Board.
     ///
-    /// Retired records are omitted unless `include_retired`: the board shows
-    /// live decisions, while the audit trail stays complete (ADR-0042).
+    /// Retired and deferred records are omitted unless explicitly included:
+    /// the working view stays quiet while the audit trail remains complete.
     pub fn list_design_items(
         &self,
         status: Option<DesignStatus>,
         include_retired: bool,
+        include_deferred: bool,
     ) -> Result<Vec<DesignItem>> {
-        let retired_filter = if include_retired {
-            ""
-        } else {
-            " AND retired_at IS NULL"
-        };
+        let retired_filter = (!include_retired).then_some("retired_at IS NULL");
+        let deferred_filter = (!include_deferred).then_some("deferred_at IS NULL");
+        let filters = [retired_filter, deferred_filter]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
         match status {
             Some(status) => {
+                let extra_filters = if filters.is_empty() {
+                    String::new()
+                } else {
+                    format!(" AND {}", filters.join(" AND "))
+                };
                 let sql = format!(
-                    "SELECT {DESIGN_COLS} FROM design_items WHERE status = ?1{retired_filter} \
+                    "SELECT {DESIGN_COLS} FROM design_items WHERE status = ?1{extra_filters} \
                      ORDER BY created_at ASC, id ASC"
                 );
                 let mut stmt = self.conn.prepare(&sql)?;
@@ -91,10 +99,10 @@ impl LodestarStore {
                 collect(rows)
             }
             None => {
-                let where_clause = if include_retired {
+                let where_clause = if filters.is_empty() {
                     String::new()
                 } else {
-                    " WHERE retired_at IS NULL".to_string()
+                    format!(" WHERE {}", filters.join(" AND "))
                 };
                 let sql = format!(
                     "SELECT {DESIGN_COLS} FROM design_items{where_clause} \
@@ -114,6 +122,7 @@ impl LodestarStore {
             "SELECT {DESIGN_COLS} FROM design_items
              WHERE retired_at IS NULL
                AND superseded_by IS NULL
+                             AND deferred_at IS NULL
                AND (status = 'proposed'
                 OR (status = 'accepted' AND promotion_status = 'pending'))
              ORDER BY created_at ASC, id ASC"
@@ -122,6 +131,22 @@ impl LodestarStore {
         let rows = stmt.query_map([], row_to_design)?;
         collect(rows)
     }
+}
+
+fn append_design_action(
+    transaction: &Transaction<'_>,
+    design_id: &str,
+    action: DesignActionKind,
+    human: &str,
+    reason: &str,
+    now: i64,
+) -> Result<()> {
+    transaction.execute(
+        "INSERT INTO design_actions (design_id, action, human, reason, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![design_id, action.as_str(), human, reason, now],
+    )?;
+    Ok(())
 }
 
 fn row_to_design(row: &Row) -> rusqlite::Result<DesignItem> {
@@ -139,6 +164,14 @@ fn row_to_design(row: &Row) -> rusqlite::Result<DesignItem> {
         promotion_status: DesignPromotionStatus::from_tag(&row.get::<_, String>(10)?)
             .unwrap_or(DesignPromotionStatus::NotRequired),
         materialization_revision: row.get(11)?,
+        deferred: match (
+            row.get::<_, Option<i64>>(18)?,
+            row.get::<_, Option<String>>(19)?,
+            row.get::<_, Option<String>>(20)?,
+        ) {
+            (Some(at), Some(by), Some(reason)) => Some(Deferral { at, by, reason }),
+            _ => None,
+        },
         // All three columns move together in `retire_design_item`, so a row is
         // retired only when the full record is present. A partial row is
         // treated as not retired rather than half-retired.

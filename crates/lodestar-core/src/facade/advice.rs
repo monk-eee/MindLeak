@@ -145,7 +145,7 @@ impl Lodestar {
             .store
             .get_task(task_id)?
             .ok_or_else(|| LodestarError::NotFound(task_id.to_string()))?;
-        let nodes = self.store.code_for_goal(&task.goal_id)?;
+        let nodes = self.store.artifacts_for_goal(&task.goal_id)?;
         let mut clauses = self
             .resolve_governing_clauses(&nodes, Some(&task.goal_id))?
             .clauses();
@@ -167,7 +167,7 @@ fn distinct_goal_ids<'a>(pairs: impl Iterator<Item = &'a (String, crate::Goal)>)
 mod tests {
     use crate::facade::test_support::engine;
     use crate::model::Consequence;
-    use crate::{AdviceDisposition, CodeBindingMode, GoalKind};
+    use crate::{AdviceDisposition, ArtifactBindingMode, GoalKind};
 
     /// The pre-flight must see the coverage the gate sees (ADR-0041).
     ///
@@ -204,7 +204,7 @@ mod tests {
             .link_goal_to_artifact(
                 &governing.id,
                 &["artifact:src/parser.rs".to_string()],
-                CodeBindingMode::Governed,
+                ArtifactBindingMode::Governed,
             )
             .unwrap();
 
@@ -362,7 +362,7 @@ mod tests {
             .link_goal_to_artifact(
                 &goal.id,
                 std::slice::from_ref(&node),
-                CodeBindingMode::ForbidChange,
+                ArtifactBindingMode::ForbidChange,
             )
             .unwrap();
 
@@ -371,7 +371,7 @@ mod tests {
             .unwrap();
         assert_eq!(advice.disposition, AdviceDisposition::Block);
         assert_eq!(advice.governing.len(), 1);
-        assert_eq!(advice.governing[0].mode, CodeBindingMode::ForbidChange);
+        assert_eq!(advice.governing[0].mode, ArtifactBindingMode::ForbidChange);
         assert!(advice.findings[0].contains("forbids changes"));
 
         // A different, unrelated node under no clause is not blocked.
@@ -401,7 +401,7 @@ mod tests {
             .link_goal_to_artifact(
                 &goal.id,
                 std::slice::from_ref(&node),
-                CodeBindingMode::Governed,
+                ArtifactBindingMode::Governed,
             )
             .unwrap();
 
@@ -427,7 +427,7 @@ mod tests {
             .link_goal_to_artifact(
                 &goal.id,
                 std::slice::from_ref(&node),
-                CodeBindingMode::Governed,
+                ArtifactBindingMode::Governed,
             )
             .unwrap();
         let task = engine
@@ -451,7 +451,7 @@ mod tests {
             .link_goal_to_artifact(
                 &goal.id,
                 std::slice::from_ref(&node),
-                CodeBindingMode::Governed,
+                ArtifactBindingMode::Governed,
             )
             .unwrap();
         let task = engine.create_task(&goal.id, "Work", "do it").unwrap();
@@ -476,7 +476,7 @@ mod tests {
             .link_goal_to_artifact(
                 &goal.id,
                 std::slice::from_ref(&node),
-                CodeBindingMode::Governed,
+                ArtifactBindingMode::Governed,
             )
             .unwrap();
         let bound = engine.create_task(&goal.id, "Extend graph", "add").unwrap();

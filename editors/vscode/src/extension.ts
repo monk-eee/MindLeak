@@ -418,6 +418,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     }),
     vscode.commands.registerCommand("mindleak.design.refresh", () => designController?.refresh()),
     vscode.commands.registerCommand("mindleak.design.sync", () => designController?.sync()),
+    vscode.commands.registerCommand("mindleak.design.expand", () => designController?.expand()),
+    vscode.commands.registerCommand("mindleak.design.toggleDeferred", async () => {
+      await designController?.toggleDeferred();
+      await vscode.commands.executeCommand(
+        "setContext",
+        "mindleak.design.showDeferred",
+        designBoard?.includeDeferred ?? false
+      );
+    }),
+    vscode.commands.registerCommand("mindleak.design.defer", (item?: DesignBoardItem) => {
+      void designController?.defer(item);
+    }),
+    vscode.commands.registerCommand("mindleak.design.resume", (item?: DesignBoardItem) => {
+      void designController?.resume(item);
+    }),
     vscode.commands.registerCommand("mindleak.design.accept", (item?: DesignBoardItem) => {
       void designController?.accept(item);
     }),

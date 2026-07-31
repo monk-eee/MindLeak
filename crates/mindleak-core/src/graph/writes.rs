@@ -3,7 +3,7 @@ use std::collections::HashSet;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::{ArtifactStub, ForgetOutcome, GraphStore, WriteOutcome};
+use super::{ArtifactStub, ForgetOutcome, GraphStore, WriteOutcome, STRUCTURE_EXTRACTOR_VERSION};
 use crate::error::{MindLeakError, Result};
 use crate::model::{Edge, Node};
 
@@ -134,6 +134,13 @@ impl GraphStore {
                 outcome.nodes_created += 1;
             }
         }
+        transaction.execute(
+            "INSERT INTO artifact_structure_versions (artifact_id, extractor_version)
+             VALUES (?1, ?2)
+             ON CONFLICT(artifact_id) DO UPDATE SET
+                 extractor_version = excluded.extractor_version",
+            params![owner_id, STRUCTURE_EXTRACTOR_VERSION],
+        )?;
         for stub in artifact_stubs {
             if !real_artifacts.contains(&stub.node_id) {
                 transaction.execute(

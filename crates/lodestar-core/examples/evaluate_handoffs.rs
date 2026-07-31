@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lodestar_core::{
-    now_unix, CodeBindingMode, ConformanceEvidence, EvidenceProvenance, GoalKind, Lodestar, Result,
-    Task, TaskStatus,
+    now_unix, ArtifactBindingMode, ConformanceEvidence, EvidenceProvenance, GoalKind, Lodestar,
+    Result, Task, TaskStatus,
 };
 use serde_json::json;
 
@@ -55,10 +55,14 @@ fn independent_arm(path: &Path) -> Result<serde_json::Value> {
         "Complete both same-file edits",
         None,
     )?;
-    setup.link_goal_to_artifact(&goal.id, &[ARTIFACT.to_string()], CodeBindingMode::Governed)?;
+    setup.link_goal_to_artifact(
+        &goal.id,
+        &[ARTIFACT.to_string()],
+        ArtifactBindingMode::Governed,
+    )?;
     let bound_to_shared_artifact = setup
         .store()
-        .code_for_goal(&goal.id)?
+        .artifacts_for_goal(&goal.id)?
         .contains(&ARTIFACT.to_string());
     let first = setup.create_task(&goal.id, "Edit Router", "Router complete")?;
     let second = setup.create_task(&goal.id, "Edit helper", "helper complete")?;
@@ -91,7 +95,11 @@ fn progressive_arm(path: &Path) -> Result<serde_json::Value> {
         "Serialize same-file edits through task handoff",
         None,
     )?;
-    setup.link_goal_to_artifact(&goal.id, &[ARTIFACT.to_string()], CodeBindingMode::Governed)?;
+    setup.link_goal_to_artifact(
+        &goal.id,
+        &[ARTIFACT.to_string()],
+        ArtifactBindingMode::Governed,
+    )?;
     let first = setup.create_task(&goal.id, "Edit Router", "Router complete")?;
     let second = setup.create_task_after(
         &goal.id,

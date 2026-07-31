@@ -31,6 +31,14 @@ Both planes resolve one per-clone id from shared Git config, so linked worktrees
 share state without sharing files, indexes, or branches. Reset and export remain
 plane-specific operations.
 
+The `repository` module is split by responsibility: `mod.rs` holds the data
+types (`DatabaseKind`, `DatabaseOrigin`, `StorageStatus`, `ResolvedDatabase`) and
+public re-exports; `resolve` picks the database and state root; `identity` owns
+the per-clone repository id and its marker bootstrap; `migrate` guards the
+one-shot legacy migration lock; `platform` resolves the OS state root;
+`worktree` lists sibling checkouts; and `fs` holds the git-process and
+filesystem helpers.
+
 ### `mindleak-session` (library)
 
 The shared ADR-0030 request identity contract. It validates client-minted
@@ -51,7 +59,7 @@ The engine. Modules:
 | [`db.rs`](../crates/mindleak-core/src/db.rs) | Connection setup (WAL, FKs), migrations, and the `effective_weight()` scalar SQL function. |
 | [`decay.rs`](../crates/mindleak-core/src/decay.rs) | The half-life decay formula and prune threshold. |
 | [`graph/`](../crates/mindleak-core/src/graph/mod.rs) | `GraphStore`: shared `types`, atomic `writes`, decay-aware `query/` (`lookup` node/FTS resolution, `traversal` bounded walks and impact radius, `agents` roster/attention/overlap), derived `signal/` (`mod` evidence and weighted edges, `promotion` what has earned consolidation, `prune` reaping faded signal), conformance `evidence`, and `lifecycle` operations. |
-| [`ingest/`](../crates/mindleak-core/src/ingest/mod.rs) | Zero-token deterministic extractors: `execution`, `git`, `ast`, `structure/{imports,hierarchy}` (JS/TS imports and type hierarchy), and `manifest` (direct package dependencies). |
+| [`ingest/`](../crates/mindleak-core/src/ingest/mod.rs) | Zero-token deterministic extractors: `execution`, `git`, `ast`, `structure/{imports,hierarchy}` (JS/TS imports and type hierarchy), `javascript/` (the JS/TS lexer plus `nav`, `scope`, `callable`, `binding`, `shadowing`), and `manifest` (direct package dependencies). |
 | [`consolidate.rs`](../crates/mindleak-core/src/consolidate.rs) | Optional Ollama consolidation worker. |
 | [`embed.rs`](../crates/mindleak-core/src/embed.rs) | Optional semantic-recall embedding index (ADR-0008): local `/v1/embeddings` client, derived `embeddings` table, cosine recall. Off the zero-token write path. |
 | [`net.rs`](../crates/mindleak-core/src/net.rs) | Network resilience for optional HTTP (ADR-0010): timeouts, bounded retry with backoff, per-endpoint circuit breaker. |
@@ -88,9 +96,14 @@ materialization plus validation, `amendments` and `waivers`, learned
 `knowledge`, and `lifecycle` operations), `llm` (optional local model), and
 `lib` (the `Lodestar` facade wiring). `store/design/` is split by
 responsibility: `mod` (register and read), `decision` (the guarded accept/reject
-transition and repairing one after the fact), `retirement` (retire and
+transition and repairing one after the fact), `action` (the append-only,
+attributed defer/resume/reject/retire audit), `retirement` (retire and
 supersede), `promotion` (promotion into work and its immutable materialization
 revisions), and `links` (the current projection of what an item is linked to).
+`store/policy_packs/` is split by responsibility: `mod` (pack registration and
+retrieval), `proposal` (proposal creation), `query` (proposal and disposition
+reads), `review` (attributed adoption/rejection), `provenance` (upstream source
+tracking), and `conflict` (pre-adoption conflict detection).
 Facade behavior is grouped under
 `facade/`: `constitution`, `executive`, `design`, `design_materialization`,
 `conformance/`, `controls`, `amendments`, `waivers`, `advice`, `fleet`,
