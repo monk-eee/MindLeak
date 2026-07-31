@@ -137,10 +137,22 @@ export const reconciliationOf = ({ tasks, branch, newCommits }) => {
 /**
  * Whether this publication may proceed.
  *
- * The checks are ordered so each refusal names its own cause. An unreachable
- * ledger cannot resolve an identity either, so testing identity first would
- * report a broken ledger as a missing session and send the reader to fix the
- * wrong thing — the failure mode ADR-0045 exists to stop.
+ * The checks are ordered so each refusal names its own cause, and the three
+ * server-side outcomes are kept distinct because their remedies differ. An
+ * unreachable ledger cannot resolve an identity either, so testing identity
+ * first would report a broken ledger as a missing session and send the reader
+ * to fix the wrong thing — the failure mode ADR-0045 exists to stop.
+ *
+ *   - `reachable: false` — the binary did not answer. Rebuild it, or point
+ *     LODESTAR_MCP_BIN at a running one.
+ *   - `agent` empty — it answered but did not identify the session. The ledger
+ *     is fine; the session id is the thing to check, not the binary.
+ *   - `boardReadable: false` — it answered and identified the session, but the
+ *     task board could not be read. The deployed binary is older than the
+ *     ledger and cannot parse an event a newer writer recorded; the fix is a
+ *     current binary, not a rebuild of a ledger that is not broken. Folding
+ *     this into "unreachable" cost a session once: the message offered
+ *     `cargo build` for a binary that was present and answering.
  *
  * `reachable: false` refuses. Unlike `gh`, whose absence is an ordinary
  * condition, Lodestar is local SQLite behind a local binary: unreachable means
@@ -150,6 +162,7 @@ export const reconciliationOf = ({ tasks, branch, newCommits }) => {
  */
 export const publishVerdict = ({
   reachable,
+  boardReadable,
   sessionDeclared,
   agent,
   tasks,
@@ -166,7 +179,7 @@ export const publishVerdict = ({
         "  one a claim is recorded against. An unattributed push is a receipt for nobody.",
     };
   }
-  if (!reachable || !agent) {
+  if (!reachable) {
     return {
       ok: false,
       message:
@@ -174,6 +187,27 @@ export const publishVerdict = ({
         "  Build it:  cargo build --release\n" +
         "  Or point at an existing server with LODESTAR_MCP_BIN.\n" +
         "  This refuses rather than waves through: an unreachable ledger must not become the way past the gate.",
+    };
+  }
+  if (!agent) {
+    return {
+      ok: false,
+      message:
+        "the Lodestar ledger answered but did not identify this session, so this publication cannot be\n" +
+        "  attributed to a claim. The ledger is reachable, so do not rebuild it: check that\n" +
+        "  LODESTAR_SESSION_ID is the same 32-character hex id the claim was made under (ADR-0030), the\n" +
+        "  one open_session resolves to a stable agent identity.",
+    };
+  }
+  if (!boardReadable) {
+    return {
+      ok: false,
+      message:
+        "the Lodestar ledger answered and identified this session, but its task board could not be read,\n" +
+        "  so this push cannot be checked against your claims. This is not an unreachable ledger and\n" +
+        "  rebuilding it will not help: the deployed binary is almost certainly older than the ledger it is\n" +
+        "  reading and cannot parse an event a newer writer recorded. Point LODESTAR_MCP_BIN at the shared\n" +
+        "  install (~/.mindleak/bin/lodestar-mcp), which tracks the current build.",
     };
   }
   const held = liveClaims(tasks, agent, now);
