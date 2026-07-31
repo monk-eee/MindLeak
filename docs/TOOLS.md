@@ -21,9 +21,9 @@ New here? Start with **[QUICKSTART.md](QUICKSTART.md)** to get running, then
 | `record_architectural_decision` | Persist a decision as a linked intent node. |
 | `ingest_execution` | Command + exit code → execution/modified/failed_on edges. |
 | `ingest_commit` | Commit → intent node + refactored edges + rationale. |
-| `ingest_file` | File → artifact + extracted symbols (`contains`). |
+| `ingest_file` | File → artifact + extracted symbols (`contains`); `structural_only` refreshes deterministic structure without recording agent attention. |
 | `forget_file` | Deleted/renamed file → reap its artifact, symbols, and their edges. |
-| `reconcile_workspace` | Forget artifacts for files no longer in the workspace set (bulk cleanup). |
+| `reconcile_workspace` | Forget artifacts outside the workspace set and report stale/missing extractor snapshots; `report_only` performs the same inspection without deleting anything. |
 | `boost_entity` | Record node focus for recency views without rewriting evidence. |
 | `graph_snapshot` | Subgraph for visualization. |
 | `prune_graph` | Surface near-expiry proven signal for consolidation, then purge decayed noise and unreferenced stubs. |
