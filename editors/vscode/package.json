@@ -159,6 +159,26 @@
         "icon": "$(sync)"
       },
       {
+        "command": "mindleak.design.expand",
+        "title": "MindLeak: Show All Designs",
+        "icon": "$(ellipsis)"
+      },
+      {
+        "command": "mindleak.design.toggleDeferred",
+        "title": "MindLeak: Show Deferred Designs",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "mindleak.design.defer",
+        "title": "MindLeak: Defer Design",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "mindleak.design.resume",
+        "title": "MindLeak: Resume Design",
+        "icon": "$(debug-continue)"
+      },
+      {
         "command": "mindleak.design.accept",
         "title": "MindLeak: Accept Design",
         "icon": "$(check)"
@@ -277,6 +297,12 @@
           "group": "navigation@2"
         },
         {
+          "command": "mindleak.design.toggleDeferred",
+          "when": "view == mindleak.designView",
+          "group": "navigation@3",
+          "toggled": "mindleak.design.showDeferred"
+        },
+        {
           "command": "mindleak.telemetry.refresh",
           "when": "view == mindleak.telemetryView",
           "group": "navigation"
@@ -319,6 +345,16 @@
           "group": "inline@2"
         },
         {
+          "command": "mindleak.design.defer",
+          "when": "view == mindleak.designView && viewItem == design.proposed",
+          "group": "inline@3"
+        },
+        {
+          "command": "mindleak.design.resume",
+          "when": "view == mindleak.designView && viewItem == design.deferred",
+          "group": "inline@1"
+        },
+        {
           "command": "mindleak.design.promote",
           "when": "view == mindleak.designView && viewItem == design.pending",
           "group": "inline@1"
@@ -335,7 +371,7 @@
         },
         {
           "command": "mindleak.design.openAdr",
-          "when": "view == mindleak.designView",
+          "when": "view == mindleak.designView && viewItem =~ /design\\.(proposed|pending|deferred|materialized|historical|rejected)/",
           "group": "navigation"
         },
         {
@@ -434,6 +470,18 @@
         },
         {
           "command": "mindleak.design.refresh",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.design.expand",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.design.defer",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.design.resume",
           "when": "false"
         },
         {

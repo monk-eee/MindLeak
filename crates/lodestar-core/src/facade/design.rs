@@ -4,8 +4,8 @@
 //! design work without code conformance.
 
 use crate::design::{
-    design_id_from_path, resembling_deciders, DesignItem, DesignMetadata, DesignPromotionStatus,
-    DesignStatus,
+    design_id_from_path, resembling_deciders, DesignActionKind, DesignItem, DesignMetadata,
+    DesignPromotionStatus, DesignStatus,
 };
 use crate::{now_unix, Lodestar, LodestarError, Result};
 
@@ -59,13 +59,79 @@ impl Lodestar {
     }
 
     /// Every design item (durable audit view), or those in one status. Retired
-    /// records are omitted unless `include_retired` (ADR-0042).
+    /// and deferred records are omitted unless explicitly included.
     pub fn list_design_items(
         &self,
         status: Option<DesignStatus>,
         include_retired: bool,
+        include_deferred: bool,
     ) -> Result<Vec<DesignItem>> {
-        self.store.list_design_items(status, include_retired)
+        self.store
+            .list_design_items(status, include_retired, include_deferred)
+    }
+
+    /// Park a proposed design without deciding it (ADR-0077).
+    pub fn defer_design(&self, id: &str, human: &str, reason: &str) -> Result<DesignItem> {
+        let human = human.trim();
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err(LodestarError::Invalid(
+                "deferring a design requires a reason".to_string(),
+            ));
+        }
+        self.load_for_decision(id, human)?;
+        self.store.defer_design_item(id, human, reason, now_unix())
+    }
+
+    /// Return a deferred proposal to the working Design Board (ADR-0077).
+    pub fn resume_design(&self, id: &str, human: &str, reason: &str) -> Result<DesignItem> {
+        let human = human.trim();
+        if human.is_empty() {
+            return Err(LodestarError::Invalid(
+                "resuming a design requires the person doing it".to_string(),
+            ));
+        }
+        if reason.trim().is_empty() {
+            return Err(LodestarError::Invalid(
+                "resuming a design requires a reason".to_string(),
+            ));
+        }
+        self.store
+            .resume_design_item(id, human, reason.trim(), now_unix())
+    }
+
+    /// Immutable attributed defer/resume/reject/retire history (ADR-0077).
+    pub fn design_action_history(&self, id: &str) -> Result<Vec<crate::DesignAction>> {
+        self.store.design_action_history(id)
+    }
+
+    /// Apply one attributed backlog act to every named design atomically.
+    pub fn apply_design_actions(
+        &self,
+        ids: &[String],
+        action: DesignActionKind,
+        human: &str,
+        reason: &str,
+    ) -> Result<Vec<DesignItem>> {
+        let human = human.trim();
+        if human.is_empty() {
+            return Err(LodestarError::Invalid(
+                "a design action requires the person doing it".to_string(),
+            ));
+        }
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err(LodestarError::Invalid(
+                "a design action requires a reason".to_string(),
+            ));
+        }
+        if matches!(action, DesignActionKind::Defer | DesignActionKind::Reject) {
+            for id in ids {
+                self.load_for_decision(id, human)?;
+            }
+        }
+        self.store
+            .apply_design_actions(ids, action, human, reason, now_unix())
     }
 
     /// Retire a design record: an explicit, attributed human act (ADR-0042).
@@ -292,6 +358,16 @@ impl Lodestar {
             return Err(LodestarError::Invalid(format!(
                 "design item {id} is already {}; only a proposed item can be decided",
                 item.status.as_str()
+            )));
+        }
+        if item.deferred.is_some() {
+            return Err(LodestarError::Invalid(format!(
+                "design item {id} is deferred; resume it before deciding it"
+            )));
+        }
+        if item.retired.is_some() || item.superseded.is_some() {
+            return Err(LodestarError::Invalid(format!(
+                "design item {id} is not a live proposal"
             )));
         }
         Ok(item)
@@ -627,7 +703,68 @@ mod tests {
         assert_eq!(rejected.reason.as_deref(), Some("superseded by 0102"));
         // Archive-not-delete: off the board but still present.
         assert!(e.design_board().unwrap().is_empty());
-        assert_eq!(e.list_design_items(None, false).unwrap().len(), 1);
+        assert_eq!(e.list_design_items(None, false, false).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn defer_and_resume_are_attributed_acts_without_changing_status() {
+        let e = agent_engine("planner");
+        let item = e
+            .register_design(
+                "docs/adr/0077-crowded-board.md",
+                "A crowded board is not a decision",
+                "park stale proposals honestly",
+                Some("planner"),
+            )
+            .unwrap();
+
+        assert!(e.defer_design(&item.id, "reviewer", " ").is_err());
+        assert!(e.defer_design(&item.id, "planner", "not now").is_err());
+        let deferred = e.defer_design(&item.id, "reviewer", "not now").unwrap();
+        assert_eq!(deferred.status, DesignStatus::Proposed);
+        assert_eq!(deferred.deferred.as_ref().unwrap().by, "reviewer");
+        assert!(e.design_board().unwrap().is_empty());
+        assert!(e.list_design_items(None, false, false).unwrap().is_empty());
+        assert_eq!(
+            e.list_design_items(None, false, true).unwrap(),
+            vec![deferred]
+        );
+
+        assert!(e.resume_design(&item.id, "", "back in scope").is_err());
+        assert!(e.resume_design(&item.id, "reviewer", " ").is_err());
+        let resumed = e
+            .resume_design(&item.id, "reviewer", "back in scope")
+            .unwrap();
+        assert!(resumed.deferred.is_none());
+        assert_eq!(e.design_board().unwrap(), vec![resumed]);
+    }
+
+    #[test]
+    fn a_deferred_proposal_must_be_resumed_before_it_can_be_decided() {
+        let e = agent_engine("planner");
+        let item = e
+            .register_design(
+                "docs/adr/0077-deferred.md",
+                "Deferred",
+                "not currently under review",
+                Some("planner"),
+            )
+            .unwrap();
+        e.defer_design(&item.id, "reviewer", "not now").unwrap();
+
+        let error = e.accept_design(&item.id, "reviewer").unwrap_err();
+        assert!(error.to_string().contains("deferred"), "{error}");
+        let still_deferred = e
+            .list_design_items(Some(DesignStatus::Proposed), false, true)
+            .unwrap();
+        assert_eq!(still_deferred.len(), 1);
+        assert!(still_deferred[0].deferred.is_some());
+
+        e.resume_design(&item.id, "reviewer", "ready now").unwrap();
+        assert_eq!(
+            e.accept_design(&item.id, "reviewer").unwrap().status,
+            DesignStatus::Accepted
+        );
     }
 
     #[test]

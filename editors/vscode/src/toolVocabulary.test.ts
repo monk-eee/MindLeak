@@ -54,7 +54,16 @@ const CURRENT_MINDLEAK_OVERLAP_CALL = "taskAllocationController.ts:this.memoryCl
 const DISCRIMINATORS: Record<string, { key: string; values: Set<string> }> = {
   design_decide: {
     key: "decision",
-    values: new Set(["accept", "reject", "retire", "supersede", "reopen", "attribute"]),
+    values: new Set([
+      "accept",
+      "reject",
+      "defer",
+      "resume",
+      "retire",
+      "supersede",
+      "reopen",
+      "attribute",
+    ]),
   },
   design_promote: {
     key: "step",

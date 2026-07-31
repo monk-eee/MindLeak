@@ -16,6 +16,7 @@ export interface DesignItem {
   updated_at: number;
   promotion_status: DesignPromotionStatus;
   materialization_revision: number;
+  deferred?: { at: number; by: string; reason: string } | null;
 }
 
 export interface DesignTask {
@@ -90,12 +91,21 @@ export interface DesignBoardRow {
   promotion?: DesignPromotion;
 }
 
+export interface DesignBoardProjection {
+  rows: DesignBoardRow[];
+  awaitingDecision: number;
+  hidden: number;
+}
+
+export const DEFAULT_DESIGN_BOARD_LIMIT = 20;
+
 const DESIGN_STATUS_ORDER: Record<string, number> = {
   proposed: 0,
   pending: 1,
-  materialized: 2,
-  historical: 3,
-  rejected: 4,
+  deferred: 2,
+  materialized: 3,
+  historical: 4,
+  rejected: 5,
 };
 
 /** Cap on the summary handed to planning, so a long ADR cannot flood the prompt. */
@@ -239,7 +249,25 @@ export function designBoardRows(
     });
 }
 
+export function projectDesignBoard(
+  designs: DesignItem[],
+  promotions: ReadonlyMap<string, DesignPromotion> = new Map(),
+  expanded = false,
+  limit = DEFAULT_DESIGN_BOARD_LIMIT
+): DesignBoardProjection {
+  const rows = designBoardRows(designs, promotions);
+  const visible = expanded ? rows : rows.slice(0, Math.max(0, limit));
+  return {
+    rows: visible,
+    awaitingDecision: designs.filter((item) => item.status === "proposed" && !item.deferred).length,
+    hidden: rows.length - visible.length,
+  };
+}
+
 export function designContext(item: DesignItem): string {
+  if (item.deferred) {
+    return "deferred";
+  }
   if (item.status === "proposed") {
     return "proposed";
   }
@@ -365,6 +393,10 @@ function toRow(item: DesignItem, promotion?: DesignPromotion): DesignBoardRow {
   if (item.reason) {
     details.push(`reason: ${item.reason}`);
   }
+  if (item.deferred) {
+    details.push(`deferred by: ${item.deferred.by}`);
+    details.push(`deferral reason: ${item.deferred.reason}`);
+  }
   if (promotion) {
     for (const goal of promotion.goals) {
       details.push(`objective: ${goal.title} (${goal.id})`);
@@ -389,6 +421,8 @@ function describe(item: DesignItem, promotion?: DesignPromotion): string {
       return "proposed · review required";
     case "pending":
       return "accepted · promotion pending";
+    case "deferred":
+      return "deferred · not now";
     case "materialized":
       return promotion?.mode === "no_work"
         ? `materialized · no new work · r${promotion.revision}`

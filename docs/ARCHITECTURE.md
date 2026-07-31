@@ -87,7 +87,8 @@ materialization plus validation, `amendments` and `waivers`, learned
 `knowledge`, and `lifecycle` operations), `llm` (optional local model), and
 `lib` (the `Lodestar` facade wiring). `store/design/` is split by
 responsibility: `mod` (register and read), `decision` (the guarded accept/reject
-transition and repairing one after the fact), `retirement` (retire and
+transition and repairing one after the fact), `action` (the append-only,
+attributed defer/resume/reject/retire audit), `retirement` (retire and
 supersede), `promotion` (promotion into work and its immutable materialization
 revisions), and `links` (the current projection of what an item is linked to).
 `store/policy_packs/` is split by responsibility: `mod` (pack registration and
