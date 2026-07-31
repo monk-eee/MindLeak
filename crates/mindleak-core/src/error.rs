@@ -1,3 +1,4 @@
+pub use mindleak_model::{ModelCallProvenance, ModelCallSource, ModelFailure, ModelFailureReason};
 use thiserror::Error;
 
 /// Errors surfaced by the MindLeak core engine.
@@ -15,6 +16,9 @@ pub enum MindLeakError {
     #[error("ollama/http error: {0}")]
     Http(String),
 
+    #[error(transparent)]
+    Model(#[from] ModelFailure),
+
     #[error("not found: {0}")]
     NotFound(String),
 
@@ -29,6 +33,15 @@ pub enum MindLeakError {
 
     #[error("{0}")]
     Other(String),
+}
+
+impl MindLeakError {
+    pub fn model_failure(&self) -> Option<&ModelFailure> {
+        match self {
+            MindLeakError::Model(failure) => Some(failure),
+            _ => None,
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, MindLeakError>;

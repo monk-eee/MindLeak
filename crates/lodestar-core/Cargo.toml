@@ -6,6 +6,7 @@ license.workspace = true
 description = "Lodestar: the Intent Plane for MindLeak — durable constitution, task coordination (claim/lease), conformance, and consolidated learned knowledge."
 
 [dependencies]
+mindleak-model = { path = "../mindleak-model" }
 mindleak-storage = { path = "../mindleak-storage" }
 mindleak-session = { path = "../mindleak-session" }
 serde = { workspace = true }
@@ -18,3 +19,4 @@ ureq = { workspace = true }
 
 [dev-dependencies]
 mindleak-core = { path = "../mindleak-core" }
+mindleak-model = { path = "../mindleak-model", features = ["test-support"] }

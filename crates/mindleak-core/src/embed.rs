@@ -9,10 +9,11 @@
 //! does the reasoning. The module owns its own `embeddings` table so it adds no
 //! schema/migration coupling.
 
+use mindleak_model::failure;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
-use crate::error::{MindLeakError, Result};
+use crate::error::{MindLeakError, ModelFailureReason, Result};
 use crate::model::NodeType;
 
 /// A local, OpenAI-compatible embeddings client (points at Ollama by default).
@@ -44,7 +45,7 @@ impl Embedder {
         self.embed_batch(std::slice::from_ref(&text.to_string()))?
             .into_iter()
             .next()
-            .ok_or_else(|| MindLeakError::Http("empty embedding response".into()))
+            .ok_or_else(|| model_error("empty embedding response"))
     }
 
     /// Embed many texts in a **single** request. The OpenAI-compatible
@@ -66,15 +67,20 @@ impl Embedder {
             &self.api_key,
             &body,
         )
-        .map_err(|error| {
-            MindLeakError::Http(format!(
-                "semantic recall is unavailable: embedding model '{model}' could not be reached \
-                 at {url} ({error}). recall/index are optional (ADR-0008) and require a local \
-                 OpenAI-compatible embeddings server. If you use Ollama, run \
-                 `ollama pull {model}`; otherwise set MINDLEAK_EMBED_MODEL / MINDLEAK_EMBED_URL \
-                 to a reachable model, or ignore this if you are not using semantic recall.",
-                model = self.model,
-            ))
+        .map_err(|error| match error {
+            MindLeakError::Model(mut failure) => {
+                failure.detail = format!(
+                    "semantic recall is unavailable: embedding model '{model}' could not be reached \
+                     at {url} ({cause}). recall/index are optional (ADR-0008) and require a local \
+                     OpenAI-compatible embeddings server. If you use Ollama, run \
+                     `ollama pull {model}`; otherwise set MINDLEAK_EMBED_MODEL / MINDLEAK_EMBED_URL \
+                     to a reachable model, or ignore this if you are not using semantic recall.",
+                    model = self.model,
+                    cause = failure.detail,
+                );
+                MindLeakError::Model(failure)
+            }
+            other => other,
         })?;
         parse_embedding_response(&value, texts.len())
     }
@@ -84,9 +90,9 @@ fn parse_embedding_response(value: &Value, expected_count: usize) -> Result<Vec<
     let data = value
         .get("data")
         .and_then(|d| d.as_array())
-        .ok_or_else(|| MindLeakError::Http("embeddings response missing data[]".into()))?;
+        .ok_or_else(|| model_error("embeddings response missing data[]"))?;
     if data.len() != expected_count {
-        return Err(MindLeakError::Http(format!(
+        return Err(model_error(format!(
             "embeddings returned {} vectors for {expected_count} inputs",
             data.len()
         )));
@@ -100,17 +106,15 @@ fn parse_embedding_response(value: &Value, expected_count: usize) -> Result<Vec<
             .map(|i| i as usize)
             .unwrap_or(position);
         if index >= out.len() {
-            return Err(MindLeakError::Http(
-                "embeddings response index out of range".into(),
-            ));
+            return Err(model_error("embeddings response index out of range"));
         }
         let vector = parse_embedding_vector(item)?;
         if vector.is_empty() {
-            return Err(MindLeakError::Http("empty embedding vector".into()));
+            return Err(model_error("empty embedding vector"));
         }
         match dimension {
             Some(expected) if vector.len() != expected => {
-                return Err(MindLeakError::Http(format!(
+                return Err(model_error(format!(
                     "embeddings response has inconsistent dimensions: expected {expected}, got {}",
                     vector.len()
                 )));
@@ -121,9 +125,7 @@ fn parse_embedding_response(value: &Value, expected_count: usize) -> Result<Vec<
         out[index] = vector;
     }
     if out.iter().any(Vec::is_empty) {
-        return Err(MindLeakError::Http(
-            "embeddings response was missing a vector".into(),
-        ));
+        return Err(model_error("embeddings response was missing a vector"));
     }
     Ok(out)
 }
@@ -131,22 +133,26 @@ fn parse_embedding_response(value: &Value, expected_count: usize) -> Result<Vec<
 fn parse_embedding_vector(item: &serde_json::Value) -> Result<Vec<f32>> {
     item.get("embedding")
         .and_then(|embedding| embedding.as_array())
-        .ok_or_else(|| MindLeakError::Http("embeddings response item missing embedding".into()))?
+        .ok_or_else(|| model_error("embeddings response item missing embedding"))?
         .iter()
         .enumerate()
         .map(|(position, value)| {
             let number = value.as_f64().ok_or_else(|| {
-                MindLeakError::Http(format!("embedding component {position} is not numeric"))
+                model_error(format!("embedding component {position} is not numeric"))
             })?;
             let narrowed = number as f32;
             if !number.is_finite() || !narrowed.is_finite() {
-                return Err(MindLeakError::Http(format!(
+                return Err(model_error(format!(
                     "embedding component {position} is not finite as f32"
                 )));
             }
             Ok(narrowed)
         })
         .collect()
+}
+
+fn model_error(detail: impl ToString) -> MindLeakError {
+    failure(ModelFailureReason::BadJson, true, detail).into()
 }
 
 /// The embedding backend behind semantic recall (ADR-0008). A trait so the
@@ -477,6 +483,21 @@ mod tests {
             .unwrap();
         assert_eq!(out, vec![vec![1.0], vec![2.0], vec![3.0]]);
         assert_eq!(embedder.calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn unreachable_embedding_model_keeps_its_reason_and_remediation() {
+        let embedder = Embedder {
+            base_url: "http://127.0.0.1:1/v1".to_string(),
+            model: "missing".to_string(),
+            api_key: String::new(),
+        };
+
+        let error = embedder.embed("text").unwrap_err();
+        let failure = error.model_failure().unwrap();
+
+        assert_eq!(failure.reason, ModelFailureReason::Unreachable);
+        assert!(failure.detail.contains("ollama pull missing"));
     }
 
     #[test]

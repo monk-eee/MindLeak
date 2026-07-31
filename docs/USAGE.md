@@ -407,8 +407,10 @@ selecting a default.
 | `MINDLEAK_EMBED_API_KEY` | *(empty)* | bearer token for hosted servers |
 | `MINDLEAK_LOG` | `info` | tracing filter (`off`, `warn`, `debug`, `mindleak_core=debug`, …) — **stderr only** |
 | `MINDLEAK_LOG_FORMAT` | `pretty` | `pretty` or `json` |
-| `MINDLEAK_HTTP_TIMEOUT_MS` | `30000` | overall timeout per optional HTTP attempt, bounded 100-300000 ms |
-| `MINDLEAK_HTTP_RETRIES` | `2` | extra transient-failure retries, bounded 0-5 |
+| `MINDLEAK_HTTP_CONNECT_TIMEOUT_MS` | `1000` | connect/DNS budget per optional HTTP attempt, bounded 100-300000 ms |
+| `MINDLEAK_HTTP_TIMEOUT_MS` | `30000` | response-read budget per optional HTTP attempt, bounded 100-300000 ms |
+| `MINDLEAK_MODEL_TIMEOUT_MS` | `120000` | MindLeak model response-read budget, bounded 100-300000 ms |
+| `MINDLEAK_HTTP_RETRIES` | `2` | extra retries for generic transient failures, bounded 0-5; model calls retry one read timeout exactly once |
 | `MINDLEAK_BREAKER_THRESHOLD` | `5` | consecutive failures before the circuit opens |
 | `MINDLEAK_BREAKER_COOLDOWN_MS` | `30000` | how long the circuit stays open before a probe |
 
@@ -421,7 +423,8 @@ selecting a default.
 | `LODESTAR_LLM_URL` | `http://localhost:11434/v1` | OpenAI-compatible server for `task_create` decomposition / semantic conformance |
 | `LODESTAR_MODEL` | `glm4:9b` | model |
 | `LODESTAR_LLM_API_KEY` | *(empty)* | bearer token for hosted servers |
-| `MINDLEAK_HTTP_TIMEOUT_MS` | `30000` | shared HTTP timeout (also honoured here) |
+| `MINDLEAK_HTTP_CONNECT_TIMEOUT_MS` | `1000` | connect budget, shared with MindLeak |
+| `MINDLEAK_HTTP_TIMEOUT_MS` | `30000` | response-read budget; a read timeout gets one bounded retry |
 
 ---
 

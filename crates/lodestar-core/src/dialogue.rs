@@ -14,6 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::llm::ModelCallProvenance;
 use crate::model::ClaimOverlap;
 
 /// Who wrote the question text.
@@ -56,6 +57,7 @@ pub struct QuestionDraft {
     pub matching_symbols: Vec<String>,
     pub question: String,
     pub drafted_by: DraftedBy,
+    pub model_call: ModelCallProvenance,
 }
 
 /// The question implied by a scope collision, with no model involved.

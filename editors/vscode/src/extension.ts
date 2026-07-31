@@ -93,13 +93,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   // part of the agent id, so the identity below is derived from the session
   // token alone and does not change with how the process was launched.
   const agentId = config.get<string>("agentId", "vscode");
-  // A single MCP request must be allowed to outlast the server-side model
-  // budget (MINDLEAK_HTTP_TIMEOUT_MS, default 30000). A model-backed tool call
-  // — design-promotion planning, goal decomposition — can consume that whole
-  // budget before it succeeds or falls back to its deterministic plan; a client
-  // timeout equal to it abandons the request mid-flight, so the clean fallback
-  // never reaches the user. Default headroom is 2x the model budget.
-  const requestTimeoutMs = config.get<number>("requestTimeoutMs", 60000);
+  // A single MCP request must outlast the bounded model sequence: one DNS/connect
+  // budget, two connect+read attempts, and retry backoff. MindLeak's generous
+  // 120s model-read default makes that about 243s; five minutes leaves headroom
+  // for the success or typed fallback to reach the caller.
+  const requestTimeoutMs = config.get<number>("requestTimeoutMs", 300000);
   const sessionId = randomBytes(16).toString("hex");
   configuredAgentId = sessionAgentIdentity(sessionId);
 

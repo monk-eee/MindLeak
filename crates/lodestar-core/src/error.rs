@@ -1,3 +1,4 @@
+pub use mindleak_model::{ModelFailure, ModelFailureReason};
 use thiserror::Error;
 
 /// Errors surfaced by the Lodestar Intent Plane.
@@ -12,14 +13,23 @@ pub enum LodestarError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("llm/http error: {0}")]
-    Http(String),
+    #[error(transparent)]
+    Model(#[from] ModelFailure),
 
     #[error("not found: {0}")]
     NotFound(String),
 
     #[error("invalid: {0}")]
     Invalid(String),
+}
+
+impl LodestarError {
+    pub fn model_failure(&self) -> Option<&ModelFailure> {
+        match self {
+            LodestarError::Model(failure) => Some(failure),
+            _ => None,
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, LodestarError>;
