@@ -564,8 +564,11 @@ impl LodestarStore {
     /// permits an expired claim to be retired. Abandoning a predecessor
     /// transactionally opens its blocked successor (ADR-0020): the reason it
     /// waited no longer exists, so the chain is never stranded by a dead
-    /// predecessor.
-    pub fn abandon_task(&self, id: &str, now: i64) -> Result<bool> {
+    /// predecessor. A task that recorded a branch is not retired silently:
+    /// unless `acknowledge_branch` is set it refuses and names the branch,
+    /// because abandon is irreversible and the ledger cannot see from here
+    /// whether that branch already shipped an open or merged pull request.
+    pub fn abandon_task(&self, id: &str, acknowledge_branch: bool, now: i64) -> Result<bool> {
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let task = get_task_on(&transaction, id)?
             .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
@@ -593,6 +596,27 @@ impl LodestarStore {
                 )));
             }
             TaskStatus::Open | TaskStatus::InReview | TaskStatus::Blocked => {}
+        }
+        // Abandon is a one-way door, and a task that recorded a branch may have
+        // shipped: measured, every abandoned task carrying a branch corresponded
+        // to a real pull request, 7 of 8 already merged. The ledger cannot see a
+        // pull request from here, so it does not decide for the caller — it
+        // refuses to retire branched work silently and names the branch, so the
+        // irreversible act is taken knowingly rather than in the mistaken belief
+        // the work was a duplicate that had in fact merged.
+        if !acknowledge_branch {
+            if let Some(branch) = task
+                .branch
+                .as_deref()
+                .map(str::trim)
+                .filter(|branch| !branch.is_empty())
+            {
+                return Err(LodestarError::Invalid(format!(
+                    "task {id} recorded branch {branch}; abandoning is permanent and does not \
+                     check whether that branch carries an open or merged pull request. Verify no \
+                     live work points at it, then re-issue with acknowledge_branch=true."
+                )));
+            }
         }
         let changed = transaction.execute(
             "UPDATE tasks
@@ -2772,14 +2796,14 @@ mod tests {
         let open = store
             .create_task(&goal.id, "Zombie", "done", None, NOW)
             .unwrap();
-        assert!(store.abandon_task(&open.id, NOW + 1).unwrap());
+        assert!(store.abandon_task(&open.id, false, NOW + 1).unwrap());
         let retired = store.get_task(&open.id).unwrap().unwrap();
         assert_eq!(retired.status, TaskStatus::Abandoned);
         assert!(retired.owner.is_none());
         // Abandoned is terminal: not claimable, not re-abandonable.
         assert!(!store.claim_task(&open.id, "agent-a", 60, NOW + 2).unwrap());
         assert!(store
-            .abandon_task(&open.id, NOW + 3)
+            .abandon_task(&open.id, false, NOW + 3)
             .unwrap_err()
             .to_string()
             .contains("cannot be abandoned"));
@@ -2791,7 +2815,7 @@ mod tests {
         assert!(store
             .block_task(&held.id, None, None, "human", NOW + 1)
             .unwrap());
-        assert!(store.abandon_task(&held.id, NOW + 2).unwrap());
+        assert!(store.abandon_task(&held.id, false, NOW + 2).unwrap());
         assert_eq!(
             store.get_task(&held.id).unwrap().unwrap().status,
             TaskStatus::Abandoned
@@ -2803,11 +2827,11 @@ mod tests {
             .unwrap();
         assert!(store.claim_task(&claimed.id, "agent-b", 60, NOW).unwrap());
         assert!(store
-            .abandon_task(&claimed.id, NOW + 1)
+            .abandon_task(&claimed.id, false, NOW + 1)
             .unwrap_err()
             .to_string()
             .contains("release it before abandoning"));
-        assert!(store.abandon_task(&claimed.id, NOW + 61).unwrap());
+        assert!(store.abandon_task(&claimed.id, false, NOW + 61).unwrap());
         assert_eq!(
             store.get_task(&claimed.id).unwrap().unwrap().status,
             TaskStatus::Abandoned
@@ -2819,10 +2843,59 @@ mod tests {
             .unwrap();
         complete_aligned(&store, &done.id, "agent-c", NOW);
         assert!(store
-            .abandon_task(&done.id, NOW + 1)
+            .abandon_task(&done.id, false, NOW + 1)
             .unwrap_err()
             .to_string()
             .contains("cannot be abandoned"));
+    }
+
+    // The gap this closes: abandon is a one-way door and said nothing about a
+    // branch, so a task whose work had already merged could be retired in the
+    // belief it was a superseded duplicate. Measured, every abandoned task
+    // carrying a branch had a real pull request. Abandon now refuses branched
+    // work unless the caller acknowledges it, and names the branch so the check
+    // it cannot make from here is at least possible.
+    #[test]
+    fn abandon_refuses_branched_work_until_acknowledged_and_names_the_branch() {
+        let store = store();
+        let goal = goal(&store);
+        let task = store
+            .create_task(&goal.id, "Shipped elsewhere", "done", None, NOW)
+            .unwrap();
+        // The task records the branch its claiming session declared.
+        working_on(&store, "agent-a", Some("feat/already-merged"));
+        assert!(store.claim_task(&task.id, "agent-a", 60, NOW).unwrap());
+        assert_eq!(
+            store.get_task(&task.id).unwrap().unwrap().branch.as_deref(),
+            Some("feat/already-merged")
+        );
+
+        // Once the lease expires the task is abandonable, but not silently: the
+        // refusal names the branch and points at the pull request it cannot see.
+        let refused = store
+            .abandon_task(&task.id, false, NOW + 61)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("feat/already-merged"),
+            "the refusal must name the branch: {refused}"
+        );
+        assert!(
+            refused.contains("pull request"),
+            "the refusal must point at the thing it cannot check: {refused}"
+        );
+        // A refused abandon leaves the task exactly as it was.
+        assert_eq!(
+            store.get_task(&task.id).unwrap().unwrap().status,
+            TaskStatus::Claimed
+        );
+
+        // Acknowledging the branch retires it, exactly as before.
+        assert!(store.abandon_task(&task.id, true, NOW + 62).unwrap());
+        assert_eq!(
+            store.get_task(&task.id).unwrap().unwrap().status,
+            TaskStatus::Abandoned
+        );
     }
 
     #[test]
@@ -3484,7 +3557,7 @@ mod tests {
             .unwrap();
         assert_eq!(second.status, TaskStatus::Blocked);
 
-        assert!(s.abandon_task(&first.id, NOW + 2).unwrap());
+        assert!(s.abandon_task(&first.id, false, NOW + 2).unwrap());
         let successor = s.get_task(&second.id).unwrap().unwrap();
         assert_eq!(successor.status, TaskStatus::Open);
         assert!(successor.blocked_by.is_none());
@@ -3512,7 +3585,7 @@ mod tests {
         assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
         assert!(s.pause_task(&t.id, "alice", None, NOW).unwrap());
         assert!(s
-            .abandon_task(&t.id, NOW + 1)
+            .abandon_task(&t.id, false, NOW + 1)
             .unwrap_err()
             .to_string()
             .contains("resume or release it before abandoning"));
