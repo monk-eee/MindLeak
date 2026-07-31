@@ -31,6 +31,16 @@ export function repoRelativePath(raw: string): string | null {
   return normalized;
 }
 
+/** Select the path sent to the server, which owns worktree canonicalisation. */
+export function serverFilePath(workspacePath: string, fsPath: string): string | null {
+  const relative = repoRelativePath(workspacePath);
+  if (relative !== null) {
+    return relative;
+  }
+  const normalized = fsPath.replace(/\\/g, "/");
+  return normalized === "" ? null : normalized;
+}
+
 /**
  * Parse an MCP tool result. Prefers the machine-readable `structuredContent`
  * (present when a tool renders Markdown for chat but still exposes JSON for

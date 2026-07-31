@@ -33,6 +33,7 @@ import {
   renewTaskRequest,
   resolveBinaryPath,
   resolveServerPath,
+  serverFilePath,
   shouldCaptureCommand,
   shouldPollTelemetry,
   taskContextValue,
@@ -1142,5 +1143,32 @@ describe("repoRelativePath", () => {
     expect(repoRelativePath("/home/agent/checkout/src/lib.rs")).toBeNull();
     expect(repoRelativePath("//fileserver/share/src/x.ts")).toBeNull();
     expect(repoRelativePath("")).toBeNull();
+  });
+});
+
+describe("serverFilePath", () => {
+  it("keeps workspace-relative paths unchanged", () => {
+    expect(serverFilePath("editors\\vscode\\src\\util.ts", "C:\\repo\\util.ts")).toBe(
+      "editors/vscode/src/util.ts"
+    );
+  });
+
+  it("falls back to a normalized absolute path for server-side worktree resolution", () => {
+    expect(
+      serverFilePath(
+        "C:\\Users\\agent\\Repos\\MindLeak-sibling\\src\\lib.rs",
+        "C:\\Users\\agent\\Repos\\MindLeak-sibling\\src\\lib.rs"
+      )
+    ).toBe("C:/Users/agent/Repos/MindLeak-sibling/src/lib.rs");
+    expect(
+      serverFilePath(
+        "/home/agent/MindLeak-sibling/src/lib.rs",
+        "/home/agent/MindLeak-sibling/src/lib.rs"
+      )
+    ).toBe("/home/agent/MindLeak-sibling/src/lib.rs");
+  });
+
+  it("rejects an empty fallback path", () => {
+    expect(serverFilePath("", "")).toBeNull();
   });
 });
