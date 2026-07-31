@@ -182,7 +182,10 @@ mod tests {
         assert_eq!(outcome.conformance_records_removed, 1);
         assert_eq!(outcome.knowledge_removed, 1);
         assert_eq!(store.stats(NOW).unwrap().active_goals, 0);
-        assert!(store.list_design_items(None, false).unwrap().is_empty());
+        assert!(store
+            .list_design_items(None, false, false)
+            .unwrap()
+            .is_empty());
         assert!(store
             .define_goal(GoalKind::Objective, "New goal", "usable", None, NOW)
             .is_ok());

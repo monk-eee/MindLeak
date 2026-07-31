@@ -46,13 +46,32 @@ function controller() {
   const callTool = vi.fn(async (name: string, args: Record<string, unknown>) => {
     calls.push({ name, args });
     if (name !== "design_query") return null;
+    if (args.view === "ledger" && args.include_deferred) {
+      return [
+        {
+          ...design("design:deferred", "not_required"),
+          status: "proposed",
+          deferred: { at: 2, by: "reviewer", reason: "not now" },
+        },
+      ];
+    }
     if (args.view === "ledger") return ledger;
     // What the server actually returns for the actionable view.
     if (args.view === "board") return ledger.filter((d) => d.promotion_status === "pending");
     if (args.view === "promotion") return { design_id: args.id, objectives: [] };
     return null;
   });
-  const provider = { update: vi.fn() };
+  let includeDeferred = false;
+  const provider = {
+    update: vi.fn(),
+    expand: vi.fn(),
+    get includeDeferred() {
+      return includeDeferred;
+    },
+    setIncludeDeferred: vi.fn((include: boolean) => {
+      includeDeferred = include;
+    }),
+  };
   const instance = new DesignBoardController(
     { isReady: () => true, callTool } as never,
     provider as never,
@@ -99,6 +118,86 @@ describe("DesignBoardController refresh", () => {
     expect(provider.update).toHaveBeenCalledTimes(1);
     const [designs] = provider.update.mock.calls[0];
     expect(designs).toHaveLength(2);
+  });
+
+  it("loads only deferred proposals when the reader asks to see them", async () => {
+    const { instance, calls, provider } = controller();
+
+    await instance.toggleDeferred();
+
+    expect(provider.setIncludeDeferred).toHaveBeenCalledWith(true);
+    expect(calls).toContainEqual({
+      name: "design_query",
+      args: { view: "ledger", status: "proposed", include_deferred: true },
+    });
+    const [designs] = provider.update.mock.calls.at(-1)!;
+    expect(designs.map((entry: { id: string }) => entry.id)).toEqual([
+      "design:0001",
+      "design:0002",
+      "design:deferred",
+    ]);
+  });
+
+  it("expands the existing projection without another server read", () => {
+    const { instance, provider, calls } = controller();
+
+    instance.expand();
+
+    expect(provider.expand).toHaveBeenCalledOnce();
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("DesignBoardController deferral", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const row = {
+    design: {
+      id: "design:0077",
+      title: "A crowded board is not a decision",
+      status: "proposed",
+      promotion_status: "not_required",
+      proposed_by: "planner",
+      created_at: 1,
+    },
+  };
+
+  it("defers without rewriting the ADR decision status", async () => {
+    vscodeMock.showInputBox
+      .mockResolvedValueOnce("Reviewer")
+      .mockResolvedValueOnce("not this quarter");
+    const { instance, calls } = controller();
+
+    await instance.defer(row as never);
+
+    expect(calls).toContainEqual({
+      name: "design_decide",
+      args: {
+        id: "design:0077",
+        decision: "defer",
+        human: "Reviewer",
+        reason: "not this quarter",
+      },
+    });
+  });
+
+  it("resumes through deferral's own inverse", async () => {
+    vscodeMock.showInputBox
+      .mockResolvedValueOnce("Reviewer")
+      .mockResolvedValueOnce("back in scope");
+    const { instance, calls } = controller();
+
+    await instance.resume(row as never);
+
+    expect(calls).toContainEqual({
+      name: "design_decide",
+      args: {
+        id: "design:0077",
+        decision: "resume",
+        human: "Reviewer",
+        reason: "back in scope",
+      },
+    });
   });
 });
 

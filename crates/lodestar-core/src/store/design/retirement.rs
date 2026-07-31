@@ -21,22 +21,15 @@ impl LodestarStore {
         reason: &str,
         now: i64,
     ) -> Result<DesignItem> {
-        if self.get_design_item(id)?.is_none() {
-            return Err(LodestarError::NotFound(id.to_string()));
-        }
-        let changed = self.conn.execute(
-            "UPDATE design_items
-             SET retired_at = ?2, retired_by = ?3, retired_reason = ?4, updated_at = ?2
-             WHERE id = ?1 AND retired_at IS NULL",
-            params![id, now, human, reason],
-        )?;
-        if changed == 0 {
-            return Err(LodestarError::Invalid(format!(
-                "design item already retired: {id}"
-            )));
-        }
-        self.get_design_item(id)?
-            .ok_or_else(|| LodestarError::NotFound(id.to_string()))
+        self.apply_design_actions(
+            &[id.to_string()],
+            DesignActionKind::Retire,
+            human,
+            reason,
+            now,
+        )?
+        .pop()
+        .ok_or_else(|| LodestarError::NotFound(id.to_string()))
     }
 
     /// Record that an accepted design has been replaced by another (ADR-0050).

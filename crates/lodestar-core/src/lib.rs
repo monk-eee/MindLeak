@@ -32,9 +32,9 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use design::{
-    DesignConstraintDraft, DesignItem, DesignMaterializationMode, DesignMaterializationPlan,
-    DesignMaterializationRecord, DesignPromotion, DesignPromotionStatus, DesignStatus,
-    DesignTaskDraft,
+    DesignAction, DesignActionKind, DesignConstraintDraft, DesignItem, DesignMaterializationMode,
+    DesignMaterializationPlan, DesignMaterializationRecord, DesignPromotion, DesignPromotionStatus,
+    DesignStatus, DesignTaskDraft,
 };
 pub use error::{LodestarError, Result};
 pub use model::{

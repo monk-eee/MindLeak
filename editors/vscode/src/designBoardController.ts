@@ -91,9 +91,21 @@ export class DesignBoardController {
       // refresh — and the refresh is wired to a file watcher over docs/adr, so
       // every ADR touch paid it again. This is the board those 5 belong to; the
       // durable record is still `view: "ledger"` for anything auditing it.
-      const designs = (await this.client.callTool("design_query", {
+      let designs = (await this.client.callTool("design_query", {
         view: "board",
       })) as DesignItem[];
+      if (this.provider.includeDeferred) {
+        const proposed = (await this.client.callTool("design_query", {
+          view: "ledger",
+          status: "proposed",
+          include_deferred: true,
+        })) as DesignItem[];
+        const known = new Set(designs.map((design) => design.id));
+        designs = [
+          ...designs,
+          ...proposed.filter((design) => design.deferred && !known.has(design.id)),
+        ];
+      }
       const materialized = designs.filter((design) => design.promotion_status === "materialized");
       // One unreadable promotion must not blank the whole board. `Promise.all`
       // rejected the entire batch, so a single bad row left the view showing
@@ -123,6 +135,70 @@ export class DesignBoardController {
       this.provider.update(designs, promotions);
     } catch (error) {
       this.reportError("Design Board refresh", error);
+    }
+  }
+
+  expand(): void {
+    this.provider.expand();
+  }
+
+  async toggleDeferred(): Promise<void> {
+    this.provider.setIncludeDeferred(!this.provider.includeDeferred);
+    await this.refresh();
+  }
+
+  async defer(item?: DesignBoardItem): Promise<void> {
+    if (!this.requireItem(item, "Defer Design")) {
+      return;
+    }
+    const human = await this.promptHuman("Defer Design", item.design);
+    if (!human) {
+      return;
+    }
+    const reason = await this.promptReason(item.design, "Why is this design not for now?");
+    if (!reason) {
+      return;
+    }
+    try {
+      await this.client.callTool("design_decide", {
+        id: item.design.id,
+        decision: "defer",
+        human,
+        reason,
+      });
+      vscode.window.showInformationMessage(`Deferred design: ${item.design.title}`);
+      await this.refresh();
+    } catch (error) {
+      this.reportError("Design deferral", error);
+    }
+  }
+
+  async resume(item?: DesignBoardItem): Promise<void> {
+    if (!this.requireItem(item, "Resume Design")) {
+      return;
+    }
+    const human = await this.promptHuman("Resume Design", item.design);
+    if (!human) {
+      return;
+    }
+    const reason = await this.promptReason(
+      item.design,
+      "Why is this design returning to the working board?"
+    );
+    if (!reason) {
+      return;
+    }
+    try {
+      await this.client.callTool("design_decide", {
+        id: item.design.id,
+        decision: "resume",
+        human,
+        reason,
+      });
+      vscode.window.showInformationMessage(`Resumed design: ${item.design.title}`);
+      await this.refresh();
+    } catch (error) {
+      this.reportError("Design resume", error);
     }
   }
 
@@ -424,6 +500,16 @@ export class DesignBoardController {
       validateInput: (value) => (value.trim() ? undefined : "A rationale is required."),
     });
     return rationale?.trim();
+  }
+
+  private async promptReason(design: DesignItem, prompt: string): Promise<string | undefined> {
+    const reason = await vscode.window.showInputBox({
+      title: design.title,
+      prompt,
+      ignoreFocusOut: true,
+      validateInput: (value) => (value.trim() ? undefined : "A reason is required."),
+    });
+    return reason?.trim();
   }
 
   private async confirmPlan(

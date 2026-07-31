@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 
-import { designBoardRows, DesignBoardRow, DesignItem, DesignPromotion } from "./designBoard";
+import { DesignBoardRow, DesignItem, DesignPromotion, projectDesignBoard } from "./designBoard";
 
 export class DesignBoardItem extends vscode.TreeItem {
   constructor(readonly row: DesignBoardRow) {
@@ -25,11 +25,24 @@ export class DesignBoardItem extends vscode.TreeItem {
   }
 }
 
-export class DesignBoardViewProvider implements vscode.TreeDataProvider<DesignBoardItem> {
+class DesignBoardMetaItem extends vscode.TreeItem {
+  constructor(label: string, contextValue: string, icon: string, command?: vscode.Command) {
+    super(label, vscode.TreeItemCollapsibleState.None);
+    this.contextValue = contextValue;
+    this.iconPath = new vscode.ThemeIcon(icon);
+    this.command = command;
+  }
+}
+
+type DesignBoardTreeItem = DesignBoardItem | DesignBoardMetaItem;
+
+export class DesignBoardViewProvider implements vscode.TreeDataProvider<DesignBoardTreeItem> {
   static readonly viewType = "mindleak.designView";
 
   private designs: DesignItem[] = [];
   private promotions = new Map<string, DesignPromotion>();
+  private expanded = false;
+  private deferredVisible = false;
   private readonly emitter = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.emitter.event;
 
@@ -39,12 +52,44 @@ export class DesignBoardViewProvider implements vscode.TreeDataProvider<DesignBo
     this.emitter.fire();
   }
 
-  getTreeItem(element: DesignBoardItem): vscode.TreeItem {
+  get includeDeferred(): boolean {
+    return this.deferredVisible;
+  }
+
+  expand(): void {
+    this.expanded = true;
+    this.emitter.fire();
+  }
+
+  setIncludeDeferred(include: boolean): void {
+    this.deferredVisible = include;
+    this.expanded = false;
+    this.emitter.fire();
+  }
+
+  getTreeItem(element: DesignBoardTreeItem): vscode.TreeItem {
     return element;
   }
 
-  getChildren(): DesignBoardItem[] {
-    return designBoardRows(this.designs, this.promotions).map((row) => new DesignBoardItem(row));
+  getChildren(): DesignBoardTreeItem[] {
+    const projection = projectDesignBoard(this.designs, this.promotions, this.expanded);
+    const items: DesignBoardTreeItem[] = [
+      new DesignBoardMetaItem(
+        `${projection.awaitingDecision} awaiting decision`,
+        "design.summary",
+        "list-selection"
+      ),
+      ...projection.rows.map((row) => new DesignBoardItem(row)),
+    ];
+    if (projection.hidden > 0) {
+      items.push(
+        new DesignBoardMetaItem(`Show ${projection.hidden} more`, "design.expand", "ellipsis", {
+          command: "mindleak.design.expand",
+          title: "Show All Designs",
+        })
+      );
+    }
+    return items;
   }
 }
 
@@ -54,6 +99,8 @@ function iconFor(context: string): vscode.ThemeIcon {
       return new vscode.ThemeIcon("request-changes");
     case "pending":
       return new vscode.ThemeIcon("rocket");
+    case "deferred":
+      return new vscode.ThemeIcon("debug-pause");
     case "materialized":
       return new vscode.ThemeIcon("verified-filled");
     case "rejected":
