@@ -44,7 +44,7 @@ impl Lodestar {
         for node in node_ids {
             let node_is_doc = is_documentation_node(node);
             for binding in self.store.active_bindings_for_node(node)? {
-                if binding.mode == CodeBindingMode::ForbidChange {
+                if binding.mode == ArtifactBindingMode::ForbidChange {
                     resolved.forbid.push((node.clone(), binding.goal));
                     continue;
                 }

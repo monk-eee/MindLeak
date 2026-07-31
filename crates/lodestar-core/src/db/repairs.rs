@@ -57,10 +57,10 @@ pub(super) fn reconnect_superseded_clauses(connection: &Connection) -> Result<()
         [],
     )?;
     connection.execute(
-        "UPDATE OR REPLACE goal_code
+        "UPDATE OR REPLACE goal_artifacts
             SET goal_id = (
                 SELECT outgoing.superseded_by FROM goals AS outgoing
-                 WHERE outgoing.id = goal_code.goal_id
+                 WHERE outgoing.id = goal_artifacts.goal_id
             )
           WHERE goal_id IN (
                 SELECT id FROM goals

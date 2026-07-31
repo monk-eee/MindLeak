@@ -137,36 +137,36 @@ impl GoalStatus {
     }
 }
 
-/// How an active goal governs a linked MindLeak code node (ADR-0009).
+/// How an active goal governs a linked MindLeak artifact node (ADR-0009).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CodeBindingMode {
+pub enum ArtifactBindingMode {
     Governed,
     ForbidChange,
 }
 
-impl CodeBindingMode {
+impl ArtifactBindingMode {
     pub fn as_str(&self) -> &'static str {
         match self {
-            CodeBindingMode::Governed => "governed",
-            CodeBindingMode::ForbidChange => "forbid_change",
+            ArtifactBindingMode::Governed => "governed",
+            ArtifactBindingMode::ForbidChange => "forbid_change",
         }
     }
 
     pub fn from_tag(value: &str) -> Option<Self> {
         match value {
-            "governed" => Some(CodeBindingMode::Governed),
-            "forbid_change" => Some(CodeBindingMode::ForbidChange),
+            "governed" => Some(ArtifactBindingMode::Governed),
+            "forbid_change" => Some(ArtifactBindingMode::ForbidChange),
             _ => None,
         }
     }
 }
 
-/// An active goal plus the policy governing one linked code node.
+/// An active goal plus the policy governing one linked artifact node.
 #[derive(Debug, Clone, Serialize)]
-pub struct CodeBinding {
+pub struct ArtifactBinding {
     pub goal: Goal,
-    pub mode: CodeBindingMode,
+    pub mode: ArtifactBindingMode,
 }
 
 /// One immutable constitutional version: the frozen preamble and clause set
