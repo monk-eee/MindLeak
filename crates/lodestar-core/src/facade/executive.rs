@@ -334,9 +334,11 @@ impl Lodestar {
     /// Permanently retire a nonterminal task to `abandoned` (terminal). The
     /// deliberate "do not do this work" verb, distinct from `reopen_task`
     /// (recover) and `reset` (wipe). Refuses to disturb live or parked ownership,
-    /// but permits an expired claim to be retired.
-    pub fn abandon_task(&self, id: &str) -> Result<bool> {
-        self.store.abandon_task(id, now_unix())
+    /// but permits an expired claim to be retired. A task that recorded a branch
+    /// refuses unless `acknowledge_branch` is set, so branched work that may have
+    /// shipped is not retired without the caller confirming they checked.
+    pub fn abandon_task(&self, id: &str, acknowledge_branch: bool) -> Result<bool> {
+        self.store.abandon_task(id, acknowledge_branch, now_unix())
     }
 
     /// Accept an `in_review` task to `done` under a reviewer label — the
@@ -569,7 +571,7 @@ mod tests {
                 1_001,
             )
             .unwrap();
-        e.abandon_task(&second.id).unwrap();
+        e.abandon_task(&second.id, false).unwrap();
 
         let found = e.existing_work(Some(&goal.id), &[]).unwrap();
         let ids: Vec<&str> = found.iter().map(|t| t.id.as_str()).collect();
