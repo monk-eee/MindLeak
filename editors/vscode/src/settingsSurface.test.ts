@@ -110,4 +110,26 @@ describe("settings surface", () => {
   it("still finds the settings the extension reads", () => {
     expect(readByCode().length).toBeGreaterThan(5);
   });
+
+  /**
+   * Regression: the MCP client request timeout was a flat 30000ms, exactly equal
+   * to the server-side model budget (MINDLEAK_HTTP_TIMEOUT_MS default). A
+   * model-backed tool call — design-promotion planning, goal decomposition —
+   * that ran near that budget was abandoned by the client at the same instant
+   * the server was still waiting, so the deterministic fallback never reached
+   * the user and promotion surfaced only `tools/call timed out after 30000ms`.
+   * The configurable client budget must outlast the model budget, so its default
+   * is required to exceed 30000ms.
+   */
+  it("gives the MCP request timeout headroom over the model budget", () => {
+    const MODEL_BUDGET_MS = 30000;
+    const timeout = groups
+      .flatMap((group) => Object.entries(group.properties))
+      .find(([key]) => key === "mindleak.requestTimeoutMs")?.[1] as
+      { default?: number; minimum?: number } | undefined;
+
+    expect(timeout, "mindleak.requestTimeoutMs must be declared").toBeDefined();
+    expect(timeout!.default).toBeGreaterThan(MODEL_BUDGET_MS);
+    expect(timeout!.minimum ?? 0).toBeGreaterThan(0);
+  });
 });
