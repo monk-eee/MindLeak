@@ -96,6 +96,23 @@ pub struct WaitCycle {
     pub task_ids: Vec<String>,
 }
 
+/// A one-way wait whose addressee has gone quiet (ADR-0046).
+///
+/// Unlike a [`WaitCycle`], which no member can break, this wait can still be
+/// answered — so it is a weaker signal. But the agent it waits on holds no live
+/// claim and has declared no session since the question was asked, so it is
+/// unlikely to be, and the wait will otherwise sit until the ADR-0020 parking
+/// grace releases it a week later. Surfaced so a human can redirect the question
+/// long before then, and reported separately from a cycle because the remedy is
+/// different: not "break the deadlock" but "ask someone who is here".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StaleWait {
+    pub task_id: String,
+    pub waiter: String,
+    pub waited_on: String,
+    pub asked_at: i64,
+}
+
 /// The read-only fleet snapshot (ADR-0035 decision 4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FleetView {
@@ -105,6 +122,8 @@ pub struct FleetView {
     pub waits: Vec<Wait>,
     /// Wait cycles: sets of agents that can only be unstuck from outside.
     pub wait_cycles: Vec<WaitCycle>,
+    /// One-way waits whose addressee has gone quiet (ADR-0046), oldest first.
+    pub stale_waits: Vec<StaleWait>,
     /// Fixed reminder that this view informs and never gates (ADR-0034).
     pub enforcement: &'static str,
 }
@@ -188,6 +207,66 @@ fn reachable_from<'a>(
     seen
 }
 
+/// The grace before a one-way wait on an unresponsive addressee reads as stale.
+///
+/// Advisory only, so an eager or lax value costs a slightly early or late prompt
+/// and never a gate; kept well under the ADR-0020 seven-day parking grace so the
+/// signal arrives while the question can still be usefully redirected.
+pub const STALE_WAIT_GRACE_SECS: i64 = 60 * 60;
+
+/// One-way waits whose addressee has gone quiet (ADR-0046).
+///
+/// A wait is stale when it is not part of any cycle, has itself outlived
+/// `grace`, and the agent it waits on has gone quiet: no live claim, and no
+/// session declared since the question was asked. Pure and total over its
+/// inputs, like [`wait_cycles`], so it is tested without a database and cannot
+/// disagree with what the view displays. Sorted oldest question first.
+pub fn stale_waits(
+    waits: &[Wait],
+    sessions: &[FleetSession],
+    cycles: &[WaitCycle],
+    now: i64,
+    grace: i64,
+) -> Vec<StaleWait> {
+    let in_cycle: BTreeSet<&str> = cycles
+        .iter()
+        .flat_map(|cycle| cycle.agents.iter().map(String::as_str))
+        .collect();
+    let mut stale: Vec<StaleWait> = waits
+        .iter()
+        .filter(|wait| {
+            // A wait is part of a cycle only when both ends are in one; a wait
+            // that merely touches a cycle member at one end is still one-way.
+            !in_cycle.contains(wait.waiter.as_str()) || !in_cycle.contains(wait.waited_on.as_str())
+        })
+        .filter(|wait| now - wait.asked_at >= grace)
+        .filter(|wait| addressee_has_gone_quiet(&wait.waited_on, wait.asked_at, sessions))
+        .map(|wait| StaleWait {
+            task_id: wait.task_id.clone(),
+            waiter: wait.waiter.clone(),
+            waited_on: wait.waited_on.clone(),
+            asked_at: wait.asked_at,
+        })
+        .collect();
+    stale.sort_by(|a, b| {
+        a.asked_at
+            .cmp(&b.asked_at)
+            .then_with(|| a.task_id.cmp(&b.task_id))
+    });
+    stale
+}
+
+/// Whether the agent a wait is addressed to shows no sign of life: no session it
+/// holds a live claim on, and none it declared at or after the question. Absence
+/// from the session list entirely counts as quiet — an agent the view has never
+/// heard from is exactly the one a wait strands.
+fn addressee_has_gone_quiet(agent: &str, asked_at: i64, sessions: &[FleetSession]) -> bool {
+    !sessions.iter().any(|session| {
+        session.agent_id == agent
+            && (!session.claimed_task_ids.is_empty() || session.declared_at >= asked_at)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,6 +278,104 @@ mod tests {
             waited_on: waited_on.to_string(),
             asked_at: 0,
         }
+    }
+
+    fn wait_at(task_id: &str, waiter: &str, waited_on: &str, asked_at: i64) -> Wait {
+        Wait {
+            task_id: task_id.to_string(),
+            waiter: waiter.to_string(),
+            waited_on: waited_on.to_string(),
+            asked_at,
+        }
+    }
+
+    fn a_session(agent: &str, declared_at: i64, claims: &[&str]) -> FleetSession {
+        FleetSession {
+            agent_id: agent.to_string(),
+            context: mindleak_session::SessionContext::default(),
+            declared_at,
+            staleness: Staleness::Unknown,
+            claimed_task_ids: claims.iter().map(|c| c.to_string()).collect(),
+        }
+    }
+
+    // The gap this closes: a one-way wait on an agent who never reappears is not
+    // a cycle and so was flagged by nothing, sitting until the week-long parking
+    // grace released it. An addressee the view has never heard from is exactly
+    // the one a wait strands.
+    #[test]
+    fn a_one_way_wait_on_an_addressee_who_never_appears_is_stale() {
+        let now = 2_000_000;
+        let waits = [wait_at(
+            "task:1",
+            "alice",
+            "ghost",
+            now - STALE_WAIT_GRACE_SECS - 1,
+        )];
+        let sessions = [a_session("alice", now, &["task:1"])];
+        let stale = stale_waits(&waits, &sessions, &[], now, STALE_WAIT_GRACE_SECS);
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].waited_on, "ghost");
+        assert_eq!(stale[0].task_id, "task:1");
+    }
+
+    // A live claim is a sign of life: the addressee is here and can still answer,
+    // so the wait is not stale however old it is.
+    #[test]
+    fn an_addressee_holding_a_live_claim_is_not_stale() {
+        let now = 2_000_000;
+        let waits = [wait_at(
+            "task:1",
+            "alice",
+            "bob",
+            now - STALE_WAIT_GRACE_SECS - 1,
+        )];
+        let sessions = [
+            a_session("alice", now, &["task:1"]),
+            a_session("bob", 0, &["task:2"]),
+        ];
+        assert!(stale_waits(&waits, &sessions, &[], now, STALE_WAIT_GRACE_SECS).is_empty());
+    }
+
+    // Declaring a session after the question is also a sign of life, even with
+    // no claim held right now.
+    #[test]
+    fn an_addressee_who_opened_a_session_after_the_question_is_not_stale() {
+        let now = 2_000_000;
+        let asked = now - STALE_WAIT_GRACE_SECS - 1;
+        let waits = [wait_at("task:1", "alice", "bob", asked)];
+        let sessions = [
+            a_session("alice", now, &["task:1"]),
+            a_session("bob", asked + 1, &[]),
+        ];
+        assert!(stale_waits(&waits, &sessions, &[], now, STALE_WAIT_GRACE_SECS).is_empty());
+    }
+
+    // Do not cry stale the instant a question is asked: a wait younger than the
+    // grace is just an ordinary wait.
+    #[test]
+    fn a_wait_within_the_grace_is_not_yet_stale() {
+        let now = 2_000_000;
+        let waits = [wait_at("task:1", "alice", "ghost", now - 1)];
+        let sessions = [a_session("alice", now, &["task:1"])];
+        assert!(stale_waits(&waits, &sessions, &[], now, STALE_WAIT_GRACE_SECS).is_empty());
+    }
+
+    // A mutual deadlock is the stronger, separately reported signal, so a wait
+    // that is part of a cycle is never also reported as a stale one-way wait \u2014
+    // even though neither parked agent holds a live claim.
+    #[test]
+    fn a_wait_that_is_part_of_a_cycle_is_not_a_stale_one_way_wait() {
+        let now = 2_000_000;
+        let asked = now - STALE_WAIT_GRACE_SECS - 1;
+        let waits = [
+            wait_at("task:1", "alice", "bob", asked),
+            wait_at("task:2", "bob", "alice", asked),
+        ];
+        let sessions = [a_session("alice", 0, &[]), a_session("bob", 0, &[])];
+        let cycles = wait_cycles(&waits);
+        assert_eq!(cycles.len(), 1);
+        assert!(stale_waits(&waits, &sessions, &cycles, now, STALE_WAIT_GRACE_SECS).is_empty());
     }
 
     // ADR-0046: the case the feature made reachable. Two agents addressing each
