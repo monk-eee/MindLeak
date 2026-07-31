@@ -135,12 +135,17 @@ export class DesignBoardController {
       return;
     }
     try {
+      // Stage the ADR file write *before* recording the decision: a decision
+      // the file cannot carry must not reach the ledger, or it says accepted
+      // while the file still says Proposed — the permanent drift ADR-0072
+      // already carries.
+      const alignment = await this.prepareAdrStatus(item.design, "accepted");
       await this.client.callTool("design_decide", {
         id: item.design.id,
         decision: "accept",
         human,
       });
-      await this.alignAdrStatus(item.design, "accepted");
+      await alignment.write();
       vscode.window.showInformationMessage(`Accepted design: ${item.design.title}`);
       await this.refresh();
     } catch (error) {
@@ -166,13 +171,17 @@ export class DesignBoardController {
       return;
     }
     try {
+      // Stage the ADR file write before recording the decision, for the same
+      // reason as accept: a decision the file cannot carry must not reach the
+      // ledger and leave the file disagreeing with it.
+      const alignment = await this.prepareAdrStatus(item.design, "rejected");
       await this.client.callTool("design_decide", {
         id: item.design.id,
         decision: "reject",
         human,
         reason: reason.trim(),
       });
-      await this.alignAdrStatus(item.design, "rejected");
+      await alignment.write();
       vscode.window.showInformationMessage(`Rejected design: ${item.design.title}`);
       await this.refresh();
     } catch (error) {
@@ -434,14 +443,35 @@ export class DesignBoardController {
     return confirmed === action;
   }
 
-  private async alignAdrStatus(design: DesignItem, status: "accepted" | "rejected"): Promise<void> {
+  /**
+   * Stage the ADR file's Status rewrite *without* committing it: resolve the
+   * file, read it, and compute the updated content, throwing here if any of
+   * that cannot be done. The returned `write` performs the actual file write.
+   *
+   * Callers record the decision between staging and writing, so every reason
+   * the file cannot carry the decision — it is not in the open workspace, or it
+   * has no Status field — is raised before the ledger is touched. Otherwise the
+   * ledger says accepted while the file still says Proposed, the permanent
+   * drift ADR-0072 already carries.
+   */
+  private async prepareAdrStatus(
+    design: DesignItem,
+    status: "accepted" | "rejected"
+  ): Promise<{ write: () => Promise<void> }> {
     const uri = await this.resolveAdrUri(design);
     const content = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("utf8");
     const updated = replaceAdrStatus(content, status);
     if (!updated) {
-      throw new Error(`${design.adr_path} has no structured Status field`);
+      throw new Error(
+        `${design.adr_path} has no structured Status field to record the decision in; ` +
+          `add a "- Status:" line to the ADR before deciding it, so the file and the ledger stay in step`
+      );
     }
-    await vscode.workspace.fs.writeFile(uri, Buffer.from(updated, "utf8"));
+    return {
+      write: async () => {
+        await vscode.workspace.fs.writeFile(uri, Buffer.from(updated, "utf8"));
+      },
+    };
   }
 
   private async resolveAdrUri(design: DesignItem): Promise<vscode.Uri> {
@@ -461,7 +491,10 @@ export class DesignBoardController {
     const choice = chooseAdrTarget(candidates.map((uri) => uri.fsPath));
     switch (choice.kind) {
       case "none":
-        throw new Error(`cannot find ${design.adr_path} in the open workspace`);
+        throw new Error(
+          `cannot find ${design.adr_path} in the open workspace; open the checkout that contains it before deciding, ` +
+            `so the decision and the ADR file are written together`
+        );
       case "one":
         return candidates[0];
       case "ambiguous": {

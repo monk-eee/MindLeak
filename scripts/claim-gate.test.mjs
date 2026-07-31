@@ -67,6 +67,7 @@ test("another session's claim is not mistaken for this one under any id shape", 
 test("the shifted claim still refuses the publication", () => {
   const verdict = publishVerdict({
     reachable: true,
+    boardReadable: true,
     sessionDeclared: true,
     agent: LABELLED,
     branch: "fleet/x",
@@ -98,6 +99,7 @@ const work = { sha: "bbb", isMerge: false };
 test("a finished task's branch may be reconciled without inventing a new task", () => {
   const verdict = publishVerdict({
     reachable: true,
+    boardReadable: true,
     sessionDeclared: true,
     agent: COLLAPSED,
     tasks: [delivered],
@@ -116,6 +118,7 @@ test("a finished task's branch may be reconciled without inventing a new task", 
 test("real work on a delivered branch still requires a claim", () => {
   const verdict = publishVerdict({
     reachable: true,
+    boardReadable: true,
     sessionDeclared: true,
     agent: COLLAPSED,
     tasks: [delivered],
@@ -140,6 +143,7 @@ test("real work on a delivered branch still requires a claim", () => {
 test("the remediation names verbs the server still advertises", () => {
   const verdict = publishVerdict({
     reachable: true,
+    boardReadable: true,
     sessionDeclared: true,
     agent: COLLAPSED,
     tasks: [],
@@ -193,4 +197,50 @@ test("a still-open task's branch is not reconcilable: claim it instead", () => {
     }),
     null,
   );
+});
+
+// The incident this fragment records: a stale binary answered open_session in
+// 450ms but could not parse the board, and the gate reported an unreachable
+// ledger and offered `cargo build` for a binary that was present. An answered
+// ledger whose board cannot be read is a different failure with a different
+// remedy, and the refusal must say so.
+test("an answered ledger whose board cannot be read is not reported as unreachable", () => {
+  const verdict = publishVerdict({
+    reachable: true,
+    boardReadable: false,
+    sessionDeclared: true,
+    agent: COLLAPSED,
+    tasks: [],
+    branch: "fleet/x",
+    newCommits: [work],
+    now: NOW,
+  });
+
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.message, /board could not be read/);
+  assert.match(verdict.message, /LODESTAR_MCP_BIN/);
+  // The wrong remedy last time: a rebuild of a ledger that was answering.
+  assert.doesNotMatch(verdict.message, /cargo build/);
+  assert.doesNotMatch(verdict.message, /is unreachable/);
+});
+
+// A session id was sent but open_session returned no agent. The ledger
+// answered, so blaming it as unreachable sends the reader to rebuild the one
+// thing that is not broken.
+test("an answered ledger that did not identify the session does not read as unreachable", () => {
+  const verdict = publishVerdict({
+    reachable: true,
+    boardReadable: true,
+    sessionDeclared: true,
+    agent: "",
+    tasks: [],
+    branch: "fleet/x",
+    newCommits: [work],
+    now: NOW,
+  });
+
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.message, /did not identify this session/);
+  assert.doesNotMatch(verdict.message, /cargo build/);
+  assert.doesNotMatch(verdict.message, /is unreachable/);
 });

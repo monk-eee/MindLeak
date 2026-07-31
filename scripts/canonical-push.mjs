@@ -178,6 +178,7 @@ const sessionId = process.env.LODESTAR_SESSION_ID || "";
 const server = resolveServer(repoRoot);
 let agent = "";
 let reachable = false;
+let boardReadable = false;
 let tasks = [];
 let overlaps = [];
 let declaredBranch = null;
@@ -230,6 +231,13 @@ if (server && /^[0-9a-f]{32}$/.test(sessionId)) {
       },
       { name: "task_query", arguments: { view: "overlap", paths: changed } },
     ]);
+    // The binary answered, so the ledger is reachable. Whether it identified
+    // the session and whether the board could be read are separate facts with
+    // separate remedies — a stale binary answers but cannot parse a board a
+    // newer writer recorded — so each is reported to the gate independently
+    // rather than collapsed into one "reachable" bit that blamed the wrong
+    // thing.
+    reachable = true;
     // Identity is whatever the ledger says this session is, never what the
     // caller asserts: a claim is recorded against the resolved agent id, so
     // matching on anything else would compare two different things.
@@ -238,8 +246,8 @@ if (server && /^[0-9a-f]{32}$/.test(sessionId)) {
       (fleet?.sessions ?? []).find((entry) =>
         sameSession(entry.agent_id, agent),
       )?.context?.branch ?? null;
-    reachable = Boolean(agent) && Array.isArray(board);
-    tasks = Array.isArray(board) ? board : [];
+    boardReadable = Array.isArray(board);
+    tasks = boardReadable ? board : [];
     overlaps = overlapResult ?? [];
   } catch {
     reachable = false;
@@ -263,6 +271,7 @@ const newCommits = remoteBranchExists
 
 const verdict = publishVerdict({
   reachable,
+  boardReadable,
   sessionDeclared: Boolean(sessionId),
   agent,
   tasks,
