@@ -143,3 +143,13 @@ Context rejects, one level up. What the measurement establishes is narrower than
 what was claimed — distinctiveness improves *ranking*, but it is the wrong shape
 for deciding *whether a query has any answer at all*, and that question is open.
 Recorded in [EVALUATION.md](../EVALUATION.md) with a reproducible harness.
+
+## Resolution (2026-07-31, measured)
+
+The open abstention question is resolved by grounding the semantic result in the evidence it returns, not by moving another similarity constant. After cosine and graph-kind ranking produce candidates, `recall` tokenises the informative terms in the query and the returned node text. Each query term is weighted by inverse document frequency over the graph's FTS corpus, $\ln((N+1)/(df+1))+1$, and the result is served only when its nodes support at least half of that information. Generic words therefore cannot outweigh an unsupported repository-specific term. Queries with fewer than three informative terms keep the previous fuzzy-recall contract because there is too little language to judge support honestly.
+
+This is deliberately evidence-local. A corpus-wide lexical check failed in measurement because the repository contains its own evaluation text, including `zzzzqqq wibble flarp`; the query existed somewhere, while the semantic hits returned for it were unrelated. Grounding against the candidate nodes asks the useful question: can this answer explain why it matched?
+
+The expanded live-index evaluation used three gibberish controls, four coherent natural-language questions absent from this repository, and seven questions labelled real. Before the gate every negative control returned five hits; afterwards **7 of 7 abstained**. Five real questions had relevant returned evidence and all **5 of 5 remained answered**. The PowerShell and stale-server questions had previously been counted as successful solely because they returned non-empty lists; inspecting their labels showed unrelated report scripts and merge commits, so the corrected relevance check records them as unanswered and the grounding gate now abstains. All 25 served hits are current graph nodes and intents.
+
+The precision tradeoff is explicit: a true paraphrase with no informative term in its candidate evidence can now return nothing. That is preferable to a plausible stranger, and the caller can rephrase or fall back to FTS and graph traversal. The gate adds no LLM call, no additional embedding request, and no change to `MINDLEAK_RECALL_FLOOR` or `DISTINCTIVE_SIGMA`. Reproduce the result with `scripts/evaluate-recall.mjs`; the machine-readable artifact is [`2026-07-31-recall-grounding.json`](../../benchmarks/results/2026-07-31-recall-grounding.json).
