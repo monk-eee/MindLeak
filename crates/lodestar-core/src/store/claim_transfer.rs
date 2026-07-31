@@ -205,6 +205,52 @@ impl LodestarStore {
         Ok(history)
     }
 
+    /// The earliest window start that authorised `owner` to hold this task.
+    ///
+    /// A recovery exists to rescue work that has already been done, so the
+    /// window that authorised that work always predates the recovery. Because
+    /// `recover_claim` opens a fresh window, and conformance refuses evidence
+    /// starting before the current one, there was no ordering of calls that
+    /// could certify a recovered claim at all — reproduced on
+    /// task:36fa0badd713, whose bundle was exactly right and still answered
+    /// "evidence interval falls outside the live claim".
+    ///
+    /// This walks the recovery chain backwards from `owner`, so the answer is
+    /// the start of the window the first recovery interrupted. It is still a
+    /// real claim: every link is an audited transfer that named the owner it
+    /// took from (ADR-0030), so an identity that never held the task, and one
+    /// that took it by a fresh claim rather than a recovery, inherit nothing.
+    ///
+    /// Reconstructed from the transfer history rather than stored, because the
+    /// history already carries the interrupted window (ADR-0064 d5) and a second
+    /// copy would be one more thing that can disagree.
+    pub fn authorising_window_start(&self, task_id: &str, owner: &str) -> Result<Option<i64>> {
+        let history = self.claim_transfer_history(task_id)?;
+        let current = self
+            .get_task(task_id)?
+            .and_then(|task| (task.owner.as_deref() == Some(owner)).then_some(task))
+            .and_then(|task| task.claim_started_at);
+
+        let mut holder = owner.to_string();
+        let mut earliest = current;
+        // Backwards: each hop answers "and who did that identity take it from",
+        // so a chain of recoveries resolves to the window that started the work.
+        loop {
+            let Some(transfer) = history
+                .iter()
+                .rev()
+                .find(|transfer| transfer.to_owner == holder)
+            else {
+                return Ok(earliest);
+            };
+            earliest = transfer.from_claim_started_at.or(earliest);
+            holder = transfer.from_owner.clone();
+            if history.iter().all(|t| t.to_owner != holder) {
+                return Ok(earliest);
+            }
+        }
+    }
+
     fn archived_transfers(&self, task_id: &str) -> Result<Vec<ClaimTransfer>> {
         let mut statement = self.conn.prepare(
             "SELECT id, task_id, from_owner, to_owner, recovered_by, reason,
@@ -320,6 +366,87 @@ mod tests {
             .open_session(token, SessionContext::default())
             .unwrap()
             .agent_id
+    }
+
+    /**
+    A recovery exists to rescue work that was already done, so the window that
+    authorised that work always predates it.
+
+    `recover_claim` opens a fresh window at the moment of recovery, and
+    conformance refuses evidence starting before the current window. Between
+    them there was no ordering of calls that could certify a recovered claim:
+    the work happened before the only window the task could show. Reproduced on
+    task:36fa0badd713, whose commit 64fb56b3 is on main with a bundle that was
+    exactly right, and which still answered "evidence interval falls outside the
+    live claim".
+
+    The transfer history already reconstructs the interrupted window's start
+    from the log (ADR-0064 d5), so the authorising window is recoverable without
+    storing anything new.
+    */
+    #[test]
+    fn the_authorising_window_predates_the_recovery_that_rescued_it() {
+        let store = store();
+        let task = store
+            .create_task(&goal(&store).id, "Authorising", "done", None, NOW)
+            .unwrap();
+        assert!(store
+            .claim_task(&task.id, "copilot-abcd1234", 10, NOW)
+            .unwrap());
+        let target = session(SESSION_A);
+        assert!(store
+            .recover_claim(
+                &task.id,
+                "copilot-abcd1234",
+                RecoveringSession {
+                    agent: &target,
+                    name: "copilot"
+                },
+                "server identity changed",
+                60,
+                NOW + 11,
+            )
+            .unwrap());
+
+        let recovered = store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(
+            recovered.claim_started_at,
+            Some(NOW + 11),
+            "the live window still starts at the recovery"
+        );
+        assert_eq!(
+            store.authorising_window_start(&task.id, &target).unwrap(),
+            Some(NOW),
+            "but the window that authorised the work is the one it interrupted"
+        );
+    }
+
+    /// The guarantee this must not weaken: the floor is still a real claim.
+    /// An owner who never held the task inherits nothing, and a task nobody
+    /// recovered reports its own window rather than an earlier stranger's.
+    #[test]
+    fn an_owner_outside_the_recovery_chain_inherits_no_window() {
+        let store = store();
+        let task = store
+            .create_task(&goal(&store).id, "Unrelated", "done", None, NOW)
+            .unwrap();
+        assert!(store
+            .claim_task(&task.id, "copilot-abcd1234", 10, NOW)
+            .unwrap());
+        let stranger = session(SESSION_B);
+
+        assert_eq!(
+            store.authorising_window_start(&task.id, &stranger).unwrap(),
+            None,
+            "a session that never held this task authorises nothing"
+        );
+        assert_eq!(
+            store
+                .authorising_window_start(&task.id, "copilot-abcd1234")
+                .unwrap(),
+            Some(NOW),
+            "the holder's own window is its authorising window"
+        );
     }
 
     #[test]
