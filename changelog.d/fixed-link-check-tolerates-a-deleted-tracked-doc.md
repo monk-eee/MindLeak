@@ -1,0 +1,1 @@
+- Fixed the Markdown link checker so a tracked document deleted from the working tree is treated as absent instead of crashing with an `ENOENT` stack, while links from surviving documents are still checked.
