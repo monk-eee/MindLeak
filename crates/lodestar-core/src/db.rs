@@ -103,6 +103,64 @@ mod tests {
         assert_eq!(indexes, 1, "the index is created after the migration");
     }
 
+    /// ADR-0060 renamed the binding verb to link_goal_to_artifact; the store it
+    /// writes to is renamed goal_code -> goal_artifacts to match. A pre-rename
+    /// ledger must keep every binding: schema.sql creates an empty
+    /// goal_artifacts, so the migration moves the rows across and drops the old
+    /// table rather than renaming (which would strand them behind the empty one).
+    #[test]
+    fn migrating_a_goal_code_ledger_moves_its_bindings_to_goal_artifacts() {
+        let path = temporary_database("goal-code-rename");
+        {
+            // A pre-rename ledger: a real goal_code table holding a binding, and
+            // no goal_artifacts yet.
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE goal_code (
+                         goal_id TEXT NOT NULL,
+                         node_id TEXT NOT NULL,
+                         mode    TEXT NOT NULL DEFAULT 'governed',
+                         PRIMARY KEY (goal_id, node_id)
+                     );
+                     INSERT INTO goal_code (goal_id, node_id, mode)
+                         VALUES ('goal:x', 'artifact:src/lib.rs', 'forbid_change');",
+                )
+                .unwrap();
+        }
+
+        let connection = open(path.to_str().unwrap()).expect("a pre-rename ledger still opens");
+
+        let old_present: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'goal_code'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_present, 0, "the old goal_code table is dropped");
+
+        let (node, mode): (String, String) = connection
+            .query_row(
+                "SELECT node_id, mode FROM goal_artifacts WHERE goal_id = 'goal:x'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("the binding moved across, mode intact");
+        assert_eq!(node, "artifact:src/lib.rs");
+        assert_eq!(mode, "forbid_change");
+
+        let idx: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_goal_artifacts_node'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 1, "the index over the renamed table is created");
+    }
+
     /// Bug: the agent id was `session:v1:{name}:{fingerprint}`, where the name
     /// came from the *hosting process* (`LODESTAR_AGENT`) and the fingerprint
     /// from the session token. One agent whose server started twice with
@@ -775,7 +833,7 @@ mod tests {
             .unwrap();
         connection
             .execute(
-                "INSERT INTO goal_code (goal_id, node_id, mode)
+                "INSERT INTO goal_artifacts (goal_id, node_id, mode)
                  VALUES ('goal:test', 'artifact:src/a.rs', 'governed')",
                 [],
             )
@@ -841,7 +899,7 @@ mod tests {
         );
         let bound: String = connection
             .query_row(
-                "SELECT goal_id FROM goal_code WHERE node_id = 'artifact:src/a.rs'",
+                "SELECT goal_id FROM goal_artifacts WHERE node_id = 'artifact:src/a.rs'",
                 [],
                 |row| row.get(0),
             )

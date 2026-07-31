@@ -56,7 +56,12 @@ pub(super) fn definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string" },
-                    "content": { "type": "string" }
+                    "content": { "type": "string" },
+                    "structural_only": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Replace deterministic structure without recording agent attention; used by extractor-version refreshes."
+                    }
                 },
                 "required": ["path", "content"]
             }
@@ -75,7 +80,14 @@ pub(super) fn definitions() -> Vec<Value> {
             "description": "Reconcile the graph against the workspace's current file set: forget every file artifact whose path is not in `paths` (deleted/moved outside the editor) or is build/VCS junk. Cleans stale structure in one pass and catches deletions the editor never saw.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "paths": { "type": "array", "items": { "type": "string" }, "default": [] } },
+                "properties": {
+                    "paths": { "type": "array", "items": { "type": "string" }, "default": [] },
+                    "report_only": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Report stale structural snapshots without forgetting absent artifacts."
+                    }
+                },
                 "required": ["paths"]
             }
         }),
@@ -135,12 +147,19 @@ pub(super) fn dispatch(
             Ok(text_result(&json!(outcome)))
         })()),
         "ingest_file" => Some((|| {
-            let agent = req_str(args, "agent")?;
             let path = req_str(args, "path")?;
             let content = req_str(args, "content")?;
-            let outcome = engine
-                .ingest_file_for_agent(&agent, &path, &content)
-                .map_err(|e| e.to_string())?;
+            let structural_only = args
+                .get("structural_only")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let outcome = if structural_only {
+                engine.ingest_file(&path, &content)
+            } else {
+                let agent = req_str(args, "agent")?;
+                engine.ingest_file_for_agent(&agent, &path, &content)
+            }
+            .map_err(|e| e.to_string())?;
             Ok(text_result(&json!(outcome)))
         })()),
         "forget_file" => Some((|| {
@@ -150,9 +169,16 @@ pub(super) fn dispatch(
         })()),
         "reconcile_workspace" => Some((|| {
             let paths = str_array(args, "paths");
-            let outcome = engine
-                .reconcile_workspace(&paths)
-                .map_err(|e| e.to_string())?;
+            let report_only = args
+                .get("report_only")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let outcome = if report_only {
+                engine.workspace_structure_status(&paths)
+            } else {
+                engine.reconcile_workspace(&paths)
+            }
+            .map_err(|e| e.to_string())?;
             Ok(text_result(&json!(outcome)))
         })()),
         "boost_entity" => Some((|| {
@@ -171,7 +197,7 @@ pub(super) fn dispatch(
 mod tests {
     use super::super::call;
     use super::super::tests::{call_ok, content_text};
-    use mindleak_core::MindLeak;
+    use mindleak_core::{MindLeak, RelationType};
     use serde_json::json;
 
     #[test]
@@ -221,6 +247,18 @@ mod tests {
             "ingest_file",
             json!({ "path": "src/gone.rs", "content": "pub fn b() {}" }),
         );
+        let report = call_ok(
+            &engine,
+            "reconcile_workspace",
+            json!({ "paths": ["src/keep.rs"], "report_only": true }),
+        );
+        assert!(content_text(&report).contains("extractor_version"));
+        assert!(engine
+            .store()
+            .get_node("artifact:src/gone.rs")
+            .unwrap()
+            .is_some());
+
         let res = call_ok(
             &engine,
             "reconcile_workspace",
@@ -237,5 +275,37 @@ mod tests {
             .get_node("artifact:src/gone.rs")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn structural_only_ingest_does_not_record_agent_attention() {
+        // Extractor upgrades must refresh deterministic structure without
+        // pretending the agent opened or edited every stale file.
+        let engine = MindLeak::open_in_memory().unwrap();
+        call_ok(
+            &engine,
+            "ingest_file",
+            json!({
+                "path": "src/normal.rs",
+                "content": "pub fn normal() {}"
+            }),
+        );
+        call_ok(
+            &engine,
+            "ingest_file",
+            json!({
+                "path": "src/refreshed.rs",
+                "content": "pub fn refreshed() {}",
+                "structural_only": true
+            }),
+        );
+
+        let graph = engine.snapshot(None, 100).unwrap();
+        assert!(graph.edges.iter().any(|edge| {
+            edge.relation == RelationType::Observed && edge.target_id == "artifact:src/normal.rs"
+        }));
+        assert!(!graph.edges.iter().any(|edge| {
+            edge.relation == RelationType::Observed && edge.target_id == "artifact:src/refreshed.rs"
+        }));
     }
 }

@@ -1,7 +1,7 @@
 //! Conformance types: what was changed, the verdict on it, and the receipt
 //! that proves the judgement was the one acted on.
 
-use super::constitution::{CodeBindingMode, Goal};
+use super::constitution::{ArtifactBindingMode, Goal};
 use serde::{Deserialize, Serialize};
 
 /// The outcome of a conformance check.
@@ -54,7 +54,7 @@ impl AdviceDisposition {
 pub struct GoverningClause {
     pub node_id: String,
     pub goal: Goal,
-    pub mode: CodeBindingMode,
+    pub mode: ArtifactBindingMode,
 }
 
 /// The result of `advise` (ADR-0029): the active clauses governing an intended

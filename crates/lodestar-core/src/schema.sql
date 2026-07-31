@@ -384,7 +384,7 @@ CREATE TABLE IF NOT EXISTS task_handoffs (
 
 -- Seam to MindLeak: which code nodes realise a goal. node_id is an opaque
 -- MindLeak id string (e.g. "artifact:src/auth.rs"); no cross-DB FK.
-CREATE TABLE IF NOT EXISTS goal_code (
+CREATE TABLE IF NOT EXISTS goal_artifacts (
     goal_id TEXT NOT NULL,
     node_id TEXT NOT NULL,
     mode    TEXT NOT NULL DEFAULT 'governed', -- governed | forbid_change

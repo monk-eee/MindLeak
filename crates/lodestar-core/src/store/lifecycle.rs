@@ -60,7 +60,7 @@ impl LodestarStore {
 
         let transaction = self.conn.unchecked_transaction()?;
         let conformance_records_removed = transaction.execute("DELETE FROM conformance", [])?;
-        let code_bindings_removed = transaction.execute("DELETE FROM goal_code", [])?;
+        let artifact_bindings_removed = transaction.execute("DELETE FROM goal_artifacts", [])?;
         let design_items_removed = transaction.execute("DELETE FROM design_items", [])?;
         let tasks_removed = transaction.execute("DELETE FROM tasks", [])?;
         let knowledge_removed = transaction.execute("DELETE FROM knowledge", [])?;
@@ -75,7 +75,7 @@ impl LodestarStore {
             goals_removed,
             tasks_removed,
             design_items_removed,
-            code_bindings_removed,
+            artifact_bindings_removed,
             conformance_records_removed,
             knowledge_removed,
         })
@@ -87,7 +87,7 @@ mod tests {
     use super::*;
     use crate::db;
     use crate::design::{DesignMaterializationMode, DesignMaterializationPlan, DesignStatus};
-    use crate::model::{CodeBindingMode, GoalKind, TaskStatus, Verdict};
+    use crate::model::{ArtifactBindingMode, GoalKind, TaskStatus, Verdict};
     use crate::store::test_support::{goal, store, NOW};
     use crate::store::ConformanceAudit;
 
@@ -121,7 +121,7 @@ mod tests {
             .link_goal_to_artifact(
                 &goal.id,
                 &["artifact:src/lib.rs".to_string()],
-                CodeBindingMode::Governed,
+                ArtifactBindingMode::Governed,
             )
             .unwrap();
         store.claim_task(&task.id, "agent-a", 60, NOW).unwrap();
@@ -178,7 +178,7 @@ mod tests {
         assert_eq!(outcome.goals_removed, 1);
         assert_eq!(outcome.tasks_removed, 1);
         assert_eq!(outcome.design_items_removed, 1);
-        assert_eq!(outcome.code_bindings_removed, 1);
+        assert_eq!(outcome.artifact_bindings_removed, 1);
         assert_eq!(outcome.conformance_records_removed, 1);
         assert_eq!(outcome.knowledge_removed, 1);
         assert_eq!(store.stats(NOW).unwrap().active_goals, 0);

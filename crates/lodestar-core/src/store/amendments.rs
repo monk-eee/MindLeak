@@ -221,10 +221,10 @@ impl LodestarStore {
         // successor is already bound to a node the outgoing clause also bound,
         // the two collapse to one row rather than failing the amendment.
         transaction.execute(
-            "UPDATE OR REPLACE goal_code
+            "UPDATE OR REPLACE goal_artifacts
                 SET goal_id = (
                     SELECT outgoing.superseded_by FROM goals AS outgoing
-                     WHERE outgoing.id = goal_code.goal_id
+                     WHERE outgoing.id = goal_artifacts.goal_id
                 )
               WHERE goal_id IN (
                     SELECT id FROM goals
@@ -318,7 +318,7 @@ impl LodestarStore {
 mod tests {
     use super::*;
     use crate::amendment::ClauseChange;
-    use crate::model::CodeBindingMode;
+    use crate::model::ArtifactBindingMode;
     use crate::model::Consequence;
     use crate::store::test_support::store;
     use crate::GoalKind;
@@ -462,7 +462,7 @@ mod tests {
             .link_goal_to_artifact(
                 &outgoing,
                 &["artifact:src/secrets.rs".to_string()],
-                CodeBindingMode::Governed,
+                ArtifactBindingMode::Governed,
             )
             .unwrap();
         let live = store

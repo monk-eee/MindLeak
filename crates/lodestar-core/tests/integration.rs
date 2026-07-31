@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lodestar_core::{
-    now_unix, CodeBindingMode, ConformanceEvidence, EvidenceProvenance, GoalKind, Lodestar,
+    now_unix, ArtifactBindingMode, ConformanceEvidence, EvidenceProvenance, GoalKind, Lodestar,
     LodestarError, SignalPromotion, TaskStatus, Verdict,
 };
 use mindleak_core::ingest::git::CommitRecord;
@@ -176,7 +176,7 @@ fn goal_task_claim_complete_flow() {
         .link_goal_to_artifact(
             &g.id,
             &["artifact:src/search.rs".into()],
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
 
@@ -266,14 +266,14 @@ fn unlink_goal_from_artifact_prunes_stale_binding_and_clears_drift() {
         .link_goal_to_artifact(
             &owner.id,
             std::slice::from_ref(&node),
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
     engine
         .link_goal_to_artifact(
             &stale.id,
             std::slice::from_ref(&node),
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
     assert_eq!(engine.governing_goals(&node).unwrap().len(), 2);
@@ -359,7 +359,7 @@ fn work_whose_product_is_not_code_conforms_with_the_finding_recorded() {
         .link_goal_to_artifact(
             &goal.id,
             std::slice::from_ref(&code),
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
 
@@ -405,7 +405,7 @@ fn work_whose_product_is_not_code_conforms_with_the_finding_recorded() {
 
 // Regression, ADR-0060 item 3: a goal could not bind what it actually delivered.
 //
-// What went wrong: `link_goal_to_code` bound code, and a `governed` binding to a
+// What went wrong: `link_goal_to_artifact` bound code, and a `governed` binding to a
 // documentation node was discarded at conformance read time before it could be
 // classified — so it could never land in scope. A goal whose delivery *is* an
 // ADR or a doc had no way to say so: `touched_task_goal` was vacuously false,
@@ -436,7 +436,7 @@ fn a_goal_may_bind_the_documentation_it_delivers_and_a_task_answers_for_it() {
         .link_goal_to_artifact(
             &goal.id,
             std::slice::from_ref(&adr),
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
 
@@ -493,7 +493,7 @@ fn a_documentation_binding_to_another_goal_is_still_not_drift() {
         .link_goal_to_artifact(
             &owner.id,
             std::slice::from_ref(&changelog),
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
 
@@ -529,7 +529,7 @@ fn missing_evidence_stays_in_review() {
         .link_goal_to_artifact(
             &goal.id,
             &["artifact:src/auth.rs".into()],
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
     let task = engine.create_task(&goal.id, "change auth", "").unwrap();
@@ -577,7 +577,7 @@ fn wrong_goal_drift_stays_in_review() {
         .link_goal_to_artifact(
             &other_goal.id,
             &["artifact:src/billing.rs".into()],
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
     let task = engine
@@ -621,7 +621,7 @@ fn forbidden_change_blocks_completion() {
         .link_goal_to_artifact(
             &goal.id,
             &["artifact:src/schema.sql".into()],
-            CodeBindingMode::ForbidChange,
+            ArtifactBindingMode::ForbidChange,
         )
         .unwrap();
     let task = engine.create_task(&goal.id, "inspect schema", "").unwrap();
@@ -658,7 +658,7 @@ fn cross_agent_and_out_of_window_evidence_are_rejected() {
         .link_goal_to_artifact(
             &goal.id,
             &["artifact:src/auth.rs".into()],
-            CodeBindingMode::Governed,
+            ArtifactBindingMode::Governed,
         )
         .unwrap();
     let task = engine.create_task(&goal.id, "change auth", "").unwrap();
