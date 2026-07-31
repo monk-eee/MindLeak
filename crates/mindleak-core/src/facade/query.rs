@@ -30,7 +30,9 @@ impl MindLeak {
     /// FTS/graph search — seed the results into `multi_hop_query`. Errors
     /// cleanly when no embedding model is reachable.
     ///
-    /// Returns nothing when nothing clears the similarity floor (ADR-0053).
+    /// Returns nothing when nothing clears the similarity floor (ADR-0053), or
+    /// when the semantic hits do not ground a majority of the query's
+    /// IDF-weighted information (ADR-0075).
     /// Before the floor existed this always answered, and the answer was often a
     /// stranger matched on one shared word — which the caller had no way to
     /// distinguish from a real hit. An empty result is the honest one.
@@ -59,6 +61,11 @@ impl MindLeak {
                     score: score as f64,
                 });
             }
+        }
+        let nodes: Vec<Node> = out.iter().map(|hit| hit.node.clone()).collect();
+        if !self.store.recall_is_grounded(query, &nodes)? {
+            tracing::debug!(%query, "recall found no lexical support in its semantic hits");
+            return Ok(Vec::new());
         }
         Ok(out)
     }

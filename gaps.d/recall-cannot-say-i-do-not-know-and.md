@@ -1,5 +1,5 @@
 - **`recall` depends on someone choosing to record a conclusion, and cannot
-  return one until the index has caught up — NARROWED 2026-07-30, OPEN.** —
+  return one until the index has caught up — NARROWED 2026-07-31, OPEN.** —
   Measured 2026-07-27 against this repository's graph: 4,463
   nodes, 9,572 active edges. Four queries, each naming a lesson that session had
   genuinely cost hours to learn, returned only `execution:` command lines and
@@ -19,21 +19,7 @@
   that choice — so the failure mode is no longer "confident noise" but a
   silence that is only as complete as the last agent's diligence.
 
-  **(b) Half fixed, and the other half measured.** `recall` scored every
-  embedded node, sorted, truncated to `limit`, and so always answered however
-  unrelated the field was; the nonsense query `zzzzqqq wibble flarp` scored
-  **0.54**, higher than any of the four real questions. ADR-0053 added the
-  floor, and ADR-0075 added a per-query distinctiveness cut. What that fixed is
-  *what gets ranked first*, measured on the live 19,317-node index: hits naming
-  a node the graph no longer holds fell from 24 of 50 to **0 of 49**, and
-  recorded conclusions rose from 14% of what the caller is handed to **96%**.
-  What it did **not** fix is this fragment's actual headline. A nonsense query
-  is still answered, not met with silence. Top-hit distance above the field runs
-  3.11–3.90 standard deviations for nonsense controls and 3.71–6.21 for real
-  questions, so the bands overlap by 0.19σ and no single threshold separates
-  them — the same shape as the floor problem, one level up. The constant is
-  deliberately not tuned to three samples. Recall now ranks well and still
-  cannot say "I do not know".
+  **(b) Fixed 2026-07-31 — semantic hits must ground the query.** The floor and per-query sigma cut could rank but could not decide whether an answer existed: the real and nonsense bands overlapped. `recall` now requires its returned node text to support a majority of the query's IDF-weighted informative terms, while queries with fewer than three such terms keep fuzzy behavior. On the expanded live index, all three gibberish controls and four coherent absent-domain questions returned `[]`; all five query sets whose returned labels were genuinely relevant remained answered. Two old "real" cases now abstain because inspection showed they had returned generic report scripts and merge commits, not answers. The gate adds no LLM or embedding call and leaves both similarity constants unchanged. Measurement: `benchmarks/results/2026-07-31-recall-grounding.json`.
 
   **(c) Narrowed from absence to latency.** A node was invisible to `recall`
   until the offline `index_nodes` pass embedded it —
