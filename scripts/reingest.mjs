@@ -28,7 +28,8 @@
 // Cross-platform, dependency-free Node (toolchain rule).
 //
 // Usage:
-//   node scripts/reingest.mjs                 # re-ingest into this repo's graph
+//   node scripts/reingest.mjs                 # refresh stale extractor snapshots
+//   node scripts/reingest.mjs --all           # force a complete structural refresh
 //   node scripts/reingest.mjs --dry-run       # list what would be sent, touch nothing
 //   node scripts/reingest.mjs --limit 50      # stop after N files
 
@@ -132,11 +133,29 @@ export function planFiles(trackedPaths) {
   return [...manifests, ...sources, ...rustSecondPass];
 }
 
+/** Plan tracked files whose structural snapshot is stale or absent. */
+export function planRefreshFiles(trackedPaths, refreshPaths) {
+  const refresh = new Set(
+    refreshPaths.map((value) => value.replace(/\\/g, "/")),
+  );
+  return planFiles(
+    trackedPaths.filter((value) =>
+      refresh.has(value.trim().replace(/\\/g, "/")),
+    ),
+  );
+}
+
 function parseArguments(argv) {
-  const options = { dryRun: false, limit: Number.POSITIVE_INFINITY };
+  const options = {
+    all: false,
+    dryRun: false,
+    limit: Number.POSITIVE_INFINITY,
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
-    if (argument === "--dry-run") {
+    if (argument === "--all") {
+      options.all = true;
+    } else if (argument === "--dry-run") {
       options.dryRun = true;
     } else if (argument === "--limit") {
       const value = Number(argv[index + 1]);
@@ -170,15 +189,7 @@ async function main() {
   }
 
   const workspace = process.cwd();
-  const files = planFiles(trackedFiles(workspace)).slice(0, options.limit);
-
-  if (options.dryRun) {
-    console.log(`reingest: ${files.length} ingest operation(s) would run`);
-    for (const file of files) {
-      console.log(`  ${file}`);
-    }
-    return;
-  }
+  const tracked = trackedFiles(workspace);
 
   // Build and drive our own server rather than reaching into whichever one an
   // editor happens to be running: a rebuilt binary does not change an already
@@ -238,6 +249,30 @@ async function main() {
     await request("initialize", {});
     await callTool("open_session", {});
 
+    const reconciliation = await callTool("reconcile_workspace", {
+      paths: tracked,
+      report_only: options.dryRun,
+    });
+    const files = (
+      options.all
+        ? planFiles(tracked)
+        : planRefreshFiles(tracked, [
+            ...(reconciliation.stale_paths ?? []),
+            ...(reconciliation.missing_paths ?? []),
+          ])
+    ).slice(0, options.limit);
+
+    if (options.dryRun) {
+      console.log(
+        `reingest: ${files.length} stale or missing ingest operation(s) would run ` +
+          `(extractor version ${reconciliation.extractor_version})`,
+      );
+      for (const file of files) {
+        console.log(`  ${file}`);
+      }
+      return;
+    }
+
     for (const file of files) {
       let content;
       try {
@@ -249,7 +284,11 @@ async function main() {
         continue;
       }
       try {
-        const outcome = await callTool("ingest_file", { path: file, content });
+        const outcome = await callTool("ingest_file", {
+          path: file,
+          content,
+          structural_only: true,
+        });
         totals.files += 1;
         totals.nodes += outcome.nodes_created ?? 0;
         totals.edges += outcome.edges_created ?? 0;
