@@ -8,6 +8,7 @@ mod shadowing;
 
 pub(crate) use binding::variable_declarator_at;
 pub(crate) use callable::callable_for_definition;
+pub(crate) use nav::{next_non_newline, previous_non_newline};
 pub(crate) use shadowing::{is_identifier_shadowed, is_identifier_shadowed_except};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
