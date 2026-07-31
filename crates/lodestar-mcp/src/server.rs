@@ -5,7 +5,7 @@ use std::io::{self, BufRead, Write};
 
 use lodestar_core::Lodestar;
 use mindleak_session::SessionRegistry;
-use mindleak_storage::StorageStatus;
+use mindleak_storage::{RunningBinary, StorageStatus};
 use serde_json::{json, Value};
 
 use crate::tools;
@@ -16,11 +16,14 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 ///
 /// `stale_build` carries the notice when this binary is behind the checkout it
 /// serves, so `open_session` can tell the agent rather than only the log.
+/// `running` answers the different question of whether the file this process
+/// started from has since been replaced, which can only be asked per call.
 pub fn run(
     engine: Lodestar,
     sessions: SessionRegistry,
     storage: StorageStatus,
     stale_build: Option<String>,
+    running: RunningBinary,
 ) -> anyhow::Result<()> {
     let stdin = io::stdin();
     let mut reader = stdin.lock();
@@ -55,6 +58,7 @@ pub fn run(
             &sessions,
             Some(&storage),
             stale_build.as_deref(),
+            &running,
             &request,
         ) {
             write_message(&mut out, &response)?;
@@ -65,7 +69,14 @@ pub fn run(
 
 #[cfg(test)]
 fn handle(engine: &Lodestar, sessions: &SessionRegistry, req: &Value) -> Option<Value> {
-    handle_with_storage(engine, sessions, None, None, req)
+    handle_with_storage(
+        engine,
+        sessions,
+        None,
+        None,
+        &RunningBinary::from_parts(None, None),
+        req,
+    )
 }
 
 fn handle_with_storage(
@@ -73,6 +84,7 @@ fn handle_with_storage(
     sessions: &SessionRegistry,
     storage: Option<&StorageStatus>,
     stale_build: Option<&str>,
+    running: &RunningBinary,
     req: &Value,
 ) -> Option<Value> {
     let id = req.get("id").cloned();
@@ -89,9 +101,9 @@ fn handle_with_storage(
         )),
         "tools/call" => {
             let id = id?;
-            let response = match tools::bind_session(&params, sessions)
-                .and_then(|bound| tools::call_with_storage(engine, &bound, storage, stale_build))
-            {
+            let response = match tools::bind_session(&params, sessions).and_then(|bound| {
+                tools::call_with_storage(engine, &bound, storage, stale_build, running)
+            }) {
                 Ok(content) => content,
                 Err(msg) => tool_error(&msg),
             };

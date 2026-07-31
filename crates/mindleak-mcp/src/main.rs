@@ -12,12 +12,17 @@ use mindleak_core::MindLeak;
 use mindleak_session::SessionRegistry;
 use mindleak_storage::{
     build_notice, head_sha, is_ancestor, resolve_database, resolve_workspace_path, DatabaseKind,
+    RunningBinary,
 };
 
 fn main() -> anyhow::Result<()> {
     mindleak_core::telemetry::init_tracing();
     let workspace = resolve_workspace();
     let stale_build = report_build_identity(&workspace);
+    // Observed now, while the file on disk is still the one being executed.
+    // Asked again on every open_session, because a swap happens after this
+    // point and a value computed once could never see it.
+    let running = RunningBinary::observe();
     let database = resolve_database(
         &workspace,
         DatabaseKind::MindLeak,
@@ -114,6 +119,7 @@ fn main() -> anyhow::Result<()> {
         maintenance.activity(),
         storage_status,
         stale_build,
+        running,
     );
     maintenance.shutdown();
     result
