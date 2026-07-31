@@ -117,8 +117,11 @@ silent status.** Split the fix along the two causes above.
   NULL`. That is a third orthogonal liveness fact — but it is the same shape as
   the two already there, so it is one more instance of a known rule, not a new
   vocabulary (ADR-0059).
-- Migration adds three nullable columns to `design_items`. Existing rows read as
-  not deferred, so nothing changes on the board until someone defers something.
+- Migration adds three nullable columns to `design_items` and an append-only
+  `design_actions` audit with one attributed row per affected design. Existing
+  rows read as not deferred, so nothing changes on the board until someone
+  defers something; a later `resume` clears the working projection without
+  erasing who resumed it or why.
 - The batch `ids` form on `design_decide` is additive; the single-`id` form is
   unchanged, and mixing both in one call is rejected rather than silently
   preferring one.

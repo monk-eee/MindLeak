@@ -1,0 +1,1 @@
+- The Design Board now keeps large backlogs forageable without hiding undecided work: maintainers can defer and resume proposed designs with attribution, apply backlog decisions in batches, expand a capped view, and explicitly reveal deferred rows.
