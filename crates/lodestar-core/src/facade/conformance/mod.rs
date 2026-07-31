@@ -807,6 +807,120 @@ mod tests {
         assert_eq!(result.verdict, Verdict::Aligned);
     }
 
+    /**
+    The outcome the store-level window lookup exists for.
+
+    A recovery rescues work that has already happened, so it always opens its
+    window *after* that work. Comparing evidence against the live window alone
+    meant a recovered claim could certify nothing, in any call order: measured on
+    task:36fa0badd713, whose commit 64fb56b3 is on main and whose bundle was
+    exactly right — one commit, three changed nodes, no contamination — and which
+    still answered "evidence interval falls outside the live claim".
+
+    Success for that task was stranded claims closing without a human
+    `resolve_task`, so this asserts the verdict, not just the admission.
+    */
+    #[test]
+    fn a_recovered_claim_certifies_the_work_it_was_recovered_for() {
+        let e = engine();
+        let goal = e
+            .define_goal(GoalKind::Objective, "Intent plane", "intent", None)
+            .unwrap();
+        e.link_goal_to_artifact(
+            &goal.id,
+            &["artifact:src/intent.rs".into()],
+            CodeBindingMode::Governed,
+        )
+        .unwrap();
+        let task = e.create_task(&goal.id, "Stranded", "done").unwrap();
+
+        // Timestamps go through the store so the lapse is real rather than
+        // waited for: the legacy identity claimed an hour ago and its lease died
+        // long before the recovery that follows.
+        let now = now_unix();
+        let worked_at = now - 3600;
+        assert!(e
+            .store
+            .claim_task(&task.id, "copilot-abcd1234", 60, worked_at)
+            .unwrap());
+
+        // The recovery opens a fresh window strictly after the work it was
+        // performed to rescue. The successor must be a genuinely registered
+        // session identity: recovery is guarded on a compatible legacy owner
+        // (ADR-0030), and inventing an id would test a path the server refuses.
+        let successor = mindleak_session::SessionRegistry::new("copilot")
+            .unwrap()
+            .open_session(
+                "00112233445566778899aabbccddeeff",
+                mindleak_session::SessionContext::default(),
+            )
+            .unwrap()
+            .agent_id;
+        assert!(e
+            .store
+            .recover_claim(
+                &task.id,
+                "copilot-abcd1234",
+                crate::store::RecoveringSession {
+                    agent: &successor,
+                    name: "copilot",
+                },
+                "server identity changed",
+                600,
+                now,
+            )
+            .unwrap());
+        let recovered = e.store.get_task(&task.id).unwrap().unwrap();
+        assert!(
+            recovered.claim_started_at.unwrap() > worked_at,
+            "the recovery opens its own window, after the work"
+        );
+
+        let mut evidence = test_evidence(
+            Some(task.id.clone()),
+            recovered.owner.as_deref().unwrap(),
+            "artifact:src/intent.rs",
+        );
+        evidence.started_at = worked_at;
+        evidence.ended_at = now;
+
+        let result = e.check_conformance(&evidence, Some(&task.id)).unwrap();
+        assert_ne!(
+            result.verdict,
+            Verdict::NeedsHuman,
+            "the work is provable, so it must not need a human: {:?}",
+            result.findings
+        );
+    }
+
+    /// The guarantee that must survive: the floor is still a real claim. Evidence
+    /// from before anybody held this task is refused, recovery or not, because
+    /// otherwise claiming after the fact would certify whatever came before.
+    #[test]
+    fn evidence_from_before_any_claim_is_still_refused() {
+        let e = engine();
+        let goal = e
+            .define_goal(GoalKind::Objective, "Intent plane", "intent", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "Too early", "done").unwrap();
+        assert!(e.claim_task(&task.id, "agent-a", 600).unwrap());
+        let claimed = e.store.get_task(&task.id).unwrap().unwrap();
+
+        let mut evidence =
+            test_evidence(Some(task.id.clone()), "agent-a", "artifact:src/intent.rs");
+        evidence.started_at = claimed.claim_started_at.unwrap() - 3600;
+        evidence.ended_at = now_unix();
+
+        let refused = e
+            .check_conformance(&evidence, Some(&task.id))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("outside the live claim"),
+            "unclaimed time must not become certifiable: {refused}"
+        );
+    }
+
     // ADR-0041 point 5: coverage is validated when it is declared. Declaring an
     // unknown goal, or the task's own goal, is refused rather than quietly
     // ignored.

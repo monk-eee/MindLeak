@@ -112,7 +112,21 @@ impl Lodestar {
         let claim_started_at = task.claim_started_at.ok_or_else(|| {
             LodestarError::Invalid("task claim has no evidence-window start".to_string())
         })?;
-        if evidence.started_at < claim_started_at
+        // The floor is the window that *authorised* the work, not the latest one
+        // opened over it. A recovery exists to rescue work already done, so it
+        // always opens its window after that work happened; comparing against
+        // the live window alone meant a recovered claim could never certify
+        // anything, whatever order its owner called things in. Walking the
+        // audited recovery chain keeps the guarantee intact — the floor is still
+        // the start of a real claim, held by an identity this one demonstrably
+        // took the task from (ADR-0030) — while no longer refusing the evidence
+        // the recovery was performed to rescue.
+        let authorising_start = self
+            .store
+            .authorising_window_start(&task.id, agent)?
+            .unwrap_or(claim_started_at)
+            .min(claim_started_at);
+        if evidence.started_at < authorising_start
             || evidence.ended_at > now
             || evidence.ended_at > task.lease_expires_at.unwrap_or(evidence.ended_at)
         {
