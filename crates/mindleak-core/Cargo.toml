@@ -6,6 +6,7 @@ license.workspace = true
 description = "MindLeak: Temporal Context Graph Engine (TCGE) core — decay-weighted graph memory for coding agents."
 
 [dependencies]
+mindleak-model = { path = "../mindleak-model" }
 mindleak-storage = { path = "../mindleak-storage" }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -19,3 +20,6 @@ thiserror = { workspace = true }
 ureq = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+mindleak-model = { path = "../mindleak-model", features = ["test-support"] }

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/mindleak-model",
     "crates/mindleak-session",
     "crates/mindleak-storage",
     "crates/mindleak-core",

@@ -125,8 +125,10 @@ All outbound HTTP is routed through one module that provides, in order:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MINDLEAK_HTTP_TIMEOUT_MS` | `30000` | overall timeout per attempt, bounded 100-300000 ms |
-| `MINDLEAK_HTTP_RETRIES` | `2` | extra attempts after the first, bounded 0-5 |
+| `MINDLEAK_HTTP_CONNECT_TIMEOUT_MS` | `1000` | connect/DNS budget per attempt, bounded 100-300000 ms |
+| `MINDLEAK_HTTP_TIMEOUT_MS` | `30000` | response-read budget per attempt, bounded 100-300000 ms |
+| `MINDLEAK_MODEL_TIMEOUT_MS` | `120000` | MindLeak model response-read budget, bounded 100-300000 ms |
+| `MINDLEAK_HTTP_RETRIES` | `2` | generic transient retries, bounded 0-5; ADR-0079 gives model calls one timeout-only retry instead |
 | `MINDLEAK_BREAKER_THRESHOLD` | `5` | consecutive failures before the circuit opens |
 | `MINDLEAK_BREAKER_COOLDOWN_MS` | `30000` | how long the circuit stays open before a probe |
 

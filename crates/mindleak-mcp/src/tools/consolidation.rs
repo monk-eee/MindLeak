@@ -42,10 +42,10 @@ pub(super) fn dispatch(
     match name {
         "consolidate_session" => Some((|| {
             let logs = str_array(args, "logs");
-            let (id, outcome) = engine
+            let outcome = engine
                 .consolidate_session(&logs)
                 .map_err(|e| e.to_string())?;
-            Ok(text_result(&json!({ "intent_id": id, "outcome": outcome })))
+            Ok(text_result(&json!(outcome)))
         })()),
         "consolidate_signal" => Some((|| {
             let limit = opt_i64(args, "limit", 20).clamp(1, 200) as usize;
@@ -65,18 +65,52 @@ pub(super) fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::super::call;
-    use mindleak_core::MindLeak;
+    use mindleak_core::{Consolidator, MindLeak};
+    use mindleak_model::test_support::{chat_response, json_endpoint};
     use serde_json::json;
+
+    fn summary_response() -> Vec<u8> {
+        let content = json!({
+            "intent_label": "summarized session",
+            "impacted_files": [],
+            "status": "ok"
+        })
+        .to_string();
+        chat_response(content)
+    }
 
     #[test]
     fn consolidate_session_errors_when_model_unreachable() {
         // Point at a dead port so this is deterministic whether or not a real
         // model server happens to be running locally. The tool must error, not panic.
-        std::env::set_var("MINDLEAK_LLM_URL", "http://127.0.0.1:1/v1");
-        let engine = MindLeak::open_in_memory().unwrap();
+        let engine = MindLeak::open_in_memory()
+            .unwrap()
+            .with_consolidator(Consolidator::new("http://127.0.0.1:1/v1", "test"));
         let params = json!({ "name": "consolidate_session", "arguments": { "logs": ["ran test", "failed"] } });
-        assert!(call(&engine, &params).is_err());
-        std::env::remove_var("MINDLEAK_LLM_URL");
+        let error = call(&engine, &params).unwrap_err();
+        assert!(error.contains("unreachable"));
+    }
+
+    #[test]
+    fn consolidate_session_reports_model_provenance_without_wrapping_old_fields() {
+        let (base_url, server) = json_endpoint("/v1", summary_response());
+        let engine = MindLeak::open_in_memory()
+            .unwrap()
+            .with_consolidator(Consolidator::new(base_url, "test"));
+        let params = json!({
+            "name": "consolidate_session",
+            "arguments": { "logs": ["cargo test passed"] }
+        });
+
+        let result = call(&engine, &params).unwrap();
+        server.join().unwrap();
+        let body: serde_json::Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+
+        assert!(body["intent_id"].as_str().unwrap().starts_with("intent:"));
+        assert!(body["outcome"].is_object());
+        assert_eq!(body["model_call"]["source"], "model");
+        assert!(body["model_call"].get("fallback_reason").is_none());
     }
 
     #[test]

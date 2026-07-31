@@ -1,8 +1,8 @@
 # ADR-0079: A model call must fail loudly, or it fails silently
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-31
-- Deciders: [pending — MindLeak maintainers]
+- Deciders: [monk-eee]
 - Related: [ADR-0002](0002-sqlite-decay-over-vector-llm.md) (SQLite/decay over a
   vector-LLM core), [ADR-0004](0004-intent-plane-spec-brain.md) (the optional
   OpenAI-compatible model), [ADR-0017](0017-working-memory-and-autonomous-consolidation.md)
@@ -21,10 +21,10 @@ behind it (a single task, a template question, no consolidation). That design is
 correct and is not in question here. The model is a garnish, not a dependency.
 
 But the *plumbing around* those calls is not durable, and two recorded gaps say
-how. Both live in `chat_json`
+how. They live in `chat_json`
 ([`crates/lodestar-core/src/llm.rs`](../../crates/lodestar-core/src/llm.rs)) and
-its mirror in
-[`crates/mindleak-core/src/consolidate.rs`](../../crates/mindleak-core/src/consolidate.rs):
+the shared MindLeak request path
+([`crates/mindleak-core/src/net.rs`](../../crates/mindleak-core/src/net.rs)):
 
 1. **One attempt, one flat budget.** `MINDLEAK_HTTP_TIMEOUT_MS` (default
    30000ms) is applied to *both* `timeout_connect` and `timeout_read`, one
@@ -77,7 +77,9 @@ optional and must error cleanly) and the zero-token write path (invariant 1).
    from the model or the deterministic fallback, and the reason the fallback
    fired (unreachable / timeout / bad-json / misconfigured). The caller no longer
    discards that distinction into a bare `Http` error. This is the load-bearing
-   change: it is what makes gap 2 observable rather than silent.
+  change: it is what makes gap 2 observable rather than silent. Both planes use
+  the same serialized vocabulary from `mindleak-model`, so `unreachable`,
+  `timeout`, `bad_json`, and `misconfigured` cannot drift apart.
 
 4. **Surface model reachability in `storage_status`.** `storage_status` gains an
    optional, on-demand model-health field: is a model reachable at the configured
@@ -102,12 +104,9 @@ optional and must error cleanly) and the zero-token write path (invariant 1).
 - The retry adds at most one extra read-budget of latency to a genuinely cold
   first call, and only on timeout — the path that already had nothing but a
   fallback to show for its wait. Connection refusal gets *faster*, not slower.
-- This is code in exactly the layer
-  [`refactor/the-model-splits-by-concern`](../../crates/lodestar-core/src/llm.rs)
-  is actively restructuring, so it is **sequenced after that refactor lands** to
-  avoid a merge collision — the same discipline ADR-0077 applied. It is proposed,
-  not accepted: nothing here changes behaviour until a maintainer accepts it and
-  it is promoted into tasks. Landing it closes both recorded gap fragments.
+- The prerequisite `refactor/the-model-splits-by-concern` landed in PR #176
+  before this decision was accepted and materialized, avoiding a same-layer
+  collision. Implementing this decision closes both recorded gap fragments.
 
 ## Rejected alternatives
 

@@ -17,3 +17,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+mindleak-model = { path = "../mindleak-model", features = ["test-support"] }

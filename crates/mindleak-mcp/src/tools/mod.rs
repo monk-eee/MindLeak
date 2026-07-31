@@ -235,7 +235,14 @@ fn dispatch(
     }
     if name == "storage_status" {
         let status = storage.ok_or("storage status is unavailable")?;
-        let value = serde_json::to_value(status).map_err(|error| error.to_string())?;
+        let mut value = serde_json::to_value(status).map_err(|error| error.to_string())?;
+        if args
+            .get("include_model_health")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            value["model_health"] = json!(engine.model_health());
+        }
         return Ok(text_result(&value));
     }
 
@@ -272,8 +279,17 @@ fn session_definition() -> Value {
 fn storage_definition() -> Value {
     json!({
         "name": "storage_status",
-        "description": "Report this plane's resolved repository id, database path, storage origin, legacy migration source, and whether migration ran. Read-only; uses the startup snapshot without re-reading Git or SQLite.",
-        "inputSchema": { "type": "object", "properties": {} }
+        "description": "Report this plane's resolved repository id, database path, storage origin, legacy migration source, and whether migration ran. Read-only; uses the startup snapshot without re-reading Git or SQLite. Set include_model_health to perform one on-demand model probe; absent or false makes no network call.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "include_model_health": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Probe the configured consolidation model now and report whether it is configured, reachable, and returns parseable JSON."
+                }
+            }
+        }
     })
 }
 
@@ -384,6 +400,7 @@ fn str_array(args: &Value, key: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mindleak_core::Consolidator;
     use mindleak_core::MindLeak;
     use mindleak_storage::DatabaseOrigin;
     use std::path::PathBuf;
@@ -638,6 +655,41 @@ mod tests {
         assert_eq!(value["repository_id"], status.repository_id.unwrap());
         assert_eq!(value["origin"], "repository");
         assert_eq!(value["migrated_legacy"], true);
+        assert!(value.get("model_health").is_none());
+    }
+
+    #[test]
+    fn storage_status_probes_model_health_only_when_requested() {
+        let engine = MindLeak::open_in_memory()
+            .unwrap()
+            .with_consolidator(Consolidator::new("", ""));
+        let status = StorageStatus {
+            plane: "mindleak".into(),
+            repository_id: None,
+            database_path: PathBuf::from("state/graph.db"),
+            origin: DatabaseOrigin::Explicit,
+            legacy_path: None,
+            migrated_legacy: false,
+        };
+        let params = json!({
+            "name": "storage_status",
+            "arguments": { "include_model_health": true }
+        });
+
+        let result = call_with_storage(
+            &engine,
+            &params,
+            Some(&status),
+            None,
+            &RunningBinary::from_parts(None, None),
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&content_text(&result)).unwrap();
+
+        assert_eq!(value["model_health"]["configured"], false);
+        assert_eq!(value["model_health"]["reachable"], false);
+        assert_eq!(value["model_health"]["responds_json"], false);
+        assert!(value["model_health"].get("failure_reason").is_none());
     }
 
     /// The bug this exists for, end to end. `ingest_commit` takes

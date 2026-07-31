@@ -2,10 +2,11 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::consolidate::{facts_from_summary, Consolidator};
+use crate::consolidate::facts_from_summary;
 use crate::{
-    ingest, net, now_unix, Edge, MindLeak, MindLeakError, PromotionCandidate, RelationType, Result,
-    SignalCandidate, SignalConsolidationOutcome, WriteOutcome,
+    ingest, net, now_unix, Edge, MindLeak, MindLeakError, ModelCallProvenance, ModelHealth,
+    PromotionCandidate, RelationType, Result, SessionConsolidationOutcome, SignalCandidate,
+    SignalConsolidationOutcome,
 };
 
 #[cfg(test)]
@@ -19,8 +20,20 @@ impl MindLeak {
     /// `MINDLEAK_MODEL`). This is the only path that calls an LLM, and it is
     /// never on the write/query hot path — it errors cleanly if no model is
     /// reachable.
-    pub fn consolidate_session(&self, logs: &[String]) -> Result<(String, WriteOutcome)> {
-        Consolidator::default().consolidate_and_store(&self.store, logs, now_unix())
+    pub fn consolidate_session(&self, logs: &[String]) -> Result<SessionConsolidationOutcome> {
+        let (intent_id, outcome) =
+            self.consolidator
+                .consolidate_and_store(&self.store, logs, now_unix())?;
+        Ok(SessionConsolidationOutcome {
+            intent_id,
+            outcome,
+            model_call: ModelCallProvenance::model(),
+        })
+    }
+
+    /// Probe the optional consolidation model only when explicitly requested.
+    pub fn model_health(&self) -> ModelHealth {
+        self.consolidator.model_health()
     }
 
     /// Consolidate queued high-signal episodics, then acknowledge their raw
@@ -135,7 +148,9 @@ impl MindLeak {
                 "signal consolidation cancelled".to_string(),
             ));
         }
-        let summary = Consolidator::default().consolidate_with_cancel(&logs, should_cancel)?;
+        let summary = self
+            .consolidator
+            .consolidate_with_cancel(&logs, should_cancel)?;
         if should_cancel() {
             return Err(MindLeakError::Cancelled(
                 "signal consolidation cancelled".to_string(),
@@ -169,6 +184,7 @@ impl MindLeak {
             edges_removed,
             nodes_removed,
             write_outcome,
+            model_call: ModelCallProvenance::model(),
         })
     }
 
@@ -198,7 +214,7 @@ impl MindLeak {
 }
 
 fn consolidation_lease_secs() -> i64 {
-    let config = net::HttpConfig::default();
+    let config = net::HttpConfig::for_model();
     config
         .maximum_elapsed()
         .as_secs()
@@ -213,6 +229,35 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use crate::{Consolidator, ModelCallSource};
+    use mindleak_model::test_support::{chat_response, json_endpoint};
+
+    fn summary_response() -> Vec<u8> {
+        let content = serde_json::json!({
+            "intent_label": "summarized session",
+            "impacted_files": [],
+            "status": "ok"
+        })
+        .to_string();
+        chat_response(content)
+    }
+
+    #[test]
+    fn session_consolidation_reports_that_the_model_produced_the_result() {
+        let (base_url, server) = json_endpoint("/v1", summary_response());
+        let engine = MindLeak::open_in_memory()
+            .unwrap()
+            .with_consolidator(Consolidator::new(base_url, "test"));
+
+        let outcome = engine
+            .consolidate_session(&["cargo test passed".to_string()])
+            .unwrap();
+        server.join().unwrap();
+
+        assert!(outcome.intent_id.starts_with("intent:"));
+        assert_eq!(outcome.model_call.source, ModelCallSource::Model);
+        assert_eq!(outcome.model_call.fallback_reason, None);
+    }
 
     #[test]
     fn signal_consolidation_interval_is_shared_across_facades() {
@@ -297,7 +342,7 @@ mod tests {
 
     #[test]
     fn consolidation_lease_outlives_the_bounded_http_budget() {
-        let budget = net::HttpConfig::default().maximum_elapsed().as_secs();
+        let budget = net::HttpConfig::for_model().maximum_elapsed().as_secs();
         assert!(consolidation_lease_secs() as u64 > budget.saturating_mul(2));
     }
 }

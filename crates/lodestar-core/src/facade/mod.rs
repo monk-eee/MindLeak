@@ -12,6 +12,9 @@ mod fleet;
 mod knowledge;
 mod waivers;
 
+pub use design_materialization::PlannedDesignMaterialization;
+pub use executive::DecomposedTask;
+
 #[cfg(test)]
 pub(super) mod test_support {
     use crate::{llm::LlmClient, Lodestar};

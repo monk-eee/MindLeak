@@ -290,8 +290,10 @@ confirms an agent did what was asked. Three parts, all local and all stdout-safe
 |---|---|---|
 | `MINDLEAK_LOG` | `info` | tracing/`RUST_LOG`-style filter; `off` silences |
 | `MINDLEAK_LOG_FORMAT` | `pretty` | `pretty` or `json` (both to stderr) |
-| `MINDLEAK_HTTP_TIMEOUT_MS` | `30000` | overall timeout per attempt, bounded 100-300000 ms |
-| `MINDLEAK_HTTP_RETRIES` | `2` | extra attempts on transient failure, bounded 0-5 |
+| `MINDLEAK_HTTP_CONNECT_TIMEOUT_MS` | `1000` | connect/DNS budget per attempt, bounded 100-300000 ms |
+| `MINDLEAK_HTTP_TIMEOUT_MS` | `30000` | response-read budget per optional HTTP attempt, bounded 100-300000 ms |
+| `MINDLEAK_MODEL_TIMEOUT_MS` | `120000` | MindLeak model response-read budget, bounded 100-300000 ms |
+| `MINDLEAK_HTTP_RETRIES` | `2` | extra attempts for generic transient failures, bounded 0-5; model calls instead retry one read timeout exactly once |
 | `MINDLEAK_BREAKER_THRESHOLD` | `5` | consecutive failures before the circuit opens |
 | `MINDLEAK_BREAKER_COOLDOWN_MS` | `30000` | how long the circuit stays open before a probe |
 

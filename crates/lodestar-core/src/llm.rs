@@ -3,9 +3,44 @@
 //! conformance. Same posture as MindLeak's consolidation worker: off every hot
 //! path, and it degrades cleanly (callers fall back) when no server is reachable.
 
+use mindleak_model::{classify_ureq_error, failure, is_io_timeout, is_read_timeout};
+pub use mindleak_model::{ModelCallProvenance, ModelCallSource, ModelHealth};
 use serde_json::json;
+use std::time::Duration;
 
-use crate::error::{LodestarError, Result};
+use crate::error::{LodestarError, ModelFailureReason, Result};
+
+const MIN_TIMEOUT_MS: u64 = 100;
+const MAX_TIMEOUT_MS: u64 = 300_000;
+
+#[derive(Debug, Clone, Copy)]
+struct HttpPolicy {
+    connect_timeout: Duration,
+    read_timeout: Duration,
+}
+
+impl HttpPolicy {
+    fn from_env() -> Self {
+        HttpPolicy {
+            connect_timeout: Duration::from_millis(env_bounded_u64(
+                "MINDLEAK_HTTP_CONNECT_TIMEOUT_MS",
+                1_000,
+            )),
+            read_timeout: Duration::from_millis(env_bounded_u64(
+                "MINDLEAK_HTTP_TIMEOUT_MS",
+                30_000,
+            )),
+        }
+    }
+}
+
+fn env_bounded_u64(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+        .clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS)
+}
 
 /// A candidate task produced by decomposition.
 #[derive(Debug, Clone)]
@@ -47,8 +82,39 @@ impl LlmClient {
         }
     }
 
+    /// Probe the configured model only when a caller explicitly asks for it.
+    pub fn model_health(&self) -> ModelHealth {
+        if self.base_url.trim().is_empty() || self.model.trim().is_empty() {
+            return ModelHealth::not_configured(&self.base_url, &self.model);
+        }
+
+        match self.chat_json(
+            "Respond with ONLY JSON: {\"status\":\"ok\"}.",
+            "Model health probe.",
+        ) {
+            Ok(_) => ModelHealth::healthy(&self.base_url, &self.model),
+            Err(error) => match error.model_failure() {
+                Some(failure) => ModelHealth::failed(&self.base_url, &self.model, failure),
+                None => ModelHealth::failed(
+                    &self.base_url,
+                    &self.model,
+                    &failure(ModelFailureReason::BadJson, false, error),
+                ),
+            },
+        }
+    }
+
     /// POST `/chat/completions` with a strict JSON response and parse the content.
     fn chat_json(&self, system: &str, user: &str) -> Result<serde_json::Value> {
+        self.chat_json_with_policy(system, user, HttpPolicy::from_env())
+    }
+
+    fn chat_json_with_policy(
+        &self,
+        system: &str,
+        user: &str,
+        policy: HttpPolicy,
+    ) -> Result<serde_json::Value> {
         let body = json!({
             "model": self.model,
             "stream": false,
@@ -59,34 +125,50 @@ impl LlmClient {
             ]
         });
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let timeout = std::time::Duration::from_millis(
-            std::env::var("MINDLEAK_HTTP_TIMEOUT_MS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(30_000),
-        );
         let agent = ureq::builder()
-            .timeout_connect(timeout)
-            .timeout_read(timeout)
+            .timeout(policy.connect_timeout.saturating_add(policy.read_timeout))
+            .timeout_connect(policy.connect_timeout)
+            .timeout_read(policy.read_timeout)
             .build();
-        let mut req = agent.post(&url);
-        if !self.api_key.is_empty() {
-            req = req.set("Authorization", &format!("Bearer {}", self.api_key));
-        }
-        let resp = req
-            .send_json(body)
-            .map_err(|e| LodestarError::Http(e.to_string()))?;
-        let value: serde_json::Value = resp
-            .into_json()
-            .map_err(|e| LodestarError::Http(e.to_string()))?;
+        let mut attempt = 0;
+        let value: serde_json::Value = loop {
+            attempt += 1;
+            let mut req = agent.post(&url);
+            if !self.api_key.is_empty() {
+                req = req.set("Authorization", &format!("Bearer {}", self.api_key));
+            }
+            match req.send_json(&body) {
+                Ok(response) => match response.into_json() {
+                    Ok(value) => break value,
+                    Err(error) if attempt == 1 && is_io_timeout(&error) => continue,
+                    Err(error) => {
+                        let reason = if is_io_timeout(&error) {
+                            ModelFailureReason::Timeout
+                        } else {
+                            ModelFailureReason::BadJson
+                        };
+                        return Err(model_error(reason, true, error));
+                    }
+                },
+                Err(error) if attempt == 1 && is_read_timeout(&error) => continue,
+                Err(error) => return Err(classify_ureq_error(error).into()),
+            }
+        };
         let content = value
             .get("choices")
             .and_then(|c| c.get(0))
             .and_then(|c| c.get("message"))
             .and_then(|m| m.get("content"))
             .and_then(|c| c.as_str())
-            .ok_or_else(|| LodestarError::Http("missing choices[0].message.content".into()))?;
-        Ok(serde_json::from_str(extract_json(content))?)
+            .ok_or_else(|| {
+                model_error(
+                    ModelFailureReason::BadJson,
+                    true,
+                    "missing choices[0].message.content",
+                )
+            })?;
+        serde_json::from_str(extract_json(content))
+            .map_err(|error| model_error(ModelFailureReason::BadJson, true, error))
     }
 
     /// Phrase the question one agent should put to a peer whose live claim
@@ -120,8 +202,10 @@ impl LlmClient {
             .trim()
             .to_string();
         if question.is_empty() {
-            return Err(LodestarError::Http(
-                "model returned no question text".into(),
+            return Err(model_error(
+                ModelFailureReason::BadJson,
+                true,
+                "model returned no question text",
             ));
         }
         Ok(question)
@@ -170,20 +254,42 @@ impl LlmClient {
     }
 }
 
+fn model_error(
+    reason: ModelFailureReason,
+    reachable: bool,
+    detail: impl ToString,
+) -> LodestarError {
+    failure(reason, reachable, detail).into()
+}
+
 fn parse_judgment(value: &serde_json::Value) -> Result<(String, String)> {
     let verdict = value
         .get("verdict")
         .and_then(|x| x.as_str())
-        .ok_or_else(|| LodestarError::Http("model returned no verdict".into()))?;
+        .ok_or_else(|| {
+            model_error(
+                ModelFailureReason::BadJson,
+                true,
+                "model returned no verdict",
+            )
+        })?;
     if !matches!(verdict, "aligned" | "violation" | "needs_human") {
-        return Err(LodestarError::Http(format!(
-            "model returned unsupported verdict: {verdict}"
-        )));
+        return Err(model_error(
+            ModelFailureReason::BadJson,
+            true,
+            format!("model returned unsupported verdict: {verdict}"),
+        ));
     }
     let rationale = value
         .get("rationale")
         .and_then(|x| x.as_str())
-        .ok_or_else(|| LodestarError::Http("model returned no rationale".into()))?;
+        .ok_or_else(|| {
+            model_error(
+                ModelFailureReason::BadJson,
+                true,
+                "model returned no rationale",
+            )
+        })?;
     let rationale = if verdict == "needs_human" && rationale.trim().is_empty() {
         "judge gave no reason"
     } else {
@@ -205,6 +311,16 @@ fn extract_json(content: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mindleak_model::test_support::{
+        cold_then_warm_json_endpoint, json_endpoint, status_endpoint,
+    };
+
+    fn model_test_policy() -> HttpPolicy {
+        HttpPolicy {
+            connect_timeout: Duration::from_millis(100),
+            read_timeout: Duration::from_millis(100),
+        }
+    }
 
     #[test]
     fn unreachable_client_is_pinned_away_from_ambient_configuration() {
@@ -213,6 +329,122 @@ mod tests {
         assert_eq!(client.base_url, "http://127.0.0.1:1/v1");
         assert_eq!(client.model, "unreachable");
         assert!(client.api_key.is_empty());
+    }
+
+    #[test]
+    fn model_call_provenance_names_model_and_fallback_paths() {
+        assert_eq!(
+            ModelCallProvenance::model(),
+            ModelCallProvenance {
+                source: ModelCallSource::Model,
+                fallback_reason: None,
+            }
+        );
+        assert_eq!(
+            ModelCallProvenance::fallback(ModelFailureReason::Timeout),
+            ModelCallProvenance {
+                source: ModelCallSource::Fallback,
+                fallback_reason: Some(ModelFailureReason::Timeout),
+            }
+        );
+    }
+
+    #[test]
+    fn model_health_distinguishes_not_configured_from_unreachable() {
+        let not_configured = LlmClient {
+            base_url: String::new(),
+            model: String::new(),
+            api_key: String::new(),
+        }
+        .model_health();
+        assert!(!not_configured.configured);
+        assert_eq!(not_configured.failure_reason, None);
+
+        let unreachable = LlmClient::unreachable().model_health();
+        assert!(unreachable.configured);
+        assert!(!unreachable.reachable);
+        assert!(!unreachable.responds_json);
+        assert_eq!(
+            unreachable.failure_reason,
+            Some(ModelFailureReason::Unreachable)
+        );
+    }
+
+    #[test]
+    fn model_health_reports_a_reachable_non_json_endpoint() {
+        let (base_url, server) = json_endpoint("/v1", b"not json");
+        let health = LlmClient {
+            base_url,
+            model: "test".to_string(),
+            api_key: String::new(),
+        }
+        .model_health();
+        server.join().unwrap();
+
+        assert!(health.configured);
+        assert!(health.reachable);
+        assert!(!health.responds_json);
+        assert_eq!(health.failure_reason, Some(ModelFailureReason::BadJson));
+    }
+
+    #[test]
+    fn cold_model_read_timeout_retries_once_and_uses_the_warm_response() {
+        let (base_url, server) = cold_then_warm_json_endpoint(
+            "/v1",
+            br#"{"choices":[{"message":{"content":"{\"ok\":true}"}}]}"#,
+            false,
+        );
+        let client = LlmClient {
+            base_url,
+            model: "test".to_string(),
+            api_key: String::new(),
+        };
+
+        let result = client.chat_json_with_policy("system", "user", model_test_policy());
+        let requests = server.join().unwrap();
+
+        assert_eq!(result.unwrap(), json!({ "ok": true }));
+        assert_eq!(requests, 2);
+    }
+
+    #[test]
+    fn cold_model_body_timeout_retries_once_and_uses_the_warm_response() {
+        let (base_url, server) = cold_then_warm_json_endpoint(
+            "/v1",
+            br#"{"choices":[{"message":{"content":"{\"ok\":true}"}}]}"#,
+            true,
+        );
+        let client = LlmClient {
+            base_url,
+            model: "test".to_string(),
+            api_key: String::new(),
+        };
+
+        let result = client.chat_json_with_policy("system", "user", model_test_policy());
+        let requests = server.join().unwrap();
+
+        assert_eq!(result.unwrap(), json!({ "ok": true }));
+        assert_eq!(requests, 2);
+    }
+
+    #[test]
+    fn model_policy_does_not_retry_a_4xx_rejection() {
+        let (base_url, server) = status_endpoint("/v1", 404, "Not Found");
+        let client = LlmClient {
+            base_url,
+            model: "missing".to_string(),
+            api_key: String::new(),
+        };
+
+        let error = client
+            .chat_json_with_policy("system", "user", model_test_policy())
+            .unwrap_err();
+
+        assert_eq!(
+            error.model_failure().map(|failure| failure.reason),
+            Some(ModelFailureReason::Misconfigured)
+        );
+        assert_eq!(server.join().unwrap(), 1);
     }
 
     #[test]
@@ -230,10 +462,9 @@ mod tests {
         let error = parse_judgment(&json!({ "rationale": "unclear" }))
             .expect_err("missing verdict must be unavailable");
 
-        assert_eq!(
-            error.to_string(),
-            "llm/http error: model returned no verdict"
-        );
+        let failure = error.model_failure().unwrap();
+        assert_eq!(failure.reason, ModelFailureReason::BadJson);
+        assert_eq!(failure.detail, "model returned no verdict");
     }
 
     // An unsupported value used to fall through to human review without naming
@@ -246,10 +477,9 @@ mod tests {
         }))
         .expect_err("unsupported verdict must be unavailable");
 
-        assert_eq!(
-            error.to_string(),
-            "llm/http error: model returned unsupported verdict: maybe"
-        );
+        let failure = error.model_failure().unwrap();
+        assert_eq!(failure.reason, ModelFailureReason::BadJson);
+        assert_eq!(failure.detail, "model returned unsupported verdict: maybe");
     }
 
     // A deliberate request for human review is valid, but the old empty
@@ -277,10 +507,9 @@ mod tests {
         let error = parse_judgment(&json!({ "verdict": "aligned" }))
             .expect_err("missing rationale must be unavailable");
 
-        assert_eq!(
-            error.to_string(),
-            "llm/http error: model returned no rationale"
-        );
+        let failure = error.model_failure().unwrap();
+        assert_eq!(failure.reason, ModelFailureReason::BadJson);
+        assert_eq!(failure.detail, "model returned no rationale");
     }
 
     #[test]

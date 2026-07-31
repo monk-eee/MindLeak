@@ -483,7 +483,16 @@ pub fn call_with_storage(
         return ok(&body);
     }
     if name == "storage_status" {
-        return ok(storage.ok_or("storage status is unavailable")?);
+        let mut status = serde_json::to_value(storage.ok_or("storage status is unavailable")?)
+            .map_err(|error| error.to_string())?;
+        if args
+            .get("include_model_health")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            status["model_health"] = json!(engine.model_health());
+        }
+        return ok(&status);
     }
 
     // Proof of life before the call runs, so a slow tool cannot lapse the very
@@ -639,8 +648,17 @@ fn session_definition() -> Value {
 fn storage_definition() -> Value {
     json!({
         "name": "storage_status",
-        "description": "Report this plane's resolved repository id, database path, storage origin, legacy migration source, and whether migration ran. Read-only; uses the startup snapshot without re-reading Git or SQLite.",
-        "inputSchema": { "type": "object", "properties": {} }
+        "description": "Report this plane's resolved repository id, database path, storage origin, legacy migration source, and whether migration ran. Read-only; uses the startup snapshot without re-reading Git or SQLite. Set include_model_health to perform one on-demand model probe; absent or false makes no network call.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "include_model_health": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Probe the configured model now and report whether it is configured, reachable, and returns parseable JSON."
+                }
+            }
+        }
     })
 }
 
@@ -928,6 +946,7 @@ pub(super) fn text(body: String) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lodestar_core::llm::LlmClient;
     use mindleak_storage::DatabaseOrigin;
     use std::path::PathBuf;
 
@@ -2359,6 +2378,44 @@ mod tests {
         assert_eq!(value["repository_id"], status.repository_id.unwrap());
         assert_eq!(value["origin"], "repository");
         assert_eq!(value["migrated_legacy"], false);
+        assert!(value.get("model_health").is_none());
+    }
+
+    #[test]
+    fn storage_status_probes_model_health_only_when_requested() {
+        let engine = Lodestar::open_in_memory().unwrap().with_llm(LlmClient {
+            base_url: String::new(),
+            model: String::new(),
+            api_key: String::new(),
+        });
+        let status = StorageStatus {
+            plane: "lodestar".into(),
+            repository_id: None,
+            database_path: PathBuf::from("state/spec.db"),
+            origin: DatabaseOrigin::Explicit,
+            legacy_path: None,
+            migrated_legacy: false,
+        };
+        let params = json!({
+            "name": "storage_status",
+            "arguments": { "include_model_health": true }
+        });
+
+        let result = call_with_storage(
+            &engine,
+            &params,
+            Some(&status),
+            None,
+            &RunningBinary::from_parts(None, None),
+        )
+        .unwrap();
+        let value: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+
+        assert_eq!(value["model_health"]["configured"], false);
+        assert_eq!(value["model_health"]["reachable"], false);
+        assert_eq!(value["model_health"]["responds_json"], false);
+        assert!(value["model_health"].get("failure_reason").is_none());
     }
 
     /// A server built from an older commit than the checkout it serves used to

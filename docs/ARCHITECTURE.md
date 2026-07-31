@@ -14,6 +14,15 @@ Agent worktrees ─┬─ MCP/stdio ─▶ mindleak-mcp ─▶ mindleak-core ─
 
 ## Crates
 
+### `mindleak-model` (library)
+
+The shared optional-model contract used by both planes: stable failure reasons
+(`unreachable`, `timeout`, `bad_json`, `misconfigured`), model-versus-fallback
+provenance, on-demand health results, and typed `ureq` failure classification
+(ADR-0079). It makes no requests itself. MindLeak and Lodestar retain their own
+clients, prompts, budgets, cancellation, and persistence behavior while sharing
+one vocabulary that cannot drift between their MCP results.
+
 ### `mindleak-storage` (library)
 
 Shared platform-independent repository identity, user-local database resolution,

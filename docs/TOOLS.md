@@ -7,6 +7,14 @@ things up in, not something to read.
 New here? Start with **[QUICKSTART.md](QUICKSTART.md)** to get running, then
 **[USAGE.md](USAGE.md)** for how an agent actually uses these in a session.
 
+Model-backed results use one additive contract: `model_call.source` is `model`
+or `fallback`; a fallback also carries `fallback_reason` as `unreachable`,
+`timeout`, `bad_json`, or `misconfigured`. Calling either plane's
+`storage_status` with `include_model_health=true` performs one probe and adds
+`model_health` (`configured`, `reachable`, `responds_json`, URL/model, and an
+optional failure reason/detail). Without that argument, no model call is made
+and the field is omitted.
+
 ---
 
 ## Memory Plane tools (`mindleak-mcp`)
@@ -31,8 +39,8 @@ New here? Start with **[QUICKSTART.md](QUICKSTART.md)** to get running, then
 | `export_graph` | Complete active graph JSON with fully derived edge weights (not a backup). |
 | `backup_database` | Create an integrity-checked online SQLite backup of the memory plane. |
 | `reset_database` | Clear regenerable memory only with the exact `RESET MINDLEAK` token. |
-| `consolidate_session` | Optional: compress raw logs into one intent node via a local Ollama model. |
-| `consolidate_signal` | Optional: consolidate queued proven signal, persist provenance links, then acknowledge raw evidence. |
+| `consolidate_session` | Optional: compress raw logs into one intent node via a local OpenAI-compatible model; successful output includes `model_call.source="model"`, while typed failures name why no result was produced. |
+| `consolidate_signal` | Optional: consolidate queued proven signal, persist provenance links, then acknowledge raw evidence; successful output carries the same `model_call` marker. |
 | `promotion_candidates` | Aggregate expiring proven signal into subject-level candidates for Lodestar `promote_signals` — the deterministic, model-free promotion pass that closes the learned-knowledge loop (ADR-0022). |
 | `list_agents` | Roster of agents + their active observation counts (attribution). |
 | `working_set` | Current agent's bounded, ranked attentional focus (derived from active observations; default cap 7). |
@@ -40,7 +48,7 @@ New here? Start with **[QUICKSTART.md](QUICKSTART.md)** to get running, then
 | `index` | Optional: embed nodes lacking a current vector via a local `/v1/embeddings` server (ADR-0008). |
 | `recall` | Optional: nearest node ids by cosine similarity — entry points to *seed* `graph_multi_hop_query`. |
 | `telemetry_snapshot` | Observability record (ADR-0010): per-tool lifetime call/error counts, latency, current health (whether each tool's most recent call failed), and recent invocations from the durable audit trail. |
-| `storage_status` | Resolved repository id, graph database path, storage origin, legacy migration source, and whether migration ran (ADR-0038). |
+| `storage_status` | Resolved repository id, graph database path, storage origin, legacy migration source, and whether migration ran (ADR-0038); `include_model_health=true` adds one on-demand consolidation-model probe (ADR-0079). |
 
 ---
 
@@ -123,7 +131,7 @@ one intent plane and one memory graph by default.
 | `active_knowledge` / `reconfirm_knowledge` / `prune_knowledge` | Durable-but-revalidated knowledge. |
 | `retire_knowledge` | Withdraw a lesson that is wrong or has been replaced, instead of waiting out its half-life. Attributed and reasoned; the record stays readable. Retired records leave the active set, so the advisory stops carrying them. |
 | `lodestar_stats` | Goal / task / knowledge counts. |
-| `storage_status` | Resolved repository id, intent database path, storage origin, legacy migration source, and whether migration ran (ADR-0038). |
+| `storage_status` | Resolved repository id, intent database path, storage origin, legacy migration source, and whether migration ran (ADR-0038); `include_model_health=true` adds one on-demand Lodestar-model probe (ADR-0079). |
 | `backup_database` | Create an integrity-checked online SQLite backup of the intent plane. |
 | `reset_database` | Clear durable intent only with the exact `RESET LODESTAR` token. |
 

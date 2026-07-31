@@ -27,13 +27,17 @@ pub mod telemetry;
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+pub use consolidate::{Consolidator, ModelHealth};
 pub use embed::{Embedder, TextEmbedder};
-pub use error::{MindLeakError, Result};
+pub use error::{
+    MindLeakError, ModelCallProvenance, ModelCallSource, ModelFailure, ModelFailureReason, Result,
+};
 pub use graph::{
     AgentActivity, AgentFootprintOverlap, ArtifactStub, ConformanceEvidence, Direction,
     EvidenceProvenance, ForgetOutcome, GraphExport, GraphStore, Preflight, PreflightNode,
-    PromotionCandidate, PruneOutcome, ReconcileOutcome, ResetOutcome, ScoredNode, SignalCandidate,
-    SignalConsolidationOutcome, Subgraph, WeightedEdge, WorkingSetItem, WriteOutcome,
+    PromotionCandidate, PruneOutcome, ReconcileOutcome, ResetOutcome, ScoredNode,
+    SessionConsolidationOutcome, SignalCandidate, SignalConsolidationOutcome, Subgraph,
+    WeightedEdge, WorkingSetItem, WriteOutcome,
 };
 pub use model::{Edge, Node, NodeType, RelationType};
 
@@ -51,6 +55,7 @@ pub fn now_unix() -> i64 {
 pub struct MindLeak {
     store: GraphStore,
     consolidation_min_interval_secs: u64,
+    consolidator: consolidate::Consolidator,
     embedder: Box<dyn embed::TextEmbedder>,
     recall_floor: f64,
     /// The checkout this process serves, used to make incoming absolute paths
@@ -105,6 +110,7 @@ impl MindLeak {
         Ok(MindLeak {
             store: GraphStore::new(db::open(path)?),
             consolidation_min_interval_secs: DEFAULT_CONSOLIDATION_MIN_INTERVAL_SECS,
+            consolidator: consolidate::Consolidator::default(),
             embedder: Box::new(embed::Embedder::default()),
             recall_floor: config::DEFAULT_RECALL_FLOOR,
             workspace_root: None,
@@ -119,6 +125,7 @@ impl MindLeak {
         Ok(MindLeak {
             store: GraphStore::new(db::open_in_memory()?),
             consolidation_min_interval_secs: DEFAULT_CONSOLIDATION_MIN_INTERVAL_SECS,
+            consolidator: consolidate::Consolidator::default(),
             embedder: Box::new(embed::Embedder::default()),
             recall_floor: config::DEFAULT_RECALL_FLOOR,
             workspace_root: None,
@@ -126,6 +133,12 @@ impl MindLeak {
             worktree_refresh: None,
             last_refresh: Mutex::new(None),
         })
+    }
+
+    /// Override the optional consolidation model client.
+    pub fn with_consolidator(mut self, consolidator: consolidate::Consolidator) -> Self {
+        self.consolidator = consolidator;
+        self
     }
 
     /// Declare the checkout this process serves, so absolute paths from editor

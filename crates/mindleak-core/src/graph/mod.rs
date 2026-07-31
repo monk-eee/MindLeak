@@ -20,8 +20,9 @@ mod writes;
 pub use types::{
     AgentActivity, AgentFootprintOverlap, ArtifactStub, ConformanceEvidence, Direction,
     EvidenceProvenance, ForgetOutcome, GraphExport, Preflight, PreflightNode, PromotionCandidate,
-    PruneOutcome, ReconcileOutcome, RepairOutcome, ResetOutcome, ScoredNode, SignalCandidate,
-    SignalConsolidationOutcome, Subgraph, WeightedEdge, WorkingSetItem, WriteOutcome,
+    PruneOutcome, ReconcileOutcome, RepairOutcome, ResetOutcome, ScoredNode,
+    SessionConsolidationOutcome, SignalCandidate, SignalConsolidationOutcome, Subgraph,
+    WeightedEdge, WorkingSetItem, WriteOutcome,
 };
 
 /// The persistent graph store.

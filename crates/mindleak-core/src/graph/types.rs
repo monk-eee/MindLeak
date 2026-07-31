@@ -2,6 +2,7 @@
 use serde::Serialize;
 
 use crate::decay::SignalEvidence;
+use crate::error::ModelCallProvenance;
 use crate::model::{Node, NodeType, RelationType};
 
 /// Direction of edge expansion during traversal.
@@ -81,6 +82,15 @@ pub struct SignalConsolidationOutcome {
     pub edges_removed: usize,
     pub nodes_removed: usize,
     pub write_outcome: WriteOutcome,
+    pub model_call: ModelCallProvenance,
+}
+
+/// Result of optional session-log consolidation.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionConsolidationOutcome {
+    pub intent_id: String,
+    pub outcome: WriteOutcome,
+    pub model_call: ModelCallProvenance,
 }
 
 /// A node reached during traversal, with its depth and path score.

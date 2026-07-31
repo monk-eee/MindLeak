@@ -37,6 +37,7 @@ pub use design::{
     DesignTaskDraft,
 };
 pub use error::{LodestarError, Result};
+pub use facade::{DecomposedTask, PlannedDesignMaterialization};
 pub use model::{
     Advice, AdviceDisposition, ClaimOverlap, ClaimOverlapReport, ClaimWindow, CodeBinding,
     CodeBindingMode, ConformanceCheck, ConformanceEvidence, ConformanceRecord, ConformanceResult,
@@ -113,6 +114,11 @@ impl Lodestar {
     pub fn with_llm(mut self, llm: LlmClient) -> Self {
         self.llm = llm;
         self
+    }
+
+    /// Probe the optional model only when an explicit status call asks for it.
+    pub fn model_health(&self) -> llm::ModelHealth {
+        self.llm.model_health()
     }
 
     #[cfg(test)]
