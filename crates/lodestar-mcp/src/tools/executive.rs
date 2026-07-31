@@ -237,7 +237,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "task_transition",
-            "description": "Move a task through the lifecycle, with `to` naming the transition. `complete` consumes an authoritative check_conformance result for the same claim-bounded ADR-0009 evidence: aligned completes, drift/uncertainty stay in review, violation blocks; pass `learned` with what the next agent should know, recorded as durable knowledge at the moment you hold it (ADR-0053) and named as an omission rather than blocked when absent. `resolve` accepts an in_review task to done under a reviewer label with no code-conformance re-run, opening any blocked successor; the label is attributed, not authenticated (ADR-0071), and must differ from the agent under review. `block` marks nonterminal work blocked and clears any live claim, and its reason is the only way the former owner learns why. `reopen` returns stranded work (in_review after a drift/needs-human completion, or manually blocked with no predecessor gate) to open; it refuses to bypass a handoff dependency, to disturb an active claim, or to revive terminal work. `abandon` permanently retires nonterminal work while preserving its history. `pause` and `resume` are the owner deliberately suspending and restarting, keeping owner and evidence window (ADR-0020). `ask` parks a claimed task with a durable question and `answer` returns it to claimed with a fresh lease; address a peer with `audience`, omit it to ask a human (ADR-0046).",
+            "description": "Move a task through the lifecycle, with `to` naming the transition. `complete` consumes an authoritative check_conformance result for the same claim-bounded ADR-0009 evidence: aligned completes, drift/uncertainty stay in review, violation blocks; pass `learned` with what the next agent should know, recorded as durable knowledge at the moment you hold it (ADR-0053) and named as an omission rather than blocked when absent. `resolve` accepts an in_review task to done under a reviewer label with no code-conformance re-run, opening any blocked successor; the label is attributed, not authenticated (ADR-0071), and must differ from the agent under review. `block` marks nonterminal work blocked and clears any live claim, and its reason is the only way the former owner learns why. `reopen` returns stranded work (in_review after a drift/needs-human completion, or manually blocked with no predecessor gate) to open; it refuses to bypass a handoff dependency, to disturb an active claim, or to revive terminal work. `abandon` permanently retires nonterminal work while preserving its history; a task that recorded a branch refuses unless `acknowledge_branch` is true, because abandon is irreversible and cannot see whether that branch already carries an open or merged pull request. `pause` and `resume` are the owner deliberately suspending and restarting, keeping owner and evidence window (ADR-0020). `ask` parks a claimed task with a durable question and `answer` returns it to claimed with a fresh lease; address a peer with `audience`, omit it to ask a human (ADR-0046).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -259,7 +259,8 @@ pub(super) fn definitions() -> Vec<Value> {
                     "audience": { "type": "string", "description": "ask: agent id to address the question to. Omit to ask a human." },
                     "answer": { "type": "string", "description": "answer: the durable answer." },
                     "author": { "type": "string", "default": "human", "description": "answer: who answered." },
-                    "lease_secs": { "type": "integer", "default": 300, "description": "resume and answer: length of the fresh lease." }
+                    "lease_secs": { "type": "integer", "default": 300, "description": "resume and answer: length of the fresh lease." },
+                    "acknowledge_branch": { "type": "boolean", "default": false, "description": "abandon: confirm you have checked that the task's recorded branch carries no open or merged pull request. Required when the task recorded a branch, because abandon is a one-way door and the ledger cannot see a pull request from here." }
                 },
                 "required": ["task_id", "to"]
             }
@@ -518,7 +519,9 @@ pub(super) fn dispatch(
                     ok(&json!({ "reopened": reopened }))
                 }
                 "abandon" => {
-                    let abandoned = engine.abandon_task(task_id).map_err(|e| e.to_string())?;
+                    let abandoned = engine
+                        .abandon_task(task_id, bool_arg(args, "acknowledge_branch", false))
+                        .map_err(|e| e.to_string())?;
                     ok(&json!({ "abandoned": abandoned }))
                 }
                 "pause" => {
@@ -1882,7 +1885,7 @@ mod tests {
             .unwrap();
         let live = engine.create_task(&goal.id, "Live", "").unwrap();
         let retired = engine.create_task(&goal.id, "Retired", "").unwrap();
-        engine.abandon_task(&retired.id).unwrap();
+        engine.abandon_task(&retired.id, false).unwrap();
 
         // Default: every task, including the abandoned one.
         let all: Value = serde_json::from_str(
@@ -2133,7 +2136,7 @@ mod tests {
         // Finished work and missing work are different refusals, and neither is
         // "wait for the lease".
         let finished = engine.create_task(&goal.id, "Shipped", "done").unwrap();
-        engine.abandon_task(&finished.id).unwrap();
+        engine.abandon_task(&finished.id, false).unwrap();
         let on_terminal = call(
             &engine,
             &json!({

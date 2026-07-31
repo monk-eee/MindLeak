@@ -599,7 +599,7 @@ mod tests {
         complete_aligned(&s, &done.id, "dave", NOW + 8);
 
         let dropped = s.create_task(&g.id, "abandoned", "", None, NOW).unwrap();
-        assert!(s.abandon_task(&dropped.id, NOW + 9).unwrap());
+        assert!(s.abandon_task(&dropped.id, false, NOW + 9).unwrap());
 
         let mut live = s.board(true).unwrap();
         live.sort_by(|a, b| a.id.cmp(&b.id));

@@ -25,6 +25,7 @@ import {
   reachableGoal,
   referencedNodes,
   referencedTasks,
+  retired,
   summarise,
 } from "./silent-knowledge.mjs";
 
@@ -294,4 +295,51 @@ test("an empty ledger reports no share rather than dividing by zero", () => {
   assert.equal(summary.unreachable, 0);
   assert.equal(summary.share, 0);
   assert.equal(summary.contention.attaching, 0);
+});
+
+// A retired record is not a silent one: it was withdrawn or replaced on
+// purpose. Counting it kept this audit's total above zero no matter how much
+// of the real backlog was cleared, which is what made --check unable to gate.
+test("a retired record is excluded from the count entirely", () => {
+  const silent = {
+    statement: "unreachable",
+    weight: 1,
+    confirmed_at: 1,
+    evidence: "{}",
+  };
+  const withdrawn = {
+    statement: "withdrawn",
+    weight: 1,
+    confirmed_at: 1,
+    evidence: "{}",
+    retired_at: 1785462000,
+  };
+
+  const summary = summarise([silent, withdrawn]);
+
+  assert.equal(summary.total, 1, "the retired record leaves the population");
+  assert.equal(summary.unreachable, 1, "only the genuinely silent one counts");
+  assert.equal(summary.retired, 1);
+  assert.equal(summary.records.length, 1);
+  assert.equal(summary.records[0].statement, "unreachable");
+});
+
+// Retiring the last silent record takes the count to zero, so the work is
+// reducible and --check can gate on it.
+test("retiring the last silent record lets the audit reach zero", () => {
+  const record = {
+    statement: "unreachable",
+    weight: 1,
+    confirmed_at: 1,
+    evidence: "{}",
+  };
+  assert.equal(summarise([record]).unreachable, 1);
+  assert.equal(summarise([{ ...record, retired_at: 1 }]).unreachable, 0);
+});
+
+test("retired() reads the column and treats null or absent as live", () => {
+  assert.equal(retired({ retired_at: 1 }), true);
+  assert.equal(retired({ retired_at: null }), false);
+  // A ledger older than the column returns rows without the field at all.
+  assert.equal(retired({}), false);
 });
