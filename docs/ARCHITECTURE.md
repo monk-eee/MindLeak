@@ -90,6 +90,10 @@ responsibility: `mod` (register and read), `decision` (the guarded accept/reject
 transition and repairing one after the fact), `retirement` (retire and
 supersede), `promotion` (promotion into work and its immutable materialization
 revisions), and `links` (the current projection of what an item is linked to).
+`store/policy_packs/` is split by responsibility: `mod` (pack registration and
+retrieval), `proposal` (proposal creation), `query` (proposal and disposition
+reads), `review` (attributed adoption/rejection), `provenance` (upstream source
+tracking), and `conflict` (pre-adoption conflict detection).
 Facade behavior is grouped under
 `facade/`: `constitution`, `executive`, `design`, `design_materialization`,
 `conformance/`, `controls`, `amendments`, `waivers`, `advice`, `fleet`,
