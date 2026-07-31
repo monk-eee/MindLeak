@@ -36,6 +36,7 @@ import {
   repoRelativePath,
   resolveBinaryPath,
   resolveServerPath,
+  serverFilePath,
   shouldPollTelemetry,
   TaskQaEntry,
   telemetryDashboard,
@@ -576,15 +577,22 @@ async function onSave(doc: vscode.TextDocument): Promise<void> {
   if (!client?.isReady() || doc.uri.scheme !== "file") {
     return;
   }
-  const rel = repoRelativePath(vscode.workspace.asRelativePath(doc.uri, false));
-  if (rel === null) {
-    // Outside every workspace folder, so there is no repo-relative id for it.
-    // Sending it anyway is a guaranteed server-side refusal on every save.
+  const sourcePath = serverFilePath(
+    vscode.workspace.asRelativePath(doc.uri, false),
+    doc.uri.fsPath
+  );
+  if (sourcePath === null) {
     return;
   }
   try {
-    await client.callTool("ingest_file", { path: rel, content: doc.getText() });
-    await refresh(`artifact:${rel}`);
+    const outcome = await client.callTool("ingest_file", {
+      path: sourcePath,
+      content: doc.getText(),
+    });
+    const artifact = outcome?.node_ids?.find((id: string) => id.startsWith("artifact:"));
+    if (artifact) {
+      await refresh(artifact);
+    }
   } catch (err) {
     output.appendLine(`ingest error: ${(err as Error).message}`);
   }
@@ -594,13 +602,12 @@ async function onDelete(uri: vscode.Uri): Promise<void> {
   if (!client?.isReady() || uri.scheme !== "file") {
     return;
   }
-  const rel = repoRelativePath(vscode.workspace.asRelativePath(uri, false));
-  if (rel === null) {
-    // Never ingested under this id, so there is nothing here to forget.
+  const sourcePath = serverFilePath(vscode.workspace.asRelativePath(uri, false), uri.fsPath);
+  if (sourcePath === null) {
     return;
   }
   try {
-    await client.callTool("forget_file", { path: rel });
+    await client.callTool("forget_file", { path: sourcePath });
     await refresh();
   } catch (err) {
     output.appendLine(`forget error: ${(err as Error).message}`);
