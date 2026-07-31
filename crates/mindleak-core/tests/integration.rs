@@ -145,6 +145,86 @@ fn reconcile_workspace_forgets_files_not_in_the_current_set() {
     assert_eq!(again.files_forgotten, 0);
 }
 
+#[test]
+fn reconcile_reports_stale_structure_and_plain_refresh_preserves_attention() {
+    // Bug: an extractor improvement could not identify artifacts whose
+    // structural snapshot came from an older extractor, so the graph quietly
+    // stayed stale until every file happened to be saved or fully re-ingested.
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_execution_for_agent("tester", &exec("cargo check", 0, "ok", &["src/stale.rs"]))
+        .unwrap();
+    engine
+        .ingest_file("src/current.rs", "pub fn current() {}\n")
+        .unwrap();
+    engine
+        .ingest_file("src/absent.rs", "pub fn absent() {}\n")
+        .unwrap();
+
+    let before = engine.snapshot(None, 200).unwrap();
+    let observed_before = before
+        .edges
+        .iter()
+        .find(|edge| {
+            edge.relation == mindleak_core::RelationType::Observed
+                && edge.target_id == "artifact:src/stale.rs"
+        })
+        .expect("execution attribution should observe the touched artifact")
+        .clone();
+
+    let report = engine
+        .workspace_structure_status(&[
+            "src/current.rs".to_string(),
+            "src/missing.rs".to_string(),
+            "src/stale.rs".to_string(),
+        ])
+        .unwrap();
+    assert_eq!(report.stale_paths, vec!["src/stale.rs"]);
+    assert_eq!(report.missing_paths, vec!["src/missing.rs"]);
+    assert!(engine
+        .store()
+        .get_node("artifact:src/absent.rs")
+        .unwrap()
+        .is_some());
+
+    let stale = engine
+        .reconcile_workspace(&[
+            "src/current.rs".to_string(),
+            "src/missing.rs".to_string(),
+            "src/stale.rs".to_string(),
+        ])
+        .unwrap();
+    assert_eq!(stale.files_forgotten, 1);
+    assert!(stale.extractor_version > 0);
+    assert_eq!(stale.stale_paths, vec!["src/stale.rs"]);
+
+    // The deterministic refresh path replaces structure without pretending
+    // the agent focused or edited this file again.
+    engine
+        .ingest_file("src/stale.rs", "pub fn refreshed() {}\n")
+        .unwrap();
+    let refreshed = engine
+        .reconcile_workspace(&[
+            "src/current.rs".to_string(),
+            "src/missing.rs".to_string(),
+            "src/stale.rs".to_string(),
+        ])
+        .unwrap();
+    assert!(refreshed.stale_paths.is_empty());
+
+    let after = engine.snapshot(None, 200).unwrap();
+    let observed_after = after
+        .edges
+        .iter()
+        .find(|edge| {
+            edge.relation == mindleak_core::RelationType::Observed
+                && edge.target_id == "artifact:src/stale.rs"
+        })
+        .expect("structural refresh must retain the prior observation");
+    assert_eq!(observed_after.updated_at, observed_before.updated_at);
+    assert_eq!(observed_after.base_weight, observed_before.base_weight);
+}
+
 /// Regression: ingesting a path that could not be made repo-relative minted an
 /// absolute node id instead of refusing.
 ///

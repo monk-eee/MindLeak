@@ -7,6 +7,7 @@ import {
   isExtractable,
   isIgnoredPath,
   planFiles,
+  planRefreshFiles,
   selectFiles,
 } from "./reingest.mjs";
 
@@ -81,5 +82,26 @@ test("the plan ingests manifests first and revisits Rust after roots exist", () 
     "crates/dependency/src/lib.rs",
     "crates/consumer/src/lib.rs",
     "crates/dependency/src/lib.rs",
+  ]);
+});
+
+test("targeted planning includes stale and missing files in deterministic order", () => {
+  const selected = planRefreshFiles(
+    [
+      "crates/current/src/lib.rs",
+      "crates/stale/src/lib.rs",
+      "editors/vscode/package.json",
+      "docs/SPEC.md",
+    ],
+    [
+      "crates\\stale\\src\\lib.rs",
+      "editors/vscode/package.json",
+      "src/not-tracked.rs",
+    ],
+  );
+  assert.deepEqual(selected, [
+    "editors/vscode/package.json",
+    "crates/stale/src/lib.rs",
+    "crates/stale/src/lib.rs",
   ]);
 });

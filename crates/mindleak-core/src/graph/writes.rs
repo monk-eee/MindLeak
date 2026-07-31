@@ -3,7 +3,7 @@ use std::collections::HashSet;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::{ArtifactStub, ForgetOutcome, GraphStore, WriteOutcome};
+use super::{ArtifactStub, ForgetOutcome, GraphStore, WriteOutcome, STRUCTURE_EXTRACTOR_VERSION};
 use crate::error::{MindLeakError, Result};
 use crate::model::{Edge, Node};
 
@@ -134,6 +134,13 @@ impl GraphStore {
                 outcome.nodes_created += 1;
             }
         }
+        transaction.execute(
+            "INSERT INTO artifact_structure_versions (artifact_id, extractor_version)
+             VALUES (?1, ?2)
+             ON CONFLICT(artifact_id) DO UPDATE SET
+                 extractor_version = excluded.extractor_version",
+            params![owner_id, STRUCTURE_EXTRACTOR_VERSION],
+        )?;
         for stub in artifact_stubs {
             if !real_artifacts.contains(&stub.node_id) {
                 transaction.execute(
@@ -189,6 +196,25 @@ impl GraphStore {
             .conn
             .prepare("SELECT id FROM nodes WHERE type = 'artifact'")?;
         let rows = statement.query_map([], |row| row.get(0))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row?);
+        }
+        Ok(ids)
+    }
+
+    /// Artifacts whose structural snapshot predates `current_version`, including
+    /// legacy artifacts with no version row at all.
+    pub fn stale_artifact_ids(&self, current_version: u32) -> Result<Vec<String>> {
+        let mut statement = self.conn.prepare(
+            "SELECT n.id
+             FROM nodes n
+             LEFT JOIN artifact_structure_versions v ON v.artifact_id = n.id
+             WHERE n.type = 'artifact'
+               AND COALESCE(v.extractor_version, 0) < ?1
+             ORDER BY n.id",
+        )?;
+        let rows = statement.query_map(params![current_version], |row| row.get(0))?;
         let mut ids = Vec::new();
         for row in rows {
             ids.push(row?);
