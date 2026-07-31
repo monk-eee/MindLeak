@@ -23,8 +23,10 @@
 //! and staleness are different claims: an installed binary cannot be called
 //! stale, but it can and must still say what it is.
 
+use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::time::SystemTime;
 
 /// What the running binary has to say about itself at startup.
 pub struct BuildNotice {
@@ -102,6 +104,111 @@ pub fn build_notice(
         ),
         stale: true,
     })
+}
+
+/// When the executable file was last written, or `None` when it cannot be read.
+///
+/// Taken once at startup so it can be compared with the same path later. The
+/// value is only ever used as an equality witness, never as a clock, so its
+/// resolution and epoch do not matter.
+pub fn executable_written_at(executable: &Path) -> Option<SystemTime> {
+    fs::metadata(executable).ok()?.modified().ok()
+}
+
+/// What to report when the file this process was started from is no longer the
+/// file on disk, or `None` while they still match.
+///
+/// This is a different fault from every other one in this module, and the
+/// difference is the whole point. `build_notice` compares a *build* against a
+/// *checkout*: it answers "was this binary made from something old". It cannot
+/// see the case where the binary was correct when the process started and the
+/// file underneath it was then replaced -- because the running process keeps
+/// reporting the build sha it was compiled with, which may match HEAD perfectly
+/// while the code actually executing has been superseded on disk.
+///
+/// Measured on 2026-07-30, and it cost most of a session. A live server kept
+/// answering with a pre-ADR-0054 labelled agent id while every binary on disk
+/// answered with the collapsed one, so the owner string flipped between two
+/// consecutive board reads with no intervening claim and the whole closing loop
+/// became unreachable: `check_conformance` refused with "evidence agent does not
+/// own the task". The first diagnosis was a stale deployment, and it was wrong.
+/// Driving the same session token through every binary on disk returned the
+/// current answer; only the live processes disagreed, because the file beneath
+/// them had been swapped while they ran. Rebuilding and reinstalling would have
+/// changed nothing. Restarting was the entire remedy.
+///
+/// So the advice here is deliberately *not* "rebuild": that is the instruction
+/// that wasted the session. A replaced file is evidence about the process, not
+/// about the build.
+///
+/// `None` for either side means the question is unanswerable rather than
+/// answered no -- the same distinction [`is_ancestor`] draws -- so a binary that
+/// cannot be stat'd never manufactures a warning.
+pub fn replaced_binary_notice(
+    started_from: Option<SystemTime>,
+    on_disk: Option<SystemTime>,
+) -> Option<String> {
+    let (started_from, on_disk) = (started_from?, on_disk?);
+    if started_from == on_disk {
+        return None;
+    }
+    Some(
+        "this server is still running the file it started from, and that file has since been \
+         replaced on disk: the code answering you is not the code in the binary. Rebuilding \
+         changes nothing here -- restart the server. Until then, treat surprising verdicts, \
+         missing tools and unexpected identities as this, not as defects."
+            .to_string(),
+    )
+}
+
+/// The executable this process is running, as it looked when the process
+/// started.
+///
+/// State with identity, observed once and passed by reference, rather than a
+/// static reached for later: two servers in one test must be able to disagree
+/// about what they started from.
+pub struct RunningBinary {
+    path: Option<std::path::PathBuf>,
+    started_from: Option<SystemTime>,
+}
+
+impl RunningBinary {
+    /// Observe the running executable. Call once, at startup -- the value is
+    /// only meaningful as a witness of what was on disk *then*.
+    pub fn observe() -> Self {
+        Self::observe_path_opt(std::env::current_exe().ok())
+    }
+
+    /// Observe a named file, so the behaviour can be exercised without being
+    /// the process under test.
+    pub fn observe_path(path: &Path) -> Self {
+        Self::observe_path_opt(Some(path.to_path_buf()))
+    }
+
+    fn observe_path_opt(path: Option<std::path::PathBuf>) -> Self {
+        let started_from = path.as_deref().and_then(executable_written_at);
+        Self { path, started_from }
+    }
+
+    /// Build one from parts, for tests and for callers that already know the
+    /// path they launched from.
+    pub fn from_parts(path: Option<std::path::PathBuf>, started_from: Option<SystemTime>) -> Self {
+        Self { path, started_from }
+    }
+
+    /// What to tell the caller now, re-read at the moment of asking because the
+    /// replacement happens *after* startup and a value computed once could
+    /// never see it.
+    pub fn replaced_notice(&self) -> Option<String> {
+        let on_disk = self.path.as_deref().and_then(executable_written_at);
+        replaced_binary_notice(self.started_from, on_disk)
+    }
+}
+
+impl Default for RunningBinary {
+    fn default() -> Self {
+        Self::observe()
+    }
 }
 
 /// Whether `descendant` has `ancestor` in its history, or `None` when git
@@ -317,5 +424,93 @@ mod tests {
         assert!(notice(LOCAL, "", Some(HEAD)).is_none());
         // A build with no identity has nothing to report wherever it lives.
         assert!(notice("/opt/mindleak/bin/mindleak-mcp", "unknown", None).is_none());
+    }
+
+    fn at(seconds: u64) -> Option<SystemTime> {
+        Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+    }
+
+    /// The fault this rule exists for: the file was swapped while the process
+    /// ran, so the code answering is not the code in the binary.
+    #[test]
+    fn a_binary_replaced_under_a_running_process_is_reported() {
+        let message = replaced_binary_notice(at(1_000), at(2_000)).expect("a replacement is news");
+        assert!(
+            message.contains("restart"),
+            "the remedy must be named: {message}"
+        );
+    }
+
+    /// Rebuilding was the first diagnosis when this happened for real, and it
+    /// was wrong -- every binary on disk was already current. Advising it again
+    /// would send the next reader down the same dead end.
+    #[test]
+    fn the_advice_is_to_restart_and_never_to_rebuild() {
+        let message = replaced_binary_notice(at(1_000), at(2_000)).unwrap();
+        assert!(
+            message.contains("Rebuilding changes nothing"),
+            "must say rebuilding is not the fix: {message}"
+        );
+    }
+
+    #[test]
+    fn an_untouched_binary_says_nothing() {
+        assert!(replaced_binary_notice(at(1_000), at(1_000)).is_none());
+    }
+
+    /// Restoring an older build is still a replacement: the running process is
+    /// no longer the file on disk, whichever direction the clock moved.
+    #[test]
+    fn a_binary_replaced_with_an_older_one_is_still_a_replacement() {
+        assert!(replaced_binary_notice(at(2_000), at(1_000)).is_some());
+    }
+
+    /// An unreadable timestamp is ignorance, not evidence -- the same
+    /// distinction `is_ancestor` draws between `None` and `Some(false)`. A
+    /// warning invented from a failed stat would be indistinguishable from a
+    /// real one.
+    #[test]
+    fn an_unanswerable_timestamp_never_manufactures_a_warning() {
+        assert!(replaced_binary_notice(None, at(2_000)).is_none());
+        assert!(replaced_binary_notice(at(1_000), None).is_none());
+        assert!(replaced_binary_notice(None, None).is_none());
+    }
+
+    /// The rule is arithmetic; this proves the type actually reads the disk, so
+    /// a real swap under a real process is seen rather than merely modelled.
+    #[test]
+    fn running_binary_sees_its_own_file_change_on_disk() {
+        let path = std::env::temp_dir().join(format!(
+            "mindleak-running-binary-{}-{:?}.bin",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::write(&path, b"first").unwrap();
+
+        let observed = RunningBinary::observe_path(&path);
+        assert!(
+            observed.replaced_notice().is_none(),
+            "an untouched file is not a replacement"
+        );
+
+        // Write a different length so the change is visible even where mtime
+        // resolution is coarse, then stamp a distinct time to be certain.
+        fs::write(&path, b"second, and longer than the first").unwrap();
+        let bumped = RunningBinary::from_parts(
+            Some(path.clone()),
+            Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1)),
+        );
+        assert!(
+            bumped.replaced_notice().is_some(),
+            "a file that no longer matches what the process started from is news"
+        );
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_path_that_cannot_be_read_stays_silent() {
+        let running = RunningBinary::observe_path(std::path::Path::new("/no/such/binary"));
+        assert!(running.replaced_notice().is_none());
     }
 }

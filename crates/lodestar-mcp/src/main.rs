@@ -10,6 +10,7 @@ use lodestar_core::Lodestar;
 use mindleak_session::SessionRegistry;
 use mindleak_storage::{
     build_notice, head_sha, is_ancestor, resolve_database, resolve_workspace_path, DatabaseKind,
+    RunningBinary,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -70,7 +71,13 @@ fn main() -> anyhow::Result<()> {
         database.repository_id.as_deref().unwrap_or("none"),
         database.origin,
     );
-    server::run(engine, sessions, storage_status, stale_build)
+    server::run(
+        engine,
+        sessions,
+        storage_status,
+        stale_build,
+        RunningBinary::observe(),
+    )
 }
 
 #[cfg(test)]

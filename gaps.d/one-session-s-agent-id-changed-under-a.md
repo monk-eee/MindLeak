@@ -40,7 +40,16 @@
   **Fixed:** ADR-0063 stops the collapse rewriting the owner of a live claim and
   records identity migrations once per database, and `ask_question` now says why
   it refused instead of returning `needs_input: false` for every reason at once.
+  The *tell* is no longer left to the reader either: `open_session` now carries
+  a `replaced_binary` notice on both planes when the file the process started
+  from has since been replaced on disk, which is exactly the condition that
+  produced this incident. It is a different question from `stale_build` and
+  cannot be answered by it — a live process keeps reporting the build sha it was
+  compiled with, so it can match HEAD perfectly while the code actually
+  answering has been superseded — and the notice says to restart rather than to
+  rebuild, because rebuilding was the first diagnosis here and it was wrong.
   **Still open:** a window reset remains invisible — a fresh window opened
   because the owner id changed still reports `claim_lapses: 0`, identical to a
   first claim. Whether identity should be pinned per session against the *token*
-  rather than whatever the running process formats is also undecided.
+  rather than whatever the running process formats is also undecided. Detection
+  is not prevention: an agent is told to restart, and nothing restarts for it.
