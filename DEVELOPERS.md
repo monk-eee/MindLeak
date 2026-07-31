@@ -22,8 +22,11 @@ cargo install cargo-llvm-cov --locked
 
 # Pre-commit hooks (client-side enforcement)
 pip install pre-commit
-pre-commit install
-pre-commit install --hook-type pre-push
+# --install-hooks installs every type in default_install_hook_types
+# (pre-commit, pre-push, post-commit) in one step. Installing only some — the
+# old two-line form omitted post-commit — leaves commits with no provenance,
+# which the pre-push hook-health check now refuses.
+pre-commit install --install-hooks
 
 # Extension dependencies
 npm --prefix editors/vscode install
