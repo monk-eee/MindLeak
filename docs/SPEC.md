@@ -1,18 +1,18 @@
-# Specification — Temporal Context Graph Engine (TCGE)
+# Memory Plane Specification — Temporal Context Graph Engine (TCGE)
 
 **Codename:** MindLeak
-**Role:** A local, event-driven **context graph** for coding agents. Ingests raw
-telemetry (executions, commits, file symbols) deterministically — **zero LLM
-tokens on the write path** — converts it into a decay-weighted directional graph,
-and exposes graph-traversal tools to LLM agents over MCP. An optional local model
-(Ollama / GLM) consolidates noisy logs into high-level intent nodes asynchronously.
+**Role:** The local, event-driven memory plane of MindLeak. It ingests executions,
+commits, files, symbols, and structural relationships deterministically — **zero
+model tokens on the write path** — into a decay-weighted directional graph and
+exposes bounded retrieval over MCP. Optional OpenAI-compatible endpoints support
+asynchronous consolidation and semantic recall without becoming authoritative.
 
-This **replaces flat-log / vector-*only* memory**: instead of storing sequential
-events forever, MindLeak maps explicit **nodes** and **edges** whose weights
-**decay on an exponential half-life** so stale context fades out. Vectors are not
-thrown away but *subordinated* — an optional embedding index
-([ADR-0008](adr/0008-semantic-recall-embedding-index.md)) is a recall *lens* that
-seeds graph traversal, never the primary substrate.
+This plane is a structured alternative to flat event history and vector-only
+retrieval. It maps explicit **nodes** and **edges** whose weights **decay on an
+exponential half-life**, so stale episodes lose influence instead of accumulating
+forever. Embeddings are not rejected; an optional index
+([ADR-0008](adr/0008-semantic-recall-embedding-index.md)) ranks candidate entry
+nodes, after which graph traversal supplies explicit relationships and provenance.
 
 > **Scope.** This document specifies the *episodic* plane — memory of the act,
 > which decays. Its durable counterpart, the **Intent Plane** (authoritative
@@ -27,43 +27,38 @@ seeds graph traversal, never the primary substrate.
 |---|---|---|
 | Structural / ontological | "How do entities relate?" (`A depends_on B`) | **MindLeak graph** |
 | Temporal / execution | "What happened, when, in what order?" | MindLeak `execution` nodes |
+| Semantic recall | "What is conceptually near this query?" | Optional embedding index |
 | Working memory / write-gate | "What is worth keeping?" | **Decay + prune** |
 
-Vector search matches keywords with extra steps; it can't do multi-hop
-structural reasoning ("what breaks if I change this schema?"). Flat logs give
-chronology but not topology. MindLeak gives both, and forgets on purpose.
+Vector similarity ranks semantic proximity; by itself it does not encode a
+directional dependency path or prove why two entities are related. Flat logs
+preserve chronology but not topology. MindLeak combines explicit structure with
+time and provenance, then forgets low-value episodes on purpose.
 
-Vectors still earn a **subordinate** role: an optional local embedding index
+Embeddings therefore have a **subordinate** role: an optional index
 ([ADR-0008](adr/0008-semantic-recall-embedding-index.md)) answers *"what is
 semantically near this phrase?"* to pick an entry node, then the graph reasons
-from there. Similarity finds the door; decay-weighted traversal walks the house.
+from there. Similarity proposes where to look; decay-weighted traversal explains
+what is connected.
 
 ---
 
 ## 2. System topology
 
 ```
-┌────────────────────────────────────────────┐
-│              VS Code extension              │
-│  passive sensor (focus/save) + Cytoscape UI │
-└──────────────────────┬──────────────────────┘
-                       │ MCP over stdio (child process)
-                       ▼
-┌────────────────────────────────────────────┐
-│                MindLeak core engine          │
-│  deterministic ingest ─▶ SQLite graph + FTS │
-│  decay engine (half-life) ─▶ prune          │
-│        │ (optional async queue)             │
-└────────┼────────────────────────────────────┘
-         ▼
-┌────────────────────────────────────────────┐
-│      Local Ollama consolidation worker      │
-│  glm4:9b / codegeex4:9b — log → intent node │
-└────────────────────────────────────────────┘
-                       ▲ MCP tools
-┌────────────────────────────────────────────┐
-│  Agents: Copilot / Claude / Cursor / CLI    │
-└────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│ MCP clients: coding agents · CLI · VS Code extension │
+│ Optional extension sensors: focus · save · shell · Git │
+└──────────────────────────┬───────────────────────────┘
+                           │ MCP over stdio
+                           ▼
+┌──────────────────────────────────────────────────────┐
+│ mindleak-mcp → mindleak-core                         │
+│ deterministic ingest · traversal · decay · evidence  │
+└───────────────────┬──────────────────┬───────────────┘
+                    │                  └ - optional async - ▶ OpenAI-compatible
+                    ▼                                         endpoint
+           graph.db (SQLite + FTS5)
 ```
 
 ---
@@ -190,9 +185,9 @@ remains inside that session's top-K. Autonomous idle consolidation is phase 2
 and is not implied by this tool.
 
 `prune_graph` returns deletion counts plus `signal_candidates`; deterministic
-maintenance never invokes an LLM. `consolidate_signal` uses the optional local
-model, persists an intent and provenance links, then acknowledges raw candidates
-only after success.
+maintenance never invokes a model. `consolidate_signal` uses the configured
+optional endpoint, persists an intent and provenance links, then acknowledges
+raw candidates only after success.
 
 **Local data lifecycle (ADR-0013):** `backup_database(path)` exists on each
 plane and uses SQLite online backup plus integrity verification. MindLeak also
@@ -207,12 +202,12 @@ vector; `recall(query, limit)` returns the nearest node ids by cosine similarity
 
 ---
 
-## 6. Optional LLM augmentation (local, async)
+## 6. Optional model augmentation (off-path, asynchronous)
 
 The deterministic pipeline owns the write path. An optional consolidation worker
-calls a local model over the **OpenAI-compatible** `/v1/chat/completions` API
-(so it works with Ollama's OpenAI endpoint, LM Studio, llama.cpp's server, or any
-compatible host — not just Ollama) with a strict JSON `response_format` to:
+calls a configured model through the **OpenAI-compatible**
+`/v1/chat/completions` API. Ollama, LM Studio, llama.cpp, and compatible hosted
+services can satisfy that contract. A strict JSON `response_format` asks it to:
 
 - **Sleep-phase consolidation** — compress N raw execution nodes into one
   high-level `intent` node, then prune the noise.
@@ -226,7 +221,7 @@ authoritative: any omitted, unknown, or structurally-invalid relation is coerced
 to `refactored`, so the engine — never the model's free text — decides the
 persisted `RelationType`.
 
-Configuration (all optional; sensible local defaults):
+Configuration is optional; defaults target a local Ollama endpoint:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -238,27 +233,29 @@ Configuration (all optional; sensible local defaults):
 | `MINDLEAK_CONSOLIDATE_MIN_INTERVAL_SECS` | `3600` | minimum attempt interval (60-86400) |
 | `MINDLEAK_CONSOLIDATE_MAX_NODES` | `20` | bounded candidates per pass (1-200) |
 
-Nothing leaves the machine when pointed at a local server; the model is optional
-and never on the hot path. Exposed as the `consolidate_session` MCP tool, which
-errors cleanly when no model is reachable. ADR-0017 phase 2 optionally schedules
-the existing `consolidate_signal` path after idle. The worker is absent unless
-explicitly enabled, uses a second file-backed SQLite connection, emits
-maintenance telemetry, and joins on server exit. Model inference occurs outside
-SQLite; resulting facts and optimistic acknowledgement of unchanged candidates
-commit in one transaction. A persisted workspace lease gates manual and idle
-inference with the same minimum interval. Gist output is bounded to 200 impacted
-files (1024 bytes per path) and stores no raw model input. Waiting workers join
-on exit; a blocked bounded HTTP attempt may be abandoned after shutdown grace,
-with cancellation preventing later persistence if it returns before process exit.
+No model request occurs on deterministic ingest or query. Data stays on the
+machine when the configured endpoint is local and leaves it when the operator
+chooses a remote endpoint. `consolidate_session` errors cleanly when no model is
+reachable. ADR-0017 phase 2 optionally schedules the existing
+`consolidate_signal` path after idle. The worker is absent unless explicitly
+enabled, uses a second file-backed SQLite connection, emits maintenance
+telemetry, and joins on server exit. Model inference occurs outside SQLite;
+resulting facts and optimistic acknowledgement of unchanged candidates commit in
+one transaction. A persisted workspace lease gates manual and idle inference
+with the same minimum interval. Gist output is bounded to 200 impacted files
+(1024 bytes per path) and stores no raw model input. Waiting workers join on exit;
+a blocked bounded HTTP attempt may be abandoned after shutdown grace, with
+cancellation preventing later persistence if it returns before process exit.
 
 ### 6.1 Semantic-recall embedding index (ADR-0008)
 
-A second optional augmentation, also local and off the write path. An async
-`index` pass embeds graph nodes through the **OpenAI-compatible** `/v1/embeddings`
-API and stores vectors in a derived, recall-only `embeddings` table; `recall`
-scores a query embedding against them by cosine similarity and returns the
-nearest node ids to seed traversal. Embeddings are *derived* — regenerable, never
-authoritative, and never consulted on the deterministic ingest/query hot path.
+A second optional augmentation is also off the write path. An async `index` pass
+embeds graph nodes through the configured **OpenAI-compatible** `/v1/embeddings`
+endpoint and stores vectors in a derived, recall-only `embeddings` table;
+`recall` scores a query embedding against them by cosine similarity and returns
+the nearest node ids to seed traversal. Embeddings are *derived* — regenerable,
+never authoritative, and never consulted on the deterministic ingest/query hot
+path.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -340,9 +337,10 @@ MindLeak is a **local, single-user tool** and its threat model is scoped to that
   non-roaming `repositories/<repository-id>/` directory (ADR-0038). They may
   contain source excerpts, commit messages, command output, goals, and proof;
   treat the directory with the same sensitivity as the workspace.
-- **LLM boundary.** Consolidation only reaches the configured
+- **Model boundary.** Consolidation only reaches the configured
   `MINDLEAK_LLM_URL`. Pointed at a local server (the default), nothing leaves
-  the machine. See [SECURITY.md](../SECURITY.md).
+  the machine; a remote URL deliberately sends the bounded request to that
+  service. See [SECURITY.md](../SECURITY.md).
 
 ---
 

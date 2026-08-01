@@ -13,306 +13,184 @@
   <img src="https://img.shields.io/badge/protocol-MCP-8A2BE2.svg" alt="Model Context Protocol">
 </p>
 
-**A local, decay-weighted context graph brain for coding agents.**
+**Local context infrastructure for coding agents: memory that forgets, intent
+that does not, and evidence that closes the loop.**
 
-MindLeak is a **Temporal Context Graph Engine (TCGE)** that turns raw developer
-telemetry (terminal runs, git commits, file symbols) into a directional knowledge
-graph whose edges **decay on an exponential half-life**, so stale context fades
-instead of drowning every query in historical noise.
+MindLeak is a local-first pair of MCP servers that gives coding agents a shared,
+repository-scoped account of three things they routinely lose between prompts
+and parallel worktrees:
 
-MindLeak has **two planes**:
+1. **What happened and how the code connects.**
+2. **What should happen, under which constraints, and why.**
+3. **Who is doing the work and what evidence says about whether it matched the
+  intent.**
 
-- a **Memory plane** — *what happened* and *how the code connects*, that
-  **forgets on purpose**. It does structural, multi-hop reasoning
-  (*"what breaks if I change this?"*) that similarity search can't, plus semantic
-  recall and passive capture of runs / commits / edits. Core:
-  [`mindleak-core`](crates/mindleak-core) (SQLite graph + FTS5, decay engine,
-  zero-token deterministic ingestion, optional embedding recall + LLM
-  consolidation); served by [`mindleak-mcp`](crates/mindleak-mcp) over MCP/stdio.
-- an **Intent plane — Lodestar** — the **durable** "spec brain": a versioned
-  constitution (goals · constraints · invariants) and a task ledger with
-  **atomic claim/lease** coordination, so multiple agents work in parallel
-  without clobbering each other, plus evidence-backed conformance checks. Core:
-  [`lodestar-core`](crates/lodestar-core); served by
-  [`lodestar-mcp`](crates/lodestar-mcp).
+It is useful with one agent and designed for the harder case: several agents
+working concurrently in isolated worktrees without a shared understanding of
+history, ownership, or completion.
 
-A **VS Code extension** ([`editors/vscode`](editors/vscode)) adds passive editor,
-shell-execution, and Git sensors, a live Cytoscape graph visualizer, and an
-intent board.
+**Start here:** **[Quickstart](docs/QUICKSTART.md)** to install it, then
+**[Usage](docs/USAGE.md)** to see the operating loop or
+**[Walkthrough](docs/WALKTHROUGH.md)** for concrete scenarios.
 
-> **No editor required.** The two planes are plain stdio MCP servers, so they
-> work with **any** MCP client on their own. You can run MindLeak entirely from
-> the **GitHub Copilot CLI** (or Claude Desktop / Cursor) with no VS Code at all —
-> the extension is an optional richer surface, not a requirement. See
-> [Use it from the Copilot CLI](docs/QUICKSTART.md#github-copilot-cli--no-editor-required).
+## The premise
 
-It is a from-scratch replacement for flat-log / vector-only agent memory. See
-[`docs/SPEC.md`](docs/SPEC.md) for the design and [`docs/`](docs/) for the
-architecture and development guides.
+Agent failures are often context failures rather than model failures. Event logs
+accumulate without structure, similarity search retrieves plausible neighbours
+without proving a dependency, governing intent drifts away from the files it
+governs, and a completion summary is not evidence by itself.
 
-> **Zero-token write path.** Ingestion uses pure pattern matching (regex + path +
-> exit code) — no LLM tokens. An optional local Ollama model only runs
-> asynchronously to consolidate noise into high-level intent nodes.
+MindLeak separates information by **lifetime** and **authority** instead of
+putting everything in one memory store.
 
-**New here?** → **[Quickstart](docs/QUICKSTART.md)** (running in minutes) ·
-**[Usage guide](docs/USAGE.md)** (how an agent uses the tools).
+## Two planes, one loop
 
----
+| Plane | Owns | Why it is separate |
+|---|---|---|
+| **Memory — MindLeak** | A directional graph of code structure, executions, commits, failures, and observations. Edges decay by derived effective weight; optional embeddings seed traversal rather than replace it. | Episodes and attention should fade. Structural multi-hop queries answer questions such as “what can this change affect?” that cosine similarity alone does not encode. |
+| **Intent — Lodestar** | Versioned goals and constraints, reviewed designs, work claims and leases, fleet state, learned knowledge, and evidence-backed conformance. | Intent, decisions, and proof must outlive the episodes that produced them. |
 
-## Where everything is
+Together they form one workflow:
 
-| I want to… | Go to |
-|---|---|
-| **Get running fast** | **[docs/QUICKSTART.md](docs/QUICKSTART.md)** |
-| **See a normal workflow (scenarios)** | **[docs/WALKTHROUGH.md](docs/WALKTHROUGH.md)** |
-| **Learn how to use the tools** | **[docs/USAGE.md](docs/USAGE.md)** |
-| Look up a specific tool | [docs/TOOLS.md](docs/TOOLS.md) |
-| Author or upgrade a policy pack | [docs/POLICY-PACKS.md](docs/POLICY-PACKS.md) |
-| Use the VS Code extension | [editors/vscode/README.md](editors/vscode/README.md) |
-| **Use it from the Copilot CLI (no editor)** | **[docs/QUICKSTART.md](docs/QUICKSTART.md#github-copilot-cli--no-editor-required)** |
-| Understand the design | [docs/SPEC.md](docs/SPEC.md) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
-| Understand the *intent plane* (spec brain) | [docs/SPEC-INTENT.md](docs/SPEC-INTENT.md) · [docs/SPEC-CONSTITUTION.md](docs/SPEC-CONSTITUTION.md) · [ADR-0004](docs/adr/0004-intent-plane-spec-brain.md) |
-| Set up & run locally | [DEVELOPERS.md](DEVELOPERS.md) |
-| Contribute a change | [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) |
-| Constraints for AI agents | [AGENTS.md](AGENTS.md) |
-| Know *why* it's shaped this way | [RATIONALE.md](RATIONALE.md) · [docs/adr/](docs/adr/) |
-| See what changed | [CHANGELOG.md](CHANGELOG.md) |
-| Report a vulnerability | [SECURITY.md](SECURITY.md) |
-| Know who owns what | [CODEOWNERS](CODEOWNERS) |
-
----
-
-## Download
-
-Tagged [GitHub Releases](https://github.com/monk-eee/MindLeak/releases) provide
-one archive containing both MCP servers for each supported platform:
-
-| Archive suffix | Platform |
-|---|---|
-| `windows-x64` | Windows x64 |
-| `linux-x64` | Linux x64 (glibc) |
-| `macos-x64` | macOS Intel |
-| `macos-arm64` | macOS Apple Silicon |
-
-Extract the archive, then run `node /path/to/extracted/install.mjs` from your
-workspace: the dependency-free Node 20+ installer smoke-tests and registers both
-servers without overwriting unrelated MCP entries. Before extracting, verify the
-archive against the release's `SHA256SUMS` and its signed GitHub artifact
-attestation. Each platform also publishes a targeted VSIX with both native
-servers included. The binaries are not OS publisher-signed, so the operating
-system may show a warning. Preview versions use tags such as `v0.1.0-preview.1`.
-
-See **[docs/QUICKSTART.md](docs/QUICKSTART.md)** for the full
-install-to-first-prompt walkthrough. Measured outcomes, supported
-language/platform matrices, and limitations:
-[`docs/RELEASE-NOTES.md`](docs/RELEASE-NOTES.md).
-
-### First five minutes
-
-Open the MindLeak activity-bar icon after installing the VSIX. The **Workspace**
-view derives one current state from the two MCP servers; it does not keep a
-second copy of graph or task data.
-
-1. Confirm the Memory and Intent rows show the exact running server builds and
-   the effective per-activation identity shared by both planes.
-2. Open a source file and choose **Ingest active file** when the workspace is
-   `ready_empty`.
-3. Open the **Context Graph** from the next action to inspect the first useful
-   file/symbol neighbourhood.
-4. When Lodestar has actionable tasks or designs, the action switches to the
-   appropriate Intent or Design Board.
-
-No account, network service, Rust toolchain, embedding model, or chat model is
-required for this path. Optional terminal/Git capture failures are named
-separately and never present the deterministic core as offline. Headless MCP
-clients can follow the same calls in [docs/USAGE.md](docs/USAGE.md#first-value-without-vs-code).
-
----
-
-## Run the MCP server
-
-```bash
-# Inside Git, every linked worktree shares the clone's repository-id store.
-./target/release/mindleak-mcp
+```text
+observe -> retrieve -> decide -> claim -> execute -> prove
 ```
 
-It speaks newline-delimited JSON-RPC 2.0 (MCP) on stdio.
+The deterministic ingest and query path uses no model tokens or network calls.
+Optional OpenAI-compatible models run off that path for consolidation and
+semantic recall. Their outputs are derived rather than authoritative;
+model-aware operations expose typed provenance or failure.
 
-On first start, MindLeak writes a 128-bit `mindleak.repositoryId` to shared
-local Git config and stores both planes beneath the platform-local, non-roaming
-state root. Independent clones receive independent ids; linked worktrees share
-one `graph.db` and `spec.db`. Use `storage_status` to inspect the exact id and
-paths. `MINDLEAK_HOME` relocates the root; direct `MINDLEAK_DB` / `LODESTAR_DB`
-overrides remain available for managed environments (ADR-0038).
+MindLeak is **not** a coding agent, a filesystem lock, or a hosted memory
+service. Claims and overlap warnings coordinate willing clients; they do not
+prevent writes. Both planes are local stdio MCP servers and work without VS Code.
+The extension adds passive sensors, graph and intent views, and packaged native
+servers as an optional richer surface.
 
-### Register with an MCP client (VS Code / Copilot example)
+---
 
-`.vscode/mcp.json`:
+## Why this is different
 
-```json
-{
-  "servers": {
-    "mindleak": {
-      "command": "${workspaceFolder}/target/release/mindleak-mcp",
-      "env": {
-        "MINDLEAK_AGENT": "copilot",
-        "MINDLEAK_WORKSPACE": "${workspaceFolder}"
-      }
-    }
-  }
-}
-```
+| Common approach | MindLeak contract |
+|---|---|
+| Keep an ever-growing event log | Decay episodic edges by half-life and prune noise while retaining durable artifacts and intent. |
+| Treat vector similarity as the answer | Use optional similarity only to find an entry point, then traverse explicit directional relationships. |
+| Put current intent in prompts and prose | Version goals, constraints, designs, and their bindings to the artifacts they govern. |
+| Coordinate agents through status messages | Use atomic claims, renewable leases, branch-aware overlap warnings, durable questions, and visible stalled work. |
+| Accept “done” as narration | Check bounded, attributed execution and commit evidence against governing intent and preserve the verdict. |
+| Let every worktree invent its own identity | Give linked worktrees one repository identity and shared local memory and intent stores while Git isolates their files. |
 
-`MINDLEAK_AGENT` is a human-readable base label, not an owner credential. The
-client must mint one 128-bit lowercase-hex token, call `open_session` once, and
-reuse that `session_id` on identity-bearing tools. The extension does this
-automatically and shares one session across both planes (ADR-0030).
+The distinction is not “graph instead of vectors.” It is a separation of
+concerns: **similarity for recall, graph structure for consequence, decay for
+relevance, constitution for authority, and evidence for completion.**
 
-`open_session` also accepts optional `branch`, `head_sha`, `base`, and `dirty`
-so a session can declare *where* it is working. The server records what you
-declare and never inspects Git itself; declare nothing and everything behaves
-exactly as before (ADR-0035).
+## What ships
 
-For the **GitHub Copilot CLI**, the installer also writes
-`.mindleak/copilot-mcp.json` (absolute paths, `mcpServers` schema); pass it with
-`copilot --additional-mcp-config @.mindleak/copilot-mcp.json` (ADR-0033). See the
-no-editor walkthrough below.
+- **`mindleak-mcp`** — temporal graph ingestion, impact and overlap queries,
+  working context, optional semantic recall, bounded evidence bundles, and data
+  lifecycle controls.
+- **`lodestar-mcp`** — constitution and design governance, task and fleet
+  coordination, learned knowledge, controls and waivers, conformance history,
+  and portable proof export.
+- **VS Code extension** — both packaged native servers, passive editor/shell/Git
+  sensors, readiness guidance, and graph, work, design, and telemetry views.
+- **Headless setup** — generated MCP configuration for clients such as GitHub
+  Copilot CLI; the servers remain ordinary newline-delimited MCP over stdio.
 
-### Use it from the GitHub Copilot CLI — no editor required
+## Measured scope
 
-MindLeak is just two stdio MCP servers, so it works from the **`copilot` CLI on
-its own** — no VS Code, no extension. The release installer registers both planes
-for the CLI: it writes `.mindleak/copilot-mcp.json` with absolute paths and the
-`mcpServers` schema the CLI expects (the CLI does not expand VS Code's
-`${workspaceFolder}`). From your project root:
+In the pinned productization benchmark, three fresh runs per arm repaired one
+composite typed-session scenario. No-memory and flat-history agents passed 0/3;
+MindLeak passed 2/3; MindLeak with Lodestar passed 3/3. MindLeak reduced median
+exploration calls by 18.2% against the no-memory arm.
+
+That is evidence for the measured scenario, not a universal efficacy claim. The
+full protocol, hidden checks, raw provenance, supported language matrix, and
+known limitations are in [EVALUATION.md](docs/EVALUATION.md) and the current
+[release notes](docs/RELEASE-NOTES.md).
+
+## Get started
+
+Download the archive for your platform from
+[GitHub Releases](https://github.com/monk-eee/MindLeak/releases), verify it
+against `SHA256SUMS` and the signed artifact attestation, extract it, then run
+the dependency-free Node 20+ installer from your workspace:
 
 ```bash
-# 1. Register both planes (writes .vscode/mcp.json AND .mindleak/copilot-mcp.json)
 node /path/to/extracted/install.mjs --agent your-name
-
-# 2. Start the CLI pointed at the MindLeak config
-copilot --additional-mcp-config @.mindleak/copilot-mcp.json
 ```
 
-To make it the machine-wide default instead, merge the same `mcpServers` block
-into `~/.copilot/mcp-config.json` (honours `COPILOT_HOME`). Full walkthrough:
-[docs/QUICKSTART.md](docs/QUICKSTART.md#github-copilot-cli--no-editor-required).
+The installer smoke-tests and registers both servers without overwriting
+unrelated MCP entries. A matching VSIX provides the supported VS Code 1.101+
+experience with no Rust toolchain or workspace MCP file required. For exact
+platform steps and the first useful query, continue with the
+**[Quickstart](docs/QUICKSTART.md)**.
 
----
+## Trust boundaries
 
-## MCP tools
+- **Local means machine-local and repository-scoped.** Both databases live in
+  non-roaming user state, open no network listener, and are shared by linked
+  worktrees through a repository id. MindLeak is not a cross-machine sync layer.
+- **Model use is optional and explicit.** Deterministic ingest, traversal,
+  coordination, and conformance do not require a model. Consolidation and
+  embeddings call only the OpenAI-compatible endpoint an operator configures.
+- **Coordination is advisory.** Claims, leases, overlap grades, and conformance
+  findings make conflicts and drift visible; Git and protected-branch policy
+  remain the enforcement boundary.
+- **Static understanding is deliberately conservative.** Extraction is
+  deterministic and heuristic. JavaScript/TypeScript has the richest cross-file
+  model; Rust imports are supported; other languages are primarily file-local.
+- **Local state is sensitive.** Graph and intent databases may contain source
+  excerpts, commands, commit messages, terminal output, goals, and audit events.
+  Read [Data lifecycle](docs/DATA-LIFECYCLE.md) before backup, export, or reset.
 
-The two servers expose a Memory Plane (`mindleak-mcp`) and an Intent Plane
-(`lodestar-mcp`). The full per-tool reference — every tool, both planes —
-is **[docs/TOOLS.md](docs/TOOLS.md)**.
+## Documentation
 
-For how they are used together in a real session, see
-**[docs/USAGE.md](docs/USAGE.md)** and **[docs/WALKTHROUGH.md](docs/WALKTHROUGH.md)**.
-
----
-
-## Optional local-LLM consolidation
-
-The consolidator speaks the **OpenAI-compatible** `/v1/chat/completions` API, so
-it works with Ollama's `/v1` endpoint, LM Studio, llama.cpp's server, or any
-compatible host. Point it at your local server:
-
-```bash
-export MINDLEAK_LLM_URL="http://localhost:11434/v1"   # Ollama's OpenAI endpoint
-export MINDLEAK_MODEL="glm4:9b"                        # or codegeex4:9b, qwen2.5-coder…
-# export MINDLEAK_LLM_API_KEY="sk-…"                    # only for hosted servers
-```
-
-The consolidator ([`consolidate.rs`](crates/mindleak-core/src/consolidate.rs))
-uses a strict JSON `response_format` to compress raw logs into a single `intent`
-node via the `consolidate_session` tool. It is optional and never on the hot
-path — it errors cleanly when no model is reachable. Model-backed results name
-whether the model or deterministic fallback answered; call `storage_status`
-with `include_model_health=true` for a one-shot reachability/JSON probe.
-
-Set `MINDLEAK_AUTONOMOUS_CONSOLIDATION=true` to opt in to ADR-0017's idle
-worker. It uses a separate SQLite connection, waits 300 idle seconds by default,
-attempts at most once per hour, and processes at most 20 expiring candidates.
-Manual and idle signal consolidation share one SQLite-backed workspace lease and
-attempt interval. Model inference happens before one optimistic transaction that
-persists a bounded gist (without raw inputs) and acknowledges only unchanged raw
-evidence. Pass outcomes appear in `telemetry_snapshot`; merely configuring a
-model never enables autonomous spend.
-
----
+| Need | Read |
+|---|---|
+| Install and reach first value | [Quickstart](docs/QUICKSTART.md) |
+| Operate the two-plane workflow | [Usage](docs/USAGE.md) and [Walkthrough](docs/WALKTHROUGH.md) |
+| Look up an MCP tool | [Tool reference](docs/TOOLS.md) |
+| Verify capabilities, limits, and results | [Release notes](docs/RELEASE-NOTES.md) and [Evaluation](docs/EVALUATION.md) |
+| Understand temporal memory | [Memory specification](docs/SPEC.md) |
+| Understand durable intent and governance | [Intent specification](docs/SPEC-INTENT.md) and [Constitution specification](docs/SPEC-CONSTITUTION.md) |
+| Understand components and decisions | [Architecture](docs/ARCHITECTURE.md) and [ADRs](docs/adr/) |
+| Operate data safely | [Data lifecycle](docs/DATA-LIFECYCLE.md) |
+| Author policy | [Policy packs](docs/POLICY-PACKS.md) |
+| Use the editor surface | [VS Code extension](editors/vscode/README.md) |
+| Build or contribute | [Developer guide](DEVELOPERS.md), [Contributing](docs/CONTRIBUTING.md), and [Agent constraints](AGENTS.md) |
 
 ## Architecture
 
 ```mermaid
-flowchart TD
-  A["Agents · Copilot / Claude / Cursor"]
-  subgraph editor["VS Code extension"]
-    S["passive sensors<br/>focus · save · terminal · git"]
-    V["Cytoscape graph + intent board"]
+flowchart LR
+  S["Editor · shell · Git"] --> M
+  A["Coding agents"] <-->|"MCP / stdio"| M
+  A <-->|"MCP / stdio"| L
+
+  subgraph local["Machine-local · repository-scoped"]
+    M["Memory plane<br/>structure · episodes · decay"] --> G[("graph.db")]
+    L["Intent plane<br/>constitution · work · proof"] --> D[("spec.db")]
   end
-  subgraph memory["Memory plane · mindleak — decays"]
-    I["zero-token ingest<br/>execution · git · ast · imports"]
-    G[("SQLite graph + FTS5<br/>decay-weighted edges")]
-    D["decay · prune · recall"]
-  end
-  subgraph intent["Intent plane · lodestar — durable"]
-    C["constitution<br/>goals · constraints · invariants"]
-    T[("task ledger<br/>atomic claim / lease")]
-  end
-  O["local model (optional)<br/>consolidation · embeddings"]
 
-  A <-->|MCP| G
-  A <-->|MCP| T
-  S -->|MCP| I
-  I --> G
-  D --> G
-  G -.async.-> O
-  O -.gist · vectors.-> G
-  C --- T
-  T -. evidence-backed conformance .-> G
+  M -. "evidence_for" .-> A
+  A -. "check_conformance" .-> L
+  O["OpenAI-compatible endpoint<br/>(optional)"] -.-> M
+  O -.-> L
 ```
 
----
+The planes share identity, and the client relays explicit evidence between their
+MCP contracts; they do not share tables or a database. See
+[Architecture](docs/ARCHITECTURE.md) for component boundaries and
+[ADRs](docs/adr/) for the decisions behind them.
 
-## Build
+## Development
 
-Requires Rust 1.75+, Node 18+, and VS Code 1.101+ for the extension.
-
-```bash
-# Both MCP servers
-cargo build --release --locked -p mindleak-mcp -p lodestar-mcp
-
-# Run the test suite
-cargo test
-
-# VS Code extension
-cd editors/vscode
-npm install
-npm run compile
-```
-
-The server binaries land at `target/release/mindleak-mcp` and
-`target/release/lodestar-mcp` (with `.exe` on Windows).
-
-For the full local workflow (lint, format, pre-commit, CI), see
-[`DEVELOPERS.md`](DEVELOPERS.md).
-
----
-
-## Layout
-
-```
-crates/
-  mindleak-core/   memory plane: db · model · decay · graph · ingest · consolidate
-  mindleak-mcp/    stdio JSON-RPC MCP server
-  lodestar-core/   intent plane: constitution · tasks (claim/lease) · conformance · knowledge
-  lodestar-mcp/    stdio JSON-RPC MCP server
-editors/
-  vscode/          passive sensor + Cytoscape visualizer
-docs/              SPEC · SPEC-INTENT · ARCHITECTURE · CONTRIBUTING
-```
-
----
+Start with [DEVELOPERS.md](DEVELOPERS.md) for the clean-machine build, validation,
+and hook workflow. [CONTRIBUTING.md](docs/CONTRIBUTING.md) defines contribution
+mechanics, [AGENTS.md](AGENTS.md) carries the non-negotiable constraints for
+coding agents, and [RATIONALE.md](RATIONALE.md) explains why the repository is
+shaped this way.
 
 ## License
 
