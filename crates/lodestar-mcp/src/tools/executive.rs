@@ -217,7 +217,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "task_claim",
-            "description": "Ownership and the lease, with `step` naming the act. `claim` atomically takes a task with a lease and optional advisory path globs / MindLeak symbol ids (ADR-0024); it returns won=true only if this agent won, a losing claimant cannot overwrite scope, and a lost claim says which of the knowable reasons it was rather than a bare false. A won claim returns the evidence window it opened, because that window is what completion later validates evidence against. A won claim also accepts `also_serves`: goals bind to files, so the governing set is usually learned while working rather than predicted at creation, and a claim you already hold is where you say so. That declaration is refused once conformance has judged the task, when it would be a rationalisation for a finding already raised rather than a prediction the evidence can still contradict. `renew` is the heartbeat: it extends a still-live lease owned by this agent, and after expiry only a fresh `claim` opens a new window. `release` hands a claim back to open, owner-guarded. `recover` takes an expired claim stranded under a compatible legacy identity, or transfers a paused task before its seven-day grace with an explicit human reviewer; it requires the exact current owner and a reason, writes append-only history, and opens a fresh window. A `human` label is an attributable declaration, not authentication, and must differ from both owners.",
+            "description": "Ownership and the lease, with `step` naming the act. `claim` atomically takes a task with a lease and optional advisory path globs / MindLeak symbol ids (ADR-0024); it returns won=true only if this agent won, a losing claimant cannot overwrite scope, and a lost claim says which of the knowable reasons it was rather than a bare false. A won scoped claim resolves active clauses against those paths and returns coverage-aware `scope_advice`; `review` names an uncovered governing goal and tells the holder to re-claim with `also_serves`. A won claim returns the evidence window it opened, because that window is what completion later validates evidence against. A won claim also accepts `also_serves`: goals bind to files, so the governing set is usually learned while working rather than predicted at creation, and a claim you already hold is where you say so. That declaration is refused once conformance has judged the task, when it would be a rationalisation for a finding already raised rather than a prediction the evidence can still contradict. `renew` is the heartbeat: it extends a still-live lease owned by this agent, and after expiry only a fresh `claim` opens a new window. `release` hands a claim back to open, owner-guarded. `recover` takes an expired claim stranded under a compatible legacy identity, or transfers a paused task before its seven-day grace with an explicit human reviewer; it requires the exact current owner and a reason, writes append-only history, and opens a fresh window. A `human` label is an attributable declaration, not authentication, and must differ from both owners.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -597,16 +597,7 @@ fn claim(engine: &Lodestar, task_id: &str, args: &Value) -> Result<Value, String
             &scope,
         )
         .map_err(|e| e.to_string())?;
-    // On a won claim, surface what governs the work so the agent sees it
-    // on pickup without a separate advise call (ADR-0029).
-    let governing = if won {
-        engine
-            .governing_clauses_for_task(task_id)
-            .map_err(|e| e.to_string())?
-    } else {
-        Vec::new()
-    };
-    let mut response = json!({ "won": won, "governing": governing });
+    let mut response = json!({ "won": won, "governing": [] });
     // The claim opens the window that completion later validates evidence
     // against: evidence starting before `claim_started_at` is refused as
     // "outside the live claim". Returning the window here is what makes that
@@ -626,6 +617,21 @@ fn claim(engine: &Lodestar, task_id: &str, args: &Value) -> Result<Value, String
                 .map_err(|e| e.to_string())?;
             if let Some(obj) = response.as_object_mut() {
                 obj.insert("also_serves".to_string(), json!(covered));
+            }
+        }
+        // Coverage must be recorded before the scope is classified: a caller
+        // can supply the correction on this same claim, and reporting stale
+        // review advice after accepting it would send the agent in a loop.
+        let governing = engine
+            .governing_clauses_for_task(task_id)
+            .map_err(|e| e.to_string())?;
+        let scope_advice = engine
+            .advice_for_task_scope(task_id)
+            .map_err(|e| e.to_string())?;
+        if let Some(obj) = response.as_object_mut() {
+            obj.insert("governing".to_string(), json!(governing));
+            if let Some(advice) = scope_advice {
+                obj.insert("scope_advice".to_string(), json!(advice));
             }
         }
         if let Some(task) = engine
@@ -2406,5 +2412,121 @@ mod tests {
             serde_json::from_str(claimed_free["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(free_body["won"], true);
         assert!(free_body["governing"].as_array().unwrap().is_empty());
+    }
+
+    /// A scoped claim used to report only the task goal's bindings, hiding a
+    /// different goal that governed the declared path. The response must name
+    /// that goal and the `also_serves` correction before work begins, while a
+    /// covered or unbound path must not manufacture the warning.
+    #[test]
+    fn scoped_claim_surfaces_actionable_cross_goal_advice() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let delivery = engine
+            .define_goal(
+                GoalKind::Objective,
+                "Ship checkout",
+                "deliver checkout",
+                None,
+            )
+            .unwrap();
+        let governing = engine
+            .define_goal(
+                GoalKind::Constraint,
+                "Payments boundary",
+                "Payment code stays isolated.",
+                None,
+            )
+            .unwrap();
+        engine
+            .link_goal_to_artifact(
+                &delivery.id,
+                &["artifact:src/checkout.rs".to_string()],
+                ArtifactBindingMode::Governed,
+            )
+            .unwrap();
+        engine
+            .link_goal_to_artifact(
+                &governing.id,
+                &["artifact:crates/pay/src/lib.rs".to_string()],
+                ArtifactBindingMode::Governed,
+            )
+            .unwrap();
+
+        let cross = engine
+            .create_task(&delivery.id, "Wire payment", "done")
+            .unwrap();
+        let claimed = call(
+            &engine,
+            &json!({
+                "name": "task_claim",
+                "arguments": {
+                    "task_id": cross.id,
+                    "step": "claim",
+                    "agent": "agent-a",
+                    "paths": ["crates/pay/**"]
+                }
+            }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(claimed["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["scope_advice"]["disposition"], "review");
+        assert_eq!(
+            body["scope_advice"]["governing"][0]["goal"]["id"],
+            governing.id
+        );
+        assert!(body["scope_advice"]["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding.as_str().unwrap().contains("also_serves")));
+        assert!(body["governing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|clause| clause["goal"]["id"] == governing.id));
+
+        let covered = engine
+            .create_task(&delivery.id, "Wire covered payment", "done")
+            .unwrap();
+        let claimed_covered = call(
+            &engine,
+            &json!({
+                "name": "task_claim",
+                "arguments": {
+                    "task_id": covered.id,
+                    "step": "claim",
+                    "agent": "agent-b",
+                    "paths": ["crates/pay/**"],
+                    "also_serves": [governing.id]
+                }
+            }),
+        )
+        .unwrap();
+        let covered_body: Value =
+            serde_json::from_str(claimed_covered["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(covered_body["scope_advice"]["disposition"], "advise");
+
+        let unbound = engine
+            .create_task(&delivery.id, "Touch unbound file", "done")
+            .unwrap();
+        let claimed_unbound = call(
+            &engine,
+            &json!({
+                "name": "task_claim",
+                "arguments": {
+                    "task_id": unbound.id,
+                    "step": "claim",
+                    "agent": "agent-c",
+                    "paths": ["src/unbound.rs"]
+                }
+            }),
+        )
+        .unwrap();
+        let unbound_body: Value =
+            serde_json::from_str(claimed_unbound["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(unbound_body.get("scope_advice").is_none());
+        assert_eq!(unbound_body["governing"].as_array().unwrap().len(), 1);
+        assert_eq!(unbound_body["governing"][0]["goal"]["id"], delivery.id);
     }
 }

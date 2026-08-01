@@ -311,6 +311,28 @@ impl LodestarStore {
         task_scope_on(&self.conn, task_id)
     }
 
+    /// Active policy nodes covered by a task's declared advisory scope.
+    pub(crate) fn governed_nodes_for_task_scope(&self, task_id: &str) -> Result<Vec<String>> {
+        let scope = self.task_scope(task_id)?;
+        let matchers = scope
+            .paths
+            .iter()
+            .map(|path| compile_scope_glob(path))
+            .collect::<Result<Vec<_>>>()?;
+        let mut nodes = Vec::new();
+        for node in self.governed_node_ids()? {
+            let path_matches = node
+                .strip_prefix("artifact:")
+                .is_some_and(|path| matchers.iter().any(|matcher| matcher.is_match(path)));
+            if path_matches || scope.symbols.contains(&node) {
+                nodes.push(node);
+            }
+        }
+        nodes.sort();
+        nodes.dedup();
+        Ok(nodes)
+    }
+
     /// Read the additional goals a task declared it serves (ADR-0041).
     pub fn goal_coverage(&self, task_id: &str) -> Result<Vec<String>> {
         goal_coverage_on(&self.conn, task_id)
