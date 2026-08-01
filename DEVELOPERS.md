@@ -309,7 +309,8 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 | `MINDLEAK_AGENT` | *(empty)* | agent id for attribution (`observed` edges); empty = off |
 | `LODESTAR_SESSION_ID` | *(empty)* | 32-hex session id resolved to this agent's identity; **required to publish** (ADR-0049) |
 | `LODESTAR_AGENT` | `agent` | display name for this process's sessions in reports; not part of the agent id (ADR-0054) |
-| `LODESTAR_MCP_BIN` | `target/release`, then `target/debug` | Lodestar server the claim gate drives; set it when publishing from a worktree with no local build |
+| `LODESTAR_MCP_BIN` | `target/release`, then `target/debug` | Lodestar (Intent Plane) server the claim gate and publisher drive; set it when publishing from a worktree with no local build, or the ledger is unreachable and the push is refused as unattributable to a claim |
+| `MINDLEAK_MCP_BIN` | `target/release`, then `target/debug` | MindLeak (Memory Plane) server the publisher drives to record the published commit; set it when publishing from a worktree with no local build, or the commit is not recorded — the work does not certify and no completion offer is produced |
 | `MINDLEAK_CONFIG` | `<workspace>/.mindleak.toml` | per-project decay policy |
 | `MINDLEAK_WORKING_SET_SIZE` | `7` | hard cap for the current agent's derived working set (1-32) |
 | `MINDLEAK_AUTONOMOUS_CONSOLIDATION` | `false` | explicit opt-in to idle model-backed consolidation |
