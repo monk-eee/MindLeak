@@ -23,6 +23,7 @@ import {
 const temporaryDirectories = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true });
   }
@@ -169,6 +170,43 @@ describe("parseArguments", () => {
 });
 
 describe("install", () => {
+  it("installs the agent skill, updates managed files, and preserves local edits", async () => {
+    const root = temporaryDirectory();
+    const archive = path.join(root, "archive");
+    const workspace = path.join(root, "workspace");
+    fs.mkdirSync(archive, { recursive: true });
+    fs.writeFileSync(path.join(archive, "VERSION"), "v1.2.3\n");
+    fs.writeFileSync(path.join(archive, "mindleak-mcp.exe"), "memory");
+    fs.writeFileSync(path.join(archive, "lodestar-mcp.exe"), "intent");
+    writeSkillArchive(archive, "v1");
+    const runtime = {
+      platform: "win32",
+      executableExtension: ".exe",
+      smoke: async () => undefined,
+      probeEmbedding: async () => ({ available: false, url: "http://x/v1", model: "m", hint: "h" }),
+    };
+    const options = { workspace, agent: "agent-a", force: false };
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await install(options, archive, runtime);
+    const skillDirectory = path.join(workspace, ".github", "skills", "mindleak");
+    const skillPath = path.join(skillDirectory, "SKILL.md");
+    const setupPath = path.join(skillDirectory, "references", "setup.md");
+    const workflowPath = path.join(skillDirectory, "references", "workflow.md");
+    expect(fs.readFileSync(skillPath, "utf8")).toBe("skill v1\n");
+    expect(fs.readFileSync(setupPath, "utf8")).toBe("setup v1\n");
+    expect(fs.readFileSync(workflowPath, "utf8")).toBe("workflow v1\n");
+
+    fs.writeFileSync(skillPath, "locally customized\n");
+    writeSkillArchive(archive, "v2");
+    await install(options, archive, runtime);
+
+    expect(fs.readFileSync(skillPath, "utf8")).toBe("locally customized\n");
+    expect(fs.readFileSync(setupPath, "utf8")).toBe("setup v2\n");
+    expect(fs.readFileSync(workflowPath, "utf8")).toBe("workflow v2\n");
+    expect(log).toHaveBeenCalledWith("Next: restart your MCP client, then run /mindleak verify");
+  });
+
   it("stages both servers, preserves JSONC, and is idempotent", async () => {
     const root = temporaryDirectory();
     const archive = path.join(root, "archive");
@@ -178,6 +216,7 @@ describe("install", () => {
     fs.writeFileSync(path.join(archive, "VERSION"), "v1.2.3\n");
     fs.writeFileSync(path.join(archive, "mindleak-mcp.exe"), "memory");
     fs.writeFileSync(path.join(archive, "lodestar-mcp.exe"), "intent");
+    writeSkillArchive(archive, "v1");
     fs.writeFileSync(
       path.join(workspace, ".vscode", "mcp.json"),
       '{\n  // preserved\n  "servers": { "other": { "command": "other" } }\n}\n'
@@ -229,6 +268,7 @@ describe("install", () => {
     fs.mkdirSync(installed, { recursive: true });
     fs.writeFileSync(path.join(archive, "mindleak-mcp.exe"), "new-memory");
     fs.writeFileSync(path.join(archive, "lodestar-mcp.exe"), "new-intent");
+    writeSkillArchive(archive, "v1");
     fs.writeFileSync(path.join(installed, "mindleak-mcp.exe"), "old-memory");
     fs.writeFileSync(path.join(installed, "lodestar-mcp.exe"), "old-intent");
 
@@ -249,6 +289,7 @@ describe("install", () => {
     const workspace = path.join(root, "workspace");
     fs.mkdirSync(archive, { recursive: true });
     fs.writeFileSync(path.join(archive, "mindleak-mcp.exe"), "memory");
+    writeSkillArchive(archive, "v1");
 
     await expect(
       install({ workspace, agent: "copilot", version: "v1.2.3", force: false }, archive, {
@@ -259,7 +300,29 @@ describe("install", () => {
     ).rejects.toThrow("missing lodestar-mcp.exe");
     expect(fs.existsSync(path.join(workspace, ".vscode", "mcp.json"))).toBe(false);
   });
+
+  it("does not register a release archive with an incomplete agent skill", async () => {
+    const root = temporaryDirectory();
+    const archive = path.join(root, "archive");
+    const workspace = path.join(root, "workspace");
+    fs.mkdirSync(archive, { recursive: true });
+    fs.writeFileSync(path.join(archive, "mindleak-mcp.exe"), "memory");
+    fs.writeFileSync(path.join(archive, "lodestar-mcp.exe"), "intent");
+    writeSkillArchive(archive, "v1");
+    fs.rmSync(path.join(archive, "mindleak-skill-workflow.md"));
+
+    await expect(
+      install({ workspace, agent: "copilot", version: "v1.2.3", force: false }, archive)
+    ).rejects.toThrow("missing mindleak-skill-workflow.md");
+    expect(fs.existsSync(path.join(workspace, ".vscode", "mcp.json"))).toBe(false);
+  });
 });
+
+function writeSkillArchive(directory, version) {
+  fs.writeFileSync(path.join(directory, "mindleak-skill.md"), `skill ${version}\n`);
+  fs.writeFileSync(path.join(directory, "mindleak-skill-setup.md"), `setup ${version}\n`);
+  fs.writeFileSync(path.join(directory, "mindleak-skill-workflow.md"), `workflow ${version}\n`);
+}
 
 describe("probeEmbeddingCapability", () => {
   it("reports recall enabled when the embeddings endpoint responds ok", async () => {
