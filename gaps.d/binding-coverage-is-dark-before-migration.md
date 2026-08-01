@@ -1,8 +1,15 @@
 - **Binding coverage is silently dark when the audit reads a spec.db that
-  predates the `goal_artifacts` rename — OBSERVED 2026-08-01, OPEN.** Every
-  `canonical-push` across a long fleet session ended with `no such table:
-  goal_artifacts` immediately followed by `canonical-push: binding coverage was
-  not observed for this publication` — on four separate publications.
+  predates the `goal_artifacts` rename — OBSERVED then RE-MEASURED 2026-08-01;
+  the throwing symptom cleared, the fail-soft that hid it is still OPEN.** Four
+  `canonical-push` runs across a long fleet session each ended with `no such
+  table: goal_artifacts` immediately followed by `canonical-push: binding
+  coverage was not observed for this publication`. A fifth push minutes later ran
+  the audit cleanly (`0 of 0 newly added Rust source files are unbound`): the
+  per-repository `spec.db` now holds `goal_artifacts`, because the installed
+  lodestar-mcp binary was rebuilt for the v0.1.4 release and migrated it on next
+  open. So the *symptom* was transient; what is durable — and the reason to keep
+  this entry — is that nothing loud told anyone the control had been dark for
+  those four publications.
 
   The mechanism is a migration the reader never triggers.
   `scripts/binding-audit.mjs` opens the per-repository `spec.db` read-only via
