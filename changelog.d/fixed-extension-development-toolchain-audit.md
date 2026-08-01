@@ -1,0 +1,1 @@
+- The VS Code extension development toolchain now audits clean after compatible ESLint, typescript-eslint, Vitest, and VSCE upgrades; the production dependency graph remains vulnerability-free.
