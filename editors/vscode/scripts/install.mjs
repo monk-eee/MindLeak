@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -10,6 +11,12 @@ import { applyEdits, modify, parse, printParseErrorCode } from "jsonc-parser/lib
 const SERVERS = [
   { name: "mindleak", binary: "mindleak-mcp", databaseVariable: "MINDLEAK_DB" },
   { name: "lodestar", binary: "lodestar-mcp", databaseVariable: "LODESTAR_DB" },
+];
+
+const SKILL_FILES = [
+  { archive: "mindleak-skill.md", destination: "SKILL.md" },
+  { archive: "mindleak-skill-setup.md", destination: "references/setup.md" },
+  { archive: "mindleak-skill-workflow.md", destination: "references/workflow.md" },
 ];
 
 const DEFAULT_EMBED_URL = "http://localhost:11434/v1";
@@ -207,6 +214,7 @@ export async function install(
 ) {
   const version = options.version ?? readVersion(archiveDirectory);
   validateVersion(version);
+  const skillFiles = readSkillFiles(archiveDirectory);
   const platform = runtime.platform ?? process.platform;
   const executableExtension = runtime.executableExtension ?? (platform === "win32" ? ".exe" : "");
   const smoke = runtime.smoke ?? smokeInstalledServers;
@@ -259,15 +267,22 @@ export async function install(
     atomicWrite(gitignorePath, nextGitignore);
   }
 
+  const skill = installSkill(options.workspace, skillFiles);
+
   console.log(`Installed MindLeak ${version} in ${installDirectory}`);
   console.log(`Registered mindleak and lodestar in ${configPath}`);
   console.log(`Registered mindleak and lodestar for Copilot CLI in ${copilotConfigPath}`);
+  console.log(`Installed the MindLeak agent skill in ${skill.directory}`);
+  if (skill.preserved.length > 0) {
+    console.log(`Preserved locally modified skill files: ${skill.preserved.join(", ")}`);
+  }
   console.log(
     `  Use it with: copilot --additional-mcp-config @${path.relative(
       options.workspace,
       copilotConfigPath
     )}`
   );
+  console.log("Next: restart your MCP client, then run /mindleak verify");
 
   const probeEmbedding = runtime.probeEmbedding ?? probeEmbeddingCapability;
   const recall = await probeEmbedding(runtime);
@@ -276,6 +291,67 @@ export async function install(
   } else {
     console.log(`Semantic recall: disabled (optional) — to enable it, ${recall.hint}`);
   }
+}
+
+function readSkillFiles(archiveDirectory) {
+  return SKILL_FILES.map((file) => {
+    const source = path.join(archiveDirectory, file.archive);
+    if (!fs.existsSync(source)) {
+      throw new Error(`release archive is missing ${file.archive}`);
+    }
+    const content = fs.readFileSync(source, "utf8");
+    return { ...file, content, hash: contentHash(content) };
+  });
+}
+
+function installSkill(workspace, files) {
+  const directory = path.join(workspace, ".github", "skills", "mindleak");
+  const manifestPath = path.join(workspace, ".mindleak", "skill-manifest.json");
+  const previous = readSkillManifest(manifestPath);
+  const managed = {};
+  const preserved = [];
+
+  for (const file of files) {
+    const destination = path.join(directory, ...file.destination.split("/"));
+    const current = fs.existsSync(destination) ? fs.readFileSync(destination, "utf8") : undefined;
+    const currentHash = current === undefined ? undefined : contentHash(current);
+    const previousHash = previous[file.destination];
+
+    if (current === undefined || currentHash === file.hash || currentHash === previousHash) {
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      if (currentHash !== file.hash) {
+        atomicWrite(destination, file.content);
+      }
+      managed[file.destination] = file.hash;
+    } else {
+      preserved.push(file.destination);
+      if (previousHash) {
+        managed[file.destination] = previousHash;
+      }
+    }
+  }
+
+  fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+  atomicWrite(manifestPath, `${JSON.stringify({ version: 1, files: managed }, null, 2)}\n`);
+  return { directory, preserved };
+}
+
+function readSkillManifest(manifestPath) {
+  if (!fs.existsSync(manifestPath)) {
+    return {};
+  }
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    return manifest?.version === 1 && manifest.files && typeof manifest.files === "object"
+      ? manifest.files
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function contentHash(content) {
+  return createHash("sha256").update(content).digest("hex");
 }
 
 async function stageInstallation(

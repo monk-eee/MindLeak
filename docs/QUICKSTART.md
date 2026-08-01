@@ -23,12 +23,12 @@ No Rust toolchain and no `PATH` changes — three steps and a restart:
    [GitHub Releases](https://github.com/monk-eee/MindLeak/releases) and extract it
    anywhere.
 
-   | Archive suffix | Platform |
-   |---|---|
-   | `windows-x64` | Windows x64 |
-   | `linux-x64` | Linux x64 (glibc) |
-   | `macos-x64` | macOS Intel |
-   | `macos-arm64` | macOS Apple Silicon |
+   | Archive suffix | Platform            |
+   | -------------- | ------------------- |
+   | `windows-x64`  | Windows x64         |
+   | `linux-x64`    | Linux x64 (glibc)   |
+   | `macos-x64`    | macOS Intel         |
+   | `macos-arm64`  | macOS Apple Silicon |
 
 2. **Register both servers** into the project you want MindLeak to remember. From
    that project's root, run:
@@ -40,8 +40,10 @@ No Rust toolchain and no `PATH` changes — three steps and a restart:
    Node.js 20+ is required. The installer smoke-tests both servers, copies them
    to `.mindleak/bin/<version>/`, merges the two registrations into
    `.vscode/mcp.json` (keeping your other servers and comments), writes a Copilot
-   CLI config to `.mindleak/copilot-mcp.json`, and adds the local databases to
-   `.gitignore`. `--agent` sets a stable identity for attribution and task
+   CLI config to `.mindleak/copilot-mcp.json`, installs the project-scoped
+   `/mindleak` agent skill under `.github/skills/mindleak`, and adds the local
+   databases to `.gitignore`. Reinstalling updates untouched skill files and
+   preserves local edits. `--agent` sets a stable label for attribution and task
    ownership; it defaults to `copilot`.
 
 3. **Restart your MCP client** (VS Code / Copilot, Claude Desktop, or Cursor) so
@@ -126,7 +128,10 @@ use the `mcpServers` key:
     },
     "lodestar": {
       "command": "/abs/path/to/lodestar-mcp",
-      "env": { "LODESTAR_AGENT": "claude", "MINDLEAK_WORKSPACE": "/abs/path/to/project" }
+      "env": {
+        "LODESTAR_AGENT": "claude",
+        "MINDLEAK_WORKSPACE": "/abs/path/to/project"
+      }
     }
   }
 }
@@ -160,7 +165,10 @@ into `~/.copilot/mcp-config.json` (honours `COPILOT_HOME`):
     },
     "lodestar": {
       "command": "/abs/path/to/lodestar-mcp",
-      "env": { "LODESTAR_AGENT": "copilot", "MINDLEAK_WORKSPACE": "/abs/path/to/project" }
+      "env": {
+        "LODESTAR_AGENT": "copilot",
+        "MINDLEAK_WORKSPACE": "/abs/path/to/project"
+      }
     }
   }
 }
@@ -192,16 +200,20 @@ the config.
 
 ## 4. Your first prompt
 
-The whole point is that your agent *looks before it leaps* and *records what it
-learns*. Paste this to your agent to exercise the memory loop in a single turn:
+The installer adds a project-scoped skill so agents can set up, verify, and use
+both planes without making you remember the tool sequence. Start with:
 
-> Before you change `src/auth.ts`, call `get_impact_radius` on it and tell me what
-> could break. After we make the change, `ingest_file` the new version and
-> `record_architectural_decision` explaining why.
+> `/mindleak verify`
 
-That one request runs the core loop end to end: **query the graph → act → write
-back**. From here, [USAGE.md](USAGE.md) walks the full loop, the intent plane, and
-every tool.
+Then exercise the memory loop in a real change:
+
+> `/mindleak work on src/auth.ts: tell me what could break before changing it,
+make the requested change, validate it, and write back useful evidence.`
+
+The skill opens one identity across both planes, checks live claims and recent
+footprints, consults governance, grounds the edit, renews task leases when
+needed, and completes with evidence. From here, [USAGE.md](USAGE.md) walks the
+full loop, the intent plane, and every tool.
 
 ---
 

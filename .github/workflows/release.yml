@@ -268,6 +268,13 @@ jobs:
               }
             }
             fs.copyFileSync("LICENSE", path.join("dist", "LICENSE"));
+            for (const [source, destination] of [
+              [path.join(".github", "skills", "mindleak", "SKILL.md"), "mindleak-skill.md"],
+              [path.join(".github", "skills", "mindleak", "references", "setup.md"), "mindleak-skill-setup.md"],
+              [path.join(".github", "skills", "mindleak", "references", "workflow.md"), "mindleak-skill-workflow.md"],
+            ]) {
+              fs.copyFileSync(source, path.join("dist", destination));
+            }
             fs.writeFileSync(path.join("dist", "VERSION"), `${process.env.GITHUB_REF_NAME}\n`);
             fs.writeFileSync(
               path.join("dist", "README.txt"),
@@ -276,7 +283,7 @@ jobs:
                 "",
                 "This bundle contains mindleak-mcp and lodestar-mcp.",
                 "From your workspace, run: node /path/to/extracted/install.mjs",
-                "The installer smoke-tests and registers both local stdio MCP servers.",
+                "The installer smoke-tests and registers both local stdio MCP servers and installs the MindLeak agent skill.",
                 "GitHub provenance attestations and SHA-256 checksums are published with this release.",
                 "The binaries are not OS publisher-signed; your operating system may show a warning.",
                 "",
@@ -300,7 +307,8 @@ jobs:
           --source ../../dist
           --out ../../dist/mindleak-${{ needs.metadata.outputs.tag }}-${{ matrix.asset }}.zip
           --files mindleak-mcp${{ matrix.extension }} lodestar-mcp${{ matrix.extension }}
-          install.mjs VERSION LICENSE README.txt
+          install.mjs mindleak-skill.md mindleak-skill-setup.md mindleak-skill-workflow.md
+          VERSION LICENSE README.txt
       - name: Attest release contents
         uses: actions/attest-build-provenance@v2
         with:
@@ -386,7 +394,7 @@ jobs:
                 prerelease: process.env.PRERELEASE === "true",
                 generate_release_notes: true,
                 body: [
-                  "Each platform archive contains both MCP servers plus the one-command `install.mjs` workspace registrar.",
+                  "Each platform archive contains both MCP servers, the MindLeak agent skill, and the one-command `install.mjs` workspace registrar.",
                   "Each targeted VSIX contains the same platform's servers for a self-contained VS Code experience.",
                   "Verify assets against `SHA256SUMS`; signed GitHub provenance attestations are also available.",
                   "The binaries are not OS publisher-signed, so your operating system may show a warning.",
