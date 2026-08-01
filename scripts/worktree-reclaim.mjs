@@ -29,6 +29,7 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 
+import { callTools, resolveServer } from "./claim-gate.mjs";
 import { MARKER_NAME } from "./worktree-owner.mjs";
 
 /** Branches that are never reclaimed whatever else is true of them. */
@@ -195,7 +196,10 @@ export function planArtefactSweep(candidates, options = {}) {
  * usual — a cleanup tool tested only on what it deletes has not been tested
  * on what it must refuse to delete.
  */
-export function classifyWorktree(worktree, { session } = {}) {
+export function classifyWorktree(
+  worktree,
+  { session, liveClaimBranches = new Set(), claimStateAvailable = true } = {},
+) {
   const { path, branch, bare, dirty, landed, owner, building, current } =
     worktree;
 
@@ -224,6 +228,15 @@ export function classifyWorktree(worktree, { session } = {}) {
   if (PROTECTED_BRANCHES.has(branch)) {
     return { reclaim: false, reason: `${branch} is protected` };
   }
+  if (!claimStateAvailable) {
+    return {
+      reclaim: false,
+      reason: "authoritative claim state is unavailable",
+    };
+  }
+  if (liveClaimBranches.has(branch)) {
+    return { reclaim: false, reason: "held by a live Lodestar claim" };
+  }
   if (dirty) {
     // Untracked counts. A file nobody has staged yet is the most valuable thing
     // in the tree, not the least, and it exists nowhere else.
@@ -239,6 +252,84 @@ export function classifyWorktree(worktree, { session } = {}) {
     return { reclaim: false, reason: "commits have not landed on origin/main" };
   }
   return { reclaim: true, reason: "merged and idle", path, branch };
+}
+
+/** Branches held by unexpired task claims at this instant. */
+export function liveClaimBranches(tasks, now = Math.floor(Date.now() / 1000)) {
+  return new Set(
+    tasks
+      .filter(
+        (task) =>
+          task.status === "claimed" &&
+          typeof task.branch === "string" &&
+          task.branch.length > 0 &&
+          Number.isInteger(task.lease_expires_at) &&
+          task.lease_expires_at > now,
+      )
+      .map((task) => task.branch),
+  );
+}
+
+/** Read the authoritative live-claim branch set, preserving failures as data. */
+export function readLiveClaimState(
+  repoRoot,
+  {
+    now = Math.floor(Date.now() / 1000),
+    resolveServerFn = resolveServer,
+    callToolsFn = callTools,
+  } = {},
+) {
+  const server = resolveServerFn(repoRoot, "lodestar");
+  if (!server) {
+    return {
+      available: false,
+      branches: new Set(),
+      reason: "no lodestar-mcp binary found",
+    };
+  }
+  try {
+    const [response] = callToolsFn(server, repoRoot, [
+      {
+        name: "task_query",
+        arguments: { view: "board", include_terminal: false },
+      },
+    ]);
+    const tasks = Array.isArray(response) ? response : response?.tasks;
+    if (!Array.isArray(tasks)) {
+      return {
+        available: false,
+        branches: new Set(),
+        reason: "Lodestar task_query did not return a board",
+      };
+    }
+    return {
+      available: true,
+      branches: liveClaimBranches(tasks, now),
+      reason: null,
+    };
+  } catch (error) {
+    return {
+      available: false,
+      branches: new Set(),
+      reason: `could not read the Lodestar board: ${error.message}`,
+    };
+  }
+}
+
+/** Re-read claims at the destructive boundary, after the report was printed. */
+export function revalidateBeforeReclaim(
+  worktree,
+  {
+    session,
+    readClaimState = () => ({ available: false, branches: new Set() }),
+  } = {},
+) {
+  const state = readClaimState();
+  return classifyWorktree(worktree, {
+    session,
+    liveClaimBranches: state.branches,
+    claimStateAvailable: state.available,
+  });
 }
 
 /**
@@ -365,12 +456,22 @@ function main() {
 
   tryGit(["fetch", "origin", "--quiet", "--prune"], anchor);
 
+  const claimState = readLiveClaimState(anchor);
+  if (!claimState.available) {
+    console.error(
+      `worktree-reclaim: ${claimState.reason}; keeping every named worktree`,
+    );
+  }
   const worktrees = readWorktrees(anchor).map((worktree) =>
     gatherFacts(worktree, anchor),
   );
   const verdicts = worktrees.map((worktree) => ({
     worktree,
-    verdict: classifyWorktree(worktree, { session }),
+    verdict: classifyWorktree(worktree, {
+      session,
+      liveClaimBranches: claimState.branches,
+      claimStateAvailable: claimState.available,
+    }),
   }));
 
   const reclaimable = verdicts.filter((entry) => entry.verdict.reclaim);
@@ -428,6 +529,14 @@ function main() {
 
   for (const entry of reclaimable) {
     const { path, branch } = entry.worktree;
+    const refreshed = revalidateBeforeReclaim(entry.worktree, {
+      session,
+      readClaimState: () => readLiveClaimState(anchor),
+    });
+    if (!refreshed.reclaim) {
+      console.log(`worktree-reclaim: kept ${branch} — ${refreshed.reason}`);
+      continue;
+    }
     for (const artifact of entry.artifacts) {
       rmSync(artifact.dir, { recursive: true, force: true });
     }

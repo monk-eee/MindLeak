@@ -8,8 +8,11 @@ import {
   classifyWorktree,
   formatBytes,
   hasLanded,
+  liveClaimBranches,
   planArtefactSweep,
   PROTECTED_BRANCHES,
+  readLiveClaimState,
+  revalidateBeforeReclaim,
 } from "./worktree-reclaim.mjs";
 
 const idle = {
@@ -26,6 +29,122 @@ test("reclaims a merged, clean, idle worktree", () => {
   const verdict = classifyWorktree(idle, { session: "session:v1:me" });
   assert.equal(verdict.reclaim, true);
   assert.equal(verdict.branch, "fix/something-that-shipped");
+});
+
+test("never takes a branch held by a live task claim", () => {
+  const verdict = classifyWorktree(idle, {
+    session: "session:v1:me",
+    liveClaimBranches: new Set([idle.branch]),
+  });
+  assert.equal(verdict.reclaim, false);
+  assert.match(verdict.reason, /live Lodestar claim/);
+});
+
+test("fails closed when authoritative claim state is unavailable", () => {
+  const verdict = classifyWorktree(idle, {
+    session: "session:v1:me",
+    claimStateAvailable: false,
+  });
+  assert.equal(verdict.reclaim, false);
+  assert.match(verdict.reason, /claim state is unavailable/);
+});
+
+test("only unexpired claimed tasks protect their declared branches", () => {
+  const now = 1_700_000_000;
+  const branches = liveClaimBranches(
+    [
+      {
+        status: "claimed",
+        branch: "fix/live",
+        lease_expires_at: now + 60,
+      },
+      {
+        status: "claimed",
+        branch: "fix/expired",
+        lease_expires_at: now - 1,
+      },
+      { status: "open", branch: "fix/open", lease_expires_at: null },
+      { status: "claimed", branch: null, lease_expires_at: now + 60 },
+    ],
+    now,
+  );
+
+  assert.deepEqual([...branches], ["fix/live"]);
+});
+
+test("reads live claim branches through the shared Lodestar client", () => {
+  const now = 1_700_000_000;
+  let requested;
+  const state = readLiveClaimState("C:/Repos/MindLeak", {
+    now,
+    resolveServerFn: () => "lodestar-stub.mjs",
+    callToolsFn: (_server, _root, calls) => {
+      requested = calls;
+      return [
+        [
+          {
+            status: "claimed",
+            branch: "fix/live",
+            lease_expires_at: now + 60,
+          },
+        ],
+      ];
+    },
+  });
+
+  assert.equal(state.available, true);
+  assert.deepEqual([...state.branches], ["fix/live"]);
+  assert.deepEqual(requested, [
+    {
+      name: "task_query",
+      arguments: { view: "board", include_terminal: false },
+    },
+  ]);
+});
+
+test("reports unavailable claim state when the Lodestar board cannot be read", () => {
+  const absent = readLiveClaimState("C:/Repos/MindLeak", {
+    resolveServerFn: () => null,
+  });
+  assert.equal(absent.available, false);
+  assert.match(absent.reason, /no lodestar-mcp binary/);
+
+  const unreadable = readLiveClaimState("C:/Repos/MindLeak", {
+    resolveServerFn: () => "lodestar-stub.mjs",
+    callToolsFn: () => {
+      throw new Error("ledger unavailable");
+    },
+  });
+  assert.equal(unreadable.available, false);
+  assert.match(unreadable.reason, /ledger unavailable/);
+});
+
+test("apply-time revalidation closes the report-to-delete claim race", () => {
+  assert.equal(
+    classifyWorktree(idle, { liveClaimBranches: new Set() }).reclaim,
+    true,
+  );
+
+  const verdict = revalidateBeforeReclaim(idle, {
+    readClaimState: () => ({
+      available: true,
+      branches: new Set([idle.branch]),
+    }),
+  });
+  assert.equal(verdict.reclaim, false);
+  assert.match(verdict.reason, /live Lodestar claim/);
+});
+
+test("apply-time revalidation fails closed when the board disappears", () => {
+  const verdict = revalidateBeforeReclaim(idle, {
+    readClaimState: () => ({
+      available: false,
+      branches: new Set(),
+      reason: "ledger unavailable",
+    }),
+  });
+  assert.equal(verdict.reclaim, false);
+  assert.match(verdict.reason, /claim state is unavailable/);
 });
 
 // Everything below is a refusal. A cleanup tool tested only on what it deletes
