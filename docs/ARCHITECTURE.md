@@ -93,7 +93,10 @@ moving — a pure function over the board), `discovery`, `schema.sql` +
 seam, `coordination` task/handoff/conformance ledger, transactional
 `policy_packs` proposal/disposition/provenance ledger, reviewed `design/`
 materialization plus validation, `amendments` and `waivers`, learned
-`knowledge`, and `lifecycle` operations), `llm` (optional local model), and
+`knowledge`, and `lifecycle` operations), `llm` (optional local model), `embed`
+(optional semantic index over knowledge — a deliberate copy of
+`mindleak-core::embed`, because ADR-0004 keeps that crate a dev-dependency only,
+so the Intent Plane cannot reach it at runtime), and
 `lib` (the `Lodestar` facade wiring). `store/design/` is split by
 responsibility: `mod` (register and read), `decision` (the guarded accept/reject
 transition and repairing one after the fact), `action` (the append-only,
