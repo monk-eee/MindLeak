@@ -58,6 +58,55 @@ test("an unreachable Memory Plane warns instead of failing the push", () => {
   }
 });
 
+test("a missing binary names the remedy rather than reporting an outage", () => {
+  // The cause that cost two days: a linked worktree has no target/ of its own,
+  // so the resolver finds nothing and the old notice called that unreachable.
+  const previous = process.env.MINDLEAK_MCP_BIN;
+  process.env.MINDLEAK_MCP_BIN = "does-not-exist";
+  try {
+    const notice = recordPublication({
+      repoRoot: process.cwd(),
+      sessionId: SESSION,
+      sha: "abc",
+      message: "x",
+    });
+    assert.match(notice, /MINDLEAK_MCP_BIN/);
+    assert.match(notice, /cargo build --release/);
+    assert.match(notice, /no target\/ of its own/);
+  } finally {
+    if (previous === undefined) delete process.env.MINDLEAK_MCP_BIN;
+    else process.env.MINDLEAK_MCP_BIN = previous;
+  }
+});
+
+test("a bad session id and a missing binary are not the same notice", () => {
+  // Reporting one as the other is what turns a one-variable fix into a hunt
+  // for an outage that never happened.
+  const previous = process.env.MINDLEAK_MCP_BIN;
+  process.env.MINDLEAK_MCP_BIN = "does-not-exist";
+  try {
+    const badSession = recordPublication({
+      repoRoot: process.cwd(),
+      sessionId: "copilot",
+      sha: "abc",
+      message: "x",
+    });
+    const noBinary = recordPublication({
+      repoRoot: process.cwd(),
+      sessionId: SESSION,
+      sha: "abc",
+      message: "x",
+    });
+
+    assert.notEqual(badSession, noBinary);
+    assert.match(badSession, /session id/);
+    assert.doesNotMatch(badSession, /MINDLEAK_MCP_BIN/);
+  } finally {
+    if (previous === undefined) delete process.env.MINDLEAK_MCP_BIN;
+    else process.env.MINDLEAK_MCP_BIN = previous;
+  }
+});
+
 test("a session id that is not a 128-bit token is refused", () => {
   const previous = process.env.MINDLEAK_MCP_BIN;
   delete process.env.MINDLEAK_MCP_BIN;
