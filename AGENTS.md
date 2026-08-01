@@ -275,6 +275,16 @@ surface in the same commit:
 - [`docs/TOOLS.md`](docs/TOOLS.md) tool table — if it adds/removes an MCP tool.
 - [`docs/adr/`](docs/adr/) — a decision that is hard to reverse or surprising gets
   an ADR; do not bury architecture decisions in a code comment.
+- **A lesson that is not about this codebase leaves the repository.** `learned`
+  notes land in `spec.db` and gap fragments land in [`gaps.d/`](gaps.d/); both
+  stop at the repository boundary, so a class of defect found here is
+  rediscovered once per repository, forever. Apply the test: *would this
+  sentence still be true in a repository containing none of this code?* Guard
+  ordering, an empty case that authorises a delete, and one message serving
+  three causes all pass it; `MINDLEAK_MCP_BIN` and `scoped-commit` do not. When
+  it passes, prefix that part of the note `PORTABLE:` so
+  `active_knowledge(contains="PORTABLE")` can sweep it out later. The prefix is
+  the entire mechanism — no new file, no new tool, no new ceremony.
 
 A purely internal refactor (file split, helper extraction) only needs a CHANGELOG
 line if it is observable; otherwise no doc change is required.
