@@ -13,6 +13,7 @@ pub mod decay;
 pub mod design;
 pub mod dialogue;
 pub mod discovery;
+pub mod embed;
 pub mod error;
 mod facade;
 pub mod fleet;
@@ -36,6 +37,7 @@ pub use design::{
     DesignMaterializationPlan, DesignMaterializationRecord, DesignPromotion, DesignPromotionStatus,
     DesignStatus, DesignTaskDraft,
 };
+pub use embed::{cosine, Embedder, KnowledgeMatches};
 pub use error::{LodestarError, Result};
 pub use facade::{DecomposedTask, PlannedDesignMaterialization};
 pub use model::{
