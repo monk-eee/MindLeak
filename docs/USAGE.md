@@ -24,6 +24,10 @@ worktrees) need to coordinate without diluting shared intent.
 Everything on the **write path is deterministic** (pattern matching, zero LLM
 tokens). Optional local models only run asynchronously, off the hot path.
 
+Agents driving this loop should also load [`skills/mindleak/SKILL.md`](../skills/mindleak/SKILL.md),
+which carries the operational discipline this guide assumes: claim scope, lease
+renewal, both plane binaries, and what to do when evidence is refused.
+
 ## First value without VS Code
 
 The extension's Workspace view is a projection over these same MCP primitives;
