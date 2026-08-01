@@ -157,8 +157,16 @@ that never reaches for a verb may as well not have it.
   *memory* half that lost to a text file, and only because it was never given
   anything to remember.
 
-## Not implemented in this build
+## Implementation
 
-Nothing here is built. The measurement above is reproducible against any
-populated graph, and this ADR records the finding so the next session does not
-have to spend eight hours rediscovering that the graph never learned anything.
+The original failure is now addressed. Task completion records `learned` and
+reports when it is omitted, `recall` can abstain, and
+`MindLeak::record_decision` attempts `embed_node_now` before returning. If the
+optional embedder is unavailable, the decision remains recorded and
+`WriteOutcome.embedded` reports the degradation; deterministic `ingest_*`
+paths remain zero-token. The installed MindLeak skill also makes deliberate
+write-back an explicit finishing step.
+
+The measurement and context above describe the pre-implementation build. They
+remain the rationale for this decision, not a statement of current product
+limitations.
