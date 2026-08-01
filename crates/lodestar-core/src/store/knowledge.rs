@@ -13,6 +13,10 @@ const KNOWLEDGE_COLS: &str =
     "id, statement, evidence, weight, half_life_hours, confirmed_at, created_at, \
      retired_at, retired_by, retired_reason, superseded_by";
 
+/// How many lessons one read may warm the index with. Bounded so the first
+/// search after an upgrade is slower once, not unusable.
+const MAX_BACKFILL_PER_READ: usize = 64;
+
 impl LodestarStore {
     /// Insert or reconfirm a knowledge node. Re-recording the same statement
     /// bumps its weight and resets its revalidation clock.
@@ -96,34 +100,68 @@ impl LodestarStore {
 
     /// Reorder `active` by how close each statement is to `query_vector`.
     ///
-    /// Returns `None` when nothing is indexed under `model`, because ranking by
-    /// a similarity everything scores zero on is arbitrary order wearing the
-    /// word "semantic" — the caller must be able to say so instead.
+    /// Returns the reordered list and how many of it were actually ranked.
+    /// Unindexed lessons keep their incoming weight order at the end rather
+    /// than being dropped — losing a lesson because it has no vector would be
+    /// the same silent failure in a different place — but they are *counted*,
+    /// because a list that is half meaning and half weight looks exactly like
+    /// one that is all meaning.
     pub fn rank_knowledge(
         &self,
         active: Vec<Knowledge>,
         query_vector: &[f32],
         model: &str,
-    ) -> Result<Option<Vec<Knowledge>>> {
+    ) -> Result<(Vec<Knowledge>, usize)> {
         let vectors = embed::vectors_for_model(&self.conn, model)?;
-        if vectors.is_empty() {
-            return Ok(None);
+        let mut ranked: Vec<(f32, Knowledge)> = Vec::new();
+        let mut unranked: Vec<Knowledge> = Vec::new();
+        for k in active {
+            match vectors.iter().find(|(id, _)| id == &k.id) {
+                Some((_, v)) => ranked.push((embed::cosine(query_vector, v), k)),
+                None => unranked.push(k),
+            }
         }
-        let mut scored: Vec<(f32, Knowledge)> = active
-            .into_iter()
-            .map(|k| {
-                let score = vectors
-                    .iter()
-                    .find(|(id, _)| id == &k.id)
-                    .map(|(_, v)| embed::cosine(query_vector, v))
-                    .unwrap_or(0.0);
-                (score, k)
-            })
+        ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let count = ranked.len();
+        let mut out: Vec<Knowledge> = ranked.into_iter().map(|(_, k)| k).collect();
+        out.extend(unranked);
+        Ok((out, count))
+    }
+
+    /// Give unembedded active knowledge a vector, best-effort, in one request.
+    ///
+    /// Returns how many were added. Bounded per call so warming a large corpus
+    /// costs a bounded amount of a single read rather than one long stall, and
+    /// swallows every failure: an unreachable model must cost ranking only.
+    pub fn backfill_embeddings(
+        &self,
+        active: &[Knowledge],
+        embedder: &Embedder,
+        now: i64,
+    ) -> usize {
+        let ids: Vec<String> = active.iter().map(|k| k.id.clone()).collect();
+        let Ok(missing) = embed::missing_vectors(&self.conn, &embedder.model, &ids) else {
+            return 0;
+        };
+        let batch: Vec<&Knowledge> = active
+            .iter()
+            .filter(|k| missing.contains(&k.id))
+            .take(MAX_BACKFILL_PER_READ)
             .collect();
-        // Ties keep their incoming order, which is strongest-weight-first, so an
-        // unindexed lesson still falls back to the ranking it always had.
-        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-        Ok(Some(scored.into_iter().map(|(_, k)| k).collect()))
+        if batch.is_empty() {
+            return 0;
+        }
+        let statements: Vec<String> = batch.iter().map(|k| k.statement.clone()).collect();
+        let Ok(vectors) = embedder.embed_batch(&statements) else {
+            return 0;
+        };
+        let mut stored = 0;
+        for (k, vector) in batch.iter().zip(vectors) {
+            if embed::store_vector(&self.conn, &k.id, &embedder.model, &vector, now).is_ok() {
+                stored += 1;
+            }
+        }
+        stored
     }
 
     /// The honest fallback: keep only what literally mentions the query.
@@ -216,7 +254,7 @@ fn row_to_knowledge(row: &Row) -> rusqlite::Result<Knowledge> {
 #[cfg(test)]
 mod tests {
     use super::LodestarStore;
-    use crate::embed;
+    use crate::embed::{self, Embedder};
     use crate::store::test_support::{store, HOUR, NOW};
 
     /// Point the optional embedder at the discard port so these tests exercise
@@ -264,16 +302,95 @@ mod tests {
         let near_hooks = s
             .rank_knowledge(s.active_knowledge(NOW).unwrap(), &[0.1, 1.0], "stub")
             .unwrap()
-            .unwrap();
+            .0;
         let near_worktrees = s
             .rank_knowledge(s.active_knowledge(NOW).unwrap(), &[1.0, 0.1], "stub")
             .unwrap()
-            .unwrap();
+            .0;
 
         // Both directions, because an implementation that simply preserved the
         // incoming order would pass either one alone.
         assert_eq!(near_hooks[0].id, hooks.id);
         assert_eq!(near_worktrees[0].id, worktrees.id);
+    }
+
+    // Regression: rank_knowledge returned Some as soon as ANY vector existed,
+    // so a partly-warmed index pinned every unembedded lesson to score 0.0 at
+    // the bottom while the reply still called itself "semantic". That is the
+    // silent-wrong-answer shape ADR-0080 exists to prevent, arriving through
+    // the fix for it: the reader cannot tell a genuinely poor match from one
+    // that was never compared at all.
+    #[test]
+    fn a_partly_indexed_corpus_reports_how_much_it_actually_ranked() {
+        let s = store();
+        let indexed = s
+            .record_knowledge("one worktree per workstream", "{}", 720.0, NOW)
+            .unwrap();
+        let unindexed = s
+            .record_knowledge("never use --no-verify", "{}", 720.0, NOW)
+            .unwrap();
+        embed::store_vector(&s.conn, &indexed.id, "stub", &[1.0, 0.0], NOW).unwrap();
+
+        let (ordered, covered) = s
+            .rank_knowledge(s.active_knowledge(NOW).unwrap(), &[1.0, 0.0], "stub")
+            .unwrap();
+
+        assert_eq!(covered, 1, "only one lesson could be compared");
+        assert_eq!(ordered.len(), 2, "the unranked lesson is kept, not dropped");
+        assert_eq!(ordered[0].id, indexed.id);
+        assert_eq!(ordered[1].id, unindexed.id);
+    }
+
+    #[test]
+    fn missing_vectors_names_only_what_has_not_been_embedded() {
+        let s = store();
+        let indexed = s.record_knowledge("a", "{}", 720.0, NOW).unwrap();
+        let unindexed = s.record_knowledge("b", "{}", 720.0, NOW).unwrap();
+        embed::store_vector(&s.conn, &indexed.id, "stub", &[1.0], NOW).unwrap();
+
+        let ids = vec![indexed.id.clone(), unindexed.id.clone()];
+        let missing = embed::missing_vectors(&s.conn, "stub", &ids).unwrap();
+
+        assert_eq!(missing, vec![unindexed.id]);
+    }
+
+    #[test]
+    fn backfill_against_an_unreachable_model_changes_nothing() {
+        without_an_embedder();
+        let s = store();
+        s.record_knowledge("never use --no-verify", "{}", 720.0, NOW)
+            .unwrap();
+        let active = s.active_knowledge(NOW).unwrap();
+
+        let stored = s.backfill_embeddings(&active, &Embedder::default(), NOW);
+
+        assert_eq!(stored, 0);
+        // Still readable, still complete - the warm-up is an optimisation and
+        // failing it must not cost the reader the lessons themselves.
+        assert_eq!(s.active_knowledge(NOW).unwrap().len(), 1);
+        let ids: Vec<String> = active.iter().map(|k| k.id.clone()).collect();
+        assert_eq!(
+            embed::missing_vectors(&s.conn, &Embedder::default().model, &ids)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn backfill_is_a_no_op_once_everything_is_indexed() {
+        without_an_embedder();
+        let s = store();
+        let k = s.record_knowledge("a", "{}", 720.0, NOW).unwrap();
+        let embedder = Embedder::default();
+        embed::store_vector(&s.conn, &k.id, &embedder.model, &[1.0], NOW).unwrap();
+
+        // Nothing is missing, so it must not reach for the network at all -
+        // otherwise every search pays a failed round trip forever.
+        assert_eq!(
+            s.backfill_embeddings(&s.active_knowledge(NOW).unwrap(), &embedder, NOW),
+            0
+        );
     }
 
     #[test]
@@ -283,13 +400,15 @@ mod tests {
             .unwrap();
 
         // Nothing is indexed under this model, so every statement would score
-        // zero and the resulting order would mean nothing. Saying so is what
-        // lets the caller degrade honestly instead of dressing up noise.
-        let ranked = s
+        // zero and the resulting order would mean nothing. Reporting zero
+        // coverage is what lets the caller degrade honestly instead of
+        // dressing up noise.
+        let (ordered, covered) = s
             .rank_knowledge(s.active_knowledge(NOW).unwrap(), &[1.0, 0.0], "stub")
             .unwrap();
 
-        assert!(ranked.is_none());
+        assert_eq!(covered, 0);
+        assert_eq!(ordered.len(), 1);
     }
 
     #[test]

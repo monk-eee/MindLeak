@@ -33,37 +33,47 @@ impl Lodestar {
     /// question it answers. This sits behind the read every agent already
     /// performs rather than arriving as a new verb to remember.
     ///
-    /// When no embedder is reachable it degrades to substring matching and
-    /// **says so** in the returned mode: a silent downgrade would leave the
-    /// caller believing an exact-match miss was a semantic one.
+    /// When `query` is given but no embedder is reachable it degrades to
+    /// substring matching and **says so** in the returned mode: a silent
+    /// downgrade would leave the caller believing an exact-match miss was a
+    /// semantic one.
     pub fn search_knowledge(&self, query: &str) -> Result<KnowledgeMatches> {
-        let active = self.store.active_knowledge(now_unix())?;
+        let now = now_unix();
+        let active = self.store.active_knowledge(now)?;
         let embedder = Embedder::default();
 
         let degraded = |because: String| KnowledgeMatches {
             knowledge: LodestarStore::substring_knowledge(active.clone(), query),
             mode: "substring",
             degraded_because: Some(because),
+            ranked: 0,
         };
 
         let query_vector = match embedder.embed(query) {
             Ok(vector) => vector,
             Err(e) => return Ok(degraded(e.to_string())),
         };
-        match self
-            .store
-            .rank_knowledge(active.clone(), &query_vector, &embedder.model)?
-        {
-            Some(ranked) => Ok(KnowledgeMatches {
-                knowledge: ranked,
-                mode: "semantic",
-                degraded_because: None,
-            }),
-            None => Ok(degraded(format!(
-                "no knowledge has been embedded under model '{}' yet",
+        // The index only ever filled on write, so a repository that learned
+        // anything before it existed would search by substring forever. Warming
+        // it here means the capability arrives with the upgrade, not with the
+        // next lesson someone happens to record.
+        self.store.backfill_embeddings(&active, &embedder, now);
+
+        let (ranked, covered) =
+            self.store
+                .rank_knowledge(active.clone(), &query_vector, &embedder.model)?;
+        if covered == 0 {
+            return Ok(degraded(format!(
+                "no knowledge could be embedded under model '{}'",
                 embedder.model
-            ))),
+            )));
         }
+        Ok(KnowledgeMatches {
+            knowledge: ranked,
+            mode: "semantic",
+            degraded_because: None,
+            ranked: covered,
+        })
     }
 
     pub fn reconfirm_knowledge(&self, id: &str) -> Result<bool> {
