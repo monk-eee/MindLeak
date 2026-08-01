@@ -44,6 +44,11 @@ export const publicationRecord = ({
  * Never throws. The commit is already on the remote by the time this runs, so
  * a failure here cannot un-publish it -- turning an unreachable graph into a
  * failed push would trade a missing record for a broken publisher.
+ *
+ * Each cause gets its own notice. One shared "unreachable" line cost a session
+ * two days of misdiagnosis: a linked worktree has no `target/` of its own, so
+ * the resolver finds no binary and reports the plane as unreachable, which
+ * reads as an outage rather than as one missing environment variable.
  */
 export const recordPublication = ({
   repoRoot,
@@ -53,9 +58,20 @@ export const recordPublication = ({
   changedFiles,
   timestamp = Math.floor(Date.now() / 1000),
 }) => {
+  if (!/^[0-9a-f]{32}$/.test(sessionId ?? "")) {
+    return (
+      "published commit not recorded; no registered session id, so this work will not certify.\n" +
+      "  Set LODESTAR_SESSION_ID to the 32-character hex id registered with open_session."
+    );
+  }
   const server = resolveServer(repoRoot, "mindleak");
-  if (!server || !/^[0-9a-f]{32}$/.test(sessionId ?? "")) {
-    return "published commit not recorded; the Memory Plane was unreachable, so this work will not certify";
+  if (!server) {
+    return (
+      "published commit not recorded; no mindleak-mcp binary was found, so this work will not certify.\n" +
+      "  Build it:  cargo build --release\n" +
+      "  Or point at an existing server with MINDLEAK_MCP_BIN.\n" +
+      "  A linked worktree has no target/ of its own, which is the usual cause here."
+    );
   }
   try {
     callTools(server, repoRoot, [
