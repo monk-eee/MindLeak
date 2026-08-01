@@ -217,7 +217,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "task_claim",
-            "description": "Ownership and the lease, with `step` naming the act. `claim` atomically takes a task with a lease and optional advisory path globs / MindLeak symbol ids (ADR-0024); it returns won=true only if this agent won, a losing claimant cannot overwrite scope, and a lost claim says which of the knowable reasons it was rather than a bare false. A won scoped claim resolves active clauses against those paths and returns coverage-aware `scope_advice`; `review` names an uncovered governing goal and tells the holder to re-claim with `also_serves`. A won claim returns the evidence window it opened, because that window is what completion later validates evidence against. A won claim also accepts `also_serves`: goals bind to files, so the governing set is usually learned while working rather than predicted at creation, and a claim you already hold is where you say so. That declaration is refused once conformance has judged the task, when it would be a rationalisation for a finding already raised rather than a prediction the evidence can still contradict. `renew` is the heartbeat: it extends a still-live lease owned by this agent, and after expiry only a fresh `claim` opens a new window. `release` hands a claim back to open, owner-guarded. `recover` takes an expired claim stranded under a compatible legacy identity, or transfers a paused task before its seven-day grace with an explicit human reviewer; it requires the exact current owner and a reason, writes append-only history, and opens a fresh window. A `human` label is an attributable declaration, not authentication, and must differ from both owners.",
+            "description": "Ownership and the lease, with `step` naming the act. `claim` atomically takes a task with a lease and optional advisory path globs / MindLeak symbol ids (ADR-0024); it returns won=true only if this agent won, a losing claimant cannot overwrite scope, and a lost claim says which of the knowable reasons it was rather than a bare false. On re-claim, an omitted `paths` or `symbols` field preserves that part of the existing scope; an explicitly supplied array replaces it, including an empty array that deliberately clears it. A won scoped claim resolves active clauses against those paths and returns coverage-aware `scope_advice`; `review` names an uncovered governing goal and tells the holder to re-claim with `also_serves`. A won claim returns the evidence window it opened, because that window is what completion later validates evidence against. A won claim also accepts `also_serves`: goals bind to files, so the governing set is usually learned while working rather than predicted at creation, and a claim you already hold is where you say so. That declaration is refused once conformance has judged the task, when it would be a rationalisation for a finding already raised rather than a prediction the evidence can still contradict. `renew` is the heartbeat: it extends a still-live lease owned by this agent, and after expiry only a fresh `claim` opens a new window. `release` hands a claim back to open, owner-guarded. `recover` takes an expired claim stranded under a compatible legacy identity, or transfers a paused task before its seven-day grace with an explicit human reviewer; it requires the exact current owner and a reason, writes append-only history, and opens a fresh window. A `human` label is an attributable declaration, not authentication, and must differ from both owners.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -225,8 +225,8 @@ pub(super) fn definitions() -> Vec<Value> {
                     "step": { "type": "string", "enum": ["claim", "renew", "release", "recover"], "description": "Which ownership act. Each names the further arguments it needs." },
                     "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." },
                     "lease_secs": { "type": "integer", "default": 300, "description": "Lease length for claim, renew and recover." },
-                    "paths": { "type": "array", "items": { "type": "string" }, "default": [], "description": "claim: workspace-relative path globs this work expects to touch." },
-                    "symbols": { "type": "array", "items": { "type": "string" }, "default": [], "description": "claim: opaque MindLeak symbol ids this work expects to touch." },
+                    "paths": { "type": "array", "items": { "type": "string" }, "description": "claim: workspace-relative path globs this work expects to touch. Omit to preserve existing paths on re-claim; pass [] to clear them." },
+                    "symbols": { "type": "array", "items": { "type": "string" }, "description": "claim: opaque MindLeak symbol ids this work expects to touch. Omit to preserve existing symbols on re-claim; pass [] to clear them." },
                     "also_serves": { "type": "array", "items": { "type": "string" }, "default": [], "description": "claim: further goal ids this work serves, for what advise reported over the files you are actually touching. Unions with what was declared at creation, so naming only what you just learned never drops what you knew. Refused once conformance has judged this task." },
                     "expected_owner": { "type": "string", "description": "recover: the exact current owner. A recovery that does not name who it is taking from is not a recovery." },
                     "reason": { "type": "string", "description": "recover: why ownership moved." },
@@ -584,17 +584,16 @@ pub(super) fn dispatch(
 
 /// The claim itself: a compare-and-swap, plus everything the losing side needs.
 fn claim(engine: &Lodestar, task_id: &str, args: &Value) -> Result<Value, String> {
-    let scope = TaskScope {
-        paths: str_array(args, "paths"),
-        symbols: str_array(args, "symbols"),
-    };
+    let paths = args.get("paths").map(|_| str_array(args, "paths"));
+    let symbols = args.get("symbols").map(|_| str_array(args, "symbols"));
     let agent = opt_str(args, "agent").unwrap_or_default();
     let won = engine
-        .claim_task_with_scope(
+        .claim_task_with_partial_scope(
             task_id,
             agent.as_str(),
             i64_arg(args, "lease_secs", 300),
-            &scope,
+            paths.as_deref(),
+            symbols.as_deref(),
         )
         .map_err(|e| e.to_string())?;
     let mut response = json!({ "won": won, "governing": [] });
@@ -605,6 +604,7 @@ fn claim(engine: &Lodestar, task_id: &str, args: &Value) -> Result<Value, String
     // wrong guess reads as a policy refusal rather than a missing accessor
     // (ADR-0060).
     if won {
+        let scope = engine.task_scope(task_id).map_err(|e| e.to_string())?;
         // Coverage rides on the claim rather than on a verb of its own: the
         // claim is already where a task says what it will touch, and a
         // same-owner re-claim keeps the evidence window open, so an agent that
@@ -2528,5 +2528,127 @@ mod tests {
         assert!(unbound_body.get("scope_advice").is_none());
         assert_eq!(unbound_body["governing"].as_array().unwrap().len(), 1);
         assert_eq!(unbound_body["governing"][0]["goal"]["id"], delivery.id);
+    }
+
+    /// Re-claiming with omitted scope fields used to convert omission into two
+    /// empty arrays and erase the path linkage `merge_evidence` needs. Omission
+    /// preserves each field; only an explicitly supplied array replaces it.
+    #[test]
+    fn reclaim_preserves_omitted_scope_fields_and_replaces_explicit_ones() {
+        let definition = definitions()
+            .into_iter()
+            .find(|definition| definition["name"] == "task_claim")
+            .unwrap();
+        assert!(definition["inputSchema"]["properties"]["paths"]
+            .get("default")
+            .is_none());
+        assert!(definition["inputSchema"]["properties"]["symbols"]
+            .get("default")
+            .is_none());
+
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship scope", "preserve scope", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Scoped work", "done").unwrap();
+        let original = TaskScope {
+            paths: vec!["src/**".to_string()],
+            symbols: vec!["symbol:src/lib.rs:run".to_string()],
+        };
+
+        let first = call(
+            &engine,
+            &json!({
+                "name": "task_claim",
+                "arguments": {
+                    "task_id": task.id,
+                    "step": "claim",
+                    "agent": "agent-a",
+                    "paths": original.paths,
+                    "symbols": original.symbols
+                }
+            }),
+        )
+        .unwrap();
+        let first_body: Value =
+            serde_json::from_str(first["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(first_body["won"], true);
+        assert_eq!(engine.task_scope(&task.id).unwrap(), original);
+
+        let reclaimed = call(
+            &engine,
+            &json!({
+                "name": "task_claim",
+                "arguments": {
+                    "task_id": task.id,
+                    "step": "claim",
+                    "agent": "agent-a"
+                }
+            }),
+        )
+        .unwrap();
+        let reclaimed_body: Value =
+            serde_json::from_str(reclaimed["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(reclaimed_body["won"], true);
+        assert_eq!(engine.task_scope(&task.id).unwrap(), original);
+
+        call(
+            &engine,
+            &json!({
+                "name": "task_claim",
+                "arguments": {
+                    "task_id": task.id,
+                    "step": "claim",
+                    "agent": "agent-a",
+                    "paths": []
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            engine.task_scope(&task.id).unwrap(),
+            TaskScope {
+                paths: Vec::new(),
+                symbols: original.symbols.clone(),
+            }
+        );
+
+        call(
+            &engine,
+            &json!({
+                "name": "task_claim",
+                "arguments": {
+                    "task_id": task.id,
+                    "step": "claim",
+                    "agent": "agent-a",
+                    "symbols": ["symbol:src/new.rs:start"]
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            engine.task_scope(&task.id).unwrap(),
+            TaskScope {
+                paths: Vec::new(),
+                symbols: vec!["symbol:src/new.rs:start".to_string()],
+            }
+        );
+
+        let fresh = engine
+            .create_task(&goal.id, "Unscoped work", "done")
+            .unwrap();
+        call(
+            &engine,
+            &json!({
+                "name": "task_claim",
+                "arguments": {
+                    "task_id": fresh.id,
+                    "step": "claim",
+                    "agent": "agent-b"
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(engine.task_scope(&fresh.id).unwrap(), TaskScope::default());
     }
 }

@@ -3,6 +3,11 @@
 
 use super::*;
 
+mod scope;
+
+use scope::{compile_scope_glob, normalize_paths, normalize_scope_values, normalize_symbols};
+pub(super) use scope::{intersect_paths, task_scope_on};
+
 impl LodestarStore {
     /// Claim a task: the coordination primitive. A guarded compare-and-swap —
     /// succeeds only if the task is open, its lease has expired, the caller
@@ -24,7 +29,29 @@ impl LodestarStore {
         scope: &TaskScope,
         now: i64,
     ) -> Result<bool> {
-        let scope = normalize_scope(scope)?;
+        self.claim_task_with_partial_scope(
+            id,
+            agent,
+            lease_secs,
+            Some(&scope.paths),
+            Some(&scope.symbols),
+            now,
+        )
+    }
+
+    /// Claim work while replacing only the scope fields the caller supplied.
+    /// Omitted fields retain their prior rows inside the same claim transaction.
+    pub(crate) fn claim_task_with_partial_scope(
+        &self,
+        id: &str,
+        agent: &str,
+        lease_secs: i64,
+        paths: Option<&[String]>,
+        symbols: Option<&[String]>,
+        now: i64,
+    ) -> Result<bool> {
+        let paths = paths.map(normalize_paths).transpose()?;
+        let symbols = symbols.map(normalize_symbols);
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let parked_cutoff = now - PARKING_GRACE_SECS;
         refuse_beyond_claim_limit(&transaction, id, agent)?;
@@ -76,18 +103,29 @@ impl LodestarStore {
             params![id, agent, now + lease_secs, now, parked_cutoff],
         )?;
         if changed == 1 {
-            transaction.execute("DELETE FROM task_scopes WHERE task_id = ?1", params![id])?;
-            for path in &scope.paths {
+            if let Some(paths) = &paths {
                 transaction.execute(
-                    "INSERT INTO task_scopes (task_id, kind, value) VALUES (?1, 'path', ?2)",
-                    params![id, path],
+                    "DELETE FROM task_scopes WHERE task_id = ?1 AND kind = 'path'",
+                    params![id],
                 )?;
+                for path in paths {
+                    transaction.execute(
+                        "INSERT INTO task_scopes (task_id, kind, value) VALUES (?1, 'path', ?2)",
+                        params![id, path],
+                    )?;
+                }
             }
-            for symbol in &scope.symbols {
+            if let Some(symbols) = &symbols {
                 transaction.execute(
-                    "INSERT INTO task_scopes (task_id, kind, value) VALUES (?1, 'symbol', ?2)",
-                    params![id, symbol],
+                    "DELETE FROM task_scopes WHERE task_id = ?1 AND kind = 'symbol'",
+                    params![id],
                 )?;
+                for symbol in symbols {
+                    transaction.execute(
+                        "INSERT INTO task_scopes (task_id, kind, value) VALUES (?1, 'symbol', ?2)",
+                        params![id, symbol],
+                    )?;
+                }
             }
             events::record(
                 &transaction,
@@ -295,77 +333,6 @@ impl LodestarStore {
         transaction.commit()?;
         Ok(changed == 1)
     }
-}
-
-fn normalize_scope(scope: &TaskScope) -> Result<TaskScope> {
-    let normalized = normalize_scope_values(scope);
-    for path in &normalized.paths {
-        compile_scope_glob(path)?;
-    }
-    Ok(normalized)
-}
-
-fn normalize_scope_values(scope: &TaskScope) -> TaskScope {
-    let mut paths = scope
-        .paths
-        .iter()
-        .map(|value| value.trim().replace('\\', "/"))
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>();
-    paths.sort();
-    paths.dedup();
-    let mut symbols = scope
-        .symbols
-        .iter()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>();
-    symbols.sort();
-    symbols.dedup();
-    TaskScope { paths, symbols }
-}
-
-fn compile_scope_glob(pattern: &str) -> Result<GlobMatcher> {
-    GlobBuilder::new(pattern)
-        .literal_separator(true)
-        .build()
-        .map(|glob| glob.compile_matcher())
-        .map_err(|error| {
-            LodestarError::Invalid(format!("invalid task scope glob '{pattern}': {error}"))
-        })
-}
-
-pub(super) fn task_scope_on(connection: &Connection, task_id: &str) -> Result<TaskScope> {
-    let mut statement = connection
-        .prepare("SELECT kind, value FROM task_scopes WHERE task_id = ?1 ORDER BY kind, value")?;
-    let rows = statement.query_map(params![task_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    let mut scope = TaskScope::default();
-    for row in rows {
-        let (kind, value) = row?;
-        match kind.as_str() {
-            "path" => scope.paths.push(value),
-            "symbol" => scope.symbols.push(value),
-            _ => {}
-        }
-    }
-    Ok(scope)
-}
-
-pub(super) fn intersect_paths(requested: &[String], declared: &[String]) -> Result<Vec<String>> {
-    let mut matches = Vec::new();
-    for request in requested {
-        for declaration in declared {
-            if compile_scope_glob(declaration)?.is_match(request) {
-                matches.push(request.clone());
-                break;
-            }
-        }
-    }
-    matches.sort();
-    matches.dedup();
-    Ok(matches)
 }
 
 /// Refuse a claim that would take an agent past [`MAX_CONCURRENT_CLAIMS`]
