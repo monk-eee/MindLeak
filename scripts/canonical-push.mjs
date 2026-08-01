@@ -26,7 +26,10 @@ import {
   persistCompletionOffer,
   prepareCompletionOffer,
 } from "./completion-offer.mjs";
-import { recordPublication } from "./publication-record.mjs";
+import {
+  memoryPlaneRefusal,
+  recordPublication,
+} from "./publication-record.mjs";
 
 const args = process.argv.slice(2);
 const verifyPrePush = args.includes("--verify-pre-push");
@@ -284,6 +287,13 @@ if (!verdict.ok) {
 }
 if (verdict.notice) {
   console.log(`canonical-push: ${verdict.notice}`);
+}
+
+// Both planes are checked before anything is pushed, not one before and one
+// after. The push is irreversible; the record of it must not be optional.
+const memoryRefusal = memoryPlaneRefusal(resolveServer(repoRoot, "mindleak"));
+if (memoryRefusal) {
+  fail(memoryRefusal);
 }
 
 const notice = overlapNotice(

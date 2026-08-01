@@ -38,6 +38,29 @@ export const publicationRecord = ({
 });
 
 /**
+ * Why a publish must not proceed, or `null` when the Memory Plane can be
+ * reached.
+ *
+ * Checked *before* the push. `resolveServer`'s own comment says both planes
+ * resolve alike because "a caller that can reach the ledger but not the graph
+ * would record intent and drop the evidence for it" -- but only the ledger
+ * refused, and the graph merely annotated the result afterwards. A warning
+ * issued after an irreversible act is not the same protection as a refusal
+ * before it: the branch was already published by the time the operator learned
+ * the work could never certify.
+ *
+ * Pure, so the refusal is testable without pushing anything.
+ */
+export const memoryPlaneRefusal = (server) =>
+  server
+    ? null
+    : "the Memory Plane is unreachable, so this publication could not certify.\n" +
+      "  Build it:  cargo build --release\n" +
+      "  Or point at an existing server with MINDLEAK_MCP_BIN.\n" +
+      "  A linked worktree has no target/ of its own, which is the usual cause here.\n" +
+      "  This refuses before pushing: an unreachable graph must not become the way past the gate.";
+
+/**
  * Ingest the just-published commit, returning a short notice to print or
  * `null` when there is nothing to say.
  *
