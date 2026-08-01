@@ -50,11 +50,29 @@ pub struct TaskDraft {
 }
 
 /// An OpenAI-compatible chat client pointed at a local server by default.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LlmClient {
     pub base_url: String,
     pub model: String,
     pub api_key: String,
+}
+
+// Manual Debug so the bearer token never reaches a log, panic, or error chain.
+impl std::fmt::Debug for LlmClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LlmClient")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field(
+                "api_key",
+                &if self.api_key.is_empty() {
+                    "<unset>"
+                } else {
+                    "<redacted>"
+                },
+            )
+            .finish()
+    }
 }
 
 impl Default for LlmClient {
@@ -320,6 +338,33 @@ mod tests {
             connect_timeout: Duration::from_millis(100),
             read_timeout: Duration::from_millis(100),
         }
+    }
+
+    #[test]
+    fn debug_redacts_the_api_key() {
+        const SECRET: &str = "sk-lodestar-super-secret-token";
+        let configured = LlmClient {
+            base_url: "http://localhost:11434/v1".to_string(),
+            model: "glm4:9b".to_string(),
+            api_key: SECRET.to_string(),
+        };
+        let shown = format!("{configured:?}");
+        assert!(
+            !shown.contains(SECRET),
+            "api key leaked into Debug: {shown}"
+        );
+        assert!(
+            shown.contains("<redacted>"),
+            "expected redaction marker: {shown}"
+        );
+        assert!(
+            shown.contains("glm4:9b"),
+            "model must still be shown: {shown}"
+        );
+        assert!(
+            format!("{:?}", LlmClient::unreachable()).contains("<unset>"),
+            "an empty key should render as <unset>"
+        );
     }
 
     #[test]
