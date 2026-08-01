@@ -152,7 +152,21 @@ const main = () => {
 
   const version = args[releaseAt + 1];
   const { head, unreleased, tail } = readChangelog();
-  const body = render(foldUnreleased(unreleased, grouped));
+  const releaseHeading = `## [${version}] - `;
+  let existingRelease = "";
+  let remainingTail = tail;
+  if (tail.startsWith(releaseHeading)) {
+    const headingEnd = tail.indexOf("\n");
+    const nextRelease = tail.indexOf("\n## [", headingEnd + 1);
+    existingRelease = tail.slice(
+      headingEnd + 1,
+      nextRelease < 0 ? undefined : nextRelease + 1,
+    );
+    remainingTail = nextRelease < 0 ? "" : tail.slice(nextRelease + 1);
+  }
+  const body = render(
+    foldUnreleased(`${unreleased}\n${existingRelease}`, grouped),
+  );
   if (!body)
     throw new Error(
       "nothing to release: no fragments and no unreleased entries",
@@ -161,7 +175,7 @@ const main = () => {
   const date = new Date().toISOString().slice(0, 10);
   writeFileSync(
     CHANGELOG,
-    `${head}## [Unreleased]\n\n## [${version}] - ${date}\n\n${body}\n\n${tail}`,
+    `${head}## [Unreleased]\n\n## [${version}] - ${date}\n\n${body}\n\n${remainingTail}`,
   );
   for (const name of files) rmSync(join(FRAGMENT_DIR, name));
   console.log(

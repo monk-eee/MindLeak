@@ -1,1 +1,0 @@
-- Structural ingestion now records its extractor version, workspace reconciliation reports stale or missing file snapshots, and `make reingest` refreshes only those files without recording false agent attention.

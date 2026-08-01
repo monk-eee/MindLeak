@@ -41,6 +41,37 @@ instead of relying on somebody remembering a second call.
   created stubs, optional HTTP/embedding responses fail closed, and build identity
   notices distinguish a stale binary from a checkout that is merely behind.
 
+## Final candidate additions
+
+The final tag also includes every change merged after the first 0.1.4 candidate:
+
+- **Coordination is more recoverable.** Stale one-way waits are visible, recovered
+  claims can certify the evidence from their audited transfer chain, re-claims
+  preserve omitted path/symbol scope, abandon names and protects its recorded
+  branch, and worktree reclaim preserves every branch held by a live claim.
+- **Governance reaches the files agents actually touch.** Scoped claims return
+  coverage-aware advice for every governing goal, new Rust modules are reported
+  as bound or unbound at publication, the binding vocabulary and migrated schema
+  now speak about artifacts rather than only code, and imported ADR statuses
+  enter as proposals until a person decides them.
+- **Memory and impact answers are more honest.** Recall abstains when returned
+  text cannot ground the query, literal dynamic JavaScript/TypeScript imports
+  produce conservative dependency edges, Rust impact crosses nested module and
+  verified local-crate boundaries, and obsolete knowledge can be retired without
+  deleting its provenance.
+- **Publication fails before an uncertifiable push.** Both MCP planes must resolve
+  before canonical publication; failures distinguish a missing binary, an
+  unregistered session, a rejected write, and an unreadable task board, each with
+  the matching remedy. Hook health also verifies pre-commit, pre-push, and
+  post-commit installation before work leaves the machine.
+- **Editor and model failures are legible.** Sibling-worktree saves/deletes reach
+  server-side canonicalization, client request budgets outlast bounded model
+  fallback, optional model results identify model versus fallback with a reason,
+  and the extension development toolchain now audits clean.
+- **Secrets stay out of diagnostics.** MindLeak and Lodestar manually redact the
+  optional LLM API key from `Debug` output while retaining useful endpoint/model
+  fields.
+
 ## Compatibility and migration
 
 - **VS Code 1.101 or newer is required.** This is the first editor release floor
