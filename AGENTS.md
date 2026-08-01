@@ -1,10 +1,11 @@
 # AGENTS.md — MindLeak Codebase Guide for AI Agents
 
-MindLeak is a **Temporal Context Graph Engine (TCGE)**: a local, decay-weighted
-knowledge graph that gives coding agents durable context, replacing flat-log /
-vector-only agent memory. Read [`docs/SPEC.md`](docs/SPEC.md) for the design and
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the module map before making
-structural changes.
+MindLeak is local context infrastructure for coding agents. Its **Memory Plane**
+is a Temporal Context Graph Engine (TCGE): a decay-weighted structural and
+episodic graph. Its **Intent Plane — Lodestar** preserves durable goals, designs,
+coordination, knowledge, and proof. Read [`docs/SPEC.md`](docs/SPEC.md) for the
+memory contract and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full
+module map before making structural changes.
 
 ---
 
@@ -370,7 +371,7 @@ MindLeak/
 │   │       └── consolidate.rs      # optional OpenAI-compatible consolidation
 │   ├── mindleak-mcp/               # MCP stdio server (Rust bin)
 │   │   └── src/                    # main · server · tools
-│   ├── lodestar-core/              # Intent Plane — durable spec brain (ADR-0004)
+│   ├── lodestar-core/              # Intent Plane — durable governance and proof (ADR-0004)
 │   │   └── src/                    # lib · model · store (claim/lease) · llm
 │   └── lodestar-mcp/               # Intent Plane MCP server (Rust bin)
 │       └── src/                    # main · server · tools

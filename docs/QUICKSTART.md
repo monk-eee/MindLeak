@@ -225,11 +225,13 @@ piping stays clean). Set `MINDLEAK_LOG=debug` for more detail, or
 
 ---
 
-## 6. Optional local models
+## 6. Optional model augmentations
 
-MindLeak is fully useful with **no model**. Two optional, local, off-hot-path
-augmentations light up if you point them at an OpenAI-compatible server (Ollama,
-LM Studio, llama.cpp):
+MindLeak is fully useful with **no model**. Two optional, off-hot-path
+augmentations use the OpenAI-compatible endpoint you configure. The defaults and
+examples below are local (Ollama, LM Studio, or llama.cpp); a compatible hosted
+endpoint also works with its API key and deliberately sends the bounded request
+to that service.
 
 ```bash
 # Consolidation: compress raw logs into one intent node (consolidate_session)

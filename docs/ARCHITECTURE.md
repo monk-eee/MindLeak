@@ -1,15 +1,23 @@
 # Architecture
 
-MindLeak is a **Temporal Context Graph Engine (TCGE)** with two planes: an
-**episodic memory graph** (`mindleak-*`) whose edges decay, and a durable
-**Intent Plane** (`lodestar-*`, ADR-0004) that does not. Each plane is a Rust
-library behind its own MCP stdio server; everything communicates only over the
-Model Context Protocol — no shared memory, no sockets beyond stdio.
+MindLeak is **local context infrastructure for coding agents**, implemented as
+two independent planes with different lifetimes and authority. The Memory Plane
+(`mindleak-*`) is a **Temporal Context Graph Engine (TCGE)** whose episodic edges
+decay. The Intent Plane (`lodestar-*`, ADR-0004) is a durable constitution, design,
+coordination, knowledge, and conformance ledger.
+
+Each plane is a Rust library behind its own MCP stdio server. They share a
+repository identity and session identity, but not tables, database connections,
+or hidden in-process state. A client relays typed payloads between them — most
+importantly, bounded `evidence_for` output from the Memory Plane into Lodestar
+conformance — so the cross-plane contract stays explicit and auditable.
 
 ```
-Agent worktrees ─┬─ MCP/stdio ─▶ mindleak-mcp ─▶ mindleak-core ─▶ user state/<repo-id>/graph.db
-                 │                                     └── async ──▶ Ollama (optional)
-                 └─ MCP/stdio ─▶ lodestar-mcp ─▶ lodestar-core ─▶ user state/<repo-id>/spec.db
+MCP clients ─┬─ stdio ─▶ mindleak-mcp ─▶ mindleak-core ─▶ user state/<repo-id>/graph.db
+             └─ stdio ─▶ lodestar-mcp ─▶ lodestar-core ─▶ user state/<repo-id>/spec.db
+
+Optional extension sensors ─▶ mindleak-mcp
+Configured OpenAI-compatible endpoint (optional) ◀─ mindleak-core / lodestar-core
 ```
 
 ## Crates
@@ -60,8 +68,8 @@ The engine. Modules:
 | [`decay.rs`](../crates/mindleak-core/src/decay.rs) | The half-life decay formula and prune threshold. |
 | [`graph/`](../crates/mindleak-core/src/graph/mod.rs) | `GraphStore`: shared `types`, atomic `writes`, decay-aware `query/` (`lookup` node/FTS resolution, `traversal` bounded walks and impact radius, `agents` roster/attention/overlap), derived `signal/` (`mod` evidence and weighted edges, `promotion` what has earned consolidation, `prune` reaping faded signal), conformance `evidence`, and `lifecycle` operations. |
 | [`ingest/`](../crates/mindleak-core/src/ingest/mod.rs) | Zero-token deterministic extractors: `execution`, `git`, `ast`, `structure/{imports,hierarchy}` (JS/TS imports and type hierarchy), `javascript/` (the JS/TS lexer plus `nav`, `scope`, `callable`, `binding`, `shadowing`), and `manifest` (direct package dependencies). |
-| [`consolidate.rs`](../crates/mindleak-core/src/consolidate.rs) | Optional Ollama consolidation worker. |
-| [`embed.rs`](../crates/mindleak-core/src/embed.rs) | Optional semantic-recall embedding index (ADR-0008): local `/v1/embeddings` client, derived `embeddings` table, cosine recall. Off the zero-token write path. |
+| [`consolidate.rs`](../crates/mindleak-core/src/consolidate.rs) | Optional OpenAI-compatible consolidation client and worker. |
+| [`embed.rs`](../crates/mindleak-core/src/embed.rs) | Optional semantic-recall embedding index (ADR-0008): configured `/v1/embeddings` client, derived `embeddings` table, cosine recall. Off the zero-token write path. |
 | [`net.rs`](../crates/mindleak-core/src/net.rs) | Network resilience for optional HTTP (ADR-0010): timeouts, bounded retry with backoff, per-endpoint circuit breaker. |
 | [`telemetry.rs`](../crates/mindleak-core/src/telemetry.rs) | Observability (ADR-0010): durable `telemetry_events` audit trail, metrics snapshot, stderr-only `tracing` init. |
 | [`lib.rs`](../crates/mindleak-core/src/lib.rs) | `MindLeak` facade wiring; behavior is grouped under `facade/`: `ingestion`, `query`, `observability`, `lifecycle`, and `consolidation`. |
@@ -93,8 +101,8 @@ moving — a pure function over the board), `discovery`, `schema.sql` +
 seam, `coordination` task/handoff/conformance ledger, transactional
 `policy_packs` proposal/disposition/provenance ledger, reviewed `design/`
 materialization plus validation, `amendments` and `waivers`, learned
-`knowledge`, and `lifecycle` operations), `llm` (optional local model), `embed`
-(optional semantic index over knowledge — a deliberate copy of
+`knowledge`, and `lifecycle` operations), `llm` (optional OpenAI-compatible model
+client), `embed` (optional semantic index over knowledge — a deliberate copy of
 `mindleak-core::embed`, because ADR-0004 keeps that crate a dev-dependency only,
 so the Intent Plane cannot reach it at runtime), and
 `lib` (the `Lodestar` facade wiring). `store/design/` is split by
@@ -315,11 +323,12 @@ All write-path extraction is pure pattern matching:
   narrow `require` grammar. Re-ingestion retracts removed dependencies, while a
   malformed supported manifest fails before replacing its last valid snapshot.
 
-## Optional LLM layer
+## Optional model layer
 
-`consolidate.rs` calls a local, OpenAI-compatible model server
-(`/v1/chat/completions`) with a JSON `response_format` to compress a batch of raw
-logs into a single `intent` node. It is asynchronous and never on the hot path;
-pointed at a local server, nothing leaves the machine.
+`consolidate.rs` calls the configured OpenAI-compatible
+`/v1/chat/completions` endpoint with a JSON `response_format` to compress a batch
+of raw logs into a single `intent` node. It is asynchronous and never on the hot
+path. The default endpoint is local; selecting a remote endpoint deliberately
+sends the bounded request to that service.
 
 See [SPEC.md](SPEC.md) for the full design rationale.
