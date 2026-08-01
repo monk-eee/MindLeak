@@ -164,6 +164,11 @@
         "icon": "$(ellipsis)"
       },
       {
+        "command": "mindleak.design.toggleArchive",
+        "title": "MindLeak: Browse Completed ADRs",
+        "icon": "$(archive)"
+      },
+      {
         "command": "mindleak.design.toggleDeferred",
         "title": "MindLeak: Show Deferred Designs",
         "icon": "$(eye)"
@@ -297,9 +302,15 @@
           "group": "navigation@2"
         },
         {
-          "command": "mindleak.design.toggleDeferred",
+          "command": "mindleak.design.toggleArchive",
           "when": "view == mindleak.designView",
           "group": "navigation@3",
+          "toggled": "mindleak.design.showArchive"
+        },
+        {
+          "command": "mindleak.design.toggleDeferred",
+          "when": "view == mindleak.designView",
+          "group": "navigation@4",
           "toggled": "mindleak.design.showDeferred"
         },
         {
