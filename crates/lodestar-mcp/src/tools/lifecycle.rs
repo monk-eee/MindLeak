@@ -76,6 +76,43 @@ mod tests {
     use super::*;
     use lodestar_core::GoalKind;
 
+    fn payload(result: Value) -> Value {
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn stats_and_active_knowledge_agree_after_retirement() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let retired = engine
+            .record_knowledge("retired lesson", "{}", Some(720.0))
+            .unwrap();
+        engine
+            .record_knowledge("active lesson", "{}", Some(720.0))
+            .unwrap();
+        engine
+            .retire_knowledge(&retired.id, "Reviewer", "measured false", None)
+            .unwrap();
+
+        let active = payload(
+            call(
+                &engine,
+                &json!({ "name": "active_knowledge", "arguments": {} }),
+            )
+            .unwrap(),
+        );
+        let stats = call(
+            &engine,
+            &json!({ "name": "lodestar_stats", "arguments": {} }),
+        )
+        .unwrap();
+
+        assert_eq!(active["count"], json!(1));
+        assert_eq!(
+            stats["structuredContent"]["active_knowledge"],
+            active["count"]
+        );
+    }
+
     #[test]
     fn lifecycle_tools_backup_and_require_lodestar_reset_token() {
         let engine = Lodestar::open_in_memory().unwrap();

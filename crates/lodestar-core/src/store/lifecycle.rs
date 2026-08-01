@@ -31,7 +31,9 @@ impl LodestarStore {
             |r| r.get(0),
         )?;
         let active_knowledge: i64 = self.conn.query_row(
-            "SELECT COUNT(1) FROM knowledge WHERE effective_weight(weight, half_life_hours, confirmed_at, ?1) >= ?2",
+                        "SELECT COUNT(1) FROM knowledge
+                            WHERE retired_at IS NULL
+                                AND effective_weight(weight, half_life_hours, confirmed_at, ?1) >= ?2",
             params![now, ACTIVE_THRESHOLD],
             |r| r.get(0),
         )?;
@@ -90,6 +92,23 @@ mod tests {
     use crate::model::{ArtifactBindingMode, GoalKind, TaskStatus, Verdict};
     use crate::store::test_support::{goal, store, NOW};
     use crate::store::ConformanceAudit;
+
+    #[test]
+    fn stats_excludes_retired_knowledge_from_the_active_count() {
+        let store = store();
+        let retired = store
+            .record_knowledge("retired lesson", "{}", 720.0, NOW)
+            .unwrap();
+        store
+            .record_knowledge("active lesson", "{}", 720.0, NOW)
+            .unwrap();
+        store
+            .retire_knowledge(&retired.id, "Reviewer", "measured false", None, NOW)
+            .unwrap();
+
+        assert_eq!(store.active_knowledge(NOW).unwrap().len(), 1);
+        assert_eq!(store.stats(NOW).unwrap().active_knowledge, 1);
+    }
 
     #[test]
     fn backup_database_preserves_constitution() {
