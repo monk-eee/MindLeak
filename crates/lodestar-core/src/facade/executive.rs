@@ -180,6 +180,20 @@ impl Lodestar {
             .claim_task_with_scope(id, agent, lease_secs, scope, now_unix())
     }
 
+    /// Claim work while replacing only explicitly supplied scope fields.
+    pub fn claim_task_with_partial_scope(
+        &self,
+        id: &str,
+        agent: &str,
+        lease_secs: i64,
+        paths: Option<&[String]>,
+        symbols: Option<&[String]>,
+    ) -> Result<bool> {
+        let agent = self.resolve_agent(agent)?;
+        self.store
+            .claim_task_with_partial_scope(id, agent, lease_secs, paths, symbols, now_unix())
+    }
+
     /// Read one task's declared advisory scope.
     pub fn task_scope(&self, task_id: &str) -> Result<TaskScope> {
         self.store.task_scope(task_id)

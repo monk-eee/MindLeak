@@ -448,6 +448,9 @@ operations below name the invocation each maps to.
   includes the matched clauses; `scope_advice` is omitted when no binding
   matches, reports `advise` when coverage is sufficient, and reports `review`
   with the `also_serves` correction when another goal governs a declared path.
+  On re-claim, each omitted `paths`/`symbols` field preserves its existing value
+  inside the claim transaction; an explicitly supplied array replaces only that
+  field, with `[]` as the deliberate clear operation.
 10. `task_query(view="scope", task_id)` → the advisory declaration;
   `task_query(view="overlap", paths[], symbols[], exclude_task_id?)` → live claim
   intersections for concrete paths and exact symbol ids. Combine with MindLeak's
