@@ -1,0 +1,29 @@
+{
+  "skill_name": "mindleak",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "it stoo hard to use without skill we need to set mindleak up and all that in this repo",
+      "expected_output": "Use the setup reference. Detect whether both MCP planes are already visible before reinstalling. If absent, prefer the release installer, explain every workspace file it changes before running it, require a client restart, and finish by verifying one shared session and matching storage_status repository ids.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Before you edit src/auth.ts, check whether another agent is touching it and tell me what could break.",
+      "expected_output": "Open or reuse one session identity, run Lodestar live task overlap and MindLeak check_overlap for src/auth.ts, consult advise before editing, distinguish unknown graph state from an all-clear, and report findings without claiming or modifying work unless the user continues.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Finish Lodestar task task:example for me. The code is already changed but validate it and submit the evidence properly.",
+      "expected_output": "Read the named task and its scope, establish or recover ownership using the current session, validate according to repository policy, renew the lease around long steps, assemble concrete evidence, run conformance, and transition through the running server schema. Do not claim completion when review, waiver, or human action remains.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "does mindleak actually work here?",
+      "expected_output": "Use only read-only verification: check both storage_status results for the same repository id and run one small health query per plane. Report concrete counts and connection state without creating a task, claiming work, ingesting files, or recording knowledge.",
+      "files": []
+    }
+  ]
+}
