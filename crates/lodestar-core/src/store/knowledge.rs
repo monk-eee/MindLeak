@@ -2,6 +2,7 @@
 use rusqlite::{params, Row};
 
 use crate::decay::ACTIVE_THRESHOLD;
+use crate::embed::{self, Embedder};
 use crate::error::{LodestarError, Result};
 use crate::model::Knowledge;
 use crate::util::short_hash;
@@ -11,6 +12,10 @@ use super::{collect, LodestarStore};
 const KNOWLEDGE_COLS: &str =
     "id, statement, evidence, weight, half_life_hours, confirmed_at, created_at, \
      retired_at, retired_by, retired_reason, superseded_by";
+
+/// How many lessons one read may warm the index with. Bounded so the first
+/// search after an upgrade is slower once, not unusable.
+const MAX_BACKFILL_PER_READ: usize = 64;
 
 impl LodestarStore {
     /// Insert or reconfirm a knowledge node. Re-recording the same statement
@@ -33,8 +38,26 @@ impl LodestarStore {
                  confirmed_at = excluded.confirmed_at",
             params![id, statement, evidence, half_life_hours, now],
         )?;
+        self.index_statement(&id, statement, now);
         self.get_knowledge(&id)?
             .ok_or_else(|| LodestarError::Invalid("knowledge vanished after insert".into()))
+    }
+
+    /// Embed a statement for semantic recall, best-effort (ADR-0080).
+    ///
+    /// Deliberately returns nothing and swallows every failure: the index is an
+    /// optimisation on *reading* knowledge, and losing a durable lesson because
+    /// an optional local model was not running would be a far worse trade than
+    /// searching that lesson by substring.
+    fn index_statement(&self, id: &str, statement: &str, now: i64) {
+        let embedder = Embedder::default();
+        match embed::needs_vector(&self.conn, id, &embedder.model) {
+            Ok(true) => {}
+            _ => return,
+        }
+        if let Ok(vector) = embedder.embed(statement) {
+            let _ = embed::store_vector(&self.conn, id, &embedder.model, &vector, now);
+        }
     }
 
     pub fn get_knowledge(&self, id: &str) -> Result<Option<Knowledge>> {
@@ -73,6 +96,84 @@ impl LodestarStore {
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![now, ACTIVE_THRESHOLD], row_to_knowledge)?;
         collect(rows)
+    }
+
+    /// Reorder `active` by how close each statement is to `query_vector`.
+    ///
+    /// Returns the reordered list and how many of it were actually ranked.
+    /// Unindexed lessons keep their incoming weight order at the end rather
+    /// than being dropped — losing a lesson because it has no vector would be
+    /// the same silent failure in a different place — but they are *counted*,
+    /// because a list that is half meaning and half weight looks exactly like
+    /// one that is all meaning.
+    pub fn rank_knowledge(
+        &self,
+        active: Vec<Knowledge>,
+        query_vector: &[f32],
+        model: &str,
+    ) -> Result<(Vec<Knowledge>, usize)> {
+        let vectors = embed::vectors_for_model(&self.conn, model)?;
+        let mut ranked: Vec<(f32, Knowledge)> = Vec::new();
+        let mut unranked: Vec<Knowledge> = Vec::new();
+        for k in active {
+            match vectors.iter().find(|(id, _)| id == &k.id) {
+                Some((_, v)) => ranked.push((embed::cosine(query_vector, v), k)),
+                None => unranked.push(k),
+            }
+        }
+        ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let count = ranked.len();
+        let mut out: Vec<Knowledge> = ranked.into_iter().map(|(_, k)| k).collect();
+        out.extend(unranked);
+        Ok((out, count))
+    }
+
+    /// Give unembedded active knowledge a vector, best-effort, in one request.
+    ///
+    /// Returns how many were added. Bounded per call so warming a large corpus
+    /// costs a bounded amount of a single read rather than one long stall, and
+    /// swallows every failure: an unreachable model must cost ranking only.
+    pub fn backfill_embeddings(
+        &self,
+        active: &[Knowledge],
+        embedder: &Embedder,
+        now: i64,
+    ) -> usize {
+        let ids: Vec<String> = active.iter().map(|k| k.id.clone()).collect();
+        let Ok(missing) = embed::missing_vectors(&self.conn, &embedder.model, &ids) else {
+            return 0;
+        };
+        let batch: Vec<&Knowledge> = active
+            .iter()
+            .filter(|k| missing.contains(&k.id))
+            .take(MAX_BACKFILL_PER_READ)
+            .collect();
+        if batch.is_empty() {
+            return 0;
+        }
+        let statements: Vec<String> = batch.iter().map(|k| k.statement.clone()).collect();
+        let Ok(vectors) = embedder.embed_batch(&statements) else {
+            return 0;
+        };
+        let mut stored = 0;
+        for (k, vector) in batch.iter().zip(vectors) {
+            if embed::store_vector(&self.conn, &k.id, &embedder.model, &vector, now).is_ok() {
+                stored += 1;
+            }
+        }
+        stored
+    }
+
+    /// The honest fallback: keep only what literally mentions the query.
+    pub fn substring_knowledge(active: Vec<Knowledge>, query: &str) -> Vec<Knowledge> {
+        let needle = query.to_lowercase();
+        active
+            .into_iter()
+            .filter(|k| {
+                k.statement.to_lowercase().contains(&needle)
+                    || k.evidence.to_lowercase().contains(&needle)
+            })
+            .collect()
     }
 
     /// Retire one lesson, attributed to whoever ended it (ADR-0019 shape).
@@ -152,7 +253,190 @@ fn row_to_knowledge(row: &Row) -> rusqlite::Result<Knowledge> {
 
 #[cfg(test)]
 mod tests {
+    use super::LodestarStore;
+    use crate::embed::{self, Embedder};
     use crate::store::test_support::{store, HOUR, NOW};
+
+    /// Point the optional embedder at the discard port so these tests exercise
+    /// the unreachable path deterministically, whether or not the machine
+    /// running them happens to have a local model listening.
+    fn without_an_embedder() {
+        std::env::set_var("LODESTAR_EMBED_URL", "http://127.0.0.1:9");
+    }
+
+    // Regression: the semantic index is an optimisation on *reading* knowledge,
+    // so an absent or unreachable embedder must cost the reader ranking and
+    // nothing else. If the embed attempt could propagate, an agent recording a
+    // hard-won lesson would lose it outright because an optional local model
+    // was not running - the write path silently acquiring a network dependency.
+    #[test]
+    fn an_unreachable_embedder_never_costs_us_the_lesson() {
+        without_an_embedder();
+        let s = store();
+
+        let k = s
+            .record_knowledge("never use --no-verify", "{}", 720.0, NOW)
+            .unwrap();
+
+        assert_eq!(
+            s.get_knowledge(&k.id).unwrap().unwrap().statement,
+            k.statement
+        );
+        assert_eq!(s.active_knowledge(NOW).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn ranking_orders_by_meaning_not_by_the_order_it_was_given() {
+        let s = store();
+        let worktrees = s
+            .record_knowledge("one worktree per workstream", "{}", 720.0, NOW)
+            .unwrap();
+        let hooks = s
+            .record_knowledge("never use --no-verify", "{}", 720.0, NOW)
+            .unwrap();
+        // A stub embedder: two statements placed on opposite axes, so the
+        // expected ranking is unambiguous.
+        embed::store_vector(&s.conn, &worktrees.id, "stub", &[1.0, 0.0], NOW).unwrap();
+        embed::store_vector(&s.conn, &hooks.id, "stub", &[0.0, 1.0], NOW).unwrap();
+
+        let near_hooks = s
+            .rank_knowledge(s.active_knowledge(NOW).unwrap(), &[0.1, 1.0], "stub")
+            .unwrap()
+            .0;
+        let near_worktrees = s
+            .rank_knowledge(s.active_knowledge(NOW).unwrap(), &[1.0, 0.1], "stub")
+            .unwrap()
+            .0;
+
+        // Both directions, because an implementation that simply preserved the
+        // incoming order would pass either one alone.
+        assert_eq!(near_hooks[0].id, hooks.id);
+        assert_eq!(near_worktrees[0].id, worktrees.id);
+    }
+
+    // Regression: rank_knowledge returned Some as soon as ANY vector existed,
+    // so a partly-warmed index pinned every unembedded lesson to score 0.0 at
+    // the bottom while the reply still called itself "semantic". That is the
+    // silent-wrong-answer shape ADR-0080 exists to prevent, arriving through
+    // the fix for it: the reader cannot tell a genuinely poor match from one
+    // that was never compared at all.
+    #[test]
+    fn a_partly_indexed_corpus_reports_how_much_it_actually_ranked() {
+        let s = store();
+        let indexed = s
+            .record_knowledge("one worktree per workstream", "{}", 720.0, NOW)
+            .unwrap();
+        let unindexed = s
+            .record_knowledge("never use --no-verify", "{}", 720.0, NOW)
+            .unwrap();
+        embed::store_vector(&s.conn, &indexed.id, "stub", &[1.0, 0.0], NOW).unwrap();
+
+        let (ordered, covered) = s
+            .rank_knowledge(s.active_knowledge(NOW).unwrap(), &[1.0, 0.0], "stub")
+            .unwrap();
+
+        assert_eq!(covered, 1, "only one lesson could be compared");
+        assert_eq!(ordered.len(), 2, "the unranked lesson is kept, not dropped");
+        assert_eq!(ordered[0].id, indexed.id);
+        assert_eq!(ordered[1].id, unindexed.id);
+    }
+
+    #[test]
+    fn missing_vectors_names_only_what_has_not_been_embedded() {
+        let s = store();
+        let indexed = s.record_knowledge("a", "{}", 720.0, NOW).unwrap();
+        let unindexed = s.record_knowledge("b", "{}", 720.0, NOW).unwrap();
+        embed::store_vector(&s.conn, &indexed.id, "stub", &[1.0], NOW).unwrap();
+
+        let ids = vec![indexed.id.clone(), unindexed.id.clone()];
+        let missing = embed::missing_vectors(&s.conn, "stub", &ids).unwrap();
+
+        assert_eq!(missing, vec![unindexed.id]);
+    }
+
+    #[test]
+    fn backfill_against_an_unreachable_model_changes_nothing() {
+        without_an_embedder();
+        let s = store();
+        s.record_knowledge("never use --no-verify", "{}", 720.0, NOW)
+            .unwrap();
+        let active = s.active_knowledge(NOW).unwrap();
+
+        let stored = s.backfill_embeddings(&active, &Embedder::default(), NOW);
+
+        assert_eq!(stored, 0);
+        // Still readable, still complete - the warm-up is an optimisation and
+        // failing it must not cost the reader the lessons themselves.
+        assert_eq!(s.active_knowledge(NOW).unwrap().len(), 1);
+        let ids: Vec<String> = active.iter().map(|k| k.id.clone()).collect();
+        assert_eq!(
+            embed::missing_vectors(&s.conn, &Embedder::default().model, &ids)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn backfill_is_a_no_op_once_everything_is_indexed() {
+        without_an_embedder();
+        let s = store();
+        let k = s.record_knowledge("a", "{}", 720.0, NOW).unwrap();
+        let embedder = Embedder::default();
+        embed::store_vector(&s.conn, &k.id, &embedder.model, &[1.0], NOW).unwrap();
+
+        // Nothing is missing, so it must not reach for the network at all -
+        // otherwise every search pays a failed round trip forever.
+        assert_eq!(
+            s.backfill_embeddings(&s.active_knowledge(NOW).unwrap(), &embedder, NOW),
+            0
+        );
+    }
+
+    #[test]
+    fn ranking_declines_rather_than_calling_arbitrary_order_semantic() {
+        let s = store();
+        s.record_knowledge("never use --no-verify", "{}", 720.0, NOW)
+            .unwrap();
+
+        // Nothing is indexed under this model, so every statement would score
+        // zero and the resulting order would mean nothing. Reporting zero
+        // coverage is what lets the caller degrade honestly instead of
+        // dressing up noise.
+        let (ordered, covered) = s
+            .rank_knowledge(s.active_knowledge(NOW).unwrap(), &[1.0, 0.0], "stub")
+            .unwrap();
+
+        assert_eq!(covered, 0);
+        assert_eq!(ordered.len(), 1);
+    }
+
+    #[test]
+    fn the_fallback_matches_literal_text_in_statement_or_evidence() {
+        let s = store();
+        s.record_knowledge("never use --no-verify", "{}", 720.0, NOW)
+            .unwrap();
+        s.record_knowledge(
+            "one worktree per workstream",
+            "{\"why\":\"hooks\"}",
+            720.0,
+            NOW,
+        )
+        .unwrap();
+
+        let active = s.active_knowledge(NOW).unwrap();
+        // Case-insensitive, and evidence counts: a lesson's provenance is often
+        // where the term the reader remembers actually appears.
+        assert_eq!(
+            LodestarStore::substring_knowledge(active.clone(), "NO-VERIFY").len(),
+            1
+        );
+        assert_eq!(
+            LodestarStore::substring_knowledge(active.clone(), "hooks").len(),
+            1
+        );
+        assert!(LodestarStore::substring_knowledge(active, "kubernetes").is_empty());
+    }
 
     #[test]
     fn knowledge_revalidation_extends_life() {

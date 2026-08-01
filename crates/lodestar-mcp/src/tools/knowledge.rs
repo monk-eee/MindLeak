@@ -1,7 +1,7 @@
 //! Knowledge tool definitions and dispatch.
 
 use super::{i64_arg, ok, opt_str, req_str, str_array, text};
-use lodestar_core::{KnowledgeReach, Lodestar, SignalPromotion};
+use lodestar_core::{KnowledgeMatches, KnowledgeReach, Lodestar, SignalPromotion};
 use serde_json::{json, Value};
 
 pub(super) fn definitions() -> Vec<Value> {
@@ -87,12 +87,13 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "active_knowledge",
-            "description": "Read what this repository has learned and not yet forgotten. Knowledge was write-only from this surface: it could be recorded, promoted, reconfirmed and pruned, but never read, so the only consumer was the conformance advisory and an agent could not find out what was already known before rediscovering it. Each entry reports how it reaches an agent: `reach` is `node` when the nodes it names carry it unconditionally, `goal:<id>` when it names none but still reaches work under the goal it was learned under (a capped, contended path), and `none` when it has neither and arrives nowhere.",
+            "description": "Read what this repository has learned and not yet forgotten. Knowledge was write-only from this surface: it could be recorded, promoted, reconfirmed and pruned, but never read, so the only consumer was the conformance advisory and an agent could not find out what was already known before rediscovering it. Pass `query` to ask a question rather than guess a spelling. Each entry reports how it reaches an agent: `reach` is `node` when the nodes it names carry it unconditionally, `goal:<id>` when it names none but still reaches work under the goal it was learned under (a capped, contended path), and `none` when it has neither and arrives nowhere.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "node": { "type": "string", "description": "Return only knowledge referencing this node id, e.g. artifact:crates/lodestar-core/src/llm.rs - what is known about the thing you are about to change." },
-                    "contains": { "type": "string", "description": "Return only knowledge whose statement contains this text, matched case-insensitively." }
+                    "contains": { "type": "string", "description": "Return only knowledge whose statement contains this text, matched case-insensitively." },
+                    "query": { "type": "string", "description": "Rank knowledge by meaning against this question, so a lesson reaches you without you knowing its wording. Falls back to substring matching when no embedder is reachable; the reply's `match_mode` always says which one answered." }
                 }
             }
         }),
@@ -228,7 +229,20 @@ pub(super) fn dispatch(
         "active_knowledge" => Some((|| {
             let node = opt_str(args, "node");
             let contains = opt_str(args, "contains").map(|c| c.to_lowercase());
-            let known = engine.active_knowledge().map_err(|e| e.to_string())?;
+            // `query` ranks by meaning; `contains` keeps its exact substring
+            // contract untouched, because a caller who spelled a filter is
+            // asking for that spelling and would not thank us for approximating
+            // it (ADR-0080).
+            let matches = match opt_str(args, "query") {
+                Some(query) => engine.search_knowledge(&query).map_err(|e| e.to_string())?,
+                None => KnowledgeMatches {
+                    knowledge: engine.active_knowledge().map_err(|e| e.to_string())?,
+                    mode: "weight",
+                    degraded_because: None,
+                    ranked: 0,
+                },
+            };
+            let known = matches.knowledge;
 
             let rows: Vec<Value> = known
                 .iter()
@@ -277,12 +291,45 @@ pub(super) fn dispatch(
                         .is_some_and(|reach| reach.starts_with("goal:"))
                 })
                 .count();
-            ok(&json!({
+            let mut body = json!({
                 "count": rows.len(),
                 "never_surfaces": unreachable,
                 "reaches_by_goal_only": by_goal_only,
+                "match_mode": matches.mode,
                 "knowledge": rows,
-            }))
+            });
+            // An answer that degraded silently is worse than one that failed:
+            // the caller reads an exact-match miss as a semantic one and
+            // concludes the repository never learned it.
+            if let (Some(object), Some(because)) =
+                (body.as_object_mut(), matches.degraded_because.as_ref())
+            {
+                object.insert(
+                    "match_mode_note".to_string(),
+                    json!(format!(
+                        "Ranked by literal substring, not meaning, because {because}. Results \
+                         mentioning the query in different words are missing from this reply."
+                    )),
+                );
+            }
+            // A part-ranked list looks exactly like a fully ranked one, so the
+            // tail that is still in weight order has to announce itself.
+            if matches.mode == "semantic" && matches.ranked < rows.len() {
+                if let Some(object) = body.as_object_mut() {
+                    object.insert("ranked_by_meaning".to_string(), json!(matches.ranked));
+                    object.insert(
+                        "match_mode_note".to_string(),
+                        json!(format!(
+                            "Only the first {} of {} lessons are ranked by meaning; the rest are \
+                             not yet embedded and follow in weight order. Search again once the \
+                             index has warmed.",
+                            matches.ranked,
+                            rows.len()
+                        )),
+                    );
+                }
+            }
+            ok(&body)
         })()),
         "reconfirm_knowledge" => Some((|| {
             let reconfirmed = engine

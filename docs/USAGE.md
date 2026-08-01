@@ -1,9 +1,9 @@
 # Using MindLeak
 
-MindLeak gives a coding agent **durable, decaying memory of the work** — what was
-run, what changed, what failed, what was decided — and lets it query that memory
-before it acts. This guide covers how the tools are used in practice and how to
-configure the servers.
+MindLeak gives a coding agent **decay-weighted memory of the work** — what was
+run, what changed, what failed, and how the code connects — alongside durable
+intent, coordination, and proof. This guide covers how both planes are used in
+practice and how to configure their servers.
 
 New here? Start with **[QUICKSTART.md](QUICKSTART.md)**. Want worked examples
 instead of a reference? See **[WALKTHROUGH.md](WALKTHROUGH.md)** for four
@@ -21,8 +21,10 @@ end-to-end scenarios with the VS Code panels shown.
 You can run just the memory plane. Add the intent plane when multiple agents (or
 worktrees) need to coordinate without diluting shared intent.
 
-Everything on the **write path is deterministic** (pattern matching, zero LLM
-tokens). Optional local models only run asynchronously, off the hot path.
+Everything on the **write path is deterministic** (pattern matching, zero model
+tokens). Optional OpenAI-compatible endpoints run asynchronously, off the hot
+path. Defaults target local models; choosing a remote endpoint deliberately
+sends the bounded request to that service.
 
 Agents driving this loop should also load [`skills/mindleak/SKILL.md`](../skills/mindleak/SKILL.md),
 which carries the operational discipline this guide assumes: claim scope, lease

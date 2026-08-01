@@ -85,14 +85,15 @@ export class DesignBoardController {
     try {
       // The actionable view, not the durable record: proposed ADRs awaiting a
       // human decision plus accepted designs awaiting or retrying promotion.
-      // `ledger` returns everything ever decided, and the decoration below then
-      // costs one further call per finished design. Measured against the live
-      // ledger: 75 rows rendered of which 5 were actionable, at 70 MCP calls a
-      // refresh — and the refresh is wired to a file watcher over docs/adr, so
-      // every ADR touch paid it again. This is the board those 5 belong to; the
-      // durable record is still `view: "ledger"` for anything auditing it.
+      // `ledger` returns everything ever decided. Archive mode requests it
+      // explicitly but leaves promotion detail lazy, so browsing completed ADRs
+      // stays one bounded read instead of one further call per finished design.
+      // Measured against the live ledger before this split: 75 rows rendered of
+      // which 5 were actionable, at 70 MCP calls a refresh — and the refresh is
+      // wired to a file watcher over docs/adr, so every ADR touch paid it again.
+      const archiveVisible = this.provider.includeArchive;
       let designs = (await this.client.callTool("design_query", {
-        view: "board",
+        view: archiveVisible ? "ledger" : "board",
       })) as DesignItem[];
       if (this.provider.includeDeferred) {
         const proposed = (await this.client.callTool("design_query", {
@@ -106,7 +107,9 @@ export class DesignBoardController {
           ...proposed.filter((design) => design.deferred && !known.has(design.id)),
         ];
       }
-      const materialized = designs.filter((design) => design.promotion_status === "materialized");
+      const materialized = archiveVisible
+        ? []
+        : designs.filter((design) => design.promotion_status === "materialized");
       // One unreadable promotion must not blank the whole board. `Promise.all`
       // rejected the entire batch, so a single bad row left the view showing
       // stale contents with only an error toast to explain it.
@@ -144,6 +147,11 @@ export class DesignBoardController {
 
   async toggleDeferred(): Promise<void> {
     this.provider.setIncludeDeferred(!this.provider.includeDeferred);
+    await this.refresh();
+  }
+
+  async toggleArchive(): Promise<void> {
+    this.provider.setIncludeArchive(!this.provider.includeArchive);
     await this.refresh();
   }
 

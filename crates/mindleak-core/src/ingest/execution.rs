@@ -5,6 +5,8 @@
 //! when the command failed — `failed_on` edges to files named in the output's
 //! stack trace / error lines.
 
+use std::sync::OnceLock;
+
 use regex::Regex;
 
 use crate::error::Result;
@@ -30,22 +32,18 @@ pub fn parse_error_locations(output: &str) -> Vec<(String, u32)> {
     let mut out = Vec::new();
 
     // path/to/file.ext:line   (Rust, JS, Go, generic)
-    if let Ok(re) = Regex::new(r"([A-Za-z0-9_./\\-]+\.[A-Za-z]{1,6}):(\d+)") {
-        for caps in re.captures_iter(output) {
-            if let (Some(p), Some(l)) = (caps.get(1), caps.get(2)) {
-                if let Ok(line) = l.as_str().parse::<u32>() {
-                    out.push((normalize_path(p.as_str()), line));
-                }
+    for caps in file_line_re().captures_iter(output) {
+        if let (Some(p), Some(l)) = (caps.get(1), caps.get(2)) {
+            if let Ok(line) = l.as_str().parse::<u32>() {
+                out.push((normalize_path(p.as_str()), line));
             }
         }
     }
     // Python: File "path", line N
-    if let Ok(re) = Regex::new(r#"File "([^"]+)", line (\d+)"#) {
-        for caps in re.captures_iter(output) {
-            if let (Some(p), Some(l)) = (caps.get(1), caps.get(2)) {
-                if let Ok(line) = l.as_str().parse::<u32>() {
-                    out.push((normalize_path(p.as_str()), line));
-                }
+    for caps in python_traceback_re().captures_iter(output) {
+        if let (Some(p), Some(l)) = (caps.get(1), caps.get(2)) {
+            if let Ok(line) = l.as_str().parse::<u32>() {
+                out.push((normalize_path(p.as_str()), line));
             }
         }
     }
@@ -53,6 +51,25 @@ pub fn parse_error_locations(output: &str) -> Vec<(String, u32)> {
     out.sort();
     out.dedup();
     out
+}
+
+/// `path/to/file.ext:line` — Rust, JS, Go, generic. Compiled once: recompiling a
+/// constant pattern on every ingest is the anti-pattern the regex crate warns of.
+fn file_line_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"([A-Za-z0-9_./\\-]+\.[A-Za-z]{1,6}):(\d+)")
+            .expect("file:line pattern is a compile-time constant, covered by unit tests")
+    })
+}
+
+/// Python traceback line: `File "path", line N`. Compiled once.
+fn python_traceback_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"File "([^"]+)", line (\d+)"#)
+            .expect("python-traceback pattern is a compile-time constant, covered by unit tests")
+    })
 }
 
 /// Ingest one execution record. Returns counts + created node ids.
@@ -131,6 +148,14 @@ pub fn ingest_execution(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn error_location_regexes_are_compiled_once() {
+        // The accessors must hand back the same static instance every call --
+        // otherwise the pattern is recompiled on every execution ingest.
+        assert!(std::ptr::eq(file_line_re(), file_line_re()));
+        assert!(std::ptr::eq(python_traceback_re(), python_traceback_re()));
+    }
 
     #[test]
     fn parses_generic_and_python_locations() {
