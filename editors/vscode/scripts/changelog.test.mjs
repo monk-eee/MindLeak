@@ -178,6 +178,52 @@ describe("the command line", () => {
     expect(text).toContain("- **Later.**");
   });
 
+  it("--release amends an unpublished same-version candidate", () => {
+    const root = sandbox();
+    writeFileSync(
+      join(root, "CHANGELOG.md"),
+      [
+        "# Changelog",
+        "",
+        "## [Unreleased]",
+        "",
+        "## [0.1.4] - 2026-07-30",
+        "",
+        "### Added",
+        "- **Candidate feature.**",
+        "",
+        "### Fixed",
+        "- **Candidate fix one.**",
+        "",
+        "  Its detail paragraph must stay separated.",
+        "",
+        "### Fixed",
+        "- **Candidate fix two.**",
+        "",
+        "## [0.1.3] - 2026-07-27",
+        "",
+        "### Added",
+        "- **Old.**",
+        "",
+      ].join("\n")
+    );
+    fragment(root, "fixed-late.md", "- **Late fix.**\n");
+
+    run(root, ["--release", "0.1.4"]);
+
+    const text = readFileSync(join(root, "CHANGELOG.md"), "utf8");
+    expect([...text.matchAll(/^## \[0\.1\.4\]/gm)]).toHaveLength(1);
+    const candidate = text.slice(text.indexOf("## [0.1.4]"), text.indexOf("## [0.1.3]"));
+    expect([...candidate.matchAll(/^### Fixed$/gm)]).toHaveLength(1);
+    expect(candidate).toContain("- **Candidate feature.**");
+    expect(candidate).toContain(
+      "- **Candidate fix one.**\n\n  Its detail paragraph must stay separated."
+    );
+    expect(candidate).toContain("- **Candidate fix two.**");
+    expect(candidate).toContain("- **Late fix.**");
+    expect(readdirSync(join(root, "changelog.d"))).toEqual([]);
+  });
+
   it("refuses to release nothing", () => {
     const root = sandbox();
     changelog(root);

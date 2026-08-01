@@ -6,7 +6,7 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.1.4] - 2026-07-30
+## [0.1.4] - 2026-08-01
 
 ### Added
 - Build-artefact hygiene now runs itself. A fleet of worktrees rebuilds the same
@@ -193,14 +193,12 @@ to [Semantic Versioning](https://semver.org/).
   `get_impact_radius` on `crates/mindleak-core/src/model.rs`, which nearly every
   module in the crate imports, returned 11 nodes, 11 edges and **zero** imports
   edges. The improvement was real and completely invisible. After one pass:
-
   | `model.rs` impact | before | after |
   |---|--:|--:|
   | nodes | 11 | 189 |
   | edges | 11 | 216 |
   | `imports` edges | 0 | 41 |
   | dependent `.rs` files reached | 0 | 25 |
-
   The pass enumerates tracked files with `git ls-files`, skips what the
   extractor cannot read, and drives `ingest_file` through a server it builds and
   spawns itself — deliberately not whichever server an editor is running, since
@@ -282,8 +280,6 @@ to [Semantic Versioning](https://semver.org/).
   when the queue is empty, because a field that always appears is one readers
   learn to scroll past — the same reason `stale_build` stays quiet on a current
   build. Both the reporting and the silence are tested.
-### Added
-
 - **`existing_work` answers whether this has already been done.** Six identical
   "carry controls across an amendment" tasks and four identical "run the merge
   queue ourselves" tasks reached the board because nothing could answer that
@@ -295,11 +291,9 @@ to [Semantic Versioning](https://semver.org/).
   comparison so the two cannot drift, and asking about nothing is refused
   rather than answered "nothing exists" — a clean bill of health for a question
   never asked is the failure this exists to prevent.
-
   `create_task` now names the prior work serving the same goal and still
   creates the task: a second task against one goal is often legitimate, and a
   gate here would be wrong more often than right (ADR-0015).
-
   Not yet answered: which branch that prior work is on, and whether it is
   merged. `Task` has no branch field — that is a separate open task, and
   reporting a branch before one is recorded would be a guess.
@@ -588,13 +582,11 @@ to [Semantic Versioning](https://semver.org/).
   measured against this repository's own — 19,317 embedded nodes, ten queries,
   the pre-change algorithm as the control arm and the built binary as the
   treatment arm.
-
   Two claims held. Hits naming a node the graph no longer holds fell from **24
   of 50 to 0 of 49**: nearly half of what recall used to hand back was an id the
   caller could not open. Recorded conclusions rose from **14% of hits served to
   96%**, where they had been outnumbered five to one by symbols, executions and
   dangling references.
-
   One did not, and it is recorded with equal weight because the fixtures could
   not see it: **a nonsense query is still answered rather than met with
   silence.** Top-hit distance above the field is 3.11–3.90 standard deviations
@@ -603,12 +595,10 @@ to [Semantic Versioning](https://semver.org/).
   shipped 1σ cut sits far below both. The reasoning that failed was that
   nonsense lifts a field uniformly — true of the fixture, false of a diverse
   19,000-node index, where even nonsense has relative outliers.
-
   The constant is deliberately **not** tuned in response: three samples
   separated by a negative margin is the same global constant the floor
   measurement already warned against, one level up. ADR-0075 is still Proposed
   and carries a correction saying so.
-
   New: `scripts/evaluate-recall.mjs`, with unit tests, reproducing all of the
   above. It needs a populated index and a reachable embeddings server — both
   optional parts of the product (ADR-0008) — and reports rather than fails when
@@ -650,6 +640,47 @@ to [Semantic Versioning](https://semver.org/).
   it. Derivation is therefore genesis seed plus in-log transitions, with a test
   that a pre-log window keeps the three lapses it had and accumulates a fourth
   on top.
+- **`fleet_view` now surfaces a stale one-way wait, not only a wait cycle.** A
+  task parked on `ask_question` addressed to a peer who never answers was flagged
+  by nothing — only a mutual wait cycle was — so it could sit until the seven-day
+  parking grace released it. `fleet_view` now reports a one-way wait whose
+  addressee has gone quiet (no live claim and no session declared since the
+  question was asked, past a grace) as a distinct, weaker signal than a cycle:
+  the remedy is not to break a deadlock but to redirect the question to someone
+  who is here. Advisory only, like the rest of the view.
+- **A pre-push hook-health check verifies the shared hooks are installed.** A
+  hook type in `default_install_hook_types` only installs when `pre-commit
+  install` is re-run, and the hooks directory is shared across every worktree,
+  so a checkout made before `post-commit` was added kept committing with no
+  provenance and nothing said so. `scripts/hook-health.mjs` runs from pre-push,
+  resolves the hooks directory git will actually use, and refuses the push with
+  `pre-commit install --install-hooks` when pre-commit, pre-push, or post-commit
+  is absent.
+- **A lesson that is wrong or has been replaced can now be retired, instead of
+  waiting out its half-life.** `prune_knowledge` only removes what decayed, so a
+  superseded record kept being counted and kept competing for the capped
+  goal-advisory slots until its clock ran out — which meant
+  `scripts/silent-knowledge.mjs` reported a backlog that doing the work could
+  not reduce, and `--check` could never gate on it. The new `retire_knowledge`
+  tool records who ended a lesson and why, and optionally the record that
+  replaced it. Retiring is not deleting: the statement and its provenance stay
+  readable, but the record leaves the active set, so the conformance advisory
+  stops carrying it and the audit stops counting it. Existing databases gain the
+  columns by migration.
+- **Literal dynamic JavaScript and TypeScript imports now contribute structural
+  dependency edges.** Calls such as `import("./feature")` and
+  `import("@scope/package")` use the same conservative artifact-candidate and
+  package resolution as static imports. Computed, template-literal, malformed,
+  and multi-argument forms remain ignored rather than guessed.
+- **An agent skill now ships with MindLeak.** `skills/mindleak/SKILL.md` is a
+  trigger-activated skill teaching an agent to operate correctly in an
+  instrumented repository: registering one session across both planes, declaring
+  path scope on every claim, renewing a lease as a heartbeat, setting both plane
+  binaries in a worktree with no local build, deciding whether a lapsed claim is
+  abandoned or merely paused, and submitting a completion offer. It complements
+  rather than repeats the existing docs — the mental model stays in `USAGE.md`,
+  scenarios in `WALKTHROUGH.md`, the tool list in `TOOLS.md` — and carries the
+  operational discipline those assume you already have.
 
 ### Changed
 - Squash and rebase merging are now disabled on `monk-eee/MindLeak`, so the
@@ -1009,20 +1040,16 @@ to [Semantic Versioning](https://semver.org/).
   would have said so. A missing embedding index reports every node as
   unrecallable rather than failing, because taking `graph_stats` down would
   remove the one health signal the fleet reads.
-### Changed
-
 - **Known gaps are fragments, so recording one never conflicts.** The Known gaps
   section of `DEVELOPERS.md` was a single shared append-only list of 81 entries,
   so every branch that recorded a gap edited the same lines. Almost every pull
   request collided there, and each conflict expressed no disagreement whatever —
   two agents adding two unrelated observations to the same paragraph. It was
   hand-resolved four times in one session.
-
   ADR-0056 already solved this shape for `CHANGELOG.md`: a fragment is a new
   file per item, and two branches never write the same path. Gaps now live in
   `gaps.d/`, one file per gap, with `node scripts/gaps.mjs --list` to read them
   and `--check` in the pre-commit hook to refuse a malformed one.
-
   One deliberate difference from `changelog.d/`: a changelog fragment folds into
   the file at release and is deleted, but a gap has no release event — it is
   open until it is fixed. Folding would put the shared list, and the conflict,
@@ -1030,7 +1057,6 @@ to [Semantic Versioning](https://semver.org/).
   `DEVELOPERS.md` points at them instead of holding a generated copy. Closing a
   gap deletes its fragment in the commit that fixes it, so the fix and the
   retraction are one reviewable change.
-
   `--check` fails on an empty `gaps.d/` rather than reporting success. An empty
   Known Gaps section is almost always a lie, and a validator that passed over a
   directory which had quietly lost every gap ever recorded would give the one
@@ -1223,7 +1249,6 @@ to [Semantic Versioning](https://semver.org/).
   overlap. The old fifteen names still answer for one minor version, and each
   reply names the call to make instead, so the deprecation teaches rather than
   merely failing; removal ships with the release train named in ADR-0059.
-
 - **The guard that checks the server advertises everything it answers to was
   reading its own source.** `every_tool_the_server_answers_to_is_advertised`
   scans dispatch blocks by searching for the text `match name {` — and
@@ -1351,13 +1376,11 @@ to [Semantic Versioning](https://semver.org/).
   string arg: reason` could not. The twenty-six old names answer for one minor
   version and each reply names the call to make instead; removal ships with the
   release train ADR-0059 names.
-
   Two guidance strings changed with them, because they name a call an agent is
   expected to make next: a lost claim now says `task_claim with step="recover"`
   can take it over, and an expiring lease says to call `task_claim with
   step="renew"`. Advice that names a verb nobody will find is worse than no
   advice.
-
 - **A deprecated tool name silently lost its argument checking.** Argument
   validation looks a tool up by name to find the schema to check against, and a
   collapsed cluster's old names are deliberately absent from that list — so for
@@ -1371,7 +1394,6 @@ to [Semantic Versioning](https://semver.org/).
   answers them, which is also the schema whose argument list the error message
   should be quoting. This shipped broken with the design cluster in the previous
   release and is fixed for both.
-
 - **The three collapsed clusters now share one deprecation implementation.** The
   rename table, its "call this instead" notice, and the two argument helpers
   every collapsed tool needs (`one_of`, and the conditional-requirement message
@@ -1413,6 +1435,33 @@ to [Semantic Versioning](https://semver.org/).
   open records nothing, silently.
   Documentation only. Whether that skip is the right behaviour is a separate
   decision and is deliberately not settled here.
+- The Design Board now keeps large backlogs forageable without hiding undecided work: maintainers can defer and resume proposed designs with attribution, apply backlog decisions in batches, expand a capped view, and explicitly reveal deferred rows.
+- **`task_transition to=abandon` no longer retires branched work silently.** A
+  task records the branch its claiming session declared, and abandon is a
+  one-way door; measured, every abandoned task carrying a branch corresponded to
+  a real pull request, most of them already merged. Abandon now refuses a task
+  that recorded a branch unless `acknowledge_branch=true` is passed, and the
+  refusal names the branch — the ledger cannot see a pull request from the stdio
+  server, so it asks the caller to check rather than deciding for them. A
+  branchless task, or one abandoned with the acknowledgement, retires exactly as
+  before.
+- **The binding vocabulary speaks artifacts, not code.** `link_goal_to_artifact`
+  (ADR-0060) writes bindings that can govern any node — `artifact:`, `symbol:`,
+  and more — but the type and table it wrote to still said "code", implying the
+  store refused non-code nodes when it never did. `CodeBindingMode` and
+  `CodeBinding` are now `ArtifactBindingMode` and `ArtifactBinding`, and the
+  `goal_code` table is now `goal_artifacts`. Existing ledgers migrate in place on
+  first open: every binding, its `mode`, and its index move to the new table.
+- Structural ingestion now records its extractor version, workspace reconciliation reports stale or missing file snapshots, and `make reingest` refreshes only those files without recording false agent attention.
+- **The push gate refuses before publishing instead of warning afterwards.**
+  The Lodestar ledger already refused a publish it could not reach, but the
+  Memory Plane was only consulted _after_ the push and could do no more than
+  annotate the result as uncertifiable — by which point the branch was
+  irreversibly on the remote. Both planes are now resolved before anything is
+  pushed, and an unreachable Memory Plane stops the publish with a message
+  naming `MINDLEAK_MCP_BIN` and the build command. A warning issued after an
+  irreversible act was never the same protection as a refusal before it.
+- Canonical publication now reports every Rust source file the branch adds as bound or unbound, so new modules cannot enter the repository with silent constitutional coverage gaps.
 
 ### Fixed
 - **A server still running a file that has since been replaced now says so.**
@@ -1422,7 +1471,6 @@ to [Semantic Versioning](https://semver.org/).
   then swapped. A running process keeps reporting the sha it was compiled with,
   so it can match HEAD exactly while the code actually answering has been
   superseded on disk.
-
   Measured cost of that silence, 2026-07-30: most of a session. A live server
   kept answering with a pre-ADR-0054 labelled agent id while every binary on
   disk answered with the collapsed one, so the owner string flipped between two
@@ -1432,7 +1480,6 @@ to [Semantic Versioning](https://semver.org/).
   driving the same session token through every binary on disk returned the
   current answer. Rebuilding and reinstalling would have changed nothing.
   Restarting was the entire remedy.
-
   `open_session` now carries a `replaced_binary` notice on both planes, asked
   fresh on every call because the swap happens after startup and a value
   computed once could never see it. The advice is deliberately to **restart, not
@@ -1440,7 +1487,6 @@ to [Semantic Versioning](https://semver.org/).
   executable whose timestamp cannot be read stays silent rather than
   manufacturing a warning, the same distinction the surrounding module already
   draws between an unanswerable question and an answer of no.
-
   Detection is not prevention: the agent is told, and nothing restarts for it.
 - **A newer writer no longer blinds an older reader.**
   The task event log is append-only and shared by binaries of different
@@ -1619,14 +1665,11 @@ to [Semantic Versioning](https://semver.org/).
   rather than at the environment. The runner now scrubs them once, so a test
   written later gets this for free; remembering per test is the discipline that
   failed.
-### Fixed
-
 - **A covering task is recognised again after a constitution amendment.** Every
   task touching governed code completed as `drift`, however correct it was, and
   `claim_task` / `governing_for_task` reported that nothing governed the change
   — so an agent was waved through on governed code and only found out at
   completion.
-
   A clause carried into a new constitution is re-issued as
   `goal:<slug>@constitution:vN`, while a task keeps naming the bare
   `goal:<slug>`. Coverage was decided by string equality on those two ids, and
@@ -1634,18 +1677,14 @@ to [Semantic Versioning](https://semver.org/).
   could ever match. Both now compare by slug — the identity a clause keeps
   across versions, which the amendment carry-forward and `diff_clauses` already
   use.
-
   The empty binding list was the worse half: it is indistinguishable from "this
   goal governs no code", so the failure reported itself as a clean bill of
   health. A verdict that comes back the same for every input has stopped
   carrying information, which is the failure mode this project keeps finding.
-
   Regression tests cover a clause that has actually been through an amendment
   (a freshly adopted v1 clause id is bare, which is why this stayed hidden until
   v2), and the mirror case: a clause from a different goal is still not
   coverage, so the fix cannot pass everything.
-### Fixed
-
 - **A delivered branch can be reconciled again.** Completing a task releases its
   claim, and publication requires one — so once a task was done, its pull
   request could never be brought up to date. `main` moved, the branch went
@@ -1653,11 +1692,9 @@ to [Semantic Versioning](https://semver.org/).
   rescuing three times, and each rescue invented a throwaway task purely to get
   past the gate. Minting a task per republish is exactly how six duplicate tasks
   reached the board.
-
   A task now records the branch it was claimed on, so a delivered branch is
   already attributed; re-attributing it to a fresh task records a fiction.
   `canonical-push` publishes it as a reconciliation and says whose work it was.
-
   Deliberately narrow: **every** new commit must be a merge. A reconciliation
   merges the base in and nothing else, so this cannot decay into "finish a task,
   then push anything to that branch forever" — the moment real work appears, a
@@ -1737,16 +1774,13 @@ to [Semantic Versioning](https://semver.org/).
   were not marginal notes — several were among the most expensive lessons the
   repository had, and were then re-learned from scratch, at length, by agents
   with no way to know they existed.
-
   The reach is recovered by reading the provenance those records already carry,
   not by rewriting them: 55 of the 67 still name the goal they were learned
   under, or a task from which the goal is reachable. The advisory gained a
   second, narrower matching dimension for exactly that case. Nothing is copied
   forward and no possibly-stale claim is restated, which is what made rewriting
   the records the wrong repair.
-
   Three details decide whether this helps or merely adds noise:
-
   - It is **capped** at three lessons per check, ranked by effective weight.
     ADR-0072 established that an advisory firing on almost every task carries no
     information, and a goal accumulates everything ever learned serving it — 20
@@ -1757,7 +1791,6 @@ to [Semantic Versioning](https://semver.org/).
     a nested array, or the bare string that is not JSON at all — because a
     reader that understood only one shape would silence the records written in
     the others.
-
   The advisory still only informs. It adds findings and can never harden a
   verdict, emit a violation, or downgrade an aligned one. No LLM joins the read
   path. Twelve records that name nothing at all remain undeliverable and are
@@ -1854,7 +1887,6 @@ to [Semantic Versioning](https://semver.org/).
   This is the same defect class as `requires_session`: a list keyed by tool
   name that a rename left pointing at nothing. Finding it twice by hand is what
   the fence is for.
-
 - **Two more retired names were still in live guidance and a second guard.**
   Reconnecting with paused work advised the owner to *"Call resume_task"* — a
   verb the server no longer advertises, offered to an agent at exactly the
@@ -1943,25 +1975,20 @@ to [Semantic Versioning](https://semver.org/).
   luck, and for a race that is the only evidence that means anything.
   Production code is untouched — the change is confined to the `#[cfg(test)]`
   helper, so what the breaker does in the field is exactly what it did before.
-### Fixed
-
 - **A worktree created after a server started is no longer invisible to it.**
   PR #239 made every worktree root a candidate when placing a path, which
   stopped most ingest calls being refused — but the root set was resolved once,
   at engine construction, so it was frozen for the life of the process.
-
   This fleet creates worktrees hourly, so a frozen set decayed from the moment
   it was resolved, and fastest exactly when the fleet was busiest. Observed
   2026-07-30: servers started at 03:55Z refusing paths from four worktrees that
   appeared later in the same session.
-
   A path that lands outside every known root now re-resolves the set once and
   retries the placement, so a worktree born after startup is picked up without
   restarting the server. The refresh rides on the failure that needs it rather
   than a timer, and is bounded — at most one per interval, never more than one
   in flight — so a genuinely foreign path from a misconfigured sensor cannot
   make every refusal pay for a git subprocess.
-
   A path under no worktree of this repository is still refused: the retry
   changes *when* the answer is computed, never what counts as belonging. The
   refresher is injected, like the roots themselves, so the core still does not
@@ -2391,31 +2418,25 @@ to [Semantic Versioning](https://semver.org/).
   ingestion, deletion, reconciliation, and `check_overlap`. A path genuinely
   outside the checkout is left alone rather than forced into a relative form that
   would name a file that does not exist.
-### Fixed
-
 - **One push now runs both test runners.** `scripts/*.test.mjs` are `node:test`
   suites and ran before every push; `editors/vscode/scripts/*.test.mjs` are
   vitest suites importing the very same modules through `../../../scripts/`, and
   ran only in CI. So renaming an export or a guidance string passed every local
   check and failed after publishing, on assertions the author had no reason to
   run.
-
   It was not hypothetical: three pull requests were blocked on exactly this at
   once — `droppedCommits` → `classifyCommits` in the merge audit, and
   `claim_task` → `task_claim` in the claim gate — each author discovering their
   own rename from a red build, while `main` stayed red behind them.
-
   Measured against the real rename: `script-tests` reports **139 passed, 0
   failed**, completely blind to it, while the hook reproduces CI's failure
   exactly, down to the assertion text, in **12 seconds**.
-
   Targeted rather than wholesale, and the difference matters. The full extension
   suite takes ~120s here and reports vitest worker timeouts under fleet load; a
   gate that intermittently blocks a push teaches people to reach for
   `--no-verify`, which is worse than no gate. The hook receives the changed
   files and runs only the suite covering a module that actually changed, so a
   Rust or docs push pays nothing — and says so, rather than passing in silence.
-
   It refuses rather than skipping when the extension's dependencies are absent:
   a silent skip is indistinguishable from a green suite, which is the failure
   this exists to prevent.
@@ -2523,7 +2544,6 @@ to [Semantic Versioning](https://semver.org/).
     says embeddings may only seed graph traversal. The weighting is a
     tie-breaker rather than an override, so a genuinely closer symbol still
     wins and structural questions keep working.
-
   The similarity floor keeps its original job (ADR-0053) and its default is
   unchanged. A field too small to have a shape is still judged by the floor
   alone, so a young index is never silenced by statistics it cannot support.
@@ -2533,7 +2553,6 @@ to [Semantic Versioning](https://semver.org/).
   (raise the floor; change the embedding model) and the measurement that
   rejects each, so the next reader does not re-derive them.
 ## Fixed
-
 - Release and archive-installer smoke tests now disable the default-on
   autonomous recall indexer alongside pruning and consolidation. This keeps the
   intentionally in-memory smoke database valid while still exercising MCP
@@ -2641,7 +2660,6 @@ to [Semantic Versioning](https://semver.org/).
   the exploration and cost figures simply come out lower and look ordinary.
   Every agent-loop run since the collapse under-counted the **mindleak+lodestar
   arm** — the one arm the benchmark exists to justify.
-
   The classifier now recognises the collapsed verbs **and keeps the retired
   ones**. That is deliberate: `benchmarks/results/2026-07-22-agent-loop-outcome.json`
   was measured before the collapse, when the agent could only call the old
@@ -2649,7 +2667,6 @@ to [Semantic Versioning](https://semver.org/).
   it. Keeping the change a superset is what makes this a fix to a counter
   instead of a silent re-baselining, and it means the published result stays
   comparable to future runs.
-
   The classifier moved into `scripts/agent-loop-events.mjs` so it can be
   tested at all — `evaluate-agent-loop.mjs` spawns the Copilot CLI at import
   time, so any test importing it would have started a real four-arm evaluation,
@@ -2758,20 +2775,16 @@ to [Semantic Versioning](https://semver.org/).
   fix from the one a reader of the original entry would have reached for.
   Docs only. Nothing is retracted: the disproof already on record stands, and
   this only settles the "until seen again" it left open.
-### Fixed
-
 - **The extension-test hook comes off pre-push.** It was added to catch a rename
   landing without its consumer, and its own comment warned that "a gate that
   intermittently blocks a push is worse than none — it teaches people to reach
   for `--no-verify`". That sentence turned out to describe the hook.
-
   Under fleet load vitest reports `[vitest-worker]: Timeout calling
   "onTaskUpdate"` and exits non-zero **with every test passing** — `14 passed, 1
   error` — and the runner cannot tell that from a real failure. It blocked
   pushes across the fleet on tests that had in fact passed. That is worse than
   the breakage it was added to catch: a missed rename fails one branch's CI,
   this stopped everyone.
-
   The capability is kept, not the gate. `make ext-test` and
   `node scripts/ext-test.mjs <changed files>` still run it, and CI still runs the
   full suite. It earns its way back to pre-push when it can distinguish a worker
@@ -2792,20 +2805,16 @@ to [Semantic Versioning](https://semver.org/).
   and on pre-push. The runner refuses to report success when it discovers no
   test files at all — a runner that quietly finds nothing is indistinguishable
   from a green suite.
-### Fixed
-
 - **The pre-push hook no longer contaminates the suites it runs.**
   `canonical-push` sets `MINDLEAK_CANONICAL_PUBLISH` while running the pre-push
   hooks, and the extension-test runner passed the environment straight through.
   So the suite asserting that a *direct* invocation of the publisher is refused
   inherited the flag, saw the direct call allowed, and failed — while passing
   when run by hand.
-
   A runner whose answer depends on who invoked it is worse than one that does
   not run at all: it makes a real guard look broken, and sends the author
   chasing their own tooling instead of the bug. Caught when the hook blocked its
   own author's push on a suite that passed standalone.
-
   `MINDLEAK_CANONICAL_PUBLISH` and `PRE_COMMIT_REMOTE_BRANCH` are now scrubbed
   alongside git's `GIT_DIR` family, and the scrub is one exported function with
   its own tests rather than a list copied inline — including that unrelated
@@ -2849,7 +2858,6 @@ to [Semantic Versioning](https://semver.org/).
   nor the fix. `board-health`, `stranded-report` and `design-audit` followed the
   same path. All four now speak the current vocabulary, proven by publishing
   this change through the migrated push rather than by reading the diff.
-
 - **A guard now refuses a retired name in the delivery scripts, and names the
   file and line.** Migrating five call sites lasts until the next rename; the
   point of the collapse was to stop finding this class by hand, and it has now
@@ -2901,7 +2909,6 @@ to [Semantic Versioning](https://semver.org/).
   call. That is luck, not coverage, and it is worth saying plainly: a guard
   named after a verb dies quietly when the verb is renamed, and the only signal
   is that it keeps passing.
-
 - **The two messages the fleet reads most often taught retired verbs.** The
   claim gate's remediation — printed when a publish is refused, which is the
   moment an agent is most likely to copy an instruction verbatim — said
@@ -2914,7 +2921,6 @@ to [Semantic Versioning](https://semver.org/).
   `task_claim`, `task_create` and `task_transition` with the argument that
   selects the act, and tests assert the verbs rather than the wording so the
   sentences stay free to improve.
-
 - **Two more guards were written against names the surface no longer
   advertises** — the tool-surface benchmark's fixture (`next_task`) and the
   completion-offer assertions above. Recorded in Known gaps: the agent-loop
@@ -2951,6 +2957,140 @@ to [Semantic Versioning](https://semver.org/).
   an already-merged branch is still reported and still a mistake: that pull
   request will never reopen, so the commit survives only for as long as
   something else happens to carry it.
+- **A delayed release candidate now absorbs every later fragment without duplicating its version.** Re-running the changelog release command for an unpublished candidate merges its existing entries, Unreleased text, and new fragments under one normalized set of headings, updates the date, and preserves all older releases.
+- A recovered claim can now certify the work it was recovered for (ADR-0076).
+  Conformance bounds evidence by a live claim, but compared it against the most
+  recent window rather than the one that authorised the work. Recovery
+  necessarily happens *after* the work it exists to rescue, and
+  `recover_claim` opened a fresh window, so the rescued work sat before the only
+  window the task could show. Every route back to a live claim behaved the same
+  way — `claim_task` and `recover_claim` both set the start to now, and
+  `renew_lease` refuses a lapsed lease — so there was no ordering of calls that
+  could certify a recovered claim at all.
+  Reproduced on `task:36fa0badd713`, whose commit `64fb56b3` is on `main`: the
+  bundle was exactly right, one commit and three changed nodes with no
+  contamination, and conformance still answered "evidence interval falls outside
+  the live claim". Such tasks could only be closed by a human `resolve_task`.
+  The floor is now the earliest window in the audited recovery chain leading to
+  the current owner, read back from the transfer history rather than stored
+  again — it was already reconstructing the interrupted window from the log.
+  The guarantee is unchanged: every link is a transfer that named the owner it
+  took from, so an identity that never held the task inherits nothing, and
+  evidence from before any claim is still refused. Committing before claiming
+  still cannot be certified, and that is asserted by its own test rather than
+  left as a side effect.
+- **A slow local model no longer times out design promotion (and other
+  model-backed tool calls).** The extension's MCP request timeout was a flat
+  30000ms — exactly equal to the server-side model budget
+  (`MINDLEAK_HTTP_TIMEOUT_MS`, default 30000). A model-backed tool call, such as
+  design-promotion planning or goal decomposition, can consume that whole budget
+  before it either succeeds or falls back to its deterministic plan. Because the
+  two budgets were equal, the client abandoned the request at the same instant
+  the server was still waiting on the model, so the clean fallback never reached
+  the user: a cold `glm4:9b` load surfaced only
+  `MCP request "tools/call" timed out after 30000ms` and the promotion failed.
+
+  The request timeout is now a setting, `mindleak.requestTimeoutMs`, defaulting
+  to 300000ms so the client budget outlasts the bounded default model sequence,
+  including ADR-0079's one cold-start read-timeout retry. It is wired into both
+  MCP planes (memory and intent) and takes effect on window reload. A
+  settings-surface test calculates the full default sequence and requires the
+  manifest and activation defaults to agree above it, so the budgets cannot
+  silently converge again.
+- **The Design Board no longer records an accept/reject the ADR file cannot
+  carry.** Accepting a design called `design_decide` first and only then wrote
+  the ADR's Status field, so when the file could not be resolved — the ADR is on
+  `main` but absent from the open checkout — the ledger had already accepted
+  while the file still said `Proposed`, and the reviewer saw only `cannot find
+  docs/adr/…`. That drift is permanent (it is the fingerprint ADR-0072 carries).
+  The board now resolves and stages the file write before recording the
+  decision, so a decision that cannot be written is not recorded at all, and the
+  failure names the checkout to open rather than only what was missing.
+- The VS Code extension development toolchain now audits clean after compatible ESLint, typescript-eslint, Vitest, and VSCE upgrades; the production dependency graph remains vulnerability-free.
+- **An imported ADR status can no longer assert a decision nobody made.**
+  Reconciliation used to import an ADR file's `accepted`/`rejected` status at
+  face value, creating a design row that recorded a decision with an empty
+  `decided_by`. A newly discovered row now always enters as `proposed`; only the
+  explicit Design Board decision path can accept or reject it (ADR-0077). Rows a
+  person already decided are untouched, and reconciliation stays idempotent.
+- Fixed the Markdown link checker so a tracked document deleted from the working tree is treated as absent instead of crashing with an `ENOENT` stack, while links from surviving documents are still checked.
+- **Optional model failures are now bounded and visible instead of silently
+  degrading.** Both planes separate a one-second connect budget from the model
+  read budget and retry one read timeout exactly once, while connection refusal
+  and 4xx responses still fail immediately. Model-backed results identify
+  `model` versus `fallback` with a stable failure reason, and
+  `storage_status(include_model_health=true)` performs an explicit one-shot
+  reachability/JSON probe without adding a background poller.
+- **Semantic recall now stays silent when its own results cannot support the question.** Returned node text must ground a majority of the query's repository-specific information, preventing gibberish and coherent out-of-domain questions from producing plausible strangers without raising the similarity floor or adding an LLM call.
+- **Re-claiming a task no longer erases its evidence scope by omission.** An
+  omitted `paths` or `symbols` field now preserves that part of the task scope
+  atomically. Explicit arrays still replace the selected field, and `[]`
+  remains the deliberate way to clear it, so rescued work retains the linkage
+  `merge_evidence` needs without making scope impossible to revise.
+- **Rust impact traversal crosses nested module and verified crate boundaries.**
+  Nested grouped `use` trees now retain every module branch and alias. Imports
+  through local Cargo path dependencies resolve to real workspace artifacts only
+  when the nearest consumer manifest declares that dependency and its target
+  manifest declares the crate root; unresolved, external, and ambiguous imports
+  keep the conservative `package:<name>` fallback. Re-ingest processes manifests
+  before source files so deferred artifact candidates converge regardless of
+  lexical crate order.
+
+  Measured over this repository, ingesting the same file set into a fresh graph
+  with each build, `get_impact_radius` reaches further: for
+  `crates/mindleak-storage/src/lib.rs`, a crate other crates consume, 90 nodes
+  becomes 286. Consumers previously stopped at `package:mindleak_storage`, so a
+  change there under-reported almost everything it could break. Files with fewer
+  cross-crate consumers move as you would expect and no further —
+  `crates/mindleak-core/src/model.rs` 287 to 300, `graph/mod.rs` 190 to 203 —
+  which is the point: the new edges are the ones Cargo actually declares.
+- **VS Code now records saves and deletes from sibling worktrees.** When a file
+  sits outside the window's workspace folders, the extension sends its normalized
+  filesystem path so MindLeak can map it through the repository's known worktree
+  roots. Normal workspace-relative paths are unchanged, and save refreshes use
+  the canonical artifact id returned by the server rather than minting an
+  absolute-path identity in the client.
+- **Task claims now surface every active goal governing their declared paths.**
+  A won scoped claim expands its path globs across active bindings and returns
+  coverage-aware `scope_advice`. An uncovered goal produces an actionable
+  `review` finding naming `also_serves`; coverage supplied on that same claim is
+  applied before advice, while unbound paths retain the prior pickup response.
+- **The publication record says why it could not certify, and how to fix it.**
+  A push that could not record its commit in the Memory Plane reported one line
+  — "the Memory Plane was unreachable" — for three different causes: no
+  `mindleak-mcp` binary, an unregistered session id, and a rejected write. The
+  most common cause by far is the most misleading one: a linked worktree has no
+  `target/` of its own, so the resolver finds no binary and an operator reads an
+  outage where a single environment variable was missing. Each cause now has its
+  own notice, and the missing-binary one names the remedy the way the Lodestar
+  gate beside it already did.
+- **The push gate now names the failure it actually hit instead of always
+  blaming an unreachable ledger.** `canonical-push` collapsed three distinct
+  conditions — the Lodestar binary did not answer, it answered but did not
+  identify the session, and it answered and identified the session but its task
+  board could not be read — into a single "the ledger is unreachable" refusal
+  that offered `cargo build`. The board-read case is the common one: a deployed
+  binary older than the ledger cannot parse an event a newer writer recorded, so
+  the remedy is a current binary (point `LODESTAR_MCP_BIN` at the shared
+  install), not a rebuild of a ledger that is answering. Each condition now
+  refuses with its own cause and its own remedy.
+- **Worktree reclaim now preserves branches held by live task claims.**
+  The reclaimer reads the authoritative Lodestar board before reporting or
+  deleting worktrees, refuses every branch named by an unexpired claim, and
+  refreshes that state at the destructive boundary. If the board cannot be
+  read, reclamation fails closed instead of treating a new clean worktree as
+  abandoned residue.
+
+### Security
+- The optional LLM API key can no longer leak through debug output. `LlmClient`
+  (Lodestar) and `Consolidator` (MindLeak) derived `Debug` over a cleartext
+  `api_key`, so a single stray `{:?}` — in a log line, a panic message, or an
+  error chain — would have printed the bearer token, contradicting the standing
+  rule that the key is never logged. Both now implement `Debug` by hand,
+  rendering the key as `<unset>` or `<redacted>` while still showing the base URL
+  and model. No call site printed it today; this closes the latent path before
+  one could, and a regression test in each crate asserts the token never appears
+  in `Debug` output.
 
 ## [0.1.3] - 2026-07-28
 
