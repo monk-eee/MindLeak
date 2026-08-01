@@ -32,7 +32,8 @@ graph engine.
   an attributed human reviewer; accepted designs remain visibly pending until a
   reviewer promotes them under an active objective. Materialized rows expose
   their persisted objective, tasks, and constraints, and failed promotion stays
-  retryable.
+  retryable. The default view stays focused on designs needing attention; its
+  archive control opens the complete live ADR ledger without changing decisions.
 - **Work** — active task ownership and evidence actions remain separate
   from design review, so proposed ADRs never appear as claimable implementation
   work. Open and expired-claim rows can be allocated to a stable agent or claimed
@@ -101,7 +102,11 @@ Turn ADRs into work without inferring tasks from Markdown. **Sync ADRs** imports
 / **Reject** (a human reviewer, not the proposing agent) and updates the ADR's
 declared status. An accepted row exposes **Promote**: choose Create, Link
 Existing, or No New Work, inspect the concrete plan, then confirm one atomic
-materialization. Existing work and no-work decisions require a rationale.
+materialization. Existing work and no-work decisions require a rationale. When
+no designs need attention, **Browse completed ADRs** opens the live ledger; use
+the archive icon in the title bar to switch between that record and the working
+queue. Deferred proposals remain behind their separate visibility toggle, and
+retired records remain audit-only.
 
 ![The Design Board with a proposed row and an accepted, pending row](media/screenshots/design-board.png)
 
