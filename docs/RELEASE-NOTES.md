@@ -45,6 +45,11 @@ instead of relying on somebody remembering a second call.
 
 The final tag also includes every change merged after the first 0.1.4 candidate:
 
+- **Operational discipline ships as an agent skill.**
+  `skills/mindleak/SKILL.md` teaches an agent to register one identity across
+  both planes, scope and renew claims, configure both worktree binaries, triage
+  lapsed ownership, and submit completion offers without duplicating the longer
+  reference documentation.
 - **Coordination is more recoverable.** Stale one-way waits are visible, recovered
   claims can certify the evidence from their audited transfer chain, re-claims
   preserve omitted path/symbol scope, abandon names and protects its recorded

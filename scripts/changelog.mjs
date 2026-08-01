@@ -100,13 +100,13 @@ export const foldUnreleased = (unreleased, grouped) => {
       if (!existing.has(current)) existing.set(current, []);
       continue;
     }
-    if (current && line.trim()) existing.get(current).push(line);
+    if (current) existing.get(current).push(line);
   }
   const merged = new Map();
   for (const section of new Set([...existing.keys(), ...grouped.keys()])) {
     const lines = [];
-    if (existing.get(section)?.length)
-      lines.push(existing.get(section).join("\n"));
+    const existingBody = existing.get(section)?.join("\n").trim();
+    if (existingBody) lines.push(existingBody);
     if (grouped.get(section)?.length)
       lines.push(grouped.get(section).join("\n"));
     merged.set(section, [lines.join("\n")]);

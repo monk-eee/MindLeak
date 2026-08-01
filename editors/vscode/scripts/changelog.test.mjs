@@ -195,6 +195,8 @@ describe("the command line", () => {
         "### Fixed",
         "- **Candidate fix one.**",
         "",
+        "  Its detail paragraph must stay separated.",
+        "",
         "### Fixed",
         "- **Candidate fix two.**",
         "",
@@ -214,7 +216,9 @@ describe("the command line", () => {
     const candidate = text.slice(text.indexOf("## [0.1.4]"), text.indexOf("## [0.1.3]"));
     expect([...candidate.matchAll(/^### Fixed$/gm)]).toHaveLength(1);
     expect(candidate).toContain("- **Candidate feature.**");
-    expect(candidate).toContain("- **Candidate fix one.**");
+    expect(candidate).toContain(
+      "- **Candidate fix one.**\n\n  Its detail paragraph must stay separated."
+    );
     expect(candidate).toContain("- **Candidate fix two.**");
     expect(candidate).toContain("- **Late fix.**");
     expect(readdirSync(join(root, "changelog.d"))).toEqual([]);
