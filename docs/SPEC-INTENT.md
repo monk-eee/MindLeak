@@ -440,10 +440,14 @@ operations below name the invocation each maps to.
    invariants are enforced continuously by conformance, not broken into
    completable tasks.
 8. `task_query(view="next", capabilities?)` → a suggested unclaimed, unblocked task.
-9. `task_claim(task_id, step="claim", lease_secs, paths?, symbols?, also_serves?, session_id)` → `{ won }` (§6);
+9. `task_claim(task_id, step="claim", lease_secs, paths?, symbols?, also_serves?, session_id)` → `{ won, governing, scope_advice? }` (§6);
   path globs and opaque symbol ids are stored atomically only for the winning
   claim. `also_serves` declares further goals the work serves, unioned with what
   creation declared and refused once conformance has judged the task (ADR-0074).
+  A won scoped claim expands those globs across active bindings. `governing`
+  includes the matched clauses; `scope_advice` is omitted when no binding
+  matches, reports `advise` when coverage is sufficient, and reports `review`
+  with the `also_serves` correction when another goal governs a declared path.
 10. `task_query(view="scope", task_id)` → the advisory declaration;
   `task_query(view="overlap", paths[], symbols[], exclude_task_id?)` → live claim
   intersections for concrete paths and exact symbol ids. Combine with MindLeak's

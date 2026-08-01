@@ -145,7 +145,10 @@ impl Lodestar {
             .store
             .get_task(task_id)?
             .ok_or_else(|| LodestarError::NotFound(task_id.to_string()))?;
-        let nodes = self.store.artifacts_for_goal(&task.goal_id)?;
+        let mut nodes = self.store.artifacts_for_goal(&task.goal_id)?;
+        nodes.extend(self.store.governed_nodes_for_task_scope(task_id)?);
+        nodes.sort();
+        nodes.dedup();
         let mut clauses = self
             .resolve_governing_clauses(&nodes, Some(&task.goal_id))?
             .clauses();
@@ -153,6 +156,22 @@ impl Lodestar {
         clauses.dedup_by(|a, b| a.goal.id == b.goal.id);
         clauses.truncate(MAX_TASK_GOVERNING_CLAUSES);
         Ok(clauses)
+    }
+
+    /// Coverage-aware advice for active policy nodes matched by a task's scope.
+    pub fn advice_for_task_scope(&self, task_id: &str) -> Result<Option<Advice>> {
+        let nodes = self.store.governed_nodes_for_task_scope(task_id)?;
+        if nodes.is_empty() {
+            return Ok(None);
+        }
+        let mut advice = self.advise(Some(task_id), &nodes, &[])?;
+        if advice.disposition == AdviceDisposition::Review {
+            advice.findings.push(
+                "re-claim this task with also_serves naming the uncovered governing goal ids above before editing"
+                    .to_string(),
+            );
+        }
+        Ok(Some(advice))
     }
 }
 
@@ -167,7 +186,7 @@ fn distinct_goal_ids<'a>(pairs: impl Iterator<Item = &'a (String, crate::Goal)>)
 mod tests {
     use crate::facade::test_support::engine;
     use crate::model::Consequence;
-    use crate::{AdviceDisposition, ArtifactBindingMode, GoalKind};
+    use crate::{AdviceDisposition, ArtifactBindingMode, GoalKind, TaskScope};
 
     /// The pre-flight must see the coverage the gate sees (ADR-0041).
     ///
@@ -495,5 +514,105 @@ mod tests {
             .governing_clauses_for_task(&unbound.id)
             .unwrap()
             .is_empty());
+    }
+
+    /// A scoped claim used to inspect only the task goal's bindings, so another
+    /// goal governing a declared path stayed invisible and the agent missed the
+    /// actionable `also_serves` correction. Scope advice must classify that path
+    /// as review unless the task already covers the governing goal.
+    #[test]
+    fn task_scope_advice_distinguishes_cross_goal_from_covered_goal() {
+        let engine = engine();
+        let governing = engine
+            .define_goal(
+                GoalKind::Constraint,
+                "Owns payments",
+                "Payment code stays within this boundary.",
+                None,
+            )
+            .unwrap();
+        let delivery = engine
+            .define_goal(
+                GoalKind::Objective,
+                "Ship checkout",
+                "Deliver the checkout flow.",
+                None,
+            )
+            .unwrap();
+        engine
+            .link_goal_to_artifact(
+                &governing.id,
+                &["artifact:crates/pay/src/lib.rs".to_string()],
+                ArtifactBindingMode::Governed,
+            )
+            .unwrap();
+        let scope = TaskScope {
+            paths: vec!["crates/pay/**".to_string()],
+            symbols: Vec::new(),
+        };
+
+        let bare = engine
+            .create_task(&delivery.id, "Wire payment", "done")
+            .unwrap();
+        assert!(engine
+            .claim_task_with_scope(&bare.id, "agent-a", 600, &scope)
+            .unwrap());
+        let review = engine
+            .advice_for_task_scope(&bare.id)
+            .unwrap()
+            .expect("the bound path has advice");
+        assert_eq!(review.disposition, AdviceDisposition::Review);
+        assert_eq!(review.governing[0].goal.id, governing.id);
+
+        let covered = engine
+            .create_task_covering(
+                &delivery.id,
+                "Wire covered payment",
+                "done",
+                None,
+                std::slice::from_ref(&governing.id),
+            )
+            .unwrap();
+        assert!(engine
+            .claim_task_with_scope(&covered.id, "agent-b", 600, &scope)
+            .unwrap());
+        let advice = engine
+            .advice_for_task_scope(&covered.id)
+            .unwrap()
+            .expect("the covered path has advice");
+        assert_eq!(advice.disposition, AdviceDisposition::Advise);
+        assert_eq!(advice.governing[0].goal.id, governing.id);
+    }
+
+    #[test]
+    fn an_unbound_task_scope_preserves_goal_bound_pickup_clauses() {
+        let engine = engine();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Graph work", "extend the graph", None)
+            .unwrap();
+        engine
+            .link_goal_to_artifact(
+                &goal.id,
+                &["artifact:crates/core/src/graph.rs".to_string()],
+                ArtifactBindingMode::Governed,
+            )
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Loose edit", "done").unwrap();
+        assert!(engine
+            .claim_task_with_scope(
+                &task.id,
+                "agent-a",
+                600,
+                &TaskScope {
+                    paths: vec!["src/unbound.rs".to_string()],
+                    symbols: vec!["symbol:src/unbound.rs:unused".to_string()],
+                },
+            )
+            .unwrap());
+
+        assert!(engine.advice_for_task_scope(&task.id).unwrap().is_none());
+        let clauses = engine.governing_clauses_for_task(&task.id).unwrap();
+        assert_eq!(clauses.len(), 1);
+        assert_eq!(clauses[0].goal.id, goal.id);
     }
 }
