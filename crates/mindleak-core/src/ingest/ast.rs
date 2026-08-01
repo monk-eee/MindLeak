@@ -9,6 +9,7 @@
 //! without touching callers.
 
 use std::collections::HashSet;
+use std::sync::OnceLock;
 
 use regex::Regex;
 
@@ -321,14 +322,21 @@ pub fn extract(path: &str, content: &str) -> Extraction {
 }
 
 fn regex_call_sites(content: &str) -> Vec<(String, usize, Option<usize>)> {
-    let call = Regex::new(r"([A-Za-z_$][\w$]*)\s*\(").expect("valid call regex");
-    call.captures_iter(content)
+    call_site_re()
+        .captures_iter(content)
         .filter_map(|captures| {
             captures
                 .get(1)
                 .map(|matched| (matched.as_str().to_string(), matched.start(), None))
         })
         .collect()
+}
+
+/// An identifier immediately followed by `(` — a heuristic call site. Compiled
+/// once rather than on every extraction.
+fn call_site_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"([A-Za-z_$][\w$]*)\s*\(").expect("valid call regex"))
 }
 
 fn javascript_call_sites(tokens: &[Token]) -> Vec<(String, usize, Option<usize>)> {

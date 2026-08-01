@@ -1,0 +1,1 @@
+- **The VS Code Design Board now exposes completed ADRs without turning them back into work.** Its default remains the actionable queue, while an empty-state link and archive control open the live design ledger in one bounded read.

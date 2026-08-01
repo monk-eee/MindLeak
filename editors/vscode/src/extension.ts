@@ -420,6 +420,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     vscode.commands.registerCommand("mindleak.design.refresh", () => designController?.refresh()),
     vscode.commands.registerCommand("mindleak.design.sync", () => designController?.sync()),
     vscode.commands.registerCommand("mindleak.design.expand", () => designController?.expand()),
+    vscode.commands.registerCommand("mindleak.design.toggleArchive", async () => {
+      await designController?.toggleArchive();
+      await vscode.commands.executeCommand(
+        "setContext",
+        "mindleak.design.showArchive",
+        designBoard?.includeArchive ?? false
+      );
+    }),
     vscode.commands.registerCommand("mindleak.design.toggleDeferred", async () => {
       await designController?.toggleDeferred();
       await vscode.commands.executeCommand(
