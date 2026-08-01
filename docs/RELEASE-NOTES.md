@@ -73,6 +73,10 @@ The final tag also includes every change merged after the first 0.1.4 candidate:
   server-side canonicalization, client request budgets outlast bounded model
   fallback, optional model results identify model versus fallback with a reason,
   and the extension development toolchain now audits clean.
+- **Malformed stdin no longer kills either MCP server.** Both stdio loops decode
+  a line lossily, so non-UTF-8 bytes become the same recoverable JSON parse error
+  as other malformed input; only a genuine I/O error ends the server and its
+  in-memory session state.
 - **Secrets stay out of diagnostics.** MindLeak and Lodestar manually redact the
   optional LLM API key from `Debug` output while retaining useful endpoint/model
   fields.
