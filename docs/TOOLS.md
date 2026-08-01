@@ -128,7 +128,7 @@ one intent plane and one memory graph by default.
 | `export_conformance_manifest` | Render every task's latest verdict as one manifest for the CI conformance gate (`scripts/conformance-gate.mjs`), so a build can fail on unresolved drift rather than on a human remembering to look. |
 | `consolidate` / `record_knowledge` | Gated promotion of learned regularities. |
 | `promote_signals` | Promotion bridge (ADR-0022): batch-feed MindLeak `promotion_candidates` into the gated consolidator; deterministic, model-optional. |
-| `active_knowledge` / `reconfirm_knowledge` / `prune_knowledge` | Durable-but-revalidated knowledge. `active_knowledge` takes an optional `query` that ranks by meaning (ADR-0080); when no embedder is reachable it falls back to substring matching and `match_mode` says so. |
+| `active_knowledge` / `reconfirm_knowledge` / `prune_knowledge` | Durable-but-revalidated knowledge. `active_knowledge` takes an optional `query` that ranks by meaning (ADR-0080); when no embedder is reachable it falls back to substring matching and `match_mode` says so. A search warms the index, so early searches may report `ranked_by_meaning` below `count` — the remainder is still in weight order. |
 | `retire_knowledge` | Withdraw a lesson that is wrong or has been replaced, instead of waiting out its half-life. Attributed and reasoned; the record stays readable. Retired records leave the active set, so the advisory stops carrying them. |
 | `lodestar_stats` | Goal / task / knowledge counts. |
 | `storage_status` | Resolved repository id, intent database path, storage origin, legacy migration source, and whether migration ran (ADR-0038); `include_model_health=true` adds one on-demand Lodestar-model probe (ADR-0079). |
