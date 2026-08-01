@@ -20,11 +20,11 @@ pub fn effective_weight(base: f64, half_life_hours: f64, updated_at: i64, now: i
     if half_life_hours <= 0.0 {
         return base;
     }
-    let dt_hours = (now - updated_at) as f64 / 3600.0;
+    let dt_hours = now.saturating_sub(updated_at) as f64 / 3600.0;
     if dt_hours <= 0.0 {
         return base;
     }
-    base * 2f64.powf(-dt_hours / half_life_hours)
+    base * (-dt_hours / half_life_hours).exp2()
 }
 
 /// Minimum reinforcements before an edge can earn a longer half-life.
@@ -70,25 +70,6 @@ pub fn signal_multiplier(evidence: SignalEvidence) -> f64 {
     multiplier.min(SIGNAL_MAX_MULTIPLIER)
 }
 
-/// Graduate an edge's half-life by *proven signal*: reinforcement corroborated
-/// across time earns a longer half-life, so it resists decay. One-offs (low
-/// count) and same-session spam (narrow span) keep the base half-life — "decay
-/// noise, not signal" (ADR-0005). A pure function of edge fields; nothing stored.
-pub fn signal_half_life(
-    base_half_life: f64,
-    reinforcement_count: i64,
-    first_seen: i64,
-    updated_at: i64,
-) -> f64 {
-    let span_hours = (updated_at - first_seen) as f64 / 3600.0;
-    base_half_life
-        * signal_multiplier(SignalEvidence {
-            reinforcement_count,
-            reinforcement_span_hours: span_hours.max(0.0),
-            ..SignalEvidence::default()
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,21 +103,12 @@ mod tests {
     }
 
     #[test]
-    fn signal_half_life_ignores_one_offs_and_spam() {
-        // Too few reinforcements -> base half-life.
-        assert_eq!(signal_half_life(24.0, 1, 0, 1_000_000), 24.0);
-        // Enough count but all within a narrow span (spam) -> base half-life.
-        let narrow = (SIGNAL_MIN_SPAN_HOURS as i64 - 1) * 3600;
-        assert_eq!(signal_half_life(24.0, 10, 0, narrow), 24.0);
-    }
-
-    #[test]
-    fn signal_half_life_extends_for_corroborated_signal() {
-        // 3 reinforcements across 100h -> longer half-life, capped.
-        let span = 100 * 3600;
-        let hl = signal_half_life(24.0, 3, 0, span);
-        assert!(hl > 24.0);
-        assert!(hl <= 24.0 * SIGNAL_MAX_MULTIPLIER);
+    fn extreme_updated_at_does_not_panic_and_fully_decays() {
+        // A corrupt/extreme timestamp must never overflow the i64 subtraction:
+        // effective_weight runs on every edge via the SQL scalar, so a debug
+        // panic here would take down a whole query.
+        let w = effective_weight(1.0, 24.0, i64::MIN, i64::MAX);
+        assert!((0.0..PRUNE_THRESHOLD).contains(&w));
     }
 
     #[test]
