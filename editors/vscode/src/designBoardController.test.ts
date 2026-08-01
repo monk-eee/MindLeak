@@ -62,14 +62,21 @@ function controller() {
     return null;
   });
   let includeDeferred = false;
+  let includeArchive = false;
   const provider = {
     update: vi.fn(),
     expand: vi.fn(),
     get includeDeferred() {
       return includeDeferred;
     },
+    get includeArchive() {
+      return includeArchive;
+    },
     setIncludeDeferred: vi.fn((include: boolean) => {
       includeDeferred = include;
+    }),
+    setIncludeArchive: vi.fn((include: boolean) => {
+      includeArchive = include;
     }),
   };
   const instance = new DesignBoardController(
@@ -136,6 +143,32 @@ describe("DesignBoardController refresh", () => {
       "design:0002",
       "design:deferred",
     ]);
+  });
+
+  it("loads the live ledger without hydrating every completed promotion", async () => {
+    const { instance, calls, provider } = controller();
+
+    await instance.toggleArchive();
+
+    expect(provider.setIncludeArchive).toHaveBeenCalledWith(true);
+    expect(calls).toContainEqual({
+      name: "design_query",
+      args: { view: "ledger" },
+    });
+    expect(
+      calls.filter((call) => call.name === "design_query" && call.args.view === "promotion")
+    ).toHaveLength(0);
+    const [designs] = provider.update.mock.calls.at(-1)!;
+    expect(designs).toEqual(ledger);
+
+    calls.length = 0;
+    await instance.toggleArchive();
+
+    expect(provider.setIncludeArchive).toHaveBeenLastCalledWith(false);
+    expect(calls).toContainEqual({
+      name: "design_query",
+      args: { view: "board" },
+    });
   });
 
   it("expands the existing projection without another server read", () => {

@@ -43,6 +43,7 @@ export class DesignBoardViewProvider implements vscode.TreeDataProvider<DesignBo
   private promotions = new Map<string, DesignPromotion>();
   private expanded = false;
   private deferredVisible = false;
+  private archiveVisible = false;
   private readonly emitter = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.emitter.event;
 
@@ -56,6 +57,10 @@ export class DesignBoardViewProvider implements vscode.TreeDataProvider<DesignBo
     return this.deferredVisible;
   }
 
+  get includeArchive(): boolean {
+    return this.archiveVisible;
+  }
+
   expand(): void {
     this.expanded = true;
     this.emitter.fire();
@@ -67,20 +72,39 @@ export class DesignBoardViewProvider implements vscode.TreeDataProvider<DesignBo
     this.emitter.fire();
   }
 
+  setIncludeArchive(include: boolean): void {
+    this.archiveVisible = include;
+    this.expanded = false;
+    this.emitter.fire();
+  }
+
   getTreeItem(element: DesignBoardTreeItem): vscode.TreeItem {
     return element;
   }
 
   getChildren(): DesignBoardTreeItem[] {
     const projection = projectDesignBoard(this.designs, this.promotions, this.expanded);
+    const summary = this.archiveVisible
+      ? `${this.designs.length} ${this.designs.length === 1 ? "ADR" : "ADRs"} in ledger`
+      : projection.awaitingDecision === 0
+        ? "No ADRs need attention"
+        : `${projection.awaitingDecision} awaiting decision`;
     const items: DesignBoardTreeItem[] = [
       new DesignBoardMetaItem(
-        `${projection.awaitingDecision} awaiting decision`,
+        summary,
         "design.summary",
-        "list-selection"
+        this.archiveVisible ? "archive" : "list-selection"
       ),
       ...projection.rows.map((row) => new DesignBoardItem(row)),
     ];
+    if (!this.archiveVisible && this.designs.length === 0) {
+      items.push(
+        new DesignBoardMetaItem("Browse completed ADRs", "design.archive", "archive", {
+          command: "mindleak.design.toggleArchive",
+          title: "Browse Completed ADRs",
+        })
+      );
+    }
     if (projection.hidden > 0) {
       items.push(
         new DesignBoardMetaItem(`Show ${projection.hidden} more`, "design.expand", "ellipsis", {

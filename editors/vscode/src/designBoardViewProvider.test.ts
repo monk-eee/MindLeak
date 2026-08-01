@@ -52,6 +52,33 @@ function design(index: number): DesignItem {
 }
 
 describe("DesignBoardViewProvider", () => {
+  it("offers the completed ADR ledger when no designs need attention", () => {
+    const provider = new DesignBoardViewProvider();
+
+    const children = provider.getChildren();
+
+    expect(children[0].label).toBe("No ADRs need attention");
+    expect(children[1].label).toBe("Browse completed ADRs");
+    expect(children[1].command).toMatchObject({ command: "mindleak.design.toggleArchive" });
+  });
+
+  it("labels archive rows as the ledger and resets expansion when the mode changes", () => {
+    const provider = new DesignBoardViewProvider();
+    provider.update(
+      Array.from({ length: 25 }, (_, index) => design(index)),
+      new Map()
+    );
+    provider.expand();
+
+    provider.setIncludeArchive(true);
+
+    expect(provider.includeArchive).toBe(true);
+    const children = provider.getChildren();
+    expect(children[0].label).toBe("25 ADRs in ledger");
+    expect(children.filter((item) => item instanceof DesignBoardItem)).toHaveLength(20);
+    expect(children.some((item) => item.label === "Browse completed ADRs")).toBe(false);
+  });
+
   it("renders the decision count, a stable cap, and an expand affordance", () => {
     const provider = new DesignBoardViewProvider();
     provider.update(
