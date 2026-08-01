@@ -239,6 +239,7 @@ pub(super) fn dispatch(
                     knowledge: engine.active_knowledge().map_err(|e| e.to_string())?,
                     mode: "weight",
                     degraded_because: None,
+                    ranked: 0,
                 },
             };
             let known = matches.knowledge;
@@ -310,6 +311,23 @@ pub(super) fn dispatch(
                          mentioning the query in different words are missing from this reply."
                     )),
                 );
+            }
+            // A part-ranked list looks exactly like a fully ranked one, so the
+            // tail that is still in weight order has to announce itself.
+            if matches.mode == "semantic" && matches.ranked < rows.len() {
+                if let Some(object) = body.as_object_mut() {
+                    object.insert("ranked_by_meaning".to_string(), json!(matches.ranked));
+                    object.insert(
+                        "match_mode_note".to_string(),
+                        json!(format!(
+                            "Only the first {} of {} lessons are ranked by meaning; the rest are \
+                             not yet embedded and follow in weight order. Search again once the \
+                             index has warmed.",
+                            matches.ranked,
+                            rows.len()
+                        )),
+                    );
+                }
             }
             ok(&body)
         })()),
