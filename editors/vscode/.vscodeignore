@@ -4,7 +4,7 @@ src
 scripts
 tsconfig.json
 vitest.config.ts
-.eslintrc.json
+eslint.config.mjs
 .prettierrc.json
 .prettierignore
 **/*.ts
