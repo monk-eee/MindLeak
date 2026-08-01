@@ -104,6 +104,13 @@ revisions), and `links` (the current projection of what an item is linked to).
 retrieval), `proposal` (proposal creation), `query` (proposal and disposition
 reads), `review` (attributed adoption/rejection), `provenance` (upstream source
 tracking), and `conflict` (pre-adoption conflict detection).
+`store/coordination/` is likewise split by responsibility: `mod` (task creation,
+shared SQL projections, and row decoding), `claim` (claim/lease CAS, overlap,
+scope, and heartbeat), `transitions` (block/reopen/abandon/resolve and progressive
+handoffs), `questions` (ask/answer, pause/resume, waits, and thread notes),
+`conformance` (audit recording and checked transitions), and `query` (board,
+next-task, and existing-work reads). Audited legacy/session recovery remains in
+the already-separate `store/claim_transfer.rs` module.
 Facade behavior is grouped under
 `facade/`: `constitution`, `executive`, `design`, `design_materialization`,
 `conformance/`, `controls`, `amendments`, `waivers`, `advice`, `fleet`,
