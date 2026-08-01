@@ -1016,8 +1016,16 @@ mod tests {
         assert!(engine.next_task().unwrap().is_none());
 
         let board = board(&engine);
-        assert_eq!(board.as_array().unwrap().len(), 1);
-        assert_eq!(board[0]["id"], "design:0026-constitution");
+        let board = board.as_array().unwrap();
+        assert_eq!(board.len(), 3);
+        assert!(board.iter().all(|item| item["status"] == "proposed"));
+        for id in [
+            "design:0001-historical",
+            "design:0002-rejected",
+            "design:0026-constitution",
+        ] {
+            assert!(board.iter().any(|item| item["id"] == id));
+        }
     }
 
     #[test]

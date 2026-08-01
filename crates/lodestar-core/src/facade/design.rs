@@ -811,7 +811,12 @@ mod tests {
         assert!(reconciled
             .iter()
             .all(|item| item.promotion_status == DesignPromotionStatus::NotRequired));
-        assert_eq!(e.design_board().unwrap(), vec![reconciled[0].clone()]);
+        // Every import is a proposal now — an imported accept/reject has no
+        // decider (ADR-0077) — so all three await a decision on the board.
+        assert!(reconciled
+            .iter()
+            .all(|item| item.status == DesignStatus::Proposed));
+        assert_eq!(e.design_board().unwrap().len(), 3);
         assert!(e.next_task().unwrap().is_none());
 
         let accepted = e.accept_design(&reconciled[0].id, "reviewer").unwrap();
@@ -829,7 +834,11 @@ mod tests {
         assert_eq!(retry[0].status, accepted.status);
         assert_eq!(retry[0].decided_by, accepted.decided_by);
         assert_eq!(retry[0].promotion_status, accepted.promotion_status);
-        assert_eq!(e.design_board().unwrap(), retry);
+        // The board also carries the two proposed imports now, but the retried
+        // item keeps its recorded decision — the file's 'rejected' was ignored.
+        let board = e.design_board().unwrap();
+        assert_eq!(board.len(), 3);
+        assert!(board.contains(&retry[0]));
         assert!(e.next_task().unwrap().is_none());
     }
 }
