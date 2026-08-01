@@ -1,0 +1,25 @@
+- **`done` does not mean `aligned`, but shipped work no longer remains silently
+  claimable — NARROWED, MEASURED 2026-08-01.** The earlier fragment combined
+  two different failures: work already merged still appearing open/free, and a
+  completed task carrying a non-aligned receipt. The first is closed. Before
+  this audit the live board held exactly two claimed tasks, both attached to
+  current workstreams, with zero open, blocked, paused, needs-input, or
+  in-review residue. Completion offers at publication, merge-derived evidence,
+  `existing_work`, reviewed rescue, and explicit human resolution removed the
+  ten known shipped-but-claimable examples recorded in the old measurement.
+
+  The receipt distinction remains and should stay visible in reporting. Taking
+  each of 330 `done` tasks' `resolved_conformance_id` when present and otherwise
+  its latest conformance check yields 157 `aligned` (47.6%), 133 `needs_human`
+  (40.3%), and 40 `drift` (12.1%). This improves on the prior 119 of 247
+  `needs_human` result (48.2%), but it is not automated affirmation. A task can
+  be `done` because a named person reviewed and resolved a non-aligned receipt;
+  that is an auditable decision, not a claim that conformance aligned.
+
+  Impact: delivery dashboards must report automated alignment separately from
+  human resolution. Do not loosen evidence windows, erase lease lapses, or
+  reinterpret a human resolution as `aligned` to improve the ratio. The
+  remaining work is measurement and workflow quality: advise before task
+  creation, claim before the first commit, keep the lease live, submit the
+  publication offer promptly, and show both completion route and verdict in
+  aggregate product metrics.
