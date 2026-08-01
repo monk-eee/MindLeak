@@ -103,6 +103,7 @@ const stubLedger = (root, { claims = [], overlaps = [] } = {}) => {
     "  const name = message.params?.name;",
     "  const view = message.params?.arguments?.view;",
     `  if (name === "open_session") reply(message.id, { agent_id: ${JSON.stringify(AGENT)} });`,
+    '  else if (name === "ingest_commit") reply(message.id, { node_ids: ["intent:test"] });',
     // The task cluster collapsed to one verb per stage, so the board and the
     // overlap report are views of `task_query` rather than tools of their own.
     // A stub answering only the retired names leaves every call unanswered, and
@@ -117,11 +118,15 @@ const stubLedger = (root, { claims = [], overlaps = [] } = {}) => {
   return path;
 };
 
-const claimEnv = (root, options) => ({
-  ...process.env,
-  LODESTAR_SESSION_ID: SESSION,
-  LODESTAR_MCP_BIN: stubLedger(root, options),
-});
+const claimEnv = (root, options) => {
+  const server = stubLedger(root, options);
+  return {
+    ...process.env,
+    LODESTAR_SESSION_ID: SESSION,
+    LODESTAR_MCP_BIN: server,
+    MINDLEAK_MCP_BIN: server,
+  };
+};
 
 const liveClaim = {
   id: "task:live",
@@ -131,6 +136,13 @@ const liveClaim = {
 };
 
 describe("canonical-push", () => {
+  it("provides both MCP planes for claimed publication", () => {
+    const { root } = sandbox();
+    const environment = claimEnv(root, { claims: [liveClaim] });
+
+    expect(environment.MINDLEAK_MCP_BIN).toBe(environment.LODESTAR_MCP_BIN);
+  });
+
   it("refuses direct publication from main", () => {
     const { repo } = sandbox();
 

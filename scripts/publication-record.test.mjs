@@ -6,9 +6,27 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { publicationRecord, recordPublication } from "./publication-record.mjs";
+import {
+  memoryPlaneRefusal,
+  publicationRecord,
+  recordPublication,
+} from "./publication-record.mjs";
 
 const SESSION = "c1a8f273b95e4d67a0c214e89f36ab50";
+
+test("an unreachable Memory Plane refuses the publish before it happens", () => {
+  // The ordering is the whole defect: the branch used to be on the remote by
+  // the time the operator learned the work could never certify.
+  const refusal = memoryPlaneRefusal(null);
+
+  assert.match(refusal, /MINDLEAK_MCP_BIN/);
+  assert.match(refusal, /cargo build --release/);
+  assert.match(refusal, /refuses before pushing/);
+});
+
+test("a resolved Memory Plane does not refuse", () => {
+  assert.equal(memoryPlaneRefusal("C:/somewhere/mindleak-mcp.exe"), null);
+});
 
 test("the record carries the files the push made visible", () => {
   const record = publicationRecord({
