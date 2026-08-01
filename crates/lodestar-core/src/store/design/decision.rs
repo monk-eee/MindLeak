@@ -19,17 +19,21 @@ impl LodestarStore {
     /// stays genuinely idempotent.
     pub fn reconcile_design_item(&self, metadata: &DesignMetadata, now: i64) -> Result<DesignItem> {
         let id = design_id_from_path(&metadata.adr_path);
-        // The declared status is imported as-is, so a repository's ADR history
-        // arrives as the record it already is rather than as 35 decisions
-        // pretending to be pending. The cost is that an imported status has no
-        // `decided_by`: it reflects a decision, it does not record one. That is
-        // visible in the row, and `reopen_undecided_design` is the way to turn
-        // one into an attributed decision (ADR-0047).
+        // A newly discovered row always enters as `proposed`, never as the
+        // status the ADR file declares. An imported `accepted`/`rejected` has no
+        // `decided_by` — it reflects a decision it cannot attribute — and a
+        // status with nobody behind it is exactly what a decision must not be
+        // (ADR-0077). The explicit Design Board decision path is the only way to
+        // accept or reject, so reconciliation imports the subject, not the
+        // verdict. Existing rows always win: the ON CONFLICT branch touches only
+        // title, summary, and updated_at, so a decision already recorded (status
+        // and `decided_by` alike) survives untouched and a no-op pass stays
+        // idempotent.
         self.conn.execute(
             "INSERT INTO design_items
                 (id, adr_path, title, summary, status, proposed_by, decided_by,
                  reason, created_at, updated_at, promotion_status, materialization_revision)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, ?7, ?7,
+             VALUES (?1, ?2, ?3, ?4, 'proposed', ?5, NULL, NULL, ?6, ?6,
                      'not_required', 0)
              ON CONFLICT(id) DO UPDATE SET
                  title = excluded.title,
@@ -45,7 +49,6 @@ impl LodestarStore {
                 metadata.adr_path,
                 metadata.title,
                 metadata.summary,
-                metadata.status.as_str(),
                 metadata.proposed_by,
                 now
             ],

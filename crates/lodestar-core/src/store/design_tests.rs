@@ -20,6 +20,32 @@ fn create_plan(goal_id: &str, title: &str) -> DesignMaterializationPlan {
     }
 }
 
+/// Insert the row shape a pre-ADR-0077 reconciliation left behind: a terminal
+/// status with no decider. Reconciliation can no longer create this (an imported
+/// accept/reject now lands proposed), but rows like it predate the fix, so the
+/// repair verbs must still act on one.
+fn legacy_undecided(
+    store: &super::LodestarStore,
+    id: &str,
+    status: DesignStatus,
+) -> crate::design::DesignItem {
+    store
+        .conn
+        .execute(
+            "INSERT INTO design_items (id, adr_path, title, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+            rusqlite::params![
+                id,
+                format!("docs/adr/{}.md", &id[7..]),
+                id,
+                status.as_str(),
+                NOW
+            ],
+        )
+        .unwrap();
+    store.get_design_item(id).unwrap().unwrap()
+}
+
 #[test]
 fn reconciliation_refreshes_repository_facts_but_never_review_state() {
     let store = store();
@@ -117,11 +143,15 @@ fn historical_terminal_adrs_import_without_arming_promotion() {
                 NOW,
             )
             .unwrap();
-        assert_eq!(item.status, status);
+        // An imported terminal status has no decider, so it enters as a proposal
+        // rather than a decision nobody made (ADR-0077).
+        assert_eq!(item.status, DesignStatus::Proposed);
         assert_eq!(item.promotion_status, DesignPromotionStatus::NotRequired);
     }
 
-    assert!(store.actionable_design_items().unwrap().is_empty());
+    // Both imports await a decision on the board, but neither arms promotion nor
+    // schedules a task.
+    assert_eq!(store.actionable_design_items().unwrap().len(), 2);
     assert!(store.next_task(NOW).unwrap().is_none());
 }
 
@@ -460,28 +490,19 @@ fn rejecting_and_retiring_each_append_an_attributed_action() {
     assert_eq!(retirement[0].reason, "duplicate registration");
 }
 
-// ADR-0047. An imported status reflects a decision; it does not record one, so
-// `decided_by` stays empty. Because deciding is guarded on `proposed`, such a
-// row is frozen: it asserts a decision that can never be attributed to anyone.
-// Observed live on ADR-0045, where a reviewer said "I agree with it" and there
-// was no way to write that down.
+// ADR-0047 / ADR-0077. Reconciliation no longer imports a terminal status at
+// face value (an imported accept/reject now lands proposed), but rows in that
+// shape predate the fix — three exist in the live ledger — and stay frozen: a
+// decision that names nobody, which deciding (guarded on `proposed`) cannot
+// touch. Observed live on ADR-0045, where a reviewer said "I agree with it" and
+// there was no way to write that down. The repair verb turns such a legacy row
+// back into a proposal a person can decide.
 #[test]
-fn an_imported_status_can_be_reopened_but_a_real_decision_cannot() {
+fn a_legacy_undecided_status_can_be_reopened_but_a_real_decision_cannot() {
     let store = store();
-    let item = store
-        .reconcile_design_item(
-            &DesignMetadata {
-                adr_path: "docs/adr/0045-fleet.md".into(),
-                title: "A fleet is a distributed system".into(),
-                summary: "treat agents as a distributed system".into(),
-                status: DesignStatus::Accepted,
-                proposed_by: None,
-            },
-            NOW,
-        )
-        .unwrap();
+    let item = legacy_undecided(&store, "design:0045-fleet", DesignStatus::Accepted);
 
-    // Imported at face value, and therefore unattributable and undecidable.
+    // Frozen: a terminal status with no decider, undecidable as it stands.
     assert_eq!(item.status, DesignStatus::Accepted);
     assert_eq!(item.decided_by, None);
     assert!(!store
@@ -830,22 +851,12 @@ fn attribution_never_overwrites_a_name_already_recorded() {
 
 // The two repair verbs partition the undecided rows rather than overlapping: a
 // row promotion has not touched is still worth deciding properly, so attribution
-// refuses it and points at the better route.
+// refuses it and points at the better route. Both act only on the legacy shape
+// reconciliation used to create and no longer does.
 #[test]
 fn attribution_defers_to_reopening_while_nothing_has_materialized() {
     let store = store();
-    let item = store
-        .reconcile_design_item(
-            &DesignMetadata {
-                adr_path: "docs/adr/0045-fleet.md".into(),
-                title: "A fleet is a distributed system".into(),
-                summary: "treat agents as a distributed system".into(),
-                status: DesignStatus::Accepted,
-                proposed_by: None,
-            },
-            NOW,
-        )
-        .unwrap();
+    let item = legacy_undecided(&store, "design:0045-fleet", DesignStatus::Accepted);
     assert_eq!(item.decided_by, None);
     assert_eq!(item.promotion_status, DesignPromotionStatus::NotRequired);
 
@@ -858,4 +869,79 @@ fn attribution_defers_to_reopening_while_nothing_has_materialized() {
     assert!(!store
         .attribute_design_decision(&item.id, "monk-eee", NOW)
         .unwrap());
+}
+
+#[test]
+fn reconcile_imports_every_declared_status_as_a_proposal() {
+    let store = store();
+    for status in [
+        DesignStatus::Accepted,
+        DesignStatus::Rejected,
+        DesignStatus::Proposed,
+    ] {
+        let item = store
+            .reconcile_design_item(
+                &DesignMetadata {
+                    adr_path: format!("docs/adr/0099-{}.md", status.as_str()),
+                    title: "x".into(),
+                    summary: "y".into(),
+                    status,
+                    proposed_by: None,
+                },
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(
+            item.status,
+            DesignStatus::Proposed,
+            "{} must import as a proposal, never a decision with no decider",
+            status.as_str()
+        );
+        assert_eq!(item.decided_by, None);
+    }
+}
+
+#[test]
+fn reconcile_never_overwrites_an_existing_decided_row() {
+    let store = store();
+    let registered = store
+        .reconcile_design_item(
+            &DesignMetadata {
+                adr_path: "docs/adr/0100-decided.md".into(),
+                title: "Decided".into(),
+                summary: String::new(),
+                status: DesignStatus::Proposed,
+                proposed_by: Some("planner".into()),
+            },
+            NOW,
+        )
+        .unwrap();
+    assert!(store
+        .decide_design_item(
+            &registered.id,
+            DesignStatus::Accepted,
+            "reviewer",
+            None,
+            NOW
+        )
+        .unwrap());
+
+    // A later pass whose file now claims 'rejected' refreshes title and summary
+    // but never the recorded decision.
+    let again = store
+        .reconcile_design_item(
+            &DesignMetadata {
+                adr_path: "docs/adr/0100-decided.md".into(),
+                title: "Decided (edited)".into(),
+                summary: "new summary".into(),
+                status: DesignStatus::Rejected,
+                proposed_by: None,
+            },
+            NOW + 1,
+        )
+        .unwrap();
+    assert_eq!(again.status, DesignStatus::Accepted);
+    assert_eq!(again.decided_by.as_deref(), Some("reviewer"));
+    assert_eq!(again.title, "Decided (edited)");
+    assert_eq!(again.summary, "new summary");
 }
