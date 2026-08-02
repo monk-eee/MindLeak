@@ -8,7 +8,7 @@ use crate::model::{Node, NodeType, RelationType};
 /// Version of the deterministic structural facts emitted by the extractor.
 /// Increment when extraction semantics change so existing artifact snapshots
 /// become explicitly stale instead of quietly retaining the old shape.
-pub const STRUCTURE_EXTRACTOR_VERSION: u32 = 1;
+pub const STRUCTURE_EXTRACTOR_VERSION: u32 = 2;
 
 /// Direction of edge expansion during traversal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
