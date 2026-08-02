@@ -245,9 +245,9 @@ automatic:
   *long-but-finite* half-life and must be **re-confirmed** by fresh evidence, or
   it eventually fades. The Constitution is authored law and never decays; learned
   knowledge is earned and revalidated.
-- **SLM-bounded, async, reviewable** — distillation runs off every hot path (§8),
-  its quality is capped by the local model, and promotions are inspectable like
-  the constitution export.
+- **Model-assisted, async, reviewable** — distillation runs off every hot path
+  (§8), its quality is bounded by the configured model, and promotions are
+  inspectable like the constitution export.
 - **Advisory in conformance, never a hard block** — active knowledge informs a
   conformance check only as an *advisory finding* (at most nudging a verdict to
   `needs_human` so a human looks), never a `violation`; a decaying, revalidated
@@ -374,9 +374,9 @@ posture:
   evidence becomes `needs_human`; a `governed` node changed without a task for
   its goal becomes `drift`; changing an active `forbid_change` binding becomes
   `violation`; evidence matching the task goal passes the deterministic tier.
-- **Semantic (optional local SLM):** "does this change contradict the *statement*
-  of constraint C?" Uses a bounded evidence summary. An unavailable or uncertain
-  model yields `needs_human`; it never fabricates alignment.
+- **Semantic (optional configured model):** "does this change contradict the
+  *statement* of constraint C?" Uses a bounded evidence summary. An unavailable
+  or uncertain model yields `needs_human`; it never fabricates alignment.
 
 Only `aligned` completes a task. `drift` and `needs_human` remain `in_review`;
 `violation` moves the task to `blocked`. `check_conformance` evaluates once and
@@ -390,11 +390,12 @@ as amended by [ADR-0025](adr/0025-authoritative-checked-conformance.md).
 
 ---
 
-## 8. Optional local SLM
+## 8. Optional model augmentation
 
 Same contract as MindLeak's `consolidate.rs`: an OpenAI-compatible
-`/v1/chat/completions` call to a local server, JSON `response_format`, off every
-hot path, nothing leaves the machine.
+`/v1/chat/completions` call to the configured endpoint, JSON `response_format`,
+off every hot path. Defaults target a local server, so nothing leaves the
+machine unless the operator deliberately configures a hosted endpoint.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -435,7 +436,7 @@ operations below name the invocation each maps to.
 
 6. `task_create(goal_id, title, acceptance, blocked_by?)` → `task_id`; a
   dependency opens automatically only after aligned predecessor completion.
-7. `task_create(goal_id)` with no title → candidate tasks (SLM-assisted;
+7. `task_create(goal_id)` with no title → candidate tasks (model-assisted;
    deterministic stub otherwise). Objective goals only — constraints and
    invariants are enforced continuously by conformance, not broken into
    completable tasks.
@@ -589,15 +590,15 @@ expose remotely; doing so would require an auth layer and its own ADR.
   without colliding.
 - **Phase 1 — conformance + seam.** `link_goal_to_artifact`, deterministic
   `check_conformance`, the `task_query` (`view="next"`) allocator, `export_constitution`.
-- **Phase 2 — optional SLM.** `task_create` decomposition and semantic conformance over the
-  local model, with deterministic fallbacks.
+- **Phase 2 — optional model.** `task_create` decomposition and semantic
+  conformance through the configured endpoint, with deterministic fallbacks.
 - **Phase 3 — editor surface.** A VS Code board view (who owns what) and inline
   conformance warnings when a save touches goal-bound code.
 - **Phase 4 — consolidation (learned knowledge).** Signal-weighted decay
   ([ADR-0005](adr/0005-signal-weighted-decay.md)) plus the sleep-phase worker
   that distils proven, about-to-expire episodic clusters into durable
   `knowledge:` nodes with provenance, revalidated on a long-but-finite half-life.
-  Depends on the seam (Phase 1) and the SLM (Phase 2).
+  Depends on the seam (Phase 1) and the optional model (Phase 2).
 
 ---
 
@@ -614,7 +615,7 @@ demands specifically:
 - **Supersede chain:** superseding bumps version, marks the old `superseded`, and
   `get_constitution("active")` returns only the current set.
 - **Conformance verdicts:** structural drift (goal-bound change with no task) and
-  violation are detected; missing SLM degrades to `needs_human`, never blocks.
+  violation are detected; a missing model degrades to `needs_human`, never blocks.
 - **Consolidation gating:** a low-evidence / single-session pattern is **not**
   promoted; a proven, cross-span cluster is; learned knowledge revalidates on
   fresh evidence and fades without it.
@@ -628,7 +629,7 @@ demands specifically:
    plan), or primary-in-committed-file loaded into the DB?
 3. **Task priority / ordering** model for `task_query` (`view="next"`) (FIFO, explicit priority,
    or goal-weighted).
-4. **Semantic-violation policy:** does a low-confidence SLM `violation` hard-block
+4. **Semantic-violation policy:** does a low-confidence model `violation` hard-block
    completion, or only warn pending human review?
 5. **Co-hosting:** keep `lodestar-mcp` separate, or expose both planes from one
    MCP server once stable?

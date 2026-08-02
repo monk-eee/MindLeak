@@ -39,13 +39,13 @@ and the field is omitted.
 | `export_graph` | Complete active graph JSON with fully derived edge weights (not a backup). |
 | `backup_database` | Create an integrity-checked online SQLite backup of the memory plane. |
 | `reset_database` | Clear regenerable memory only with the exact `RESET MINDLEAK` token. |
-| `consolidate_session` | Optional: compress raw logs into one intent node via a local OpenAI-compatible model; successful output includes `model_call.source="model"`, while typed failures name why no result was produced. |
+| `consolidate_session` | Optional: compress raw logs into one intent node through the configured OpenAI-compatible endpoint; the default is local, while hosted endpoints use the configured API key. Successful output includes `model_call.source="model"`, while typed failures name why no result was produced. |
 | `consolidate_signal` | Optional: consolidate queued proven signal, persist provenance links, then acknowledge raw evidence; successful output carries the same `model_call` marker. |
 | `promotion_candidates` | Aggregate expiring proven signal into subject-level candidates for Lodestar `promote_signals` — the deterministic, model-free promotion pass that closes the learned-knowledge loop (ADR-0022). |
 | `list_agents` | Roster of agents + their active observation counts (attribution). |
 | `working_set` | Current agent's bounded, ranked attentional focus (derived from active observations; default cap 7). |
 | `evidence_for` | Bounded, provenance-bearing evidence bundle from an agent's attributed executions/commits in a work window (ADR-0009). |
-| `index` | Optional: embed nodes lacking a current vector via a local `/v1/embeddings` server (ADR-0008). |
+| `index` | Optional: embed nodes lacking a current vector through the configured OpenAI-compatible `/v1/embeddings` endpoint (ADR-0008). |
 | `recall` | Optional: nearest node ids by cosine similarity — entry points to *seed* `graph_multi_hop_query`. |
 | `telemetry_snapshot` | Observability record (ADR-0010): per-tool lifetime call/error counts, latency, current health (whether each tool's most recent call failed), and recent invocations from the durable audit trail. |
 | `storage_status` | Resolved repository id, graph database path, storage origin, legacy migration source, and whether migration ran (ADR-0038); `include_model_health=true` adds one on-demand consolidation-model probe (ADR-0079). |
@@ -56,10 +56,10 @@ and the field is omitted.
 
 
 A second, **durable** MCP server ([`lodestar-mcp`](crates/lodestar-mcp)) — the
-"spec brain" that keeps parallel agents aligned to shared intent instead of
-diluting it. Register it alongside `mindleak-mcp`; both servers derive the same
-per-clone repository id and user-local directory, so isolated worktrees share
-one intent plane and one memory graph by default.
+intent, coordination, and proof plane that keeps parallel agents aligned to
+shared goals and constraints. Register it alongside `mindleak-mcp`; both servers
+derive the same per-clone repository id and user-local directory, so isolated
+worktrees share one intent plane and one memory graph by default.
 
 > **Evidence is the proof.** Completion here isn't a claim an agent makes — it's
 > proof it must produce. `task_transition` (`to="complete"`) accepts only a provenance-bearing evidence

@@ -18,7 +18,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "consolidate_signal",
-            "description": "Optional: consolidate queued high-signal episodic evidence through the local OpenAI-compatible model, persist deterministic provenance links, then acknowledge raw candidates only after success.",
+            "description": "Optional: consolidate queued high-signal episodic evidence through the configured OpenAI-compatible endpoint, persist deterministic provenance links, then acknowledge raw candidates only after success.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
