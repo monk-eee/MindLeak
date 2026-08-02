@@ -198,7 +198,7 @@ pub(super) fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "task_create",
-            "description": "Create work serving a goal. With `title`, one task: `blocked_by` keeps it unclaimable until the predecessor completes aligned, enabling progressive same-file handoffs without pretending to lock symbols or text, and `also_serves` declares up front the additional goals it serves, so genuinely cross-cutting work is reviewable breadth rather than drift (ADR-0041). Without `title`, the goal is decomposed into claimable tasks instead, using a local model when one is reachable and a single-task fallback when not. Either way the answer names what already serves this goal rather than refusing the request (ADR-0015).",
+            "description": "Create work serving a goal. With `title`, one task: `blocked_by` keeps it unclaimable until the predecessor completes aligned, enabling progressive same-file handoffs without pretending to lock symbols or text, and `also_serves` declares up front the additional goals it serves, so genuinely cross-cutting work is reviewable breadth rather than drift (ADR-0041). Without `title`, the goal is decomposed into claimable tasks instead, using the configured model endpoint when reachable and a single-task fallback when not. Either way the answer names what already serves this goal rather than refusing the request (ADR-0015).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
