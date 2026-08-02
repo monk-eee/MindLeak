@@ -1,6 +1,6 @@
 ---
 name: mindleak
-description: "Set up, verify, use, and troubleshoot the MindLeak and Lodestar MCP servers. Use when installing or configuring MindLeak, connecting an MCP client, opening a shared session, checking code impact or agent overlap, recalling repository context, coordinating or claiming tasks, renewing leases, recording durable knowledge, completing work with evidence, or diagnosing storage and connection problems."
+description: "Set up, verify, use, and troubleshoot the MindLeak and Lodestar MCP servers. Use when installing or configuring MindLeak, connecting an MCP client, opening a shared session, checking code impact or agent overlap, recalling repository context, coordinating or claiming tasks, renewing leases, recording durable knowledge, completing work with evidence, or diagnosing storage, connection, claim, or evidence problems."
 argument-hint: "setup, verify, work <task>, status, or troubleshoot"
 ---
 
@@ -18,7 +18,10 @@ Do not query their SQLite files directly.
    described below.
 3. For implementation, investigation, planning, coordination, or handoff, follow
    [the working loop](./references/workflow.md).
-4. For a simple status question, use the smallest read-only tools that answer it;
+4. If a claim, evidence bundle, or conformance check is refused, or a push
+   reports that the work will not certify, see
+   [troubleshooting](./references/troubleshooting.md).
+5. For a simple status question, use the smallest read-only tools that answer it;
    do not claim work or write knowledge merely because the tools are available.
 
 ## Session Invariant
