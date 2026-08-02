@@ -14,20 +14,24 @@ use std::sync::{Arc, Mutex, OnceLock};
 use regex::Regex;
 
 use crate::ingest::javascript::{
-    callable_for_definition, is_identifier_shadowed, is_identifier_shadowed_except, mask_non_code,
-    next_non_newline, previous_non_newline, tokenize, Token,
+    callable_for_definition, is_identifier_shadowed, is_identifier_shadowed_except,
+    mask_non_code as mask_javascript_non_code, next_non_newline, previous_non_newline, tokenize,
+    Token,
 };
+use crate::ingest::source_mask::mask_non_code as mask_source_non_code;
 
 /// A source symbol definition discovered in a file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Symbol {
     pub name: String,
+    /// Stable identity within the file, qualified by a lexical owner when one
+    /// exists (for example `GraphStore::new`).
+    pub qualified_name: String,
     pub kind: String,
     pub line: usize,
 }
 
-/// An in-file call: `caller` (a symbol defined in the file) references `callee`
-/// (another symbol defined in the same file).
+/// An in-file call between qualified symbol identities defined in the file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Call {
     pub caller: String,
@@ -52,6 +56,8 @@ pub struct Extraction {
 /// Internal definition record with the byte offset of its name.
 struct Def {
     name: String,
+    qualified_name: String,
+    owner: Option<String>,
     kind: String,
     line: usize,
     name_offset: usize,
@@ -67,12 +73,21 @@ fn language_config(ext: &str) -> (&'static [(&'static str, &'static str)], bool)
         "rs" => (
             &[
                 (
-                    r"(?m)^\s*(?:pub\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_]\w*)",
+                    r#"(?m)^\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:(?:const|async|unsafe|extern(?:\s+"[^"]*"))\s+)*fn\s+([A-Za-z_]\w*)"#,
                     "fn",
                 ),
-                (r"(?m)^\s*(?:pub\s+)?struct\s+([A-Za-z_]\w*)", "struct"),
-                (r"(?m)^\s*(?:pub\s+)?enum\s+([A-Za-z_]\w*)", "enum"),
-                (r"(?m)^\s*(?:pub\s+)?trait\s+([A-Za-z_]\w*)", "trait"),
+                (
+                    r"(?m)^\s*(?:pub(?:\s*\([^)]*\))?\s+)?struct\s+([A-Za-z_]\w*)",
+                    "struct",
+                ),
+                (
+                    r"(?m)^\s*(?:pub(?:\s*\([^)]*\))?\s+)?enum\s+([A-Za-z_]\w*)",
+                    "enum",
+                ),
+                (
+                    r"(?m)^\s*(?:pub(?:\s*\([^)]*\))?\s+)?trait\s+([A-Za-z_]\w*)",
+                    "trait",
+                ),
             ],
             true,
         ),
@@ -138,6 +153,8 @@ fn find_defs(content: &str, patterns: &[(&str, &str)]) -> Vec<Def> {
                 let line = 1 + content[..m.start()].bytes().filter(|&b| b == b'\n').count();
                 defs.push(Def {
                     name: m.as_str().to_string(),
+                    qualified_name: m.as_str().to_string(),
+                    owner: None,
                     kind: (*kind).to_string(),
                     line,
                     name_offset: m.start(),
@@ -166,6 +183,116 @@ fn compiled_pattern(pattern: &str) -> Option<Arc<Regex>> {
     Some(re)
 }
 
+#[derive(Debug)]
+struct OwnerSpan {
+    name: String,
+    start: usize,
+    end: usize,
+}
+
+fn qualify_rust_methods(content: &str, defs: &mut [Def]) {
+    let owners = rust_impl_owner_spans(content);
+    for def in defs.iter_mut().filter(|definition| definition.kind == "fn") {
+        let owner = owners
+            .iter()
+            .filter(|owner| def.name_offset >= owner.start && def.name_offset < owner.end)
+            .min_by_key(|owner| owner.end - owner.start);
+        if let Some(owner) = owner {
+            def.owner = Some(owner.name.clone());
+            def.qualified_name = format!("{}::{}", owner.name, def.name);
+        }
+    }
+}
+
+fn rust_impl_owner_spans(content: &str) -> Vec<OwnerSpan> {
+    rust_impl_re()
+        .captures_iter(content)
+        .filter_map(|capture| {
+            let complete = capture.get(0)?;
+            let header = capture.get(1)?.as_str();
+            let open = complete.end().checked_sub(1)?;
+            let end = matching_brace_end(content, open)?;
+            Some(OwnerSpan {
+                name: rust_impl_identity(header)?,
+                start: open + 1,
+                end,
+            })
+        })
+        .collect()
+}
+
+fn rust_impl_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?ms)^[ \t]*(?:unsafe[ \t]+)?impl\b(.*?)\{").expect("valid Rust impl regex")
+    })
+}
+
+fn rust_impl_identity(header: &str) -> Option<String> {
+    let header = header.split_whitespace().collect::<Vec<_>>().join(" ");
+    let header = strip_leading_generics(header.trim());
+    let header = header.split(" where ").next()?.trim();
+    if let Some((trait_name, target)) = header.rsplit_once(" for ") {
+        Some(format!(
+            "{}::{}",
+            rust_type_name(target)?,
+            rust_type_name(trait_name)?
+        ))
+    } else {
+        rust_type_name(header)
+    }
+}
+
+fn strip_leading_generics(value: &str) -> &str {
+    if !value.starts_with('<') {
+        return value;
+    }
+    let mut depth = 0usize;
+    for (index, character) in value.char_indices() {
+        match character {
+            '<' => depth += 1,
+            '>' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return value[index + character.len_utf8()..].trim_start();
+                }
+            }
+            _ => {}
+        }
+    }
+    value
+}
+
+fn rust_type_name(value: &str) -> Option<String> {
+    let without_generics = value.split('<').next()?.trim();
+    let path = without_generics
+        .split_whitespace()
+        .last()?
+        .trim_matches(|character: char| {
+            !character.is_ascii_alphanumeric() && character != '_' && character != ':'
+        });
+    path.rsplit("::")
+        .find(|segment| !segment.is_empty())
+        .map(str::to_string)
+}
+
+fn matching_brace_end(content: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, byte) in content.as_bytes().iter().enumerate().skip(open) {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Compute the `[start, end)` byte span of a definition's body.
 fn body_span(
     content: &str,
@@ -185,20 +312,7 @@ fn body_span(
         ))
     } else if brace_lang {
         let open = content[def.name_offset..].find('{')? + def.name_offset;
-        let mut depth = 0usize;
-        for (i, &b) in content.as_bytes().iter().enumerate().skip(open) {
-            match b {
-                b'{' => depth += 1,
-                b'}' => {
-                    depth = depth.saturating_sub(1);
-                    if depth == 0 {
-                        return Some((open + 1, i));
-                    }
-                }
-                _ => {}
-            }
-        }
-        None
+        matching_brace_end(content, open).map(|end| (open + 1, end))
     } else {
         // Indentation-scoped (Python): body = following lines indented deeper
         // than the definition line.
@@ -239,30 +353,44 @@ pub fn extract(path: &str, content: &str) -> Extraction {
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     let javascript = matches!(ext.as_str(), "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs");
     let (patterns, brace_lang) = language_config(&ext);
-    let masked = javascript.then(|| mask_non_code(content));
-    let defs = find_defs(masked.as_deref().unwrap_or(content), patterns);
+    let masked = if javascript {
+        mask_javascript_non_code(content)
+    } else {
+        mask_source_non_code(&ext, content)
+    };
+    let mut defs = find_defs(&masked, patterns);
+    if ext == "rs" {
+        qualify_rust_methods(&masked, &mut defs);
+    }
 
     let symbols: Vec<Symbol> = defs
         .iter()
         .map(|d| Symbol {
             name: d.name.clone(),
+            qualified_name: d.qualified_name.clone(),
             kind: d.kind.clone(),
             line: d.line,
         })
         .collect();
 
-    let callable_names: HashSet<&str> = defs
+    let mut callable_defs: HashMap<&str, Vec<&Def>> = HashMap::new();
+    for definition in defs
         .iter()
-        .filter(|d| CALLABLE_KINDS.contains(&d.kind.as_str()))
-        .map(|d| d.name.as_str())
-        .collect();
+        .filter(|definition| CALLABLE_KINDS.contains(&definition.kind.as_str()))
+    {
+        callable_defs
+            .entry(definition.name.as_str())
+            .or_default()
+            .push(definition);
+    }
 
     // Body spans for callable definitions (for innermost-caller attribution).
-    let bodies: Vec<(&str, usize, usize)> = defs
+    let bodies: Vec<(&Def, usize, usize)> = defs
         .iter()
         .filter(|d| CALLABLE_KINDS.contains(&d.kind.as_str()))
         .filter_map(|d| {
-            body_span(content, d, brace_lang, javascript).map(|(s, e)| (d.name.as_str(), s, e))
+            let body_source = if javascript { content } else { &masked };
+            body_span(body_source, d, brace_lang, javascript).map(|(start, end)| (d, start, end))
         })
         .collect();
 
@@ -277,7 +405,7 @@ pub fn extract(path: &str, content: &str) -> Extraction {
         let call_sites = if let Some(tokens) = &javascript_tokens {
             javascript_call_sites(tokens)
         } else {
-            regex_call_sites(content)
+            regex_call_sites(&masked)
         };
         for (callee, offset, token_index) in call_sites {
             // Definition signatures look like calls to the regex.
@@ -287,15 +415,14 @@ pub fn extract(path: &str, content: &str) -> Extraction {
             let caller = bodies
                 .iter()
                 .filter(|(_, start, end)| offset >= *start && offset < *end)
-                .min_by_key(|(_, s, e)| e - s)
-                .map(|(n, _, _)| *n);
+                .min_by_key(|(_, start, end)| end - start)
+                .map(|(definition, _, _)| *definition);
             if let Some(caller) = caller {
-                if caller == callee {
-                    continue;
-                }
-                let local_definition = defs.iter().find(|definition| {
-                    definition.name == callee && CALLABLE_KINDS.contains(&definition.kind.as_str())
-                });
+                let local_candidates = callable_defs
+                    .get(callee.as_str())
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                let local_definition = resolve_local_definition(local_candidates, caller);
                 let shadowed = match (&javascript_tokens, token_index) {
                     (Some(tokens), Some(index)) => {
                         if let Some(definition) = local_definition {
@@ -311,20 +438,28 @@ pub fn extract(path: &str, content: &str) -> Extraction {
                     }
                     _ => false,
                 };
-                if !shadowed
-                    && callable_names.contains(callee.as_str())
-                    && seen.insert((caller.to_string(), callee.clone()))
-                {
-                    calls.push(Call {
-                        caller: caller.to_string(),
-                        callee,
-                    });
-                } else if !shadowed
-                    && !callable_names.contains(callee.as_str())
-                    && references_seen.insert((caller.to_string(), callee.clone()))
+                if shadowed {
+                    continue;
+                }
+                if let Some(local_definition) = local_definition {
+                    if caller.qualified_name == local_definition.qualified_name {
+                        continue;
+                    }
+                    let edge = (
+                        caller.qualified_name.clone(),
+                        local_definition.qualified_name.clone(),
+                    );
+                    if seen.insert(edge.clone()) {
+                        calls.push(Call {
+                            caller: edge.0,
+                            callee: edge.1,
+                        });
+                    }
+                } else if local_candidates.is_empty()
+                    && references_seen.insert((caller.qualified_name.clone(), callee.clone()))
                 {
                     call_references.push(CallReference {
-                        caller: caller.to_string(),
+                        caller: caller.qualified_name.clone(),
                         callee,
                     });
                 }
@@ -337,6 +472,18 @@ pub fn extract(path: &str, content: &str) -> Extraction {
         calls,
         call_references,
     }
+}
+
+fn resolve_local_definition<'a>(candidates: &[&'a Def], caller: &Def) -> Option<&'a Def> {
+    if candidates.len() == 1 {
+        return candidates.first().copied();
+    }
+    let mut same_owner = candidates
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.owner == caller.owner);
+    let resolved = same_owner.next()?;
+    same_owner.next().is_none().then_some(resolved)
 }
 
 fn regex_call_sites(content: &str) -> Vec<(String, usize, Option<usize>)> {

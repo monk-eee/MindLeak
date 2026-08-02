@@ -455,6 +455,111 @@ fn ingest_file_creates_in_file_call_edges() {
         && e.target_id == "symbol:src/lib.rs:b"));
 }
 
+/// Regression: restricted Rust visibility and `const fn` declarations did not
+/// match the definition regex, so common internal APIs never reached the graph.
+#[test]
+fn ingest_file_keeps_restricted_visibility_and_const_rust_functions() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file(
+            "src/visibility.rs",
+            "pub(crate) fn crate_visible() {}\npub(super) const fn parent_visible() {}\n",
+        )
+        .unwrap();
+
+    for symbol in ["crate_visible", "parent_visible"] {
+        assert!(
+            engine
+                .store()
+                .get_node(&format!("symbol:src/visibility.rs:{symbol}"))
+                .unwrap()
+                .is_some(),
+            "missing extracted symbol {symbol}"
+        );
+    }
+}
+
+/// Regression: call-shaped text and braces inside Rust comments or strings
+/// invented call edges and could truncate the real caller body before its call.
+#[test]
+fn ingest_file_ignores_non_code_when_extracting_rust_calls() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file(
+            "src/non_code.rs",
+            r#"fn caller() {
+    let text = "fake() }";
+    // fake();
+    real();
+}
+fn fake() {}
+fn real() {}
+"#,
+        )
+        .unwrap();
+
+    let caller = engine
+        .multi_hop_query("symbol:src/non_code.rs:caller", 1, 0.0)
+        .unwrap();
+    assert!(caller.edges.iter().any(|edge| {
+        edge.relation == mindleak_core::RelationType::Calls
+            && edge.target_id == "symbol:src/non_code.rs:real"
+    }));
+    assert!(!caller.edges.iter().any(|edge| {
+        edge.relation == mindleak_core::RelationType::Calls
+            && edge.target_id == "symbol:src/non_code.rs:fake"
+    }));
+}
+
+/// Regression: methods were keyed only by their short name, so two `impl`
+/// blocks defining `run`/`helper` collapsed into two nodes and crossed calls.
+#[test]
+fn ingest_file_qualifies_same_named_rust_methods_by_impl_owner() {
+    let engine = MindLeak::open_in_memory().unwrap();
+    engine
+        .ingest_file(
+            "src/workers.rs",
+            r#"struct First;
+struct Second;
+impl First {
+    fn helper() {}
+    fn run() { Self::helper(); }
+}
+impl Second {
+    fn helper() {}
+    fn run() { Self::helper(); }
+}
+"#,
+        )
+        .unwrap();
+
+    for symbol in [
+        "First::helper",
+        "First::run",
+        "Second::helper",
+        "Second::run",
+    ] {
+        assert!(
+            engine
+                .store()
+                .get_node(&format!("symbol:src/workers.rs:{symbol}"))
+                .unwrap()
+                .is_some(),
+            "missing qualified symbol {symbol}"
+        );
+    }
+    for owner in ["First", "Second"] {
+        let run_id = format!("symbol:src/workers.rs:{owner}::run");
+        let helper_id = format!("symbol:src/workers.rs:{owner}::helper");
+        let run = engine.multi_hop_query(&run_id, 1, 0.0).unwrap();
+        assert!(run.edges.iter().any(|edge| {
+            edge.relation == mindleak_core::RelationType::Calls
+                && edge.source_id == run_id
+                && edge.target_id == helper_id
+        }));
+    }
+}
+
 #[test]
 fn agent_attribution_records_observed_edges_and_roster() {
     let engine = MindLeak::open_in_memory().unwrap();

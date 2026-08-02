@@ -6,6 +6,7 @@ pub mod execution;
 pub mod git;
 pub(crate) mod javascript;
 pub mod manifest;
+pub(crate) mod source_mask;
 pub mod structure;
 
 use sha2::{Digest, Sha256};

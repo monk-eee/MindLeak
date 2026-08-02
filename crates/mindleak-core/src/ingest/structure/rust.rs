@@ -12,7 +12,7 @@
 //! already knows. Guessing is left to the caller that holds the file list.
 
 use super::{Import, ImportBinding, ImportTarget};
-use crate::ingest::normalize_path;
+use crate::ingest::{normalize_path, source_mask::mask_non_code};
 use regex::Regex;
 use std::sync::OnceLock;
 
@@ -96,7 +96,7 @@ pub fn extract(path: &str, content: &str) -> Vec<Import> {
     };
     // Comments are masked rather than removed so byte offsets stay meaningful
     // and a `use` quoted inside a doc comment cannot be mistaken for a real one.
-    let code = mask_comments_and_strings(content);
+    let code = mask_non_code("rs", content);
 
     let mut imports: Vec<Import> = Vec::new();
     for capture in mod_declaration().captures_iter(&code) {
@@ -363,69 +363,6 @@ fn is_item_name(name: &str) -> bool {
         && name
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-}
-
-/// Blank out comments and string literals so their contents never parse as code.
-fn mask_comments_and_strings(content: &str) -> String {
-    let bytes = content.as_bytes();
-    let mut out = String::with_capacity(content.len());
-    let mut index = 0usize;
-    let mut block_depth = 0usize;
-    while index < bytes.len() {
-        let ch = bytes[index] as char;
-        if block_depth > 0 {
-            if bytes[index..].starts_with(b"/*") {
-                block_depth += 1;
-                out.push_str("  ");
-                index += 2;
-                continue;
-            }
-            if bytes[index..].starts_with(b"*/") {
-                block_depth -= 1;
-                out.push_str("  ");
-                index += 2;
-                continue;
-            }
-            out.push(if ch == '\n' { '\n' } else { ' ' });
-            index += 1;
-            continue;
-        }
-        if bytes[index..].starts_with(b"/*") {
-            block_depth = 1;
-            out.push_str("  ");
-            index += 2;
-            continue;
-        }
-        if bytes[index..].starts_with(b"//") {
-            while index < bytes.len() && bytes[index] != b'\n' {
-                out.push(' ');
-                index += 1;
-            }
-            continue;
-        }
-        if ch == '"' {
-            out.push(' ');
-            index += 1;
-            while index < bytes.len() {
-                if bytes[index] == b'\\' {
-                    out.push_str("  ");
-                    index += 2;
-                    continue;
-                }
-                if bytes[index] == b'"' {
-                    out.push(' ');
-                    index += 1;
-                    break;
-                }
-                out.push(if bytes[index] == b'\n' { '\n' } else { ' ' });
-                index += 1;
-            }
-            continue;
-        }
-        out.push(ch);
-        index += ch.len_utf8();
-    }
-    out
 }
 
 /// Keep one import per target, unioning bindings.

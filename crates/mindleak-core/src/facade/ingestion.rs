@@ -203,14 +203,16 @@ impl MindLeak {
         let mut imported_symbols: HashMap<String, (String, String)> = HashMap::new();
 
         let extraction = ingest::ast::extract(path, content);
-        let local_symbols: HashSet<&str> = extraction
-            .symbols
-            .iter()
-            .map(|symbol| symbol.name.as_str())
-            .collect();
+        let mut local_symbols: HashMap<&str, Option<&str>> = HashMap::new();
+        for symbol in &extraction.symbols {
+            local_symbols
+                .entry(symbol.name.as_str())
+                .and_modify(|identity| *identity = None)
+                .or_insert(Some(symbol.qualified_name.as_str()));
+        }
         for sym in &extraction.symbols {
-            let sym_id = format!("symbol:{norm}:{}", sym.name);
-            let label = format!("{} ({})", sym.name, sym.kind);
+            let sym_id = format!("symbol:{norm}:{}", sym.qualified_name);
+            let label = format!("{} ({})", sym.qualified_name, sym.kind);
             // `path:line` locates the symbol; the declaration and its doc
             // comment are what give the embedding something to mean. Without
             // them a symbol embeds as its name alone, and terse implementation
@@ -289,17 +291,23 @@ impl MindLeak {
         }
 
         for hierarchy in ingest::structure::extract_hierarchy(path, content) {
-            if !local_symbols.contains(hierarchy.source.as_str()) {
+            let Some(source_name) = local_symbols
+                .get(hierarchy.source.as_str())
+                .and_then(|identity| *identity)
+            else {
                 continue;
-            }
-            let (target_path, target_name) = if local_symbols.contains(hierarchy.target.as_str()) {
-                (norm.as_str(), hierarchy.target.as_str())
+            };
+            let (target_path, target_name) = if let Some(target_name) = local_symbols
+                .get(hierarchy.target.as_str())
+                .and_then(|identity| *identity)
+            {
+                (norm.as_str(), target_name)
             } else if let Some((path, name)) = imported_symbols.get(&hierarchy.target) {
                 (path.as_str(), name.as_str())
             } else {
                 continue;
             };
-            let source_id = format!("symbol:{norm}:{}", hierarchy.source);
+            let source_id = format!("symbol:{norm}:{source_name}");
             let target_id = format!("symbol:{target_path}:{target_name}");
             if !self.store.node_exists(&target_id)? {
                 nodes.push(Node::new(
