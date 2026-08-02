@@ -8,8 +8,8 @@
 //! replace the heuristics later (for cross-file / scope-accurate resolution)
 //! without touching callers.
 
-use std::collections::HashSet;
-use std::sync::OnceLock;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use regex::Regex;
 
@@ -129,9 +129,9 @@ fn language_config(ext: &str) -> (&'static [(&'static str, &'static str)], bool)
 fn find_defs(content: &str, patterns: &[(&str, &str)]) -> Vec<Def> {
     let mut defs = Vec::new();
     for (pattern, kind) in patterns {
-        let re = match Regex::new(pattern) {
-            Ok(re) => re,
-            Err(_) => continue,
+        let re = match compiled_pattern(pattern) {
+            Some(re) => re,
+            None => continue,
         };
         for caps in re.captures_iter(content) {
             if let Some(m) = caps.get(1) {
@@ -146,6 +146,24 @@ fn find_defs(content: &str, patterns: &[(&str, &str)]) -> Vec<Def> {
         }
     }
     defs
+}
+
+/// Compile each language's constant definition pattern once and reuse it across
+/// files, keyed by the pattern text. `find_defs` previously recompiled every
+/// pattern on every call; a pattern that fails to compile is still skipped
+/// (`None`) and never cached, exactly as before.
+fn compiled_pattern(pattern: &str) -> Option<Arc<Regex>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Arc<Regex>>>> = OnceLock::new();
+    let mut cache = CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(re) = cache.get(pattern) {
+        return Some(Arc::clone(re));
+    }
+    let re = Arc::new(Regex::new(pattern).ok()?);
+    cache.insert(pattern.to_string(), Arc::clone(&re));
+    Some(re)
 }
 
 /// Compute the `[start, end)` byte span of a definition's body.
@@ -438,6 +456,16 @@ fn is_attribute(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compiled_pattern_caches_and_reuses_the_same_regex() {
+        let a = compiled_pattern(r"^\s*fn\s+(\w+)").expect("valid pattern");
+        let b = compiled_pattern(r"^\s*fn\s+(\w+)").expect("valid pattern");
+        // Same pattern text -> the same cached instance, not a fresh compile.
+        assert!(Arc::ptr_eq(&a, &b));
+        // A malformed pattern is skipped, exactly as the old Regex::new match.
+        assert!(compiled_pattern(r"(").is_none());
+    }
 
     #[test]
     fn symbol_context_keeps_the_declaration_and_its_doc_comment() {
