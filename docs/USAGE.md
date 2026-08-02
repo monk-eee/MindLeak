@@ -26,7 +26,7 @@ tokens). Optional OpenAI-compatible endpoints run asynchronously, off the hot
 path. Defaults target local models; choosing a remote endpoint deliberately
 sends the bounded request to that service.
 
-Agents driving this loop should also load [`skills/mindleak/SKILL.md`](../skills/mindleak/SKILL.md),
+Agents driving this loop should also load the [`mindleak` skill](../.github/skills/mindleak/SKILL.md),
 which carries the operational discipline this guide assumes: claim scope, lease
 renewal, both plane binaries, and what to do when evidence is refused.
 
