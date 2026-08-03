@@ -6,6 +6,100 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-08-03
+
+### Added
+- **Reusable agent memories now persist in Lodestar instead of remaining in one
+  client's notes.** `record_knowledge` accepts an attributed repo/session
+  `source_ref`, reconfirms exact repeats, supersedes edited lessons, and lets
+  `active_knowledge` resolve the current record. Global preferences and scratch
+  notes remain private by default.
+- **The VS Code Design Board now exposes completed ADRs without turning them back into work.** Its default remains the actionable queue, while an empty-state link and archive control open the live design ledger in one bounded read.
+- **Knowledge can be searched by meaning, not just by spelling.** `active_knowledge`
+  gains an optional `query` that ranks lessons by semantic similarity, so a lesson
+  reaches the agent asking the question it answers rather than only the one who
+  already guessed its wording. It sits behind the read agents already perform —
+  there is no new verb to remember (ADR-0080). Embedding is optional and
+  best-effort: recording a lesson never depends on a model being reachable, and
+  when none is, the reply degrades to substring matching and says which mode
+  answered in `match_mode`. The existing `contains` filter keeps its exact
+  substring contract unchanged. Configure with `LODESTAR_EMBED_URL` /
+  `LODESTAR_EMBED_MODEL` (defaults: a local Ollama, `nomic-embed-text`).
+- **Release installs now include a project-scoped MindLeak agent skill.** Agents
+  can set up and verify both MCP planes, share one session identity, check impact
+  and overlap, coordinate task leases, and complete work with evidence without
+  requiring users to memorize the tool sequence; upgrades preserve local edits.
+
+### Changed
+- The last per-call regex recompilation on the ingest path is gone. The AST
+  extractor's `find_defs` recompiled each language's definition patterns on every
+  file it processed; they are now compiled once and cached by pattern text,
+  completing the hoisting begun for the execution and call-site extractors.
+  Behaviour is unchanged.
+- Ingest is a little leaner. The error-location regexes in the execution
+  extractor and the call-site regex in the AST extractor were recompiled on
+  every call — once per command ingested and once per file extracted. They now
+  compile once per process behind `OnceLock`, matching the Rust-structure
+  extractor that already did this. Behaviour is unchanged; the zero-token write
+  path just stops rebuilding constant patterns on the hot path.
+- **MindLeak now presents itself as local context infrastructure rather than a
+  universal agent-memory replacement.** The public entry points distinguish the
+  decaying Memory Plane from Lodestar's durable intent, coordination, and proof;
+  state the measured evidence and trust boundaries; and route operational detail
+  to the dedicated guides.
+- **One MindLeak skill, in the directory clients actually read.** Two skills both
+  declared `name: mindleak`: the installer-managed one under
+  `.github/skills/mindleak/`, and a second under a top-level `skills/` that no
+  MCP client or editor discovers, so it never loaded. The undiscovered copy is
+  gone and the operational failure modes it uniquely carried are now
+  `.github/skills/mindleak/references/troubleshooting.md` — the linked-worktree
+  binary overrides whose absence lets a push succeed while the work silently
+  cannot certify, claim and lease discipline, the triage that separates an
+  abandoned worktree from a peer between heartbeats, and a symptom/cause/fix
+  table for refused claims, bundles and conformance checks.
+- **Optional model documentation now distinguishes local defaults from hosted
+  support.** The intent and tool references describe configured
+  OpenAI-compatible endpoints without promising a model size the implementation
+  does not enforce, while preserving deterministic fallbacks and explicit data
+  boundaries.
+
+### Fixed
+- **A partly-warmed knowledge index no longer claims to be fully semantic, and
+  the index warms itself.** `active_knowledge`'s semantic `query` (ADR-0080)
+  shipped with an index that only filled on write, so a repository that had
+  already learned anything searched by substring forever, and once a single
+  lesson was embedded the reply called itself `semantic` while every unembedded
+  lesson was silently pinned last. Now a search backfills missing embeddings in
+  one bounded batch, ranking covers only what was actually embedded, and the
+  reply reports `ranked_by_meaning` with a note whenever part of the list is
+  still in weight order. The embeddings client also validates the model's
+  response — vector count, per-input `index`, dimension consistency and
+  non-finite components are refused rather than quietly reshaped into a vector
+  that scores against everything.
+- **AST ingestion now preserves restricted Rust APIs, ignores non-code text,
+  and keeps same-named methods distinct.** Declarations such as `pub(crate) fn`
+  and `const fn` previously vanished, braces and call-shaped text in comments or
+  literals could corrupt call edges, and methods in separate `impl` blocks
+  collapsed onto one symbol id. Existing structural snapshots are marked stale
+  for deterministic refresh under extractor version 2.
+- The decay weight function can no longer be crashed by a corrupt timestamp.
+  `effective_weight` — evaluated on every edge in every graph query via its SQL
+  scalar — computed `now - updated_at` as a raw `i64` subtraction, which panics
+  on overflow in debug builds for an extreme or corrupt `updated_at`. It now uses
+  `saturating_sub`, so the function is total: a pathological timestamp degrades to
+  a fully-decayed edge instead of taking down the query. The `2^x` term is now
+  computed with `exp2` for accuracy. Behaviour is unchanged for every realistic
+  timestamp. A dead, uncalled `signal_half_life` helper was also removed —
+  half-life graduation is applied through `signal_multiplier` in the promotion
+  path, so the helper was misleading dead surface.
+- **`lodestar_stats` no longer counts retired knowledge as active.**
+  The compact stats surface now uses the same retirement and decay predicate as
+  `active_knowledge`, so retiring a lesson removes it from both views
+  immediately while preserving its durable history.
+- **Windows Rust CI no longer resets the embedding fixture mid-request.** The
+  Lodestar embedding tests now use the shared model endpoint, which consumes
+  complete HTTP headers and the declared body before replying and closing.
+
 ## [0.1.4] - 2026-08-01
 
 ### Added
