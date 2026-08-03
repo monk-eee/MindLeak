@@ -272,6 +272,7 @@ jobs:
               [path.join(".github", "skills", "mindleak", "SKILL.md"), "mindleak-skill.md"],
               [path.join(".github", "skills", "mindleak", "references", "setup.md"), "mindleak-skill-setup.md"],
               [path.join(".github", "skills", "mindleak", "references", "workflow.md"), "mindleak-skill-workflow.md"],
+              [path.join(".github", "skills", "mindleak", "references", "troubleshooting.md"), "mindleak-skill-troubleshooting.md"],
             ]) {
               fs.copyFileSync(source, path.join("dist", destination));
             }
@@ -308,6 +309,7 @@ jobs:
           --out ../../dist/mindleak-${{ needs.metadata.outputs.tag }}-${{ matrix.asset }}.zip
           --files mindleak-mcp${{ matrix.extension }} lodestar-mcp${{ matrix.extension }}
           install.mjs mindleak-skill.md mindleak-skill-setup.md mindleak-skill-workflow.md
+          mindleak-skill-troubleshooting.md
           VERSION LICENSE README.txt
       - name: Attest release contents
         uses: actions/attest-build-provenance@v2
