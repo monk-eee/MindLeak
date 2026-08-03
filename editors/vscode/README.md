@@ -119,6 +119,26 @@ retired records remain audit-only.
 
 - VS Code 1.101 or newer.
 
+### Agents window (Preview)
+
+The Agents window can run this extension when explicitly opted in. Add this to
+your VS Code user settings and reload the Agents window:
+
+```json
+{
+  "extensions.supportAgentsWindow": {
+    "monk-eee.mindleak": true
+  }
+}
+```
+
+For a local-folder **Copilot CLI** session, confirm both servers under
+**Customizations > MCP Servers** and run `/mindleak verify`. Folder and worktree
+isolation are supported. Copilot Cloud cannot access the local stdio servers or
+SQLite stores; remote SSH/dev-tunnel sessions need MindLeak installed on the
+remote host. Full boundaries and the explicit CLI-config fallback are in
+[Using MindLeak](../../docs/USAGE.md#vs-code-agents-window-preview).
+
 A platform-targeted release VSIX includes both MCP servers and prefers those
 packaged binaries automatically. No Rust toolchain or global `PATH` change is
 required. Source development still auto-detects `target/release` (or `debug`),

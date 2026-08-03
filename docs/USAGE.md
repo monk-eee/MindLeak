@@ -30,6 +30,49 @@ Agents driving this loop should also load the [`mindleak` skill](../.github/skil
 which carries the operational discipline this guide assumes: claim scope, lease
 renewal, both plane binaries, and what to do when evidence is refused.
 
+## VS Code Agents window (Preview)
+
+MindLeak works with a **local-folder Copilot CLI session** in the VS Code Agents
+window. The Agents window runs Copilot CLI on your machine, and Copilot CLI can
+use MindLeak's unauthenticated local stdio MCP servers. Opt the extension into
+the preview window in your user settings, then reload the Agents window:
+
+```json
+{
+  "extensions.supportAgentsWindow": {
+    "monk-eee.mindleak": true
+  }
+}
+```
+
+Choose a trusted local folder, then choose **Copilot CLI**. Folder and worktree
+isolation are both supported: worktree sessions still resolve the repository's
+shared Memory and Intent stores. Before relying on them, open **Customizations >
+MCP Servers** (or **MCP: List Servers**) and confirm both MindLeak planes are
+enabled. In the session, run `/mindleak verify`; both `open_session` results must
+name one agent identity and both `storage_status` results must name one
+`repository_id`.
+
+| Agents-window target | MindLeak support |
+|---|---|
+| Local folder + Copilot CLI | Supported after the extension opt-in and server check above. |
+| Copilot CLI worktree isolation | Supported; the worktree shares repository-scoped stores. |
+| Copilot Cloud repository | The project skill can load, but the cloud agent cannot reach local stdio servers or local SQLite. |
+| SSH or dev-tunnel workspace | Install/configure MindLeak on the remote host; MCP servers run where configured. |
+| Quick chat | Not repository-scoped; do not use it for repository evidence or task ownership. |
+
+Copilot CLI does not expose extension-provided *tools*, but it does support
+local MCP servers. If the preview window does not forward the extension's MCP
+definitions, use the release installer's explicit CLI configuration and start
+the local session with:
+
+```bash
+copilot --additional-mcp-config @.mindleak/copilot-mcp.json
+```
+
+That fallback is the same local Copilot CLI harness, with the two server paths
+made explicit. It is not a way to give Copilot Cloud access to local state.
+
 ## First value without VS Code
 
 The extension's Workspace view is a projection over these same MCP primitives;
