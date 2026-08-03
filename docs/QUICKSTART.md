@@ -65,6 +65,30 @@ backup, export, and reset controls.
 > binaries are not yet OS publisher-signed, so Windows/macOS may show a trust
 > prompt.
 
+### VS Code Agents window (Preview)
+
+The release VSIX can provide both local MCP servers to the Agents window. Enable
+the extension there in your user settings and reload the window:
+
+```json
+{
+  "extensions.supportAgentsWindow": {
+    "monk-eee.mindleak": true
+  }
+}
+```
+
+Start a session against a **local folder** and select **Copilot CLI**. Either
+folder or worktree isolation works. Confirm `mindleak` and `lodestar` under the
+Agents window's **Customizations > MCP Servers**, then run `/mindleak verify`.
+The two planes must return the same session identity and `repository_id`.
+
+This support is local, not universal: Copilot Cloud cannot reach the stdio
+processes or SQLite databases on your machine. For SSH/dev-tunnel sessions,
+install MindLeak on that remote host. Quick chats have no repository scope and
+should not create repository evidence or own Lodestar tasks. See the full
+[Agents-window support matrix](USAGE.md#vs-code-agents-window-preview).
+
 ### Option B — build from source
 
 Requires stable Rust 1.75+:
