@@ -17,6 +17,10 @@ const SKILL_FILES = [
   { archive: "mindleak-skill.md", destination: "SKILL.md" },
   { archive: "mindleak-skill-setup.md", destination: "references/setup.md" },
   { archive: "mindleak-skill-workflow.md", destination: "references/workflow.md" },
+  {
+    archive: "mindleak-skill-troubleshooting.md",
+    destination: "references/troubleshooting.md",
+  },
 ];
 
 const DEFAULT_EMBED_URL = "http://localhost:11434/v1";

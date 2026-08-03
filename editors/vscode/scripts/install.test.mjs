@@ -170,6 +170,22 @@ describe("parseArguments", () => {
 });
 
 describe("install", () => {
+  it("packages every installer-managed skill file in the release workflow", () => {
+    const workflow = fs.readFileSync(
+      new URL("../../../.github/workflows/release.yml", import.meta.url),
+      "utf8"
+    );
+
+    for (const archiveName of [
+      "mindleak-skill.md",
+      "mindleak-skill-setup.md",
+      "mindleak-skill-workflow.md",
+      "mindleak-skill-troubleshooting.md",
+    ]) {
+      expect(workflow).toContain(archiveName);
+    }
+  });
+
   it("installs the agent skill, updates managed files, and preserves local edits", async () => {
     const root = temporaryDirectory();
     const archive = path.join(root, "archive");
@@ -193,9 +209,11 @@ describe("install", () => {
     const skillPath = path.join(skillDirectory, "SKILL.md");
     const setupPath = path.join(skillDirectory, "references", "setup.md");
     const workflowPath = path.join(skillDirectory, "references", "workflow.md");
+    const troubleshootingPath = path.join(skillDirectory, "references", "troubleshooting.md");
     expect(fs.readFileSync(skillPath, "utf8")).toBe("skill v1\n");
     expect(fs.readFileSync(setupPath, "utf8")).toBe("setup v1\n");
     expect(fs.readFileSync(workflowPath, "utf8")).toBe("workflow v1\n");
+    expect(fs.readFileSync(troubleshootingPath, "utf8")).toBe("troubleshooting v1\n");
 
     fs.writeFileSync(skillPath, "locally customized\n");
     writeSkillArchive(archive, "v2");
@@ -204,6 +222,7 @@ describe("install", () => {
     expect(fs.readFileSync(skillPath, "utf8")).toBe("locally customized\n");
     expect(fs.readFileSync(setupPath, "utf8")).toBe("setup v2\n");
     expect(fs.readFileSync(workflowPath, "utf8")).toBe("workflow v2\n");
+    expect(fs.readFileSync(troubleshootingPath, "utf8")).toBe("troubleshooting v2\n");
     expect(log).toHaveBeenCalledWith("Next: restart your MCP client, then run /mindleak verify");
   });
 
@@ -322,6 +341,10 @@ function writeSkillArchive(directory, version) {
   fs.writeFileSync(path.join(directory, "mindleak-skill.md"), `skill ${version}\n`);
   fs.writeFileSync(path.join(directory, "mindleak-skill-setup.md"), `setup ${version}\n`);
   fs.writeFileSync(path.join(directory, "mindleak-skill-workflow.md"), `workflow ${version}\n`);
+  fs.writeFileSync(
+    path.join(directory, "mindleak-skill-troubleshooting.md"),
+    `troubleshooting ${version}\n`
+  );
 }
 
 describe("probeEmbeddingCapability", () => {
