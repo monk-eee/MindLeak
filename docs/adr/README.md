@@ -88,6 +88,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0078](0078-an-unbound-file-is-reported-at-publication.md) | An unbound file is reported at publication | Accepted |
 | [0079](0079-a-model-call-must-fail-loudly-or-it-fails-silently.md) | A model call must fail loudly, or it fails silently | Accepted |
 | [0080](0080-knowledge-is-searched-where-it-is-already-read.md) | Knowledge is searched where it is already read | Accepted |
+| [0081](0081-agent-memory-is-a-staging-area-not-a-silo.md) | Agent memory is a staging area, not a silo | Accepted |
 
 ## Writing a new ADR
 

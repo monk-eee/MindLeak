@@ -73,6 +73,27 @@ Use `record_architectural_decision` only for an actual design choice with a
 useful decision and rationale. Routine implementation details do not become
 architecture merely because the tool exists.
 
+Treat client memory as staging, not a second durable silo:
+
+- When writing a reusable repository fact under `/memories/repo/`, also call
+  Lodestar `record_knowledge` immediately. Pass the registered `session_id`, an
+  atomic statement, a stable `source_ref` including the heading when needed,
+  and evidence containing the relevant artifact/symbol `nodes` or `goal`.
+- Before completing or handing off, review notes written under
+  `/memories/session/` and promote only reusable repository lessons the same
+  way. Temporary plans, stale measurements, secrets, and raw command output stay
+  scratch.
+- Do not copy global `/memories/*.md` preferences into a repository ledger.
+- A sourced write is complete only when the reply says `surfaces: true`. On an
+  edit, reuse the same `source_ref`; Lodestar supersedes its prior lesson. On a
+  deletion, call the existing attributed `retire_knowledge` with that
+  `source_ref`; it detaches only the deleted note and retires the lesson after
+  its final source disappears.
+
+Report how many memory lessons were promoted and how many remained scratch. A
+final answer that mentions writing repo/session memory but never records or
+explicitly rejects its durable candidates has not finished the write-back step.
+
 Promote expiring proven signals only through the cross-plane candidate and
 promotion tools; do not manually turn one session's guess into durable knowledge.
 

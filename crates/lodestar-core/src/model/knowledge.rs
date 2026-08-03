@@ -63,20 +63,7 @@ impl Knowledge {
     /// when the evidence is hand-authored or not in that shape — so a hand-written
     /// note never accidentally governs conformance.
     pub fn referenced_nodes(&self) -> Vec<String> {
-        serde_json::from_str::<serde_json::Value>(&self.evidence)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("nodes")
-                    .and_then(|nodes| nodes.as_array())
-                    .map(|nodes| {
-                        nodes
-                            .iter()
-                            .filter_map(|node| node.as_str().map(str::to_string))
-                            .collect()
-                    })
-            })
-            .unwrap_or_default()
+        referenced_nodes_in(&self.evidence)
     }
 
     /// The goal this lesson declares it was learned under, if the evidence says
@@ -88,14 +75,7 @@ impl Knowledge {
     /// repository's ledger, 55 of 67 node-less records name a goal here or a
     /// task from which one is reachable.
     pub fn declared_goal(&self) -> Option<String> {
-        serde_json::from_str::<serde_json::Value>(&self.evidence)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("goal")
-                    .and_then(|goal| goal.as_str())
-                    .map(str::to_string)
-            })
+        declared_goal_in(&self.evidence)
     }
 
     /// The task ids named anywhere in the evidence, in order of appearance.
@@ -106,25 +86,57 @@ impl Knowledge {
     /// all. A reader that only understood one shape would silence the records
     /// written in the others.
     pub fn referenced_tasks(&self) -> Vec<String> {
-        let bytes = self.evidence.as_bytes();
-        let mut found = Vec::new();
-        let mut at = 0;
-        while let Some(offset) = self.evidence[at..].find("task:") {
-            let start = at + offset;
-            let mut end = start + "task:".len();
-            // A task id is hex; stop at the first character that cannot be one.
-            while end < bytes.len() && bytes[end].is_ascii_hexdigit() {
-                end += 1;
-            }
-            let id = &self.evidence[start..end];
-            // `task:task:abc123` appears in the wild; skip the empty outer one.
-            if end > start + "task:".len() && !found.contains(&id.to_string()) {
-                found.push(id.to_string());
-            }
-            at = end.max(start + "task:".len());
-        }
-        found
+        referenced_tasks_in(&self.evidence)
     }
+}
+
+pub(crate) fn referenced_nodes_in(evidence: &str) -> Vec<String> {
+    serde_json::from_str::<serde_json::Value>(evidence)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("nodes")
+                .and_then(|nodes| nodes.as_array())
+                .map(|nodes| {
+                    nodes
+                        .iter()
+                        .filter_map(|node| node.as_str().map(str::to_string))
+                        .collect()
+                })
+        })
+        .unwrap_or_default()
+}
+
+pub(crate) fn declared_goal_in(evidence: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(evidence)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("goal")
+                .and_then(|goal| goal.as_str())
+                .map(str::to_string)
+        })
+}
+
+pub(crate) fn referenced_tasks_in(evidence: &str) -> Vec<String> {
+    let bytes = evidence.as_bytes();
+    let mut found = Vec::new();
+    let mut at = 0;
+    while let Some(offset) = evidence[at..].find("task:") {
+        let start = at + offset;
+        let mut end = start + "task:".len();
+        // A task id is hex; stop at the first character that cannot be one.
+        while end < bytes.len() && bytes[end].is_ascii_hexdigit() {
+            end += 1;
+        }
+        let id = &evidence[start..end];
+        // `task:task:abc123` appears in the wild; skip the empty outer one.
+        if end > start + "task:".len() && !found.contains(&id.to_string()) {
+            found.push(id.to_string());
+        }
+        at = end.max(start + "task:".len());
+    }
+    found
 }
 
 /// An opaque proven-signal candidate handed across the loose MindLeak → Lodestar

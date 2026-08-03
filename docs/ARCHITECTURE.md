@@ -155,6 +155,14 @@ intersects a proven regularity attaches an **advisory** finding and may nudge an
 otherwise-`Aligned` verdict to `NeedsHuman`, but can never emit `Violation` (only
 the Constitution hard-fails). The read path stays deterministic — no LLM.
 
+Agent memory crosses into that loop explicitly (ADR-0081), never through an
+editor-private file watcher. The canonical skill classifies client memory while
+it still has context, then calls `record_knowledge` with a logical
+`/memories/repo/...` or `/memories/session/...` source and node/goal provenance.
+`knowledge_sources` keeps one current lesson per source: repeats reconfirm,
+edits supersede, and `active_knowledge(source_ref=...)` resolves the current row.
+Global user preferences and scratch notes remain outside the repository ledger.
+
 **Evidence is the proof-of-work — the load-bearing guarantee.** Completion is not a
 status an agent can assert: `complete_task` consumes only a bounded,
 provenance-bearing evidence bundle (`evidence_for`, from the Memory plane) that
