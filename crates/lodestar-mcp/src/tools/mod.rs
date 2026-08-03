@@ -694,7 +694,7 @@ const REQUIRED_SESSION_ACTS: [ToolAct; 5] = [
 /// without one. Overlap is advisory, scope/history are read-only, and ADR-0046
 /// explicitly allows anyone to answer. A resolved session still supplies the
 /// identity needed for branch context or an ADR-0052 heartbeat.
-const OPTIONAL_SESSION_ACTS: [ToolAct; 4] = [
+const OPTIONAL_SESSION_ACTS: [ToolAct; 5] = [
     ToolAct {
         tool: "task_query",
         key: "view",
@@ -712,6 +712,11 @@ const OPTIONAL_SESSION_ACTS: [ToolAct; 4] = [
     },
     ToolAct {
         tool: "conformance_history",
+        key: "",
+        value: "",
+    },
+    ToolAct {
+        tool: "record_knowledge",
         key: "",
         value: "",
     },

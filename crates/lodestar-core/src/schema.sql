@@ -432,6 +432,18 @@ CREATE TABLE IF NOT EXISTS knowledge (
     superseded_by   TEXT                   -- the knowledge id that replaced it
 );
 
+-- Stable logical sources for agent-authored memory. The client supplies a
+-- portable /memories/... reference; Lodestar never reads editor-private files.
+-- A source points at one current knowledge row so exact repeats reconfirm it
+-- and edits can retire the prior lesson instead of accumulating both forever.
+CREATE TABLE IF NOT EXISTS knowledge_sources (
+    source_ref    TEXT PRIMARY KEY,
+    knowledge_id  TEXT NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
+    updated_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_sources_knowledge
+    ON knowledge_sources(knowledge_id);
+
 -- Where each agent session declared it is working (ADR-0035, amended by
 -- ADR-0044). Durable because the fleet spans processes: linked worktrees share
 -- one spec.db, but each runs its own server with its own in-memory registry, so

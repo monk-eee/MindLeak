@@ -24,6 +24,18 @@
       "prompt": "does mindleak actually work here?",
       "expected_output": "Use only read-only verification: check both storage_status results for the same repository id and run one small health query per plane. Report concrete counts and connection state without creating a task, claiming work, ingesting files, or recording knowledge.",
       "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "remember that every linked worktree needs both MCP binary overrides or the push cannot certify later",
+      "expected_output": "Write the repo-scoped client memory if useful, and persist the same atomic lesson through Lodestar record_knowledge with the registered session, a stable /memories/repo/... source_ref, and artifact/symbol nodes or the repository-delivery goal. Verify the reply surfaces, do not copy unrelated global preferences, and report both writes.",
+      "files": []
+    },
+    {
+      "id": 6,
+      "prompt": "we are done, keep the useful things from my session notes before they disappear",
+      "expected_output": "Review only session memories written in this session, separate reusable repository lessons from temporary plans, stale measurements, secrets, and raw logs, then promote each reusable atomic lesson with record_knowledge using its /memories/session/... source_ref and node or goal provenance. Verify surfaces=true and report promoted versus scratch counts before completion.",
+      "files": []
     }
   ]
 }

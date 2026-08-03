@@ -947,8 +947,8 @@ mod tests {
         connection.execute("DELETE FROM task_handoffs", []).unwrap();
     }
 
-    /// A database written before knowledge could be retired still opens, and
-    /// its existing lessons survive the upgrade.
+    /// A database written before knowledge could be retired or sourced still
+    /// opens, and its existing lessons survive the upgrade.
     ///
     /// The retirement columns arrive by `ALTER TABLE ADD COLUMN`, so the table
     /// must be the *old* one: `CREATE TABLE IF NOT EXISTS` in `schema.sql`
@@ -956,7 +956,7 @@ mod tests {
     /// the shape a real upgrade meets. NULL on every pre-existing row is the
     /// honest answer — nothing was retired before this existed.
     #[test]
-    fn migration_adds_knowledge_retirement_to_a_pre_existing_database() {
+    fn migration_adds_knowledge_retirement_and_sources_to_a_pre_existing_database() {
         let path = temporary_database("legacy-knowledge");
         {
             let connection = Connection::open(&path).unwrap();
@@ -983,6 +983,34 @@ mod tests {
         assert_eq!(existing.statement, "learned before retirement");
         assert_eq!(existing.retired_at, None);
         assert!(!existing.retired());
+
+        // `schema.sql` creates the source table beside the legacy knowledge
+        // table, so the first post-upgrade memory write needs no operator step.
+        let source = "/memories/repo/build.md#hooks";
+        let sourced = store
+            .record_sourced_knowledge(
+                "new sourced lesson",
+                r#"{"nodes":["artifact:.pre-commit-config.yaml"]}"#,
+                720.0,
+                source,
+                "agent-a",
+                150,
+            )
+            .unwrap()
+            .0;
+        assert_eq!(
+            store
+                .active_knowledge_for_source(source)
+                .unwrap()
+                .unwrap()
+                .id,
+            sourced.id
+        );
+        assert_eq!(
+            store.active_knowledge(150).unwrap().len(),
+            2,
+            "legacy unsourced and new sourced knowledge coexist"
+        );
 
         // And the new act works against the upgraded row.
         let retired = store

@@ -231,6 +231,17 @@ by *signal-weighted decay* ([ADR-0005](adr/0005-signal-weighted-decay.md)):
 | `confirmed_at` | last time fresh episodic evidence re-confirmed it |
 | `created_at` | unix seconds |
 
+Agent-authored memory may also have a stable logical source in
+`knowledge_sources(source_ref, knowledge_id, updated_at)` (ADR-0081). The
+source is a portable `/memories/repo/...` or `/memories/session/...` reference
+supplied by the client, never a file Lodestar reads. Repeating unchanged text
+reconfirms one knowledge row; editing it moves the source to a successor and
+retires the prior lesson when no other source still names it.
+
+Global `/memories/*.md` preferences and scratch notes are not repository
+knowledge. A sourced promotion requires an attributed session and provenance
+that reaches artifact/symbol nodes, a goal, or a known task.
+
 ### How signal is promoted (not laundered)
 
 Consolidation is a lossy, semantic act, so promotion is **gated** — never
@@ -241,6 +252,9 @@ automatic:
   and corroboration are.
 - **Provenance** — every knowledge node records the episodes that support it, so
   the promotion is auditable and reversible.
+- **Agent-memory write-back** — reusable repo memory is promoted at write time,
+  and reusable session memory before handoff; the canonical workflow reports
+  what crossed the boundary (ADR-0081).
 - **Learned ≠ immortal.** Unlike the Constitution, learned knowledge carries a
   *long-but-finite* half-life and must be **re-confirmed** by fresh evidence, or
   it eventually fades. The Constitution is authored law and never decays; learned
