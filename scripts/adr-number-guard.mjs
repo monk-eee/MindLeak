@@ -21,7 +21,13 @@ const ADR_PATH = /^docs\/adr\/(\d{4})-(.+)\.md$/;
 
 const capture = (args) => {
   try {
-    return execFileSync("git", args, { encoding: "utf8" }).trim();
+    // stderr is ignored because several probes here are expected to fail: a ref
+    // that does not exist, or a branch with no configured upstream. Letting git
+    // print `fatal:` for a handled miss makes a healthy run look broken.
+    return execFileSync("git", args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
   } catch {
     return "";
   }
@@ -96,24 +102,65 @@ const alreadyOnMain = (adr) => {
   return false;
 };
 
-/**
- * Whether every rival slug at this number is deleted by this same change.
- *
- * Retitling replaces `NNNN-old.md` with `NNNN-new.md` in one commit. Until that
- * commit lands, the old slug is still on this branch and its upstream, so a ref
- * scan reads the decision as its own rival. Blocking that would make a retitle
- * impossible without bypassing the guard, which is the one thing a guard must
- * never teach. A rival slug that is not being deleted still conflicts.
- */
-const retitledInThisChange = (adr, others) => {
-  const deleted = new Set(
+/** The refs this branch answers for: its own tip, and the upstream a push replaces. */
+const ownRefs = () => {
+  const refs = new Set();
+  const branch = capture(["symbolic-ref", "--quiet", "--short", "HEAD"]);
+  if (!branch) return refs;
+  refs.add(branch);
+  const upstream = capture([
+    "rev-parse",
+    "--abbrev-ref",
+    "--symbolic-full-name",
+    `${branch}@{upstream}`,
+  ]);
+  if (upstream) refs.add(upstream);
+  // A branch published as `HEAD:refs/heads/<branch>` has a remote-tracking ref
+  // but no configured upstream, so the same name on each remote counts too.
+  for (const remote of capture(["remote"]).split("\n").filter(Boolean)) {
+    refs.add(`${remote}/${branch}`);
+  }
+  return refs;
+};
+
+const stagedDeletions = () =>
+  new Set(
     capture(["diff", "--cached", "--name-only", "--diff-filter=D"])
       .split("\n")
       .map(parseAdr)
-      .filter((entry) => entry && entry.number === adr.number)
-      .map((entry) => entry.slug),
+      .filter(Boolean)
+      .map((entry) => `${entry.number}-${entry.slug}`),
   );
-  return others.every((slug) => deleted.has(slug));
+
+const inHead = (number, slug) =>
+  Boolean(
+    capture([
+      "ls-tree",
+      "-r",
+      "--name-only",
+      "HEAD",
+      "--",
+      `docs/adr/${number}-${slug}.md`,
+    ]).trim(),
+  );
+
+/**
+ * Whether this branch has already replaced that slug.
+ *
+ * Retitling swaps `NNNN-old.md` for `NNNN-new.md`. Until the branch merges, the
+ * old slug is still reachable from this branch and its upstream, so a ref scan
+ * reads the decision as its own rival — from the index before the commit, and
+ * from the very remote ref the push is about to replace afterwards. Blocking
+ * either would make a retitle impossible without bypassing the guard, which is
+ * the one thing a guard must never teach.
+ *
+ * The allowance stays narrow in both directions: a slug held on any ref this
+ * branch does not answer for is a real rival, and a slug still standing in this
+ * branch's own tree is a real duplicate.
+ */
+const supersededByThisBranch = (adr, slug, refs, own, deletions) => {
+  if ([...refs].some((ref) => !own.has(ref))) return false;
+  return deletions.has(`${adr.number}-${slug}`) || !inHead(adr.number, slug);
 };
 
 const targets = process.argv.slice(2).length
@@ -124,21 +171,26 @@ const candidates = targets.map(parseAdr).filter(Boolean);
 if (candidates.length === 0) process.exit(0);
 
 const claimed = claimedAcrossRefs();
+const own = ownRefs();
+const deletions = stagedDeletions();
 let conflicted = false;
 
 for (const adr of candidates) {
   const bySlug = claimed.get(adr.number);
   if (!bySlug) continue;
-  const others = [...bySlug.keys()].filter((slug) => slug !== adr.slug);
-  if (others.length === 0) continue;
+  const rivals = [...bySlug.keys()].filter((slug) => slug !== adr.slug);
+  const superseded = rivals.filter((slug) =>
+    supersededByThisBranch(adr, slug, bySlug.get(slug), own, deletions),
+  );
+  const others = rivals.filter((slug) => !superseded.includes(slug));
 
-  if (retitledInThisChange(adr, others)) {
+  if (superseded.length > 0) {
     console.warn(
-      `adr-number-guard: ADR-${adr.number} is retitled by this change; ` +
-        `${others.map((slug) => `${adr.number}-${slug}.md`).join(", ")} is deleted here.`,
+      `adr-number-guard: ADR-${adr.number} is retitled by this branch; ` +
+        `${superseded.map((slug) => `${adr.number}-${slug}.md`).join(", ")} is replaced.`,
     );
-    continue;
   }
+  if (others.length === 0) continue;
 
   if (alreadyOnMain(adr)) {
     console.warn(

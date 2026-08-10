@@ -158,7 +158,26 @@ describe("adr-number-guard", () => {
     const result = runGuard(repo, [renamed]);
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-    expect(result.stderr).toMatch(/retitled by this change/);
+    expect(result.stderr).toMatch(/retitled by this branch/);
+  }, 30_000);
+
+  it("allows a retitle already committed, with the old slug still upstream", () => {
+    // Regression: at push time nothing is staged, and the old slug still sits on
+    // the very upstream ref the push replaces. Keying the allowance only on
+    // staged deletions left every retitle committable but unpushable.
+    const repo = repoWithRivalAdr();
+    git(repo, ["update-ref", "refs/remotes/origin/other", "other"]);
+    git(repo, ["checkout", "other"]);
+    git(repo, ["branch", "--set-upstream-to=origin/other", "other"]);
+    git(repo, ["rm", "-q", "docs/adr/0042-their-decision.md"]);
+    const renamed = writeAdr(repo, "0042-their-decision-retitled.md");
+    git(repo, ["add", renamed]);
+    git(repo, ["commit", "-m", "retitle"]);
+
+    const result = runGuard(repo, [renamed]);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stderr).toMatch(/retitled by this branch/);
   }, 30_000);
 
   it("still refuses when a rival slug is not the one being deleted", () => {
