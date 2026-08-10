@@ -89,6 +89,15 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0079](0079-a-model-call-must-fail-loudly-or-it-fails-silently.md) | A model call must fail loudly, or it fails silently | Accepted |
 | [0080](0080-knowledge-is-searched-where-it-is-already-read.md) | Knowledge is searched where it is already read | Accepted |
 | [0081](0081-agent-memory-is-a-staging-area-not-a-silo.md) | Agent memory is a staging area, not a silo | Accepted |
+| [0082](0082-backplane-is-a-standalone-federation-service.md) | Ackplane is a standalone federation service | Accepted |
+| [0083](0083-grpc-is-the-backplane-node-protocol.md) | gRPC is the Ackplane node protocol | Accepted |
+| [0084](0084-backplane-evidence-has-explicit-trust.md) | Ackplane evidence has explicit trust | Accepted |
+| [0085](0085-node-enrolment-requires-proof-of-possession.md) | Node enrolment requires proof of possession | Accepted |
+| [0086](0086-postgresql-is-the-backplane-ledger-and-arbiter.md) | PostgreSQL is the Ackplane ledger and arbiter | Accepted |
+| [0087](0087-the-backplane-graph-is-a-projection-not-an-authority.md) | The Ackplane graph is a projection, not an authority | Accepted |
+| [0088](0088-the-backplane-runs-in-containers-the-planes-do-not.md) | Ackplane runs in containers; the planes do not | Accepted |
+| [0089](0089-mindleak-is-an-operating-system-for-agent-coordination.md) | MindLeak is an operating system for agent coordination | Accepted |
+| [0090](0090-certification-is-a-status-not-a-service.md) | Certification is a status, not a service | Accepted |
 
 ## Writing a new ADR
 

@@ -1,6 +1,9 @@
 # AGENTS.md — MindLeak Codebase Guide for AI Agents
 
-MindLeak is local context infrastructure for coding agents. Its **Memory Plane**
+MindLeak is an operating system for agent coordination ([ADR-0089](docs/adr/0089-mindleak-is-an-operating-system-for-agent-coordination.md)):
+it gives a fleet shared memory, durable intent, arbitrated work, and provable
+completion. That coordination is cooperative, never preemptive — nothing here
+sandboxes a process or blocks a write. Its **Memory Plane**
 is a Temporal Context Graph Engine (TCGE): a decay-weighted structural and
 episodic graph. Its **Intent Plane — Lodestar** preserves durable goals, designs,
 coordination, knowledge, and proof. Read [`docs/SPEC.md`](docs/SPEC.md) for the

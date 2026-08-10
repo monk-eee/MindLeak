@@ -13,12 +13,13 @@
   <img src="https://img.shields.io/badge/protocol-MCP-8A2BE2.svg" alt="Model Context Protocol">
 </p>
 
-**Local context infrastructure for coding agents: memory that forgets, intent
-that does not, and evidence that closes the loop.**
+**An operating system for agent coordination: shared memory, durable intent,
+arbitrated work, and provable completion.**
 
-MindLeak is a local-first pair of MCP servers that gives coding agents a shared,
-repository-scoped account of three things they routinely lose between prompts
-and parallel worktrees:
+MindLeak is the layer coding agents run on top of — not an agent and not a
+model. It is local-first, and it gives a fleet a shared, repository-scoped
+account of three things they routinely lose between prompts and parallel
+worktrees:
 
 1. **What happened and how the code connects.**
 2. **What should happen, under which constraints, and why.**
@@ -61,11 +62,12 @@ Optional OpenAI-compatible models run off that path for consolidation and
 semantic recall. Their outputs are derived rather than authoritative;
 model-aware operations expose typed provenance or failure.
 
-MindLeak is **not** a coding agent, a filesystem lock, or a hosted memory
-service. Claims and overlap warnings coordinate willing clients; they do not
-prevent writes. Both planes are local stdio MCP servers and work without VS Code.
-The extension adds passive sensors, graph and intent views, and packaged native
-servers as an optional richer surface.
+The coordination is **cooperative, not preemptive**. MindLeak is not a coding
+agent, a filesystem lock, a sandbox, or a hosted memory service. Claims, leases,
+and overlap warnings coordinate willing clients; they never stop a process from
+writing to a file. Both planes are local stdio MCP servers and work without VS
+Code. The extension adds passive sensors, graph and intent views, and packaged
+native servers as an optional richer surface.
 
 ---
 
@@ -96,6 +98,15 @@ relevance, constitution for authority, and evidence for completion.**
   sensors, readiness guidance, and graph, work, design, and telemetry views.
 - **Headless setup** — generated MCP configuration for clients such as GitHub
   Copilot CLI; the servers remain ordinary newline-delimited MCP over stdio.
+
+Together these are **MindLeak Core**, the local tier and the only tier that ships
+today. *Ackplane* (the shared control plane) and *the Bridge* (assurance and
+fleet operations) are accepted designs that are not yet built — see
+[ADR-0082](docs/adr/0082-backplane-is-a-standalone-federation-service.md) onward.
+Inside Core each capability has a name and the question it answers: MindLeak
+remembers, *Lodestar* holds intent, *Beacon* coordinates claims, *Gatekeeper*
+governs, *Librarian* keeps evidence, and *Verifier* decides whether that
+evidence proves conformance. They are capabilities, not separate products.
 
 ## Measured scope
 
