@@ -96,6 +96,26 @@ const alreadyOnMain = (adr) => {
   return false;
 };
 
+/**
+ * Whether every rival slug at this number is deleted by this same change.
+ *
+ * Retitling replaces `NNNN-old.md` with `NNNN-new.md` in one commit. Until that
+ * commit lands, the old slug is still on this branch and its upstream, so a ref
+ * scan reads the decision as its own rival. Blocking that would make a retitle
+ * impossible without bypassing the guard, which is the one thing a guard must
+ * never teach. A rival slug that is not being deleted still conflicts.
+ */
+const retitledInThisChange = (adr, others) => {
+  const deleted = new Set(
+    capture(["diff", "--cached", "--name-only", "--diff-filter=D"])
+      .split("\n")
+      .map(parseAdr)
+      .filter((entry) => entry && entry.number === adr.number)
+      .map((entry) => entry.slug),
+  );
+  return others.every((slug) => deleted.has(slug));
+};
+
 const targets = process.argv.slice(2).length
   ? process.argv.slice(2)
   : capture(["diff", "--cached", "--name-only", "--diff-filter=A"]).split("\n");
@@ -111,6 +131,14 @@ for (const adr of candidates) {
   if (!bySlug) continue;
   const others = [...bySlug.keys()].filter((slug) => slug !== adr.slug);
   if (others.length === 0) continue;
+
+  if (retitledInThisChange(adr, others)) {
+    console.warn(
+      `adr-number-guard: ADR-${adr.number} is retitled by this change; ` +
+        `${others.map((slug) => `${adr.number}-${slug}.md`).join(", ")} is deleted here.`,
+    );
+    continue;
+  }
 
   if (alreadyOnMain(adr)) {
     console.warn(

@@ -143,4 +143,38 @@ describe("adr-number-guard", () => {
     expect(result.stderr).toMatch(/other claimant must renumber/);
     expect(result.stderr).toMatch(/0042-their-decision\.md/);
   }, 30_000);
+
+  it("allows a retitle that deletes the old slug in the same change", () => {
+    // Regression: retitling replaces `NNNN-old.md` with `NNNN-new.md` in one
+    // commit, but the old slug stays on this branch and its upstream until that
+    // commit lands. The ref scan read the decision as its own rival, so no ADR
+    // could be retitled without bypassing the guard.
+    const repo = repoWithRivalAdr();
+    git(repo, ["checkout", "other"]);
+    git(repo, ["rm", "-q", "docs/adr/0042-their-decision.md"]);
+    const renamed = writeAdr(repo, "0042-their-decision-retitled.md");
+    git(repo, ["add", renamed]);
+
+    const result = runGuard(repo, [renamed]);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stderr).toMatch(/retitled by this change/);
+  }, 30_000);
+
+  it("still refuses when a rival slug is not the one being deleted", () => {
+    // The retitle allowance must stay narrow: deleting your own old slug does
+    // not excuse a number another branch is holding under a third name.
+    const repo = repoWithRivalAdr();
+    const mineOld = writeAdr(repo, "0042-mine-old.md");
+    git(repo, ["add", mineOld]);
+    git(repo, ["commit", "-m", "mine"]);
+    git(repo, ["rm", "-q", "docs/adr/0042-mine-old.md"]);
+    const renamed = writeAdr(repo, "0042-mine-new.md");
+    git(repo, ["add", renamed]);
+
+    const result = runGuard(repo, [renamed]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/0042-their-decision\.md/);
+  }, 30_000);
 });
