@@ -10,8 +10,8 @@ durable constitution, design, coordination, knowledge, and conformance ledger.
 The category is cooperative, not preemptive: the system schedules, arbitrates,
 remembers, governs, and audits, but it never preempts an agent, sandboxes a
 process, or blocks a write. What ships today is **MindLeak Core**, the local
-tier described below. *Backplane* (federation, ADR-0082 to ADR-0088) and
-*Mission Control* (assurance operations, ADR-0090) are accepted designs that are
+tier described below. *Ackplane* (federation, ADR-0082 to ADR-0088) and *the
+Bridge* (assurance operations, ADR-0090) are accepted designs that are
 not yet built.
 
 Each plane is a Rust library behind its own MCP stdio server. They share a

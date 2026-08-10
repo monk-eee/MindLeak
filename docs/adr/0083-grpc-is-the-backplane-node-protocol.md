@@ -1,4 +1,4 @@
-# ADR-0083: gRPC is the Backplane node protocol
+# ADR-0083: gRPC is the Ackplane node protocol
 
 - Status: Accepted
 - Date: 2026-08-10
@@ -15,7 +15,7 @@
 
 ## Context
 
-The Backplane boundary needs a protocol between repository nodes and a remote,
+The Ackplane boundary needs a protocol between repository nodes and a remote,
 multi-tenant service. The traffic is not ordinary CRUD. A node publishes an
 ordered stream of evidence and lifecycle records, receives an acknowledgement
 for durable progress, reconnects from that position after interruption, and
@@ -32,12 +32,12 @@ MCP already serves a different boundary well: an agent asks a local tool to
 perform a repository operation. Treating remote federation as another MCP
 server would expose an inventory of commands where the protocol needs an
 ordered, resumable stream. Conversely, replacing local MCP with a network RPC
-API would add Backplane availability to the deterministic local path.
+API would add Ackplane availability to the deterministic local path.
 
 ## Decision
 
-1. **Repository nodes speak versioned Protobuf over gRPC to Backplane.** The
-   first package is `mindleak.backplane.v1`. The Rust implementation uses
+1. **Repository nodes speak versioned Protobuf over gRPC to Ackplane.** The
+   first package is `mindleak.ackplane.v1`. The Rust implementation uses
    `tonic` and `prost`; generated types are the wire contract and contain no
    storage-layer structs.
 
@@ -45,17 +45,17 @@ API would add Backplane availability to the deterministic local path.
 
    ```protobuf
    service NodeSyncService {
-     rpc Synchronize(stream NodeFrame) returns (stream BackplaneFrame);
+     rpc Synchronize(stream NodeFrame) returns (stream AckplaneFrame);
    }
    ```
 
    A node opens with repository identity, capabilities, and its last accepted
-   position. It then sends bounded event batches and heartbeats. Backplane
+   position. It then sends bounded event batches and heartbeats. Ackplane
    returns per-batch receipts, explicit rejections, flow-control hints, and
    versioned notices. Reconnection resumes from the last receipt; it does not
    infer progress from connection lifetime.
 
-3. **The stream is not a remote shell.** A `BackplaneFrame` has a closed set of
+3. **The stream is not a remote shell.** An `AckplaneFrame` has a closed set of
    coordination messages. It cannot carry arbitrary commands, source patches,
    terminal input, or an untyped "execute" payload. A future server-initiated
    mutation needs its own reviewed command contract and local authorisation.
@@ -63,7 +63,7 @@ API would add Backplane availability to the deterministic local path.
 4. **MCP remains the agent-facing local protocol.** Existing MindLeak and
    Lodestar tools keep their semantics and stdio transport. A repository node
    translates committed domain events and receipts, not MCP requests, into the
-   Backplane protocol. There is no one-for-one remote copy of every MCP tool.
+   Ackplane protocol. There is no one-for-one remote copy of every MCP tool.
 
 5. **Compatibility is additive within `v1`.** Field numbers are never reused;
    removed fields remain reserved; enums include an unspecified value; readers
@@ -94,8 +94,8 @@ API would add Backplane availability to the deterministic local path.
    evidence trust are intentionally delegated to the following trust-boundary
    decision; TLS alone must not be presented as proof of who produced a record.
 
-9. **The browser is not forced through native gRPC.** Mission Control consumes
-  a same-origin web API or a reviewed gRPC-Web gateway over Backplane read
+9. **The browser is not forced through native gRPC.** The Bridge consumes
+  a same-origin web API or a reviewed gRPC-Web gateway over Ackplane read
   models. Either route uses ADR-0084's principal and tenant authorisation,
   denies cross-origin access by default, and cannot add authority unavailable
   to the underlying service principal. Browser authentication, caching, and
@@ -117,9 +117,9 @@ API would add Backplane availability to the deterministic local path.
 - gRPC adds build tooling, generated code, HTTP/2 proxy requirements, and more
   operational complexity than a small REST API. The streaming and compatibility
   requirements are the reason to pay that cost.
-- Mission Control can evolve its web-facing query contract without changing the
+- The Bridge can evolve its web-facing query contract without changing the
   repository synchronization protocol.
-- The local MCP servers remain network-independent. Losing Backplane
+- The local MCP servers remain network-independent. Losing Ackplane
   connectivity does not turn local tool calls into gRPC failures.
 - Protocol conformance needs fixture messages from every supported package
   version plus reconnect, duplicate, out-of-order, deadline, and backpressure
@@ -142,10 +142,10 @@ the vocabularies separate also prevents a remote service from entering local
 ingestion by accident.
 
 **Let nodes publish directly to Kafka, NATS, or a database.** Rejected because
-it exposes Backplane infrastructure as the product API and distributes tenant,
-compatibility, and validation logic into every node. Backplane may use a broker
+it exposes Ackplane infrastructure as the product API and distributes tenant,
+compatibility, and validation logic into every node. Ackplane may use a broker
 internally without making it part of the node contract.
 
-**Use gRPC for every surface, including Mission Control.** Rejected as a goal in
+**Use gRPC for every surface, including the Bridge.** Rejected as a goal in
 itself. The node stream earns gRPC; the browser should choose its transport from
 browser constraints rather than architectural symmetry.

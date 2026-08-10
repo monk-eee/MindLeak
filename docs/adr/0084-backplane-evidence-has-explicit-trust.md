@@ -1,4 +1,4 @@
-# ADR-0084: Backplane evidence has explicit trust
+# ADR-0084: Ackplane evidence has explicit trust
 
 - Status: Accepted
 - Date: 2026-08-10
@@ -24,7 +24,7 @@ separates concurrent clients and preserves continuity, but it is not a remote
 credential. A reviewer label records what a caller declared; it does not prove
 that the named person supplied it. ADR-0071 makes that limitation explicit.
 
-A multi-tenant Backplane crosses a different boundary. It receives records over
+A multi-tenant Ackplane crosses a different boundary. It receives records over
 a network, aggregates repositories belonging to different organisations, and
 presents evidence to security reviewers and auditors. TLS protects bytes in
 transit but does not make a local label an authenticated person, prove that an
@@ -38,14 +38,14 @@ and an approval made by an authenticated person carry different provenance.
 
 ## Decision
 
-1. **Backplane authenticates principals; it does not trust display labels.**
+1. **Ackplane authenticates principals; it does not trust display labels.**
    Human access uses an organisation-configured OpenID Connect provider. Service
    access uses short-lived workload credentials. Stable issuer and subject
    identifiers are the principal keys; display names and email addresses are
    mutable presentation fields.
 
 2. **A repository node is explicitly enrolled.** Enrolment binds a tenant id,
-   Backplane repository id, node id, and node-held public signing key through an
+   Ackplane repository id, node id, and node-held public signing key through an
    authorised administrative action. The corresponding private key never
    leaves the node and is stored through an operating-system credential facility
    where available. Keys have ids, activation and expiry times, rotation, and
@@ -76,10 +76,10 @@ and an approval made by an authenticated person carry different provenance.
 
    Payload size is bounded before hashing and sending. The producer sequence
    and previous digest make deletion, insertion, replay, and reordering visible
-   within one producer stream. A sequence gap is recorded as a gap; Backplane
+   within one producer stream. A sequence gap is recorded as a gap; Ackplane
    never invents the missing event or closes the chain on the producer's behalf.
 
-5. **Backplane validates first and then issues an immutable receipt.** A receipt
+5. **Ackplane validates first and then issues an immutable receipt.** A receipt
    binds the envelope digest to its tenant, repository, authenticated connection
    principal, accepted ledger position, and server receive time. Duplicate
    envelopes return the original receipt. A conflicting digest for an existing
@@ -93,7 +93,7 @@ and an approval made by an authenticated person carry different provenance.
    - `enrolled_node`: origin and integrity verified against a node key;
    - `authenticated_principal`: an action made in an authenticated user or
      workload session;
-   - `provider_attested`: Backplane independently validated the result against
+   - `provider_attested`: Ackplane independently validated the result against
      an external source such as a Git or CI provider.
 
   These are not averaged into a percentage and are not silently ordered from
@@ -110,7 +110,7 @@ and an approval made by an authenticated person carry different provenance.
    signature cannot turn an observation directly into a verdict or policy.
 
 8. **Authenticated approval is a new record, not a reinterpretation.** A
-   Backplane approval records the OIDC principal, tenant, role, target, reason,
+   Ackplane approval records the OIDC principal, tenant, role, target, reason,
    and timestamp. Existing `resolved_by` and other local reviewer labels remain
    `unverified_attribution` forever. Synchronising them does not upgrade them to
   authenticated human actions. A clause that requires authenticated approval
@@ -129,13 +129,13 @@ and an approval made by an authenticated person carry different provenance.
   graph, or arbitrary metadata map is accepted. Structural violations are
   rejected with a non-retryable reason and are never silently scrubbed. A
   schema cannot prove an allowed string contains no secret, so nodes still
-  redact before serialization and Backplane treats permitted text as
+  redact before serialization and Ackplane treats permitted text as
   sensitive. Raw terminal output, source text, and full graph content remain
   local unless a separately accepted ADR adds a bounded payload type and
   retention contract. Hashes and provider references are preferred when they
   let an auditor resolve the source.
 
-11. **Freshness and completeness remain visible.** Mission Control shows the
+11. **Freshness and completeness remain visible.** The Bridge shows the
     last accepted producer sequence and time, chain gaps, key status, and
     provenance class. A cryptographically valid but stale or incomplete stream
     cannot render as current assurance.
@@ -143,13 +143,13 @@ and an approval made by an authenticated person carry different provenance.
 12. **Compromise is appended, never erased.** Key revocation and a later
   compromise finding are durable security events. Existing receipts retain
   the key status known at acceptance and gain a visible later-compromise
-  annotation; they are not deleted or silently downgraded. Mission Control
+    annotation; they are not deleted or silently downgraded. The Bridge
   raises an assurance finding, and affected policy claims require explicit
   re-evaluation under their evidence contracts.
 
 ## Consequences
 
-- Backplane can make a stronger identity claim than the local stdio services
+- Ackplane can make a stronger identity claim than the local stdio services
   without falsifying the history produced before authentication existed.
 - Auditors can distinguish who delivered a record, whether it changed in
   transit or storage, whether an independent provider corroborated it, and
@@ -164,7 +164,7 @@ and an approval made by an authenticated person carry different provenance.
   Provider attestation, control execution, constitutional consequence, and
   human review remain separate defences.
 - Local mode keeps its current trust boundary. It does not need an identity
-  provider merely because Backplane supports one.
+  provider merely because Ackplane supports one.
 
 ## Rejected alternatives
 
@@ -186,8 +186,8 @@ threshold to become policy without constitutional authority.
 directory name does not prove who performed the historical action. Later
 authentication cannot travel backwards in time.
 
-**Have Backplane sign all uploads and call them verified.** Rejected because a
-server receipt proves what Backplane accepted, not who originally produced it
+**Have Ackplane sign all uploads and call them verified.** Rejected because a
+server receipt proves what Ackplane accepted, not who originally produced it
 or whether its contents were true. Producer signatures and server receipts
 answer different questions.
 

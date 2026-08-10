@@ -4,6 +4,6 @@
   than the category and gave no reason for memory, intent, claims, policy, and
   evidence to be one product. Every surface now states the category together with
   its limit — coordination is cooperative, never preemptive, and nothing here
-  sandboxes a process or blocks a write. The names Core, Backplane, and Mission
-  Control are fixed, and Backplane and Mission Control are labelled as accepted
+  sandboxes a process or blocks a write. The names Core, Ackplane, and the
+  Bridge are fixed, and Ackplane and the Bridge are labelled as accepted
   designs that are not yet built (ADR-0089).

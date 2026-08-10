@@ -33,7 +33,7 @@ registries, and lease expiry, each wearing a Git costume. The remedies were
 scheduling, arbitration, identity, and isolation — the concerns an OS exists to
 provide.
 
-Second, the Backplane series extends coordination across machines and
+Second, the Ackplane series extends coordination across machines and
 organisations. A product that arbitrates claims, resolves identity, governs
 permissions, schedules work, ages memory, and keeps an audit journal is not
 describing itself well as "infrastructure for context".
@@ -67,11 +67,11 @@ one a security reviewer discovers rather than one we disclosed.
    | Scheduler and run queue | Tasks, claims, leases, next-task allocation | Cooperative; no preemption or forced yield |
    | Locks and mutual exclusion | Claims plus pre-flight overlap (ADR-0024) | Advisory; never a filesystem or Git lock |
    | Memory hierarchy and eviction | Decay graph, working set, consolidation, pruning | Eviction by relevance, not by correctness |
-   | Process identity | Session identity (ADR-0054), enrolled nodes (ADR-0085) | Local is attribution; only Backplane authenticates |
+   | Process identity | Session identity (ADR-0054), enrolled nodes (ADR-0085) | Local is attribution; only Ackplane authenticates |
    | Permissions and policy | Constitution clauses, consequences, waivers | Governs verdicts; does not intercept writes |
    | Journal and audit | Evidence bundles, conformance receipts, task event log | Records what happened; prevents nothing |
    | Device drivers | Passive terminal and Git sensors (ADR-0011) | Best-effort; degrade visibly when unsupported |
-   | IPC and networking | Durable task thread (ADR-0046), Backplane federation | Asynchronous; no direct agent-to-agent channel |
+   | IPC and networking | Durable task thread (ADR-0046), Ackplane federation | Asynchronous; no direct agent-to-agent channel |
 
 3. **Cooperative, not preemptive, is part of the claim.** Any statement of the
    category carries the constraint that MindLeak coordinates willing clients. We
@@ -87,11 +87,34 @@ one a security reviewer discovers rather than one we disclosed.
    or a model. This gives the repositioning a stopping rule rather than a licence
    to grow.
 
-5. **Product names are fixed.** *MindLeak Core* is the local pair of planes.
-   *MindLeak Backplane* is the federation service. *MindLeak Mission Control* is
-   the operations and assurance interface. *Lodestar* remains the name of the
-   Intent Plane component inside Core, not a separate product, so external
-   material stops implying two products where there is one.
+5. **Product names and the capability vocabulary are fixed.** *MindLeak Core* is
+   the local pair of planes. *Ackplane* is the shared control plane, named for
+   the acknowledgement stream it actually is (ADR-0083) rather than the passive
+   bus a backplane would be. *The Bridge* is the human operations interface.
+   Inside those, each capability has a name and the question it answers:
+
+   | Capability | Name | Answers |
+   |---|---|---|
+   | Memory | MindLeak | What happened? |
+   | Intent | Lodestar | What are we trying to achieve? |
+   | Coordination | Beacon | Who is working on this? |
+   | Governance | Gatekeeper | Is this allowed? |
+   | Evidence | Librarian | Where is the proof? |
+   | Verification | Verifier | Does the evidence prove it? |
+
+   These are capability names inside the two planes, not deployable services and
+   not separate products. Beacon, Gatekeeper, Librarian, and Verifier are all
+   `lodestar-core` today; naming a capability never authorises splitting it into
+   a service, and ADR-0004 still decides where a process boundary belongs.
+   Gatekeeper's question is answered with advice and a verdict, never an
+   interception, because clause 3 still holds. Nothing is named *Certifier*:
+   certification is a status a subject holds, not a component that issues it
+   (ADR-0090).
+
+   A capability name earns its place if a dashboard widget can be named after
+   it — Beacon Conflicts, Gatekeeper Decisions, Librarian Evidence, Lodestar
+   Goals, MindLeak Context. A name that reads awkwardly as a widget is naming
+   the wrong thing.
 
 6. **Claim discipline is unchanged.** ADR-0028's tiers still bind every
    measurable statement. A category frame is a description of what the system

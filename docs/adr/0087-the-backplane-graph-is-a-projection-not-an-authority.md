@@ -1,4 +1,4 @@
-# ADR-0087: The Backplane graph is a projection, not an authority
+# ADR-0087: The Ackplane graph is a projection, not an authority
 
 - Status: Accepted
 - Date: 2026-08-10
@@ -16,7 +16,7 @@
 
 ## Context
 
-Mission Control wants questions the ledger alone answers badly: what a change
+The Bridge wants questions the ledger alone answers badly: what a change
 can affect, which repositories share an ownership boundary, where an agent's
 footprint overlaps another's, and where a policy question was answered before.
 Those are graph and similarity questions, and PostgreSQL can host both through
@@ -49,7 +49,7 @@ deployed.
    explicit depth, fanout, and node-count bounds. Every supported deployment has
    this. No capability depends on an extension being present.
 
-3. **MindLeak owns the traversal contract, not the extension.** Backplane
+3. **MindLeak owns the traversal contract, not the extension.** Ackplane
    traversal keeps the bounded, best-first semantics the local engine already
    uses: seed set, maximum depth, maximum admitted nodes, per-node fanout
    limited to the strongest edges, and dangling edges dropped. Any backend must
@@ -82,14 +82,14 @@ deployed.
    or raw episodic logs.
 
 8. **Embeddings never leave the deployment silently.** Vectors are computed
-   locally or by an endpoint the operator configured explicitly. Backplane does
+   locally or by an endpoint the operator configured explicitly. Ackplane does
    not send projected content to a third-party embedding service by default, and
    a model-derived value is recorded as derived, never as evidence.
 
 9. **Cross-repository traversal is analysis, not authority.** A query may span
    repositories inside one tenant to answer an impact or ownership question. It
    creates no claim, no coordination edge, and no cross-repository task
-   relationship; ADR-0082 decision 9 still governs what Backplane arbitrates.
+   relationship; ADR-0082 decision 9 still governs what Ackplane arbitrates.
 
 10. **Projection freshness is visible.** Every graph or similarity answer carries
     the ledger position and projection time behind it, so a stale or still
@@ -97,7 +97,7 @@ deployed.
 
 ## Consequences
 
-- Backplane can answer blast-radius, ownership, and overlap questions across a
+- Ackplane can answer blast-radius, ownership, and overlap questions across a
   tenant without becoming a competing source of truth for code structure.
 - A rebuildable projection can be corrected by replaying the ledger, which is
   the cheapest possible recovery from a projector defect.
@@ -122,7 +122,7 @@ where correctness matters most.
 couples the product to an extension's major-version cadence, in exchange for
 query ergonomics rather than a capability the baseline lacks.
 
-**Replicate the whole local decay graph into Backplane.** Rejected because it
+**Replicate the whole local decay graph into Ackplane.** Rejected because it
 contradicts evidence minimisation, uploads local implementation detail, and
 would make the shared service grow with every repository's episodic churn.
 

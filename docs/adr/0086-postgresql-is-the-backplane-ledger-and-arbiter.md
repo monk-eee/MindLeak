@@ -1,4 +1,4 @@
-# ADR-0086: PostgreSQL is the Backplane ledger and arbiter
+# ADR-0086: PostgreSQL is the Ackplane ledger and arbiter
 
 - Status: Accepted
 - Date: 2026-08-10
@@ -20,9 +20,9 @@
 
 ## Context
 
-The Backplane decisions require one arbiter for federated claims, an append-only
+The Ackplane decisions require one arbiter for federated claims, an append-only
 ledger, transactional duplicate detection, immutable acceptance receipts, and
-read models for Mission Control. Saying "standalone service" does not identify
+read models for the Bridge. Saying "standalone service" does not identify
 where that authority lives when several server instances handle connections.
 
 Keeping authority in an application process would recreate the split registry
@@ -39,13 +39,13 @@ database for projections and then require a decision about which one wins.
 
 ## Decision
 
-1. **PostgreSQL is Backplane's sole durable write authority.** All accepted
-   envelopes, Backplane-originated domain events, receipts, enrolments, claims,
+1. **PostgreSQL is Ackplane's sole durable write authority.** All accepted
+   envelopes, Ackplane-originated domain events, receipts, enrolments, claims,
    leases, and projection checkpoints are committed there. An application
    instance has no authoritative local state and cannot accept work while the
    database is unavailable.
 
-2. **Backplane server instances are stateless and horizontally replaceable.**
+2. **Ackplane server instances are stateless and horizontally replaceable.**
    Any healthy instance may terminate a gRPC stream or web request. It performs
    each domain mutation in PostgreSQL and returns success only after commit.
    Process memory may cache immutable metadata, but a cache hit never grants a
@@ -57,7 +57,7 @@ database for projections and then require a decision about which one wins.
    standbys and a failover system that fences the old primary before promoting
    another. Active-active multi-primary, disconnected writes, and application-
    level conflict merging are unsupported. If write authority is uncertain,
-   Backplane fails closed and repository nodes retain their durable outboxes.
+   Ackplane fails closed and repository nodes retain their durable outboxes.
 
 4. **The ledger is partitioned into ordered logical streams.** Repository
    records use a repository stream; tenant administration uses a tenant stream.
@@ -68,7 +68,7 @@ database for projections and then require a decision about which one wins.
 
 5. **Idempotency is enforced by database constraints.** The node deduplication
    key from ADR-0083 is unique across the authoritative store. In one
-   transaction, Backplane locks the stream head, checks the producer sequence,
+   transaction, Ackplane locks the stream head, checks the producer sequence,
    verifies the digest, appends at most one record, creates the signed receipt,
    and advances the head. A same-key/same-digest retry reads the stored receipt;
    a same-key/different-digest retry cannot pass the uniqueness and digest
@@ -90,7 +90,7 @@ database for projections and then require a decision about which one wins.
    write around the projection. Rebuilding into a scratch projection and
    diffing it against current state is a required invariant test.
 
-8. **Mission Control reads versioned projections with visible freshness.**
+8. **The Bridge reads versioned projections with visible freshness.**
    Assurance queues, timelines, trends, and fleet summaries may be projected
    asynchronously. Every response carries the source stream position and
    projection time. Read replicas are permitted only for read-only queries and
@@ -121,19 +121,19 @@ database for projections and then require a decision about which one wins.
     commits. A production deployment may report `quorum_durable` only when an
     acknowledged commit is synchronously replicated to the configured failure
     domain; a single-node deployment reports `single_node`. Backups are
-    encrypted and point-in-time recovery is tested. Backplane never labels an
+    encrypted and point-in-time recovery is tested. Ackplane never labels an
     asynchronously replicated acknowledgement as zero-loss assurance.
 
 13. **Schema evolution preserves the ledger.** Migrations use expand, backfill,
     verify, then contract. New projection versions are built beside old ones and
     switch only after their checkpoints and deterministic diff pass. Protobuf
     compatibility follows ADR-0083. Retention, tenant export and deletion, and
-    disaster migration between Backplane deployments require separate decisions
+    disaster migration between Ackplane deployments require separate decisions
     before production because they can end or move an append-only trust domain.
 
 ## Consequences
 
-- Several Backplane instances can serve clients without becoming several
+- Several Ackplane instances can serve clients without becoming several
   arbiters. PostgreSQL transactions settle ordering, uniqueness, leases, and
   claim ownership.
 - The write path stays deliberately conservative. A database outage blocks new
@@ -152,7 +152,7 @@ database for projections and then require a decision about which one wins.
 
 ## Rejected alternatives
 
-**SQLite on the Backplane host.** Rejected because it would bind authority to
+**SQLite on the Ackplane host.** Rejected because it would bind authority to
 one application host and make horizontal failover a filesystem problem. SQLite
 remains the right repository-local store; the remote service has a different
 concurrency and availability boundary.

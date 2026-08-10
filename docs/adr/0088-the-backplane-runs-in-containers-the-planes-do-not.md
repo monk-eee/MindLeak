@@ -1,4 +1,4 @@
-# ADR-0088: The Backplane runs in containers; the planes do not
+# ADR-0088: Ackplane runs in containers; the planes do not
 
 - Status: Accepted
 - Date: 2026-08-10
@@ -16,7 +16,7 @@
 
 ## Context
 
-Backplane needs PostgreSQL with a specific version, extensions, roles, and
+Ackplane needs PostgreSQL with a specific version, extensions, roles, and
 migrations. Asking a contributor to install and configure that by hand makes the
 first run unreliable and the second run different. It also makes review harder:
 a reported failure cannot be reproduced when everyone's database differs.
@@ -35,8 +35,8 @@ topology that no availability or fencing decision ever reviewed.
 ## Decision
 
 1. **Docker Compose is the supported topology for local development and small
-   self-hosting of Backplane.** The stack is a `postgres` service, a one-shot
-   `migrate` service, and the `backplane` service. Mission Control's static
+   self-hosting of Ackplane.** The stack is a `postgres` service, a one-shot
+   `migrate` service, and the `ackplane` service. The Bridge's static
    assets ship with the server or as one additional service.
 
 2. **The repository-local planes never require a container runtime.**
@@ -81,7 +81,7 @@ topology that no availability or fencing decision ever reviewed.
 
 ## Consequences
 
-- A contributor gets a working Backplane and database with one command, and
+- A contributor gets a working Ackplane and database with one command, and
   reviewers reproduce failures against the same versions and extensions.
 - The local-first guarantee becomes testable rather than aspirational: a CI job
   without a container runtime either passes or the claim was false.
@@ -105,7 +105,7 @@ problem.
 add a runtime dependency to the offline, zero-token local path and put a
 container boundary between an editor's stdio client and its server for no gain.
 
-**Embed PostgreSQL in the Backplane image.** Rejected because it couples the
+**Embed PostgreSQL in the Ackplane image.** Rejected because it couples the
 stateless service to its durable store, breaks the horizontally replaceable
 instance model, and produces a container whose restart risks the ledger.
 
