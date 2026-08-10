@@ -1,10 +1,18 @@
 # Architecture
 
-MindLeak is **local context infrastructure for coding agents**, implemented as
-two independent planes with different lifetimes and authority. The Memory Plane
-(`mindleak-*`) is a **Temporal Context Graph Engine (TCGE)** whose episodic edges
-decay. The Intent Plane (`lodestar-*`, ADR-0004) is a durable constitution, design,
-coordination, knowledge, and conformance ledger.
+MindLeak is **an operating system for agent coordination**
+([ADR-0089](adr/0089-mindleak-is-an-operating-system-for-agent-coordination.md)),
+implemented as two independent planes with different lifetimes and authority.
+The Memory Plane (`mindleak-*`) is a **Temporal Context Graph Engine (TCGE)**
+whose episodic edges decay. The Intent Plane (`lodestar-*`, ADR-0004) is a
+durable constitution, design, coordination, knowledge, and conformance ledger.
+
+The category is cooperative, not preemptive: the system schedules, arbitrates,
+remembers, governs, and audits, but it never preempts an agent, sandboxes a
+process, or blocks a write. What ships today is **MindLeak Core**, the local
+tier described below. *Backplane* (federation, ADR-0082 to ADR-0088) and
+*Mission Control* (assurance operations, ADR-0090) are accepted designs that are
+not yet built.
 
 Each plane is a Rust library behind its own MCP stdio server. They share a
 repository identity and session identity, but not tables, database connections,

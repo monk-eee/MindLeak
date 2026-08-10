@@ -2,10 +2,13 @@
   <img src="media/mindleak_logo.png" alt="MindLeak" width="420">
 </p>
 
-# MindLeak — Temporal Context Graph (VS Code)
+# MindLeak — Agent Coordination OS (VS Code)
 
-Live visualizer and passive sensor for the [MindLeak](../../README.md) context
-graph engine.
+The editor surface for [MindLeak](../../README.md), an operating system for
+agent coordination: shared memory, durable intent, arbitrated work, and provable
+completion. This extension packages both MCP servers, senses activity passively,
+and visualizes the decay-weighted context graph. Coordination is cooperative —
+it makes conflicts and drift visible, and never blocks a write.
 
 ## What it does
 

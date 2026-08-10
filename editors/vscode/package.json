@@ -1,7 +1,7 @@
 {
   "name": "mindleak",
-  "displayName": "MindLeak — Temporal Context Graph",
-  "description": "Live, decay-weighted context graph for coding agents. Visualizes the MindLeak MCP memory engine and passively feeds editor focus into it.",
+  "displayName": "MindLeak — Agent Coordination OS",
+  "description": "An operating system for agent coordination: shared memory, durable intent, arbitrated work, and provable completion. Packages both MCP servers, senses editor, shell, and Git activity passively, and visualizes the decay-weighted context graph. Coordination is advisory, never a lock.",
   "version": "0.1.5",
   "publisher": "monk-eee",
   "license": "MIT",
