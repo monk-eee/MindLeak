@@ -87,7 +87,7 @@ const nextFreeNumber = (claimed, wanted) => {
  * making the guard impossible to satisfy without bypassing it. Asked in
  * anger, that is exactly what a guard must not do.
  */
-const alreadyOnMain = (adr) => {
+const onIntegrationBranch = (number, slug) => {
   for (const ref of ["origin/main", "main"]) {
     const listing = capture([
       "ls-tree",
@@ -95,7 +95,7 @@ const alreadyOnMain = (adr) => {
       "--name-only",
       ref,
       "--",
-      `docs/adr/${adr.number}-${adr.slug}.md`,
+      `docs/adr/${number}-${slug}.md`,
     ]);
     if (listing.trim()) return true;
   }
@@ -123,11 +123,20 @@ const ownRefs = () => {
   return refs;
 };
 
-const stagedDeletions = () =>
+/**
+ * Every ADR slug this change replaces: outright deletions, and the old name of
+ * a rename.
+ *
+ * Both have to count, because `git mv` is the natural way to correct a filename
+ * and git reports it as a rename rather than a delete. `--name-status` names the
+ * old path second in both cases (`D\tpath`, `R100\told\tnew`), so one listing
+ * answers for both.
+ */
+const stagedReplacements = () =>
   new Set(
-    capture(["diff", "--cached", "--name-only", "--diff-filter=D"])
+    capture(["diff", "--cached", "-M", "--name-status", "--diff-filter=DR"])
       .split("\n")
-      .map(parseAdr)
+      .map((line) => parseAdr(line.split("\t")[1] ?? ""))
       .filter(Boolean)
       .map((entry) => `${entry.number}-${entry.slug}`),
   );
@@ -157,10 +166,23 @@ const inHead = (number, slug) =>
  * The allowance stays narrow in both directions: a slug held on any ref this
  * branch does not answer for is a real rival, and a slug still standing in this
  * branch's own tree is a real duplicate.
+ *
+ * The one exception is a slug that has *landed*. A decision published as
+ * `NNNN-old.md` is on main and on every branch cut from it, so the ownership
+ * test can never pass and its filename could never be corrected — the guard's
+ * own advice was to renumber an accepted decision, rewriting its identity and
+ * every cross-link that cites it to fix a typo. Being on main is what makes
+ * that slug this decision's former name rather than a rival: an unlanded ADR on
+ * a sibling branch is not there, so a genuine collision is still refused, and a
+ * renumber onto a landed decision is refused too because this branch has not
+ * replaced that slug.
  */
-const supersededByThisBranch = (adr, slug, refs, own, deletions) => {
-  if ([...refs].some((ref) => !own.has(ref))) return false;
-  return deletions.has(`${adr.number}-${slug}`) || !inHead(adr.number, slug);
+const supersededByThisBranch = (adr, slug, refs, own, replacements) => {
+  const replaced =
+    replacements.has(`${adr.number}-${slug}`) || !inHead(adr.number, slug);
+  if (!replaced) return false;
+  if (onIntegrationBranch(adr.number, slug)) return true;
+  return [...refs].every((ref) => own.has(ref));
 };
 
 const targets = process.argv.slice(2).length
@@ -172,7 +194,7 @@ if (candidates.length === 0) process.exit(0);
 
 const claimed = claimedAcrossRefs();
 const own = ownRefs();
-const deletions = stagedDeletions();
+const replacements = stagedReplacements();
 let conflicted = false;
 
 for (const adr of candidates) {
@@ -180,7 +202,7 @@ for (const adr of candidates) {
   if (!bySlug) continue;
   const rivals = [...bySlug.keys()].filter((slug) => slug !== adr.slug);
   const superseded = rivals.filter((slug) =>
-    supersededByThisBranch(adr, slug, bySlug.get(slug), own, deletions),
+    supersededByThisBranch(adr, slug, bySlug.get(slug), own, replacements),
   );
   const others = rivals.filter((slug) => !superseded.includes(slug));
 
@@ -192,7 +214,7 @@ for (const adr of candidates) {
   }
   if (others.length === 0) continue;
 
-  if (alreadyOnMain(adr)) {
+  if (onIntegrationBranch(adr.number, adr.slug)) {
     console.warn(
       `adr-number-guard: ADR-${adr.number} is contested, but ${adr.number}-${adr.slug}.md ` +
         `is already on main, so the other claimant must renumber:`,

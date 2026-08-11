@@ -5,13 +5,13 @@
 - Deciders: MindLeak maintainers
 - Accepted: 2026-08-10 by the repository owner — attributed human adoption after
   review.
-- Depends on: [ADR-0086](0086-postgresql-is-the-backplane-ledger-and-arbiter.md)
+- Depends on: [ADR-0086](0086-postgresql-is-the-ackplane-ledger-and-arbiter.md)
   (PostgreSQL ledger and projections)
 - Related: [ADR-0002](0002-sqlite-decay-over-vector-llm.md) (decay graph over
   vector-only memory), [ADR-0007](0007-structural-snapshot-reconciliation.md)
   (owned structural facts), [ADR-0008](0008-semantic-recall-embedding-index.md)
   (similarity seeds traversal), [ADR-0053](0053-the-graph-records-events-not-conclusions.md)
-  (events, not conclusions), [ADR-0084](0084-backplane-evidence-has-explicit-trust.md)
+  (events, not conclusions), [ADR-0084](0084-ackplane-evidence-has-explicit-trust.md)
   (evidence minimisation)
 
 ## Context

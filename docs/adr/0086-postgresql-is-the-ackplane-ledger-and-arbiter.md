@@ -5,14 +5,14 @@
 - Deciders: MindLeak maintainers
 - Accepted: 2026-08-10 by the repository owner — attributed human adoption after
   review.
-- Depends on: [ADR-0082](0082-backplane-is-a-standalone-federation-service.md)
+- Depends on: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md)
   (standalone federation and sole authority),
-  [ADR-0083](0083-grpc-is-the-backplane-node-protocol.md) (idempotent node
-  protocol), [ADR-0084](0084-backplane-evidence-has-explicit-trust.md)
+  [ADR-0083](0083-grpc-is-the-ackplane-node-protocol.md) (idempotent node
+  protocol), [ADR-0084](0084-ackplane-evidence-has-explicit-trust.md)
   (immutable receipts)
-- Refined by: [ADR-0087](0087-the-backplane-graph-is-a-projection-not-an-authority.md)
+- Refined by: [ADR-0087](0087-the-ackplane-graph-is-a-projection-not-an-authority.md)
   (graph and vector projections),
-  [ADR-0088](0088-the-backplane-runs-in-containers-the-planes-do-not.md)
+  [ADR-0088](0088-the-ackplane-runs-in-containers-the-planes-do-not.md)
   (container topology and durability profile)
 - Related: [ADR-0045](0045-a-fleet-is-a-distributed-system.md) (one arbiter per
   shared resource), [ADR-0064](0064-the-log-is-the-ledger.md) (event authority

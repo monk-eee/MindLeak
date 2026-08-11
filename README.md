@@ -102,7 +102,7 @@ relevance, constitution for authority, and evidence for completion.**
 Together these are **MindLeak Core**, the local tier and the only tier that ships
 today. *Ackplane* (the shared control plane) and *the Bridge* (assurance and
 fleet operations) are accepted designs that are not yet built — see
-[ADR-0082](docs/adr/0082-backplane-is-a-standalone-federation-service.md) onward.
+[ADR-0082](docs/adr/0082-ackplane-is-a-standalone-federation-service.md) onward.
 Inside Core each capability has a name and the question it answers: MindLeak
 remembers, *Lodestar* holds intent, *Beacon* coordinates claims, *Gatekeeper*
 governs, *Librarian* keeps evidence, and *Verifier* decides whether that
