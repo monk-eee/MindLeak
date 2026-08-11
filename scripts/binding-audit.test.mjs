@@ -6,8 +6,25 @@ import path from "node:path";
 import {
   addedRustSources,
   configuredRepositoryDb,
+  goalArtifactBindings,
   unboundSources,
 } from "./binding-audit.mjs";
+
+function bindingDb(table, rows = []) {
+  return {
+    prepare(sql) {
+      if (sql.includes("sqlite_master")) {
+        return { all: () => (table ? [{ name: table }] : []) };
+      }
+      const expected =
+        table === "goal_artifacts"
+          ? "select goal_id, node_id, mode from goal_artifacts"
+          : "select goal_id, node_id, 'governed' as mode from goal_code";
+      assert.equal(sql, expected);
+      return { all: () => rows.map((row) => ({ ...row })) };
+    },
+  };
+}
 
 test("addedRustSources returns only new Rust files under crate source trees", () => {
   let calledWith;
@@ -49,6 +66,32 @@ test("unboundSources names only added files with no artifact binding", () => {
   ]);
 
   assert.deepEqual(unboundSources(files, bound), ["crates/beta/src/lib.rs"]);
+});
+
+test("goalArtifactBindings reads equivalent current and legacy bindings", () => {
+  const expected = [
+    {
+      goal_id: "goal:delivery",
+      node_id: "artifact:crates/example/src/lib.rs",
+      mode: "governed",
+    },
+  ];
+
+  assert.deepEqual(
+    goalArtifactBindings(bindingDb("goal_artifacts", expected)),
+    expected,
+  );
+  assert.deepEqual(
+    goalArtifactBindings(bindingDb("goal_code", expected)),
+    expected,
+  );
+});
+
+test("goalArtifactBindings explains when the ledger has no binding table", () => {
+  assert.throws(
+    () => goalArtifactBindings(bindingDb(null)),
+    /neither goal_artifacts nor legacy goal_code bindings/,
+  );
 });
 
 test("configuredRepositoryDb selects this repository when other ledgers exist", () => {

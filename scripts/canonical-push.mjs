@@ -399,17 +399,19 @@ try {
 // Report that fact at publication, when the branch first becomes visible to
 // the fleet, but do not invent a binding or turn an intent decision into a gate.
 try {
-  execFileSync(
+  const report = execFileSync(
     process.execPath,
     ["scripts/binding-audit.mjs", "--new-since", "origin/main"],
     {
       cwd: repoRoot,
-      stdio: "inherit",
+      encoding: "utf8",
       env: process.env,
     },
   );
-} catch {
+  process.stdout.write(report);
+} catch (error) {
+  const diagnostic = error.stderr?.toString().trim() || error.message;
   console.warn(
-    "canonical-push: binding coverage was not observed for this publication",
+    `canonical-push: binding audit failed but remains non-fatal: ${diagnostic}`,
   );
 }

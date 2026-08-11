@@ -1,0 +1,1 @@
+- **Binding coverage audits now read pre-rename Lodestar ledgers and report audit failures with their diagnostic.** Canonical publication remains nonfatal, but a repository database awaiting migration from `goal_code` to `goal_artifacts` no longer silently disables coverage observations.

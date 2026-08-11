@@ -1,8 +1,6 @@
 - **Publication reports a newly added file as unbound, and no agent-reachable
   verb can bind it — OBSERVED 2026-08-01, left OPEN.** With the binding audit
-  now running cleanly (see
-  [`binding-coverage-is-dark-before-migration.md`](binding-coverage-is-dark-before-migration.md),
-  which records the *previous* failure — that the control was silently dark), it
+  now running cleanly after its legacy-schema compatibility gap was closed, it
   correctly reported `UNBOUND crates/lodestar-core/src/embed.rs` at publication,
   and the completion receipt for `task:87b6e88e1da7` carried the finding
   `evidence does not touch code bound to the task goal`. Both are right. Neither
@@ -27,9 +25,9 @@
   make the gap visible either.
 
   Distinct from the two neighbouring entries and deliberately filed separately:
-  `binding-coverage-is-dark-before-migration.md` is about the audit failing to
-  run, and `the-engine-was-ungoverned-and-the-gate-that-would-enforce-it.md` is
-  about coverage breadth and manifest export. This one is about the write path —
+  the now-closed legacy-schema gap was about the audit failing to run, and
+  `the-engine-was-ungoverned-and-the-gate-that-would-enforce-it.md` is about
+  coverage breadth and manifest export. This one is about the write path —
   the audit runs, the answer is correct, and there is no verb to fix it with.
 
   Fix direction (left for later, needs a decision on who may bind): expose a

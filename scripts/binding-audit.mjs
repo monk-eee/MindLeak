@@ -51,6 +51,31 @@ export function unboundSources(files, boundNodeIds) {
   return files.filter((file) => !bound.has(`artifact:${file}`)).sort();
 }
 
+/** Binding rows from either the current or pre-rename Lodestar schema. */
+export function goalArtifactBindings(db) {
+  const tables = new Set(
+    db
+      .prepare(
+        "select name from sqlite_master where type = 'table' and name in ('goal_artifacts', 'goal_code')",
+      )
+      .all()
+      .map((table) => table.name),
+  );
+  if (tables.has("goal_artifacts")) {
+    return db
+      .prepare("select goal_id, node_id, mode from goal_artifacts")
+      .all();
+  }
+  if (tables.has("goal_code")) {
+    return db
+      .prepare("select goal_id, node_id, 'governed' as mode from goal_code")
+      .all();
+  }
+  throw new Error(
+    "binding-audit: ledger has neither goal_artifacts nor legacy goal_code bindings; open it with a current Lodestar build to migrate it.",
+  );
+}
+
 /** The current repository's configured state database, when it exists. */
 export function configuredRepositoryDb(run, exists, repositories) {
   let repositoryId;
@@ -153,9 +178,7 @@ async function main() {
   const dbPath = resolveDb(argv, repoRoot);
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
-    const bindings = db
-      .prepare("select goal_id, node_id, mode from goal_artifacts")
-      .all();
+    const bindings = goalArtifactBindings(db);
     const bound = new Set(bindings.map((binding) => binding.node_id));
 
     if (newSinceFlag !== -1) {
