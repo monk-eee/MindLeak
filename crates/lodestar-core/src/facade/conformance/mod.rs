@@ -34,6 +34,7 @@ pub struct Completion {
     pub learned: Option<String>,
 }
 
+mod certification;
 mod clauses;
 mod evidence;
 mod token;
@@ -259,6 +260,64 @@ impl Lodestar {
     }
 }
 
+/// Adopt the common-core pack as the active constitution.
+///
+/// Lives here rather than in either test module because both need it: nothing
+/// can be certified against a policy no project has adopted, and an amendment
+/// has to have something to amend.
+#[cfg(test)]
+fn adopt_constitution(e: &Lodestar) -> crate::ConstitutionVersion {
+    let proposal = e
+        .propose_constitution(&["README.md".to_string()], Some("monk-eee"))
+        .unwrap();
+    for clause in proposal.common_core.proposals {
+        e.review_pack_clause(
+            &clause.id,
+            crate::PackClauseDisposition::Adopted,
+            None,
+            "monk-eee",
+            Some("Adopted as proposed"),
+        )
+        .unwrap();
+    }
+    e.activate_constitution(&proposal.version.id, "monk-eee")
+        .unwrap();
+    proposal.version
+}
+
+#[cfg(test)]
+fn test_evidence(
+    task_id: Option<String>,
+    agent: &str,
+    changed_node_id: &str,
+) -> ConformanceEvidence {
+    ConformanceEvidence {
+        schema_version: 1,
+        task_id,
+        agent_id: agent.into(),
+        started_at: 1,
+        ended_at: 2,
+        changed_node_ids: vec![changed_node_id.into()],
+        failed_node_ids: Vec::new(),
+        execution_ids: vec!["execution:proof".into()],
+        successful_execution_ids: vec!["execution:proof".into()],
+        commit_ids: Vec::new(),
+        summary: format!("changed {changed_node_id}"),
+        provenance: vec![
+            crate::EvidenceProvenance {
+                source_id: format!("agent:{agent}"),
+                target_id: "execution:proof".into(),
+                relation: "observed".into(),
+            },
+            crate::EvidenceProvenance {
+                source_id: "execution:proof".into(),
+                target_id: changed_node_id.into(),
+                relation: "modified".into(),
+            },
+        ],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -396,21 +455,7 @@ mod tests {
     /// freshly adopted v1 clause id is *bare*, so this only bites from the
     /// first amendment onwards. That is exactly when it bit.
     fn amended_clause(e: &Lodestar) -> crate::Goal {
-        let proposal = e
-            .propose_constitution(&["README.md".to_string()], Some("monk-eee"))
-            .unwrap();
-        for clause in proposal.common_core.proposals {
-            e.review_pack_clause(
-                &clause.id,
-                crate::PackClauseDisposition::Adopted,
-                None,
-                "monk-eee",
-                Some("Adopted as proposed"),
-            )
-            .unwrap();
-        }
-        e.activate_constitution(&proposal.version.id, "monk-eee")
-            .unwrap();
+        adopt_constitution(e);
 
         let draft = e.propose_amendment(Some("monk-eee")).unwrap();
         // An amendment that changes nothing is refused as churn, so harden one
@@ -1803,37 +1848,5 @@ mod tests {
                 .verdict,
             Verdict::NeedsHuman
         );
-    }
-
-    fn test_evidence(
-        task_id: Option<String>,
-        agent: &str,
-        changed_node_id: &str,
-    ) -> ConformanceEvidence {
-        ConformanceEvidence {
-            schema_version: 1,
-            task_id,
-            agent_id: agent.into(),
-            started_at: 1,
-            ended_at: 2,
-            changed_node_ids: vec![changed_node_id.into()],
-            failed_node_ids: Vec::new(),
-            execution_ids: vec!["execution:proof".into()],
-            successful_execution_ids: vec!["execution:proof".into()],
-            commit_ids: Vec::new(),
-            summary: format!("changed {changed_node_id}"),
-            provenance: vec![
-                EvidenceProvenance {
-                    source_id: format!("agent:{agent}"),
-                    target_id: "execution:proof".into(),
-                    relation: "observed".into(),
-                },
-                EvidenceProvenance {
-                    source_id: "execution:proof".into(),
-                    target_id: changed_node_id.into(),
-                    relation: "modified".into(),
-                },
-            ],
-        }
     }
 }
