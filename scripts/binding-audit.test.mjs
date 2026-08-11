@@ -2,7 +2,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 
 import {
   addedRustSources,
@@ -10,6 +9,22 @@ import {
   goalArtifactBindings,
   unboundSources,
 } from "./binding-audit.mjs";
+
+function bindingDb(table, rows = []) {
+  return {
+    prepare(sql) {
+      if (sql.includes("sqlite_master")) {
+        return { all: () => (table ? [{ name: table }] : []) };
+      }
+      const expected =
+        table === "goal_artifacts"
+          ? "select goal_id, node_id, mode from goal_artifacts"
+          : "select goal_id, node_id, 'governed' as mode from goal_code";
+      assert.equal(sql, expected);
+      return { all: () => rows.map((row) => ({ ...row })) };
+    },
+  };
+}
 
 test("addedRustSources returns only new Rust files under crate source trees", () => {
   let calledWith;
@@ -54,52 +69,29 @@ test("unboundSources names only added files with no artifact binding", () => {
 });
 
 test("goalArtifactBindings reads equivalent current and legacy bindings", () => {
-  const current = new DatabaseSync(":memory:");
-  const legacy = new DatabaseSync(":memory:");
-  try {
-    current.exec(
-      "create table goal_artifacts (goal_id text, node_id text, mode text); insert into goal_artifacts values ('goal:delivery', 'artifact:crates/example/src/lib.rs', 'governed');",
-    );
-    legacy.exec(
-      "create table goal_code (goal_id text, node_id text); insert into goal_code values ('goal:delivery', 'artifact:crates/example/src/lib.rs');",
-    );
+  const expected = [
+    {
+      goal_id: "goal:delivery",
+      node_id: "artifact:crates/example/src/lib.rs",
+      mode: "governed",
+    },
+  ];
 
-    assert.deepEqual(
-      goalArtifactBindings(current).map((row) => ({ ...row })),
-      [
-        {
-          goal_id: "goal:delivery",
-          node_id: "artifact:crates/example/src/lib.rs",
-          mode: "governed",
-        },
-      ],
-    );
-    assert.deepEqual(
-      goalArtifactBindings(legacy).map((row) => ({ ...row })),
-      [
-        {
-          goal_id: "goal:delivery",
-          node_id: "artifact:crates/example/src/lib.rs",
-          mode: "governed",
-        },
-      ],
-    );
-  } finally {
-    current.close();
-    legacy.close();
-  }
+  assert.deepEqual(
+    goalArtifactBindings(bindingDb("goal_artifacts", expected)),
+    expected,
+  );
+  assert.deepEqual(
+    goalArtifactBindings(bindingDb("goal_code", expected)),
+    expected,
+  );
 });
 
 test("goalArtifactBindings explains when the ledger has no binding table", () => {
-  const db = new DatabaseSync(":memory:");
-  try {
-    assert.throws(
-      () => goalArtifactBindings(db),
-      /neither goal_artifacts nor legacy goal_code bindings/,
-    );
-  } finally {
-    db.close();
-  }
+  assert.throws(
+    () => goalArtifactBindings(bindingDb(null)),
+    /neither goal_artifacts nor legacy goal_code bindings/,
+  );
 });
 
 test("configuredRepositoryDb selects this repository when other ledgers exist", () => {
