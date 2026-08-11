@@ -1,0 +1,1 @@
+- **Ackplane's versioned protocol now defines node-enrolment requests, activation challenges, and proof-of-possession responses.** The wire contract carries the exact tenant, repository, node, fingerprint, nonce, and signature bindings needed for a later authenticated enrolment implementation without transmitting private keys.
