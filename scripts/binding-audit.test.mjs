@@ -64,20 +64,26 @@ test("goalArtifactBindings reads equivalent current and legacy bindings", () => 
       "create table goal_code (goal_id text, node_id text); insert into goal_code values ('goal:delivery', 'artifact:crates/example/src/lib.rs');",
     );
 
-    assert.deepEqual(goalArtifactBindings(current), [
-      {
-        goal_id: "goal:delivery",
-        node_id: "artifact:crates/example/src/lib.rs",
-        mode: "governed",
-      },
-    ]);
-    assert.deepEqual(goalArtifactBindings(legacy), [
-      {
-        goal_id: "goal:delivery",
-        node_id: "artifact:crates/example/src/lib.rs",
-        mode: "governed",
-      },
-    ]);
+    assert.deepEqual(
+      goalArtifactBindings(current).map((row) => ({ ...row })),
+      [
+        {
+          goal_id: "goal:delivery",
+          node_id: "artifact:crates/example/src/lib.rs",
+          mode: "governed",
+        },
+      ],
+    );
+    assert.deepEqual(
+      goalArtifactBindings(legacy).map((row) => ({ ...row })),
+      [
+        {
+          goal_id: "goal:delivery",
+          node_id: "artifact:crates/example/src/lib.rs",
+          mode: "governed",
+        },
+      ],
+    );
   } finally {
     current.close();
     legacy.close();
