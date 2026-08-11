@@ -10,6 +10,7 @@ service NodeEnrollmentService {
   rpc SubmitEnrollmentRequest(EnrollmentRequest) returns (EnrollmentRequestStatus);
   rpc GetActivationChallenge(EnrollmentChallengeRequest) returns (EnrollmentChallenge);
   rpc ActivateEnrollment(EnrollmentActivationProof) returns (EnrollmentActivationResult);
+  rpc RotateNodeKey(KeyRotationRequest) returns (KeyRotationResult);
 }
 
 message NodeFrame {
@@ -93,6 +94,42 @@ message EnrollmentActivationResult {
   string enrolment_receipt_id = 3;
   EnrollmentRejectionReason rejection_reason = 4;
   string diagnostic = 5;
+}
+
+message KeyRotationRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string node_id = 3;
+  string current_key_id = 4;
+  string successor_key_id = 5;
+  string successor_public_key_fingerprint = 6;
+  bytes successor_public_key = 7;
+  bytes current_key_signature = 8;
+  bytes successor_key_signature = 9;
+  uint64 requested_overlap_seconds = 10;
+}
+
+message KeyRotationResult {
+  string node_id = 1;
+  string current_key_id = 2;
+  string successor_key_id = 3;
+  KeyRotationOutcome outcome = 4;
+  KeyRotationRejectionReason rejection_reason = 5;
+  string diagnostic = 6;
+}
+
+enum KeyRotationOutcome {
+  KEY_ROTATION_OUTCOME_UNSPECIFIED = 0;
+  KEY_ROTATION_OUTCOME_APPLIED = 1;
+  KEY_ROTATION_OUTCOME_REJECTED = 2;
+}
+
+enum KeyRotationRejectionReason {
+  KEY_ROTATION_REJECTION_REASON_UNSPECIFIED = 0;
+  KEY_ROTATION_REJECTION_REASON_CURRENT_KEY_NOT_ACTIVE = 1;
+  KEY_ROTATION_REJECTION_REASON_SUCCESSOR_KEY_CONFLICT = 2;
+  KEY_ROTATION_REJECTION_REASON_CONTINUITY_PROOF_INVALID = 3;
+  KEY_ROTATION_REJECTION_REASON_NODE_REVOKED = 4;
 }
 
 enum EnrollmentState {
