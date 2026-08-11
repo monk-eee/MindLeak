@@ -6,6 +6,12 @@ service NodeSyncService {
   rpc Synchronize(stream NodeFrame) returns (stream AckplaneFrame);
 }
 
+service NodeEnrollmentService {
+  rpc SubmitEnrollmentRequest(EnrollmentRequest) returns (EnrollmentRequestStatus);
+  rpc GetActivationChallenge(EnrollmentChallengeRequest) returns (EnrollmentChallenge);
+  rpc ActivateEnrollment(EnrollmentActivationProof) returns (EnrollmentActivationResult);
+}
+
 message NodeFrame {
   oneof frame {
     Hello hello = 1;
@@ -30,6 +36,84 @@ message Hello {
   string producer_id = 3;
   uint64 last_accepted_position = 4;
   repeated string capabilities = 5;
+}
+
+message EnrollmentRequest {
+  string request_id = 1;
+  string tenant_id = 2;
+  string repository_id = 3;
+  string proposed_node_id = 4;
+  string display_name = 5;
+  string public_key_fingerprint = 6;
+  repeated string requested_capabilities = 7;
+  string created_at = 8;
+  string expires_at = 9;
+}
+
+message EnrollmentRequestStatus {
+  string request_id = 1;
+  EnrollmentState state = 2;
+  EnrollmentRejectionReason rejection_reason = 3;
+  string diagnostic = 4;
+}
+
+message EnrollmentChallengeRequest {
+  string request_id = 1;
+  string tenant_id = 2;
+  string repository_id = 3;
+  string proposed_node_id = 4;
+  string public_key_fingerprint = 5;
+}
+
+message EnrollmentChallenge {
+  string request_id = 1;
+  string tenant_id = 2;
+  string repository_id = 3;
+  string proposed_node_id = 4;
+  string public_key_fingerprint = 5;
+  bytes nonce = 6;
+  string issued_at = 7;
+  string expires_at = 8;
+  EnrollmentState state = 9;
+}
+
+message EnrollmentActivationProof {
+  string request_id = 1;
+  string tenant_id = 2;
+  string repository_id = 3;
+  string proposed_node_id = 4;
+  string public_key_fingerprint = 5;
+  bytes nonce = 6;
+  bytes signature = 7;
+}
+
+message EnrollmentActivationResult {
+  string request_id = 1;
+  EnrollmentState state = 2;
+  string enrolment_receipt_id = 3;
+  EnrollmentRejectionReason rejection_reason = 4;
+  string diagnostic = 5;
+}
+
+enum EnrollmentState {
+  ENROLLMENT_STATE_UNSPECIFIED = 0;
+  ENROLLMENT_STATE_PENDING = 1;
+  ENROLLMENT_STATE_APPROVED = 2;
+  ENROLLMENT_STATE_ACTIVATING = 3;
+  ENROLLMENT_STATE_ACTIVE = 4;
+  ENROLLMENT_STATE_EXPIRED = 5;
+  ENROLLMENT_STATE_REJECTED = 6;
+  ENROLLMENT_STATE_REVOKED = 7;
+}
+
+enum EnrollmentRejectionReason {
+  ENROLLMENT_REJECTION_REASON_UNSPECIFIED = 0;
+  ENROLLMENT_REJECTION_REASON_REQUEST_EXPIRED = 1;
+  ENROLLMENT_REJECTION_REASON_REQUEST_REJECTED = 2;
+  ENROLLMENT_REJECTION_REASON_NODE_REVOKED = 3;
+  ENROLLMENT_REJECTION_REASON_BINDING_MISMATCH = 4;
+  ENROLLMENT_REJECTION_REASON_CHALLENGE_EXPIRED = 5;
+  ENROLLMENT_REJECTION_REASON_CHALLENGE_ALREADY_USED = 6;
 }
 
 message HelloAccepted {
