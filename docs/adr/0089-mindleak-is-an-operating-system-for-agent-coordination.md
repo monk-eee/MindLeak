@@ -10,8 +10,8 @@
   fleet is a distributed system), [ADR-0059](0059-the-tool-surface-is-a-vocabulary.md)
   (the tool surface is a vocabulary), [ADR-0024](0024-preflight-overlap-detection.md)
   (advisory overlap), [ADR-0054](0054-identity-is-the-session-not-the-process.md)
-  (session identity), [ADR-0082](0082-backplane-is-a-standalone-federation-service.md)
-  (federation boundary), [ADR-0084](0084-backplane-evidence-has-explicit-trust.md)
+  (session identity), [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md)
+  (federation boundary), [ADR-0084](0084-ackplane-evidence-has-explicit-trust.md)
   (attribution versus authentication),
   [ADR-0071](0071-task-resolution-records-an-unverified-reviewer-label.md)
   (unverified reviewer label)

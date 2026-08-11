@@ -5,9 +5,9 @@
 - Deciders: MindLeak maintainers
 - Accepted: 2026-08-10 by the repository owner — attributed human adoption after
   review.
-- Depends on: [ADR-0082](0082-backplane-is-a-standalone-federation-service.md)
+- Depends on: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md)
   (standalone federation boundary),
-  [ADR-0083](0083-grpc-is-the-backplane-node-protocol.md) (node protocol)
+  [ADR-0083](0083-grpc-is-the-ackplane-node-protocol.md) (node protocol)
 - Refined by: [ADR-0085](0085-node-enrolment-requires-proof-of-possession.md)
   (key binding, rotation, and revocation ceremony)
 - Related: [ADR-0009](0009-evidence-backed-conformance.md) (evidence-backed
