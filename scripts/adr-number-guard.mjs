@@ -87,7 +87,7 @@ const nextFreeNumber = (claimed, wanted) => {
  * making the guard impossible to satisfy without bypassing it. Asked in
  * anger, that is exactly what a guard must not do.
  */
-const alreadyOnMain = (adr) => {
+const onIntegrationBranch = (number, slug) => {
   for (const ref of ["origin/main", "main"]) {
     const listing = capture([
       "ls-tree",
@@ -95,7 +95,7 @@ const alreadyOnMain = (adr) => {
       "--name-only",
       ref,
       "--",
-      `docs/adr/${adr.number}-${adr.slug}.md`,
+      `docs/adr/${number}-${slug}.md`,
     ]);
     if (listing.trim()) return true;
   }
@@ -123,42 +123,23 @@ const ownRefs = () => {
   return refs;
 };
 
-const stagedDeletions = () =>
+/**
+ * Every ADR slug this change replaces: outright deletions, and the old name of
+ * a rename.
+ *
+ * Both have to count, because `git mv` is the natural way to correct a filename
+ * and git reports it as a rename rather than a delete. `--name-status` names the
+ * old path second in both cases (`D\tpath`, `R100\told\tnew`), so one listing
+ * answers for both.
+ */
+const stagedReplacements = () =>
   new Set(
-    capture(["diff", "--cached", "--name-only", "--diff-filter=D"])
+    capture(["diff", "--cached", "-M", "--name-status", "--diff-filter=DR"])
       .split("\n")
-      .map(parseAdr)
+      .map((line) => parseAdr(line.split("\t")[1] ?? ""))
       .filter(Boolean)
       .map((entry) => `${entry.number}-${entry.slug}`),
   );
-
-/**
- * Every staged ADR rename, mapped from the new filename to the old one.
- *
- * A rename is how a decision that has already landed gets its filename
- * corrected, and it is the one case the ref scan cannot read: the old slug is
- * present on every ref *because* the decision landed under it, so it looks like
- * a rival held everywhere rather than this decision's own former name.
- */
-const stagedRenames = () => {
-  const renames = new Map();
-  const listing = capture([
-    "diff",
-    "--cached",
-    "-M",
-    "--name-status",
-    "--diff-filter=R",
-  ]);
-  for (const line of listing.split("\n")) {
-    const [, from, to] = line.split("\t");
-    const source = parseAdr(from ?? "");
-    const target = parseAdr(to ?? "");
-    if (source && target) {
-      renames.set(`${target.number}-${target.slug}`, source);
-    }
-  }
-  return renames;
-};
 
 const inHead = (number, slug) =>
   Boolean(
@@ -185,25 +166,23 @@ const inHead = (number, slug) =>
  * The allowance stays narrow in both directions: a slug held on any ref this
  * branch does not answer for is a real rival, and a slug still standing in this
  * branch's own tree is a real duplicate.
- */
-const supersededByThisBranch = (adr, slug, refs, own, deletions) => {
-  if ([...refs].some((ref) => !own.has(ref))) return false;
-  return deletions.has(`${adr.number}-${slug}`) || !inHead(adr.number, slug);
-};
-
-/**
- * Whether the rival slug is only this decision's own former filename.
  *
- * The number is what a claim is made of, so a rename that keeps it renames one
- * decision rather than contesting two. A rename that *changes* the number is a
- * renumber onto someone else's claim, and stays a collision — which is why this
- * compares both sides rather than trusting that a rename is always benign.
+ * The one exception is a slug that has *landed*. A decision published as
+ * `NNNN-old.md` is on main and on every branch cut from it, so the ownership
+ * test can never pass and its filename could never be corrected — the guard's
+ * own advice was to renumber an accepted decision, rewriting its identity and
+ * every cross-link that cites it to fix a typo. Being on main is what makes
+ * that slug this decision's former name rather than a rival: an unlanded ADR on
+ * a sibling branch is not there, so a genuine collision is still refused, and a
+ * renumber onto a landed decision is refused too because this branch has not
+ * replaced that slug.
  */
-const renamedFromSameNumber = (adr, slug, renames) => {
-  const source = renames.get(`${adr.number}-${adr.slug}`);
-  return Boolean(
-    source && source.number === adr.number && source.slug === slug,
-  );
+const supersededByThisBranch = (adr, slug, refs, own, replacements) => {
+  const replaced =
+    replacements.has(`${adr.number}-${slug}`) || !inHead(adr.number, slug);
+  if (!replaced) return false;
+  if (onIntegrationBranch(adr.number, slug)) return true;
+  return [...refs].every((ref) => own.has(ref));
 };
 
 const targets = process.argv.slice(2).length
@@ -215,30 +194,18 @@ if (candidates.length === 0) process.exit(0);
 
 const claimed = claimedAcrossRefs();
 const own = ownRefs();
-const deletions = stagedDeletions();
-const renames = stagedRenames();
+const replacements = stagedReplacements();
 let conflicted = false;
 
 for (const adr of candidates) {
   const bySlug = claimed.get(adr.number);
   if (!bySlug) continue;
-  const contenders = [...bySlug.keys()].filter((slug) => slug !== adr.slug);
-  const renamed = contenders.filter((slug) =>
-    renamedFromSameNumber(adr, slug, renames),
-  );
-  const rivals = contenders.filter((slug) => !renamed.includes(slug));
+  const rivals = [...bySlug.keys()].filter((slug) => slug !== adr.slug);
   const superseded = rivals.filter((slug) =>
-    supersededByThisBranch(adr, slug, bySlug.get(slug), own, deletions),
+    supersededByThisBranch(adr, slug, bySlug.get(slug), own, replacements),
   );
   const others = rivals.filter((slug) => !superseded.includes(slug));
 
-  if (renamed.length > 0) {
-    console.warn(
-      `adr-number-guard: ADR-${adr.number} keeps its number and is renamed by ` +
-        `this commit; ${renamed.map((slug) => `${adr.number}-${slug}.md`).join(", ")} ` +
-        "is its former filename.",
-    );
-  }
   if (superseded.length > 0) {
     console.warn(
       `adr-number-guard: ADR-${adr.number} is retitled by this branch; ` +
@@ -247,7 +214,7 @@ for (const adr of candidates) {
   }
   if (others.length === 0) continue;
 
-  if (alreadyOnMain(adr)) {
+  if (onIntegrationBranch(adr.number, adr.slug)) {
     console.warn(
       `adr-number-guard: ADR-${adr.number} is contested, but ${adr.number}-${adr.slug}.md ` +
         `is already on main, so the other claimant must renumber:`,

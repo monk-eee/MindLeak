@@ -66,6 +66,23 @@ const repoWithRivalAdr = () => {
   return repo;
 };
 
+/** A repo where ADR-0042 has *landed* on main, then a branch to correct it on. */
+const landedAdrRepo = () => {
+  const repo = mkdtempSync(join(tmpdir(), "mindleak-adr-guard-"));
+  temporaryDirectories.push(repo);
+  git(repo, ["init", "-b", "main"]);
+  git(repo, ["config", "user.name", "ADR Guard Test"]);
+  git(repo, ["config", "user.email", "adr-guard@example.invalid"]);
+  const landed = writeAdr(repo, "0042-their-decision.md");
+  git(repo, ["add", landed]);
+  git(repo, ["commit", "-m", "adr lands"]);
+  // A sibling ref that also carries the old slug, which is what made a landed
+  // decision read as a rival held everywhere.
+  git(repo, ["branch", "other"]);
+  git(repo, ["checkout", "-b", "correct-the-filename"]);
+  return repo;
+};
+
 const runGuard = (repo, args) =>
   spawnSync(process.execPath, [guard, ...args], {
     cwd: repo,
@@ -206,18 +223,7 @@ describe("adr-number-guard", () => {
     // landed. So correcting a published ADR's filename was impossible, and the
     // guard's own advice was to renumber an accepted decision, rewriting its
     // identity and every cross-link to fix a typo.
-    const repo = mkdtempSync(join(tmpdir(), "mindleak-adr-guard-"));
-    temporaryDirectories.push(repo);
-    git(repo, ["init", "-b", "main"]);
-    git(repo, ["config", "user.name", "ADR Guard Test"]);
-    git(repo, ["config", "user.email", "adr-guard@example.invalid"]);
-    const landed = writeAdr(repo, "0042-their-decision.md");
-    git(repo, ["add", landed]);
-    git(repo, ["commit", "-m", "adr lands"]);
-    // A sibling ref that also carries the old slug, which is what made the
-    // landed decision read as a rival held everywhere.
-    git(repo, ["branch", "other"]);
-    git(repo, ["checkout", "-b", "rename-the-file"]);
+    const repo = landedAdrRepo();
     git(repo, [
       "mv",
       "docs/adr/0042-their-decision.md",
@@ -227,7 +233,7 @@ describe("adr-number-guard", () => {
     const result = runGuard(repo, ["docs/adr/0042-their-decision-corrected.md"]);
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-    expect(result.stderr).toMatch(/ADR-0042 keeps its number and is renamed/);
+    expect(result.stderr).toMatch(/ADR-0042 is retitled by this branch/);
   }, 30_000);
 
   it("still refuses a rename that moves a decision onto a taken number", () => {
@@ -245,5 +251,40 @@ describe("adr-number-guard", () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/ADR-0042 is already claimed/);
     expect(result.stderr).toMatch(/0042-their-decision\.md/);
+  }, 30_000);
+
+  it("allows pushing a landed rename once it is committed", () => {
+    // Regression, caught in anger: at push time nothing is staged, so an
+    // allowance keyed on the index passes the commit and then refuses the push
+    // — leaving the work committed and unpublishable, which is the same dead
+    // end as blocking it outright.
+    const repo = landedAdrRepo();
+    git(repo, [
+      "mv",
+      "docs/adr/0042-their-decision.md",
+      "docs/adr/0042-their-decision-corrected.md",
+    ]);
+    git(repo, ["commit", "-m", "correct the filename"]);
+
+    const result = runGuard(repo, ["docs/adr/0042-their-decision-corrected.md"]);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stderr).toMatch(/ADR-0042 is retitled by this branch/);
+  }, 30_000);
+
+  it("still refuses a renumber onto a decision that landed", () => {
+    // The landed exception says "this slug is on main, so it is this decision's
+    // former name". That must not extend to a number this branch never held:
+    // 0042 is still standing in its own tree, so nothing was replaced.
+    const repo = landedAdrRepo();
+    const mine = writeAdr(repo, "0099-mine.md");
+    git(repo, ["add", mine]);
+    git(repo, ["commit", "-m", "mine"]);
+    git(repo, ["mv", "docs/adr/0099-mine.md", "docs/adr/0042-mine.md"]);
+
+    const result = runGuard(repo, ["docs/adr/0042-mine.md"]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/ADR-0042 is already claimed/);
   }, 30_000);
 });
