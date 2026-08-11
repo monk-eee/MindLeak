@@ -7,15 +7,20 @@ use crate::llm::{ModelCallProvenance, ModelCallSource};
 use crate::stalls::{stalls, Stall, StallKind};
 use crate::{
     now_unix, ClaimOverlap, ClaimOverlapReport, ClaimTransfer, ClaimWindow, HumanQuestion,
-    Lodestar, LodestarError, Result, Task, TaskQa, TaskScope,
+    Lodestar, LodestarError, Result, Task, TaskQa, TaskScope, TaskStatus,
 };
 
-/// A newly-created decomposition task with additive model-call provenance.
+/// One task a decomposition resolved to, with additive model-call provenance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecomposedTask {
     #[serde(flatten)]
     pub task: Task,
     pub model_call: ModelCallProvenance,
+    /// Whether this draft resolved to work that already existed rather than to
+    /// a task this run created. Reported because the two are indistinguishable
+    /// from the task alone, and a caller told it created work it did not create
+    /// will go looking for a second copy.
+    pub reused: bool,
 }
 
 impl std::ops::Deref for DecomposedTask {
@@ -91,6 +96,25 @@ impl Lodestar {
 
     /// Break a goal into tasks. Uses the local model when reachable, else a
     /// deterministic single-task fallback so the plane works with no LLM.
+    ///
+    /// Idempotent per `(goal, title)` over live work: a draft whose exact title
+    /// already names a non-terminal task under this goal resolves to that task
+    /// instead of a second copy of it. Decomposition is a generator, and a
+    /// generator that runs twice must not produce the work twice — the second
+    /// copy adds no work, only two agents each holding a task they believe is
+    /// the only one. Measured here: repeated runs left three or four identical
+    /// `Implement: ADR-NNNN` seeds per ADR, and two sessions independently
+    /// claimed and built ADR-0090.
+    ///
+    /// Deliberately not a rule on [`create_task`](Self::create_task), where
+    /// ADR-0015 holds that a second task against one goal is often right and a
+    /// gate would be wrong more often than right. The difference is authorship:
+    /// a person asking for another task has decided they want one; a generator
+    /// re-emitting a draft it already emitted has decided nothing.
+    ///
+    /// Terminal work does not suppress a draft. A `done` or `abandoned` task is
+    /// history, nothing dispatches it to an agent, and re-decomposing after
+    /// retiring the old breakdown is a deliberate act that should produce work.
     pub fn decompose_goal(&self, goal_id: &str) -> Result<Vec<DecomposedTask>> {
         let goal = self
             .store
@@ -112,13 +136,33 @@ impl Lodestar {
         let now = now_unix();
         let (drafts, model_call) =
             self.decompose_drafts_with_provenance(&goal.title, &goal.statement);
+        // `existing_work` because it compares goals by slug: an amendment
+        // re-issues a clause as `goal:<slug>@constitution:vN` while tasks keep
+        // naming whichever form they were created under, and an exact compare
+        // would call every pre-amendment seed absent.
+        let mut live: Vec<Task> = self
+            .store
+            .existing_work(Some(goal_id), &[])?
+            .into_iter()
+            .filter(|task| !matches!(task.status, TaskStatus::Done | TaskStatus::Abandoned))
+            .collect();
         let mut out = Vec::new();
         for (title, acceptance) in &drafts {
+            // Also catches a model that emits one title twice in a single batch.
+            let (task, reused) = match live.iter().find(|task| &task.title == title) {
+                Some(found) => (found.clone(), true),
+                None => {
+                    let created = self
+                        .store
+                        .create_task(goal_id, title, acceptance, None, now)?;
+                    live.push(created.clone());
+                    (created, false)
+                }
+            };
             out.push(DecomposedTask {
-                task: self
-                    .store
-                    .create_task(goal_id, title, acceptance, None, now)?,
+                task,
                 model_call,
+                reused,
             });
         }
         Ok(out)
@@ -624,9 +668,9 @@ mod tests {
         let goal = e
             .define_goal(GoalKind::Objective, "Run the queue", "land work", None)
             .unwrap();
-        // Same title, seconds apart — exactly how the six duplicates on the
-        // live board were produced. The id hashes the creation second, so the
-        // ledger does not stop this and nothing else was looking.
+        // Same title and same second: `create_task` deliberately allows this
+        // under ADR-0015. Generator reuse belongs to `decompose_goal`, while
+        // this read must report every task that was deliberately created.
         let first = e
             .store
             .create_task(
@@ -644,16 +688,15 @@ mod tests {
                 "Run the merge queue ourselves",
                 "done",
                 None,
-                1_001,
+                1_000,
             )
             .unwrap();
-        e.abandon_task(&second.id, false).unwrap();
 
         let found = e.existing_work(Some(&goal.id), &[]).unwrap();
         let ids: Vec<&str> = found.iter().map(|t| t.id.as_str()).collect();
-        assert!(ids.contains(&first.id.as_str()));
+        assert!(ids.contains(&second.id.as_str()));
         assert!(
-            ids.contains(&second.id.as_str()),
+            ids.contains(&first.id.as_str()),
             "terminal work is the answer that matters most and the one `board` hides"
         );
         assert_eq!(found.len(), 2, "both duplicates are reported, not one");
@@ -1081,6 +1124,69 @@ mod tests {
         assert!(serialized.get("task").is_none());
         assert_eq!(serialized["model_call"]["source"], "fallback");
         assert_eq!(serialized["model_call"]["fallback_reason"], "unreachable");
+    }
+
+    /// Bug: decomposition was additive, so every re-run produced another copy
+    /// of the same drafts. Measured on 2026-08-11 the board carried three or
+    /// four identical `Implement: ADR-NNNN` seeds for each of eight ADRs, and
+    /// two sessions claimed different seeds for ADR-0090 and built it twice.
+    /// Impact: `next_task` hands duplicates to different agents, and the
+    /// overlap preflight cannot catch it, because a claim-time check is a race
+    /// the second claimant always wins. Fix: a draft whose exact title already
+    /// names live work under this goal resolves to that task.
+    #[test]
+    fn decomposing_a_goal_twice_does_not_produce_the_work_twice() {
+        let e = engine();
+        let g = e
+            .define_goal(
+                GoalKind::Objective,
+                "Add search",
+                "Implement FTS search",
+                None,
+            )
+            .unwrap();
+
+        let first = e.decompose_goal(&g.id).unwrap();
+        let second = e.decompose_goal(&g.id).unwrap();
+
+        assert_eq!(second.len(), first.len());
+        assert_eq!(
+            second[0].id, first[0].id,
+            "the second run resolved to the task the first run created"
+        );
+        assert!(!first[0].reused, "the first run created the work");
+        assert!(second[0].reused, "the second run reported that it did not");
+
+        let live: Vec<String> = e
+            .board(false)
+            .unwrap()
+            .into_iter()
+            .map(|task| task.title)
+            .collect();
+        assert_eq!(live, vec![first[0].title.clone()]);
+    }
+
+    /// The boundary is live work, not history. Retiring a breakdown and asking
+    /// for another is a deliberate act, and a run that answered with the
+    /// abandoned task would leave the goal with no claimable work at all.
+    #[test]
+    fn a_retired_task_does_not_suppress_a_later_decomposition() {
+        let e = engine();
+        let g = e
+            .define_goal(
+                GoalKind::Objective,
+                "Add search",
+                "Implement FTS search",
+                None,
+            )
+            .unwrap();
+
+        let first = e.decompose_goal(&g.id).unwrap();
+        assert!(e.abandon_task(&first[0].id, true).unwrap());
+        let second = e.decompose_goal(&g.id).unwrap();
+
+        assert_ne!(second[0].id, first[0].id);
+        assert!(!second[0].reused);
     }
 
     /// Finished work must be findable by the only party who can move it.
