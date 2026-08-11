@@ -5,7 +5,7 @@
 - Deciders: monk-eee
 - Related: [ADR-0009](0009-evidence-backed-conformance.md) (evidence-backed
   conformance), [ADR-0029](0029-proactive-constitutional-advice.md) (proactive
-  constitutional advice), [ADR-0034](0034-a-control-is-not-a-guard-unless-it-can-refuse.md)
+  constitutional advice), [ADR-0034](0034-typed-controls-and-enforcement-ceilings.md)
   (reporting must not enforce harder than its rule),
   [ADR-0065](0065-completion-belongs-at-the-publication-boundary.md)
   (publication is when work becomes visible),

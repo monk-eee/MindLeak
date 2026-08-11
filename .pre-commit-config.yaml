@@ -95,6 +95,18 @@ repos:
         files: ^docs/adr/\d{4}-.*\.md$
         pass_filenames: true
 
+      - id: adr-link-check
+        name: every ADR cross-reference resolves
+        # An ADR filename carries a slug, and a slug is prose: it gets reworded
+        # while the number stays put. A link written from memory of the idea
+        # rather than the filename renders as an ordinary link and fails only
+        # when a reader clicks it. Four such links sat on main, found by writing
+        # the check rather than by reading.
+        entry: node scripts/adr-link-check.mjs
+        language: system
+        files: ^docs/adr/\d{4}-.*\.md$
+        pass_filenames: true
+
       - id: merge-driver-guard
         name: no merge driver in any .gitattributes
         # A merge driver runs only in a local checkout. GitHub's update-branch,

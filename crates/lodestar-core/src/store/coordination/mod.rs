@@ -213,6 +213,28 @@ pub(super) fn create_task_on(
     create_task_after_on(connection, goal_id, title, acceptance, None, None, &[], now)
 }
 
+/// Live work under this goal already carrying this exact title.
+///
+/// For generators, which dedupe at their own boundary rather than relying on
+/// `create_task` to refuse them. Terminal work is excluded: a `done` or
+/// `abandoned` task is history and nothing dispatches it, so it must never
+/// stand in for work that still has to happen. Matched on the exact goal id
+/// because the callers name the goal they are about to create under.
+pub(super) fn live_task_titled_on(
+    connection: &Connection,
+    goal_id: &str,
+    title: &str,
+) -> Result<Option<Task>> {
+    let sql = format!(
+        "SELECT {TASK_COLS} FROM tasks
+          WHERE goal_id = ?1 AND title = ?2 AND status NOT IN ('done', 'abandoned')
+          ORDER BY created_at ASC LIMIT 1"
+    );
+    Ok(connection
+        .query_row(&sql, params![goal_id, title], row_to_task)
+        .optional()?)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn create_task_after_on(
     connection: &Connection,
