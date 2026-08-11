@@ -49,6 +49,20 @@ message EventEnvelope {
   bytes payload = 5;
   bytes payload_digest = 6;
   string schema_version = 7;
+  string occurred_at = 8;
+  string payload_type = 9;
+  bytes previous_envelope_digest = 10;
+  string signing_key_id = 11;
+  bytes signature = 12;
+  ProvenanceClass provenance = 13;
+}
+
+enum ProvenanceClass {
+  PROVENANCE_CLASS_UNSPECIFIED = 0;
+  PROVENANCE_CLASS_UNVERIFIED_ATTRIBUTION = 1;
+  PROVENANCE_CLASS_ENROLLED_NODE = 2;
+  PROVENANCE_CLASS_AUTHENTICATED_PRINCIPAL = 3;
+  PROVENANCE_CLASS_PROVIDER_ATTESTED = 4;
 }
 
 message Heartbeat {
