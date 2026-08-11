@@ -19,6 +19,7 @@ const vscodeMock = vi.hoisted(() => ({
   showErrorMessage: vi.fn(),
   showInformationMessage: vi.fn(),
   showWarningMessage: vi.fn(),
+  showQuickPick: vi.fn(),
   showInputBox: vi.fn(),
 }));
 
@@ -234,6 +235,137 @@ describe("DesignBoardController deferral", () => {
   });
 });
 
+describe("DesignBoardController materialization planning", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("requires an explicitly labelled confirmation when decomposition uses fallback", async () => {
+    const objective = {
+      id: "goal:ship",
+      title: "Ship",
+      kind: "objective",
+      status: "active",
+    };
+    vscodeMock.showQuickPick
+      .mockResolvedValueOnce({ mode: "create" })
+      .mockResolvedValueOnce([{ goal: objective }]);
+    vscodeMock.showWarningMessage.mockResolvedValue("Materialize fallback");
+    const { instance, callTool } = controller();
+    callTool.mockImplementation(async (name, args) => {
+      if (name === "get_constitution") {
+        return [objective];
+      }
+      if (name === "design_promote" && args.step === "plan") {
+        return {
+          mode: "create",
+          tasks: [
+            {
+              goal_id: objective.id,
+              title: "Implement: ADR-0084",
+              acceptance: "Implement the accepted design",
+            },
+          ],
+          constraints: [],
+          model_call: { source: "fallback", fallback_reason: "unreachable" },
+        };
+      }
+      if (name === "design_promote" && args.step === "materialize") {
+        return { tasks: [], revision: 1 };
+      }
+      return null;
+    });
+
+    await instance.promote({ design: design("design:0084", "pending") } as never);
+
+    expect(vscodeMock.showWarningMessage.mock.calls).toStrictEqual([
+      [
+        "Materialize design:0084?\n\n" +
+          "Planning source: deterministic fallback (not the configured model)\n" +
+          "- Ship: unreachable\n" +
+          "Review these drafts carefully before materializing them.\n\n" +
+          "Mode: create\n" +
+          "Create: Implement: ADR-0084 (goal:ship)\n" +
+          "Done when: Implement the accepted design",
+        { modal: true },
+        "Materialize fallback",
+      ],
+    ]);
+    expect(
+      callTool.mock.calls.filter(
+        ([name, args]) => name === "design_promote" && args.step === "materialize"
+      )
+    ).toStrictEqual([
+      [
+        "design_promote",
+        {
+          id: "design:0084",
+          step: "materialize",
+          plan: {
+            mode: "create",
+            tasks: [
+              {
+                goal_id: "goal:ship",
+                title: "Implement: ADR-0084",
+                acceptance: "Implement the accepted design",
+              },
+            ],
+            constraints: [],
+          },
+        },
+      ],
+    ]);
+  });
+
+  it("keeps the ordinary confirmation for model-authored drafts", async () => {
+    const objective = {
+      id: "goal:ship",
+      title: "Ship",
+      kind: "objective",
+      status: "active",
+    };
+    vscodeMock.showQuickPick
+      .mockResolvedValueOnce({ mode: "create" })
+      .mockResolvedValueOnce([{ goal: objective }]);
+    vscodeMock.showWarningMessage.mockResolvedValue("Materialize");
+    const { instance, callTool } = controller();
+    callTool.mockImplementation(async (name, args) => {
+      if (name === "get_constitution") {
+        return [objective];
+      }
+      if (name === "design_promote" && args.step === "plan") {
+        return {
+          mode: "create",
+          tasks: [
+            {
+              goal_id: objective.id,
+              title: "Build the Ackplane transport",
+              acceptance: "The node protocol streams evidence",
+            },
+          ],
+          constraints: [],
+          model_call: { source: "model" },
+        };
+      }
+      if (name === "design_promote" && args.step === "materialize") {
+        return { tasks: [], revision: 1 };
+      }
+      return null;
+    });
+
+    await instance.promote({ design: design("design:0083", "pending") } as never);
+
+    expect(vscodeMock.showWarningMessage.mock.calls).toStrictEqual([
+      [
+        "Materialize design:0083?\n\n" +
+          "Mode: create\n" +
+          "Create: Build the Ackplane transport (goal:ship)\n" +
+          "Done when: The node protocol streams evidence",
+        { modal: true },
+        "Materialize",
+      ],
+    ]);
+  });
+});
+
 // A decision and the ADR file must move together. accept()/reject() used to
 // call design_decide first and only then write the file, so when the file could
 // not be resolved -- the ADR is on main but absent from the open checkout --
@@ -265,7 +397,9 @@ describe("DesignBoardController does not record a decision it cannot write to th
     expect(calls.filter((c) => c.name === "design_decide")).toHaveLength(0);
     // The failure names what to do, not only what is missing.
     expect(vscodeMock.showErrorMessage).toHaveBeenCalledWith(
-      expect.stringContaining("open the checkout that contains it before deciding")
+      "MindLeak Design acceptance failed: cannot find docs/adr/0075-example.md in the open " +
+        "workspace; open the checkout that contains it before deciding, so the decision and " +
+        "the ADR file are written together"
     );
   });
 
@@ -277,7 +411,9 @@ describe("DesignBoardController does not record a decision it cannot write to th
 
     expect(calls.filter((c) => c.name === "design_decide")).toHaveLength(0);
     expect(vscodeMock.showErrorMessage).toHaveBeenCalledWith(
-      expect.stringContaining("open the checkout that contains it before deciding")
+      "MindLeak Design rejection failed: cannot find docs/adr/0075-example.md in the open " +
+        "workspace; open the checkout that contains it before deciding, so the decision and " +
+        "the ADR file are written together"
     );
   });
 });
