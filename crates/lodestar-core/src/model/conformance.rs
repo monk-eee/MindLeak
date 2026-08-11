@@ -138,6 +138,83 @@ pub struct TaskReceipt {
     pub affirms: bool,
 }
 
+/// The state a subject's certification holds (ADR-0090).
+///
+/// Verification is the capability; this is the status it produces. The states
+/// are deliberately distinct: none of the ones below `Certified` renders as
+/// certified, so a quiet result is never mistaken for a clean one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CertificationState {
+    /// Evidence affirmed the subject against the named policy version.
+    Certified,
+    /// Verified and refused. `reason` names what failed.
+    NotCertified,
+    /// Excepted by a live waiver, which carries its own expiry and remediation.
+    Waived,
+    /// The check could not decide; a person has to look.
+    NeedsHuman,
+    /// No constitution is adopted, so there is nothing to certify against.
+    Uncertifiable,
+    /// The subject moved past the evidence behind its status.
+    Stale,
+}
+
+impl CertificationState {
+    /// The stable snake_case tag, matching the serialized form.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CertificationState::Certified => "certified",
+            CertificationState::NotCertified => "not_certified",
+            CertificationState::Waived => "waived",
+            CertificationState::NeedsHuman => "needs_human",
+            CertificationState::Uncertifiable => "uncertifiable",
+            CertificationState::Stale => "stale",
+        }
+    }
+}
+
+/// Which clauses a status was judged against, and which it was not (ADR-0090
+/// §7). A status covers the clauses it names and nothing more, so the
+/// unevaluated set travels beside it rather than being left for a reader to
+/// infer from silence.
+#[derive(Debug, Clone, Serialize)]
+pub struct ClauseCoverage {
+    pub evaluated: Vec<String>,
+    pub not_evaluated: Vec<String>,
+}
+
+/// A qualified certification status (ADR-0090): never a bare badge.
+///
+/// Every field beside the state is what stops it being read as a framework
+/// verdict. `policy_version` is the self-limiting one — "certified against
+/// constitution:v3" cannot be cropped into "compliant" — and it is why this
+/// type has no variant that asserts external framework compliance.
+///
+/// Derived at read time from the durable conformance record; nothing here is
+/// stored twice.
+#[derive(Debug, Clone, Serialize)]
+pub struct CertificationStatus {
+    pub subject: String,
+    /// The commit the evidence was judged over; `None` when it names none.
+    pub commit: Option<String>,
+    /// The constitution version judged against; `None` when none is adopted.
+    pub policy_version: Option<String>,
+    /// The conformance record behind the status, resolvable after the fact.
+    pub evidence_bundle: Option<i64>,
+    /// When the judgement was made.
+    pub certified_at: Option<i64>,
+    pub state: CertificationState,
+    /// Why the status is what it is, in words. Diagnostic, and never the branch
+    /// condition for a reader — that is `state`.
+    pub reason: String,
+    /// How many nodes the evidence behind the status covered.
+    pub covered_nodes: usize,
+    pub coverage: ClauseCoverage,
+    /// The live waiver behind a `waived` state, with its expiry and remediation.
+    pub waiver: Option<crate::waiver::Waiver>,
+}
+
 /// One persisted conformance audit record: the durable, resolvable evidence
 /// link for a task. Its `id` is stable and addressable after the fact, and the
 /// stored `evidence` is exactly the bundle that produced `verdict`/`findings`.
