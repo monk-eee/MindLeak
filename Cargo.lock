@@ -3,6 +3,13 @@
 version = 3
 
 [[package]]
+name = "ackplane-core"
+version = "0.1.5"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -296,6 +303,7 @@ dependencies = [
 name = "lodestar-mcp"
 version = "0.1.5"
 dependencies = [
+ "ackplane-core",
  "anyhow",
  "lodestar-core",
  "mindleak-session",
@@ -349,6 +357,7 @@ dependencies = [
 name = "mindleak-mcp"
 version = "0.1.5"
 dependencies = [
+ "ackplane-core",
  "anyhow",
  "mindleak-core",
  "mindleak-model",

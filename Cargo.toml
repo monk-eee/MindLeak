@@ -8,6 +8,7 @@ members = [
     "crates/mindleak-mcp",
     "crates/lodestar-core",
     "crates/lodestar-mcp",
+    "crates/ackplane-core",
 ]
 
 [workspace.package]

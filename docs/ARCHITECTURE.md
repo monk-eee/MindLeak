@@ -11,8 +11,9 @@ The category is cooperative, not preemptive: the system schedules, arbitrates,
 remembers, governs, and audits, but it never preempts an agent, sandboxes a
 process, or blocks a write. What ships today is **MindLeak Core**, the local
 tier described below. *Ackplane* (federation, ADR-0082 to ADR-0088) and *the
-Bridge* (assurance operations, ADR-0090) are accepted designs that are
-not yet built.
+Bridge* (assurance operations, ADR-0090) are accepted designs whose services
+are not yet built; the only part that exists is the repository side of the
+Ackplane boundary, described under `ackplane-core` below.
 
 Each plane is a Rust library behind its own MCP stdio server. They share a
 repository identity and session identity, but not tables, database connections,
@@ -230,6 +231,17 @@ amendments, waivers, design, design materialization, evidence, and fleet
 responsibility. See [`USAGE.md`](USAGE.md) for the workflows those verbs
 compose into — the tool tables in [`TOOLS.md`](TOOLS.md) describe each verb,
 not the order to call them in.
+
+### `ackplane-core` (library)
+
+The repository side of the Ackplane federation boundary (ADR-0082). Ackplane
+itself is a separately deployable service and is not built; what a repository
+must settle before it coordinates at all is which arbiter owns its claims. A
+repository declares `MINDLEAK_COORDINATION_MODE` as `local` or `federated`, and
+both planes resolve it once at startup rather than per call. An unrecognised
+value, or a `federated` repository this build has no client to reach, is
+refused rather than quietly arbitrated locally: that downgrade would be the
+second arbiter ADR-0045 forbids.
 
 ### `editors/vscode` (extension)
 
