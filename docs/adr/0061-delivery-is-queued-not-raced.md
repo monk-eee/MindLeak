@@ -4,7 +4,7 @@
 - Date: 2026-07-28
 - Related: [ADR-0038](0038-isolated-worktrees-shared-repository-state.md)
   (isolated worktrees, shared repository state),
-  [ADR-0045](0045-armed-means-finished.md) (armed means finished),
+  [ADR-0045](0045-a-fleet-is-a-distributed-system.md) (armed means finished),
   [ADR-0049](0049-publication-requires-a-claim.md) (publication requires a
   claim), [ADR-0056](0056-the-changelog-is-assembled-not-edited.md) (the
   changelog is assembled, not edited)
