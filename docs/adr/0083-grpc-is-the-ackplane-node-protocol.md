@@ -5,7 +5,7 @@
 - Deciders: MindLeak maintainers
 - Accepted: 2026-08-10 by the repository owner — attributed human adoption after
   review.
-- Depends on: [ADR-0082](0082-backplane-is-a-standalone-federation-service.md)
+- Depends on: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md)
   (standalone federation boundary)
 - Related: [ADR-0010](0010-observability-and-resilience.md) (bounded network
   behaviour), [ADR-0030](0030-discrete-per-agent-identity.md) and
