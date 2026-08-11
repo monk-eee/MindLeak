@@ -132,6 +132,34 @@ const stagedDeletions = () =>
       .map((entry) => `${entry.number}-${entry.slug}`),
   );
 
+/**
+ * Every staged ADR rename, mapped from the new filename to the old one.
+ *
+ * A rename is how a decision that has already landed gets its filename
+ * corrected, and it is the one case the ref scan cannot read: the old slug is
+ * present on every ref *because* the decision landed under it, so it looks like
+ * a rival held everywhere rather than this decision's own former name.
+ */
+const stagedRenames = () => {
+  const renames = new Map();
+  const listing = capture([
+    "diff",
+    "--cached",
+    "-M",
+    "--name-status",
+    "--diff-filter=R",
+  ]);
+  for (const line of listing.split("\n")) {
+    const [, from, to] = line.split("\t");
+    const source = parseAdr(from ?? "");
+    const target = parseAdr(to ?? "");
+    if (source && target) {
+      renames.set(`${target.number}-${target.slug}`, source);
+    }
+  }
+  return renames;
+};
+
 const inHead = (number, slug) =>
   Boolean(
     capture([
@@ -163,6 +191,21 @@ const supersededByThisBranch = (adr, slug, refs, own, deletions) => {
   return deletions.has(`${adr.number}-${slug}`) || !inHead(adr.number, slug);
 };
 
+/**
+ * Whether the rival slug is only this decision's own former filename.
+ *
+ * The number is what a claim is made of, so a rename that keeps it renames one
+ * decision rather than contesting two. A rename that *changes* the number is a
+ * renumber onto someone else's claim, and stays a collision — which is why this
+ * compares both sides rather than trusting that a rename is always benign.
+ */
+const renamedFromSameNumber = (adr, slug, renames) => {
+  const source = renames.get(`${adr.number}-${adr.slug}`);
+  return Boolean(
+    source && source.number === adr.number && source.slug === slug,
+  );
+};
+
 const targets = process.argv.slice(2).length
   ? process.argv.slice(2)
   : capture(["diff", "--cached", "--name-only", "--diff-filter=A"]).split("\n");
@@ -173,17 +216,29 @@ if (candidates.length === 0) process.exit(0);
 const claimed = claimedAcrossRefs();
 const own = ownRefs();
 const deletions = stagedDeletions();
+const renames = stagedRenames();
 let conflicted = false;
 
 for (const adr of candidates) {
   const bySlug = claimed.get(adr.number);
   if (!bySlug) continue;
-  const rivals = [...bySlug.keys()].filter((slug) => slug !== adr.slug);
+  const contenders = [...bySlug.keys()].filter((slug) => slug !== adr.slug);
+  const renamed = contenders.filter((slug) =>
+    renamedFromSameNumber(adr, slug, renames),
+  );
+  const rivals = contenders.filter((slug) => !renamed.includes(slug));
   const superseded = rivals.filter((slug) =>
     supersededByThisBranch(adr, slug, bySlug.get(slug), own, deletions),
   );
   const others = rivals.filter((slug) => !superseded.includes(slug));
 
+  if (renamed.length > 0) {
+    console.warn(
+      `adr-number-guard: ADR-${adr.number} keeps its number and is renamed by ` +
+        `this commit; ${renamed.map((slug) => `${adr.number}-${slug}.md`).join(", ")} ` +
+        "is its former filename.",
+    );
+  }
   if (superseded.length > 0) {
     console.warn(
       `adr-number-guard: ADR-${adr.number} is retitled by this branch; ` +
