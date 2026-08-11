@@ -668,9 +668,10 @@ mod tests {
         let goal = e
             .define_goal(GoalKind::Objective, "Run the queue", "land work", None)
             .unwrap();
-        // Same title, seconds apart — exactly how the six duplicates on the
-        // live board were produced. The id hashes the creation second, so the
-        // ledger does not stop this and nothing else was looking.
+        // One retired task and one live, under a single goal and sharing a
+        // title. This pair used to be creatable straight through, which is how
+        // the live board grew its duplicates; now the first has to be retired
+        // before the title can come back, so retiring it is part of the fixture.
         let first = e
             .store
             .create_task(
@@ -681,6 +682,7 @@ mod tests {
                 1_000,
             )
             .unwrap();
+        e.abandon_task(&first.id, false).unwrap();
         let second = e
             .store
             .create_task(
@@ -688,16 +690,15 @@ mod tests {
                 "Run the merge queue ourselves",
                 "done",
                 None,
-                1_001,
+                1_000,
             )
             .unwrap();
-        e.abandon_task(&second.id, false).unwrap();
 
         let found = e.existing_work(Some(&goal.id), &[]).unwrap();
         let ids: Vec<&str> = found.iter().map(|t| t.id.as_str()).collect();
-        assert!(ids.contains(&first.id.as_str()));
+        assert!(ids.contains(&second.id.as_str()));
         assert!(
-            ids.contains(&second.id.as_str()),
+            ids.contains(&first.id.as_str()),
             "terminal work is the answer that matters most and the one `board` hides"
         );
         assert_eq!(found.len(), 2, "both duplicates are reported, not one");

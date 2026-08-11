@@ -213,6 +213,27 @@ pub(super) fn create_task_on(
     create_task_after_on(connection, goal_id, title, acceptance, None, None, &[], now)
 }
 
+/// The id of live work under this goal already carrying this exact title.
+///
+/// Terminal work is excluded deliberately: a `done` or `abandoned` task is
+/// history, nothing dispatches it to an agent, and refusing a new task because
+/// an old one was retired would leave the goal with no claimable work.
+fn live_task_titled_on(
+    connection: &Connection,
+    goal_id: &str,
+    title: &str,
+) -> Result<Option<String>> {
+    Ok(connection
+        .query_row(
+            "SELECT id FROM tasks
+              WHERE goal_id = ?1 AND title = ?2 AND status NOT IN ('done', 'abandoned')
+              ORDER BY created_at ASC LIMIT 1",
+            params![goal_id, title],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn create_task_after_on(
     connection: &Connection,
@@ -227,11 +248,26 @@ fn create_task_after_on(
     if !goals::goal_exists_on(connection, goal_id)? {
         return Err(LodestarError::NotFound(goal_id.to_string()));
     }
-    let id = format!("task:{}", short_hash(&format!("{goal_id}|{title}|{now}")));
-    if get_task_on(connection, &id)?.is_some() {
+    // Duplicate is a question about live work, not about the clock. This used
+    // to be answered by the derived id colliding, and the id carries `now` — so
+    // an identical title was refused when both creations landed in the same
+    // second and allowed a second later, which is not an answer to anything.
+    if let Some(existing) = live_task_titled_on(connection, goal_id, title)? {
         return Err(LodestarError::Invalid(format!(
-            "an identical task already exists ({id}); reuse it or choose a distinct title"
+            "an identical task already exists ({existing}); reuse it or choose a distinct title"
         )));
+    }
+    // A terminal task with this title may still own the derived id when both
+    // were created in the same second. The id identifies a row; it no longer
+    // decides whether the work is a duplicate.
+    let mut id = format!("task:{}", short_hash(&format!("{goal_id}|{title}|{now}")));
+    let mut discriminator = 1u32;
+    while get_task_on(connection, &id)?.is_some() {
+        id = format!(
+            "task:{}",
+            short_hash(&format!("{goal_id}|{title}|{now}|{discriminator}"))
+        );
+        discriminator += 1;
     }
     let predecessor_id = blocked_by;
     let blocked_by = match predecessor_id.as_deref() {
@@ -455,5 +491,30 @@ mod tests {
             1,
             "a rejected duplicate must not create a second row"
         );
+    }
+
+    /// Bug: "is this a duplicate?" was answered by the derived id colliding,
+    /// and the id is `short_hash(goal|title|now)` — so an identical title was
+    /// refused when both creations landed in the same second and allowed a
+    /// second later. Retiring a breakdown and asking for another therefore
+    /// failed or succeeded depending on the clock. Impact: CI caught it where a
+    /// developer machine did not, because the two calls ran inside one second
+    /// there and not here. Fix: refuse on live work of the same title, and let
+    /// the id disambiguate itself when a terminal row already holds it.
+    #[test]
+    fn a_retired_task_does_not_block_an_identical_title_created_in_the_same_second() {
+        let store = store();
+        let goal = goal(&store);
+        let first = store
+            .create_task(&goal.id, "same task", "done", None, NOW)
+            .unwrap();
+        assert!(store.abandon_task(&first.id, true, NOW).unwrap());
+
+        let second = store
+            .create_task(&goal.id, "same task", "done", None, NOW)
+            .unwrap();
+
+        assert_ne!(second.id, first.id, "the new row needs its own identity");
+        assert_eq!(second.status, TaskStatus::Open);
     }
 }

@@ -13,7 +13,10 @@
   cannot cover this case, because a claim-time check is a race the second
   claimant always wins. Duplicated effort is the visible cost; the invisible one
   is that both branches edit the same governed files and only one of them can
-  merge. — Generator fixed this run: `decompose_goal` is now idempotent per
-  `(goal, title)` over live work. The seeds already on the board when this was
-  found are retired separately, and nothing yet prevents the same shape arriving
-  from `promote_design`, which creates its tasks by another path.
+  merge. — Fixed this run at both layers: `decompose_goal` is now idempotent per
+  `(goal, title)` over live work, and the store's duplicate refusal no longer
+  depends on the clock — it used to be answered by the derived id colliding, and
+  that id hashes the creation second, so an identical title was refused inside
+  one second and allowed a second later. The seeds already on the board when this
+  was found are retired separately, and nothing yet prevents the same shape
+  arriving from `promote_design`, which creates its tasks by another path.
