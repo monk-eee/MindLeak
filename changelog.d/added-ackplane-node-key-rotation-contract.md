@@ -1,0 +1,1 @@
+- **Ackplane's versioned protocol now defines node key-rotation requests and outcomes.** The wire contract binds both current and successor key identities, continuity proofs, requested overlap, and typed rejection results without exposing private keys or implementing key management.
