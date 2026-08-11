@@ -1,0 +1,17 @@
+[package]
+name = "ackplane-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Versioned Protobuf contracts for Ackplane repository-node synchronization."
+build = "build.rs"
+
+[dependencies]
+prost = { workspace = true }
+tonic = { workspace = true }
+
+[build-dependencies]
+protoc-bin-vendored = { workspace = true }
+tonic-build = { workspace = true }

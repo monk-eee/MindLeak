@@ -1,0 +1,99 @@
+syntax = "proto3";
+
+package mindleak.ackplane.v1;
+
+service NodeSyncService {
+  rpc Synchronize(stream NodeFrame) returns (stream AckplaneFrame);
+}
+
+message NodeFrame {
+  oneof frame {
+    Hello hello = 1;
+    EventBatch event_batch = 2;
+    Heartbeat heartbeat = 3;
+  }
+}
+
+message AckplaneFrame {
+  oneof frame {
+    HelloAccepted hello_accepted = 1;
+    BatchReceipt batch_receipt = 2;
+    Rejection rejection = 3;
+    FlowControl flow_control = 4;
+    Notice notice = 5;
+  }
+}
+
+message Hello {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string producer_id = 3;
+  uint64 last_accepted_position = 4;
+  repeated string capabilities = 5;
+}
+
+message HelloAccepted {
+  uint64 accepted_position = 1;
+  repeated string enabled_capabilities = 2;
+}
+
+message EventBatch {
+  repeated EventEnvelope events = 1;
+}
+
+message EventEnvelope {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string producer_id = 3;
+  uint64 producer_sequence = 4;
+  bytes payload = 5;
+  bytes payload_digest = 6;
+  string schema_version = 7;
+}
+
+message Heartbeat {
+  uint64 last_accepted_position = 1;
+}
+
+message BatchReceipt {
+  repeated RecordReceipt receipts = 1;
+}
+
+message RecordReceipt {
+  string record_id = 1;
+  uint64 position = 2;
+  ReceiptDisposition disposition = 3;
+}
+
+enum ReceiptDisposition {
+  RECEIPT_DISPOSITION_UNSPECIFIED = 0;
+  RECEIPT_DISPOSITION_ACCEPTED = 1;
+  RECEIPT_DISPOSITION_DUPLICATE = 2;
+}
+
+message Rejection {
+  string record_id = 1;
+  RejectionReason reason = 2;
+  bool retryable = 3;
+  string diagnostic = 4;
+}
+
+enum RejectionReason {
+  REJECTION_REASON_UNSPECIFIED = 0;
+  REJECTION_REASON_MALFORMED = 1;
+  REJECTION_REASON_UNAUTHENTICATED = 2;
+  REJECTION_REASON_UNAUTHORIZED = 3;
+  REJECTION_REASON_SEQUENCE_CONFLICT = 4;
+  REJECTION_REASON_UNSUPPORTED_VERSION = 5;
+  REJECTION_REASON_UNAVAILABLE = 6;
+}
+
+message FlowControl {
+  uint32 max_in_flight_batches = 1;
+  uint32 max_batch_bytes = 2;
+}
+
+message Notice {
+  string code = 1;
+  string message = 2;
+}
