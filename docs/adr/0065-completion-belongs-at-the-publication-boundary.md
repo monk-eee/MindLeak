@@ -4,7 +4,7 @@
 - Date: 2026-07-29
 - Related: [ADR-0009](0009-evidence-backed-conformance.md) (evidence-backed
   conformance),
-  [ADR-0045](0045-armed-means-finished.md) (armed means finished),
+  [ADR-0045](0045-a-fleet-is-a-distributed-system.md) (armed means finished),
   [ADR-0046](0046-agents-talk-through-the-durable-thread.md) (a question
   nobody is asked),
   [ADR-0048](0048-a-lapsed-lease-holes-the-window-it-does-not-move-it.md) (a

@@ -164,13 +164,26 @@ impl LodestarStore {
         match plan.mode {
             DesignMaterializationMode::Create => {
                 for draft in &plan.tasks {
-                    tasks.push(coordination::create_task_on(
+                    // A repair re-states the drafts it is repairing, and the
+                    // links to the tasks the previous revision created were
+                    // deleted above. Creating again would leave those originals
+                    // live and unreachable from the design while their twins
+                    // took their place on the board.
+                    let task = match coordination::live_task_titled_on(
                         &transaction,
                         &draft.goal_id,
                         &draft.title,
-                        &draft.acceptance,
-                        now,
-                    )?);
+                    )? {
+                        Some(existing) => existing,
+                        None => coordination::create_task_on(
+                            &transaction,
+                            &draft.goal_id,
+                            &draft.title,
+                            &draft.acceptance,
+                            now,
+                        )?,
+                    };
+                    tasks.push(task);
                 }
             }
             DesignMaterializationMode::Link => {
