@@ -1,0 +1,1 @@
+- **Ackplane now has a versioned Protobuf contract for repository-node synchronization.** The standalone `ackplane-protocol` crate generates the `mindleak.ackplane.v1` duplex stream and typed domain frames without exposing local MCP or storage schemas.
