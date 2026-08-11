@@ -321,6 +321,29 @@ describe("canonical-push", () => {
     expect(readFileSync(marker, "utf8")).toBe("observed\n");
   }, 30_000);
 
+  it("reports the binding audit failure without blocking publication", () => {
+    const { root, repo } = sandbox();
+    mkdirSync(join(repo, "scripts"));
+    writeFileSync(
+      join(repo, "scripts", "binding-audit.mjs"),
+      [
+        'console.error("binding-audit: legacy schema needs migration");',
+        "process.exit(2);",
+        "",
+      ].join("\n")
+    );
+    git(repo, ["checkout", "-b", "fleet/binding-audit-failure"]);
+    git(repo, ["add", "--", "scripts/binding-audit.mjs"]);
+    git(repo, ["commit", "-m", "add failing binding audit fixture"]);
+
+    const result = runPublisher(repo, [], claimEnv(root, { claims: [liveClaim] }));
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toMatch(
+      /binding audit failed but remains non-fatal: binding-audit: legacy schema needs migration/
+    );
+  }, 30_000);
+
   // ADR-0049: the ledger stops being optional at exactly this boundary.
   it("refuses publication with no live claim", () => {
     const { root, repo } = sandbox();

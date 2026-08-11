@@ -2,10 +2,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import {
   addedRustSources,
   configuredRepositoryDb,
+  goalArtifactBindings,
   unboundSources,
 } from "./binding-audit.mjs";
 
@@ -49,6 +51,49 @@ test("unboundSources names only added files with no artifact binding", () => {
   ]);
 
   assert.deepEqual(unboundSources(files, bound), ["crates/beta/src/lib.rs"]);
+});
+
+test("goalArtifactBindings reads equivalent current and legacy bindings", () => {
+  const current = new DatabaseSync(":memory:");
+  const legacy = new DatabaseSync(":memory:");
+  try {
+    current.exec(
+      "create table goal_artifacts (goal_id text, node_id text, mode text); insert into goal_artifacts values ('goal:delivery', 'artifact:crates/example/src/lib.rs', 'governed');",
+    );
+    legacy.exec(
+      "create table goal_code (goal_id text, node_id text); insert into goal_code values ('goal:delivery', 'artifact:crates/example/src/lib.rs');",
+    );
+
+    assert.deepEqual(goalArtifactBindings(current), [
+      {
+        goal_id: "goal:delivery",
+        node_id: "artifact:crates/example/src/lib.rs",
+        mode: "governed",
+      },
+    ]);
+    assert.deepEqual(goalArtifactBindings(legacy), [
+      {
+        goal_id: "goal:delivery",
+        node_id: "artifact:crates/example/src/lib.rs",
+        mode: "governed",
+      },
+    ]);
+  } finally {
+    current.close();
+    legacy.close();
+  }
+});
+
+test("goalArtifactBindings explains when the ledger has no binding table", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    assert.throws(
+      () => goalArtifactBindings(db),
+      /neither goal_artifacts nor legacy goal_code bindings/,
+    );
+  } finally {
+    db.close();
+  }
 });
 
 test("configuredRepositoryDb selects this repository when other ledgers exist", () => {
