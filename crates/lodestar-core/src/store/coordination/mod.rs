@@ -213,27 +213,6 @@ pub(super) fn create_task_on(
     create_task_after_on(connection, goal_id, title, acceptance, None, None, &[], now)
 }
 
-/// The id of live work under this goal already carrying this exact title.
-///
-/// Terminal work is excluded deliberately: a `done` or `abandoned` task is
-/// history, nothing dispatches it to an agent, and refusing a new task because
-/// an old one was retired would leave the goal with no claimable work.
-fn live_task_titled_on(
-    connection: &Connection,
-    goal_id: &str,
-    title: &str,
-) -> Result<Option<String>> {
-    Ok(connection
-        .query_row(
-            "SELECT id FROM tasks
-              WHERE goal_id = ?1 AND title = ?2 AND status NOT IN ('done', 'abandoned')
-              ORDER BY created_at ASC LIMIT 1",
-            params![goal_id, title],
-            |row| row.get(0),
-        )
-        .optional()?)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn create_task_after_on(
     connection: &Connection,
@@ -248,18 +227,9 @@ fn create_task_after_on(
     if !goals::goal_exists_on(connection, goal_id)? {
         return Err(LodestarError::NotFound(goal_id.to_string()));
     }
-    // Duplicate is a question about live work, not about the clock. This used
-    // to be answered by the derived id colliding, and the id carries `now` — so
-    // an identical title was refused when both creations landed in the same
-    // second and allowed a second later, which is not an answer to anything.
-    if let Some(existing) = live_task_titled_on(connection, goal_id, title)? {
-        return Err(LodestarError::Invalid(format!(
-            "an identical task already exists ({existing}); reuse it or choose a distinct title"
-        )));
-    }
-    // A terminal task with this title may still own the derived id when both
-    // were created in the same second. The id identifies a row; it no longer
-    // decides whether the work is a duplicate.
+    // An id identifies one row; it does not decide whether work is redundant.
+    // ADR-0015 deliberately leaves `create_task` free to add a second task with
+    // the same title. Generators dedupe at their own boundary instead.
     let mut id = format!("task:{}", short_hash(&format!("{goal_id}|{title}|{now}")));
     let mut discriminator = 1u32;
     while get_task_on(connection, &id)?.is_some() {
@@ -451,45 +421,33 @@ mod tests {
             .unwrap();
     }
 
-    // A task id is derived from goal, title and whole-second timestamp. Two
-    // identical creates in one second used to let the second INSERT hit the
-    // primary key and leak `UNIQUE constraint failed: tasks.id` to the caller.
-    // The duplicate is a domain error, not a database failure.
+    /// Bug: a task id was derived only from goal, title, and a whole-second
+    /// timestamp. Two deliberate identical creates in one second therefore
+    /// rejected the second, despite ADR-0015 explicitly allowing another task
+    /// against one goal. Impact: whether work could be created depended on
+    /// machine speed. Fix: occupied ids receive a deterministic discriminator;
+    /// generator-level dedupe remains in `decompose_goal`.
     #[test]
-    fn duplicate_task_creation_is_a_typed_error_not_a_raw_sqlite_fault() {
+    fn deliberate_identical_tasks_in_the_same_second_receive_distinct_ids() {
         let store = store();
         let goal = goal(&store);
         let first = store
             .create_task(&goal.id, "same task", "done", None, NOW)
             .unwrap();
-
-        let error = store
+        let second = store
             .create_task(&goal.id, "same task", "done", None, NOW)
-            .unwrap_err();
+            .unwrap();
 
-        assert!(
-            matches!(error, LodestarError::Invalid(_)),
-            "expected a typed Invalid error, got {error:?}"
-        );
-        assert!(
-            error.to_string().contains(&first.id),
-            "the error should identify the existing task: {error}"
-        );
-        assert!(
-            error
-                .to_string()
-                .contains("reuse it or choose a distinct title"),
-            "the error should name the next action: {error}"
-        );
+        assert_ne!(second.id, first.id);
         assert_eq!(
             store
                 .board(true)
                 .unwrap()
                 .into_iter()
-                .filter(|task| task.id == first.id)
+                .filter(|task| task.title == "same task")
                 .count(),
-            1,
-            "a rejected duplicate must not create a second row"
+            2,
+            "both deliberately-created tasks must remain dispatchable"
         );
     }
 
@@ -499,8 +457,8 @@ mod tests {
     /// second later. Retiring a breakdown and asking for another therefore
     /// failed or succeeded depending on the clock. Impact: CI caught it where a
     /// developer machine did not, because the two calls ran inside one second
-    /// there and not here. Fix: refuse on live work of the same title, and let
-    /// the id disambiguate itself when a terminal row already holds it.
+    /// there and not here. Fix: let an occupied id disambiguate itself; whether
+    /// work is redundant is not a property of the clock.
     #[test]
     fn a_retired_task_does_not_block_an_identical_title_created_in_the_same_second() {
         let store = store();

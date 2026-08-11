@@ -5,11 +5,10 @@
   independently claimed different seeds for ADR-0090 and built it twice. A draft
   whose exact title already names live work under the goal now resolves to that
   task, and `DecomposedTask` reports `reused` so a caller can tell the two apart.
-  Underneath, "is this a duplicate?" was answered by the derived task id
-  colliding, and that id hashes the creation second — so an identical title was
-  refused when both creations landed in the same second and allowed a second
-  later. The refusal now tests for live work of the same title at any distance in
-  time, and the id disambiguates itself when a retired row already holds it.
-  Terminal work does not suppress a draft, and `create_task` is unchanged: under
-  ADR-0015 a person asking for a second task against one goal is often right,
-  whereas a generator re-emitting a draft it already emitted has decided nothing.
+  Underneath, task IDs now add a deterministic discriminator when the base ID is
+  occupied, so two deliberate tasks created in the same second receive distinct
+  identities instead of colliding.
+  Terminal work does not suppress a draft, and `create_task` remains deliberately
+  permissive: under ADR-0015 a person asking for a second task against one goal is
+  often right, whereas a generator re-emitting a draft it already emitted has
+  decided nothing.

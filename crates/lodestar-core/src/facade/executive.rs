@@ -668,10 +668,9 @@ mod tests {
         let goal = e
             .define_goal(GoalKind::Objective, "Run the queue", "land work", None)
             .unwrap();
-        // One retired task and one live, under a single goal and sharing a
-        // title. This pair used to be creatable straight through, which is how
-        // the live board grew its duplicates; now the first has to be retired
-        // before the title can come back, so retiring it is part of the fixture.
+        // Same title and same second: `create_task` deliberately allows this
+        // under ADR-0015. Generator reuse belongs to `decompose_goal`, while
+        // this read must report every task that was deliberately created.
         let first = e
             .store
             .create_task(
@@ -682,7 +681,6 @@ mod tests {
                 1_000,
             )
             .unwrap();
-        e.abandon_task(&first.id, false).unwrap();
         let second = e
             .store
             .create_task(
