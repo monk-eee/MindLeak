@@ -26,6 +26,24 @@ fn hello_frame_round_trips_through_the_v1_wire_contract() {
 }
 
 #[test]
+fn v1_node_frames_tolerate_unknown_additive_fields() {
+    let frame = NodeFrame {
+        frame: Some(node_frame::Frame::Hello(Hello {
+            tenant_id: "tenant-a".into(),
+            repository_id: "repository-a".into(),
+            producer_id: "node-a".into(),
+            last_accepted_position: 42,
+            capabilities: vec!["receipts.v1".into()],
+        })),
+    };
+    let mut encoded = frame.encode_to_vec();
+
+    encoded.extend([0x98, 0x06, 0x01]);
+
+    assert_eq!(NodeFrame::decode(encoded.as_slice()).unwrap(), frame);
+}
+
+#[test]
 fn signed_evidence_envelope_round_trips_through_the_v1_wire_contract() {
     let envelope = EventEnvelope {
         tenant_id: "tenant-a".into(),
