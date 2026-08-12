@@ -10,6 +10,7 @@ members = [
     "crates/lodestar-mcp",
     "crates/ackplane-core",
     "crates/ackplane-protocol",
+    "crates/ackplane-server",
 ]
 
 [workspace.package]
