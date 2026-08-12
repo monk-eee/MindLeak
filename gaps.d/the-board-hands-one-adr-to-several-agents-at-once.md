@@ -24,6 +24,10 @@
   `design_task_links` are deleted before the drafts are created. `promote_design`
   itself was never the hole the earlier text claimed — plan equality and the CAS
   on `promotion_status` already make a straight replay idempotent. The seeds
-  already on the board when this was found were retired separately. Still open:
-  every generator has to remember to dedupe at its own boundary, and nothing
-  makes that structural, so the next one added will have the same bug.
+  already on the board when this was found were retired separately. Both
+  generators now share one slug-matched lookup rather than the two divergent
+  implementations they started with, which would have disagreed the first time
+  the constitution was amended. Still open: sharing the lookup makes the right
+  answer available, it does not make asking it compulsory — a third generator
+  that simply calls `create_task` will have this bug again, and nothing in the
+  type system or the tests would say so.

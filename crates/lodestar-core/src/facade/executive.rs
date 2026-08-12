@@ -7,7 +7,7 @@ use crate::llm::{ModelCallProvenance, ModelCallSource};
 use crate::stalls::{stalls, Stall, StallKind};
 use crate::{
     now_unix, ClaimOverlap, ClaimOverlapReport, ClaimTransfer, ClaimWindow, HumanQuestion,
-    Lodestar, LodestarError, Result, Task, TaskQa, TaskScope, TaskStatus,
+    Lodestar, LodestarError, Result, Task, TaskQa, TaskScope,
 };
 
 /// One task a decomposition resolved to, with additive model-call provenance.
@@ -104,7 +104,8 @@ impl Lodestar {
     /// copy adds no work, only two agents each holding a task they believe is
     /// the only one. Measured here: repeated runs left three or four identical
     /// `Implement: ADR-NNNN` seeds per ADR, and two sessions independently
-    /// claimed and built ADR-0090.
+    /// claimed and built ADR-0090. The lookup is shared with design
+    /// materialization so the two generators cannot drift apart on it.
     ///
     /// Deliberately not a rule on [`create_task`](Self::create_task), where
     /// ADR-0015 holds that a second task against one goal is often right and a
@@ -136,28 +137,19 @@ impl Lodestar {
         let now = now_unix();
         let (drafts, model_call) =
             self.decompose_drafts_with_provenance(&goal.title, &goal.statement);
-        // `existing_work` because it compares goals by slug: an amendment
-        // re-issues a clause as `goal:<slug>@constitution:vN` while tasks keep
-        // naming whichever form they were created under, and an exact compare
-        // would call every pre-amendment seed absent.
-        let mut live: Vec<Task> = self
-            .store
-            .existing_work(Some(goal_id), &[])?
-            .into_iter()
-            .filter(|task| !matches!(task.status, TaskStatus::Done | TaskStatus::Abandoned))
-            .collect();
         let mut out = Vec::new();
         for (title, acceptance) in &drafts {
-            // Also catches a model that emits one title twice in a single batch.
-            let (task, reused) = match live.iter().find(|task| &task.title == title) {
-                Some(found) => (found.clone(), true),
-                None => {
-                    let created = self
-                        .store
-                        .create_task(goal_id, title, acceptance, None, now)?;
-                    live.push(created.clone());
-                    (created, false)
-                }
+            // One lookup, shared with design materialization, so the two
+            // generators cannot answer "already live work" differently. Asked
+            // per draft rather than from a snapshot, which also catches a model
+            // that emits one title twice in a single batch.
+            let (task, reused) = match self.store.live_task_titled(goal_id, title)? {
+                Some(found) => (found, true),
+                None => (
+                    self.store
+                        .create_task(goal_id, title, acceptance, None, now)?,
+                    false,
+                ),
             };
             out.push(DecomposedTask {
                 task,
