@@ -71,6 +71,15 @@ impl Lodestar {
         )
     }
 
+    /// Live work under this goal already carrying this exact title.
+    ///
+    /// The same lookup the generators dedupe on, exposed so a caller that is
+    /// allowed to create a duplicate can still be told it is about to. Reports;
+    /// never refuses (ADR-0015).
+    pub fn live_task_titled(&self, goal_id: &str, title: &str) -> Result<Option<Task>> {
+        self.store.live_task_titled(goal_id, title)
+    }
+
     /// Declare further goals the held claim serves, before conformance speaks.
     ///
     /// Goals bind to files, so the governing set is usually learned while
