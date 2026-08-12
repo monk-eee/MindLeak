@@ -66,6 +66,40 @@ jobs:
       - name: Test
         run: cargo test --all
 
+  # ADR-0088 keeps the repository-local planes usable without Ackplane's
+  # container and PostgreSQL stack. Dependencies are installed before this
+  # proof; the commands under test then have no package registry escape hatch.
+  local-planes:
+    name: Local planes (no containers, PostgreSQL, or network)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - name: Install extension dependencies
+        run: npm --prefix editors/vscode ci
+      - name: Build local planes offline
+        run: cargo build --locked --offline
+        env:
+          CARGO_NET_OFFLINE: "true"
+      - name: Test local planes offline
+        run: cargo test --all --locked --offline
+        env:
+          CARGO_NET_OFFLINE: "true"
+      - name: Test extension offline
+        run: npm --prefix editors/vscode test
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+
   extension:
     name: VS Code extension (lint · compile)
     runs-on: ubuntu-latest
