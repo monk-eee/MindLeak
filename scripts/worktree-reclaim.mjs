@@ -29,7 +29,11 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 
-import { callTools, resolveServer } from "./claim-gate.mjs";
+import {
+  callTools,
+  resolveServer,
+  unreadableBoardGuidance,
+} from "./claim-gate.mjs";
 import { MARKER_NAME } from "./worktree-owner.mjs";
 
 /** Branches that are never reclaimed whatever else is true of them. */
@@ -298,6 +302,7 @@ export function readLiveClaimState(
     if (!Array.isArray(tasks)) {
       return {
         available: false,
+        boardUnreadable: true,
         branches: new Set(),
         reason: "Lodestar task_query did not return a board",
       };
@@ -314,6 +319,14 @@ export function readLiveClaimState(
       reason: `could not read the Lodestar board: ${error.message}`,
     };
   }
+}
+
+/** Explain an unavailable claim state without inventing a live claim. */
+export function claimStateRefusal(claimState) {
+  const message = `worktree-reclaim: refusing to reclaim named worktrees because authoritative claim state is unavailable: ${claimState.reason}.`;
+  return claimState.boardUnreadable
+    ? `${message}\n  ${unreadableBoardGuidance}`
+    : message;
 }
 
 /** Re-read claims at the destructive boundary, after the report was printed. */
@@ -458,9 +471,7 @@ function main() {
 
   const claimState = readLiveClaimState(anchor);
   if (!claimState.available) {
-    console.error(
-      `worktree-reclaim: ${claimState.reason}; keeping every named worktree`,
-    );
+    console.error(claimStateRefusal(claimState));
   }
   const worktrees = readWorktrees(anchor).map((worktree) =>
     gatherFacts(worktree, anchor),

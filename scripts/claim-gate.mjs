@@ -160,6 +160,11 @@ export const reconciliationOf = ({ tasks, branch, newCommits }) => {
  * ledger was down" the universal bypass inside a week, and the gate would be
  * decorative — the exact state it exists to end.
  */
+export const unreadableBoardGuidance =
+  "rebuilding it will not help: the deployed binary is almost certainly older than the ledger it is\n" +
+  "  reading and cannot parse an event a newer writer recorded. Point LODESTAR_MCP_BIN at the shared\n" +
+  "  install (~/.mindleak/bin/lodestar-mcp), which tracks the current build.";
+
 export const publishVerdict = ({
   reachable,
   boardReadable,
@@ -205,9 +210,7 @@ export const publishVerdict = ({
       message:
         "the Lodestar ledger answered and identified this session, but its task board could not be read,\n" +
         "  so this push cannot be checked against your claims. This is not an unreachable ledger and\n" +
-        "  rebuilding it will not help: the deployed binary is almost certainly older than the ledger it is\n" +
-        "  reading and cannot parse an event a newer writer recorded. Point LODESTAR_MCP_BIN at the shared\n" +
-        "  install (~/.mindleak/bin/lodestar-mcp), which tracks the current build.",
+        `  ${unreadableBoardGuidance}`,
     };
   }
   const held = liveClaims(tasks, agent, now);
