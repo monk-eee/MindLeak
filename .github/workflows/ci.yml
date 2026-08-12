@@ -78,6 +78,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+      - name: Fetch locked Rust dependencies
+        run: cargo fetch --locked
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
