@@ -20,6 +20,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ackplane-server"
+version = "0.1.5"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
