@@ -161,6 +161,32 @@ impl GraphStore {
             provenance,
         })
     }
+
+    /// When this agent's most recent attributed event was recorded, if it has
+    /// one at all.
+    ///
+    /// Read only to explain an empty window. `evidence_for` bounds on the
+    /// event node's `created_at`, and a node is created when it is *ingested* —
+    /// which is at or after the commit it records, never before. So a caller who
+    /// ends the window at the commit's own timestamp misses their work by
+    /// seconds, and cannot tell that from having ingested nothing at all. This
+    /// separates the two.
+    pub fn latest_attributed_event_at(&self, agent: &str) -> Result<Option<i64>> {
+        let agent = agent.trim().strip_prefix("agent:").unwrap_or(agent.trim());
+        if agent.is_empty() {
+            return Ok(None);
+        }
+        Ok(self.conn.query_row(
+            "SELECT MAX(n.created_at)
+             FROM edges observation
+             JOIN nodes n ON n.id = observation.target_id
+             WHERE observation.source_id = ?1
+               AND observation.relation = 'observed'
+               AND n.type IN ('execution', 'intent')",
+            params![format!("agent:{agent}")],
+            |row| row.get::<_, Option<i64>>(0),
+        )?)
+    }
 }
 
 #[cfg(test)]

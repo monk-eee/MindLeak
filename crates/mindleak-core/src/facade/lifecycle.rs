@@ -82,6 +82,12 @@ impl MindLeak {
             .evidence_for(task_id, agent, started_at, ended_at)
     }
 
+    /// When this agent's most recent attributed event was recorded, used to
+    /// explain an empty evidence window rather than assert nothing was ingested.
+    pub fn latest_attributed_event_at(&self, agent: &str) -> Result<Option<i64>> {
+        self.store.latest_attributed_event_at(agent)
+    }
+
     /// A visualization snapshot: a bounded, relevance-first neighbourhood of
     /// `seed` (never the full depth-2 reach, so a hub node cannot explode the
     /// render), or the most recently accessed nodes when no seed is given. Both
