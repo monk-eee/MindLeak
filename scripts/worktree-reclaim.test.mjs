@@ -4,6 +4,7 @@ import { test } from "node:test";
 
 import {
   ARTEFACT_KINDS,
+  claimStateRefusal,
   classifyArtefact,
   classifyWorktree,
   formatBytes,
@@ -117,6 +118,25 @@ test("reports unavailable claim state when the Lodestar board cannot be read", (
   });
   assert.equal(unreadable.available, false);
   assert.match(unreadable.reason, /ledger unavailable/);
+});
+
+test("refuses explicitly when Lodestar answers without a readable board", () => {
+  const state = readLiveClaimState("C:/Repos/MindLeak", {
+    resolveServerFn: () => "lodestar-stub.mjs",
+    callToolsFn: () => [{ error: "unknown task board event" }],
+  });
+
+  assert.equal(state.available, false);
+  assert.equal(state.boardUnreadable, true);
+  assert.match(claimStateRefusal(state), /refusing to reclaim named worktrees/);
+  assert.match(
+    claimStateRefusal(state),
+    /almost certainly older than the ledger/,
+  );
+  assert.doesNotMatch(
+    claimStateRefusal(state),
+    /held by a live Lodestar claim/,
+  );
 });
 
 test("apply-time revalidation closes the report-to-delete claim race", () => {
