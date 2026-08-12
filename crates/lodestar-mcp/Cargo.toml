@@ -10,6 +10,7 @@ name = "lodestar-mcp"
 path = "src/main.rs"
 
 [dependencies]
+ackplane-core = { path = "../ackplane-core" }
 lodestar-core = { path = "../lodestar-core" }
 mindleak-session = { path = "../mindleak-session" }
 mindleak-storage = { path = "../mindleak-storage" }
