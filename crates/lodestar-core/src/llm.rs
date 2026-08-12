@@ -472,6 +472,13 @@ mod tests {
         assert_eq!(requests, 2);
     }
 
+    // Regression: under a full parallel `cargo test` run, `model_test_policy`'s
+    // 100ms read timeout (deliberately tight to simulate a cold model for the
+    // retry tests above) can fire before this test's local loopback round trip
+    // completes, so the client sees a genuine timeout instead of the 404 this
+    // test exists to check, and the stub server's write then aborts. This test
+    // asserts 4xx classification, not timeout behavior, so it gets its own
+    // generous policy rather than sharing the one the retry tests need tight.
     #[test]
     fn model_policy_does_not_retry_a_4xx_rejection() {
         let (base_url, server) = status_endpoint("/v1", 404, "Not Found");
@@ -480,9 +487,13 @@ mod tests {
             model: "missing".to_string(),
             api_key: String::new(),
         };
+        let policy = HttpPolicy {
+            connect_timeout: Duration::from_secs(2),
+            read_timeout: Duration::from_secs(2),
+        };
 
         let error = client
-            .chat_json_with_policy("system", "user", model_test_policy())
+            .chat_json_with_policy("system", "user", policy)
             .unwrap_err();
 
         assert_eq!(
