@@ -136,6 +136,12 @@ impl LodestarStore {
         get_task_on(&self.conn, id)
     }
 
+    /// Live work under this goal already carrying this exact title, for a
+    /// generator deciding whether it has produced this draft before.
+    pub(crate) fn live_task_titled(&self, goal_id: &str, title: &str) -> Result<Option<Task>> {
+        live_task_titled_on(&self.conn, goal_id, title)
+    }
+
     /// Read the additional goals a task declared it serves (ADR-0041).
     pub fn goal_coverage(&self, task_id: &str) -> Result<Vec<String>> {
         goal_coverage_on(&self.conn, task_id)
@@ -215,24 +221,33 @@ pub(super) fn create_task_on(
 
 /// Live work under this goal already carrying this exact title.
 ///
-/// For generators, which dedupe at their own boundary rather than relying on
-/// `create_task` to refuse them. Terminal work is excluded: a `done` or
-/// `abandoned` task is history and nothing dispatches it, so it must never
-/// stand in for work that still has to happen. Matched on the exact goal id
-/// because the callers name the goal they are about to create under.
+/// The one answer to "has a generator already produced this?", shared by every
+/// generator so two of them cannot drift apart on it. Terminal work is excluded:
+/// a `done` or `abandoned` task is history and nothing dispatches it, so it must
+/// never stand in for work that still has to happen.
+///
+/// Goals are compared by slug, and in Rust rather than in SQL, for the same
+/// reason [`existing_work`](LodestarStore::existing_work) does it: an amendment
+/// re-issues a clause as `goal:<slug>@constitution:vN` while tasks go on naming
+/// whichever form they were created under, so an exact compare would report
+/// every pre-amendment task absent and rebuild all of it. This runs when a task
+/// is created, not in a hot loop.
 pub(super) fn live_task_titled_on(
     connection: &Connection,
     goal_id: &str,
     title: &str,
 ) -> Result<Option<Task>> {
+    let slug = goal_slug(goal_id);
     let sql = format!(
         "SELECT {TASK_COLS} FROM tasks
-          WHERE goal_id = ?1 AND title = ?2 AND status NOT IN ('done', 'abandoned')
-          ORDER BY created_at ASC LIMIT 1"
+          WHERE title = ?1 AND status NOT IN ('done', 'abandoned')
+          ORDER BY created_at ASC"
     );
-    Ok(connection
-        .query_row(&sql, params![goal_id, title], row_to_task)
-        .optional()?)
+    let mut stmt = connection.prepare(&sql)?;
+    let rows = stmt.query_map(params![title], row_to_task)?;
+    Ok(collect(rows)?
+        .into_iter()
+        .find(|task| goal_slug(&task.goal_id) == slug))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -496,5 +511,52 @@ mod tests {
 
         assert_ne!(second.id, first.id, "the new row needs its own identity");
         assert_eq!(second.status, TaskStatus::Open);
+    }
+
+    /// Two generators asked "has this already been produced?" two different
+    /// ways: decomposition compared goals by slug, materialization compared the
+    /// id exactly. An amendment re-issues a clause as
+    /// `goal:<slug>@constitution:vN` while tasks keep naming the form they were
+    /// created under, so the exact comparison would report every pre-amendment
+    /// task absent and rebuild all of it — the duplicate board this whole rule
+    /// exists to prevent, arriving the first time the constitution is amended.
+    /// One lookup, slug-matched, so they cannot disagree.
+    #[test]
+    fn live_work_is_found_across_a_constitutional_re_issue_of_its_goal() {
+        let store = store();
+        let goal = goal(&store);
+        let created = store
+            .create_task(
+                &goal.id,
+                "Carry controls across an amendment",
+                "done",
+                None,
+                NOW,
+            )
+            .unwrap();
+        let reissued = format!("{}@constitution:v9", goal.id);
+
+        let found = store
+            .live_task_titled(&reissued, "Carry controls across an amendment")
+            .unwrap();
+
+        assert_eq!(found.map(|task| task.id), Some(created.id));
+    }
+
+    /// Terminal work is history: nothing dispatches it, so it must never stand
+    /// in for work that still has to happen.
+    #[test]
+    fn retired_work_is_not_offered_as_live_work() {
+        let store = store();
+        let goal = goal(&store);
+        let created = store
+            .create_task(&goal.id, "Retired breakdown", "done", None, NOW)
+            .unwrap();
+        assert!(store.abandon_task(&created.id, true, NOW).unwrap());
+
+        assert!(store
+            .live_task_titled(&goal.id, "Retired breakdown")
+            .unwrap()
+            .is_none());
     }
 }
