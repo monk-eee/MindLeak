@@ -179,22 +179,41 @@ pub(super) fn dispatch(
             // An empty bundle is not evidence, and handing one back invites
             // submitting it. Conformance then reports "no provenance-bearing
             // mutation" and parks the task at needs_human, awaiting a human who
-            // cannot do anything about it -- the cause is always that nothing
-            // was ingested into this window, and the remedy is knowable here.
-            // Refusing at the point of construction is the same rule the
-            // argument guard applies: a call that cannot produce a useful
-            // result says so, rather than succeeding emptily.
+            // cannot do anything about it. Refusing at the point of
+            // construction is the same rule the argument guard applies: a call
+            // that cannot produce a useful result says so, rather than
+            // succeeding emptily.
+            //
+            // Which refusal matters. The window bounds an event node's
+            // `created_at`, and a node is created when it is *ingested* — at or
+            // after the commit it records, never before. So a caller who ends
+            // the window at their commit's own timestamp misses the work by
+            // seconds. Told "nothing was ingested" they go looking for a
+            // failed ingest that never happened; told when their last event
+            // actually landed, they widen the window and move on.
             if evidence.changed_node_ids.is_empty()
                 && evidence.commit_ids.is_empty()
                 && evidence.execution_ids.is_empty()
             {
-                return Err(format!(
-                    "no evidence in {started_at}..{ended_at} for {agent}: nothing was ingested \
-                     into this window, so there is nothing to complete a task with. Ingest the \
-                     work first -- `ingest_commit` with `changed_files` for a commit, \
-                     `ingest_execution` for a command -- then ask again. Submitting an empty \
-                     bundle records a needs_human verdict no human can resolve."
-                ));
+                let latest = engine
+                    .latest_attributed_event_at(&agent)
+                    .map_err(|e| e.to_string())?;
+                return Err(match latest {
+                    Some(at) if at > ended_at => format!(
+                        "no evidence in {started_at}..{ended_at} for {agent}, but this session's \
+                         most recent attributed event was recorded at {at}, after the window \
+                         ends. Ingestion timestamps the event when it is recorded, not when the \
+                         work happened, so a window ending at your commit's own timestamp misses \
+                         it. Ask again with ended_at at or after {at}."
+                    ),
+                    _ => format!(
+                        "no evidence in {started_at}..{ended_at} for {agent}: nothing was \
+                         ingested into this window, so there is nothing to complete a task with. \
+                         Ingest the work first -- `ingest_commit` with `changed_files` for a \
+                         commit, `ingest_execution` for a command -- then ask again. Submitting \
+                         an empty bundle records a needs_human verdict no human can resolve."
+                    ),
+                });
             }
             Ok(text_result(&json!(evidence)))
         })()),
@@ -419,5 +438,80 @@ mod tests {
             .unwrap()
             .iter()
             .any(|fact| fact["relation"] == "modified"));
+    }
+
+    /// Regression: the refusal used to assert "nothing was ingested into this
+    /// window", which is a conclusion it had not checked. Ingestion timestamps
+    /// an event when it is recorded, at or after the work it describes, so a
+    /// window ending at a commit's own timestamp misses it by seconds — and the
+    /// agent went hunting for an ingest failure that never happened. This cost
+    /// a real session; the window was short by moments and the message said the
+    /// work did not exist.
+    #[test]
+    fn an_empty_window_says_when_the_work_actually_landed() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        call_ok(
+            &engine,
+            "ingest_execution",
+            json!({
+                "command": "cargo check",
+                "exit_code": 0,
+                "changed_files": ["src/lib.rs"],
+                "timestamp": 100,
+                "agent": "agent-a"
+            }),
+        );
+
+        let error = call(
+            &engine,
+            &json!({
+                "name": "evidence_for",
+                "arguments": {
+                    "agent_id": "agent-a",
+                    "started_at": 50,
+                    "ended_at": 90
+                }
+            }),
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("most recent attributed event was recorded at 100"),
+            "the refusal names when the work landed: {error}"
+        );
+        assert!(
+            error.contains("ended_at at or after 100"),
+            "and the window to ask for instead: {error}"
+        );
+        assert!(
+            !error.contains("nothing was ingested"),
+            "and does not claim the work does not exist: {error}"
+        );
+    }
+
+    /// The other half: with nothing ingested at all, the original guidance is
+    /// the right one, and the allowance above must not swallow it.
+    #[test]
+    fn an_empty_window_with_no_events_at_all_still_says_ingest_first() {
+        let engine = MindLeak::open_in_memory().unwrap();
+
+        let error = call(
+            &engine,
+            &json!({
+                "name": "evidence_for",
+                "arguments": {
+                    "agent_id": "agent-a",
+                    "started_at": 50,
+                    "ended_at": 90
+                }
+            }),
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("nothing was ingested into this window"),
+            "{error}"
+        );
+        assert!(error.contains("ingest_commit"), "{error}");
     }
 }
