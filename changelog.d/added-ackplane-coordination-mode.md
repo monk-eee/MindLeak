@@ -5,5 +5,5 @@
   is two authorities. No Ackplane client ships yet, so declaring `federated` is
   refused with an explanation rather than quietly downgraded to local
   arbitration, which would hand the repository a second arbiter
-  ([ADR-0082](../docs/adr/0082-backplane-is-a-standalone-federation-service.md),
+  ([ADR-0082](../docs/adr/0082-ackplane-is-a-standalone-federation-service.md),
   [ADR-0045](../docs/adr/0045-a-fleet-is-a-distributed-system.md)).

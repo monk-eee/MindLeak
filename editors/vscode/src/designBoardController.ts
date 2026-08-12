@@ -28,6 +28,14 @@ interface ConstitutionGoal extends DesignGoal {
 interface PlanSelection {
   plan: DesignMaterializationPlan;
   linkedTasks: DesignTask[];
+  planningFallbacks: { objective: string; reason: string }[];
+}
+
+interface PlannedDesignMaterialization extends DesignMaterializationPlan {
+  model_call: {
+    source: "model" | "fallback";
+    fallback_reason?: string;
+  };
 }
 
 export class DesignBoardController {
@@ -417,7 +425,7 @@ export class DesignBoardController {
               id: design.id,
               step: "plan",
               objective_goal_id: objective.id,
-            })) as DesignMaterializationPlan
+            })) as PlannedDesignMaterialization
         )
       );
       const plan: DesignMaterializationPlan = {
@@ -432,7 +440,20 @@ export class DesignBoardController {
         }
         plan.rationale = rationale;
       }
-      return { plan, linkedTasks: [] };
+      return {
+        plan,
+        linkedTasks: [],
+        planningFallbacks: suggestions.flatMap((suggestion, index) =>
+          suggestion.model_call.source === "fallback"
+            ? [
+                {
+                  objective: objectives[index].title,
+                  reason: suggestion.model_call.fallback_reason ?? "reason unavailable",
+                },
+              ]
+            : []
+        ),
+      };
     }
 
     const rationale = await this.promptRationale(
@@ -445,7 +466,11 @@ export class DesignBoardController {
       return undefined;
     }
     if (choice.mode === "no_work") {
-      return { plan: { mode: "no_work", rationale }, linkedTasks: [] };
+      return {
+        plan: { mode: "no_work", rationale },
+        linkedTasks: [],
+        planningFallbacks: [],
+      };
     }
 
     const tasks = (
@@ -474,6 +499,7 @@ export class DesignBoardController {
     return {
       plan: { mode: "link", task_ids: selected.map((entry) => entry.task.id), rationale },
       linkedTasks: selected.map((entry) => entry.task),
+      planningFallbacks: [],
     };
   }
 
@@ -525,12 +551,19 @@ export class DesignBoardController {
     selection: PlanSelection,
     repair: boolean
   ): Promise<boolean> {
-    const action = repair ? "Repair" : "Materialize";
+    const verb = repair ? "Repair" : "Materialize";
+    const hasFallback = selection.planningFallbacks.length > 0;
+    const action = hasFallback ? `${verb} fallback` : verb;
+    const provenance = hasFallback
+      ? `\n\nPlanning source: deterministic fallback (not the configured model)\n${selection.planningFallbacks
+          .map(({ objective, reason }) => `- ${objective}: ${reason}`)
+          .join("\n")}\nReview these drafts carefully before materializing them.`
+      : "";
     const retention = repair
       ? "\n\nPrior tasks remain durable and must be retired separately if they are obsolete."
       : "";
     const confirmed = await vscode.window.showWarningMessage(
-      `${action} ${design.title}?\n\n${formatMaterializationPlan(selection.plan, selection.linkedTasks)}${retention}`,
+      `${verb} ${design.title}?${provenance}\n\n${formatMaterializationPlan(selection.plan, selection.linkedTasks)}${retention}`,
       { modal: true },
       action
     );

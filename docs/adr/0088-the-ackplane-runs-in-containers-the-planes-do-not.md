@@ -5,9 +5,9 @@
 - Deciders: MindLeak maintainers
 - Accepted: 2026-08-10 by the repository owner — attributed human adoption after
   review.
-- Depends on: [ADR-0082](0082-backplane-is-a-standalone-federation-service.md)
+- Depends on: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md)
   (local-first boundary),
-  [ADR-0086](0086-postgresql-is-the-backplane-ledger-and-arbiter.md)
+  [ADR-0086](0086-postgresql-is-the-ackplane-ledger-and-arbiter.md)
   (PostgreSQL authority and durability reporting)
 - Related: [ADR-0016](0016-platform-packaging-and-registration.md) (packaging and
   registration), [ADR-0013](0013-local-data-lifecycle.md) (backup, export, reset),

@@ -5,9 +5,9 @@
 - Deciders: MindLeak maintainers
 - Accepted: 2026-08-10 by the repository owner — attributed human adoption after
   review.
-- Depends on: [ADR-0082](0082-backplane-is-a-standalone-federation-service.md)
+- Depends on: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md)
   (federated coordination mode),
-  [ADR-0084](0084-backplane-evidence-has-explicit-trust.md) (remote identity and
+  [ADR-0084](0084-ackplane-evidence-has-explicit-trust.md) (remote identity and
   signed evidence)
 - Related: [ADR-0016](0016-platform-packaging-and-registration.md) (local
   installation), [ADR-0038](0038-isolated-worktrees-shared-repository-state.md)

@@ -9,6 +9,7 @@ members = [
     "crates/lodestar-core",
     "crates/lodestar-mcp",
     "crates/ackplane-core",
+    "crates/ackplane-protocol",
 ]
 
 [workspace.package]
@@ -33,6 +34,10 @@ ureq = { version = "2", features = ["json"] }
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+prost = "0.13"
+tonic = "0.12"
+tonic-build = "0.12"
+protoc-bin-vendored = "3"
 
 [profile.release]
 lto = "thin"

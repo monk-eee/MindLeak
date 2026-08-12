@@ -2,7 +2,7 @@
 //! Conformance tool definitions and dispatch.
 
 use super::{ok, opt_str, rendered, req_str, str_array};
-use lodestar_core::{Advice, ConformanceEvidence, Lodestar};
+use lodestar_core::{Advice, CertificationStatus, ConformanceEvidence, Lodestar};
 use serde_json::{json, Value};
 
 pub(super) fn definitions() -> Vec<Value> {
@@ -43,6 +43,18 @@ pub(super) fn definitions() -> Vec<Value> {
                 "required": ["task_id"]
             }
         }),
+        json!({
+            "name": "certification_status",
+            "description": "The qualified certification status a subject holds (ADR-0090). Verification is the capability; certification is the status it produces, and it is never a bare badge: every status carries its subject and commit, the policy version it was judged against, the evidence bundle behind it, the date, and which clauses were evaluated and which were not. It runs no new judgement — the verdict is the deterministic conformance record the task already closed on. The states are distinct and legible: certified, not_certified with its reason, waived with its expiry and remediation, needs_human, uncertifiable where no constitution has been adopted, and stale where the subject moved past its evidence. None of them renders as certified, and this never asserts compliance with an external framework: a status certifies conformance to the clauses it names and nothing more.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string", "description": "The subject to report on." },
+                    "at_commit": { "type": "string", "description": "Optional commit you are asking about. The server never reads Git, so staleness is judged against what you declare: a status whose evidence does not cover this commit reports stale." }
+                },
+                "required": ["task_id"]
+            }
+        }),
     ]
 }
 
@@ -71,6 +83,15 @@ pub(super) fn dispatch(
             ok(&engine
                 .conformance_history(req_str(args, "task_id")?)
                 .map_err(|e| e.to_string())?)
+        })()),
+        "certification_status" => Some((|| {
+            let status = engine
+                .certification_status(
+                    req_str(args, "task_id")?,
+                    opt_str(args, "at_commit").as_deref(),
+                )
+                .map_err(|e| e.to_string())?;
+            rendered(render_status(&status), &status)
         })()),
         _ => None,
     }
@@ -111,6 +132,51 @@ fn render_advice(advice: &Advice) -> String {
     markdown
 }
 
+/// Render a certification status as the qualified status line of ADR-0090 §2.
+///
+/// The qualifiers are rendered with the state rather than beneath it, because
+/// the honesty has to survive the line being screenshotted: a reader cannot crop
+/// "certified against constitution:v3" into "compliant".
+fn render_status(status: &CertificationStatus) -> String {
+    let mut markdown = format!("**Status: {}**\n\n```text\n", status.state.as_str());
+    let unknown = "-".to_string();
+    for (label, value) in [
+        ("Subject", Some(status.subject.clone())),
+        ("Commit", status.commit.clone()),
+        (
+            "Checked (unix)",
+            status.certified_at.map(|at| at.to_string()),
+        ),
+        (
+            "Evidence Bundle",
+            status.evidence_bundle.map(|id| id.to_string()),
+        ),
+        ("Policy Version", status.policy_version.clone()),
+    ] {
+        markdown.push_str(&format!(
+            "{label:<16}{}\n",
+            value.as_ref().unwrap_or(&unknown)
+        ));
+    }
+    markdown.push_str("```\n\n");
+    markdown.push_str(&format!("- {}\n", status.reason));
+    markdown.push_str(&format!(
+        "- Coverage: {} clause(s) evaluated, {} not evaluated, over {} changed node(s)\n",
+        status.coverage.evaluated.len(),
+        status.coverage.not_evaluated.len(),
+        status.covered_nodes
+    ));
+    if let Some(waiver) = &status.waiver {
+        markdown.push_str(&format!(
+            "- Waiver {} expires at {} (unix); remediation: {}\n",
+            waiver.id,
+            waiver.expires_at,
+            waiver.remediation_task_id.as_deref().unwrap_or("none")
+        ));
+    }
+    markdown
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::call;
@@ -146,6 +212,36 @@ mod tests {
         let records: Value =
             serde_json::from_str(empty["content"][0]["text"].as_str().unwrap()).unwrap();
         assert!(records.as_array().unwrap().is_empty());
+    }
+
+    /// ADR-0090 §2. The status line has to carry its qualifiers, because the
+    /// line is what gets shown to the person being sold to. A rendering that
+    /// dropped the policy version would be the bare badge the decision refuses.
+    #[test]
+    fn certification_status_renders_a_qualified_status_line() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "work", "unproven").unwrap();
+
+        let result = call(
+            &engine,
+            &json!({ "name": "certification_status", "arguments": { "task_id": task.id } }),
+        )
+        .unwrap();
+
+        let markdown = result["content"][0]["text"].as_str().unwrap();
+        assert!(
+            markdown.starts_with("**Status: uncertifiable**"),
+            "the state leads, and it is not 'certified': {markdown}"
+        );
+        assert!(
+            markdown.contains("Policy Version"),
+            "the qualifier a bare badge would omit: {markdown}"
+        );
+        assert_eq!(result["structuredContent"]["state"], "uncertifiable");
+        assert_eq!(result["structuredContent"]["subject"], task.id);
     }
 
     #[test]

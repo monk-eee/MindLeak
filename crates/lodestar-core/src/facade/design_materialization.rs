@@ -165,4 +165,54 @@ mod tests {
         assert!(serialized.get("plan").is_none());
         assert_eq!(serialized["model_call"]["source"], "fallback");
     }
+
+    /// Bug: a repair re-states the drafts it is repairing, and materialization
+    /// deletes `design_task_links` before creating. Revision 2 in create mode
+    /// therefore built twins of revision 1's tasks and left the originals live
+    /// but unreachable from the design — the duplicate shape this ledger exists
+    /// to prevent, arriving by the one path that is meant to be a correction.
+    /// Impact: two agents can claim a task and its twin, and only one of them is
+    /// the work the design points at. Fix: a draft resolves to live work of the
+    /// same goal and title, so a repair re-links what it already made.
+    #[test]
+    fn repairing_a_design_relinks_its_tasks_instead_of_building_twins() {
+        let engine = engine();
+        let item = engine
+            .register_design(
+                "docs/adr/0998-repair-plan.md",
+                "Repair plan",
+                "Implement it",
+                Some("planner"),
+            )
+            .unwrap();
+        engine.accept_design(&item.id, "reviewer").unwrap();
+        let objective = engine
+            .define_goal(GoalKind::Objective, "Ship it", "deliver", None)
+            .unwrap();
+        let planned = engine
+            .plan_design_promotion(&item.id, &objective.id)
+            .unwrap();
+        let first = engine.promote_design(&item.id, &planned.plan).unwrap();
+
+        // The rationale is what makes this a repair rather than the identical
+        // plan replayed, which materialization short-circuits.
+        let mut repair = planned.plan.clone();
+        repair.rationale = Some("re-materialize after review".to_string());
+        let second = engine
+            .revise_design_promotion(&item.id, "reviewer", &repair)
+            .unwrap();
+
+        let first_ids: Vec<&str> = first.tasks.iter().map(|task| task.id.as_str()).collect();
+        let second_ids: Vec<&str> = second.tasks.iter().map(|task| task.id.as_str()).collect();
+        assert!(!first_ids.is_empty(), "the fixture needs work to repair");
+        assert_eq!(
+            second_ids, first_ids,
+            "the repair re-linked the tasks it had already created"
+        );
+        assert_eq!(
+            engine.board(false).unwrap().len(),
+            first.tasks.len(),
+            "no orphaned twin is left on the board"
+        );
+    }
 }
