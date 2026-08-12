@@ -198,7 +198,7 @@ pub(super) fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "task_create",
-            "description": "Create work serving a goal. With `title`, one task: `blocked_by` keeps it unclaimable until the predecessor completes aligned, enabling progressive same-file handoffs without pretending to lock symbols or text, and `also_serves` declares up front the additional goals it serves, so genuinely cross-cutting work is reviewable breadth rather than drift (ADR-0041). Without `title`, the goal is decomposed into claimable tasks instead, using the configured model endpoint when reachable and a single-task fallback when not. Either way the answer names what already serves this goal rather than refusing the request (ADR-0015).",
+            "description": "Create work serving a goal. With `title`, one task: `blocked_by` keeps it unclaimable until the predecessor completes aligned, enabling progressive same-file handoffs without pretending to lock symbols or text, and `also_serves` declares up front the additional goals it serves, so genuinely cross-cutting work is reviewable breadth rather than drift (ADR-0041). Without `title`, the goal is decomposed into claimable tasks instead, using the configured model endpoint when reachable and a single-task fallback when not. Either way the answer names what already serves this goal rather than refusing the request (ADR-0015). When live work under the goal already carries the exact title just created, the answer says so in `duplicates` — separately from `prior_work`, which lists every task ever created under the goal and is too long to spot one entry in. It still creates the task: a second task against one goal is often right, and the point is that you find out now rather than when two agents have claimed both.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -337,10 +337,35 @@ pub(super) fn dispatch(
                     })
                 })
                 .collect();
+            // An exact-title live match is a different signal from the list
+            // above and has to be carried separately, because that list is
+            // every task ever created under the goal — 203 of them here — and
+            // the one entry that matters cannot be found by reading it. Two
+            // agents created "Make worktree reclaim refuse loudly when the
+            // Lodestar board is unreadable" against one goal with this report
+            // already in front of them.
+            let duplicate = engine
+                .live_task_titled(goal_id, title.as_str())
+                .map_err(|e| e.to_string())?
+                .filter(|existing| existing.id != task.id);
             let mut value = serde_json::to_value(&task).map_err(|e| e.to_string())?;
             if let Some(object) = value.as_object_mut() {
                 object.insert("already_serving_this_goal".into(), json!(prior.len()));
                 object.insert("prior_work".into(), json!(prior));
+                if let Some(existing) = duplicate {
+                    object.insert(
+                        "duplicates".into(),
+                        json!({
+                            "task_id": existing.id,
+                            "status": existing.status,
+                            "owner": existing.owner,
+                            "detail": "live work under this goal already carries this exact \
+                                       title; this task was created anyway, because a second \
+                                       task against one goal is often right (ADR-0015). If it \
+                                       is not, retire one of them before both are claimed.",
+                        }),
+                    );
+                }
             }
             ok(&value)
         })()),
@@ -1195,10 +1220,6 @@ mod tests {
         let first = engine
             .create_task(&goal.id, "Carry controls across an amendment", "done")
             .unwrap();
-        // Titles differ only because a task id hashes the creation *second*, so
-        // two identical titles created in the same second collide on a raw
-        // sqlite UNIQUE error. Recorded in DEVELOPERS.md; what is under test
-        // here is that prior work on the goal is named either way.
 
         let created = call(
             &engine,
@@ -1225,6 +1246,46 @@ mod tests {
             body["prior_work"][0]["title"], "Carry controls across an amendment",
             "the prior task is named, not merely counted"
         );
+        assert!(
+            body.get("duplicates").is_none(),
+            "a different title is not a duplicate: {body}"
+        );
+    }
+
+    /// Naming the prior work was not enough on its own. `prior_work` is every
+    /// task ever created under the goal — 203 of them on the live board — so
+    /// the one entry that matters cannot be found by reading it, and two agents
+    /// created "Make worktree reclaim refuse loudly when the Lodestar board is
+    /// unreadable" against one goal with that report in front of them. An
+    /// exact-title live match is now carried on its own, and still does not
+    /// refuse: a second task against one goal is often right (ADR-0015), and
+    /// the point is finding out now rather than once both have been claimed.
+    #[test]
+    fn create_task_names_an_exact_title_duplicate_separately_from_the_long_list() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Reclaim", "reclaim worktrees", None)
+            .unwrap();
+        let title = "Make worktree reclaim refuse loudly when the board is unreadable";
+        let first = engine.create_task(&goal.id, title, "done").unwrap();
+
+        let created = call(
+            &engine,
+            &json!({
+                "name": "task_create",
+                "arguments": { "goal_id": goal.id, "title": title, "acceptance": "done" }
+            }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(created["content"][0]["text"].as_str().unwrap()).unwrap();
+
+        assert!(
+            body["id"].as_str().is_some_and(|id| id != first.id),
+            "the duplicate is still created: {body}"
+        );
+        assert_eq!(body["duplicates"]["task_id"], first.id);
+        assert_eq!(body["duplicates"]["status"], "open");
     }
 
     #[test]
