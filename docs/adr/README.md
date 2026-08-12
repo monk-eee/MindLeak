@@ -98,6 +98,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0088](0088-the-ackplane-runs-in-containers-the-planes-do-not.md) | Ackplane runs in containers; the planes do not | Accepted |
 | [0089](0089-mindleak-is-an-operating-system-for-agent-coordination.md) | MindLeak is an operating system for agent coordination | Accepted |
 | [0090](0090-certification-is-a-status-not-a-service.md) | Certification is a status, not a service | Accepted |
+| [0091](0091-ackplane-builds-and-tests-without-a-database.md) | Ackplane builds and tests without a database | Proposed |
 
 ## Writing a new ADR
 
