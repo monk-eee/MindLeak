@@ -1,8 +1,10 @@
 # ADR-0091: Ackplane builds and tests without a database
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-13
-- Deciders: Pending human acceptance
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-13 by the repository owner — attributed human adoption after
+  review.
 - Depends on: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md)
   (Ackplane is a separately deployable service),
   [ADR-0086](0086-postgresql-is-the-ackplane-ledger-and-arbiter.md)
