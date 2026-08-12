@@ -17,6 +17,10 @@ use mindleak_storage::{
 
 fn main() -> anyhow::Result<()> {
     mindleak_core::telemetry::init_tracing();
+    // Which arbiter owns this repository's coordination (ADR-0082), settled
+    // once here rather than per call, and before any store is opened.
+    let coordination = ackplane_core::resolve_coordination_mode(|name| std::env::var(name).ok())?;
+    tracing::info!(mode = coordination.as_str(), "resolved coordination mode");
     let workspace = resolve_workspace();
     let stale_build = report_build_identity(&workspace);
     // Observed now, while the file on disk is still the one being executed.

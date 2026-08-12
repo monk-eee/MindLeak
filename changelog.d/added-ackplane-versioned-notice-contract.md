@@ -1,0 +1,1 @@
+- **Ackplane notices now carry an explicit schema version in the v1 wire contract.** Repository nodes can identify notice payload versions independently of diagnostic text as the protocol evolves.

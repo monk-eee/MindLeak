@@ -2,7 +2,8 @@
 use ackplane_protocol::v1::{
     node_frame, EnrollmentActivationProof, EnrollmentChallenge, EnrollmentChallengeRequest,
     EnrollmentRequest, EnrollmentState, EventEnvelope, Hello, KeyRotationOutcome,
-    KeyRotationRejectionReason, KeyRotationRequest, KeyRotationResult, NodeFrame, ProvenanceClass,
+    KeyRotationRejectionReason, KeyRotationRequest, KeyRotationResult, NodeFrame, Notice,
+    ProvenanceClass,
 };
 use prost::Message;
 
@@ -46,6 +47,20 @@ fn signed_evidence_envelope_round_trips_through_the_v1_wire_contract() {
     let decoded = EventEnvelope::decode(encoded.as_slice()).unwrap();
 
     assert_eq!(decoded, envelope);
+}
+
+#[test]
+fn versioned_notice_round_trips_through_the_v1_wire_contract() {
+    let notice = Notice {
+        code: "policy_pack_available".into(),
+        message: "A policy pack is available for review.".into(),
+        schema_version: "v1".into(),
+    };
+
+    assert_eq!(
+        Notice::decode(notice.encode_to_vec().as_slice()).unwrap(),
+        notice
+    );
 }
 
 #[test]

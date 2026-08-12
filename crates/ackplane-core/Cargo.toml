@@ -1,0 +1,11 @@
+[package]
+name = "ackplane-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "The repository side of the Ackplane federation boundary: which arbiter owns this repository's coordination (ADR-0082)."
+
+[dependencies]
+thiserror = { workspace = true }

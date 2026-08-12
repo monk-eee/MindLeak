@@ -10,6 +10,7 @@ name = "mindleak-mcp"
 path = "src/main.rs"
 
 [dependencies]
+ackplane-core = { path = "../ackplane-core" }
 mindleak-core = { path = "../mindleak-core" }
 mindleak-session = { path = "../mindleak-session" }
 mindleak-storage = { path = "../mindleak-storage" }

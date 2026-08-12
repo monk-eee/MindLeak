@@ -14,6 +14,9 @@ use mindleak_storage::{
 };
 
 fn main() -> anyhow::Result<()> {
+    // Which arbiter owns this repository's coordination (ADR-0082), settled
+    // once here rather than per call, and before any store is opened.
+    let coordination = ackplane_core::resolve_coordination_mode(|name| std::env::var(name).ok())?;
     let current = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let workspace = resolve_workspace_path(
         &current,
@@ -67,9 +70,10 @@ fn main() -> anyhow::Result<()> {
     let sessions = SessionRegistry::new(&display_name).map_err(anyhow::Error::msg)?;
     let engine = Lodestar::open(&db_path)?.with_workspace_root(workspace.to_string_lossy());
     eprintln!(
-        "[lodestar-mcp] ready — intent plane at {db_path}; repository_id={}; origin={:?}; migrated_legacy={migrated_legacy}",
+        "[lodestar-mcp] ready — intent plane at {db_path}; repository_id={}; origin={:?}; migrated_legacy={migrated_legacy}; coordination={}",
         database.repository_id.as_deref().unwrap_or("none"),
         database.origin,
+        coordination.as_str(),
     );
     server::run(
         engine,
