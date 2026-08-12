@@ -27,7 +27,13 @@
   already on the board when this was found were retired separately. Both
   generators now share one slug-matched lookup rather than the two divergent
   implementations they started with, which would have disagreed the first time
-  the constitution was amended. Still open: sharing the lookup makes the right
-  answer available, it does not make asking it compulsory — a third generator
-  that simply calls `create_task` will have this bug again, and nothing in the
-  type system or the tests would say so.
+  the constitution was amended. `task_create` reports an exact-title live match
+  in its own field, because naming the prior work was not enough on its own: the
+  list it was buried in is every task ever created under the goal, 203 of them
+  when this was measured, and two agents created "Make worktree reclaim refuse
+  loudly when the Lodestar board is unreadable" against one goal with that report
+  already in front of them. — Still open: the report is advisory by design under
+  ADR-0015, so an agent that ignores it still creates the duplicate, and nothing
+  reconciles the pair afterwards. The board carried exactly that pair while this
+  was being written, and retiring one of them is still a human judgement nobody
+  is prompted to make.
