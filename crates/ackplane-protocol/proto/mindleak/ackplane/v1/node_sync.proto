@@ -231,4 +231,5 @@ message FlowControl {
 message Notice {
   string code = 1;
   string message = 2;
+  string schema_version = 3;
 }
