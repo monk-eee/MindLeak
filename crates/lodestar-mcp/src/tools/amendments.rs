@@ -28,14 +28,15 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "amend_constitution",
-            "description": "Promote a reviewed amendment draft, retiring the version it replaces and recording an attributed rationale plus an explicit clause diff. The old version and its clauses are superseded, never deleted, so prior conformance records keep naming the policy they were judged under. Refuses an amendment that changes nothing, one that leaves no clauses at all, and one carrying an undecided clause proposal.",
+            "description": "Promote a reviewed amendment draft, retiring the version it replaces and recording an attributed rationale plus an explicit clause diff. The old version and its clauses are superseded, never deleted, so prior conformance records keep naming the policy they were judged under. `approved_by` names who accepted the change and must differ from the calling agent: an agent may approve an amendment, just not its own, which is what lets the audit history tell a reviewed adoption from an agent changing policy alone. Attributed, not authenticated (ADR-0071). Refuses an amendment that changes nothing, one that leaves no clauses at all, and one carrying an undecided clause proposal.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "draft_id": { "type": "string" },
+                    "approved_by": { "type": "string", "description": "Who accepted this change. Must differ from the calling agent; another agent is allowed, approving your own is not." },
                     "rationale": { "type": "string", "description": "Why the rule is changing — the thing a reader will want most in a year." }
                 },
-                "required": ["draft_id", "rationale"]
+                "required": ["draft_id", "approved_by", "rationale"]
             }
         }),
         json!({
@@ -128,6 +129,7 @@ fn amend_constitution(engine: &Lodestar, args: &Value) -> Result<Value, String> 
         .amend_constitution(
             req_str(args, "draft_id")?,
             req_str(args, "agent")?,
+            req_str(args, "approved_by")?,
             req_str(args, "rationale")?,
         )
         .map_err(|e| e.to_string())?;
@@ -136,6 +138,7 @@ fn amend_constitution(engine: &Lodestar, args: &Value) -> Result<Value, String> 
         "from_version": amendment.from_version,
         "to_version": amendment.to_version,
         "amended_by": amendment.amended_by,
+        "approved_by": amendment.approved_by,
         "diff": amendment.diff,
     }))
 }

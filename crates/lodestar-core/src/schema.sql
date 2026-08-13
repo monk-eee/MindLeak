@@ -86,6 +86,11 @@ CREATE TABLE IF NOT EXISTS constitution_amendments (
     to_version    TEXT NOT NULL,
     rationale     TEXT NOT NULL,
     amended_by    TEXT NOT NULL,
+    -- Who authorised the change, as distinct from the agent that executed it.
+    -- Nullable because rows written before this existed recorded only the
+    -- executor, and inventing an approver for them would fabricate the one
+    -- fact the column exists to establish.
+    approved_by   TEXT,
     created_at    INTEGER NOT NULL,
     diff          TEXT NOT NULL          -- JSON array of ClauseDiff
 );

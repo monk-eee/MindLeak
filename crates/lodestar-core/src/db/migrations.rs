@@ -102,6 +102,11 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
         // task was claimed on before this existed was never recorded, and
         // inferring one from where the agent happens to be now would invent a
         // fact about the past.
+        // ADR-0043. Backfills as NULL, which is the honest answer: amendments
+        // recorded before this existed named only the agent that executed them,
+        // and naming that agent as its own approver would assert exactly the
+        // separation this column exists to prove.
+        ("constitution_amendments", "approved_by", "TEXT"),
         ("tasks", "branch", "TEXT"),
     ] {
         if !column_exists(connection, table, column)? {

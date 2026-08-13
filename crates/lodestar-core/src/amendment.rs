@@ -55,6 +55,9 @@ pub struct ConstitutionAmendment {
     pub to_version: String,
     pub rationale: String,
     pub amended_by: String,
+    /// Who authorised it, when that is recorded and distinct from `amended_by`.
+    /// `None` on amendments written before an approver could be named.
+    pub approved_by: Option<String>,
     pub created_at: i64,
     pub diff: Vec<ClauseDiff>,
 }

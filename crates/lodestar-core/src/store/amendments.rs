@@ -47,14 +47,17 @@ impl LodestarStore {
         &self,
         draft_id: &str,
         amended_by: &str,
+        approved_by: &str,
         rationale: &str,
         now: i64,
     ) -> Result<ConstitutionAmendment> {
         let amended_by = amended_by.trim();
+        let approved_by = approved_by.trim();
         let rationale = rationale.trim();
-        if amended_by.is_empty() || rationale.is_empty() {
+        if amended_by.is_empty() || approved_by.is_empty() || rationale.is_empty() {
             return Err(LodestarError::Invalid(
-                "an amendment requires an attributed author and a rationale".to_string(),
+                "an amendment requires an attributed author, an approver, and a rationale"
+                    .to_string(),
             ));
         }
 
@@ -254,14 +257,15 @@ impl LodestarStore {
         )?;
         transaction.execute(
             "INSERT INTO constitution_amendments
-                 (id, from_version, to_version, rationale, amended_by, created_at, diff)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 (id, from_version, to_version, rationale, amended_by, approved_by, created_at, diff)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 id,
                 before,
                 draft_id,
                 rationale,
                 amended_by,
+                approved_by,
                 now,
                 serialized_diff
             ],
@@ -274,6 +278,7 @@ impl LodestarStore {
             to_version: draft_id.to_string(),
             rationale: rationale.to_string(),
             amended_by: amended_by.to_string(),
+            approved_by: Some(approved_by.to_string()),
             created_at: now,
             diff,
         })
@@ -282,7 +287,7 @@ impl LodestarStore {
     /// The amendment history, newest first — how policy got to where it is.
     pub fn amendments(&self) -> Result<Vec<ConstitutionAmendment>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, from_version, to_version, rationale, amended_by, created_at, diff
+            "SELECT id, from_version, to_version, rationale, amended_by, approved_by, created_at, diff
                FROM constitution_amendments ORDER BY created_at DESC, id",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -292,20 +297,23 @@ impl LodestarStore {
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
-                row.get::<_, i64>(5)?,
-                row.get::<_, String>(6)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, String>(7)?,
             ))
         })?;
 
         let mut out = Vec::new();
         for row in rows {
-            let (id, from_version, to_version, rationale, amended_by, created_at, raw) = row?;
+            let (id, from_version, to_version, rationale, amended_by, approved_by, created_at, raw) =
+                row?;
             out.push(ConstitutionAmendment {
                 id,
                 from_version,
                 to_version,
                 rationale,
                 amended_by,
+                approved_by,
                 created_at,
                 diff: serde_json::from_str::<Vec<ClauseDiff>>(&raw)?,
             });
@@ -377,7 +385,13 @@ mod tests {
         harden(&store, &draft);
 
         let amendment = store
-            .amend_constitution(&draft, "monk-eee", "Keys leaked once; harden it.", NOW + 10)
+            .amend_constitution(
+                &draft,
+                "monk-eee",
+                "reviewer",
+                "Keys leaked once; harden it.",
+                NOW + 10,
+            )
             .unwrap();
         assert_eq!(amendment.diff.len(), 1);
         assert_eq!(amendment.diff[0].change, ClauseChange::Changed);
@@ -392,7 +406,13 @@ mod tests {
         harden(&store, &draft);
 
         let amendment = store
-            .amend_constitution(&draft, "monk-eee", "Harden the secrets rule.", NOW + 10)
+            .amend_constitution(
+                &draft,
+                "monk-eee",
+                "reviewer",
+                "Harden the secrets rule.",
+                NOW + 10,
+            )
             .unwrap();
         assert_eq!(amendment.from_version, before);
         assert_eq!(amendment.to_version, draft);
@@ -435,7 +455,13 @@ mod tests {
         let outgoing = store.clauses_for_version(&before).unwrap()[0].id.clone();
 
         store
-            .amend_constitution(&draft, "monk-eee", "Harden the secrets rule.", NOW + 10)
+            .amend_constitution(
+                &draft,
+                "monk-eee",
+                "reviewer",
+                "Harden the secrets rule.",
+                NOW + 10,
+            )
             .unwrap();
 
         let successor = store.clauses_for_version(&draft).unwrap()[0].id.clone();
@@ -480,7 +506,13 @@ mod tests {
             .unwrap();
 
         store
-            .amend_constitution(&draft, "monk-eee", "Harden the secrets rule.", NOW + 10)
+            .amend_constitution(
+                &draft,
+                "monk-eee",
+                "reviewer",
+                "Harden the secrets rule.",
+                NOW + 10,
+            )
             .unwrap();
 
         let successor = store.clauses_for_version(&draft).unwrap()[0].id.clone();
@@ -513,7 +545,7 @@ mod tests {
             .create_constitution_version("constitution:v1", 1, GoalStatus::Draft, None, NOW)
             .unwrap();
         let error = store
-            .amend_constitution(&draft.id, "monk-eee", "Because", NOW)
+            .amend_constitution(&draft.id, "monk-eee", "reviewer", "Because", NOW)
             .unwrap_err();
         assert!(
             format!("{error}").contains("activation, not an amendment"),
@@ -528,10 +560,16 @@ mod tests {
         store.copy_clauses_to_version(&before, &draft).unwrap();
         harden(&store, &draft);
         assert!(store
-            .amend_constitution(&draft, "", "Because", NOW)
+            .amend_constitution(&draft, "", "reviewer", "Because", NOW)
+            .is_err());
+        // An unnamed approver records nothing, so it is refused here too: the
+        // separation of parties is enforced above, but an empty label could not
+        // establish it even if it were.
+        assert!(store
+            .amend_constitution(&draft, "monk-eee", "  ", "Because", NOW)
             .is_err());
         assert!(store
-            .amend_constitution(&draft, "monk-eee", "  ", NOW)
+            .amend_constitution(&draft, "monk-eee", "reviewer", "  ", NOW)
             .is_err());
     }
 
@@ -543,7 +581,7 @@ mod tests {
         let (before, draft) = governed(&store);
         store.copy_clauses_to_version(&before, &draft).unwrap();
         let error = store
-            .amend_constitution(&draft, "monk-eee", "Tidy up", NOW)
+            .amend_constitution(&draft, "monk-eee", "reviewer", "Tidy up", NOW)
             .unwrap_err();
         assert!(format!("{error}").contains("changes nothing"), "{error}");
     }
@@ -555,7 +593,7 @@ mod tests {
         let store = store();
         let (_, draft) = governed(&store);
         let error = store
-            .amend_constitution(&draft, "monk-eee", "Clean slate", NOW)
+            .amend_constitution(&draft, "monk-eee", "reviewer", "Clean slate", NOW)
             .unwrap_err();
         assert!(format!("{error}").contains("no clauses"), "{error}");
     }
@@ -575,7 +613,7 @@ mod tests {
             .unwrap();
 
         let error = store
-            .amend_constitution(&draft, "monk-eee", "Because", NOW)
+            .amend_constitution(&draft, "monk-eee", "reviewer", "Because", NOW)
             .unwrap_err();
         assert!(format!("{error}").contains("undecided"), "{error}");
     }
@@ -587,7 +625,7 @@ mod tests {
         store.copy_clauses_to_version(&before, &draft).unwrap();
         harden(&store, &draft);
         store
-            .amend_constitution(&draft, "monk-eee", "Harden", NOW + 10)
+            .amend_constitution(&draft, "monk-eee", "reviewer", "Harden", NOW + 10)
             .unwrap();
 
         let history = store.amendments().unwrap();

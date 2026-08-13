@@ -108,14 +108,40 @@ impl Lodestar {
     }
 
     /// Promote a reviewed amendment draft, retiring the version it replaces.
+    ///
+    /// `approved_by` is the separation of parties, not a humans-only gate: an
+    /// agent may approve an amendment, just not its own. That is the whole
+    /// point — the record could previously only ever name the calling agent, so
+    /// an agent changing policy on its own initiative was indistinguishable
+    /// from a reviewed adoption. Attributed, never authenticated (ADR-0071):
+    /// this establishes what the audit history can say, and nothing here could
+    /// be enforced against a determined caller on a local stdio server.
+    ///
+    /// The same shape `task_transition to="resolve"` already uses for a single
+    /// task, applied to the larger act.
     pub fn amend_constitution(
         &self,
         draft_id: &str,
         amended_by: &str,
+        approved_by: &str,
         rationale: &str,
     ) -> Result<ConstitutionAmendment> {
+        let approver = approved_by.trim();
+        if approver.is_empty() {
+            return Err(LodestarError::Invalid(
+                "an amendment requires an attributed approver; ADR-0043 makes adoption an \
+                 attributed act, and an unnamed one records nothing"
+                    .to_string(),
+            ));
+        }
+        if approver.eq_ignore_ascii_case(amended_by.trim()) {
+            return Err(LodestarError::Invalid(format!(
+                "{approver} proposed this amendment and cannot also approve it; name the \
+                 reviewer who accepted it, which may be another agent"
+            )));
+        }
         self.store
-            .amend_constitution(draft_id, amended_by, rationale, now_unix())
+            .amend_constitution(draft_id, amended_by, approver, rationale, now_unix())
     }
 
     /// The amendment history, newest first.
@@ -290,11 +316,17 @@ mod tests {
             .unwrap();
 
         let amendment = e
-            .amend_constitution(&draft.id, "monk-eee", "Evidence rule needed teeth.")
+            .amend_constitution(
+                &draft.id,
+                "monk-eee",
+                "reviewer",
+                "Evidence rule needed teeth.",
+            )
             .unwrap();
 
         assert_eq!(amendment.from_version, active);
         assert_eq!(amendment.amended_by, "monk-eee");
+        assert_eq!(amendment.approved_by.as_deref(), Some("reviewer"));
         assert!(amendment
             .diff
             .iter()
@@ -304,6 +336,56 @@ mod tests {
             draft.id
         );
         assert_eq!(e.amendments().unwrap().len(), 1);
+    }
+
+    // The record could previously only ever name the calling agent, so an agent
+    // amending policy on its own initiative was indistinguishable from a
+    // reviewed adoption. The guard is separation of parties, not a humans-only
+    // gate: another agent approving is fine, approving your own is not.
+    #[test]
+    fn an_amendment_cannot_be_approved_by_whoever_made_it() {
+        let e = engine();
+        let active = governed(&e);
+        let draft = e.propose_amendment(Some("session:v1:alice")).unwrap();
+        harden_clause(&e, &draft.id, 0);
+
+        let error = e
+            .amend_constitution(
+                &draft.id,
+                "session:v1:alice",
+                "session:v1:alice",
+                "Because I say so.",
+            )
+            .unwrap_err();
+        assert!(
+            format!("{error}").contains("cannot also approve it"),
+            "{error}"
+        );
+        // Case is not a loophole: the same party under another spelling is the
+        // same party.
+        assert!(e
+            .amend_constitution(
+                &draft.id,
+                "session:v1:alice",
+                "SESSION:V1:ALICE",
+                "Because I say so.",
+            )
+            .is_err());
+        assert!(e
+            .amend_constitution(&draft.id, "session:v1:alice", "   ", "No approver.")
+            .is_err());
+
+        // A different party may approve, and it need not be a human.
+        let amendment = e
+            .amend_constitution(
+                &draft.id,
+                "session:v1:alice",
+                "session:v1:bob",
+                "Reviewed by a peer.",
+            )
+            .unwrap();
+        assert_eq!(amendment.from_version, active);
+        assert_eq!(amendment.approved_by.as_deref(), Some("session:v1:bob"));
     }
 
     #[test]
@@ -375,8 +457,13 @@ mod tests {
         })
         .unwrap();
 
-        e.amend_constitution(&draft.id, "monk-eee", "Evidence rule needed teeth.")
-            .unwrap();
+        e.amend_constitution(
+            &draft.id,
+            "monk-eee",
+            "reviewer",
+            "Evidence rule needed teeth.",
+        )
+        .unwrap();
 
         let after = active_clause(&e, &slug);
         assert_ne!(before, after, "the amendment gives the clause a new id");
@@ -402,7 +489,7 @@ mod tests {
         let first = e.propose_amendment(Some("monk-eee")).unwrap();
         let slug = harden_clause(&e, &first.id, 0);
         let stranded_against = active_clause(&e, &slug);
-        e.amend_constitution(&first.id, "monk-eee", "First change.")
+        e.amend_constitution(&first.id, "monk-eee", "reviewer", "First change.")
             .unwrap();
 
         // Registered against the clause id that the first amendment retired,
@@ -428,7 +515,7 @@ mod tests {
 
         let second = e.propose_amendment(Some("monk-eee")).unwrap();
         harden_clause(&e, &second.id, 1);
-        e.amend_constitution(&second.id, "monk-eee", "Second change.")
+        e.amend_constitution(&second.id, "monk-eee", "reviewer", "Second change.")
             .unwrap();
 
         let controls = e.clause_controls(&active_clause(&e, &slug)).unwrap();
@@ -463,8 +550,13 @@ mod tests {
         .unwrap();
         assert!(e.retire_control("control:retired", "monk-eee").unwrap());
 
-        e.amend_constitution(&draft.id, "monk-eee", "Evidence rule needed teeth.")
-            .unwrap();
+        e.amend_constitution(
+            &draft.id,
+            "monk-eee",
+            "reviewer",
+            "Evidence rule needed teeth.",
+        )
+        .unwrap();
 
         let after = active_clause(&e, &slug);
         assert!(
@@ -625,6 +717,7 @@ mod tests {
         e.amend_constitution(
             &draft.id,
             "monk-eee",
+            "reviewer",
             "Bring the tool surface under a stated rule.",
         )
         .unwrap();
