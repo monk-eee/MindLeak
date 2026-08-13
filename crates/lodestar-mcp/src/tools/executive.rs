@@ -15,8 +15,9 @@ const TRANSITIONS: [&str; 9] = [
     "complete", "resolve", "block", "reopen", "abandon", "pause", "resume", "ask", "answer",
 ];
 
-const VIEWS: [&str; 11] = [
+const VIEWS: [&str; 12] = [
     "board",
+    "doctor",
     "next",
     "scope",
     "existing_work",
@@ -267,13 +268,13 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "task_query",
-            "description": "Every read over tasks, with `view` naming the question. `board` is the coordination snapshot with owner, status and lease. `next` suggests the next unblocked claimable task, oldest first. `scope` reads one task's declared advisory path/symbol scope, which is a planning hint and never a lock (ADR-0024). `existing_work` answers 'has this already been done?' and INCLUDES finished and abandoned tasks, because a task that is already done is the most useful answer and the one `board` hides. `overlap` is the pre-flight check for live claims intersecting concrete paths or symbols, each classified from the branches the two sessions declared at open_session (ADR-0035) as same_branch_collision, cross_branch_merge_risk, or undeclared. `stalled` returns every task that is not progressing and the fact that stalled it, reporting how long without deciding whether that is too long. `thread` is the durable append-only dialogue for a task. `pending_questions` is what is addressed to you, `questions_for_a_human` what is waiting on a person — necessarily separate, because a human has no agent id, so a query matching an id can never return one (ADR-0046). `drafts` proposes the questions a task's owner could put to colliding peers (ADR-0055). `claim_transfers` is the append-only ownership recovery history. All of it is read-only and evidence-free: nothing is delivered, reserved or consumed, so reading can never lose a question and two readers see the same rows.",
+            "description": "Every read over tasks, with `view` naming the question. `board` is the coordination snapshot with owner, status and lease. `doctor` diagnoses that same live board: identical titles under one goal, one title forked across several goals, and work blocked on no predecessor — each with the task ids and a suggested repair. It reports and never mutates, because which of two identically titled tasks is the real work is a call only you can make (ADR-0015). `next` suggests the next unblocked claimable task, oldest first. `scope` reads one task's declared advisory path/symbol scope, which is a planning hint and never a lock (ADR-0024). `existing_work` answers 'has this already been done?' and INCLUDES finished and abandoned tasks, because a task that is already done is the most useful answer and the one `board` hides. `overlap` is the pre-flight check for live claims intersecting concrete paths or symbols, each classified from the branches the two sessions declared at open_session (ADR-0035) as same_branch_collision, cross_branch_merge_risk, or undeclared. `stalled` returns every task that is not progressing and the fact that stalled it, reporting how long without deciding whether that is too long. `thread` is the durable append-only dialogue for a task. `pending_questions` is what is addressed to you, `questions_for_a_human` what is waiting on a person — necessarily separate, because a human has no agent id, so a query matching an id can never return one (ADR-0046). `drafts` proposes the questions a task's owner could put to colliding peers (ADR-0055). `claim_transfers` is the append-only ownership recovery history. All of it is read-only and evidence-free: nothing is delivered, reserved or consumed, so reading can never lose a question and two readers see the same rows.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "view": {
                         "type": "string",
-                        "enum": ["board", "next", "scope", "existing_work", "overlap", "stalled", "thread", "pending_questions", "questions_for_a_human", "drafts", "claim_transfers"],
+                        "enum": ["board", "doctor", "next", "scope", "existing_work", "overlap", "stalled", "thread", "pending_questions", "questions_for_a_human", "drafts", "claim_transfers"],
                         "description": "Which question to ask. Each names the further arguments it needs."
                     },
                     "task_id": { "type": "string", "description": "scope, thread, drafts and claim_transfers: the task to read." },
@@ -537,6 +538,7 @@ pub(super) fn dispatch(
             }
             "existing_work" => existing_work(engine, args),
             "board" => board(engine, args),
+            "doctor" => ok(&engine.diagnose_board().map_err(|e| e.to_string())?),
             other => unreachable!("one_of refused every value but {VIEWS:?}, not {other}"),
         })()),
         "task_transition" => Some((|| {

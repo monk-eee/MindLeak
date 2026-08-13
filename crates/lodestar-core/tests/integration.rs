@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lodestar_core::{
-    now_unix, ArtifactBindingMode, ConformanceEvidence, EvidenceProvenance, GoalKind, Lodestar,
-    LodestarError, SignalPromotion, TaskStatus, Verdict,
+    now_unix, ArtifactBindingMode, BoardAilment, BoardFinding, ConformanceEvidence,
+    EvidenceProvenance, GoalKind, Lodestar, LodestarError, SignalPromotion, TaskStatus, Verdict,
 };
 use mindleak_core::ingest::git::CommitRecord;
 use mindleak_core::MindLeak;
@@ -900,4 +900,105 @@ fn learned_knowledge_loop_promotes_then_advises_conformance_without_violation() 
         .findings
         .iter()
         .any(|f| f.contains("advisory: learned knowledge")));
+}
+
+#[test]
+fn board_doctor_names_the_ailments_no_other_view_surfaces() {
+    // Regression test for the board conditions that had to be repaired by hand
+    // because no query named them. Observed on this repository's own board: 49
+    // identically titled live tasks (21 duplicated under one goal, 28 forked
+    // across goals) and 9 tasks `blocked` with no predecessor. Impact: two
+    // agents claimed the same work from a board that looked healthy, and the
+    // ungated blocks were invisible to `stalled` — which reports lateness, and
+    // nothing about a duplicate or an ungated block is late — so a human had to
+    // read every row to find them. Fix: `diagnose_board` reports all three.
+    // Fails pre-fix: the method does not exist.
+    let engine = Lodestar::open_in_memory().unwrap();
+    let search = engine
+        .define_goal(GoalKind::Objective, "Ship search", "add FTS search", None)
+        .unwrap();
+
+    // One task per title is healthy, and a healthy board reports nothing.
+    let healthy = engine
+        .create_task(&search.id, "wire FTS", "search returns hits")
+        .unwrap();
+    assert_eq!(engine.diagnose_board().unwrap(), Vec::<BoardFinding>::new());
+
+    // Two live tasks with one title under one goal: the collision that had two
+    // agents building the same thing.
+    let twin = engine
+        .create_task(&search.id, "wire FTS", "search returns hits")
+        .unwrap();
+    assert_ne!(twin.id, healthy.id, "the seeds must be distinct tasks");
+    let duplicate = engine.diagnose_board().unwrap();
+    assert_eq!(
+        duplicate.len(),
+        1,
+        "expected one finding, got {duplicate:?}"
+    );
+    assert_eq!(duplicate[0].ailment, BoardAilment::DuplicateTitle);
+    assert_eq!(duplicate[0].subject, "wire FTS");
+    assert_eq!(
+        duplicate[0].task_ids,
+        vec![healthy.id.clone(), twin.id.clone()],
+        "oldest first, so the reader can see which seed came second"
+    );
+
+    // Retiring one clears it: terminal work is history, and a diagnostic that
+    // kept reporting repairs would get noisier every time it was acted on.
+    assert!(engine.abandon_task(&twin.id, true).unwrap());
+    assert_eq!(engine.diagnose_board().unwrap(), Vec::<BoardFinding>::new());
+
+    // The same title live under a second goal is a fork, not a duplicate: the
+    // repair is to keep one and declare the breadth (ADR-0041), not to abandon
+    // a task that is genuinely the only work serving its goal.
+    let rank = engine
+        .define_goal(GoalKind::Objective, "Rank results", "order by score", None)
+        .unwrap();
+    let forked = engine
+        .create_task(&rank.id, "wire FTS", "search returns hits")
+        .unwrap();
+    let across = engine.diagnose_board().unwrap();
+    assert_eq!(across.len(), 1, "expected one finding, got {across:?}");
+    assert_eq!(across[0].ailment, BoardAilment::SameTitleAcrossGoals);
+    assert_eq!(across[0].subject, "wire FTS");
+    assert_eq!(across[0].task_ids, vec![healthy.id.clone(), forked.id]);
+
+    // Blocked on no predecessor: nothing will ever unblock it, and `stalled`
+    // cannot see it because a blocked task is not late, it is parked.
+    let ungated = engine
+        .create_task(&search.id, "tune the ranker", "scores improve")
+        .unwrap();
+    assert!(engine
+        .block_task(&ungated.id, None, None, "agent-a")
+        .unwrap());
+    assert_eq!(
+        engine
+            .store()
+            .get_task(&ungated.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Blocked
+    );
+    let blocked: Vec<BoardFinding> = engine
+        .diagnose_board()
+        .unwrap()
+        .into_iter()
+        .filter(|f| f.ailment == BoardAilment::BlockedWithoutGate)
+        .collect();
+    assert_eq!(blocked.len(), 1, "expected one finding, got {blocked:?}");
+    assert_eq!(blocked[0].task_ids, vec![ungated.id.clone()]);
+    assert_eq!(blocked[0].subject, "tune the ranker");
+
+    // A block that names its predecessor is ordinary sequencing, not an
+    // ailment: something will clear it.
+    assert!(engine
+        .block_task(&ungated.id, Some(healthy.id.clone()), None, "agent-a")
+        .unwrap());
+    assert!(!engine
+        .diagnose_board()
+        .unwrap()
+        .iter()
+        .any(|f| f.ailment == BoardAilment::BlockedWithoutGate));
 }

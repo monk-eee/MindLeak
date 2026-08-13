@@ -41,6 +41,89 @@ impl LodestarStore {
         collect(rows)
     }
 
+    /// Diagnose the live board: the conditions that no other view surfaces.
+    ///
+    /// Read-only and judgement-free. It reports what it finds and suggests a
+    /// repair; it never abandons, blocks, or reopens anything, because which of
+    /// two identically titled tasks is the real work is a call only the reader
+    /// can make (ADR-0015).
+    ///
+    /// Terminal tasks are excluded throughout. A retired duplicate is history,
+    /// and reporting it would make the view noisier every time it was acted on
+    /// — which is how a diagnostic stops being read.
+    pub fn diagnose_board(&self) -> Result<Vec<BoardFinding>> {
+        let live = self.board(false)?;
+        let mut findings = Vec::new();
+
+        let mut by_title: Vec<(&str, Vec<&Task>)> = Vec::new();
+        for task in &live {
+            match by_title.iter_mut().find(|(title, _)| *title == task.title) {
+                Some((_, group)) => group.push(task),
+                None => by_title.push((task.title.as_str(), vec![task])),
+            }
+        }
+
+        for (title, group) in &by_title {
+            if group.len() < 2 {
+                continue;
+            }
+            // One title can be both at once: two under one goal and a third
+            // elsewhere is a fork *and* a duplicate, and a reader told only the
+            // first would retire the wrong one.
+            let mut same_goal: Vec<String> = Vec::new();
+            let mut across_goals: Vec<String> = Vec::new();
+            for task in group {
+                let slug = goal_slug(&task.goal_id);
+                if group
+                    .iter()
+                    .any(|other| other.id != task.id && goal_slug(&other.goal_id) == slug)
+                {
+                    same_goal.push(task.id.clone());
+                }
+                if group.iter().any(|other| goal_slug(&other.goal_id) != slug) {
+                    across_goals.push(task.id.clone());
+                }
+            }
+            if !same_goal.is_empty() {
+                findings.push(BoardFinding {
+                    ailment: BoardAilment::DuplicateTitle,
+                    task_ids: same_goal,
+                    subject: (*title).to_string(),
+                    remedy: "one goal, one title, more than one live task: decide which is \
+                             the work and abandon the rest before two agents claim both"
+                        .to_string(),
+                });
+            }
+            if !across_goals.is_empty() {
+                findings.push(BoardFinding {
+                    ailment: BoardAilment::SameTitleAcrossGoals,
+                    task_ids: across_goals,
+                    subject: (*title).to_string(),
+                    remedy: "the same title is live under several goals: keep the one whose \
+                             goal the work actually serves, declare any genuine breadth with \
+                             also_serves on that single task (ADR-0041), and abandon the rest"
+                        .to_string(),
+                });
+            }
+        }
+
+        for task in &live {
+            if task.status == TaskStatus::Blocked && task.blocked_by.is_none() {
+                findings.push(BoardFinding {
+                    ailment: BoardAilment::BlockedWithoutGate,
+                    task_ids: vec![task.id.clone()],
+                    subject: task.title.clone(),
+                    remedy: "blocked on no predecessor, so nothing will unblock it: reopen it \
+                             if the work is wanted, abandon it if it is not, or re-block it \
+                             with a reason naming what would clear it"
+                        .to_string(),
+                });
+            }
+        }
+
+        Ok(findings)
+    }
+
     /// Work that already serves this goal, or already declared any of these
     /// paths in its scope — including finished work.
     ///

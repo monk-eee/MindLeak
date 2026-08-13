@@ -6,8 +6,8 @@ use crate::error::ModelFailureReason;
 use crate::llm::{ModelCallProvenance, ModelCallSource};
 use crate::stalls::{stalls, Stall, StallKind};
 use crate::{
-    now_unix, ClaimOverlap, ClaimOverlapReport, ClaimTransfer, ClaimWindow, HumanQuestion,
-    Lodestar, LodestarError, Result, Task, TaskQa, TaskScope,
+    now_unix, BoardFinding, ClaimOverlap, ClaimOverlapReport, ClaimTransfer, ClaimWindow,
+    HumanQuestion, Lodestar, LodestarError, Result, Task, TaskQa, TaskScope,
 };
 
 /// One task a decomposition resolved to, with additive model-call provenance.
@@ -591,6 +591,17 @@ impl Lodestar {
 
     pub fn board(&self, include_terminal: bool) -> Result<Vec<Task>> {
         self.store.board(include_terminal)
+    }
+
+    /// Diagnose the live board: duplicate titles, the same title forked across
+    /// goals, and work blocked on no predecessor.
+    ///
+    /// Read-only and judgement-free. Every condition here was found and
+    /// repaired by hand before this existed, and none is surfaced by another
+    /// view — `stalled` reports lateness, and nothing about a duplicate or an
+    /// ungated block is late.
+    pub fn diagnose_board(&self) -> Result<Vec<BoardFinding>> {
+        self.store.diagnose_board()
     }
 
     /// Every task that is not progressing, and the fact that stalled it.
