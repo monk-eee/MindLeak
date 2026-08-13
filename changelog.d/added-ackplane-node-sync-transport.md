@@ -1,0 +1,1 @@
+- **Ackplane now serves the ledger-backed `NodeSyncService.Synchronize` gRPC stream.** Repository nodes can receive hello acknowledgements, submit event batches for durable receipts, and receive typed rejections without making the local MCP planes depend on the federation service.
