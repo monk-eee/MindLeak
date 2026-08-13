@@ -261,10 +261,20 @@ asynchronously replicated acknowledgement ADR-0086 clause 12 will not label as
 zero-loss. The database URL carries a password, so it is absent from the banner
 and redacted in a hand-written `Debug`.
 
-The server exposes only `NodeSyncService.Synchronize` from ADR-0083. Its stream
-acknowledges a hello, translates event batches into ledger appends, returns
-durable positions in receipts, and emits typed rejections for malformed or
-conflicting records. Enrollment and key-rotation RPCs remain unimplemented.
+The server exposes `NodeSyncService.Synchronize` from ADR-0083 and the initial
+enrollment path from ADR-0085. The synchronization stream acknowledges a hello,
+translates event batches into ledger appends, returns durable positions in
+receipts, and emits typed rejections for malformed or conflicting records.
+
+`NodeEnrollmentService` persists pending requests, an append-only authority
+transition history, approved public-key bindings, single-use short-lived
+challenges, and immutable enrollment receipts. A node may submit a request, but
+it cannot approve itself: an independently authenticated administrator must
+approve the exact fingerprint before the service issues a challenge. Ackplane
+verifies the node's Ed25519 proof over a domain-separated, bound challenge and
+atomically consumes it while recording `activating`. Key rotation remains
+explicitly unavailable until the continuity proof required by ADR-0085 is
+implemented.
 
 ### `editors/vscode` (extension)
 

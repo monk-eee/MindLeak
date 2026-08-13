@@ -2,8 +2,14 @@
 
 use std::{net::SocketAddr, process::ExitCode};
 
-use ackplane_protocol::v1::node_sync_service_server::NodeSyncServiceServer;
-use ackplane_server::{ledger::LedgerStore, service::NodeSyncService, ServerConfig};
+use ackplane_protocol::v1::{
+    node_enrollment_service_server::NodeEnrollmentServiceServer,
+    node_sync_service_server::NodeSyncServiceServer,
+};
+use ackplane_server::{
+    enrollment_service::NodeEnrollmentService, enrollment_store::EnrollmentStore,
+    ledger::LedgerStore, service::NodeSyncService, ServerConfig,
+};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -26,10 +32,24 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            let enrollment_store = match EnrollmentStore::connect(config.database_url()).await {
+                Ok(store) => store,
+                Err(error) => {
+                    eprintln!(
+                        "ackplane-server: could not connect to the configured enrollment store: {error}"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            };
 
-            println!("ackplane-server: serving NodeSyncService.Synchronize");
+            println!(
+                "ackplane-server: serving NodeSyncService.Synchronize and NodeEnrollmentService"
+            );
             match tonic::transport::Server::builder()
                 .add_service(NodeSyncServiceServer::new(NodeSyncService::new(ledger)))
+                .add_service(NodeEnrollmentServiceServer::new(
+                    NodeEnrollmentService::new(enrollment_store),
+                ))
                 .serve(address)
                 .await
             {
