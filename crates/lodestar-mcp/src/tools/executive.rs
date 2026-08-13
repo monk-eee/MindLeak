@@ -6,7 +6,10 @@ use super::{
     bool_arg, i64_arg, ok, one_of, opt_str, optional_string_arg, renamed, rendered, req_str,
     required_for, str_array, text, Renamed,
 };
-use lodestar_core::{now_unix, GoverningClause, HumanQuestion, Lodestar, TaskScope, TaskStatus};
+use lodestar_core::{
+    now_unix, ConformanceCheckReference, GoverningClause, HumanQuestion, Lodestar, TaskScope,
+    TaskStatus,
+};
 use serde_json::{json, Value};
 
 const CLAIM_STEPS: [&str; 4] = ["claim", "renew", "release", "recover"];
@@ -250,7 +253,7 @@ pub(super) fn definitions() -> Vec<Value> {
                     },
                     "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." },
                     "evidence": { "type": "object", "description": "complete: versioned ConformanceEvidence returned by MindLeak evidence_for." },
-                    "check": { "type": "object", "description": "complete: the exact id/token/verdict/findings object returned by check_conformance." },
+                    "check": { "type": "object", "description": "complete: the id/token reference returned by check_conformance, or the full legacy id/token/verdict/findings object." },
                     "learned": { "type": "string", "description": "complete: what this task taught that the next agent would otherwise rediscover. Omit when it taught nothing." },
                     "human": { "type": "string", "description": "resolve: non-empty reviewer label recorded in resolved_by. Attributed, not authenticated; must differ from the agent id under review." },
                     "blocked_by": { "type": "string", "description": "block: optional predecessor, which must be same-goal, acyclic, and part of a one-to-one handoff chain." },
@@ -799,22 +802,36 @@ fn existing_work(engine: &Lodestar, args: &Value) -> Result<Value, String> {
 
 fn complete(engine: &Lodestar, task_id: &str, args: &Value) -> Result<Value, String> {
     let evidence = parse_evidence(args)?;
-    let check = serde_json::from_value(
-        args.get("check")
-            .cloned()
-            .ok_or_else(|| "\"complete\" requires check: the exact id/token/verdict/findings object returned by check_conformance.".to_string())?,
-    )
-    .map_err(|error| format!("invalid conformance check: {error}"))?;
+    let check = args
+        .get("check")
+        .cloned()
+        .ok_or_else(|| {
+            "\"complete\" requires check: the id/token reference or full check returned by check_conformance."
+                .to_string()
+        })?;
     let learned = opt_str(args, "learned");
-    let completion = engine
-        .complete_task(
+    let completion = if check.get("verdict").is_some() || check.get("findings").is_some() {
+        let check = serde_json::from_value(check)
+            .map_err(|error| format!("invalid full conformance check: {error}"))?;
+        engine.complete_task(
             task_id,
             opt_str(args, "agent").unwrap_or_default().as_str(),
             &evidence,
             &check,
             learned.as_deref(),
         )
-        .map_err(|e| e.to_string())?;
+    } else {
+        let check: ConformanceCheckReference = serde_json::from_value(check)
+            .map_err(|error| format!("invalid compact conformance check: {error}"))?;
+        engine.complete_task_with_check_reference(
+            task_id,
+            opt_str(args, "agent").unwrap_or_default().as_str(),
+            &evidence,
+            &check,
+            learned.as_deref(),
+        )
+    }
+    .map_err(|e| e.to_string())?;
     let mut response = json!({
         "completed": completion.completed,
         "conformance": completion.conformance,
@@ -1704,7 +1721,10 @@ mod tests {
                     "to": "complete",
                     "agent": "agent-a",
                     "evidence": evidence,
-                    "check": checked
+                    "check": {
+                        "id": checked["id"],
+                        "token": checked["token"]
+                    }
                 }
             }),
         )
