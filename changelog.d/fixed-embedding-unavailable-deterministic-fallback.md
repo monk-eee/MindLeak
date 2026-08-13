@@ -1,0 +1,1 @@
+- **Semantic recall now degrades to the deterministic graph when embeddings are unavailable.** The `recall` tool returns FTS-seeded graph traversal with explicit fallback metadata and actionable Ollama/`nomic-embed-text` or alternate-endpoint setup advice; autonomous-index telemetry now preserves the same model failure instead of reducing it to an opaque category.

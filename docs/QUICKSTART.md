@@ -279,14 +279,15 @@ export MINDLEAK_EMBED_URL="http://localhost:11434/v1"
 export MINDLEAK_EMBED_MODEL="nomic-embed-text"    # ollama pull nomic-embed-text
 ```
 
-Both error cleanly when no server is reachable — they never block the
-deterministic path. **Semantic recall additionally needs the embedding model
-pulled** (`ollama pull nomic-embed-text`). Until then `recall`/`index` return an
-actionable error naming the exact fix, and the server logs `semantic recall:
-enabled` or `disabled` at startup so you always know its state. Once the model is
-reachable the index refreshes itself on idle (when
-`MINDLEAK_AUTONOMOUS_CONSOLIDATION=true`); otherwise run the `index` tool once to
-populate vectors.
+Neither augmentation blocks the deterministic path when its server is
+unreachable. **Semantic recall additionally needs the embedding model pulled**
+(`ollama pull nomic-embed-text`). Until then `index` returns an actionable error,
+while `recall` returns deterministic graph/FTS results plus the exact Ollama or
+alternate-endpoint remedy. The server logs `semantic recall: enabled` or
+`disabled` at startup, and autonomous-index telemetry preserves the failure
+detail. Once reachable, the index refreshes every 300 seconds by default,
+independently of autonomous consolidation; set
+`MINDLEAK_AUTONOMOUS_INDEX=false` to disable those attempts.
 
 Autonomous consolidation is disabled by default. To opt in, set
 `MINDLEAK_AUTONOMOUS_CONSOLIDATION=true`; the server then uses the same optional
