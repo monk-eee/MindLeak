@@ -94,6 +94,28 @@ export const isUpToDate = (pr) =>
   pr.mergeStateStatus === "HAS_HOOKS";
 
 /**
+ * `mergeStateStatus` is a cached answer GitHub recomputes lazily, and after a
+ * burst of merges it can keep reporting `DIRTY` for a branch that merges
+ * cleanly (gaps.d records this happening to a real branch: `git merge-tree`
+ * and the REST `mergeable` field both said clean while `gh pr list` still said
+ * `DIRTY`). Trusting it directly makes the one case the queue is designed to
+ * hand back -- a real conflict -- also the case it gets wrong, and wrong in a
+ * way nothing ever rechecks: the same stale field is read every tick.
+ *
+ * `verifyDirty(pr)` is the correction, injected rather than hard-coded so the
+ * pure decision stays git- and network-free in tests. Given no predicate, a
+ * `DIRTY` verdict is trusted exactly as before -- this function changes
+ * nothing unless a caller opts in. Given one that reports the branch actually
+ * merges cleanly, the verdict is corrected to `BEHIND`, which is what a stale
+ * `DIRTY` almost always really is: main moved on and GitHub has not caught up.
+ */
+export function effectiveMergeState(pr, verifyDirty) {
+  if (pr.mergeStateStatus !== "DIRTY") return pr.mergeStateStatus;
+  if (verifyDirty && !verifyDirty(pr)) return "BEHIND";
+  return "DIRTY";
+}
+
+/**
  * Decide the single next thing to do.
  *
  * The invariant: do not update a branch while another branch is *about to
@@ -111,8 +133,18 @@ export const isUpToDate = (pr) =>
  * otherwise wedge the queue forever, so after that long we stop waiting on it
  * and let the next branch through.
  */
-export function nextAction(prs, now, { stalledAfterMs = 45 * 60 * 1000 } = {}) {
-  const queued = queueOrder(prs);
+export function nextAction(
+  prs,
+  now,
+  { stalledAfterMs = 45 * 60 * 1000, verifyDirty } = {},
+) {
+  // Corrected once, up front, so every downstream question (blocked?,
+  // up to date?, behind?) sees one consistent verdict per branch rather than
+  // each re-deriving its own opinion of what DIRTY really meant this tick.
+  const queued = queueOrder(prs).map((pr) => ({
+    ...pr,
+    mergeStateStatus: effectiveMergeState(pr, verifyDirty),
+  }));
   const blocked = queued.filter((pr) => pr.mergeStateStatus === "DIRTY");
   const failing = queued.filter((pr) => checksFailing(pr).length > 0);
   // Open work the queue is not managing. Arming is what queues a pull request
@@ -262,6 +294,47 @@ export function readQueue() {
   );
 }
 
+/**
+ * The real `verifyDirty`: fetch the two refs the answer depends on, then ask
+ * `git merge-tree` whether they actually conflict. It never touches the
+ * working tree, the index, or any ref -- `--write-tree` writes a tree object
+ * to the object database and nothing else, so this is safe to call mid-tick
+ * against whatever the caller happens to have checked out.
+ *
+ * `git merge-tree` exits non-zero when the merge has conflicts and zero when
+ * it does not (`execFileSync` throwing is exactly that non-zero exit), so a
+ * clean merge and a real conflict are already distinguished by the exit code
+ * before any output is inspected. On a fetch failure or any other unexpected
+ * error, this reports the conflict as real: a cached `DIRTY` that turns out to
+ * be correct costs one extra hand-back, but treating an unverifiable branch as
+ * automatically clean could update a branch that genuinely does not merge.
+ */
+export function verifyDirtyWithGit(pr) {
+  try {
+    execFileSync(
+      "git",
+      ["fetch", "origin", "main", pr.headRefName, "--quiet"],
+      {
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    execFileSync(
+      "git",
+      [
+        "merge-tree",
+        "--write-tree",
+        "--name-only",
+        "origin/main",
+        `origin/${pr.headRefName}`,
+      ],
+      { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 const USAGE = `delivery-queue -- take branch-update turns in order (ADR-0062)
 
   node scripts/delivery-queue.mjs [--watch] [--dry-run]
@@ -327,7 +400,9 @@ function main() {
   };
 
   const tick = () => {
-    const action = nextAction(readQueue(), Date.now());
+    const action = nextAction(readQueue(), Date.now(), {
+      verifyDirty: verifyDirtyWithGit,
+    });
     console.log(describe(action));
     if (action.kind !== "update") return action.kind;
     if (!apply) {
