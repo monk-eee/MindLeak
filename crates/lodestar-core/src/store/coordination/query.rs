@@ -107,21 +107,57 @@ impl LodestarStore {
             }
         }
 
+        let stated_a_reason = self.blocks_that_stated_a_reason()?;
         for task in &live {
-            if task.status == TaskStatus::Blocked && task.blocked_by.is_none() {
+            if task.status == TaskStatus::Blocked
+                && task.blocked_by.is_none()
+                && !stated_a_reason.contains(&task.id)
+            {
                 findings.push(BoardFinding {
                     ailment: BoardAilment::BlockedWithoutGate,
                     task_ids: vec![task.id.clone()],
                     subject: task.title.clone(),
-                    remedy: "blocked on no predecessor, so nothing will unblock it: reopen it \
-                             if the work is wanted, abandon it if it is not, or re-block it \
-                             with a reason naming what would clear it"
+                    remedy: "blocked on no predecessor and with no reason recorded, so nothing \
+                             will unblock it and nothing says what would: reopen it if the work \
+                             is wanted, abandon it if it is not, or re-block it with a reason \
+                             naming what clears it"
                         .to_string(),
                 });
             }
         }
 
         Ok(findings)
+    }
+
+    /// Tasks whose most recent `blocked` event stated a reason.
+    ///
+    /// `blocked_by` is a one-to-one handoff (ADR-0015), so several tasks waiting
+    /// on one predecessor cannot all be gated on it. A block with a stated
+    /// reason is the only way to express that, and reporting it as an ailment
+    /// would fire forever on a board that is behaving correctly.
+    fn blocks_that_stated_a_reason(&self) -> Result<HashSet<String>> {
+        let mut statement = self.conn.prepare(
+            "SELECT task_id, detail FROM task_events e
+             WHERE e.kind = ?1
+               AND e.seq = (SELECT MAX(seq) FROM task_events x
+                            WHERE x.task_id = e.task_id AND x.kind = ?1)",
+        )?;
+        let rows = statement.query_map(params![TaskEventKind::Blocked.as_str()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut stated = HashSet::new();
+        for row in rows {
+            let (task_id, detail) = row?;
+            // Written by `detail_json`, so read it the same way rather than
+            // matching on the text.
+            let reason = serde_json::from_str::<serde_json::Value>(&detail)
+                .ok()
+                .and_then(|detail| detail.get("reason")?.as_str().map(str::to_string));
+            if reason.is_some_and(|reason| !reason.trim().is_empty()) {
+                stated.insert(task_id);
+            }
+        }
+        Ok(stated)
     }
 
     /// Work that already serves this goal, or already declared any of these
