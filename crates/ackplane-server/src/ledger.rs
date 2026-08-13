@@ -78,7 +78,7 @@ pub struct DedupKey {
 /// plain storage-layer type rather than the generated Protobuf message:
 /// mapping the wire contract onto this is the gRPC handler's job (ADR-0083),
 /// not the ledger's, so the two can change independently.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventEnvelope {
     pub key: DedupKey,
     pub payload: Vec<u8>,
