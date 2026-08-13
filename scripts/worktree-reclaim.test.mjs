@@ -312,6 +312,7 @@ const cache = (over = {}) => ({
   path: "C:/Repos/MindLeak-x/target/debug",
   branch: "feat/x",
   bare: false,
+  primary: false,
   dirty: false,
   landed: true,
   owner: null,
@@ -334,7 +335,7 @@ test("never sweeps the bare host's target/release, which serves the running serv
     { now: NOW },
   );
   assert.equal(verdict.sweep, false);
-  assert.match(verdict.reason, /serves the running MCP binaries/);
+  assert.match(verdict.reason, /serves the running tools/);
 });
 
 test("still sweeps the bare host's target/debug, the largest measured candidate", () => {
@@ -342,6 +343,62 @@ test("still sweeps the bare host's target/debug, the largest measured candidate"
     cache({ bare: true, branch: null, kind: "cargo-debug" }),
     { now: NOW },
   );
+  assert.equal(verdict.sweep, true);
+});
+
+// Measured 2026-08-13: this fleet serves from a NON-bare checkout on `main`.
+// It is clean, landed, unowned and idle, so every other predicate passed and
+// the sweep deleted the binaries `resolveServer` resolves to -- after which
+// worktree-reclaim refused every worktree with "no lodestar-mcp binary found"
+// and canonical-push could not publish. A guard keyed on `bare` alone never
+// fired here.
+test("never sweeps the serving checkout's target/release when it is not bare", () => {
+  const verdict = classifyArtefact(
+    cache({ primary: true, branch: "main", kind: "cargo-release" }),
+    { now: NOW },
+  );
+  assert.equal(verdict.sweep, false);
+  assert.match(verdict.reason, /serves the running tools/);
+});
+
+test("still sweeps the serving checkout's target/debug", () => {
+  const verdict = classifyArtefact(
+    cache({ primary: true, branch: "main", kind: "cargo-debug" }),
+    { now: NOW },
+  );
+  assert.equal(verdict.sweep, true);
+});
+
+// The other half of the same rule: the commit hooks shell out to prettier and
+// eslint from editors/vscode/node_modules, so sweeping it off the host breaks
+// every subsequent commit there with MODULE_NOT_FOUND from a hook that
+// modifies nothing.
+test("never sweeps the serving checkout's extension node_modules", () => {
+  const verdict = classifyArtefact(
+    cache({
+      primary: true,
+      branch: "main",
+      kind: "extension-node-modules",
+    }),
+    { now: NOW },
+  );
+  assert.equal(verdict.sweep, false);
+  assert.match(verdict.reason, /serves the running tools/);
+});
+
+test("still sweeps a linked worktree's extension node_modules", () => {
+  const verdict = classifyArtefact(cache({ kind: "extension-node-modules" }), {
+    now: NOW,
+  });
+  assert.equal(verdict.sweep, true);
+});
+
+// The disk win this tool exists for lives in the linked worktrees, so sparing
+// the host must not spare them too.
+test("still sweeps a linked worktree's landed target/release", () => {
+  const verdict = classifyArtefact(cache({ kind: "cargo-release" }), {
+    now: NOW,
+  });
   assert.equal(verdict.sweep, true);
 });
 

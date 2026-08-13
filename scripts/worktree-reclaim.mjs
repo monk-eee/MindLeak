@@ -85,6 +85,16 @@ export const ARTEFACT_KINDS = [
 export const ARTIFACT_DIRECTORIES = ARTEFACT_KINDS.map((k) => k.rel);
 
 /**
+ * The kinds the fleet host is actively serving from, rather than merely
+ * storing. Both are regenerable, which is why they are sweepable anywhere
+ * else; on the host they are what the other agents are mid-call against.
+ */
+export const HOST_TOOLING_KINDS = new Set([
+  "cargo-release",
+  "extension-node-modules",
+]);
+
+/**
  * Whether one artefact directory may be swept, and if not, which rule stopped
  * it.
  *
@@ -107,17 +117,39 @@ export function classifyArtefact(candidate, options = {}) {
     session = null,
     openPrBranches = new Set(),
   } = options;
-  const { kind, bare, branch, dirty, landed, owner, building, modifiedAt } =
-    candidate;
+  const {
+    kind,
+    bare,
+    primary,
+    branch,
+    dirty,
+    landed,
+    owner,
+    building,
+    modifiedAt,
+  } = candidate;
 
-  // The bare host serves the MCP binaries the whole fleet is talking to right
-  // now. Deleting target/release there stops every agent mid-call, and the
-  // symptom (tools vanishing) points nowhere near the cause. Its target/debug
-  // is ordinary stale output and was the single largest candidate measured.
-  if (bare && kind === "cargo-release") {
+  // The fleet host serves the tooling every agent is using right now: the MCP
+  // binaries `resolveServer` resolves to, and the prettier/eslint the commit
+  // hooks shell out to. Deleting either stops the fleet mid-flight, and the
+  // symptom points nowhere near the cause -- "no lodestar-mcp binary found"
+  // from a reclaim that inspected no worktree, or MODULE_NOT_FOUND from a hook
+  // that modifies nothing.
+  //
+  // Keyed on `primary` rather than `bare` because a bare host is only one way
+  // to arrange this. Measured 2026-08-13: this fleet serves from a NON-bare
+  // checkout on `main`, which is clean, landed and idle, so every other
+  // predicate passed and both directories were swept out from under it. A bare
+  // host is always the primary worktree, so the case the original guard named
+  // is still covered.
+  //
+  // One rule over a set of kinds rather than two special cases: what makes
+  // these load-bearing is the checkout they sit in, not what they hold. The
+  // host's target/debug stays ordinary stale output.
+  if ((bare || primary) && HOST_TOOLING_KINDS.has(kind)) {
     return {
       sweep: false,
-      reason: "the bare host's target/release serves the running MCP binaries",
+      reason: "the fleet host's build output serves the running tools",
     };
   }
   if (building) {
@@ -435,7 +467,7 @@ export function readWorktrees(anchor) {
     .split(/\r?\n\r?\n/)
     .map((block) => block.split(/\r?\n/).filter(Boolean))
     .filter((lines) => lines.length)
-    .map((lines) => ({
+    .map((lines, index) => ({
       path: lines
         .find((l) => l.startsWith("worktree "))
         ?.slice("worktree ".length),
@@ -444,6 +476,9 @@ export function readWorktrees(anchor) {
           .find((l) => l.startsWith("branch refs/heads/"))
           ?.slice("branch refs/heads/".length) ?? null,
       bare: lines.includes("bare"),
+      // git lists the main worktree first; the linked ones follow. This is the
+      // checkout the fleet's scripts resolve their server binaries from.
+      primary: index === 0,
     }))
     .filter((worktree) => worktree.path);
 }
