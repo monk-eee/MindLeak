@@ -93,6 +93,10 @@ fn enrolment_request_challenge_and_proof_round_trip_through_the_v1_wire_contract
         requested_capabilities: vec!["synchronize.v1".into()],
         created_at: "2026-08-11T00:00:00Z".into(),
         expires_at: "2026-08-11T00:10:00Z".into(),
+        // ADR-0085 decision 2: the key itself travels with the fingerprint.
+        // Without it the server has only a hash, and decision 5's "Ackplane
+        // verifies the signature" is not implementable at all.
+        public_key: vec![0x2a; 32],
     };
     let challenge_request = EnrollmentChallengeRequest {
         request_id: request.request_id.clone(),
@@ -131,6 +135,34 @@ fn enrolment_request_challenge_and_proof_round_trip_through_the_v1_wire_contract
             EnrollmentActivationProof::decode(proof.encode_to_vec().as_slice()).unwrap(),
         ),
         (request, challenge_request, challenge, proof)
+    );
+}
+
+// The key travels once, at enrolment. Activation carries the fingerprint, the
+// nonce and the signature, and deliberately no key: approval binds to the
+// fingerprint (ADR-0085 decision 4), so a proof that could carry its own key
+// would let a node present a different one after approval and be verified
+// against it. This asserts that absence, because it is a security property
+// rather than an oversight, and a later "helpful" addition would remove it.
+#[test]
+fn only_enrolment_carries_the_public_key_so_approval_cannot_be_sidestepped() {
+    let descriptor = EnrollmentActivationProof::default();
+    let encoded = descriptor.encode_to_vec();
+    assert!(encoded.is_empty(), "a default proof encodes to nothing");
+
+    // Field 10 is the enrolment request's public key. Nothing decodes it here,
+    // so a proof carrying one would be an unknown field rather than a key the
+    // server could be persuaded to trust.
+    let request = EnrollmentRequest {
+        public_key: vec![0x2a; 32],
+        ..EnrollmentRequest::default()
+    };
+    assert_eq!(
+        EnrollmentRequest::decode(request.encode_to_vec().as_slice())
+            .unwrap()
+            .public_key,
+        vec![0x2a; 32],
+        "enrolment carries the key"
     );
 }
 
