@@ -7,7 +7,7 @@ use crate::llm::{ModelCallProvenance, ModelCallSource};
 use crate::stalls::{stalls, Stall, StallKind};
 use crate::{
     now_unix, BoardFinding, ClaimOverlap, ClaimOverlapReport, ClaimTransfer, ClaimWindow,
-    HumanQuestion, Lodestar, LodestarError, Result, Task, TaskQa, TaskScope,
+    HumanQuestion, Lodestar, LodestarError, Result, ReworkReport, Task, TaskQa, TaskScope,
 };
 
 /// One task a decomposition resolved to, with additive model-call provenance.
@@ -602,6 +602,15 @@ impl Lodestar {
     /// ungated block is late.
     pub fn diagnose_board(&self) -> Result<Vec<BoardFinding>> {
         self.store.diagnose_board()
+    }
+
+    /// The rework rate ADR-0057 named as this line's measurable outcome.
+    ///
+    /// `since` is a unix second; pass 0 for the whole ledger. Windowing is the
+    /// point rather than a convenience: a lifetime average cannot show a rate
+    /// falling, so it cannot answer the question the ADR asked.
+    pub fn rework_rate(&self, since: i64) -> Result<ReworkReport> {
+        self.store.rework_rate(since)
     }
 
     /// Every task that is not progressing, and the fact that stalled it.
