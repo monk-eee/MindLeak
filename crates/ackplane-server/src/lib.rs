@@ -9,12 +9,15 @@
 //!
 //! What exists here so far is the startup contract: what a deployment must
 //! declare before it may accept work, and what it is allowed to claim about its
-//! own durability. Both are refusals rather than defaults, because the failures
-//! they prevent are silent ones.
+//! own durability, plus the durable ledger schema and idempotent append
+//! transaction (ADR-0086 clauses 4, 5, 6, 11) that gives it something to
+//! serve from.
 //!
 //! [`ackplane-core`]: https://docs.rs/ackplane-core
 
 use std::fmt;
+
+pub mod ledger;
 
 use thiserror::Error;
 
@@ -149,6 +152,13 @@ impl ServerConfig {
             self.listen,
             self.durability
         )
+    }
+
+    /// The connection string the ledger is reached through. Never logged or
+    /// rendered (see the hand-written `Debug` impl above); this exists only
+    /// for the one caller that actually opens the connection.
+    pub fn database_url(&self) -> &str {
+        &self.database_url
     }
 }
 

@@ -8,13 +8,14 @@ fn main() -> ExitCode {
     match ServerConfig::resolve(|key| std::env::var(key).ok()) {
         Ok(config) => {
             println!("{}", config.banner());
-            // Serving is the next decision's work: there is no ledger to serve
-            // from until ADR-0086's schema exists, and a listener that accepted
-            // work without one would be the dual authority ADR-0082 clause 3
-            // refuses.
+            // The ledger schema and its append transaction exist
+            // (`ackplane_server::ledger`, ADR-0086), but nothing here accepts a
+            // network connection yet: that is ADR-0083's gRPC node protocol, a
+            // separate decision. Serving without it would be the dual
+            // authority ADR-0082 clause 3 refuses.
             println!(
-                "ackplane-server: no ledger implementation yet; exiting rather than \
-                 accepting work it cannot durably record"
+                "ackplane-server: ledger schema ready; no gRPC service yet, so exiting rather \
+                 than accepting work over a protocol that does not exist"
             );
             ExitCode::SUCCESS
         }
