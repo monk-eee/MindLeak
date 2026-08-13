@@ -23,8 +23,10 @@ dependencies = [
 name = "ackplane-server"
 version = "0.1.5"
 dependencies = [
+ "ackplane-protocol",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror",
  "tokio",
  "tokio-postgres",
