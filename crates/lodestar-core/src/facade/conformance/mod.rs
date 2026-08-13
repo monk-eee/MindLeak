@@ -623,7 +623,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        e.amend_constitution(&draft.id, "monk-eee", "Carry policy forward.")
+        e.amend_constitution(&draft.id, "monk-eee", "reviewer", "Carry policy forward.")
             .unwrap();
         e.store
             .clauses_for_version(&draft.id)
