@@ -9,6 +9,7 @@ import { test } from "node:test";
 import {
   checksFailing,
   describe,
+  effectiveMergeState,
   isQueued,
   nextAction,
   queueOrder,
@@ -318,4 +319,72 @@ test("a fully armed queue reports nothing as unmanaged", () => {
   const rendered = describe(nextAction([pr(1), pr(2)], NOW));
 
   assert.equal(rendered.includes("not queued"), false);
+});
+
+/// gaps.d/the-delivery-queue-trusts-a-stale-conflict-verdict.md: GitHub's
+/// mergeStateStatus is cached and can still read DIRTY after main has moved on
+/// and the branch would in fact merge cleanly. Without a verifyDirty predicate
+/// the queue must keep trusting DIRTY exactly as it always did -- this is the
+/// existing "conflicting branch" test, unchanged, proving the default is a
+/// no-op.
+test("with no verifyDirty supplied, a DIRTY verdict is trusted as before", () => {
+  const conflicted = pr(1, { mergeStateStatus: "DIRTY" });
+  const fine = pr(2);
+
+  const action = nextAction([conflicted, fine], NOW);
+  assert.equal(action.kind, "update");
+  assert.equal(action.pr.number, 2);
+  assert.deepEqual(
+    action.blocked.map((p) => p.number),
+    [1],
+  );
+});
+
+/// The corrected case: verifyDirty reports the branch actually merges
+/// cleanly, so the queue must stop reporting it as blocked and instead treat
+/// it as an ordinary BEHIND branch it can update -- the fix this task exists
+/// for.
+test("a DIRTY verdict verifyDirty disproves is corrected to BEHIND and updated", () => {
+  const staleVerdict = pr(1, { mergeStateStatus: "DIRTY" });
+  const verifyDirty = (candidate) => {
+    assert.equal(candidate.number, 1, "only the DIRTY branch should be asked");
+    return false; // merges cleanly; the cached DIRTY was stale
+  };
+
+  const action = nextAction([staleVerdict], NOW, { verifyDirty });
+  assert.equal(action.kind, "update");
+  assert.equal(action.pr.number, 1);
+  assert.deepEqual(
+    action.blocked.map((p) => p.number),
+    [],
+    "a disproved conflict must not still be reported as blocked",
+  );
+  assert.equal(action.queued[0].mergeStateStatus, "BEHIND");
+});
+
+/// A genuine conflict must still block, or the fix would trade one false
+/// negative for another: verifyDirty confirming DIRTY must leave the existing
+/// hand-back behaviour exactly as it was.
+test("a DIRTY verdict verifyDirty confirms still blocks", () => {
+  const realConflict = pr(1, { mergeStateStatus: "DIRTY" });
+  const fine = pr(2);
+  const verifyDirty = () => true; // genuinely conflicts
+
+  const action = nextAction([realConflict, fine], NOW, { verifyDirty });
+  assert.equal(action.kind, "update");
+  assert.equal(action.pr.number, 2);
+  assert.deepEqual(
+    action.blocked.map((p) => p.number),
+    [1],
+  );
+  assert.match(describe(action), /#1 has a real conflict/);
+});
+
+test("effectiveMergeState leaves every non-DIRTY status untouched", () => {
+  for (const status of ["BEHIND", "BLOCKED", "CLEAN", "HAS_HOOKS", "UNKNOWN"]) {
+    assert.equal(
+      effectiveMergeState(pr(1, { mergeStateStatus: status }), () => true),
+      status,
+    );
+  }
 });

@@ -19,6 +19,7 @@ use std::fmt;
 
 pub mod ledger;
 pub mod projection;
+pub mod sync;
 #[cfg(test)]
 mod test_support;
 

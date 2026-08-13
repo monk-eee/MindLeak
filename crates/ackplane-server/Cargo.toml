@@ -11,8 +11,12 @@ description = "The Ackplane federation service: a separately deployable arbiter 
 # separate deployable rather than a mode of mindleak-mcp or lodestar-mcp, and a
 # dependency edge here would be the first step back to it being one.
 [dependencies]
+# The wire contract this service exists to serve. ADR-0082 clause 1 forbids
+# depending on a plane crate, which this is not.
+ackplane-protocol = { path = "../ackplane-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-postgres = { workspace = true }
