@@ -15,8 +15,9 @@ const TRANSITIONS: [&str; 9] = [
     "complete", "resolve", "block", "reopen", "abandon", "pause", "resume", "ask", "answer",
 ];
 
-const VIEWS: [&str; 11] = [
+const VIEWS: [&str; 12] = [
     "board",
+    "doctor",
     "next",
     "scope",
     "existing_work",
@@ -267,13 +268,13 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "task_query",
-            "description": "Every read over tasks, with `view` naming the question. `board` is the coordination snapshot with owner, status and lease. `next` suggests the next unblocked claimable task, oldest first. `scope` reads one task's declared advisory path/symbol scope, which is a planning hint and never a lock (ADR-0024). `existing_work` answers 'has this already been done?' and INCLUDES finished and abandoned tasks, because a task that is already done is the most useful answer and the one `board` hides. `overlap` is the pre-flight check for live claims intersecting concrete paths or symbols, each classified from the branches the two sessions declared at open_session (ADR-0035) as same_branch_collision, cross_branch_merge_risk, or undeclared. `stalled` returns every task that is not progressing and the fact that stalled it, reporting how long without deciding whether that is too long. `thread` is the durable append-only dialogue for a task. `pending_questions` is what is addressed to you, `questions_for_a_human` what is waiting on a person — necessarily separate, because a human has no agent id, so a query matching an id can never return one (ADR-0046). `drafts` proposes the questions a task's owner could put to colliding peers (ADR-0055). `claim_transfers` is the append-only ownership recovery history. All of it is read-only and evidence-free: nothing is delivered, reserved or consumed, so reading can never lose a question and two readers see the same rows.",
+            "description": "Every read over tasks, with `view` naming the question. `board` is the coordination snapshot with owner, status and lease. `doctor` diagnoses that same live board: identical titles under one goal, one title forked across several goals, and work blocked on no predecessor — each with the task ids and a suggested repair. It reports and never mutates, because which of two identically titled tasks is the real work is a call only you can make (ADR-0015). `next` suggests the next unblocked claimable task, oldest first. `scope` reads one task's declared advisory path/symbol scope, which is a planning hint and never a lock (ADR-0024). `existing_work` answers 'has this already been done?' and INCLUDES finished and abandoned tasks, because a task that is already done is the most useful answer and the one `board` hides. `overlap` is the pre-flight check for live claims intersecting concrete paths or symbols, each classified from the branches the two sessions declared at open_session (ADR-0035) as same_branch_collision, cross_branch_merge_risk, or undeclared. `stalled` returns every task that is not progressing and the fact that stalled it, reporting how long without deciding whether that is too long. `thread` is the durable append-only dialogue for a task. `pending_questions` is what is addressed to you, `questions_for_a_human` what is waiting on a person — necessarily separate, because a human has no agent id, so a query matching an id can never return one (ADR-0046). `drafts` proposes the questions a task's owner could put to colliding peers (ADR-0055). `claim_transfers` is the append-only ownership recovery history. All of it is read-only and evidence-free: nothing is delivered, reserved or consumed, so reading can never lose a question and two readers see the same rows.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "view": {
                         "type": "string",
-                        "enum": ["board", "next", "scope", "existing_work", "overlap", "stalled", "thread", "pending_questions", "questions_for_a_human", "drafts", "claim_transfers"],
+                        "enum": ["board", "doctor", "next", "scope", "existing_work", "overlap", "stalled", "thread", "pending_questions", "questions_for_a_human", "drafts", "claim_transfers"],
                         "description": "Which question to ask. Each names the further arguments it needs."
                     },
                     "task_id": { "type": "string", "description": "scope, thread, drafts and claim_transfers: the task to read." },
@@ -348,6 +349,24 @@ pub(super) fn dispatch(
                 .live_task_titled(goal_id, title.as_str())
                 .map_err(|e| e.to_string())?
                 .filter(|existing| existing.id != task.id);
+            // The same title under a different goal is the shape the same-goal
+            // rule cannot see, and the one that actually filled this board: a
+            // generator run once per active goal produced four identically
+            // titled "Implement: ADR-0086" tasks in the same second, of which
+            // three named goals the work does not serve.
+            let elsewhere: Vec<Value> = engine
+                .live_tasks_titled_elsewhere(goal_id, title.as_str())
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .filter(|existing| existing.id != task.id)
+                .map(|existing| {
+                    json!({
+                        "task_id": existing.id,
+                        "goal_id": existing.goal_id,
+                        "status": existing.status,
+                    })
+                })
+                .collect();
             let mut value = serde_json::to_value(&task).map_err(|e| e.to_string())?;
             if let Some(object) = value.as_object_mut() {
                 object.insert("already_serving_this_goal".into(), json!(prior.len()));
@@ -363,6 +382,20 @@ pub(super) fn dispatch(
                                        title; this task was created anyway, because a second \
                                        task against one goal is often right (ADR-0015). If it \
                                        is not, retire one of them before both are claimed.",
+                        }),
+                    );
+                }
+                if !elsewhere.is_empty() {
+                    object.insert(
+                        "same_title_under_other_goals".into(),
+                        json!({
+                            "tasks": elsewhere,
+                            "detail": "this exact title is already live under another goal. \
+                                       One piece of work serving several goals is declared \
+                                       with also_serves on a single task (ADR-0041), not by \
+                                       creating one task per goal: only one of them can be \
+                                       the work, and the rest are graded against goals they \
+                                       do not serve.",
                         }),
                     );
                 }
@@ -505,6 +538,7 @@ pub(super) fn dispatch(
             }
             "existing_work" => existing_work(engine, args),
             "board" => board(engine, args),
+            "doctor" => ok(&engine.diagnose_board().map_err(|e| e.to_string())?),
             other => unreachable!("one_of refused every value but {VIEWS:?}, not {other}"),
         })()),
         "task_transition" => Some((|| {
@@ -1286,6 +1320,81 @@ mod tests {
         );
         assert_eq!(body["duplicates"]["task_id"], first.id);
         assert_eq!(body["duplicates"]["status"], "open");
+    }
+
+    /// The board refilled with 28 seeds in one pass despite the same-goal rule,
+    /// because a generator was run once per active goal: each ADR produced one
+    /// identically titled task under every objective, in the same second. Four
+    /// copies of "Implement: ADR-0086: PostgreSQL is the Ackplane ledger", of
+    /// which three named goals a PostgreSQL arbiter does not serve. A per-goal
+    /// comparison cannot see that shape by construction, so it is reported
+    /// separately — and reported, not refused, because one piece of work
+    /// serving several goals is legitimate when it is declared with
+    /// `also_serves` on a single task (ADR-0041) rather than forked per goal.
+    #[test]
+    fn create_task_names_the_same_title_living_under_another_goal() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let ledger = engine
+            .define_goal(GoalKind::Objective, "Ledger", "hold the ledger", None)
+            .unwrap();
+        let identity = engine
+            .define_goal(GoalKind::Objective, "Identity", "resolve identity", None)
+            .unwrap();
+        let title = "Implement: ADR-0086: PostgreSQL is the Ackplane ledger";
+        let first = engine.create_task(&ledger.id, title, "done").unwrap();
+
+        let created = call(
+            &engine,
+            &json!({
+                "name": "task_create",
+                "arguments": { "goal_id": identity.id, "title": title, "acceptance": "done" }
+            }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(created["content"][0]["text"].as_str().unwrap()).unwrap();
+
+        assert!(
+            body["id"].as_str().is_some_and(|id| id != first.id),
+            "the task is still created: {body}"
+        );
+        assert_eq!(
+            body["same_title_under_other_goals"]["tasks"][0]["task_id"],
+            first.id
+        );
+        assert_eq!(
+            body["same_title_under_other_goals"]["tasks"][0]["goal_id"], ledger.id,
+            "the goal it already serves is named, so the reader can tell which is the work"
+        );
+        assert!(
+            body.get("duplicates").is_none(),
+            "a different goal is not a same-goal duplicate: {body}"
+        );
+    }
+
+    /// Silence when there is nothing to say. A field that always appears is one
+    /// readers learn to scroll past, and this one only earns attention on the
+    /// day it is not empty.
+    #[test]
+    fn a_title_living_nowhere_else_reports_no_other_goals() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+
+        let created = call(
+            &engine,
+            &json!({
+                "name": "task_create",
+                "arguments": { "goal_id": goal.id, "title": "A title nobody else uses", "acceptance": "done" }
+            }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(created["content"][0]["text"].as_str().unwrap()).unwrap();
+
+        assert!(body.get("same_title_under_other_goals").is_none(), "{body}");
+        assert!(body.get("duplicates").is_none(), "{body}");
     }
 
     #[test]

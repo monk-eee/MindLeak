@@ -7,8 +7,8 @@ use std::collections::HashSet;
 use crate::error::{LodestarError, Result};
 use crate::fleet::Wait;
 use crate::model::{
-    ClaimOverlap, ClaimOverlapReport, ConformanceRecord, HumanQuestion, OverlapSignal, Task,
-    TaskEventKind, TaskQa, TaskScope, TaskStatus, Verdict,
+    BoardAilment, BoardFinding, ClaimOverlap, ClaimOverlapReport, ConformanceRecord, HumanQuestion,
+    OverlapSignal, Task, TaskEventKind, TaskQa, TaskScope, TaskStatus, Verdict,
 };
 use crate::util::{goal_slug, short_hash};
 
@@ -142,6 +142,15 @@ impl LodestarStore {
         live_task_titled_on(&self.conn, goal_id, title)
     }
 
+    /// Live work carrying this exact title under some other goal.
+    pub(crate) fn live_tasks_titled_elsewhere(
+        &self,
+        goal_id: &str,
+        title: &str,
+    ) -> Result<Vec<Task>> {
+        live_tasks_titled_elsewhere_on(&self.conn, goal_id, title)
+    }
+
     /// Read the additional goals a task declared it serves (ADR-0041).
     pub fn goal_coverage(&self, task_id: &str) -> Result<Vec<String>> {
         goal_coverage_on(&self.conn, task_id)
@@ -219,12 +228,27 @@ pub(super) fn create_task_on(
     create_task_after_on(connection, goal_id, title, acceptance, None, None, &[], now)
 }
 
+/// Every live task carrying this exact title, whatever goal it serves.
+///
+/// Terminal work is excluded throughout: a `done` or `abandoned` task is history
+/// and nothing dispatches it, so it must never stand in for work that still has
+/// to happen. One query, so the two views below cannot disagree about what
+/// "already exists" means.
+fn live_tasks_titled_on(connection: &Connection, title: &str) -> Result<Vec<Task>> {
+    let sql = format!(
+        "SELECT {TASK_COLS} FROM tasks
+          WHERE title = ?1 AND status NOT IN ('done', 'abandoned')
+          ORDER BY created_at ASC"
+    );
+    let mut stmt = connection.prepare(&sql)?;
+    let rows = stmt.query_map(params![title], row_to_task)?;
+    collect(rows)
+}
+
 /// Live work under this goal already carrying this exact title.
 ///
 /// The one answer to "has a generator already produced this?", shared by every
-/// generator so two of them cannot drift apart on it. Terminal work is excluded:
-/// a `done` or `abandoned` task is history and nothing dispatches it, so it must
-/// never stand in for work that still has to happen.
+/// generator so two of them cannot drift apart on it.
 ///
 /// Goals are compared by slug, and in Rust rather than in SQL, for the same
 /// reason [`existing_work`](LodestarStore::existing_work) does it: an amendment
@@ -238,16 +262,30 @@ pub(super) fn live_task_titled_on(
     title: &str,
 ) -> Result<Option<Task>> {
     let slug = goal_slug(goal_id);
-    let sql = format!(
-        "SELECT {TASK_COLS} FROM tasks
-          WHERE title = ?1 AND status NOT IN ('done', 'abandoned')
-          ORDER BY created_at ASC"
-    );
-    let mut stmt = connection.prepare(&sql)?;
-    let rows = stmt.query_map(params![title], row_to_task)?;
-    Ok(collect(rows)?
+    Ok(live_tasks_titled_on(connection, title)?
         .into_iter()
         .find(|task| goal_slug(&task.goal_id) == slug))
+}
+
+/// Live work carrying this exact title under some *other* goal.
+///
+/// The same-goal rule above cannot see this shape, and it is the one that
+/// actually filled the board: a generator run once per active goal produced one
+/// identically titled task under each, in the same second — four copies of
+/// "Implement: ADR-0086", of which three named goals the work does not serve.
+/// Reported rather than refused, because the same title under two goals is
+/// sometimes genuinely cross-cutting; ADR-0041's declared coverage is how that
+/// is said, and one task under each goal is how it is said wrong.
+pub(super) fn live_tasks_titled_elsewhere_on(
+    connection: &Connection,
+    goal_id: &str,
+    title: &str,
+) -> Result<Vec<Task>> {
+    let slug = goal_slug(goal_id);
+    Ok(live_tasks_titled_on(connection, title)?
+        .into_iter()
+        .filter(|task| goal_slug(&task.goal_id) != slug)
+        .collect())
 }
 
 #[allow(clippy::too_many_arguments)]

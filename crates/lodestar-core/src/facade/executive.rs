@@ -6,8 +6,8 @@ use crate::error::ModelFailureReason;
 use crate::llm::{ModelCallProvenance, ModelCallSource};
 use crate::stalls::{stalls, Stall, StallKind};
 use crate::{
-    now_unix, ClaimOverlap, ClaimOverlapReport, ClaimTransfer, ClaimWindow, HumanQuestion,
-    Lodestar, LodestarError, Result, Task, TaskQa, TaskScope,
+    now_unix, BoardFinding, ClaimOverlap, ClaimOverlapReport, ClaimTransfer, ClaimWindow,
+    HumanQuestion, Lodestar, LodestarError, Result, Task, TaskQa, TaskScope,
 };
 
 /// One task a decomposition resolved to, with additive model-call provenance.
@@ -78,6 +78,15 @@ impl Lodestar {
     /// never refuses (ADR-0015).
     pub fn live_task_titled(&self, goal_id: &str, title: &str) -> Result<Option<Task>> {
         self.store.live_task_titled(goal_id, title)
+    }
+
+    /// Live work carrying this exact title under some other goal.
+    ///
+    /// The same-goal rule cannot see the shape that actually filled this board:
+    /// a generator run once per active goal, producing one identically titled
+    /// task under each in the same second. Reports; never refuses.
+    pub fn live_tasks_titled_elsewhere(&self, goal_id: &str, title: &str) -> Result<Vec<Task>> {
+        self.store.live_tasks_titled_elsewhere(goal_id, title)
     }
 
     /// Declare further goals the held claim serves, before conformance speaks.
@@ -582,6 +591,17 @@ impl Lodestar {
 
     pub fn board(&self, include_terminal: bool) -> Result<Vec<Task>> {
         self.store.board(include_terminal)
+    }
+
+    /// Diagnose the live board: duplicate titles, the same title forked across
+    /// goals, and work blocked on no predecessor.
+    ///
+    /// Read-only and judgement-free. Every condition here was found and
+    /// repaired by hand before this existed, and none is surfaced by another
+    /// view — `stalled` reports lateness, and nothing about a duplicate or an
+    /// ungated block is late.
+    pub fn diagnose_board(&self) -> Result<Vec<BoardFinding>> {
+        self.store.diagnose_board()
     }
 
     /// Every task that is not progressing, and the fact that stalled it.
