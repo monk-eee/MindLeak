@@ -241,6 +241,15 @@ pub struct ConformanceCheck {
     pub findings: Vec<String>,
 }
 
+/// The compact, tamper-evident handle for a conformance check. New audit rows
+/// retain their canonical findings vector, so completion can reload it instead
+/// of requiring clients to echo advisory findings that may be too large to send.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConformanceCheckReference {
+    pub id: i64,
+    pub token: String,
+}
+
 /// The result of a conformance check (returned to callers; also audited).
 #[derive(Debug, Clone, Serialize)]
 pub struct ConformanceResult {

@@ -10,8 +10,9 @@ use crate::scope;
 use crate::store::ConformanceAudit;
 use crate::util::goal_slug;
 use crate::{
-    now_unix, ArtifactBindingMode, ConformanceCheck, ConformanceEvidence, ConformanceResult, Goal,
-    GoalStatus, GoverningClause, Lodestar, LodestarError, Result, Task, TaskStatus, Verdict,
+    now_unix, ArtifactBindingMode, ConformanceCheck, ConformanceCheckReference,
+    ConformanceEvidence, ConformanceResult, Goal, GoalStatus, GoverningClause, Lodestar,
+    LodestarError, Result, Task, TaskStatus, Verdict,
 };
 
 const MAX_EVIDENCE_EVENTS: usize = 200;
@@ -96,6 +97,50 @@ impl GoverningClauses {
 }
 
 impl Lodestar {
+    /// Complete with the compact handle from a new conformance audit. The
+    /// findings are loaded from the authoritative record before the ordinary
+    /// completion validator recomputes the token against current policy state.
+    pub fn complete_task_with_check_reference(
+        &self,
+        id: &str,
+        agent: &str,
+        evidence: &ConformanceEvidence,
+        check: &ConformanceCheckReference,
+        learned: Option<&str>,
+    ) -> Result<Completion> {
+        let record = self
+            .store
+            .conformance_record(check.id)?
+            .ok_or_else(|| LodestarError::NotFound(format!("conformance check {}", check.id)))?;
+        let findings_json = self
+            .store
+            .conformance_findings_json(check.id)?
+            .ok_or_else(|| {
+                LodestarError::Invalid(format!(
+                    "conformance check {} predates compact completion; supply its full check",
+                    check.id
+                ))
+            })?;
+        let findings = serde_json::from_str(&findings_json).map_err(|error| {
+            LodestarError::Invalid(format!(
+                "conformance check {} has invalid canonical findings: {error}",
+                check.id
+            ))
+        })?;
+        self.complete_task(
+            id,
+            agent,
+            evidence,
+            &ConformanceCheck {
+                id: check.id,
+                token: check.token.clone(),
+                verdict: record.verdict,
+                findings,
+            },
+            learned,
+        )
+    }
+
     /// Complete a task using one authoritative, claim-bounded conformance check
     /// (ADR-0009). The optional semantic judge is not invoked again here.
     ///
@@ -231,7 +276,8 @@ impl Lodestar {
         let conformance = self.evaluate_conformance(evidence, task.as_ref())?;
         let serialized = serde_json::to_string(evidence)?;
         let findings = conformance.findings.join("; ");
-        let id = self.store.record_conformance(
+        let findings_json = serde_json::to_string(&conformance.findings)?;
+        let id = self.store.record_conformance_with_findings_json(
             resolved_task_id,
             ConformanceAudit {
                 evidence_schema_version: evidence.schema_version,
@@ -239,6 +285,7 @@ impl Lodestar {
                 verdict: conformance.verdict,
                 findings: &findings,
             },
+            Some(&findings_json),
             now_unix(),
         )?;
         let mut checked = ConformanceCheck {
@@ -384,6 +431,105 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].id, checked.id);
         assert_eq!(judge_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn compact_reference_reloads_canonical_findings_before_completion() {
+        let e = engine();
+        let goal = e
+            .define_goal(
+                GoalKind::Objective,
+                "Compact completion",
+                "keep checks usable",
+                None,
+            )
+            .unwrap();
+        let node_id = "artifact:src/compact.rs";
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], ArtifactBindingMode::Governed)
+            .unwrap();
+        let task = e
+            .create_task(&goal.id, "complete compactly", "use the durable check")
+            .unwrap();
+        e.claim_task(&task.id, "agent-a", 300).unwrap();
+        let claimed = e.store.get_task(&task.id).unwrap().unwrap();
+        let mut evidence = test_evidence(Some(task.id.clone()), "agent-a", node_id);
+        evidence.started_at = claimed.claim_started_at.unwrap();
+        evidence.ended_at = now_unix();
+
+        let checked = e.check_conformance(&evidence, Some(&task.id)).unwrap();
+        let reference = ConformanceCheckReference {
+            id: checked.id,
+            token: checked.token.clone(),
+        };
+
+        let completion = e
+            .complete_task_with_check_reference(&task.id, "agent-a", &evidence, &reference, None)
+            .unwrap();
+
+        assert!(completion.completed);
+        assert_eq!(completion.conformance.findings, checked.findings);
+    }
+
+    #[test]
+    fn legacy_check_requires_the_full_findings_payload() {
+        let e = engine();
+        let goal = e
+            .define_goal(
+                GoalKind::Objective,
+                "Legacy completion",
+                "preserve old checks",
+                None,
+            )
+            .unwrap();
+        let node_id = "artifact:src/legacy.rs";
+        e.link_goal_to_artifact(&goal.id, &[node_id.into()], ArtifactBindingMode::Governed)
+            .unwrap();
+        let task = e
+            .create_task(&goal.id, "complete legacy", "supply the original check")
+            .unwrap();
+        e.claim_task(&task.id, "agent-a", 300).unwrap();
+        let claimed = e.store.get_task(&task.id).unwrap().unwrap();
+        let mut evidence = test_evidence(Some(task.id.clone()), "agent-a", node_id);
+        evidence.started_at = claimed.claim_started_at.unwrap();
+        evidence.ended_at = now_unix();
+        let findings = vec!["legacy finding; separator preserved".to_string()];
+        let serialized = serde_json::to_string(&evidence).unwrap();
+        let audit_id = e
+            .store
+            .record_conformance(
+                Some(&task.id),
+                ConformanceAudit {
+                    evidence_schema_version: evidence.schema_version,
+                    evidence: &serialized,
+                    verdict: Verdict::Aligned,
+                    findings: &findings.join("; "),
+                },
+                now_unix(),
+            )
+            .unwrap();
+        let mut checked = ConformanceCheck {
+            id: audit_id,
+            token: String::new(),
+            verdict: Verdict::Aligned,
+            findings,
+        };
+        checked.token = e
+            .conformance_token(audit_id, &evidence, &checked, Some(&claimed))
+            .unwrap();
+        let reference = ConformanceCheckReference {
+            id: audit_id,
+            token: checked.token.clone(),
+        };
+
+        let error = e
+            .complete_task_with_check_reference(&task.id, "agent-a", &evidence, &reference, None)
+            .unwrap_err();
+        assert!(error.to_string().contains("predates compact completion"));
+
+        let completion = e
+            .complete_task(&task.id, "agent-a", &evidence, &checked, None)
+            .unwrap();
+        assert!(completion.completed);
     }
 
     /// ADR-0053. The graph recorded 196 executions and not one conclusion,
