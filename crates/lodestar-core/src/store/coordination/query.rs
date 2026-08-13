@@ -129,6 +129,80 @@ impl LodestarStore {
         Ok(findings)
     }
 
+    /// How much of the work created since `since` had already been created.
+    ///
+    /// Answers the test [ADR-0057] set and nothing could run: the rework rate.
+    /// It reads every task, terminal included — a duplicate that was retired
+    /// still cost the fleet the seeding, the reading, and the retiring, so
+    /// excluding it here would hide exactly the history being measured. That is
+    /// the opposite of `diagnose_board`, which excludes terminal work because
+    /// it reports what to fix now rather than what already happened.
+    ///
+    /// Pass `since = 0` for the whole ledger.
+    pub fn rework_rate(&self, since: i64) -> Result<ReworkReport> {
+        let all = self.board(true)?;
+
+        let mut by_title: Vec<(&str, Vec<&Task>)> = Vec::new();
+        for task in &all {
+            match by_title.iter_mut().find(|(title, _)| *title == task.title) {
+                Some((_, group)) => group.push(task),
+                None => by_title.push((task.title.as_str(), vec![task])),
+            }
+        }
+
+        let mut report = ReworkReport {
+            created: 0,
+            redundant: 0,
+            same_second: 0,
+            abandoned: 0,
+            repeated_titles: Vec::new(),
+        };
+
+        for (title, group) in &mut by_title {
+            // Redundancy is judged against the whole history, but only counted
+            // for the window: a seed that repeats work from before the window
+            // is still rework, and moving the boundary must not make it vanish.
+            group.sort_by_key(|task| (task.created_at, task.id.as_str()));
+            let first_seen = group[0].created_at;
+
+            let mut redundant_in_window = 0;
+            for (index, task) in group.iter().enumerate() {
+                if task.created_at < since {
+                    continue;
+                }
+                report.created += 1;
+                if task.status == TaskStatus::Abandoned {
+                    report.abandoned += 1;
+                }
+                if index == 0 {
+                    continue;
+                }
+                report.redundant += 1;
+                redundant_in_window += 1;
+                if task.created_at == first_seen {
+                    report.same_second += 1;
+                }
+            }
+
+            if redundant_in_window > 0 {
+                let mut goals: Vec<&str> = group.iter().map(|task| task.goal_id.as_str()).collect();
+                goals.sort_unstable();
+                goals.dedup();
+                report.repeated_titles.push(RepeatedTitle {
+                    title: (*title).to_string(),
+                    seeds: group.len(),
+                    redundant: redundant_in_window,
+                    goals: goals.len(),
+                });
+            }
+        }
+
+        report
+            .repeated_titles
+            .sort_by(|a, b| b.redundant.cmp(&a.redundant).then(a.title.cmp(&b.title)));
+        Ok(report)
+    }
+
     /// Tasks whose most recent `blocked` event stated a reason.
     ///
     /// `blocked_by` is a one-to-one handoff (ADR-0015), so several tasks waiting
