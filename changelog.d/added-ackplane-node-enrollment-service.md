@@ -1,0 +1,1 @@
+- **Ackplane now serves initial node enrollment with durable public-key bindings, administrator-approved proof-of-possession challenges, and immutable activation receipts.** Nodes cannot self-approve, replay a consumed challenge, or activate with a proof bound to another enrollment; key rotation remains explicitly unavailable pending its continuity-proof implementation.

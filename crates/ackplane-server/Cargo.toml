@@ -14,6 +14,8 @@ description = "The Ackplane federation service: a separately deployable arbiter 
 # The wire contract this service exists to serve. ADR-0082 clause 1 forbids
 # depending on a plane crate, which this is not.
 ackplane-protocol = { path = "../ackplane-protocol" }
+ed25519-dalek = "2.1"
+getrandom = "0.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -23,3 +25,4 @@ tokio-postgres = { workspace = true }
 tokio-stream = "0.1"
 tonic = { workspace = true }
 tracing = { workspace = true }
+time = { version = "=0.3.36", features = ["formatting"] }
