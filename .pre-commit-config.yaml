@@ -7,8 +7,12 @@ minimum_pre_commit_version: "3.5.0"
 # has to be installed with an extra flag is a hook most checkouts do not have,
 # and `post-commit` is the one that records evidence -- if it is missing, the
 # work is unattributable and nothing says so until `complete_task` refuses,
-# hours later, with no way left to repair it (ADR-0048).
-default_install_hook_types: [pre-commit, pre-push, post-commit]
+# hours later, with no way left to repair it (ADR-0048). `post-checkout` fires
+# on `git worktree add` itself (confirmed: git treats a new worktree's initial
+# checkout the same as any other), which is what lets ownership be recorded at
+# creation instead of waiting for a first commit that may never come.
+default_install_hook_types:
+  [pre-commit, pre-push, post-commit, post-checkout]
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -33,6 +37,21 @@ repos:
         language: system
         always_run: true
         pass_filenames: false
+
+      # A worktree that has been created and declared, but never committed in,
+      # has no owner marker -- the `worktree-owner` hook above only writes one
+      # from `git commit`. `post-checkout` fires the moment `git worktree add`
+      # completes, so the creating session's marker is written immediately,
+      # before any peer could walk in and find the checkout reading as
+      # unclaimed. Reuses the same script and the same unchanged verdict logic;
+      # only the trigger differs.
+      - id: worktree-owner-on-create
+        name: worktree ownership is recorded at creation, not only at first commit
+        entry: node scripts/worktree-owner.mjs --stage=post-checkout
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [post-checkout]
 
       - id: commit-identity
         name: the commit author is a real contributor
