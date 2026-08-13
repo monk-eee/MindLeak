@@ -385,7 +385,7 @@ fn run_index(engine: &MindLeak, batch: usize) {
                 "autonomous_index",
                 "error",
                 started.elapsed().as_millis() as i64,
-                Some(json!({ "category": error_category(&error) })),
+                Some(index_error_detail(&error)),
             );
             tracing::debug!(%error, "autonomous index skipped; no embedding server");
         }
@@ -477,10 +477,18 @@ fn run_consolidation(
                 "autonomous_index",
                 "error",
                 index_started.elapsed().as_millis() as i64,
-                Some(json!({ "category": error_category(&error) })),
+                Some(index_error_detail(&error)),
             );
         }
     }
+}
+
+fn index_error_detail(error: &MindLeakError) -> serde_json::Value {
+    json!({
+        "category": error_category(error),
+        "error": error.to_string(),
+        "fallback": "deterministic_graph",
+    })
 }
 
 fn error_category(error: &MindLeakError) -> &'static str {
@@ -503,7 +511,27 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    use mindleak_core::{Result as MindLeakResult, TextEmbedder};
+    use mindleak_model::{failure, ModelFailureReason};
+
     use super::*;
+
+    struct UnavailableIndexEmbedder;
+
+    impl TextEmbedder for UnavailableIndexEmbedder {
+        fn model(&self) -> &str {
+            "nomic-embed-text"
+        }
+
+        fn embed(&self, _text: &str) -> MindLeakResult<Vec<f32>> {
+            Err(failure(
+                ModelFailureReason::Unreachable,
+                false,
+                "semantic recall is unavailable; install and start Ollama, then run `ollama pull nomic-embed-text`",
+            )
+            .into())
+        }
+    }
 
     #[test]
     fn shutdown_marks_state_and_wakes_waiters() {
@@ -626,6 +654,31 @@ mod tests {
             .recent
             .iter()
             .any(|event| event.name == "autonomous_consolidation"));
+    }
+
+    #[test]
+    fn unavailable_index_records_actionable_deterministic_fallback_telemetry() {
+        let engine = MindLeak::open_in_memory()
+            .unwrap()
+            .with_embedder(Box::new(UnavailableIndexEmbedder));
+        engine
+            .ingest_file("src/auth.rs", "fn authentication_handler() {}")
+            .unwrap();
+
+        run_index(&engine, 128);
+
+        let snapshot = engine.telemetry_snapshot(1).unwrap();
+        let event = &snapshot.recent[0];
+        assert_eq!(event.kind, "maintenance");
+        assert_eq!(event.name, "autonomous_index");
+        assert_eq!(event.outcome, "error");
+        let detail = event.detail.as_ref().unwrap();
+        assert_eq!(detail["category"], "unreachable");
+        assert_eq!(detail["fallback"], "deterministic_graph");
+        assert!(detail["error"]
+            .as_str()
+            .unwrap()
+            .contains("ollama pull nomic-embed-text"));
     }
 
     #[test]
