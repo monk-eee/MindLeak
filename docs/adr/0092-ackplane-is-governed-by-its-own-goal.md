@@ -4,12 +4,14 @@
 - Date: 2026-08-13
 - Deciders: monk-eee
 - Accepted: 2026-08-13 by monk-eee (repository owner) — attributed human
-  adoption under ADR-0043. This records the decision; it does not by itself
-  perform the amendment. The goal does not yet exist and the three crates are
-  not yet bound, because decision 5 holds: the Intent Plane exposes no
-  agent-reachable verb that defines a goal or binds code to one. Decision 6
-  therefore stays in force until that binding is made — an Ackplane
-  `needs_human` still means ungoverned, and is still not to be worked around.
+  adoption under ADR-0043.
+- Adopted: 2026-08-13 as `amendment:a334b7f2c123`, which promoted
+  `constitution:v4` and created `goal:ackplane-federation-service@constitution:v4`.
+  All twelve Rust files of `ackplane-core`, `ackplane-protocol` and
+  `ackplane-server` are bound to it as `governed`. Approved by monk-eee and
+  executed by an agent, which is the separation of parties `amend_constitution`
+  requires. `advise` over those crates now returns a governing clause where it
+  previously returned an empty set, so decision 6 has been discharged.
 - Depends on: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md)
   (Ackplane is a separately deployable service)
 - Related: [ADR-0026](0026-constitutional-policy-over-mechanistic-ratchets.md)
@@ -77,26 +79,41 @@ taxonomy fix, and the tempting one — narrowing evidence until the grade improv
    records meant. New Ackplane work is created under the new goal instead, and
    the older tasks are completed, resolved, or retired as they stand.
 
-5. **Adoption is a human act, and this ADR is only the proposal.** The running
-   Intent Plane exposes no agent-reachable verb that defines a goal or binds code
-   to one — the tool surface has `advise` and `governing_for_task` but no
-   `define_goal` or `link_goal_to_code` — so an agent cannot adopt this even if
-   it wanted to. Adoption follows ADR-0043's attributed amendment flow, and the
-   binding of the three crates happens with it.
+5. **Adoption is an attributed act under ADR-0043.** The amendment names both
+   the agent that executed it and the person who approved it, and the binding of
+   the three crates happens with it.
 
-6. **Until it is adopted, an Ackplane `needs_human` verdict means ungoverned.**
-   It is read as "no clause covers this", not as "this change is suspect", and it
-   is not worked around by narrowing the evidence bundle, declaring unrelated
-   coverage under ADR-0041, or suppressing the binding-coverage report. Reporting
-   the verdict honestly is the required behaviour while this is open.
+   This decision originally added that the Intent Plane exposed no
+   agent-reachable verb defining a goal or binding code to one, and concluded
+   that "an agent cannot adopt this even if it wanted to". That was false, and
+   it is corrected here rather than quietly dropped, because it was believed and
+   acted upon: it authorised a task to build a constitution API that already
+   shipped. ADR-0059 narrows `tools/list` to a default profile and deliberately
+   does **not** narrow dispatch, so `constitution_define`,
+   `link_goal_to_artifact` and the whole amendment lifecycle —
+   `propose_amendment`, `draft_clause`, `amend_constitution`, `amendments` —
+   were callable by name the entire time. An empty tool list is evidence about
+   the advertisement, never about the capability. Recorded in
+   [`gaps.d/the-constitution-verbs-were-reachable-all-along.md`](../../gaps.d/the-constitution-verbs-were-reachable-all-along.md).
+
+6. **An Ackplane `needs_human` verdict meant ungoverned — until this was
+   adopted.** While Ackplane had no goal of its own, that verdict was read as
+   "no clause covers this" rather than "this change is suspect", and it was not
+   to be worked around by narrowing the evidence bundle, declaring unrelated
+   coverage under ADR-0041, or suppressing the binding-coverage report. The
+   adoption recorded in the header ended that condition: a `needs_human` verdict
+   on Ackplane work now says something about the change again, which is the
+   outcome this decision existed to produce.
 
 ## Consequences
 
 - Ackplane work can reach `aligned` on its merits, and a `needs_human` verdict
   there recovers its meaning: it starts indicating something about the change.
-- The binding still cannot be performed by an agent. Adopting this decision
-  makes the missing verb load-bearing rather than latent, which is an argument
-  for closing that gap and not a reason to defer this one.
+- The binding is performed by an attributed amendment. Adopting this decision
+  made the amendment verbs load-bearing rather than latent, and that pressure
+  produced the fix immediately: `amend_constitution` now requires an
+  `approved_by` distinct from the calling agent, so the adoption above names who
+  approved it as well as who ran it.
 - The goal is an objective, so it decomposes into claimable work. Constraints
   specific to Ackplane — that authority is never dual-written, that a durability
   claim names its failure domain — remain candidates for separate clauses, and
