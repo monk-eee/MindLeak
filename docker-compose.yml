@@ -1,0 +1,87 @@
+# Ackplane's supported local-development and small self-hosting topology
+# (ADR-0088 clauses 1, 3, 5, 6, 8). A developer types `docker compose` and
+# nothing else; every host-side operation beyond bringing the stack up and
+# down goes through `node scripts/ackplane-compose.mjs` (clause 3, clause 7).
+#
+# This is not the production deployment contract (clause 8): one PostgreSQL
+# container is not a fenced primary, credentials below are development-only,
+# and nothing here is meant to accrete production-only features over time.
+name: ackplane
+
+services:
+  # Pinned by tag and digest (clause 4).
+  postgres:
+    image: postgres:16-bookworm@sha256:64154d0babcb1741988719e703419af0382b19953706149f9872fbd0f438efa8
+    environment:
+      # Development-only credentials (clause 6). Never used outside this
+      # Compose stack, and never the production deployment's answer.
+      POSTGRES_USER: ackplane
+      POSTGRES_PASSWORD: ackplane-development-only-not-for-production
+      POSTGRES_DB: ackplane
+    volumes:
+      - ackplane-postgres-data:/var/lib/postgresql/data
+    ports:
+      # Loopback only, so this is reachable for local `psql` debugging and
+      # nowhere else (clause 6). Not published at all is also a reasonable
+      # choice; this keeps the common "just want to poke at the dev DB" case
+      # a single `psql` invocation away.
+      - "127.0.0.1:${ACKPLANE_POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ackplane -d ackplane"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  # Runs to completion and exits; the `ackplane` service starts only after
+  # this succeeds and `postgres` reports healthy (clause 5). Never runs
+  # automatically against a database this Compose file did not start.
+  migrate:
+    build:
+      context: .
+      dockerfile: crates/ackplane-server/Dockerfile
+      args:
+        ACKPLANE_VERSION: ${ACKPLANE_VERSION:-dev}
+        ACKPLANE_COMMIT: ${ACKPLANE_COMMIT:-unknown}
+    entrypoint: ["/usr/local/bin/ackplane-migrate"]
+    environment:
+      ACKPLANE_DATABASE_URL: postgresql://ackplane:ackplane-development-only-not-for-production@postgres:5432/ackplane
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # Bound to loopback only by default (clause 6): the container listens on
+  # every interface internally (ACKPLANE_LISTEN=0.0.0.0), but the published
+  # port below is what actually decides reachability from the host, and that
+  # stays 127.0.0.1. Reports `single_node` durability (clause 6): one
+  # PostgreSQL container is not a fenced primary with synchronous standbys.
+  #
+  # The current build has no gRPC service yet (ADR-0083 is a separate,
+  # not-yet-implemented decision), so this container starts, resolves its
+  # configuration, prints its startup banner, and exits 0 rather than serving
+  # requests -- that is today's real capability, not a topology defect.
+  # `restart: "no"` reflects that honestly; once ADR-0083 lands this should
+  # move to a long-running restart policy and a real healthcheck.
+  ackplane:
+    build:
+      context: .
+      dockerfile: crates/ackplane-server/Dockerfile
+      args:
+        ACKPLANE_VERSION: ${ACKPLANE_VERSION:-dev}
+        ACKPLANE_COMMIT: ${ACKPLANE_COMMIT:-unknown}
+    environment:
+      ACKPLANE_DATABASE_URL: postgresql://ackplane:ackplane-development-only-not-for-production@postgres:5432/ackplane
+      ACKPLANE_LISTEN: 0.0.0.0:8443
+      ACKPLANE_DURABILITY: single_node
+    ports:
+      - "127.0.0.1:${ACKPLANE_PORT:-8443}:8443"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+volumes:
+  # Named volume (clause 7): recreating a container never destroys the ledger
+  # as a side effect. Lifecycle commands (backup, restore, reset) are
+  # documented and scripted in scripts/ackplane-compose.mjs.
+  ackplane-postgres-data:
