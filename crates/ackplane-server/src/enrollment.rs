@@ -1,0 +1,338 @@
+//! Pure enrollment decisions for the Ackplane service (ADR-0085).
+//!
+//! Storage records these values and the gRPC service maps requests onto them;
+//! neither concern decides whether a proof may activate a node.
+
+use std::time::SystemTime;
+
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+const ACTIVATION_DOMAIN: &[u8] = b"mindleak.ackplane.v1.enrollment.activation\0";
+
+/// Encode the exact domain-separated bytes a node signs to prove possession of
+/// its approved key. Every binding is length-delimited so adjacent fields can
+/// never be reinterpreted as a different tuple.
+pub fn activation_challenge_bytes(
+    nonce: &[u8],
+    request_id: &str,
+    tenant_id: &str,
+    repository_id: &str,
+    node_id: &str,
+    public_key_fingerprint: &str,
+) -> Vec<u8> {
+    let fields = [
+        nonce,
+        request_id.as_bytes(),
+        tenant_id.as_bytes(),
+        repository_id.as_bytes(),
+        node_id.as_bytes(),
+        public_key_fingerprint.as_bytes(),
+    ];
+    let mut bytes = Vec::with_capacity(
+        ACTIVATION_DOMAIN.len() + fields.iter().map(|field| 4 + field.len()).sum::<usize>(),
+    );
+    bytes.extend_from_slice(ACTIVATION_DOMAIN);
+    for field in fields {
+        bytes.extend_from_slice(&(field.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(field);
+    }
+    bytes
+}
+
+/// The immutable values the activation proof binds together.
+pub struct ActivationProofBinding<'a> {
+    pub nonce: &'a [u8],
+    pub request_id: &'a str,
+    pub tenant_id: &'a str,
+    pub repository_id: &'a str,
+    pub node_id: &'a str,
+    pub public_key_fingerprint: &'a str,
+}
+
+/// Verify possession of the exact public key approved for the enrollment.
+pub fn verify_activation_proof(
+    public_key: &[u8],
+    signature: &[u8],
+    binding: ActivationProofBinding<'_>,
+) -> bool {
+    let Ok(public_key) = <&[u8; 32]>::try_from(public_key) else {
+        return false;
+    };
+    let Ok(verifying_key) = VerifyingKey::from_bytes(public_key) else {
+        return false;
+    };
+    let Ok(signature) = Signature::from_slice(signature) else {
+        return false;
+    };
+    verifying_key
+        .verify(
+            &activation_challenge_bytes(
+                binding.nonce,
+                binding.request_id,
+                binding.tenant_id,
+                binding.repository_id,
+                binding.node_id,
+                binding.public_key_fingerprint,
+            ),
+            &signature,
+        )
+        .is_ok()
+}
+
+/// The authority-owned state of a node enrollment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnrollmentState {
+    Pending,
+    Approved,
+    Activating,
+    Active,
+    Expired,
+    Rejected,
+    Revoked,
+}
+
+/// The stable identity and approved public key for an enrollment request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Enrollment {
+    pub request_id: String,
+    pub tenant_id: String,
+    pub repository_id: String,
+    pub node_id: String,
+    pub public_key_fingerprint: String,
+    pub public_key: Vec<u8>,
+    pub state: EnrollmentState,
+}
+
+/// A single-use proof-of-possession challenge issued by Ackplane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivationChallenge {
+    pub request_id: String,
+    pub nonce: Vec<u8>,
+    pub expires_at: SystemTime,
+    pub consumed: bool,
+}
+
+/// Why a presented activation proof cannot activate an enrollment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivationFailure {
+    NotApproved,
+    RequestMismatch,
+    ChallengeExpired,
+    ChallengeReplayed,
+    InvalidProof,
+}
+
+impl Enrollment {
+    /// Begin activation only after the authority verifies a fresh, unused
+    /// challenge against the public key it already approved and stored.
+    pub fn activate(
+        &mut self,
+        challenge: &mut ActivationChallenge,
+        now: SystemTime,
+        proof_is_valid: bool,
+    ) -> Result<(), ActivationFailure> {
+        if self.state != EnrollmentState::Approved {
+            return Err(ActivationFailure::NotApproved);
+        }
+        if challenge.request_id != self.request_id {
+            return Err(ActivationFailure::RequestMismatch);
+        }
+        if challenge.consumed {
+            return Err(ActivationFailure::ChallengeReplayed);
+        }
+        if now > challenge.expires_at {
+            return Err(ActivationFailure::ChallengeExpired);
+        }
+        if !proof_is_valid {
+            return Err(ActivationFailure::InvalidProof);
+        }
+
+        challenge.consumed = true;
+        self.state = EnrollmentState::Activating;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, SystemTime};
+
+    use ed25519_dalek::{Signer, SigningKey};
+
+    use super::{
+        activation_challenge_bytes, verify_activation_proof, ActivationChallenge,
+        ActivationFailure, ActivationProofBinding, Enrollment, EnrollmentState,
+    };
+
+    fn approved_enrollment() -> Enrollment {
+        Enrollment {
+            request_id: "request-1".to_owned(),
+            tenant_id: "tenant-1".to_owned(),
+            repository_id: "repository-1".to_owned(),
+            node_id: "node-1".to_owned(),
+            public_key_fingerprint: "fingerprint-1".to_owned(),
+            public_key: vec![1, 2, 3],
+            state: EnrollmentState::Approved,
+        }
+    }
+
+    fn unconsumed_challenge() -> ActivationChallenge {
+        ActivationChallenge {
+            request_id: "request-1".to_owned(),
+            nonce: vec![4, 5, 6],
+            expires_at: SystemTime::UNIX_EPOCH + Duration::from_secs(60),
+            consumed: false,
+        }
+    }
+
+    #[test]
+    fn valid_proof_begins_activation_and_consumes_challenge() {
+        let mut enrollment = approved_enrollment();
+        let mut challenge = unconsumed_challenge();
+
+        let result = enrollment.activate(&mut challenge, SystemTime::UNIX_EPOCH, true);
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(enrollment.state, EnrollmentState::Activating);
+        assert!(challenge.consumed);
+    }
+
+    #[test]
+    fn invalid_proof_leaves_enrollment_approved_and_challenge_unconsumed() {
+        let mut enrollment = approved_enrollment();
+        let mut challenge = unconsumed_challenge();
+
+        let result = enrollment.activate(&mut challenge, SystemTime::UNIX_EPOCH, false);
+
+        assert_eq!(result, Err(ActivationFailure::InvalidProof));
+        assert_eq!(enrollment.state, EnrollmentState::Approved);
+        assert!(!challenge.consumed);
+    }
+
+    #[test]
+    fn mismatched_challenge_request_leaves_enrollment_approved_and_challenge_unconsumed() {
+        let mut enrollment = approved_enrollment();
+        let mut challenge = unconsumed_challenge();
+        challenge.request_id = "another-request".to_owned();
+
+        let result = enrollment.activate(&mut challenge, SystemTime::UNIX_EPOCH, true);
+
+        assert_eq!(result, Err(ActivationFailure::RequestMismatch));
+        assert_eq!(enrollment.state, EnrollmentState::Approved);
+        assert!(!challenge.consumed);
+    }
+
+    #[test]
+    fn expired_challenge_leaves_enrollment_approved_and_challenge_unconsumed() {
+        let mut enrollment = approved_enrollment();
+        let mut challenge = unconsumed_challenge();
+
+        let result = enrollment.activate(
+            &mut challenge,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(61),
+            true,
+        );
+
+        assert_eq!(result, Err(ActivationFailure::ChallengeExpired));
+        assert_eq!(enrollment.state, EnrollmentState::Approved);
+        assert!(!challenge.consumed);
+    }
+
+    #[test]
+    fn replayed_challenge_leaves_enrollment_approved() {
+        let mut enrollment = approved_enrollment();
+        let mut challenge = unconsumed_challenge();
+        challenge.consumed = true;
+
+        let result = enrollment.activate(&mut challenge, SystemTime::UNIX_EPOCH, true);
+
+        assert_eq!(result, Err(ActivationFailure::ChallengeReplayed));
+        assert_eq!(enrollment.state, EnrollmentState::Approved);
+        assert!(challenge.consumed);
+    }
+
+    #[test]
+    fn unapproved_enrollment_rejects_proof_without_consuming_challenge() {
+        let mut enrollment = approved_enrollment();
+        let mut challenge = unconsumed_challenge();
+        enrollment.state = EnrollmentState::Pending;
+
+        let result = enrollment.activate(&mut challenge, SystemTime::UNIX_EPOCH, true);
+
+        assert_eq!(result, Err(ActivationFailure::NotApproved));
+        assert_eq!(enrollment.state, EnrollmentState::Pending);
+        assert!(!challenge.consumed);
+    }
+
+    #[test]
+    fn activation_challenge_encoding_binds_each_field_unambiguously() {
+        let encoded = activation_challenge_bytes(
+            &[1, 2],
+            "request",
+            "tenant",
+            "repository",
+            "node",
+            "fingerprint",
+        );
+
+        assert_eq!(
+            encoded,
+            [
+                b"mindleak.ackplane.v1.enrollment.activation\0".as_slice(),
+                &[0, 0, 0, 2, 1, 2],
+                &[0, 0, 0, 7],
+                b"request",
+                &[0, 0, 0, 6],
+                b"tenant",
+                &[0, 0, 0, 10],
+                b"repository",
+                &[0, 0, 0, 4],
+                b"node",
+                &[0, 0, 0, 11],
+                b"fingerprint",
+            ]
+            .concat()
+        );
+    }
+
+    #[test]
+    fn proof_verification_rejects_a_signature_reused_for_another_node() {
+        let signing_key = SigningKey::from_bytes(&[9; 32]);
+        let nonce = [1, 2, 3];
+        let signature = signing_key.sign(&activation_challenge_bytes(
+            &nonce,
+            "request",
+            "tenant",
+            "repository",
+            "node-1",
+            "fingerprint",
+        ));
+
+        let valid = verify_activation_proof(
+            &signing_key.verifying_key().to_bytes(),
+            &signature.to_bytes(),
+            ActivationProofBinding {
+                nonce: &nonce,
+                request_id: "request",
+                tenant_id: "tenant",
+                repository_id: "repository",
+                node_id: "node-1",
+                public_key_fingerprint: "fingerprint",
+            },
+        );
+        let reused_for_another_node = verify_activation_proof(
+            &signing_key.verifying_key().to_bytes(),
+            &signature.to_bytes(),
+            ActivationProofBinding {
+                nonce: &nonce,
+                request_id: "request",
+                tenant_id: "tenant",
+                repository_id: "repository",
+                node_id: "node-2",
+                public_key_fingerprint: "fingerprint",
+            },
+        );
+
+        assert_eq!((valid, reused_for_another_node), (true, false));
+    }
+}
