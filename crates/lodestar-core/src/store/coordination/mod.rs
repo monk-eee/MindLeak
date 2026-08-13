@@ -7,8 +7,8 @@ use std::collections::HashSet;
 use crate::error::{LodestarError, Result};
 use crate::fleet::Wait;
 use crate::model::{
-    ClaimOverlap, ClaimOverlapReport, ConformanceRecord, HumanQuestion, OverlapSignal, Task,
-    TaskEventKind, TaskQa, TaskScope, TaskStatus, Verdict,
+    BoardAilment, BoardFinding, ClaimOverlap, ClaimOverlapReport, ConformanceRecord, HumanQuestion,
+    OverlapSignal, Task, TaskEventKind, TaskQa, TaskScope, TaskStatus, Verdict,
 };
 use crate::util::{goal_slug, short_hash};
 
