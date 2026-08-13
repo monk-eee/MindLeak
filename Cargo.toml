@@ -39,6 +39,8 @@ prost = "0.13"
 tonic = "0.12"
 tonic-build = "0.12"
 protoc-bin-vendored = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio-postgres = "0.7"
 
 [profile.release]
 lto = "thin"

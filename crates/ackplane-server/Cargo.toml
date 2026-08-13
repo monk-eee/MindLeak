@@ -12,3 +12,6 @@ description = "The Ackplane federation service: a separately deployable arbiter 
 # dependency edge here would be the first step back to it being one.
 [dependencies]
 thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-postgres = { workspace = true }
+tracing = { workspace = true }
