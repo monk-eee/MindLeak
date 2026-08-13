@@ -1,0 +1,1 @@
+- **Conformance completion no longer requires clients to echo arbitrarily large advisory findings.** New checks retain their canonical findings and may complete through an id-and-token reference while Lodestar still recomputes the token against the live claim and policy state; legacy audits continue to require their original full check.

@@ -5,26 +5,50 @@ use super::transitions::open_blocked_successor_on;
 use super::*;
 
 impl LodestarStore {
+    #[cfg(test)]
     pub(crate) fn record_conformance(
         &self,
         task_id: Option<&str>,
         audit: ConformanceAudit<'_>,
         now: i64,
     ) -> Result<i64> {
+        self.record_conformance_with_findings_json(task_id, audit, None, now)
+    }
+
+    pub(crate) fn record_conformance_with_findings_json(
+        &self,
+        task_id: Option<&str>,
+        audit: ConformanceAudit<'_>,
+        findings_json: Option<&str>,
+        now: i64,
+    ) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO conformance
-                 (task_id, evidence_schema_version, evidence, verdict, findings, checked_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                 (task_id, evidence_schema_version, evidence, verdict, findings, findings_json, checked_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 task_id,
                 audit.evidence_schema_version,
                 audit.evidence,
                 audit.verdict.as_str(),
                 audit.findings,
+                findings_json,
                 now
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    pub(crate) fn conformance_findings_json(&self, id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT findings_json FROM conformance WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten())
     }
 
     pub(crate) fn conformance_record(&self, id: i64) -> Result<Option<ConformanceRecord>> {

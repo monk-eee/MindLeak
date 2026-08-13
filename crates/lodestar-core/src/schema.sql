@@ -409,6 +409,7 @@ CREATE TABLE IF NOT EXISTS conformance (
     evidence   TEXT,
     verdict    TEXT NOT NULL,             -- aligned | drift | violation | needs_human
     findings   TEXT NOT NULL DEFAULT '',
+    findings_json TEXT,                   -- canonical Vec<String>; NULL for legacy audits
     checked_at INTEGER NOT NULL
 );
 
