@@ -1,0 +1,12 @@
+# Kept out of every Docker build context so the Ackplane image build (ADR-0088
+# clause 4) stays fast and does not accidentally bake in local build output,
+# VCS metadata, or the editor extension's own toolchain.
+target/
+.git/
+.github/
+gaps.d/
+changelog.d/
+docs/
+benchmarks/
+editors/
+*.lcov
