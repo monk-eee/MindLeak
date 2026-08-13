@@ -6,8 +6,19 @@
 use std::time::SystemTime;
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use sha2::{Digest, Sha256};
 
 const ACTIVATION_DOMAIN: &[u8] = b"mindleak.ackplane.v1.enrollment.activation\0";
+
+/// Return the canonical, human-comparable fingerprint of an Ed25519 public key.
+pub fn public_key_fingerprint(public_key: &[u8]) -> String {
+    let digest = Sha256::digest(public_key);
+    let encoded = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("ed25519:{encoded}")
+}
 
 /// Encode the exact domain-separated bytes a node signs to prove possession of
 /// its approved key. Every binding is length-delimited so adjacent fields can
@@ -160,8 +171,9 @@ mod tests {
     use ed25519_dalek::{Signer, SigningKey};
 
     use super::{
-        activation_challenge_bytes, verify_activation_proof, ActivationChallenge,
-        ActivationFailure, ActivationProofBinding, Enrollment, EnrollmentState,
+        activation_challenge_bytes, public_key_fingerprint, verify_activation_proof,
+        ActivationChallenge, ActivationFailure, ActivationProofBinding, Enrollment,
+        EnrollmentState,
     };
 
     fn approved_enrollment() -> Enrollment {
@@ -334,5 +346,13 @@ mod tests {
         );
 
         assert_eq!((valid, reused_for_another_node), (true, false));
+    }
+
+    #[test]
+    fn public_key_fingerprint_is_prefixed_sha256_hex() {
+        assert_eq!(
+            public_key_fingerprint(&[0; 32]),
+            "ed25519:66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925"
+        );
     }
 }

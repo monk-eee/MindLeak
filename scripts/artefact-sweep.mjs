@@ -45,6 +45,7 @@ import {
   measureTree,
   planArtefactSweep,
   readWorktrees,
+  reclaimScriptFreshness,
 } from "./worktree-reclaim.mjs";
 
 /** How often an unattended sweep runs. Long: this is housekeeping, not work. */
@@ -197,6 +198,51 @@ const tryGit = (args, cwd) => {
     return { ok: false, out: String(error.stderr ?? error.message ?? "") };
   }
 };
+
+/**
+ * Both files that decide what gets deleted.
+ *
+ * The sweep imports its selection rules rather than copying them, so a current
+ * sweep on top of a stale worktree-reclaim.mjs deletes by stale rules and looks
+ * entirely healthy doing it. Being current is a property of the pair.
+ */
+export const SWEEP_CRITICAL_SCRIPTS = [
+  "scripts/artefact-sweep.mjs",
+  "scripts/worktree-reclaim.mjs",
+];
+
+/**
+ * Whether this copy of the sweep, and the rules it deletes by, are current.
+ *
+ * Measured: PR #435 taught the sweep to spare the fleet host's `target/release`,
+ * and the host's build output was deleted again afterwards anyway -- by a sweep
+ * running from a checkout whose `scripts/` predated the fix. A safety rule only
+ * protects the runs that have it, which is why the reclaim CLI already refuses
+ * to run stale. The unattended path needs it more, not less: nobody is watching
+ * it, so a stale one is discovered by its damage.
+ *
+ * Fails closed. An origin that cannot be fetched is not evidence of being
+ * current, and the shared verdict in worktree-reclaim.mjs treats it that way.
+ */
+export function readSweepFreshness(anchor, { git: run = tryGit } = {}) {
+  const fetched = run(["fetch", "origin", "--quiet", "--prune"], anchor);
+  if (!fetched.ok)
+    return reclaimScriptFreshness({ fetched: false, matchesOrigin: false });
+
+  const stale = SWEEP_CRITICAL_SCRIPTS.filter(
+    (script) =>
+      !run(["diff", "--quiet", "origin/main", "--", script], anchor).ok,
+  );
+  if (stale.length === 0)
+    return reclaimScriptFreshness({ fetched: true, matchesOrigin: true });
+
+  // Name the file. The shared verdict says "this script", which points at the
+  // wrong one whenever it is the imported rules that went stale.
+  return {
+    current: false,
+    reason: `${stale.join(" and ")} ${stale.length > 1 ? "differ" : "differs"} from origin/main`,
+  };
+}
 
 /** Branches with an open pull request, or null when GitHub cannot be reached. */
 export function readOpenPrBranches() {
@@ -366,10 +412,19 @@ export function sweepIfDue({
   intervalMs = SWEEP_INTERVAL_MS,
   force = false,
   run = sweep,
+  checkFreshness = readSweepFreshness,
 }) {
   const state = readSweepState(commonDir);
   if (!force && !dueForSweep(state.lastRunAt, now, intervalMs))
     return { ran: false, reason: "not due" };
+
+  // After due-ness, before the lock. Fetching on every watcher tick would put a
+  // network round trip on the hot path of the queue this shares a process with;
+  // and a sweeper that is about to be refused must not hold the fleet-wide lock
+  // while it happens.
+  const freshness = checkFreshness(anchor);
+  if (!freshness.current)
+    return { ran: false, reason: `stale checkout: ${freshness.reason}` };
 
   const lock = acquireSweepLock(commonDir, now);
   if (!lock.held) return { ran: false, reason: lock.reason };

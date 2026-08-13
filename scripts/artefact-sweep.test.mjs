@@ -11,7 +11,9 @@ import {
   describeSweep,
   dueForSweep,
   owningWorktree,
+  readSweepFreshness,
   readSweepState,
+  SWEEP_CRITICAL_SCRIPTS,
   SWEEP_INTERVAL_MS,
   summariseSkips,
   sweepIfDue,
@@ -22,6 +24,9 @@ const HOUR = 60 * 60 * 1000;
 const NOW = 1_700_000_000_000;
 
 const scratch = () => mkdtempSync(join(tmpdir(), "artefact-sweep-"));
+
+/** A checkout whose safety-critical scripts match origin/main. */
+const CURRENT = () => ({ current: true, reason: null });
 
 const cache = (over = {}) => ({
   kind: "cargo-debug",
@@ -94,6 +99,7 @@ test("a dry run does not mark the sweep as done", () => {
       apply: false,
       now: NOW,
       force: true,
+      checkFreshness: CURRENT,
       run: () => report,
     });
     assert.equal(dry.ran, true);
@@ -105,6 +111,7 @@ test("a dry run does not mark the sweep as done", () => {
       apply: true,
       now: NOW,
       force: true,
+      checkFreshness: CURRENT,
       run: () => report,
     });
     assert.equal(wet.ran, true);
@@ -146,6 +153,7 @@ test("a second sweeper does not run while the first holds the lock", () => {
       commonDir: dir,
       now: NOW,
       force: true,
+      checkFreshness: CURRENT,
       run: () => {
         ran = true;
         return {};
@@ -170,6 +178,7 @@ test("an unreachable GitHub stops the run rather than sweeping every branch", ()
       apply: true,
       now: NOW,
       force: true,
+      checkFreshness: CURRENT,
       run: () => ({
         skippedRun: "GitHub was unreachable, so open pull requests are unknown",
       }),
@@ -180,6 +189,117 @@ test("an unreachable GitHub stops the run rather than sweeping every branch", ()
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- the stale-checkout refusal -------------------------------------------
+
+test("a stale checkout does not sweep, and says which file went stale", () => {
+  // Regression: worktree-reclaim.mjs refused to run from a stale checkout and
+  // this, the unattended path, did not -- so the deliberate CLI was guarded and
+  // the automatic one was not. Measured: PR #435 taught the sweep to spare the
+  // fleet host's build output, and a sweep running from a pre-#435 `scripts/`
+  // deleted it again anyway, leaving canonical-push unable to reach the ledger.
+  const dir = scratch();
+  try {
+    let ran = false;
+    const outcome = sweepIfDue({
+      anchor: dir,
+      commonDir: dir,
+      apply: true,
+      now: NOW,
+      force: true,
+      checkFreshness: () => ({
+        current: false,
+        reason: "scripts/worktree-reclaim.mjs differs from origin/main",
+      }),
+      run: () => {
+        ran = true;
+        return {};
+      },
+    });
+    assert.equal(ran, false);
+    assert.deepStrictEqual(outcome, {
+      ran: false,
+      reason:
+        "stale checkout: scripts/worktree-reclaim.mjs differs from origin/main",
+    });
+    // A refused run is not a completed one: it must not suppress the next.
+    assert.equal(readSweepState(dir).lastRunAt, null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the freshness check runs before the lock is taken", () => {
+  // A sweeper that is about to be refused must not queue behind the fleet-wide
+  // lock to find that out. Holding the lock first makes the order observable:
+  // check-then-lock reports staleness, lock-then-check reports contention and
+  // never mentions the stale rules at all.
+  const dir = scratch();
+  try {
+    acquireSweepLock(dir, NOW);
+    const outcome = sweepIfDue({
+      anchor: dir,
+      commonDir: dir,
+      now: NOW,
+      force: true,
+      checkFreshness: () => ({ current: false, reason: "stale" }),
+      run: () => ({}),
+    });
+    assert.deepStrictEqual(outcome, {
+      ran: false,
+      reason: "stale checkout: stale",
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an origin that cannot be fetched reads as stale, not as current", () => {
+  // Fail closed. "I could not check" is not evidence of being up to date, and
+  // the offline case is exactly when a long-lived watcher has drifted furthest.
+  const freshness = readSweepFreshness("/anywhere", {
+    git: (args) =>
+      args[0] === "fetch"
+        ? { ok: false, out: "no route to host" }
+        : { ok: true },
+  });
+  assert.deepStrictEqual(freshness, {
+    current: false,
+    reason: "could not fetch origin before checking this script's version",
+  });
+});
+
+test("stale imported rules are stale, even when the sweep itself is current", () => {
+  // The selection rules live in worktree-reclaim.mjs and are imported, so a
+  // current sweep on top of stale rules deletes by stale rules -- and looks
+  // entirely healthy doing it. Being current is a property of the pair.
+  const freshness = readSweepFreshness("/anywhere", {
+    git: (args) => ({
+      ok: args[0] !== "diff" || args.at(-1) !== "scripts/worktree-reclaim.mjs",
+    }),
+  });
+  assert.deepStrictEqual(freshness, {
+    current: false,
+    reason: "scripts/worktree-reclaim.mjs differs from origin/main",
+  });
+});
+
+test("a checkout matching origin/main on both scripts is current", () => {
+  const asked = [];
+  const freshness = readSweepFreshness("/anywhere", {
+    git: (args) => {
+      asked.push(args.join(" "));
+      return { ok: true };
+    },
+  });
+  assert.deepStrictEqual(freshness, { current: true, reason: null });
+  assert.deepStrictEqual(asked, [
+    "fetch origin --quiet --prune",
+    ...SWEEP_CRITICAL_SCRIPTS.map(
+      (script) => `diff --quiet origin/main -- ${script}`,
+    ),
+  ]);
 });
 
 // --- the fleet-wide lock --------------------------------------------------
