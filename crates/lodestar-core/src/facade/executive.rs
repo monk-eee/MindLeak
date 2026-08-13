@@ -80,6 +80,15 @@ impl Lodestar {
         self.store.live_task_titled(goal_id, title)
     }
 
+    /// Live work carrying this exact title under some other goal.
+    ///
+    /// The same-goal rule cannot see the shape that actually filled this board:
+    /// a generator run once per active goal, producing one identically titled
+    /// task under each in the same second. Reports; never refuses.
+    pub fn live_tasks_titled_elsewhere(&self, goal_id: &str, title: &str) -> Result<Vec<Task>> {
+        self.store.live_tasks_titled_elsewhere(goal_id, title)
+    }
+
     /// Declare further goals the held claim serves, before conformance speaks.
     ///
     /// Goals bind to files, so the governing set is usually learned while

@@ -32,8 +32,16 @@
   list it was buried in is every task ever created under the goal, 203 of them
   when this was measured, and two agents created "Make worktree reclaim refuse
   loudly when the Lodestar board is unreadable" against one goal with that report
-  already in front of them. — Still open: the report is advisory by design under
-  ADR-0015, so an agent that ignores it still creates the duplicate, and nothing
-  reconciles the pair afterwards. The board carried exactly that pair while this
-  was being written, and retiring one of them is still a human judgement nobody
-  is prompted to make.
+  already in front of them. Then the board refilled anyway: 28 seeds in one pass
+  on 2026-08-12, because a generator was run once per active goal and each ADR
+  produced one identically titled task under every objective, in the same second.
+  Four copies of "Implement: ADR-0086: PostgreSQL is the Ackplane ledger", of
+  which three named goals a PostgreSQL arbiter does not serve. A per-goal
+  comparison cannot see that by construction, so `task_create` now reports a
+  same-title live task under another goal separately, naming the goal it already
+  serves. — Still open, and unchanged by any of it: every report here is advisory
+  under ADR-0015, so an agent that ignores one still creates the duplicate, and
+  nothing reconciles the result afterwards — all 28 were retired by hand. The
+  deeper cause is upstream of the reports: work generated under whichever goal
+  was to hand will keep being wrong while a subsystem has no goal of its own,
+  which is what ADR-0092 proposes to fix.
