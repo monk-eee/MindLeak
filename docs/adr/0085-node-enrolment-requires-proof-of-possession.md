@@ -5,6 +5,11 @@
 - Deciders: MindLeak maintainers
 - Accepted: 2026-08-10 by the repository owner — attributed human adoption after
   review.
+- Corrected: 2026-08-13 — decision 3's enumeration of a pending request omitted
+  the public key that decision 2 requires and decision 5 cannot work without.
+  The shipped wire contract carried exactly the nine items decision 3 listed, in
+  order, so the omission propagated into the protocol. The enumeration now names
+  the key. No decision changed; an incomplete list was completed.
 - Depends on: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md)
   (federated coordination mode),
   [ADR-0084](0084-ackplane-evidence-has-explicit-trust.md) (remote identity and
@@ -52,9 +57,9 @@ being questioned.
 
 3. **A pending request names the exact identity being requested.** It contains
    a random request id, tenant id, explicit Ackplane repository id, proposed
-   node id and display name, public-key fingerprint, requested capabilities,
-   creation time, and expiry. A Git remote URL may help a person find the
-   repository but cannot select or merge its identity automatically.
+   node id and display name, the public key and its fingerprint, requested
+   capabilities, creation time, and expiry. A Git remote URL may help a person
+   find the repository but cannot select or merge its identity automatically.
 
 4. **An authenticated administrator approves the fingerprint, not a label.** A
    principal authorised for that tenant and repository approves or rejects the
