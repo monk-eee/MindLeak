@@ -55,6 +55,9 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
         ("goal_artifacts", "mode", "TEXT NOT NULL DEFAULT 'governed'"),
         ("conformance", "evidence_schema_version", "INTEGER"),
         ("conformance", "evidence", "TEXT"),
+        // Pre-existing audits retain their original text only. The exact vector
+        // boundaries were never stored, so migration must not invent them.
+        ("conformance", "findings_json", "TEXT"),
         (
             "design_items",
             "promotion_status",
