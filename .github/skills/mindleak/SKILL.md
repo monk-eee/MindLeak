@@ -42,7 +42,10 @@ Do not query their SQLite files directly.
    MindLeak's decay-active `check_overlap`. Treat unknown ids as unknown, not
    clear, and a quiet impact result as "nothing recorded", not "no impact".
 3. Ask Lodestar `advise` what governs the intended artifacts. Respect `review`,
-   `block`, and `needs_human`; advice is evidence, not a lock bypass.
+   and `block`. For `needs_human`, branch on its structured `reason`:
+   `no_constitution_adopted` is repository bootstrap state, so either seed an
+   accepted goal or explicitly continue ordinary ungoverned work; `ambiguous`
+   or a missing reason remains a stop. Advice is evidence, not a lock bypass.
 4. If work has a Lodestar task, claim it with the same paths/symbols. Renew its
    lease after each substantial step and before long validation.
 5. Ground the change with deterministic evidence (`evidence_for`, impact, graph
@@ -58,6 +61,9 @@ Do not query their SQLite files directly.
 
 - MindLeak and Lodestar are local and fully useful without an LLM, embedding
   model, account, or network service.
+- A local `git init` is enough for shared repository storage. A commit and an
+   upstream remote are optional; omit unknown `head_sha`, `base`, and `behind`
+   values instead of inventing `origin/main`.
 - Keep ingestion deterministic. Optional model calls belong only to explicit
   consolidation or semantic-recall paths.
 - Coordinate on overlap; do not interpret advisory checks as filesystem locks.

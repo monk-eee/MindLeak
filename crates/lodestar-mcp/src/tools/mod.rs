@@ -49,14 +49,19 @@ pub fn list() -> Vec<Value> {
 /// the counter-pressure ADR-0059 identifies as the missing piece: nothing
 /// treated the surface as a cost, so it only ever grew.
 ///
-/// Governance authoring (the constitution, amendments, policy packs, waivers,
-/// ratchets and controls), the design board, goal↔code binding, knowledge
-/// maintenance and database admin are all specialist: real and load-bearing,
-/// used by a small minority of calls (ADR-0059).
+/// Goal creation and active-goal reads are the bootstrap exception: a fresh
+/// repository cannot reach the task lifecycle without them. The rest of
+/// governance authoring (constitution activation, amendments, policy packs,
+/// waivers, ratchets and controls), the design board, goal↔code binding,
+/// knowledge maintenance and database admin remain specialist: real and
+/// load-bearing, used by a small minority of calls (ADR-0059).
 const DEFAULT_PROFILE_TOOLS: &[&str] = &[
     // Identity and where your state lives.
     "open_session",
     "storage_status",
+    // A fresh repository must be able to establish and inspect its first goal.
+    "constitution_define",
+    "constitution_query",
     // The task lifecycle — the surface every session touches.
     "task_create",
     "task_claim",
@@ -66,13 +71,8 @@ const DEFAULT_PROFILE_TOOLS: &[&str] = &[
     "advise",
     "check_conformance",
     "conformance_history",
-    "governing_for_task",
-    // Completing: the evidence a task closes on.
+    // Completing: build the evidence a task closes on.
     "merge_evidence",
-    "export_evidence",
-    "export_conformance_manifest",
-    // Coordinating with the rest of the fleet.
-    "fleet_view",
     // Learned knowledge on the recall-adjacent common path.
     "active_knowledge",
     "record_knowledge",
@@ -2127,6 +2127,113 @@ mod tests {
                 "default profile names `{name}`, which no tool declares"
             );
         }
+    }
+
+    #[test]
+    fn the_default_profile_exposes_the_fresh_repository_bootstrap_path() {
+        let tools = advertised_for(Profile::Default);
+        let advertised: Vec<&str> = tools
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+
+        assert!(advertised.contains(&"constitution_define"));
+        assert!(advertised.contains(&"constitution_query"));
+    }
+
+    /// A goal-less repository used to dead-end at `task_create`: goal authoring
+    /// existed only outside the default profile, so an agent could neither find
+    /// nor use the prerequisite. Keep the complete first-use path executable
+    /// through the same MCP dispatch and session contract real clients use.
+    #[test]
+    fn a_fresh_repository_can_bootstrap_from_goal_to_won_claim() {
+        const TOKEN: &str = "00112233445566778899aabbccddeeff";
+        let engine = Lodestar::open_in_memory().unwrap();
+        let sessions = SessionRegistry::new("test").unwrap();
+
+        let advice = call(
+            &engine,
+            &json!({
+                "name": "advise",
+                "arguments": { "node_ids": ["artifact:src/lib.rs"] }
+            }),
+        )
+        .unwrap();
+        let advice = &advice["structuredContent"];
+        assert_eq!(advice["disposition"], "needs_human");
+        assert_eq!(advice["reason"], "no_constitution_adopted");
+
+        let created = call(
+            &engine,
+            &json!({
+                "name": "constitution_define",
+                "arguments": {
+                    "action": "goal",
+                    "kind": "objective",
+                    "title": "Deliver the first change",
+                    "statement": "Establish one claimable unit of work."
+                }
+            }),
+        )
+        .unwrap();
+        let goal: Value =
+            serde_json::from_str(created["content"][0]["text"].as_str().unwrap()).unwrap();
+        let goal_id = goal["id"].as_str().unwrap();
+
+        let listed = call(
+            &engine,
+            &json!({
+                "name": "constitution_query",
+                "arguments": { "action": "active" }
+            }),
+        )
+        .unwrap();
+        let listed: Value =
+            serde_json::from_str(listed["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["id"], goal_id);
+
+        let created_task = call(
+            &engine,
+            &json!({
+                "name": "task_create",
+                "arguments": {
+                    "goal_id": goal_id,
+                    "title": "Make the first change",
+                    "acceptance": "The first change is verified."
+                }
+            }),
+        )
+        .unwrap();
+        let task: Value =
+            serde_json::from_str(created_task["content"][0]["text"].as_str().unwrap()).unwrap();
+
+        let opened = bind_session(
+            &json!({
+                "name": "open_session",
+                "arguments": { "session_id": TOKEN }
+            }),
+            &sessions,
+        )
+        .unwrap();
+        call(&engine, &opened).unwrap();
+        let claim = bind_session(
+            &json!({
+                "name": "task_claim",
+                "arguments": {
+                    "step": "claim",
+                    "task_id": task["id"],
+                    "session_id": TOKEN
+                }
+            }),
+            &sessions,
+        )
+        .unwrap();
+        let claimed = call(&engine, &claim).unwrap();
+        let claimed: Value =
+            serde_json::from_str(claimed["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(claimed["won"], true);
+        assert!(claimed["claim_started_at"].is_number());
     }
 
     /// The whole point of tiering: the specialist machinery is off the default

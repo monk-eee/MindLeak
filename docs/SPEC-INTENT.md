@@ -434,10 +434,12 @@ Caller-selected `agent`/`agent_id` values are not part of the public schema.
 
 **Constitution**
 
-1. `define_goal(title, statement, kind, parent?)` → `goal_id`.
+1. `constitution_define(action="goal", title, statement, kind, parent_id?)` →
+  an active `Goal` carrying its `id`.
 2. `supersede_goal(goal_id, new_statement, reason)` → new `goal_id` (version bump).
-3. `get_constitution(status="active")` → the authoritative goals/constraints an
-   agent reads **before acting**.
+3. `constitution_query(action="active")` → the authoritative active goals and
+  constraints an agent reads **before acting**, including an empty list for a
+  repository where none have been seeded.
 4. `link_goal_to_artifact(goal_id, node_ids[], mode="governed")` → the seam to MindLeak.
 5. `export_constitution(path?)` → write a committed, human-reviewable markdown
    snapshot (durability + PR review without any network infra).
@@ -558,12 +560,16 @@ ADR-0059 names.
     each record's stable `id`, the recorded evidence bundle, `verdict`,
     `findings`, and `checked_at` — the durable, resolvable link proving how (and
     whether) a task reached completion.
-21. `advise(task_id?, node_ids[])` → `{ disposition, governing[], findings[] }`;
+21. `advise(task_id?, node_ids[])` →
+  `{ disposition, reason?, governing[], findings[] }`;
     the forward-looking, evidence-free, state-free read (ADR-0029) — the clauses
     governing an intended change plus a proportional disposition
     (`advise`/`review`/`block`/`needs_human`), so an agent asks what governs the
-    work **before acting**. It records no verdict, changes no task state, needs no
-    model, and never gates the compare-and-swap claim. `governing_for_task(task_id)`
+  work **before acting**. `reason=no_constitution_adopted` distinguishes an
+  unseeded repository from `ambiguous`, a real judgment stop, without changing
+  the backward-compatible `needs_human` disposition. It records no verdict,
+  changes no task state, needs no model, and never gates the compare-and-swap
+  claim. `governing_for_task(task_id)`
     returns the clauses governing a task's linked scope — the same set surfaced on
     `task_claim` / `task_query` (`view="next"`) and the VS Code Work view.
 
