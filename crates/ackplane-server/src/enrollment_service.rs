@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
 
 use crate::{
-    enrollment::EnrollmentState,
+    enrollment::{public_key_fingerprint, EnrollmentState},
     enrollment_store::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentStatus, EnrollmentStore,
         EnrollmentStoreError, EnrollmentSubmission,
@@ -122,6 +122,10 @@ fn submission_from_wire(request: v1::EnrollmentRequest) -> Result<EnrollmentSubm
         .map_err(|_| "public_key must be an Ed25519 public key".to_owned())?;
     VerifyingKey::from_bytes(public_key_array)
         .map_err(|_| "public_key must be an Ed25519 public key".to_owned())?;
+    let declared_fingerprint = required(request.public_key_fingerprint, "public_key_fingerprint")?;
+    if public_key_fingerprint(&public_key) != declared_fingerprint {
+        return Err("public_key_fingerprint does not match public_key".to_owned());
+    }
 
     Ok(EnrollmentSubmission {
         request_id: required(request.request_id, "request_id")?,
@@ -130,7 +134,7 @@ fn submission_from_wire(request: v1::EnrollmentRequest) -> Result<EnrollmentSubm
         proposed_node_id: required(request.proposed_node_id, "proposed_node_id")?,
         display_name: required(request.display_name, "display_name")?,
         public_key,
-        public_key_fingerprint: required(request.public_key_fingerprint, "public_key_fingerprint")?,
+        public_key_fingerprint: declared_fingerprint,
         requested_capabilities: request.requested_capabilities,
         created_at: required(request.created_at, "created_at")?,
         expires_at: required(request.expires_at, "expires_at")?,
@@ -221,6 +225,9 @@ fn new_receipt_id() -> Result<String, String> {
 fn map_store_error(error: EnrollmentStoreError) -> Status {
     match error {
         EnrollmentStoreError::RequestConflict { .. } => Status::already_exists(error.to_string()),
+        EnrollmentStoreError::PublicKeyFingerprintMismatch { .. } => {
+            Status::invalid_argument(error.to_string())
+        }
         EnrollmentStoreError::NotFound { .. } => Status::not_found(error.to_string()),
         EnrollmentStoreError::BindingMismatch { .. }
         | EnrollmentStoreError::FingerprintMismatch { .. }
@@ -272,10 +279,10 @@ mod tests {
     #[test]
     fn submission_preserves_a_valid_public_key_and_its_explicit_binding() {
         let signing_key = SigningKey::from_bytes(&[7; 32]);
-        let submission = submission_from_wire(enrollment_request(
-            signing_key.verifying_key().to_bytes().to_vec(),
-        ))
-        .expect("valid Ed25519 key is accepted");
+        let mut request = enrollment_request(signing_key.verifying_key().to_bytes().to_vec());
+        let fingerprint = public_key_fingerprint(&signing_key.verifying_key().to_bytes());
+        request.public_key_fingerprint = fingerprint.clone();
+        let submission = submission_from_wire(request).expect("valid Ed25519 key is accepted");
 
         assert_eq!(
             submission,
@@ -286,11 +293,23 @@ mod tests {
                 proposed_node_id: "node-1".to_owned(),
                 display_name: "Node one".to_owned(),
                 public_key: signing_key.verifying_key().to_bytes().to_vec(),
-                public_key_fingerprint: "fingerprint-1".to_owned(),
+                public_key_fingerprint: fingerprint,
                 requested_capabilities: vec!["synchronize".to_owned()],
                 created_at: "2026-08-14T00:00:00Z".to_owned(),
                 expires_at: "2026-08-15T00:00:00Z".to_owned(),
             }
+        );
+    }
+
+    #[test]
+    fn submission_rejects_a_fingerprint_for_a_different_public_key() {
+        let signing_key = SigningKey::from_bytes(&[7; 32]);
+        let mut request = enrollment_request(signing_key.verifying_key().to_bytes().to_vec());
+        request.public_key_fingerprint = public_key_fingerprint(&[8; 32]);
+
+        assert_eq!(
+            submission_from_wire(request),
+            Err("public_key_fingerprint does not match public_key".to_owned())
         );
     }
 

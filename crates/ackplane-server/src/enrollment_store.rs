@@ -6,7 +6,9 @@ use tokio_postgres::{Client, NoTls};
 
 use thiserror::Error;
 
-use crate::enrollment::{verify_activation_proof, ActivationProofBinding, EnrollmentState};
+use crate::enrollment::{
+    public_key_fingerprint, verify_activation_proof, ActivationProofBinding, EnrollmentState,
+};
 
 const MIGRATION: &str = include_str!("../migrations/0003_enrollment.sql");
 pub const ACTIVATION_CHALLENGE_LIFETIME: Duration = Duration::from_secs(300);
@@ -84,6 +86,8 @@ pub struct EnrollmentActivationResult {
 pub enum EnrollmentStoreError {
     #[error("enrollment request {request_id} conflicts with the binding already recorded")]
     RequestConflict { request_id: String },
+    #[error("enrollment request {request_id} does not name the fingerprint of its public key")]
+    PublicKeyFingerprintMismatch { request_id: String },
     #[error("enrollment request {request_id} was not found")]
     NotFound { request_id: String },
     #[error("enrollment request {request_id} is not pending")]
@@ -132,6 +136,11 @@ impl EnrollmentStore {
         &mut self,
         submission: &EnrollmentSubmission,
     ) -> Result<EnrollmentStatus, EnrollmentStoreError> {
+        if public_key_fingerprint(&submission.public_key) != submission.public_key_fingerprint {
+            return Err(EnrollmentStoreError::PublicKeyFingerprintMismatch {
+                request_id: submission.request_id.clone(),
+            });
+        }
         let transaction = self.client.transaction().await?;
         let existing = transaction
             .query_opt(
@@ -728,7 +737,7 @@ mod tests {
             proposed_node_id: format!("node-{unique_suffix}"),
             display_name: "Node test".to_owned(),
             public_key: signing_key.verifying_key().to_bytes().to_vec(),
-            public_key_fingerprint: "ed25519:test-key".to_owned(),
+            public_key_fingerprint: public_key_fingerprint(&signing_key.verifying_key().to_bytes()),
             requested_capabilities: vec!["synchronize".to_owned()],
             created_at: "2026-01-01T00:00:00Z".to_owned(),
             expires_at: "2030-01-01T00:00:00Z".to_owned(),
