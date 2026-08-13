@@ -6,6 +6,7 @@ import {
   ARTEFACT_KINDS,
   claimStateRefusal,
   classifyArtefact,
+  classifySuperseded,
   classifyWorktree,
   formatBytes,
   hasLanded,
@@ -328,6 +329,53 @@ test("never takes a detached HEAD, because nothing names what it holds", () => {
   const verdict = classifyWorktree({ ...idle, branch: null }, {});
   assert.equal(verdict.reclaim, false);
   assert.match(verdict.reason, /detached/);
+});
+
+// A worktree kept for dirtiness is kept forever: untracked files never become
+// clean on their own, so the same refusal fires at every audit and the kept set
+// only grows. These report such a tree to a person. None of them reclaims it.
+const stranded = {
+  dirty: true,
+  landed: true,
+  dirtyPaths: ["Cargo.toml", "crates/x/src/lib.rs"],
+  unmatchedPaths: [],
+};
+
+test("reports a dirty, landed worktree whose every uncommitted path is on main", () => {
+  const verdict = classifySuperseded(stranded);
+  assert.equal(verdict.report, true);
+  assert.match(verdict.reason, /exists on origin\/main/);
+});
+
+test("one uncommitted path that exists nowhere upstream withdraws the report", () => {
+  // The whole tree, not just that path: anything absent upstream is new work,
+  // whatever the rest of it duplicates.
+  const verdict = classifySuperseded({
+    ...stranded,
+    unmatchedPaths: ["crates/x/src/brand-new.rs"],
+  });
+  assert.equal(verdict.report, false);
+  assert.match(verdict.reason, /exist nowhere on origin\/main/);
+});
+
+test("never reports a worktree whose own commits have not landed", () => {
+  const verdict = classifySuperseded({ ...stranded, landed: false });
+  assert.equal(verdict.report, false);
+  assert.match(verdict.reason, /have not landed/);
+});
+
+test("never reports a clean worktree, which is the reclaimer's business", () => {
+  const verdict = classifySuperseded({ ...stranded, dirty: false });
+  assert.equal(verdict.report, false);
+  assert.match(verdict.reason, /nothing uncommitted/);
+});
+
+test("a reported worktree is still refused by the reclaimer", () => {
+  // The load-bearing assertion. Reporting must not become a delete by a later
+  // edit that quietly treats the report as permission.
+  const verdict = classifyWorktree({ ...idle, dirty: true }, {});
+  assert.equal(verdict.reclaim, false);
+  assert.match(verdict.reason, /uncommitted or untracked/);
 });
 
 /**

@@ -1,0 +1,1 @@
+- **Security:** Ackplane enrollment now derives the canonical `ed25519:<sha256>` fingerprint from the submitted public key and rejects requests whose declared fingerprint does not match that key. This binds approval intent to the exact key that can later prove possession.

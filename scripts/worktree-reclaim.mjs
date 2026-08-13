@@ -361,6 +361,81 @@ export function readAbandonedBranches() {
   }
 }
 
+/**
+ * Whether a kept worktree holds only work that already exists on origin/main,
+ * and is therefore worth showing a PERSON. Never a reclaim decision.
+ *
+ * The refusal that keeps these trees — "uncommitted or untracked changes" — is
+ * correct and is deliberately left firing. Its defect is that it has no exit:
+ * untracked files never become clean on their own, so every audit declines the
+ * same tree for the same reason forever, and the kept set only ever grows.
+ *
+ * This reports facts and stops. It does not decide that somebody's uncommitted
+ * work is worthless, because that judgement rests on a content comparison with
+ * no reliable basis and an outcome nobody can undo. Measured on the live case:
+ * every uncommitted path was an EARLIER, SMALLER draft of a file since shipped
+ * (99 lines against 247), so a byte-equality test would have reported nothing.
+ * Presence on origin/main is the honest signal; supersession is the person's
+ * call.
+ */
+export function classifySuperseded({
+  dirty,
+  landed,
+  dirtyPaths = [],
+  unmatchedPaths = [],
+} = {}) {
+  if (!dirty) return { report: false, reason: "nothing uncommitted" };
+  if (!landed) {
+    return { report: false, reason: "commits have not landed on origin/main" };
+  }
+  if (!dirtyPaths.length) {
+    return { report: false, reason: "no uncommitted paths to compare" };
+  }
+  // One unmatched path is enough. A tree holding anything that exists nowhere
+  // upstream contains new work, whatever the rest of it duplicates.
+  if (unmatchedPaths.length) {
+    return {
+      report: false,
+      reason: `${unmatchedPaths.length} uncommitted path(s) exist nowhere on origin/main`,
+    };
+  }
+  return {
+    report: true,
+    reason: "every uncommitted path exists on origin/main",
+  };
+}
+
+/** Uncommitted paths in a worktree: modified and untracked, files not folders. */
+export function readDirtyPaths(worktreePath) {
+  const modified = tryGit(["diff", "--name-only"], worktreePath);
+  const untracked = tryGit(
+    ["ls-files", "--others", "--exclude-standard"],
+    worktreePath,
+  );
+  if (!modified.ok || !untracked.ok) return null;
+  return [...modified.out.split(/\n/), ...untracked.out.split(/\n/)]
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+/** Of `paths`, those that exist nowhere on origin/main. */
+export function unmatchedOnMain(paths, worktreePath) {
+  // Missing is the expected answer for half these probes, and git reports it on
+  // stderr. Left unsilenced, a clean report reads as a screen of fatal errors.
+  const onMain = (path) => {
+    try {
+      execFileSync("git", ["cat-file", "-e", `origin/main:${path}`], {
+        cwd: worktreePath,
+        stdio: "ignore",
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  return paths.filter((path) => !onMain(path));
+}
+
 /** Branches held by unexpired task claims at this instant. */
 export function liveClaimBranches(tasks, now = Math.floor(Date.now() / 1000)) {
   return new Set(
@@ -554,12 +629,25 @@ function gatherFacts(worktree, anchor) {
   const cherry = tryGit(["cherry", "origin/main", worktree.branch], anchor);
   const gitDir = tryGit(["rev-parse", "--absolute-git-dir"], worktree.path);
   const markerPath = gitDir.ok ? join(gitDir.out.trim(), MARKER_NAME) : null;
+  const dirty = !status.ok || status.out.trim().length > 0;
+  // Only gathered for trees that are already being kept, so the extra git calls
+  // never run on the trees this tool might act on.
+  const dirtyPaths = dirty ? readDirtyPaths(worktree.path) : [];
+  const behind = tryGit(
+    ["rev-list", "--count", "HEAD..origin/main"],
+    worktree.path,
+  );
   return {
     ...worktree,
     current,
     // A status that cannot be read is treated as dirty. Guessing "clean" from a
     // failure is how a cleanup tool deletes a tree it could not inspect.
-    dirty: !status.ok || status.out.trim().length > 0,
+    dirty,
+    dirtyPaths: dirtyPaths ?? [],
+    unmatchedPaths: dirtyPaths?.length
+      ? unmatchedOnMain(dirtyPaths, worktree.path)
+      : [],
+    behind: behind.ok ? Number(behind.out.trim()) : null,
     landed: cherry.ok && hasLanded(cherry.out),
     owner:
       markerPath && existsSync(markerPath)
@@ -664,6 +752,30 @@ function main() {
       `worktree-reclaim: ${heldByOthers.length} more are held by other sessions. ` +
         "Their owner reclaims them, or scripts/worktree-owner.mjs --adopt-worktree " +
         "transfers one whose session is provably gone.",
+    );
+  }
+
+  // Printed after the kept list and never merged into it: a tree named here is
+  // still kept, and the only thing that may act on it is a person.
+  const superseded = kept.filter(
+    (entry) => classifySuperseded(entry.worktree).report,
+  );
+  if (superseded.length) {
+    console.log(
+      `worktree-reclaim: ${superseded.length} kept worktree(s) hold nothing that is not already on origin/main:`,
+    );
+    for (const { worktree } of superseded) {
+      const behind =
+        worktree.behind === null ? "unknown" : `${worktree.behind} commits`;
+      console.log(
+        `  review   ${worktree.branch}  — ${behind} behind, ` +
+          `${worktree.dirtyPaths.length} uncommitted path(s), each already on origin/main`,
+      );
+    }
+    console.log(
+      "worktree-reclaim: nothing above was touched. Open one, confirm its " +
+        "uncommitted work is genuinely obsolete, and clear it yourself — this " +
+        "tool will not decide that for you.",
     );
   }
 
