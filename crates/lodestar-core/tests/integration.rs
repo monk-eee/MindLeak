@@ -1058,3 +1058,100 @@ fn a_recorded_block_reason_is_not_an_ailment() {
         1
     );
 }
+
+#[test]
+fn the_rework_rate_counts_repeated_titles_and_names_machine_fan_out() {
+    // Regression test for the measurement ADR-0057 named as the whole point of
+    // the coordination line and then could not take. The ADR recorded a
+    // baseline rework rate and said that if it does not fall, the mechanism is
+    // wrong and should be removed rather than tuned indefinitely — a test
+    // nothing could re-run, because no query returned the number. Impact: two
+    // prevention fixes shipped against duplicate seeding (exact-title reuse at
+    // decomposition, then a cross-goal notice) with no way to tell whether
+    // either worked, and the board filled up again after both. Fix:
+    // `rework_rate` reports it. Fails pre-fix: the method does not exist.
+    //
+    // Timestamps are supplied rather than read from the clock so the
+    // same-second count is deterministic, instead of depending on which side
+    // of a second boundary the test happens to land on.
+    let engine = Lodestar::open_in_memory().unwrap();
+    let search = engine
+        .define_goal(GoalKind::Objective, "Ship search", "add FTS search", None)
+        .unwrap();
+    let rank = engine
+        .define_goal(GoalKind::Objective, "Rank results", "order by score", None)
+        .unwrap();
+
+    // A ledger where every title is distinct has not spent anything twice.
+    engine
+        .store()
+        .create_task(&search.id, "wire FTS", "search returns hits", None, 1_000)
+        .unwrap();
+    engine
+        .store()
+        .create_task(&search.id, "tune the ranker", "scores improve", None, 1_001)
+        .unwrap();
+    let clean = engine.rework_rate(0).unwrap();
+    assert_eq!(clean.created, 2);
+    assert_eq!(clean.redundant, 0);
+    assert_eq!(clean.same_second, 0);
+    assert!(
+        clean.repeated_titles.is_empty(),
+        "no title repeats, got {:?}",
+        clean.repeated_titles
+    );
+
+    // The shape that actually filled this board: one generator run producing
+    // the same title under a second goal in the SAME second. No advisory
+    // notice could have prevented it, because a notice needs a reader.
+    let twin = engine
+        .store()
+        .create_task(&rank.id, "wire FTS", "search returns hits", None, 1_000)
+        .unwrap();
+    let fanned = engine.rework_rate(0).unwrap();
+    assert_eq!(fanned.created, 3);
+    assert_eq!(fanned.redundant, 1);
+    assert_eq!(
+        fanned.same_second, 1,
+        "created in the same second as the task it repeats: a generator, not an agent"
+    );
+    assert_eq!(fanned.repeated_titles.len(), 1);
+    assert_eq!(fanned.repeated_titles[0].title, "wire FTS");
+    assert_eq!(fanned.repeated_titles[0].seeds, 2);
+    assert_eq!(fanned.repeated_titles[0].redundant, 1);
+    assert_eq!(
+        fanned.repeated_titles[0].goals, 2,
+        "forked across goals, so one of the two gradings cannot be right"
+    );
+
+    // A repeat seeded much later is still rework, but it is not fan-out: a
+    // reader had time to notice it, so the two must not be conflated.
+    engine
+        .store()
+        .create_task(&search.id, "wire FTS", "search returns hits", None, 5_000)
+        .unwrap();
+    let later = engine.rework_rate(0).unwrap();
+    assert_eq!(later.redundant, 2);
+    assert_eq!(later.same_second, 1);
+
+    // Windowing is what lets a rate be shown to fall, and redundancy is judged
+    // against the whole history: narrowing the window must not turn a repeat
+    // of older work into new work.
+    let window = engine.rework_rate(5_000).unwrap();
+    assert_eq!(window.created, 1);
+    assert_eq!(
+        window.redundant, 1,
+        "it repeats a title from before the window and is still rework"
+    );
+    assert_eq!(window.same_second, 0);
+
+    // Retiring a duplicate is good judgement, not waste. It is reported as
+    // abandoned, and still counted as the rework it had already cost.
+    assert!(engine.abandon_task(&twin.id, true).unwrap());
+    let retired = engine.rework_rate(0).unwrap();
+    assert_eq!(retired.abandoned, 1);
+    assert_eq!(
+        retired.redundant, 2,
+        "abandoning a seed does not un-spend the work of making and retiring it"
+    );
+}

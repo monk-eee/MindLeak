@@ -391,3 +391,47 @@ pub struct BoardFinding {
     /// only the reader can make (ADR-0015).
     pub remedy: String,
 }
+
+/// One title that was seeded more than once, and how badly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepeatedTitle {
+    pub title: String,
+    /// Every task carrying this title, in any state.
+    pub seeds: usize,
+    /// How many of them were redundant — all but the earliest.
+    pub redundant: usize,
+    /// Distinct goals the title was seeded under. More than one means the work
+    /// was graded against goals it cannot serve.
+    pub goals: usize,
+}
+
+/// How much of the work the fleet created had already been created.
+///
+/// [ADR-0057](../../../docs/adr/0057-work-already-done-is-a-collision.md) named
+/// the rework rate as the measurable outcome of the whole coordination line,
+/// recorded a baseline, and said that if it does not fall the mechanism is
+/// wrong and should be removed rather than tuned indefinitely. Nothing could
+/// re-run that test, so it never was. This is the instrument.
+///
+/// A task counts as redundant when an *earlier* task carries its exact title:
+/// by the time it existed there was nothing new for it to do. That is
+/// deliberately the narrow, provable subset of waste. Abandonment is reported
+/// beside it but is NOT called rework — work dropped because it turned out to
+/// be unnecessary is good judgement, and counting it as waste would flatter a
+/// fleet that never reconsiders anything.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReworkReport {
+    /// Tasks created in the window, in any state.
+    pub created: usize,
+    pub redundant: usize,
+    /// Redundant seeds created in the same second as the task they repeat.
+    ///
+    /// The signature of a generator, not of an agent: a person or an agent
+    /// deciding whether to start cannot produce two tasks in one second. This
+    /// is the number that says whether an advisory notice could have helped,
+    /// because a notice is addressed to a reader and a generator has none.
+    pub same_second: usize,
+    pub abandoned: usize,
+    /// Worst first, so the reader sees the shape before the total.
+    pub repeated_titles: Vec<RepeatedTitle>,
+}
