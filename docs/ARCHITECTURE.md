@@ -12,8 +12,9 @@ remembers, governs, and audits, but it never preempts an agent, sandboxes a
 process, or blocks a write. What ships today is **MindLeak Core**, the local
 tier described below. *Ackplane* (federation, ADR-0082 to ADR-0088) and *the
 Bridge* (assurance operations, ADR-0090) are accepted designs whose services
-are not yet built; the only part that exists is the repository side of the
-Ackplane boundary, described under `ackplane-core` below.
+are not yet fully built. Ackplane now includes the repository-side contract and
+the ledger-backed node synchronization transport described under
+`ackplane-core` and `ackplane-server` below.
 
 Each plane is a Rust library behind its own MCP stdio server. They share a
 repository identity and session identity, but not tables, database connections,
@@ -246,9 +247,8 @@ be the second arbiter ADR-0045 forbids.
 
 The service side of the same boundary, and a separate deployable rather than a
 mode of either plane (ADR-0082 clause 1) — it depends on no plane crate, and on
-`ackplane-core` not at all. What exists is the startup contract: a deployment
-declares its ledger and its durability profile before it may accept work, and
-both are refusals rather than defaults.
+`ackplane-core` not at all. A deployment declares its ledger and its durability
+profile before it may accept work, and both are refusals rather than defaults.
 
 Without `ACKPLANE_DATABASE_URL` it will not start, because an instance holds no
 authoritative local state and cannot accept work without the ledger (ADR-0086
@@ -261,9 +261,10 @@ asynchronously replicated acknowledgement ADR-0086 clause 12 will not label as
 zero-loss. The database URL carries a password, so it is absent from the banner
 and redacted in a hand-written `Debug`.
 
-The ledger itself is not here yet; the process exits rather than listening,
-since accepting work it cannot durably record would be the dual authority
-ADR-0082 clause 3 refuses.
+The server exposes only `NodeSyncService.Synchronize` from ADR-0083. Its stream
+acknowledges a hello, translates event batches into ledger appends, returns
+durable positions in receipts, and emits typed rejections for malformed or
+conflicting records. Enrollment and key-rotation RPCs remain unimplemented.
 
 ### `editors/vscode` (extension)
 

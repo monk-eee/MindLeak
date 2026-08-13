@@ -1,23 +1,44 @@
 //! The Ackplane federation service entry point (ADR-0082).
 
-use std::process::ExitCode;
+use std::{net::SocketAddr, process::ExitCode};
 
-use ackplane_server::ServerConfig;
+use ackplane_protocol::v1::node_sync_service_server::NodeSyncServiceServer;
+use ackplane_server::{ledger::LedgerStore, service::NodeSyncService, ServerConfig};
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> ExitCode {
     match ServerConfig::resolve(|key| std::env::var(key).ok()) {
         Ok(config) => {
             println!("{}", config.banner());
-            // The ledger schema and its append transaction exist
-            // (`ackplane_server::ledger`, ADR-0086), but nothing here accepts a
-            // network connection yet: that is ADR-0083's gRPC node protocol, a
-            // separate decision. Serving without it would be the dual
-            // authority ADR-0082 clause 3 refuses.
-            println!(
-                "ackplane-server: ledger schema ready; no gRPC service yet, so exiting rather \
-                 than accepting work over a protocol that does not exist"
-            );
-            ExitCode::SUCCESS
+            let address = match config.listen.parse::<SocketAddr>() {
+                Ok(address) => address,
+                Err(error) => {
+                    eprintln!("ackplane-server: invalid ACKPLANE_LISTEN address: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let ledger = match LedgerStore::connect(config.database_url()).await {
+                Ok(ledger) => ledger,
+                Err(error) => {
+                    eprintln!(
+                        "ackplane-server: could not connect to the configured ledger: {error}"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            };
+
+            println!("ackplane-server: serving NodeSyncService.Synchronize");
+            match tonic::transport::Server::builder()
+                .add_service(NodeSyncServiceServer::new(NodeSyncService::new(ledger)))
+                .serve(address)
+                .await
+            {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("ackplane-server: gRPC server stopped with an error: {error}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Err(error) => {
             eprintln!("ackplane-server: {error}");
