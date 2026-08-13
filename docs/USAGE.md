@@ -454,6 +454,9 @@ selecting a default.
 | `MINDLEAK_EMBED_URL` | `http://localhost:11434/v1` | embeddings server (for `recall`/`index`) |
 | `MINDLEAK_EMBED_MODEL` | `nomic-embed-text` | embedding model |
 | `MINDLEAK_EMBED_API_KEY` | *(empty)* | bearer token for hosted servers |
+| `MINDLEAK_AUTONOMOUS_INDEX` | `true` | refresh semantic-recall vectors on a wall-clock cadence; set `false` to disable attempts |
+| `MINDLEAK_INDEX_INTERVAL_SECS` | `300` | autonomous index cadence, bounded 30-86400 seconds |
+| `MINDLEAK_INDEX_BATCH` | `128` | nodes embedded per autonomous pass, bounded 1-1000 |
 | `MINDLEAK_LOG` | `info` | tracing filter (`off`, `warn`, `debug`, `mindleak_core=debug`, …) — **stderr only** |
 | `MINDLEAK_LOG_FORMAT` | `pretty` | `pretty` or `json` |
 | `MINDLEAK_HTTP_CONNECT_TIMEOUT_MS` | `1000` | connect/DNS budget per optional HTTP attempt, bounded 100-300000 ms |
@@ -462,6 +465,16 @@ selecting a default.
 | `MINDLEAK_HTTP_RETRIES` | `2` | extra retries for generic transient failures, bounded 0-5; model calls retry one read timeout exactly once |
 | `MINDLEAK_BREAKER_THRESHOLD` | `5` | consecutive failures before the circuit opens |
 | `MINDLEAK_BREAKER_COOLDOWN_MS` | `30000` | how long the circuit stays open before a probe |
+
+Autonomous indexing needs an OpenAI-compatible `/v1/embeddings` endpoint only
+for semantic recall; deterministic ingestion, FTS, graph traversal, impact, and
+pruning continue without one. The default endpoint is Ollama. If startup or
+`autonomous_index` telemetry reports it unavailable, install and start Ollama,
+then run `ollama pull nomic-embed-text`. Alternatively, configure
+`MINDLEAK_EMBED_URL`, `MINDLEAK_EMBED_MODEL`, and
+`MINDLEAK_EMBED_API_KEY` for another compatible provider. Until that endpoint
+is healthy, `recall` returns a clearly marked deterministic graph/FTS fallback
+with the same remediation rather than failing the tool call.
 
 ### `lodestar-mcp`
 

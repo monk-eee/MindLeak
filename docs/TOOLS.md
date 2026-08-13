@@ -45,8 +45,8 @@ and the field is omitted.
 | `list_agents` | Roster of agents + their active observation counts (attribution). |
 | `working_set` | Current agent's bounded, ranked attentional focus (derived from active observations; default cap 7). |
 | `evidence_for` | Bounded, provenance-bearing evidence bundle from an agent's attributed executions/commits in a work window (ADR-0009). |
-| `index` | Optional: embed nodes lacking a current vector through the configured OpenAI-compatible `/v1/embeddings` endpoint (ADR-0008). |
-| `recall` | Optional: nearest node ids by cosine similarity — entry points to *seed* `graph_multi_hop_query`. |
+| `index` | Optional: embed nodes lacking a current vector through the configured OpenAI-compatible `/v1/embeddings` endpoint (ADR-0008); failures name the Ollama/`nomic-embed-text` or alternate-endpoint remedy. |
+| `recall` | Nearest semantic node ids when embeddings are available; otherwise successful FTS-seeded deterministic graph results in the same `results` field, plus explicit fallback metadata and setup advice. |
 | `telemetry_snapshot` | Observability record (ADR-0010): per-tool lifetime call/error counts, latency, current health (whether each tool's most recent call failed), and recent invocations from the durable audit trail. |
 | `storage_status` | Resolved repository id, graph database path, storage origin, legacy migration source, and whether migration ran (ADR-0038); `include_model_health=true` adds one on-demand consolidation-model probe (ADR-0079). |
 

@@ -262,8 +262,17 @@ path.
 | `MINDLEAK_EMBED_URL` | `http://localhost:11434/v1` | OpenAI-compatible embeddings base URL |
 | `MINDLEAK_EMBED_MODEL` | `nomic-embed-text` | embedding model name |
 | `MINDLEAK_EMBED_API_KEY` | *(empty)* | bearer token for hosted servers; Ollama ignores it |
+| `MINDLEAK_AUTONOMOUS_INDEX` | `true` | refresh missing vectors on a wall-clock cadence |
+| `MINDLEAK_INDEX_INTERVAL_SECS` | `300` | autonomous index cadence (30-86400) |
+| `MINDLEAK_INDEX_BATCH` | `128` | nodes attempted per pass (1-1000) |
 
-Like consolidation, it errors cleanly when no embedding server is reachable.
+When the embedding endpoint is unavailable, explicit `index` calls and
+autonomous-index telemetry name the model, URL, and remediation. The MCP
+`recall` boundary instead returns FTS-seeded deterministic graph traversal in
+its existing `results` field, with fallback metadata that recommends installing
+and starting Ollama plus `ollama pull nomic-embed-text`, or configuring another
+OpenAI-compatible endpoint. Ingestion, graph traversal, impact, decay, and prune
+remain model-free.
 
 ### 6.2 Observability, telemetry & resilience (ADR-0010)
 
