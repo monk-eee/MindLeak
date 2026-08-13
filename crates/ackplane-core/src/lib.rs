@@ -45,12 +45,56 @@ impl CoordinationMode {
 
     // Kept apart from resolution so that the day an Ackplane client exists,
     // only this answer changes.
-    fn ensure_supported(self) -> Result<(), CoordinationModeError> {
+    /// Refuse a declared mode this repository cannot honour right now.
+    ///
+    /// Takes readiness rather than probing for it: whether federation is usable
+    /// is a fact about the running deployment, and the client that can
+    /// establish it lives outside this crate. Passing it in is also the only
+    /// way a test reaches the arms no build can currently produce.
+    pub fn ensure_supported(
+        self,
+        federation: FederationReadiness,
+    ) -> Result<(), CoordinationModeError> {
         match self {
+            // Local arbitration never consults federation: a repository that
+            // declared `local` is not waiting on an arbiter to be reachable.
             Self::Local => Ok(()),
-            Self::Federated => Err(CoordinationModeError::FederationUnavailable),
+            Self::Federated => match federation {
+                FederationReadiness::Ready => Ok(()),
+                FederationReadiness::NoClient => Err(CoordinationModeError::NoFederationClient),
+                FederationReadiness::ArbiterUnreachable => {
+                    Err(CoordinationModeError::ArbiterUnreachable)
+                }
+                FederationReadiness::NotEnrolled => Err(CoordinationModeError::NotEnrolled),
+            },
         }
     }
+}
+
+/// What this repository can currently do about a `federated` declaration.
+///
+/// Three separable failures, because they have three different remedies and
+/// only one of them is fixed by changing the binary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FederationReadiness {
+    /// A client is compiled in, the arbiter answered, and it knows this
+    /// repository.
+    Ready,
+    /// This build carries no Ackplane client at all.
+    NoClient,
+    /// A client is compiled in, but the arbiter did not answer.
+    ArbiterUnreachable,
+    /// The arbiter answered and does not recognise this repository.
+    NotEnrolled,
+}
+
+/// What federation the running build can actually perform.
+///
+/// No Ackplane client exists in this workspace yet, so `NoClient` is the only
+/// honest answer. When one lands this probes instead, and nothing else in the
+/// resolution below changes.
+pub fn compiled_federation_readiness() -> FederationReadiness {
+    FederationReadiness::NoClient
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -63,12 +107,31 @@ pub enum CoordinationModeError {
     Unrecognised(String),
     #[error(
         "MINDLEAK_COORDINATION_MODE is `federated`, but this build carries no Ackplane \
-         client and cannot reach a federated arbiter. Continuing locally would create a \
-         second arbiter for the claims this repository expects Ackplane to own (ADR-0082, \
-         ADR-0045), so this is refused rather than downgraded. Declare `local` to \
-         coordinate with the repository-local stores."
+         client, so it cannot reach any arbiter. Continuing locally would create a second \
+         arbiter for the claims this repository expects Ackplane to own (ADR-0082, \
+         ADR-0045), so this is refused rather than downgraded. Install a build that \
+         includes the client, or declare `local` to coordinate with the repository-local \
+         stores."
     )]
-    FederationUnavailable,
+    NoFederationClient,
+    #[error(
+        "MINDLEAK_COORDINATION_MODE is `federated` and this build can federate, but the \
+         Ackplane arbiter did not answer. Continuing locally would create a second arbiter \
+         for the claims this repository expects Ackplane to own (ADR-0082, ADR-0045), so \
+         this is refused rather than downgraded. Rebuilding will not help — this build is \
+         already correct. Check that the arbiter is running and reachable from here, or \
+         declare `local` if this repository is meant to be locally arbitrated."
+    )]
+    ArbiterUnreachable,
+    #[error(
+        "MINDLEAK_COORDINATION_MODE is `federated` and the Ackplane arbiter answered, but \
+         it does not recognise this repository. Coordinating locally instead would create \
+         a second arbiter for claims this repository expects Ackplane to own (ADR-0082, \
+         ADR-0045), so this is refused rather than downgraded. Rebuilding will not help \
+         and the connection is fine — enrol this repository with the arbiter (ADR-0085), \
+         or declare `local`."
+    )]
+    NotEnrolled,
 }
 
 /// Resolve the mode this repository declared, refusing any it cannot honour.
@@ -88,7 +151,7 @@ where
             .ok_or_else(|| CoordinationModeError::Unrecognised(raw.trim().to_string()))?,
         _ => CoordinationMode::Local,
     };
-    mode.ensure_supported()?;
+    mode.ensure_supported(compiled_federation_readiness())?;
     Ok(mode)
 }
 
@@ -123,9 +186,10 @@ mod tests {
     fn a_federated_repository_is_refused_not_arbitrated_locally() {
         // ADR-0082 decision 3: authority never falls back according to
         // reachability. Answering `local` here would be the second arbiter.
+        // No client is compiled in yet, so that is the cause reported.
         assert_eq!(
             declared(Some("federated")),
-            Err(CoordinationModeError::FederationUnavailable)
+            Err(CoordinationModeError::NoFederationClient)
         );
     }
 
@@ -142,5 +206,100 @@ mod tests {
         for mode in [CoordinationMode::Local, CoordinationMode::Federated] {
             assert_eq!(CoordinationMode::from_tag(mode.as_str()), Some(mode));
         }
+    }
+
+    #[test]
+    fn each_reason_federation_is_unusable_is_reported_as_its_own_cause() {
+        // Regression test for a refusal that named a cause which was about to
+        // stop being true. One `FederationUnavailable` variant answered for
+        // three unrelated situations, and its message asserted the build
+        // carried no client. Once a client exists, an operator whose arbiter is
+        // merely down would be told to rebuild a binary that is already
+        // correct, and the one true remedy would appear nowhere. Fails pre-fix:
+        // these variants do not exist, and one value answered for all of them.
+        for (readiness, expected) in [
+            (
+                FederationReadiness::NoClient,
+                CoordinationModeError::NoFederationClient,
+            ),
+            (
+                FederationReadiness::ArbiterUnreachable,
+                CoordinationModeError::ArbiterUnreachable,
+            ),
+            (
+                FederationReadiness::NotEnrolled,
+                CoordinationModeError::NotEnrolled,
+            ),
+        ] {
+            // The remedy has to differ too: three variants that all say the
+            // same sentence would leave the reader exactly where they started.
+            let message = expected.to_string();
+            assert_eq!(
+                CoordinationMode::Federated.ensure_supported(readiness),
+                Err(expected),
+                "{readiness:?} must report its own cause"
+            );
+            let rebuild_is_the_remedy = matches!(readiness, FederationReadiness::NoClient);
+            assert_eq!(
+                message.contains("Install a build"),
+                rebuild_is_the_remedy,
+                "only a missing client is fixed by changing the binary: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unusable_arbiter_is_refused_and_never_downgraded_to_local() {
+        // ADR-0082 decision 3 and ADR-0045: falling back on reachability is how
+        // one repository acquires two arbiters for the same claims. An
+        // implementation that downgraded would return Ok here, so this fails
+        // against it rather than merely describing the rule.
+        for readiness in [
+            FederationReadiness::NoClient,
+            FederationReadiness::ArbiterUnreachable,
+            FederationReadiness::NotEnrolled,
+        ] {
+            assert!(
+                CoordinationMode::Federated
+                    .ensure_supported(readiness)
+                    .is_err(),
+                "{readiness:?} must refuse rather than resolve"
+            );
+        }
+    }
+
+    #[test]
+    fn a_ready_federation_resolves_instead_of_being_refused() {
+        // Nothing could exercise a successful federated resolution before the
+        // readiness became an injected fact, so the accepting arm of the match
+        // had never been executed by any test.
+        assert_eq!(
+            CoordinationMode::Federated.ensure_supported(FederationReadiness::Ready),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_local_repository_never_consults_federation() {
+        // A repository that declared `local` is not waiting on an arbiter, so
+        // an unreachable one must not stop it starting.
+        for readiness in [
+            FederationReadiness::Ready,
+            FederationReadiness::NoClient,
+            FederationReadiness::ArbiterUnreachable,
+            FederationReadiness::NotEnrolled,
+        ] {
+            assert_eq!(CoordinationMode::Local.ensure_supported(readiness), Ok(()));
+        }
+    }
+
+    #[test]
+    fn this_build_reports_that_it_carries_no_client() {
+        // The one honest answer while no client crate exists; the resolution
+        // path above depends on it, so it is stated rather than assumed.
+        assert_eq!(
+            compiled_federation_readiness(),
+            FederationReadiness::NoClient
+        );
     }
 }
