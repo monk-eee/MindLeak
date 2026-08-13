@@ -251,7 +251,12 @@ export function planArtefactSweep(candidates, options = {}) {
  */
 export function classifyWorktree(
   worktree,
-  { session, liveClaimBranches = new Set(), claimStateAvailable = true } = {},
+  {
+    session,
+    liveClaimBranches = new Set(),
+    claimStateAvailable = true,
+    abandonedBranches = new Set(),
+  } = {},
 ) {
   const { path, branch, bare, dirty, landed, owner, building, current } =
     worktree;
@@ -301,10 +306,59 @@ export function classifyWorktree(
   if (owner && session && owner !== session) {
     return { reclaim: false, reason: `owned by session ${owner.slice(0, 12)}` };
   }
-  if (!landed) {
+  if (!landed && !abandonedBranches.has(branch)) {
     return { reclaim: false, reason: "commits have not landed on origin/main" };
   }
-  return { reclaim: true, reason: "merged and idle", path, branch };
+  // Abandoned and merged are both finished, and the operator is told which,
+  // because "reclaimed" reads very differently when the work was thrown away.
+  return {
+    reclaim: true,
+    reason: landed
+      ? "merged and idle"
+      : "abandoned: its pull request closed unmerged",
+    path,
+    branch,
+  };
+}
+
+/**
+ * Branches whose pull request was closed without merging.
+ *
+ * Such a branch will never land, so the `!landed` rule above would keep its
+ * worktree forever — and the more disciplined the fleet is about closing
+ * duplicate pull requests, the more dead worktrees it accumulates. That is the
+ * measured failure mode in the header comment, reached by doing the right thing.
+ *
+ * Fails to the EMPTY set, which is the opposite of `readOpenPrBranches` in
+ * artefact-sweep.mjs and deliberately so: that set PROTECTS, so not knowing must
+ * refuse; this set PERMITS, so not knowing must permit nothing. Both directions
+ * are "assume nothing was proven", which is only the same word, not the same
+ * value.
+ */
+export function readAbandonedBranches() {
+  try {
+    const out = execFileSync(
+      "gh",
+      [
+        "pr",
+        "list",
+        "--state",
+        "closed",
+        "--limit",
+        "100",
+        "--json",
+        "headRefName,mergedAt",
+      ],
+      { encoding: "utf8", env: { ...process.env, GH_PAGER: "cat" } },
+    );
+    return new Set(
+      JSON.parse(out)
+        .filter((pr) => !pr.mergedAt)
+        .map((pr) => pr.headRefName),
+    );
+  } catch {
+    return new Set();
+  }
 }
 
 /** Branches held by unexpired task claims at this instant. */
@@ -384,6 +438,7 @@ export function revalidateBeforeReclaim(
   {
     session,
     readClaimState = () => ({ available: false, branches: new Set() }),
+    readAbandoned = () => new Set(),
   } = {},
 ) {
   const state = readClaimState();
@@ -391,6 +446,9 @@ export function revalidateBeforeReclaim(
     session,
     liveClaimBranches: state.branches,
     claimStateAvailable: state.available,
+    // Re-read rather than carried: a reopened pull request between the report
+    // and here would otherwise cost its remote branch under --remote.
+    abandonedBranches: readAbandoned(),
   });
 }
 
@@ -547,6 +605,7 @@ function main() {
   if (!claimState.available) {
     console.error(claimStateRefusal(claimState));
   }
+  const abandonedBranches = readAbandonedBranches();
   const worktrees = readWorktrees(anchor).map((worktree) =>
     gatherFacts(worktree, anchor),
   );
@@ -556,6 +615,7 @@ function main() {
       session,
       liveClaimBranches: claimState.branches,
       claimStateAvailable: claimState.available,
+      abandonedBranches,
     }),
   }));
 
@@ -617,6 +677,7 @@ function main() {
     const refreshed = revalidateBeforeReclaim(entry.worktree, {
       session,
       readClaimState: () => readLiveClaimState(anchor),
+      readAbandoned: readAbandonedBranches,
     });
     if (!refreshed.reclaim) {
       console.log(`worktree-reclaim: kept ${branch} — ${refreshed.reason}`);

@@ -239,6 +239,68 @@ test("never takes work that has not landed on origin/main", () => {
   assert.match(verdict.reason, /have not landed/);
 });
 
+test("takes a branch whose pull request was closed unmerged", () => {
+  // Such a branch never lands, so the rule above would keep its worktree
+  // forever. Measured 2026-08-14: feat/enrolment-carries-the-public-key, closed
+  // as a duplicate, was permanently unreclaimable. Closing a duplicate is the
+  // correct move, and the cleanup tool was charging disk for it.
+  const verdict = classifyWorktree(
+    { ...idle, landed: false },
+    { abandonedBranches: new Set([idle.branch]) },
+  );
+  assert.equal(verdict.reclaim, true);
+  assert.match(verdict.reason, /closed unmerged/);
+});
+
+test("distinguishes abandoned from merged in the reason it reports", () => {
+  // "reclaimed" reads very differently when the work was thrown away, and the
+  // operator sees only this line.
+  assert.match(classifyWorktree(idle, {}).reason, /merged and idle/);
+});
+
+test("keeps unlanded work that has no pull request at all", () => {
+  // The distinction the fix turns on: no pull request means nobody has decided
+  // against this yet, so it is in-progress work and stays. Only an explicit
+  // closed-unmerged verdict releases it.
+  const verdict = classifyWorktree(
+    { ...idle, landed: false },
+    { abandonedBranches: new Set(["some/other-branch"]) },
+  );
+  assert.equal(verdict.reclaim, false);
+  assert.match(verdict.reason, /have not landed/);
+});
+
+test("abandonment never overrides a refusal that outranks it", () => {
+  // An abandoned branch must widen exactly one rule, not become a skeleton key
+  // for the guards ahead of it — each of these protects something the closed
+  // pull request says nothing about.
+  const abandonedBranches = new Set([idle.branch]);
+  const cases = [
+    [{ dirty: true }, {}, /uncommitted or untracked/],
+    [{ building: true }, {}, /build is running/],
+    [{ branch: null }, {}, /detached/],
+    [{ branch: "main" }, {}, /protected/],
+    [{ bare: true }, {}, /primary checkout/],
+    [{ current: true }, {}, /running here/],
+    [{}, { liveClaimBranches: new Set([idle.branch]) }, /live Lodestar claim/],
+    [{}, { claimStateAvailable: false }, /claim state is unavailable/],
+    [
+      { owner: "session:v1:someone-else" },
+      { session: "session:v1:me" },
+      /owned by session/,
+    ],
+  ];
+
+  for (const [facts, options, expected] of cases) {
+    const verdict = classifyWorktree(
+      { ...idle, landed: false, ...facts },
+      { ...options, abandonedBranches },
+    );
+    assert.equal(verdict.reclaim, false, `${expected} should still refuse`);
+    assert.match(verdict.reason, expected);
+  }
+});
+
 test("never takes a worktree another session owns", () => {
   const verdict = classifyWorktree(
     { ...idle, owner: "session:v1:someone-else" },
