@@ -41,9 +41,9 @@ pub use embed::{cosine, Embedder, KnowledgeMatches};
 pub use error::{LodestarError, Result};
 pub use facade::{DecomposedTask, PlannedDesignMaterialization};
 pub use model::{
-    Advice, AdviceDisposition, ArtifactBinding, ArtifactBindingMode, BoardAilment, BoardFinding,
-    CertificationState, CertificationStatus, ClaimOverlap, ClaimOverlapReport, ClaimWindow,
-    ClauseCoverage, ConformanceCheck, ConformanceCheckReference, ConformanceEvidence,
+    Advice, AdviceDisposition, AdviceReason, ArtifactBinding, ArtifactBindingMode, BoardAilment,
+    BoardFinding, CertificationState, CertificationStatus, ClaimOverlap, ClaimOverlapReport,
+    ClaimWindow, ClauseCoverage, ConformanceCheck, ConformanceCheckReference, ConformanceEvidence,
     ConformanceRecord, ConformanceResult, ConstitutionProposal, ConstitutionState,
     ConstitutionStatus, ConstitutionVersion, EvidenceProvenance, Goal, GoalKind, GoalStatus,
     GoverningClause, HumanQuestion, Knowledge, KnowledgeReach, OverlapSignal, RepeatedTitle,

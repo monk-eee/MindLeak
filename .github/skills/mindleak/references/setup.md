@@ -59,14 +59,24 @@ is intentionally managed; repository-id storage is the normal path.
 
 1. Confirm both servers appear in the client's MCP tool list.
 2. Mint one 32-character lowercase hexadecimal session token.
-3. Call `open_session` on both planes with that same token.
+3. Call `open_session` on both planes with that same token. In an unborn local
+  repository, omit `head_sha`, `base`, and `behind`; neither a first commit nor
+  an `origin/main` remote is required.
 4. Call `storage_status` on both planes.
 5. Require matching non-empty `repository_id` values and database paths under
    the same `repositories/<id>/` directory.
-6. Run one read-only memory query and one read-only intent query.
+6. Call `constitution_query(action="active")`. This is the positive goal list;
+  an empty array means goals have never been seeded for this repository.
+7. If the repository chooses Lodestar task coordination and the list is empty,
+  call `constitution_define(action="goal", kind="objective", title=...,
+  statement=...)` from an accepted, current repository decision. Never turn a
+  proposed record into active policy. Use the returned goal id with
+  `task_create`, then query `active` again to verify it.
+8. Run one read-only memory query and one additional read-only intent query.
 
 If verification succeeds, report the effective session identity and repository
-id without dumping database contents.
+id without dumping database contents. An intentionally goal-less repository is
+connected but has not opted into Lodestar task coordination; say so explicitly.
 
 ## Troubleshoot
 
@@ -75,6 +85,9 @@ id without dumping database contents.
   do not expand `${workspaceFolder}` and select the binary for the current OS.
 - **Planes have different repository ids:** check that both registrations use
   the same `MINDLEAK_WORKSPACE` and belong to the same Git clone.
+- **Git cannot find `origin/main`:** do not create a remote merely for the MCP
+  servers. Omit undeclared base/divergence fields until the repository has an
+  upstream; local repository identity still works before the first commit.
 - **Linked worktrees differ:** remove direct `MINDLEAK_DB`/`LODESTAR_DB`
   overrides unless deliberate; linked worktrees should share repository-id
   storage automatically.

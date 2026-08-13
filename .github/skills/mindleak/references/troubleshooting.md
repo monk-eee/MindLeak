@@ -83,6 +83,9 @@ nothing.
 | `will not certify` after a successful push | `MINDLEAK_MCP_BIN` unset; no binary in a fresh worktree | Set the override, then ingest the published commit |
 | `board could not be read` | Deployed binary older than the ledger | Point at the shared install, not `target/release` |
 | `unknown session_id` | Server restarted since `open_session` | Open the session again with the same id |
+| `task_create` returns `not found: <goal_id>` | No active goal has that id; a fresh repository may have no goals at all | Run `constitution_query(action="active")`; if coordination is wanted, create the goal from an accepted decision with `constitution_define(action="goal", ...)` and use the returned id |
+| `advise` returns `needs_human` with `reason: no_constitution_adopted` | The repository has no active goals | Seed an accepted goal, or explicitly proceed with ordinary ungoverned work; do not treat this setup state as change-specific ambiguity |
+| Git reports an unknown revision such as `origin/main` | The local repository has no upstream remote yet | Omit `base` and `behind` from `open_session` and skip remote divergence checks; a local `git init` is sufficient for both planes |
 | `task declared no path scope` | Claimed without `paths` | Re-claim with the scope; read the existing scope first if taking over |
 | Bundle `does not match the live task claim` | Evidence was retyped or trimmed | Pass `evidence`/`check` **by reference** from the completion offer file |
 | `evidence interval falls outside the live claim` | Window ends in the future, or outside the claim | Bound the window by the claim and the current time |
