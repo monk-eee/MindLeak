@@ -18,6 +18,9 @@
 use std::fmt;
 
 pub mod ledger;
+pub mod projection;
+#[cfg(test)]
+mod test_support;
 
 use thiserror::Error;
 
