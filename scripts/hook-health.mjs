@@ -3,16 +3,19 @@
 // fleet relies on.
 //
 // `.pre-commit-config.yaml` declares
-// `default_install_hook_types: [pre-commit, pre-push, post-commit]`, but that
-// list only takes effect when `pre-commit install` is re-run. A checkout made
-// before a hook type was added keeps working and silently never installs the
-// new one — and the hooks directory is shared across every worktree, so the
-// drift is fleet-wide, not local. Nothing reported it, because the hook that
-// would announce a missing hook is the missing hook: `post-commit` records a
-// commit's provenance, so its absence produces an empty evidence bundle that
-// looks exactly like an agent who forgot to ingest, and the diagnosis lands on
-// the wrong cause (it cost one session two wrong theories before anyone checked
-// whether the hook existed).
+// `default_install_hook_types: [pre-commit, pre-push, post-commit, post-checkout]`,
+// but that list only takes effect when `pre-commit install` is re-run. A
+// checkout made before a hook type was added keeps working and silently never
+// installs the new one — and the hooks directory is shared across every
+// worktree, so the drift is fleet-wide, not local. Nothing reported it,
+// because the hook that would announce a missing hook is the missing hook:
+// `post-commit` records a commit's provenance, so its absence produces an
+// empty evidence bundle that looks exactly like an agent who forgot to
+// ingest, and the diagnosis lands on the wrong cause (it cost one session two
+// wrong theories before anyone checked whether the hook existed).
+// `post-checkout` records worktree ownership the moment `git worktree add`
+// completes; without it a freshly created worktree reads as unclaimed until
+// its first commit.
 //
 // This runs from pre-push — a path that is itself installed — and refuses the
 // push with the one command that reinstalls every declared hook type at once.
@@ -26,8 +29,15 @@ import { pathToFileURL } from "node:url";
 
 // The hooks pre-commit installs and the fleet depends on. `post-commit` is the
 // one that records evidence; without it work is unattributable and nothing says
-// so until completion refuses, hours later (ADR-0048).
-export const EXPECTED_HOOKS = ["pre-commit", "pre-push", "post-commit"];
+// so until completion refuses, hours later (ADR-0048). `post-checkout` is the
+// one that records worktree ownership at creation (ADR-0038); without it a
+// fresh worktree reads as unclaimed until someone commits in it.
+export const EXPECTED_HOOKS = [
+  "pre-commit",
+  "pre-push",
+  "post-commit",
+  "post-checkout",
+];
 
 // pre-commit writes a generated shim that names itself. A hand-written hook, or
 // a stale one left by another tool, does not run pre-commit's configured stages
@@ -51,15 +61,32 @@ export function setupCommand() {
   return "pre-commit install --install-hooks";
 }
 
+// Named consequences for the two hooks whose absence is otherwise silent: each
+// still runs its git-side effect (the commit lands, the worktree is created),
+// so nothing else reports what it quietly skipped doing.
+const SILENT_CONSEQUENCES = {
+  "post-commit":
+    "commits land with no provenance and nothing says so until completion " +
+    "refuses, hours later (ADR-0048)",
+  "post-checkout":
+    "a freshly created worktree reads as unclaimed until its first commit " +
+    "(ADR-0038)",
+};
+
 export function healthMessage(missing) {
+  const consequences = missing
+    .map((hook) => SILENT_CONSEQUENCES[hook])
+    .filter(Boolean);
+  const explanation =
+    consequences.length > 0
+      ? `Without it, ${consequences.join("; and without it, ")}.`
+      : "Each missing hook silently stops enforcing what it exists to check.";
   return (
     "hook-health: the shared Git hooks directory is missing hooks the fleet relies on:\n" +
     missing.map((hook) => `  - ${hook}`).join("\n") +
     "\n\n`default_install_hook_types` only installs on `pre-commit install`, so a\n" +
     "checkout made before a hook type was added never gets it — and the hooks\n" +
-    "directory is shared across every worktree, so the gap is fleet-wide. Without\n" +
-    "post-commit, commits land with no provenance and nothing says so until\n" +
-    "completion refuses, hours later (ADR-0048).\n\n" +
+    `directory is shared across every worktree, so the gap is fleet-wide. ${explanation}\n\n` +
     "Reinstall every declared hook type (safe to re-run):\n" +
     `  ${setupCommand()}`
   );

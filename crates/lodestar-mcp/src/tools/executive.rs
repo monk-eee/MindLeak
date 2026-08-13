@@ -348,6 +348,24 @@ pub(super) fn dispatch(
                 .live_task_titled(goal_id, title.as_str())
                 .map_err(|e| e.to_string())?
                 .filter(|existing| existing.id != task.id);
+            // The same title under a different goal is the shape the same-goal
+            // rule cannot see, and the one that actually filled this board: a
+            // generator run once per active goal produced four identically
+            // titled "Implement: ADR-0086" tasks in the same second, of which
+            // three named goals the work does not serve.
+            let elsewhere: Vec<Value> = engine
+                .live_tasks_titled_elsewhere(goal_id, title.as_str())
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .filter(|existing| existing.id != task.id)
+                .map(|existing| {
+                    json!({
+                        "task_id": existing.id,
+                        "goal_id": existing.goal_id,
+                        "status": existing.status,
+                    })
+                })
+                .collect();
             let mut value = serde_json::to_value(&task).map_err(|e| e.to_string())?;
             if let Some(object) = value.as_object_mut() {
                 object.insert("already_serving_this_goal".into(), json!(prior.len()));
@@ -363,6 +381,20 @@ pub(super) fn dispatch(
                                        title; this task was created anyway, because a second \
                                        task against one goal is often right (ADR-0015). If it \
                                        is not, retire one of them before both are claimed.",
+                        }),
+                    );
+                }
+                if !elsewhere.is_empty() {
+                    object.insert(
+                        "same_title_under_other_goals".into(),
+                        json!({
+                            "tasks": elsewhere,
+                            "detail": "this exact title is already live under another goal. \
+                                       One piece of work serving several goals is declared \
+                                       with also_serves on a single task (ADR-0041), not by \
+                                       creating one task per goal: only one of them can be \
+                                       the work, and the rest are graded against goals they \
+                                       do not serve.",
                         }),
                     );
                 }
@@ -1286,6 +1318,81 @@ mod tests {
         );
         assert_eq!(body["duplicates"]["task_id"], first.id);
         assert_eq!(body["duplicates"]["status"], "open");
+    }
+
+    /// The board refilled with 28 seeds in one pass despite the same-goal rule,
+    /// because a generator was run once per active goal: each ADR produced one
+    /// identically titled task under every objective, in the same second. Four
+    /// copies of "Implement: ADR-0086: PostgreSQL is the Ackplane ledger", of
+    /// which three named goals a PostgreSQL arbiter does not serve. A per-goal
+    /// comparison cannot see that shape by construction, so it is reported
+    /// separately — and reported, not refused, because one piece of work
+    /// serving several goals is legitimate when it is declared with
+    /// `also_serves` on a single task (ADR-0041) rather than forked per goal.
+    #[test]
+    fn create_task_names_the_same_title_living_under_another_goal() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let ledger = engine
+            .define_goal(GoalKind::Objective, "Ledger", "hold the ledger", None)
+            .unwrap();
+        let identity = engine
+            .define_goal(GoalKind::Objective, "Identity", "resolve identity", None)
+            .unwrap();
+        let title = "Implement: ADR-0086: PostgreSQL is the Ackplane ledger";
+        let first = engine.create_task(&ledger.id, title, "done").unwrap();
+
+        let created = call(
+            &engine,
+            &json!({
+                "name": "task_create",
+                "arguments": { "goal_id": identity.id, "title": title, "acceptance": "done" }
+            }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(created["content"][0]["text"].as_str().unwrap()).unwrap();
+
+        assert!(
+            body["id"].as_str().is_some_and(|id| id != first.id),
+            "the task is still created: {body}"
+        );
+        assert_eq!(
+            body["same_title_under_other_goals"]["tasks"][0]["task_id"],
+            first.id
+        );
+        assert_eq!(
+            body["same_title_under_other_goals"]["tasks"][0]["goal_id"], ledger.id,
+            "the goal it already serves is named, so the reader can tell which is the work"
+        );
+        assert!(
+            body.get("duplicates").is_none(),
+            "a different goal is not a same-goal duplicate: {body}"
+        );
+    }
+
+    /// Silence when there is nothing to say. A field that always appears is one
+    /// readers learn to scroll past, and this one only earns attention on the
+    /// day it is not empty.
+    #[test]
+    fn a_title_living_nowhere_else_reports_no_other_goals() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+
+        let created = call(
+            &engine,
+            &json!({
+                "name": "task_create",
+                "arguments": { "goal_id": goal.id, "title": "A title nobody else uses", "acceptance": "done" }
+            }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(created["content"][0]["text"].as_str().unwrap()).unwrap();
+
+        assert!(body.get("same_title_under_other_goals").is_none(), "{body}");
+        assert!(body.get("duplicates").is_none(), "{body}");
     }
 
     #[test]
