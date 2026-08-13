@@ -93,6 +93,7 @@ fn enrolment_request_challenge_and_proof_round_trip_through_the_v1_wire_contract
         requested_capabilities: vec!["synchronize.v1".into()],
         created_at: "2026-08-11T00:00:00Z".into(),
         expires_at: "2026-08-11T00:10:00Z".into(),
+        public_key: vec![7; 32],
     };
     let challenge_request = EnrollmentChallengeRequest {
         request_id: request.request_id.clone(),
@@ -132,6 +133,46 @@ fn enrolment_request_challenge_and_proof_round_trip_through_the_v1_wire_contract
         ),
         (request, challenge_request, challenge, proof)
     );
+}
+
+/// ADR-0085 decision 5 requires Ackplane to verify the activation signature,
+/// which is impossible from a fingerprint: a fingerprint is a hash of a key,
+/// not a key. The contract shipped carrying only the fingerprint, so every
+/// signature in the system was unverifiable. Fixed by carrying the key itself
+/// on the enrolment request, which is the message ADR-0085 decision 2 names.
+#[test]
+fn an_enrolment_request_carries_the_verifying_key_and_not_merely_its_fingerprint() {
+    let key = vec![7; 32];
+    let request = EnrollmentRequest {
+        request_id: "request-a".into(),
+        tenant_id: "tenant-a".into(),
+        repository_id: "repository-a".into(),
+        proposed_node_id: "node-a".into(),
+        display_name: "Build node A".into(),
+        public_key_fingerprint: "ed25519:7f3a".into(),
+        requested_capabilities: vec!["synchronize.v1".into()],
+        created_at: "2026-08-11T00:00:00Z".into(),
+        expires_at: "2026-08-11T00:10:00Z".into(),
+        public_key: key.clone(),
+    };
+
+    let decoded = EnrollmentRequest::decode(request.encode_to_vec().as_slice()).unwrap();
+
+    assert_eq!(decoded.public_key, key);
+    assert_ne!(
+        decoded.public_key.as_slice(),
+        decoded.public_key_fingerprint.as_bytes(),
+        "the key must travel in its own field, not be aliased to the fingerprint"
+    );
+
+    // A different key under an identical fingerprint must reach the wire as a
+    // different request; otherwise the field is declared but never transmitted.
+    let impostor = EnrollmentRequest {
+        public_key: vec![8; 32],
+        ..request.clone()
+    };
+
+    assert_ne!(impostor.encode_to_vec(), request.encode_to_vec());
 }
 
 #[test]

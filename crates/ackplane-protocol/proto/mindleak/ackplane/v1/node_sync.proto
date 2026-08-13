@@ -49,6 +49,10 @@ message EnrollmentRequest {
   repeated string requested_capabilities = 7;
   string created_at = 8;
   string expires_at = 9;
+  // The key itself, not its hash: nothing can verify a signature from a
+  // fingerprint alone. This is the only message that carries it, because
+  // Ackplane resolves it by fingerprint after enrolment.
+  bytes public_key = 10;
 }
 
 message EnrollmentRequestStatus {
