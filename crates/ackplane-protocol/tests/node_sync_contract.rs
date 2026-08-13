@@ -175,6 +175,36 @@ fn an_enrolment_request_carries_the_verifying_key_and_not_merely_its_fingerprint
     assert_ne!(impostor.encode_to_vec(), request.encode_to_vec());
 }
 
+/// The key travels once, at enrolment. Approval binds to the fingerprint
+/// (ADR-0085 decision 4), so a proof able to carry its own key could present a
+/// different one after approval and be verified against it, making the approval
+/// meaningless. Field 10 must therefore stay unassigned on the proof: splice one
+/// onto the wire and it has to be discarded, not absorbed. This fails if anyone
+/// later adds a key field to the proof, which is the point — the absence is a
+/// security property, not an oversight.
+#[test]
+fn an_activation_proof_cannot_smuggle_a_key_past_the_approved_fingerprint() {
+    let proof = EnrollmentActivationProof {
+        request_id: "request-a".into(),
+        tenant_id: "tenant-a".into(),
+        repository_id: "repository-a".into(),
+        proposed_node_id: "node-a".into(),
+        public_key_fingerprint: "ed25519:7f3a".into(),
+        nonce: vec![1; 32],
+        signature: vec![2; 64],
+    };
+
+    let mut smuggled = proof.encode_to_vec();
+    smuggled.push(0x52); // field 10, length-delimited — the enrolment key's tag
+    smuggled.push(32);
+    smuggled.extend(std::iter::repeat_n(0x2a, 32));
+
+    assert_eq!(
+        EnrollmentActivationProof::decode(smuggled.as_slice()).unwrap(),
+        proof
+    );
+}
+
 #[test]
 fn node_key_rotation_request_and_result_round_trip_through_the_v1_wire_contract() {
     let request = KeyRotationRequest {

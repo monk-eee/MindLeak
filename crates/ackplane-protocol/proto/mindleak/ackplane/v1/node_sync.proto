@@ -50,8 +50,15 @@ message EnrollmentRequest {
   string created_at = 8;
   string expires_at = 9;
   // The key itself, not its hash: nothing can verify a signature from a
-  // fingerprint alone. This is the only message that carries it, because
-  // Ackplane resolves it by fingerprint after enrolment.
+  // fingerprint alone. The fingerprint stays, because decision 4 has an
+  // administrator approve THAT, and a person can compare a short fingerprint on
+  // two screens where they cannot compare a key.
+  //
+  // Enrolment is the only message that carries it. Activation deliberately does
+  // not: approval binds to the fingerprint, so a proof allowed to re-send a key
+  // could present a different one after approval and be verified against it,
+  // which would make the approval meaningless. Ackplane keeps what was approved
+  // and verifies against that.
   bytes public_key = 10;
 }
 
