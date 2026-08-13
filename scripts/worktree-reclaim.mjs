@@ -39,6 +39,23 @@ import { MARKER_NAME } from "./worktree-owner.mjs";
 /** Branches that are never reclaimed whatever else is true of them. */
 export const PROTECTED_BRANCHES = new Set(["main", "master"]);
 
+/** Decide whether this copy of the safety-critical reclaim script is current. */
+export function reclaimScriptFreshness({ fetched, matchesOrigin }) {
+  if (!fetched) {
+    return {
+      current: false,
+      reason: "could not fetch origin before checking this script's version",
+    };
+  }
+  if (!matchesOrigin) {
+    return {
+      current: false,
+      reason: "this script differs from origin/main",
+    };
+  }
+  return { current: true, reason: null };
+}
+
 /**
  * Build output, named one directory at a time.
  *
@@ -467,7 +484,29 @@ function main() {
   const session = process.env.LODESTAR_SESSION_ID ?? null;
   const anchor = process.cwd();
 
-  tryGit(["fetch", "origin", "--quiet", "--prune"], anchor);
+  const fetched = tryGit(["fetch", "origin", "--quiet", "--prune"], anchor);
+  const scriptDiff = fetched.ok
+    ? tryGit(
+        [
+          "diff",
+          "--quiet",
+          "origin/main",
+          "--",
+          "scripts/worktree-reclaim.mjs",
+        ],
+        anchor,
+      )
+    : { ok: false };
+  const freshness = reclaimScriptFreshness({
+    fetched: fetched.ok,
+    matchesOrigin: scriptDiff.ok,
+  });
+  if (!freshness.current) {
+    console.error(
+      `worktree-reclaim: refusing to run because ${freshness.reason}. Run it from a current checkout.`,
+    );
+    return;
+  }
 
   const claimState = readLiveClaimState(anchor);
   if (!claimState.available) {
