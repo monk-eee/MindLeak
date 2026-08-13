@@ -33,11 +33,12 @@ When the user asks for tests on **multiple files** (e.g., "generate tests for th
 2. Read the source file
 3. Write the test file. **The very first line must be the AI attribution comment** (see "AI attribution comment" rule below). Write this comment line *before* any imports or other code.
 4. Run `get_errors` on the test file and fix every lint/compile error
-5. Call `run_tests` with `include_coverage=true` — tests must pass
-6. Meet the coverage target (see Coverage improvement loop)
-7. **Only now** move to the next file and repeat from step 1
+5. Call `review_test` on the test file and **resolve every `block` finding** (fix the test, or add a justified `// protective-tests-disable-next-line <ruleId> — <reason>`); address `warn` findings or note why they stand
+6. Call `run_tests` with `include_coverage=true` — tests must pass
+7. Meet the coverage target (see Coverage improvement loop)
+8. **Only now** move to the next file and repeat from step 1
 
-If you catch yourself about to call `generate_test` a second time before step 6 has completed for the previous file, **STOP** and finish the previous file first. This applies even when the files are structurally similar — every file gets its own full cycle.
+If you catch yourself about to call `generate_test` a second time before step 7 has completed for the previous file, **STOP** and finish the previous file first. This applies even when the files are structurally similar — every file gets its own full cycle.
 
 ## MCP tools
 
@@ -48,6 +49,7 @@ If you catch yourself about to call `generate_test` a second time before step 6 
 | #tool:unittest-mcp `generate_tests_batch` | Scan a **folder** to find source files that need tests. |
 | #tool:unittest-mcp `inspect_coverage` | Read existing coverage artifacts without re-running tests. Never use as validation for current changes. Pass `source_file` for per-file detail only after fresh coverage exists or when explicitly inspecting existing artifacts. |
 | #tool:unittest-mcp `find_test_files` | Discover test files in a directory. |
+| #tool:unittest-mcp `review_test` | Run the local protective-test gate (static analysis) on a single test file. Call after writing/editing a test; **resolve every `block` finding** before reporting done. |
 
 ## Rules
 
@@ -78,8 +80,9 @@ If you catch yourself about to call `generate_test` a second time before step 6 
 - **Run tests + coverage / validate coverage:** Call `run_tests` with `include_coverage=true`. This is the only tool that validates the current code by executing tests.
 - **Run tests + inspect coverage gaps:** Call `run_tests` with `include_coverage=true`, then call `inspect_coverage` with the same `root_dir` only if you need uncovered-line/branch detail from that fresh run.
 - **Run tests with coverage (no explicit inspect request):** Call `run_tests` with `include_coverage=true`. If `coverage.met` is `false`, call `inspect_coverage` automatically. Do not offer coverage work as optional when a coverage target applies.
-- **Create tests for a single file:** Call `generate_test` **immediately as your first action**. Do NOT read the source or test file first (exception: Python — brief `file_search` to check test folder layout is OK). Detection: request mentions a specific file with extension (e.g., `user.ts`, `service.py`).
+- **Create tests for a single file:** Call `generate_test` **immediately as your first action**. Do NOT read the source or test file first (exception: Python — brief `file_search` to check test folder layout is OK). Detection: request mentions a specific file with extension (e.g., `user.ts`, `service.py`). You **may** pass `test_type` when the intent is obvious (React component/ReactView → `integration`; pure helper → `unit`), but you are **not** required to read source to decide — otherwise omit it and the server resolves `auto`.
 - **Improve an existing test file:** Call `generate_test` with both `source_file_path` and `test_file_path`. Do NOT read the test file before calling. Apply additive improvements only.
+- **Review/validate a test file (protective gate):** Call `review_test` with `test_file_path` (and `source_file_path` when known). Use it after writing or editing any test file, and whenever the user asks to "review", "validate", or "check" a test. Resolve every `block` finding before reporting done.
 - **Create tests for a folder/multiple files:** See the **"CRITICAL — Process multiple files ONE AT A TIME"** section at the top of this document. For folder requests, call `generate_tests_batch` first to discover the file list, then process each file sequentially through its full cycle before starting the next.
 - **Inspect existing coverage only:** Call `inspect_coverage` immediately only when the user explicitly asks to read existing coverage artifacts or coverage has already been generated in the current workflow. Do not use it to answer whether current tests pass.
 
@@ -101,8 +104,15 @@ Use the repo's existing test location conventions (`__tests__`, `tests/`, coloca
 2. Synthesize concrete test code from the guidance.
 3. Create or update the test file. **Line 1 must be the AI attribution comment** — see Rule 4 for the exact text and per-language syntax. This is a required acceptance criterion, not an optional nicety.
 4. Run `get_errors` and iteratively fix **all** lint/compile errors until none remain. Do this **before** proceeding.
-5. Run tests via `run_tests` with `include_coverage=true` and follow the coverage improvement loop (Section 5) until target coverage is met for the requested scope.
-6. Do **not** end with "Want me to add coverage-focused tests?" when coverage is below target — coverage completion is required before reporting done.
+5. Call `review_test` on the test file and **resolve every `block` finding** before proceeding — these are the over-mocking, coercion, and weak-assertion patterns the gate exists to stop. Treat `warn` findings as improvements to make or consciously justify.
+6. Run tests via `run_tests` with `include_coverage=true` and follow the coverage improvement loop (Section 5) until target coverage is met for the requested scope.
+7. Do **not** end with "Want me to add coverage-focused tests?" when coverage is below target — coverage completion is required before reporting done.
+
+**Protective-test acceptance criteria (satisfy these before reporting done):**
+- Render the **real** first-party component/ReactView with its real children, hooks, and context — do **not** mock first-party components, hooks, context, or pure helpers.
+- Mock **only** external/platform/network boundaries — network/data/ARM, host-platform services & hooks resolved from a host channel/registry/DI container absent in the test env (symptom: a "No service registered"/missing-provider error), jsdom-unsupported browser APIs, and nondeterminism (time/random/uuid). **First-party app code is never a boundary.** If a platform/UI module cannot run in jsdom, use a faithful double that preserves labels, roles, values, and interactions (never `() => null` or stub `<div>`s).
+- **Reuse shared mocks; hoist recurring ones.** Before adding a boundary mock, check whether the repo already declares it globally (Jest `setupFilesAfterEnv`/`testSetup`, pytest `conftest.py`, .NET base fixtures) and existing test helpers, and reuse those; if the same boundary mock recurs across files, hoist it to that shared setup instead of redeclaring it per file.
+- Assert exact values with `toStrictEqual` — one assertion on the whole object, not many single-field asserts (it also catches type / `undefined` / sparse-array mismatches `toEqual` misses); do **not** use `toMatchObject`/`*Containing` as the primary assertion (one unavoidably-varying field, e.g. a timestamped name, may use `expect.stringContaining`); no `as any`/`as unknown as`; assert the value the code returns, not that a function "was called"; keep tests isolated (no mock/variable shared across tests); each test must fail if the behavior under test breaks; the test title must match what it asserts.
 
 **Path heuristics:** To find the test file from source, examine the repo's existing test structure (`__tests__`, `tests/`, colocated). To find the source from a test file, remove `.test.`/`.spec.`, move out of `__tests__` (JS/TS), `tests/` (Python), or remove `Tests` suffix (C#).
 
@@ -119,7 +129,7 @@ Use the repo's existing test location conventions (`__tests__`, `tests/`, coloca
 
 ### 5. Coverage improvement loop
 
-Do NOT report task completion until coverage for the requested scope meets the configured target (from MCP settings/tool response).
+Do NOT report task completion until **all** hold for the requested scope: (a) coverage meets the configured target (from MCP settings/tool response), (b) `review_test` reports **zero `block` findings** on every test file you created or changed, and (c) you have answered `review_test`'s self-review checklist. Coverage percentage alone is not sufficient — a high-coverage test that mocks first-party code or asserts nothing still fails the gate.
 
 **Important:** When testing a single file, start with `run_tests` using `include_coverage=true`, `scope='file'`, and an explicit `test_pattern` whenever possible. If the result still needs uncovered-line detail, then call `inspect_coverage` with `source_file` for that same source file. Do not call `inspect_coverage` first when validating current changes.
 
@@ -151,7 +161,18 @@ REPEAT (max 5 iterations):
 - When `source_file` is provided, LCOV is preferred (has line-level detail) over Istanbul summary.
 - Interpret the per-file data directly to identify low-coverage files or target specific uncovered paths.
 
-### 7. General rules
+### 7. `review_test` — protective-test gate
+
+`review_test` runs a deterministic static analysis over a single test file and returns structured findings. It does **not** execute tests; run it **in addition to** `run_tests`, after the file is lint-clean.
+
+- **When:** after writing or editing any test file, and whenever the user asks to review/validate/check a test.
+- **Inputs:** `test_file_path` (required), `source_file_path` (optional but improves results), `framework`/`language` (optional).
+- **Findings:** each has a `severity` — `block` (must fix), `warn` (should fix), or `info` — plus a `ruleId`, `message`, and often a `suggestedFix`. Rules cover over-mocking first-party code, `as any`/`as unknown as` and literal `as T` data coercion, partial-matcher-only and was-called-only assertions, render-without-interaction, and pointless constant snapshots.
+- **Self-review checklist:** `review_test` also returns one question per semantic dimension the static rules cannot judge (assertion strength, mocking hygiene, encapsulation, structure, determinism, setup-to-assertion ratio, what NOT to test). You are already the reviewing model — answer each against the test you wrote and fix any failure before reporting done.
+- **Acceptance:** **resolve every `block` finding** before reporting done — fix the test, or, when a finding is a genuine false positive at a real boundary, add `// protective-tests-disable-next-line <ruleId> — <reason>` on the line above. Do not blanket-suppress to silence the gate.
+- `review_test` is complementary to `run_tests`: a test can pass and still fail the gate (e.g., it mocks the system under test). Both must be green before you report done.
+
+### 8. General rules
 
 - If 3 consecutive test runs fail, re-read config and retry once.
 - If source path inference fails, ask the user.

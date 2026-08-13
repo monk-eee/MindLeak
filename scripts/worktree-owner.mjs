@@ -89,18 +89,31 @@ export function checkWorktreeOwnership({
   return { ...verdict, session };
 }
 
-// Hook entry point: refuse the commit outright.
+// Hook entry point. `--stage=post-checkout` runs right after `git worktree
+// add` completes: git ignores this hook's exit code for the checkout it just
+// performed, so there is nothing to block. Its only job is to write the
+// marker on a still-unclaimed worktree via the exact verdict logic above, and
+// warn rather than refuse if it somehow finds one already owned by a peer.
+// The default (commit) stage keeps refusing outright, since that one still
+// guards a real write.
 if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
+  const isPostCheckout = process.argv.includes("--stage=post-checkout");
   const verdict = checkWorktreeOwnership({
     adopt: process.argv.includes("--adopt-worktree"),
   });
   if (verdict.action === "refuse") {
-    console.error(
-      `worktree-owner: refusing to commit — ${refusalMessage(verdict)}`,
-    );
-    process.exit(4);
+    if (isPostCheckout) {
+      console.error(
+        `worktree-owner: this worktree already belongs to another agent — ${refusalMessage(verdict)}`,
+      );
+    } else {
+      console.error(
+        `worktree-owner: refusing to commit — ${refusalMessage(verdict)}`,
+      );
+      process.exit(4);
+    }
   }
 }

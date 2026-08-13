@@ -234,14 +234,36 @@ not the order to call them in.
 
 ### `ackplane-core` (library)
 
-The repository side of the Ackplane federation boundary (ADR-0082). Ackplane
-itself is a separately deployable service and is not built; what a repository
-must settle before it coordinates at all is which arbiter owns its claims. A
-repository declares `MINDLEAK_COORDINATION_MODE` as `local` or `federated`, and
-both planes resolve it once at startup rather than per call. An unrecognised
-value, or a `federated` repository this build has no client to reach, is
-refused rather than quietly arbitrated locally: that downgrade would be the
-second arbiter ADR-0045 forbids.
+The repository side of the Ackplane federation boundary (ADR-0082). What a
+repository must settle before it coordinates at all is which arbiter owns its
+claims. A repository declares `MINDLEAK_COORDINATION_MODE` as `local` or
+`federated`, and both planes resolve it once at startup rather than per call. An
+unrecognised value, or a `federated` repository this build has no client to
+reach, is refused rather than quietly arbitrated locally: that downgrade would
+be the second arbiter ADR-0045 forbids.
+
+### `ackplane-server` (binary)
+
+The service side of the same boundary, and a separate deployable rather than a
+mode of either plane (ADR-0082 clause 1) — it depends on no plane crate, and on
+`ackplane-core` not at all. What exists is the startup contract: a deployment
+declares its ledger and its durability profile before it may accept work, and
+both are refusals rather than defaults.
+
+Without `ACKPLANE_DATABASE_URL` it will not start, because an instance holds no
+authoritative local state and cannot accept work without the ledger (ADR-0086
+clause 1); starting anyway would turn a misconfiguration into a failure on
+whichever request happened to arrive first. It binds loopback by default and
+prints a banner naming its profile (ADR-0088 clause 6). A `quorum_durable`
+claim is refused unless `ACKPLANE_SYNCHRONOUS_STANDBYS` names the failure domain
+it rests on, because a durability claim nothing backs is exactly the
+asynchronously replicated acknowledgement ADR-0086 clause 12 will not label as
+zero-loss. The database URL carries a password, so it is absent from the banner
+and redacted in a hand-written `Debug`.
+
+The ledger itself is not here yet; the process exits rather than listening,
+since accepting work it cannot durably record would be the dual authority
+ADR-0082 clause 3 refuses.
 
 ### `editors/vscode` (extension)
 

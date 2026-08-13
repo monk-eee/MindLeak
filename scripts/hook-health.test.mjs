@@ -70,12 +70,19 @@ test("the message names every missing hook and the one repair command", () => {
   );
 });
 
+test("a missing post-checkout names its own silent consequence", () => {
+  const message = healthMessage(["post-checkout"]);
+  assert.match(message, /- post-checkout/);
+  assert.match(message, /reads as unclaimed until its first commit/);
+});
+
 test("reading a complete hooks directory off disk finds nothing missing", () => {
   withHooksDir(
     {
       "pre-commit": PRE_COMMIT_SHIM,
       "pre-push": PRE_COMMIT_SHIM,
       "post-commit": PRE_COMMIT_SHIM,
+      "post-checkout": PRE_COMMIT_SHIM,
     },
     (dir) => {
       assert.deepEqual(missingHooks(readHookFrom(dir)), []);
@@ -88,6 +95,7 @@ test("reading a hooks directory that lacks post-commit names it", () => {
     {
       "pre-commit": PRE_COMMIT_SHIM,
       "pre-push": PRE_COMMIT_SHIM,
+      "post-checkout": PRE_COMMIT_SHIM,
     },
     (dir) => {
       assert.deepEqual(missingHooks(readHookFrom(dir)), ["post-commit"]);
@@ -95,6 +103,27 @@ test("reading a hooks directory that lacks post-commit names it", () => {
   );
 });
 
-test("the expected set is exactly the three declared hook types", () => {
-  assert.deepEqual(EXPECTED_HOOKS, ["pre-commit", "pre-push", "post-commit"]);
+test("reading a hooks directory that lacks post-checkout names it", () => {
+  // The regression this whole gap fix exists for: a checkout that predates
+  // post-checkout joining default_install_hook_types never gets it, and a
+  // freshly created worktree in it reads as unclaimed until a first commit.
+  withHooksDir(
+    {
+      "pre-commit": PRE_COMMIT_SHIM,
+      "pre-push": PRE_COMMIT_SHIM,
+      "post-commit": PRE_COMMIT_SHIM,
+    },
+    (dir) => {
+      assert.deepEqual(missingHooks(readHookFrom(dir)), ["post-checkout"]);
+    },
+  );
+});
+
+test("the expected set is exactly the four declared hook types", () => {
+  assert.deepEqual(EXPECTED_HOOKS, [
+    "pre-commit",
+    "pre-push",
+    "post-commit",
+    "post-checkout",
+  ]);
 });
