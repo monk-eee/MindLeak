@@ -1002,3 +1002,59 @@ fn board_doctor_names_the_ailments_no_other_view_surfaces() {
         .iter()
         .any(|f| f.ailment == BoardAilment::BlockedWithoutGate));
 }
+
+#[test]
+fn a_recorded_block_reason_is_not_an_ailment() {
+    // Regression test for a false positive in the board doctor shipped hours
+    // earlier: it reported every gateless block, including ones deliberately
+    // parked with a stated reason. `blocked_by` is one-to-one (ADR-0015), so a
+    // reason is the ONLY way to express "waiting on something that is not a
+    // single predecessor task" — the doctor was calling correct practice a
+    // fault, on a board where it would fire forever. Impact: a diagnostic whose
+    // findings you learn to skip is worse than none, because it hides the real
+    // ones. Fix: exempt a task whose most recent `blocked` event stated a
+    // reason. Fails pre-fix (the reasoned block is reported).
+    let engine = Lodestar::open_in_memory().unwrap();
+    let goal = engine
+        .define_goal(GoalKind::Objective, "Ship search", "add FTS search", None)
+        .unwrap();
+    let parked = engine
+        .create_task(&goal.id, "adopt ADR-0092", "constitution amended")
+        .unwrap();
+
+    // Parked with an explanation: a reader knows what clears it.
+    assert!(engine
+        .block_task(
+            &parked.id,
+            None,
+            Some("waiting on human acceptance of ADR-0092"),
+            "agent-a"
+        )
+        .unwrap());
+    assert_eq!(engine.diagnose_board().unwrap(), Vec::<BoardFinding>::new());
+
+    // Re-blocking without a reason erases the explanation, so the ailment
+    // returns. The exemption reads the LATEST block, not any block ever.
+    assert!(engine
+        .block_task(&parked.id, None, None, "agent-a")
+        .unwrap());
+    let findings = engine.diagnose_board().unwrap();
+    assert_eq!(findings.len(), 1, "expected one finding, got {findings:?}");
+    assert_eq!(findings[0].ailment, BoardAilment::BlockedWithoutGate);
+    assert_eq!(findings[0].task_ids, vec![parked.id.clone()]);
+
+    // An all-whitespace reason explains nothing, and `detail_json` stores no
+    // reason at all for it, so it must not buy an exemption.
+    assert!(engine
+        .block_task(&parked.id, None, Some("   "), "agent-a")
+        .unwrap());
+    assert_eq!(
+        engine
+            .diagnose_board()
+            .unwrap()
+            .iter()
+            .filter(|f| f.ailment == BoardAilment::BlockedWithoutGate)
+            .count(),
+        1
+    );
+}
