@@ -1,0 +1,14 @@
+[package]
+name = "ackplane-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "The Ackplane federation service: a separately deployable arbiter for one organisation boundary (ADR-0082)."
+
+# Deliberately depends on no plane crate. ADR-0082 clause 1 makes Ackplane a
+# separate deployable rather than a mode of mindleak-mcp or lodestar-mcp, and a
+# dependency edge here would be the first step back to it being one.
+[dependencies]
+thiserror = { workspace = true }
