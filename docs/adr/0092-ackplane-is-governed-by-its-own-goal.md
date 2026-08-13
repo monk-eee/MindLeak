@@ -1,8 +1,15 @@
 # ADR-0092: Ackplane is governed by its own goal
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-13
-- Deciders: Pending human acceptance
+- Deciders: monk-eee
+- Accepted: 2026-08-13 by monk-eee (repository owner) — attributed human
+  adoption under ADR-0043. This records the decision; it does not by itself
+  perform the amendment. The goal does not yet exist and the three crates are
+  not yet bound, because decision 5 holds: the Intent Plane exposes no
+  agent-reachable verb that defines a goal or binds code to one. Decision 6
+  therefore stays in force until that binding is made — an Ackplane
+  `needs_human` still means ungoverned, and is still not to be worked around.
 - Depends on: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md)
   (Ackplane is a separately deployable service)
 - Related: [ADR-0026](0026-constitutional-policy-over-mechanistic-ratchets.md)

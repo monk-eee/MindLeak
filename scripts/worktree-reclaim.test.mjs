@@ -12,6 +12,7 @@ import {
   liveClaimBranches,
   planArtefactSweep,
   PROTECTED_BRANCHES,
+  reclaimScriptFreshness,
   readLiveClaimState,
   revalidateBeforeReclaim,
 } from "./worktree-reclaim.mjs";
@@ -25,6 +26,33 @@ const idle = {
   owner: null,
   building: false,
 };
+
+test("runs only when the reclaim script matches origin/main after fetching", () => {
+  assert.deepEqual(
+    reclaimScriptFreshness({ fetched: true, matchesOrigin: true }),
+    { current: true, reason: null },
+  );
+});
+
+test("refuses a stale reclaim script before inspecting shared worktrees", () => {
+  assert.deepEqual(
+    reclaimScriptFreshness({ fetched: true, matchesOrigin: false }),
+    {
+      current: false,
+      reason: "this script differs from origin/main",
+    },
+  );
+});
+
+test("refuses to reclaim when origin cannot be fetched", () => {
+  assert.deepEqual(
+    reclaimScriptFreshness({ fetched: false, matchesOrigin: true }),
+    {
+      current: false,
+      reason: "could not fetch origin before checking this script's version",
+    },
+  );
+});
 
 test("reclaims a merged, clean, idle worktree", () => {
   const verdict = classifyWorktree(idle, { session: "session:v1:me" });
