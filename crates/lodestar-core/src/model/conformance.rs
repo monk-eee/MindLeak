@@ -49,6 +49,18 @@ impl AdviceDisposition {
     }
 }
 
+/// The machine-readable cause when advice cannot proceed without a person.
+/// Kept separate from [`AdviceDisposition`] so adding diagnostic precision does
+/// not break clients that already branch on `needs_human`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdviceReason {
+    /// This repository has no active constitutional clauses yet.
+    NoConstitutionAdopted,
+    /// Active policy exists, but does not determine one safe course of action.
+    Ambiguous,
+}
+
 /// One active clause governing a node in an intended change scope (ADR-0029).
 #[derive(Debug, Clone, Serialize)]
 pub struct GoverningClause {
@@ -63,6 +75,8 @@ pub struct GoverningClause {
 #[derive(Debug, Clone, Serialize)]
 pub struct Advice {
     pub disposition: AdviceDisposition,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<AdviceReason>,
     pub governing: Vec<GoverningClause>,
     pub findings: Vec<String>,
 }

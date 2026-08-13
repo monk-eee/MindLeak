@@ -7,6 +7,9 @@ Use this loop after both planes pass setup verification.
 Mint one 128-bit lowercase hexadecimal token and call `open_session` on the
 Memory and Intent planes. Reuse it throughout the session. When Git facts are
 available, declare branch, head SHA, expected base, and dirty state on both.
+These fields are optional declarations, not startup prerequisites. In a local
+repository with no commit or upstream, omit unknown values and do not probe or
+invent `origin/main`.
 
 ## 2. Establish Scope Before Editing
 
@@ -29,10 +32,23 @@ Interpret the results carefully:
 
 ## 3. Join the Intent Workflow When One Exists
 
+First call `constitution_query(action="active")`. If it returns no goals,
+`advise` reports `needs_human` with reason `no_constitution_adopted`. That is a
+repository bootstrap choice, not ambiguity about the current change:
+
+- when the repository opts into Lodestar coordination, create the first goal
+  with `constitution_define(action="goal", ...)` from an accepted, current
+  decision record, then use its returned id with `task_create`;
+- when it has not opted in, continue ordinary repository work without a
+  Lodestar task and rely on the repository's own governing system;
+- never seed active intent from a proposed or unapproved record.
+
+Any other `needs_human` reason, including `ambiguous`, remains a real stop.
+
 If the user names a task, or the request clearly belongs to an existing task,
 query it before creating anything new. Claim it with the current session and
 the same path/symbol scope. If there is no task, ordinary repository work may
-continue without manufacturing one.
+continue without manufacturing one after the goal state above is understood.
 
 Renew a held claim:
 

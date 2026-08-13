@@ -73,14 +73,16 @@ worktrees share one intent plane and one memory graph by default.
 > before its first question, so an unspent minute of governance authoring is a
 > tax paid in every session (ADR-0059 rule 2). By default `lodestar-mcp`
 > advertises only the tools an agent uses to find, claim, do, prove and hand off
-> work, plus the ones it reads to know what governs it — 17 tools, ~4,513 tokens,
-> against 67 tools and ~13,757 tokens for the whole surface. The specialist
-> machinery below — the constitution and amendments, policy packs, waivers,
+> work, plus the ones it reads to know what governs it - 15 tools, ~5,960 tokens,
+> against 69 tools and ~15,812 tokens for the whole surface. The specialist
+> machinery below stays fully reachable. Goal creation and active-goal queries
+> are the narrow exception: a fresh repository needs them before task work can
+> begin. The remaining constitution lifecycle, amendments, policy packs, waivers,
 > ratchets and controls, the design board, goal↔code binding, knowledge
-> maintenance, and database admin — is not advertised by default but stays fully
-> reachable: dispatch is unchanged, so a specialist tool called by name still
-> runs. Set `LODESTAR_TOOL_PROFILE=full` to advertise everything. Measure any
-> time with `node scripts/measure-tool-surface.mjs`.
+> maintenance, audit exports, and database admin are not advertised by default
+> but stay fully reachable: dispatch is unchanged, so a specialist tool called
+> by name still runs. Set `LODESTAR_TOOL_PROFILE=full` to advertise everything.
+> Measure any time with `node scripts/measure-tool-surface.mjs`.
 
 | Tool | Purpose |
 |---|---|
@@ -100,7 +102,7 @@ worktrees share one intent plane and one memory graph by default.
 | `complete_clause_contract` | Give a clause the scope, evidence contract, consequence, and waiver policy it needs to drive a verdict. Until this is done a clause is review-only — migration invents none of those fields, so a rule never silently gains the power to block. Refuses an active clause: hardening what already governs people is an amendment. |
 | `register_control` | Bind a versioned mechanism to a clause. Without one the clause is an orphan and resolves at `advise` whatever it declares, because a rule with no mechanism behind it is a preference (ADR-0034). Declare the power the mechanism honestly has; `observed` and `advisory` cap at `review`. |
 | `retire_control` | Stand a control down when it is superseded or was registered under the wrong id. Attributed to the calling session and permanent — retiring a control is the one act that reduces what a clause can enforce without changing a word of the clause. Retirement is not deletion: the control keeps recording what it enforced, so observations naming it resolve as `unknown` rather than disappearing. Without it a misregistered control is permanent, because its version can never move backwards. |
-| `advise` | **Ask before acting** (ADR-0029): given the `artifact:`/`symbol:` ids you intend to change, returns the governing clauses + a proportional disposition (advise / review / block / needs_human). Evidence-free, records nothing, needs no model, never gates a claim. |
+| `advise` | **Ask before acting** (ADR-0029): given the `artifact:`/`symbol:` ids you intend to change, returns the governing clauses + a proportional disposition (advise / review / block / needs_human). A `needs_human` response also carries a stable `reason`: `no_constitution_adopted` is repository bootstrap state; `ambiguous` remains a real stop. Evidence-free, records nothing, needs no model, never gates a claim. |
 | `link_goal_to_artifact` | Bind a goal to the MindLeak `artifact:`/`symbol:` nodes that realise it — source, or equally an ADR, doc, benchmark or build script (ADR-0060). |
 | `unlink_goal_from_artifact` / `governing_goals` | Prune a stale goal↔artifact binding, and audit which goals govern a node — keeps conformance honest. |
 | `governing_for_task` | The clauses governing a task's linked scope — what the Work view surfaces on in-progress work (ADR-0029). |
