@@ -17,6 +17,9 @@
 
 use std::fmt;
 
+pub mod enrollment;
+pub mod enrollment_service;
+pub mod enrollment_store;
 pub mod ledger;
 pub mod projection;
 pub mod service;
