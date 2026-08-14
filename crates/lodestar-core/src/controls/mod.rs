@@ -439,7 +439,12 @@ mod tests {
     #[test]
     fn a_ratchet_fails_only_on_regression_beyond_tolerance() {
         let ratchet = coverage_ratchet()
-            .with_reviewed_baseline(90.0, "monk-eee", 5)
+            .with_reviewed_baseline(
+                90.0,
+                "monk-eee",
+                "the seam is real; splitting here would break cohesion",
+                5,
+            )
             .unwrap();
         let status = |measured: f64| {
             ratchet
@@ -463,7 +468,12 @@ mod tests {
             0.0,
         )
         .unwrap()
-        .with_reviewed_baseline(12.0, "monk-eee", 5)
+        .with_reviewed_baseline(
+            12.0,
+            "monk-eee",
+            "the seam is real; splitting here would break cohesion",
+            5,
+        )
         .unwrap();
         let status = |measured: f64| {
             ratchet
@@ -483,11 +493,72 @@ mod tests {
         // against a number it never saw.
         let ratchet = coverage_ratchet();
         assert_eq!(ratchet.version, 1);
-        assert!(ratchet.with_reviewed_baseline(90.0, "  ", 5).is_err());
+        assert!(ratchet
+            .with_reviewed_baseline(
+                90.0,
+                "  ",
+                "the seam is real; splitting here would break cohesion",
+                5
+            )
+            .is_err());
 
-        let reviewed = ratchet.with_reviewed_baseline(90.0, "monk-eee", 5).unwrap();
+        let reviewed = ratchet
+            .with_reviewed_baseline(
+                90.0,
+                "monk-eee",
+                "the seam is real; splitting here would break cohesion",
+                5,
+            )
+            .unwrap();
         assert_eq!(reviewed.version, 2);
         assert_eq!(reviewed.baseline.as_ref().unwrap().reviewed_by, "monk-eee");
+    }
+
+    #[test]
+    fn accepting_a_baseline_needs_a_reason_not_just_a_signature() {
+        // SPEC-CONSTITUTION §4 says whether the baseline was trustworthy is a
+        // question the ratchet cannot answer about itself, so the answer has to
+        // arrive from outside. A signature is not that answer: it records who
+        // moved the number, never whether moving it was justified. Measured
+        // 2026-08-14: control:rust-module-length went 7 -> 8 to absorb an
+        // 833-line module, attributed to a session and explained nowhere,
+        // because there was nowhere to explain it.
+        let ratchet = coverage_ratchet();
+        for blank in ["", "   ", "\t\n"] {
+            assert!(
+                ratchet
+                    .with_reviewed_baseline(90.0, "monk-eee", blank, 5)
+                    .is_err(),
+                "a blank reason must be refused, got one accepted for {blank:?}"
+            );
+        }
+
+        let reviewed = ratchet
+            .with_reviewed_baseline(90.0, "monk-eee", "  coverage tooling changed  ", 5)
+            .unwrap();
+        assert_eq!(
+            reviewed.baseline.as_ref().unwrap().reason.as_deref(),
+            Some("coverage tooling changed"),
+        );
+    }
+
+    #[test]
+    fn a_baseline_stored_before_reasons_were_required_still_loads() {
+        // The configuration is JSON in a TEXT column, so rows written before
+        // this field existed must still deserialize. A control that cannot be
+        // read is a control that cannot refuse, which fails open — and `None`
+        // says "recorded before a reason was required" without inventing one.
+        let stored = r#"{"value":7.0,"reviewed_by":"monk-eee","reviewed_at":5}"#;
+        let baseline: RatchetBaseline = serde_json::from_str(stored).unwrap();
+        assert_eq!(
+            baseline,
+            RatchetBaseline {
+                value: 7.0,
+                reviewed_by: "monk-eee".to_string(),
+                reviewed_at: 5,
+                reason: None,
+            }
+        );
     }
 
     #[test]
@@ -496,7 +567,12 @@ mod tests {
         // caps it at review however hard the clause it serves declares, because
         // whether a regression is acceptable is a judgement about the change.
         let ratchet = coverage_ratchet()
-            .with_reviewed_baseline(90.0, "monk-eee", 5)
+            .with_reviewed_baseline(
+                90.0,
+                "monk-eee",
+                "the seam is real; splitting here would break cohesion",
+                5,
+            )
             .unwrap();
         let control = ratchet.control().unwrap();
         assert_eq!(control.power, EnforcementPower::Observed);
@@ -516,7 +592,12 @@ mod tests {
     #[test]
     fn a_ratchet_round_trips_through_the_control_it_registers_as() {
         let ratchet = coverage_ratchet()
-            .with_reviewed_baseline(90.0, "monk-eee", 5)
+            .with_reviewed_baseline(
+                90.0,
+                "monk-eee",
+                "the seam is real; splitting here would break cohesion",
+                5,
+            )
             .unwrap();
         let restored = Ratchet::from_control(&ratchet.control().unwrap()).unwrap();
         assert_eq!(restored, ratchet);
@@ -525,7 +606,12 @@ mod tests {
     #[test]
     fn a_non_finite_measurement_is_refused_rather_than_compared() {
         let ratchet = coverage_ratchet()
-            .with_reviewed_baseline(90.0, "monk-eee", 5)
+            .with_reviewed_baseline(
+                90.0,
+                "monk-eee",
+                "the seam is real; splitting here would break cohesion",
+                5,
+            )
             .unwrap();
         assert!(ratchet
             .observe(f64::NAN, "artifact:crates", Vec::new(), 10)

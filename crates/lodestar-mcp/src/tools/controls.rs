@@ -30,14 +30,18 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "accept_ratchet_baseline",
-            "description": "Accept the value a ratchet compares against, attributed to the calling session. A ratchet never moves its own baseline: a mechanism that adopts whatever it last measured launders a regression into the new normal. Bumps the control version, so observations taken against the old baseline resolve as unknown rather than being re-judged against a number they never saw.",
+            "description": "Accept the value a ratchet compares against, attributed to the calling session and justified by a required reason. A ratchet never moves its own baseline: a mechanism that adopts whatever it last measured launders a regression into the new normal. The reason is required because who moved the number does not say whether moving it was justified, which is the question the mechanism cannot answer about itself. Bumps the control version, so observations taken against the old baseline resolve as unknown rather than being re-judged against a number they never saw.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "control_id": { "type": "string" },
-                    "value": { "type": "number" }
+                    "value": { "type": "number" },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why this baseline is trustworthy — the judgement the ratchet cannot make about itself."
+                    }
                 },
-                "required": ["control_id", "value"]
+                "required": ["control_id", "value", "reason"]
             }
         }),
         json!({
@@ -194,6 +198,7 @@ fn accept_ratchet_baseline(engine: &Lodestar, args: &Value) -> Result<Value, Str
                 .and_then(Value::as_f64)
                 .ok_or_else(|| "missing required number arg: value".to_string())?,
             req_str(args, "agent")?,
+            req_str(args, "reason")?,
         )
         .map_err(|e| e.to_string())?;
     let baseline = reviewed
@@ -205,6 +210,7 @@ fn accept_ratchet_baseline(engine: &Lodestar, args: &Value) -> Result<Value, Str
         "metric": reviewed.metric,
         "baseline": baseline.value,
         "reviewed_by": baseline.reviewed_by,
+        "reason": baseline.reason,
         "version": reviewed.version,
     }))
 }

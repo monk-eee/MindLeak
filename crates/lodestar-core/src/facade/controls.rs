@@ -89,18 +89,19 @@ impl Lodestar {
             .ok_or_else(|| LodestarError::Invalid("no resolution produced".to_string()))
     }
 
-    /// Accept a new reviewed baseline for a ratchet: attributed, and it bumps
-    /// the control version so stale observations resolve as `unknown`.
+    /// Accept a new reviewed baseline for a ratchet: attributed, justified, and
+    /// it bumps the control version so stale observations resolve as `unknown`.
     pub fn accept_ratchet_baseline(
         &self,
         control_id: &str,
         value: f64,
         reviewed_by: &str,
+        reason: &str,
     ) -> Result<Ratchet> {
         let ratchet = self
             .ratchet(control_id)?
             .ok_or_else(|| LodestarError::NotFound(control_id.to_string()))?;
-        let reviewed = ratchet.with_reviewed_baseline(value, reviewed_by, now_unix())?;
+        let reviewed = ratchet.with_reviewed_baseline(value, reviewed_by, reason, now_unix())?;
         self.store
             .register_control(&reviewed.control()?, now_unix())?;
         Ok(reviewed)
@@ -111,7 +112,8 @@ impl Lodestar {
 mod tests {
     use super::*;
     use crate::controls::{
-        ControlKind, ControlStatus, EnforcementPower, ObservationStatus, RatchetDirection,
+        ControlKind, ControlStatus, EnforcementPower, ObservationStatus, RatchetBaseline,
+        RatchetDirection,
     };
     use crate::facade::test_support::engine;
     use crate::model::Consequence;
@@ -246,7 +248,12 @@ mod tests {
         assert_eq!(unknown.effective, Consequence::Advise);
 
         let reviewed = e
-            .accept_ratchet_baseline("control:coverage", 90.0, "monk-eee")
+            .accept_ratchet_baseline(
+                "control:coverage",
+                90.0,
+                "monk-eee",
+                "the seam is real; splitting here would break cohesion",
+            )
             .unwrap();
         assert_eq!(reviewed.version, 2);
 
@@ -271,8 +278,13 @@ mod tests {
         let e = engine();
         let clause = evidence_clause(&e);
         e.register_ratchet(&coverage_ratchet(&clause)).unwrap();
-        e.accept_ratchet_baseline("control:coverage", 90.0, "monk-eee")
-            .unwrap();
+        e.accept_ratchet_baseline(
+            "control:coverage",
+            90.0,
+            "monk-eee",
+            "the seam is real; splitting here would break cohesion",
+        )
+        .unwrap();
         assert_eq!(
             e.observe_ratchet("control:coverage", 85.0, &clause, Vec::new())
                 .unwrap()
@@ -280,8 +292,13 @@ mod tests {
             ObservationStatus::Fail
         );
 
-        e.accept_ratchet_baseline("control:coverage", 84.0, "monk-eee")
-            .unwrap();
+        e.accept_ratchet_baseline(
+            "control:coverage",
+            84.0,
+            "monk-eee",
+            "the seam is real; splitting here would break cohesion",
+        )
+        .unwrap();
         assert_eq!(
             e.observe_ratchet("control:coverage", 85.0, &clause, Vec::new())
                 .unwrap()
@@ -289,6 +306,44 @@ mod tests {
             ObservationStatus::Pass
         );
         assert_eq!(e.ratchet("control:coverage").unwrap().unwrap().version, 3);
+    }
+
+    #[test]
+    fn the_reason_a_baseline_was_accepted_survives_the_store() {
+        // An exception nobody can read afterwards is not a recorded exception.
+        // The reason has to come back out of the store, not merely be accepted
+        // by the call, or the next person still cannot tell why the number moved.
+        let e = engine();
+        let clause = evidence_clause(&e);
+        e.register_ratchet(&coverage_ratchet(&clause)).unwrap();
+        e.accept_ratchet_baseline(
+            "control:coverage",
+            90.0,
+            "monk-eee",
+            "the flaky suite was deleted, so the metric measures less code",
+        )
+        .unwrap();
+
+        let reloaded = e.ratchet("control:coverage").unwrap().unwrap();
+        let baseline = reloaded.baseline.unwrap();
+        assert!(
+            baseline.reviewed_at > 0,
+            "the acceptance was not timestamped"
+        );
+        assert_eq!(
+            RatchetBaseline {
+                reviewed_at: 0,
+                ..baseline
+            },
+            RatchetBaseline {
+                value: 90.0,
+                reviewed_by: "monk-eee".to_string(),
+                reviewed_at: 0,
+                reason: Some(
+                    "the flaky suite was deleted, so the metric measures less code".to_string()
+                ),
+            }
+        );
     }
 
     #[test]
@@ -300,8 +355,13 @@ mod tests {
         let e = engine();
         let clause = evidence_clause(&e);
         e.register_ratchet(&coverage_ratchet(&clause)).unwrap();
-        e.accept_ratchet_baseline("control:coverage", 79.0, "monk-eee")
-            .unwrap();
+        e.accept_ratchet_baseline(
+            "control:coverage",
+            79.0,
+            "monk-eee",
+            "the seam is real; splitting here would break cohesion",
+        )
+        .unwrap();
         let stale = e
             .ratchet("control:coverage")
             .unwrap()
@@ -310,8 +370,13 @@ mod tests {
             .unwrap();
         assert_eq!(stale.status, ObservationStatus::Pass);
 
-        e.accept_ratchet_baseline("control:coverage", 90.0, "monk-eee")
-            .unwrap();
+        e.accept_ratchet_baseline(
+            "control:coverage",
+            90.0,
+            "monk-eee",
+            "the seam is real; splitting here would break cohesion",
+        )
+        .unwrap();
         let resolved = e.resolve_control_observations(&[stale]).unwrap();
         assert_eq!(resolved[0].status, ObservationStatus::Unknown);
         assert_eq!(resolved[0].effective, Consequence::Advise);
