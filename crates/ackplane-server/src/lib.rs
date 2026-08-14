@@ -23,6 +23,7 @@ pub mod enrollment_store;
 pub mod ledger;
 pub mod projection;
 pub mod service;
+pub mod signing_keys;
 pub mod sync;
 #[cfg(test)]
 mod test_support;
