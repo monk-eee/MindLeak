@@ -16,6 +16,9 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 ///
 /// `stale_build` carries the notice when this binary is behind the checkout it
 /// serves, so `open_session` can tell the agent rather than only the log.
+/// `coordination_refusal` is the stronger case: this process never settled
+/// which arbiter owns the repository, so it answers the protocol but performs
+/// no work at all.
 /// `running` answers the different question of whether the file this process
 /// started from has since been replaced, which can only be asked per call.
 pub fn run(
@@ -23,6 +26,7 @@ pub fn run(
     sessions: SessionRegistry,
     storage: StorageStatus,
     stale_build: Option<String>,
+    coordination_refusal: Option<String>,
     running: RunningBinary,
 ) -> anyhow::Result<()> {
     let stdin = io::stdin();
@@ -57,6 +61,7 @@ pub fn run(
             &sessions,
             Some(&storage),
             stale_build.as_deref(),
+            coordination_refusal.as_deref(),
             &running,
             &request,
         ) {
@@ -73,6 +78,7 @@ fn handle(engine: &Lodestar, sessions: &SessionRegistry, req: &Value) -> Option<
         sessions,
         None,
         None,
+        None,
         &RunningBinary::from_parts(None, None),
         req,
     )
@@ -83,6 +89,7 @@ fn handle_with_storage(
     sessions: &SessionRegistry,
     storage: Option<&StorageStatus>,
     stale_build: Option<&str>,
+    coordination_refusal: Option<&str>,
     running: &RunningBinary,
     req: &Value,
 ) -> Option<Value> {
@@ -100,6 +107,13 @@ fn handle_with_storage(
         )),
         "tools/call" => {
             let id = id?;
+            // Answering would be the second arbiter ADR-0082 forbids, so the
+            // refusal is the only work this process does. It is returned per
+            // call rather than once at startup because a client shows the
+            // agent tool results, and shows it nothing else.
+            if let Some(notice) = coordination_refusal {
+                return Some(result_response(id, tool_error(notice)));
+            }
             let response = match tools::bind_session(&params, sessions).and_then(|bound| {
                 tools::call_with_storage(engine, &bound, storage, stale_build, running)
             }) {
@@ -209,6 +223,94 @@ mod tests {
 
     fn sessions() -> SessionRegistry {
         SessionRegistry::new("test").unwrap()
+    }
+
+    /// A real refusal, not a placeholder: the text is what the agent has to be
+    /// able to act on.
+    fn refusal() -> String {
+        ackplane_core::CoordinationModeError::Unrecognised("cloud".to_string()).refusal_notice()
+    }
+
+    fn open_session_request() -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": "open_session",
+                "arguments": { "session_id": "0123456789abcdef0123456789abcdef" }
+            }
+        })
+    }
+
+    #[test]
+    fn a_refused_coordination_mode_stops_a_call_that_would_otherwise_have_worked() {
+        let engine = engine();
+        let sessions = sessions();
+        let running = RunningBinary::from_parts(None, None);
+        let request = open_session_request();
+
+        // Establish first that this call really does coordinate when the mode
+        // resolved. Without this the refusal test could pass against a call
+        // that was going to fail for its own reasons.
+        let served =
+            handle_with_storage(&engine, &sessions, None, None, None, &running, &request).unwrap();
+        assert_ne!(
+            served["result"]["isError"],
+            json!(true),
+            "open_session must succeed when no refusal is carried: {served}"
+        );
+
+        let notice = refusal();
+        let refused = handle_with_storage(
+            &engine,
+            &sessions,
+            None,
+            None,
+            Some(&notice),
+            &running,
+            &request,
+        )
+        .unwrap();
+
+        assert_eq!(
+            refused["result"],
+            json!({
+                "content": [{ "type": "text", "text": notice }],
+                "isError": true
+            }),
+            "a refusing server must answer the reason and do nothing else"
+        );
+    }
+
+    #[test]
+    fn a_refused_coordination_mode_still_completes_the_handshake() {
+        // "The server failed to start" is the message that sent an operator
+        // hunting a broken binary instead of a wrong declaration, so the
+        // handshake has to survive for the refusal to be reachable at all.
+        let engine = engine();
+        let sessions = sessions();
+        let running = RunningBinary::from_parts(None, None);
+        let notice = refusal();
+
+        for method in ["initialize", "tools/list"] {
+            let request = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": {} });
+            let response = handle_with_storage(
+                &engine,
+                &sessions,
+                None,
+                None,
+                Some(&notice),
+                &running,
+                &request,
+            )
+            .unwrap_or_else(|| panic!("{method} must still answer while refusing"));
+
+            assert!(
+                response["error"].is_null(),
+                "{method} must not error while refusing: {response}"
+            );
+        }
     }
 
     #[test]
