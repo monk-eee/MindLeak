@@ -266,6 +266,55 @@ pub struct Goal {
     pub waiver_authority: Option<String>,
     /// The provenance of the clause.
     pub origin: ClauseOrigin,
+    /// The system that supplied this imported clause, if any.
+    pub source_system: Option<String>,
+    /// Stable identifier assigned by the supplying system.
+    pub external_id: Option<String>,
+    /// Human-readable pointer to the source record.
+    pub source_ref: Option<String>,
+    /// Content digest supplied by the source system for conflict detection.
+    pub source_digest: Option<String>,
+}
+
+/// A caller-supplied external ADR record. Lodestar consumes this structured
+/// input and deliberately does not inspect or parse the source document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalGoalRecord {
+    pub external_id: String,
+    pub kind: GoalKind,
+    pub title: String,
+    pub statement: String,
+    pub status: String,
+    pub source_ref: String,
+    pub source_digest: String,
+}
+
+/// The deterministic outcome for one external ADR record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalGoalImportDisposition {
+    Created,
+    Unchanged,
+    Skipped,
+    Conflict,
+}
+
+/// One external ADR record's import outcome.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalGoalImportOutcome {
+    pub external_id: String,
+    pub disposition: ExternalGoalImportDisposition,
+    pub goal_id: Option<String>,
+}
+
+/// The outcomes and totals from one atomic external ADR import.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalGoalImportResult {
+    pub outcomes: Vec<ExternalGoalImportOutcome>,
+    pub created: usize,
+    pub unchanged: usize,
+    pub skipped: usize,
+    pub conflicts: usize,
 }
 
 impl Goal {

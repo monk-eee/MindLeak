@@ -18,6 +18,9 @@ CREATE INDEX IF NOT EXISTS idx_waivers_expiry ON waivers(expires_at);
 CREATE INDEX IF NOT EXISTS idx_amendments_to ON constitution_amendments(to_version);
 CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
 CREATE INDEX IF NOT EXISTS idx_goals_slug   ON goals(slug);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_goals_external_identity
+    ON goals (source_system, external_id)
+    WHERE source_system IS NOT NULL AND external_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_design_items_status ON design_items(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_goal   ON tasks(goal_id);

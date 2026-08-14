@@ -1,0 +1,2 @@
+- **Lodestar can now import caller-supplied accepted ADR records through `constitution_define(action="import")`.** Imports preserve source provenance, are idempotent by external identity and digest, report conflicts without rewriting stored intent, and never parse arbitrary Markdown.
+- **`storage_status` now reports `server_version`.** A client that never reads the `initialize` handshake can still tell which semantic version and build commit answered it, so a stale installed binary stops being indistinguishable from a fixed one.

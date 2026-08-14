@@ -4,8 +4,9 @@ use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, Transact
 use crate::discovery::{ProjectFact, ProjectFactKind};
 use crate::error::{LodestarError, Result};
 use crate::model::{
-    ArtifactBinding, ArtifactBindingMode, ClauseOrigin, Consequence, ConstitutionVersion, Goal,
-    GoalKind, GoalStatus,
+    ArtifactBinding, ArtifactBindingMode, ClauseOrigin, Consequence, ConstitutionVersion,
+    ExternalGoalImportDisposition, ExternalGoalImportOutcome, ExternalGoalImportResult,
+    ExternalGoalRecord, Goal, GoalKind, GoalStatus,
 };
 use crate::util::{goal_slug, short_hash, slugify};
 
@@ -13,7 +14,8 @@ use super::{collect, LodestarStore};
 
 const GOAL_COLS: &str =
     "id, slug, kind, title, statement, status, version, parent_id, superseded_by, reason, created_at, \
-     constitution_version, rationale, scope, evidence_contract, consequence, waivable, waiver_authority, origin";
+    constitution_version, rationale, scope, evidence_contract, consequence, waivable, waiver_authority, origin, \
+    source_system, external_id, source_ref, source_digest";
 
 const CONSTITUTION_COLS: &str = "id, version, project_identity, purpose, preamble, status, \
      created_by, created_at, activated_by, activated_at";
@@ -48,6 +50,130 @@ impl LodestarStore {
         now: i64,
     ) -> Result<Goal> {
         define_goal_on(&self.conn, kind, title, statement, parent, now)
+    }
+
+    /// Import caller-supplied ADR records without inspecting their source
+    /// documents. Validation runs before the transaction, so a malformed batch
+    /// cannot leave a partial import behind.
+    pub fn import_external_goals(
+        &self,
+        source_system: &str,
+        records: &[ExternalGoalRecord],
+        now: i64,
+    ) -> Result<ExternalGoalImportResult> {
+        let source_system = source_system.trim();
+        if source_system.is_empty() {
+            return Err(LodestarError::Invalid(
+                "source_system must not be empty".to_string(),
+            ));
+        }
+        let mut identities = std::collections::HashSet::new();
+        for record in records {
+            if record.external_id.trim().is_empty()
+                || record.title.trim().is_empty()
+                || record.statement.trim().is_empty()
+                || record.status.trim().is_empty()
+                || record.source_ref.trim().is_empty()
+                || record.source_digest.trim().is_empty()
+            {
+                return Err(LodestarError::Invalid(
+                    "each import record requires external_id, title, statement, status, source_ref, and source_digest".to_string(),
+                ));
+            }
+            if !identities.insert(record.external_id.trim()) {
+                return Err(LodestarError::Invalid(format!(
+                    "import batch repeats external_id {}",
+                    record.external_id
+                )));
+            }
+        }
+
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let mut outcomes = Vec::with_capacity(records.len());
+        let mut created = 0;
+        let mut unchanged = 0;
+        let mut skipped = 0;
+        let mut conflicts = 0;
+        for record in records {
+            let external_id = record.external_id.trim();
+            if record.status.trim() != "accepted" {
+                skipped += 1;
+                outcomes.push(ExternalGoalImportOutcome {
+                    external_id: external_id.to_string(),
+                    disposition: ExternalGoalImportDisposition::Skipped,
+                    goal_id: None,
+                });
+                continue;
+            }
+            let existing: Option<(String, String)> = transaction
+                .query_row(
+                    "SELECT id, source_digest FROM goals
+                     WHERE source_system = ?1 AND external_id = ?2",
+                    params![source_system, external_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if let Some((goal_id, digest)) = existing {
+                let disposition = if digest == record.source_digest.trim() {
+                    unchanged += 1;
+                    ExternalGoalImportDisposition::Unchanged
+                } else {
+                    conflicts += 1;
+                    ExternalGoalImportDisposition::Conflict
+                };
+                outcomes.push(ExternalGoalImportOutcome {
+                    external_id: external_id.to_string(),
+                    disposition,
+                    goal_id: Some(goal_id),
+                });
+                continue;
+            }
+
+            let id = format!(
+                "goal:external-{}",
+                short_hash(&format!("{source_system}:{external_id}"))
+            );
+            let goal = Goal {
+                id: id.clone(),
+                slug: slugify(record.title.trim()),
+                kind: record.kind,
+                title: record.title.trim().to_string(),
+                statement: record.statement.trim().to_string(),
+                status: GoalStatus::Active,
+                version: 1,
+                parent_id: None,
+                superseded_by: None,
+                reason: None,
+                created_at: now,
+                constitution_version: None,
+                rationale: None,
+                scope: None,
+                evidence_contract: None,
+                consequence: None,
+                waivable: false,
+                waiver_authority: None,
+                origin: ClauseOrigin::Local,
+                source_system: Some(source_system.to_string()),
+                external_id: Some(external_id.to_string()),
+                source_ref: Some(record.source_ref.trim().to_string()),
+                source_digest: Some(record.source_digest.trim().to_string()),
+            };
+            insert_goal_on(&transaction, &goal)?;
+            created += 1;
+            outcomes.push(ExternalGoalImportOutcome {
+                external_id: external_id.to_string(),
+                disposition: ExternalGoalImportDisposition::Created,
+                goal_id: Some(id),
+            });
+        }
+        transaction.commit()?;
+        Ok(ExternalGoalImportResult {
+            outcomes,
+            created,
+            unchanged,
+            skipped,
+            conflicts,
+        })
     }
 
     /// Write a newly authored clause into an amendment draft.
@@ -95,6 +221,10 @@ impl LodestarStore {
             waivable: false,
             waiver_authority: None,
             origin: ClauseOrigin::Local,
+            source_system: None,
+            external_id: None,
+            source_ref: None,
+            source_digest: None,
         };
         insert_goal_on(&self.conn, &goal)?;
         Ok(goal)
@@ -167,6 +297,10 @@ impl LodestarStore {
             waivable: old.waivable,
             waiver_authority: old.waiver_authority.clone(),
             origin: old.origin,
+            source_system: old.source_system.clone(),
+            external_id: old.external_id.clone(),
+            source_ref: old.source_ref.clone(),
+            source_digest: old.source_digest.clone(),
         };
         self.insert_goal(&new_goal)?;
         self.conn.execute(
@@ -513,7 +647,7 @@ impl LodestarStore {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![node_id], |row| {
-            let mode: String = row.get(19)?;
+            let mode: String = row.get(23)?;
             Ok(ArtifactBinding {
                 goal: row_to_goal(row)?,
                 mode: ArtifactBindingMode::from_tag(&mode).unwrap_or(ArtifactBindingMode::Governed),
@@ -577,6 +711,10 @@ pub(super) fn define_goal_on(
         waivable: false,
         waiver_authority: None,
         origin: ClauseOrigin::Local,
+        source_system: None,
+        external_id: None,
+        source_ref: None,
+        source_digest: None,
     };
     insert_goal_on(connection, &goal)?;
     Ok(goal)
@@ -586,8 +724,9 @@ pub(super) fn insert_goal_on(connection: &Connection, g: &Goal) -> Result<()> {
     connection.execute(
         "INSERT INTO goals
             (id, slug, kind, title, statement, status, version, parent_id, superseded_by, reason, created_at,
-             constitution_version, rationale, scope, evidence_contract, consequence, waivable, waiver_authority, origin)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+             constitution_version, rationale, scope, evidence_contract, consequence, waivable, waiver_authority, origin,
+             source_system, external_id, source_ref, source_digest)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
         params![
             g.id,
             g.slug,
@@ -608,6 +747,10 @@ pub(super) fn insert_goal_on(connection: &Connection, g: &Goal) -> Result<()> {
             g.waivable as i64,
             g.waiver_authority,
             g.origin.as_str(),
+            g.source_system,
+            g.external_id,
+            g.source_ref,
+            g.source_digest,
         ],
     )?;
     Ok(())
@@ -647,6 +790,10 @@ fn row_to_goal(row: &Row) -> rusqlite::Result<Goal> {
         waivable: row.get::<_, i64>(16)? != 0,
         waiver_authority: row.get(17)?,
         origin: ClauseOrigin::from_tag(&origin).unwrap_or(ClauseOrigin::Local),
+        source_system: row.get(19)?,
+        external_id: row.get(20)?,
+        source_ref: row.get(21)?,
+        source_digest: row.get(22)?,
     })
 }
 
@@ -670,6 +817,96 @@ fn row_to_constitution_version(row: &Row) -> rusqlite::Result<ConstitutionVersio
 mod tests {
     use super::*;
     use crate::store::test_support::{goal, store, NOW};
+
+    fn external_record(external_id: &str, status: &str, digest: &str) -> ExternalGoalRecord {
+        ExternalGoalRecord {
+            external_id: external_id.to_string(),
+            kind: GoalKind::Objective,
+            title: "Imported objective".to_string(),
+            statement: "Ship the agreed outcome.".to_string(),
+            status: status.to_string(),
+            source_ref: format!("adr:{external_id}"),
+            source_digest: digest.to_string(),
+        }
+    }
+
+    #[test]
+    fn import_external_goals_is_idempotent_and_preserves_provenance() {
+        let store = store();
+        let record = external_record("ADR-447", "accepted", "sha256:one");
+
+        let created = store
+            .import_external_goals("ringmaster", std::slice::from_ref(&record), NOW)
+            .unwrap();
+        assert_eq!(created.created, 1);
+        assert_eq!(
+            created.outcomes[0].disposition,
+            ExternalGoalImportDisposition::Created
+        );
+
+        let repeated = store
+            .import_external_goals("ringmaster", &[record], NOW + 1)
+            .unwrap();
+        assert_eq!(repeated.unchanged, 1);
+        assert_eq!(
+            repeated.outcomes[0].disposition,
+            ExternalGoalImportDisposition::Unchanged
+        );
+        let goals = store.goals_by_status(GoalStatus::Active).unwrap();
+        assert_eq!(goals.len(), 1);
+        assert_eq!(goals[0].source_system.as_deref(), Some("ringmaster"));
+        assert_eq!(goals[0].external_id.as_deref(), Some("ADR-447"));
+        assert_eq!(goals[0].source_digest.as_deref(), Some("sha256:one"));
+    }
+
+    #[test]
+    fn import_external_goals_skips_non_accepted_and_reports_digest_conflicts_without_mutation() {
+        let store = store();
+        let accepted = external_record("ADR-447", "accepted", "sha256:one");
+        store
+            .import_external_goals("ringmaster", &[accepted], NOW)
+            .unwrap();
+        let proposed = external_record("ADR-448", "proposed", "sha256:two");
+        let changed = external_record("ADR-447", "accepted", "sha256:changed");
+
+        let result = store
+            .import_external_goals("ringmaster", &[proposed, changed], NOW + 1)
+            .unwrap();
+        assert_eq!(result.skipped, 1);
+        assert_eq!(result.conflicts, 1);
+        assert_eq!(
+            result
+                .outcomes
+                .iter()
+                .map(|outcome| outcome.disposition)
+                .collect::<Vec<_>>(),
+            vec![
+                ExternalGoalImportDisposition::Skipped,
+                ExternalGoalImportDisposition::Conflict,
+            ]
+        );
+        let goals = store.goals_by_status(GoalStatus::Active).unwrap();
+        assert_eq!(goals.len(), 1);
+        assert_eq!(goals[0].source_digest.as_deref(), Some("sha256:one"));
+    }
+
+    #[test]
+    fn import_external_goals_rejects_a_malformed_batch_without_writing_any_record() {
+        let store = store();
+        let valid = external_record("ADR-447", "accepted", "sha256:one");
+        let malformed = ExternalGoalRecord {
+            statement: String::new(),
+            ..external_record("ADR-448", "accepted", "sha256:two")
+        };
+
+        assert!(store
+            .import_external_goals("ringmaster", &[valid, malformed], NOW)
+            .is_err());
+        assert!(store
+            .goals_by_status(GoalStatus::Active)
+            .unwrap()
+            .is_empty());
+    }
 
     #[test]
     fn fresh_database_reports_no_active_constitution_version() {

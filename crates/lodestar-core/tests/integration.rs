@@ -9,9 +9,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use lodestar_core::llm::LlmClient;
 use lodestar_core::{
     now_unix, ArtifactBindingMode, BoardAilment, BoardFinding, ConformanceEvidence,
-    EvidenceProvenance, GoalKind, Lodestar, LodestarError, SignalPromotion, TaskStatus, Verdict,
+    EvidenceProvenance, ExternalGoalRecord, GoalKind, Lodestar, LodestarError, SignalPromotion,
+    TaskStatus, Verdict,
 };
 use mindleak_core::ingest::git::CommitRecord;
 use mindleak_core::MindLeak;
@@ -1154,4 +1156,59 @@ fn the_rework_rate_counts_repeated_titles_and_names_machine_fan_out() {
         retired.redundant, 2,
         "abandoning a seed does not un-spend the work of making and retiring it"
     );
+}
+
+#[test]
+fn a_fresh_repository_imports_an_accepted_adr_then_decomposes_and_claims_it() {
+    // The bootstrap a fresh clone could not reach: with no goal, task_create
+    // had nothing to decompose, and a repository's accepted ADRs could not
+    // become intent without Lodestar parsing Markdown it does not own. The
+    // model is unreachable here, so this also proves the deterministic
+    // fallback still leaves the repository something to claim.
+    let engine = Lodestar::open_in_memory()
+        .unwrap()
+        .with_llm(LlmClient::unreachable());
+    assert!(engine.get_constitution().unwrap().is_empty());
+
+    let records = vec![
+        ExternalGoalRecord {
+            external_id: "ADR-0022".into(),
+            kind: GoalKind::Objective,
+            title: "Daily Brief endpoint".into(),
+            statement: "Expose obligations ranked by urgency.".into(),
+            status: "accepted".into(),
+            source_ref: "docs/adr.d/0022-daily-brief-endpoint.md".into(),
+            source_digest: "sha256:brief".into(),
+        },
+        ExternalGoalRecord {
+            external_id: "ADR-0023".into(),
+            kind: GoalKind::Objective,
+            title: "Undecided endpoint".into(),
+            statement: "Still under review.".into(),
+            status: "proposed".into(),
+            source_ref: "docs/adr.d/0023-undecided.md".into(),
+            source_digest: "sha256:undecided".into(),
+        },
+    ];
+
+    let imported = engine
+        .import_external_goals("ringmaster-adr", &records)
+        .unwrap();
+    assert_eq!((imported.created, imported.skipped), (1, 1));
+
+    // Only what the source repository accepted is in force, and it carries the
+    // provenance a reader needs to trace it back.
+    let active = engine.get_constitution().unwrap();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].external_id.as_deref(), Some("ADR-0022"));
+    assert_eq!(active[0].source_system.as_deref(), Some("ringmaster-adr"));
+
+    let drafted = engine.decompose_goal(&active[0].id).unwrap();
+    assert!(
+        !drafted.is_empty(),
+        "an imported objective must be decomposable, or the import bought nothing"
+    );
+
+    let task = engine.next_task().unwrap().unwrap();
+    assert!(engine.claim_task(&task.id, "agent-a", 300).unwrap());
 }

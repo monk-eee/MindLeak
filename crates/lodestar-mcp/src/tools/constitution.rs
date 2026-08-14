@@ -1,18 +1,18 @@
 //! Constitution tool definitions and dispatch.
 
 use super::{constitution_packs as policy_packs, ok, opt_str, req_str, str_array, text};
-use lodestar_core::{ArtifactBindingMode, GoalKind, Lodestar};
+use lodestar_core::{ArtifactBindingMode, ExternalGoalRecord, GoalKind, Lodestar};
 use serde_json::{json, Value};
 
 pub(super) fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "constitution_define",
-            "description": "Write or rewrite constitutional intent (ADR-0059). `action` names the act: `goal` adds a durable objective, constraint or invariant; `supersede` replaces one with a new active version, retiring rather than deleting the old, which is the only way intent changes; `bind` and `unbind` attach and prune the artefacts a clause governs, which is what makes `touched_task_goal` answerable at all. Read the constitution before acting.",
+            "description": "Write or rewrite constitutional intent (ADR-0059). `action` names the act: `goal` adds a durable objective, constraint or invariant; `import` records the caller-supplied `records` of one `source_system`, never scanning Markdown; `supersede` replaces one with a new active version, retiring rather than deleting the old, which is the only way intent changes; `bind` and `unbind` attach and prune the artefacts a clause governs, making `touched_task_goal` answerable. Read the constitution before acting.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "enum": ["goal", "supersede", "bind", "unbind"] },
+                    "action": { "type": "string", "enum": ["goal", "import", "supersede", "bind", "unbind"] },
                     "kind": { "type": "string", "enum": ["objective", "constraint", "invariant"], "description": "Required for goal." },
                     "title": { "type": "string", "description": "Required for goal." },
                     "statement": { "type": "string", "description": "Required for goal: the normative text, what must hold or be achieved." },
@@ -21,7 +21,9 @@ pub(super) fn definitions() -> Vec<Value> {
                     "new_statement": { "type": "string", "description": "Required for supersede." },
                     "reason": { "type": "string", "description": "Required for supersede." },
                     "node_ids": { "type": "array", "items": { "type": "string" }, "description": "Required for bind and unbind." },
-                    "mode": { "type": "string", "enum": ["governed", "forbid_change"], "description": "Optional for bind; defaults to governed." }
+                    "mode": { "type": "string", "enum": ["governed", "forbid_change"], "description": "Optional for bind; defaults to governed." },
+                    "source_system": { "type": "string" },
+                    "records": { "type": "array" }
                 },
                 "required": ["action"]
             }
@@ -194,11 +196,20 @@ pub(super) fn dispatch(
         // other way to discover the vocabulary.
         "constitution_define" => match req_str(args, "action") {
             Ok("goal") => dispatch(engine, "define_goal", args),
+            // `import` is new vocabulary, so unlike its siblings it has no
+            // superseded name to reach through. Handling it here keeps the
+            // server from answering to a name it never advertises.
+            Ok("import") => Some((|| {
+                let records = external_records(args)?;
+                ok(&engine
+                    .import_external_goals(req_str(args, "source_system")?, &records)
+                    .map_err(|error| error.to_string())?)
+            })()),
             Ok("supersede") => dispatch(engine, "supersede_goal", args),
             Ok("bind") => dispatch(engine, "link_goal_to_artifact", args),
             Ok("unbind") => dispatch(engine, "unlink_goal_from_artifact", args),
             Ok(other) => Some(Err(format!(
-                "unknown action: {other}; constitution_define takes goal, supersede, bind or unbind"
+                "unknown action: {other}; constitution_define takes goal, import, supersede, bind or unbind"
             ))),
             Err(error) => Some(Err(error)),
         },
@@ -362,6 +373,14 @@ pub(super) fn dispatch(
         "complete_clause_contract" => Some(pack_complete_contract(engine, args)),
         _ => None,
     }
+}
+
+fn external_records(args: &Value) -> Result<Vec<ExternalGoalRecord>, String> {
+    let records = args
+        .get("records")
+        .ok_or_else(|| "missing required argument: records".to_string())?;
+    serde_json::from_value(records.clone())
+        .map_err(|error| format!("invalid import records: {error}"))
 }
 
 fn parse_kind(s: &str) -> Result<GoalKind, String> {

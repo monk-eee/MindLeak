@@ -118,7 +118,11 @@ CREATE TABLE IF NOT EXISTS goals (
     consequence          TEXT,             -- advise | review | block
     waivable             INTEGER NOT NULL DEFAULT 0,
     waiver_authority     TEXT,             -- authority required to waive
-    origin               TEXT NOT NULL DEFAULT 'local'  -- local | pack | discovered
+    origin               TEXT NOT NULL DEFAULT 'local', -- local | pack | discovered
+    source_system        TEXT,             -- caller-declared external source
+    external_id          TEXT,             -- stable source identity
+    source_ref           TEXT,             -- human-readable source pointer
+    source_digest        TEXT              -- source content digest
 );
 
 -- Policy packs are immutable, versioned inputs to constitutional drafting

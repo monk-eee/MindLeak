@@ -31,24 +31,23 @@
 // via `git ls-files`, so it validates the state you are about to commit.
 //   node scripts/link-check.mjs
 //
-// Scope: the *living* documentation. `docs/adr/` is deliberately excluded — an
-// ADR is a historical record identified by its number, its cross-references
-// capture other ADRs' titles as they were at the time, and some point at
-// decisions that were renamed or never got their own file. Repairing those is a
-// maintainer's call about intent, not a mechanical one, and is tracked
-// separately; guarding them here would either fail on that backlog or force
-// this tool to edit historical records to stay green. It still catches the rot
-// that actually misleads a reader today: a living doc linking to a moved,
-// renamed, or deleted file.
+// Scope: every tracked markdown file, `docs/adr/` included. That tree was once
+// excluded because a backlog of ADR cross-references pointed at decisions that
+// had been renamed or never got their own file, and guarding them would have
+// failed on work nobody had done yet. That backlog is closed — lifting the
+// exclusion reported zero broken links across every ADR — and it had outlived
+// its reason: an ADR citing a `gaps.d/` fragment went on resolving after the
+// fragment was deleted, because `adr-link-check.mjs` only matches sibling
+// `NNNN-slug.md` targets and this tool was not looking there. An ADR is a
+// historical record, but a link inside one is still a promise to a reader: when
+// a target genuinely moves, repairing or inlining it is a deliberate edit, and
+// a failure here is what prompts it.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SCREENSHOT_EXEMPT = /(^|\/)media\/screenshots\//;
-
-/** Historical/append-only trees whose links are not the living-docs contract. */
-const EXCLUDED_SOURCES = [/^docs\/adr\//];
 
 /** Every tracked path, and the set of directories they imply. */
 export function treeSets(files) {
@@ -161,7 +160,6 @@ export function checkRepo(root) {
   const sets = treeSets(present);
   const broken = [];
   for (const rel of present.filter((f) => f.endsWith(".md"))) {
-    if (EXCLUDED_SOURCES.some((re) => re.test(rel))) continue;
     const text = readFileSync(path.join(root, rel), "utf8");
     broken.push(...brokenLinksIn(rel, text, sets));
   }

@@ -31,11 +31,92 @@ fn git(root: &Path, args: &[&str]) -> String {
         .expect("git runs");
     assert!(
         output.status.success(),
-        "git {:?} failed: {}",
-        args,
-        String::from_utf8_lossy(&output.stderr)
+        "{}",
+        git_failure(args, output.status.code(), &output.stdout, &output.stderr)
     );
     String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// Describe a failed git invocation.
+///
+/// Pure, so the message is testable without spawning anything — and it needs
+/// testing, because the interesting case is the one where git says nothing.
+/// Measured 2026-08-14: under memory pressure git exits non-zero having written
+/// to neither stream, and the old message ended at a bare colon. The failing
+/// names here are all `merge_evidence_*`, so a silent failure reads as "my
+/// change broke something I do not understand" when the cause is the machine.
+/// The exit status is the one fact always available, so it is always reported.
+fn git_failure(args: &[&str], code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> String {
+    let status = match code {
+        Some(code) => format!("exit code {code}"),
+        None => "terminated by a signal".to_string(),
+    };
+    let said = [stderr, stdout]
+        .iter()
+        .map(|stream| String::from_utf8_lossy(stream).trim().to_string())
+        .find(|stream| !stream.is_empty());
+
+    match said {
+        Some(said) => format!("git {args:?} failed ({status}): {said}"),
+        None => format!(
+            "git {args:?} failed ({status}) and wrote nothing to stdout or stderr. \
+             A non-zero exit with no message is usually the machine rather than the \
+             code under test — memory, disk, or a killed process. Try \
+             `--test-threads=1` before suspecting your change."
+        ),
+    }
+}
+
+#[test]
+fn a_failure_reports_what_git_said_and_the_status_it_exited_with() {
+    let message = git_failure(
+        &["commit", "-m", "base"],
+        Some(128),
+        b"",
+        b"fatal: nothing to commit\n",
+    );
+    assert_eq!(
+        message,
+        "git [\"commit\", \"-m\", \"base\"] failed (exit code 128): fatal: nothing to commit"
+    );
+}
+
+#[test]
+fn a_failure_that_only_wrote_to_stdout_is_still_quoted() {
+    // git does not reliably choose stderr for its complaints, and discarding
+    // stdout was half of why the old message could come back empty.
+    let message = git_failure(&["cherry"], Some(1), b"+ 0123456789\n", b"");
+    assert_eq!(
+        message,
+        "git [\"cherry\"] failed (exit code 1): + 0123456789"
+    );
+}
+
+#[test]
+fn a_silent_failure_names_the_machine_rather_than_the_code_under_test() {
+    // Regression for the measured case: six merge_tests failed with a bare
+    // "failed:" while the fleet was building, one of them revealing
+    // "fatal: Out of memory". The failing test names are unrelated to whatever
+    // the developer was editing, so the message has to redirect them.
+    let message = git_failure(&["init", "--initial-branch=main"], Some(137), b"", b"   \n");
+    assert_eq!(
+        message,
+        "git [\"init\", \"--initial-branch=main\"] failed (exit code 137) and wrote \
+         nothing to stdout or stderr. A non-zero exit with no message is usually the \
+         machine rather than the code under test — memory, disk, or a killed process. \
+         Try `--test-threads=1` before suspecting your change."
+    );
+}
+
+#[test]
+fn a_signal_termination_says_so_rather_than_reporting_no_code() {
+    // A killed process has no exit code, which is exactly the case that used to
+    // render as nothing at all.
+    let message = git_failure(&["status"], None, b"", b"");
+    assert!(
+        message.starts_with("git [\"status\"] failed (terminated by a signal) and wrote nothing"),
+        "unexpected message: {message}"
+    );
 }
 
 fn write(root: &Path, relative: &str, contents: &str) {

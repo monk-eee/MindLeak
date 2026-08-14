@@ -485,6 +485,7 @@ pub fn call_with_storage(
     if name == "storage_status" {
         let mut status = serde_json::to_value(storage.ok_or("storage status is unavailable")?)
             .map_err(|error| error.to_string())?;
+        status["server_version"] = json!(crate::server::server_version());
         if args
             .get("include_model_health")
             .and_then(Value::as_bool)
@@ -2490,6 +2491,12 @@ mod tests {
         assert_eq!(value["repository_id"], status.repository_id.unwrap());
         assert_eq!(value["origin"], "repository");
         assert_eq!(value["migrated_legacy"], false);
+        // Which build answered, for a client that never reads the handshake.
+        assert_eq!(value["server_version"], crate::server::server_version());
+        assert!(value["server_version"]
+            .as_str()
+            .unwrap()
+            .starts_with(concat!(env!("CARGO_PKG_VERSION"), "+")));
         assert!(value.get("model_health").is_none());
     }
 
