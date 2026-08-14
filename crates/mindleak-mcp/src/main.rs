@@ -19,8 +19,24 @@ fn main() -> anyhow::Result<()> {
     mindleak_core::telemetry::init_tracing();
     // Which arbiter owns this repository's coordination (ADR-0082), settled
     // once here rather than per call, and before any store is opened.
-    let coordination = ackplane_core::resolve_coordination_mode(|name| std::env::var(name).ok())?;
-    tracing::info!(mode = coordination.as_str(), "resolved coordination mode");
+    //
+    // A refusal deliberately does not exit. Exiting is what made this
+    // undiagnosable: the process died before it could serve anything, so the
+    // agent saw only a server that failed to start. It serves instead, and
+    // refuses every tool call, which keeps the ADR-0082 guarantee — a process
+    // that arbitrates nothing cannot be the second arbiter — while putting the
+    // reason where the agent will actually read it.
+    let coordination = ackplane_core::resolve_coordination_mode(|name| std::env::var(name).ok());
+    let coordination_refusal = coordination.as_ref().err().map(|error| {
+        tracing::error!(%error, "refusing to coordinate");
+        error.refusal_notice()
+    });
+    tracing::info!(
+        mode = coordination
+            .as_ref()
+            .map_or("refused", |mode| mode.as_str()),
+        "resolved coordination mode"
+    );
     let workspace = resolve_workspace();
     let stale_build = report_build_identity(&workspace);
     // Observed now, while the file on disk is still the one being executed.
@@ -123,6 +139,7 @@ fn main() -> anyhow::Result<()> {
         maintenance.activity(),
         storage_status,
         stale_build,
+        coordination_refusal,
         running,
     );
     maintenance.shutdown();

@@ -16,7 +16,18 @@ use mindleak_storage::{
 fn main() -> anyhow::Result<()> {
     // Which arbiter owns this repository's coordination (ADR-0082), settled
     // once here rather than per call, and before any store is opened.
-    let coordination = ackplane_core::resolve_coordination_mode(|name| std::env::var(name).ok())?;
+    //
+    // A refusal deliberately does not exit. Exiting is what made this
+    // undiagnosable: the process died before it could serve anything, so the
+    // agent saw only a server that failed to start. It serves instead, and
+    // refuses every tool call, which keeps the ADR-0082 guarantee — a process
+    // that arbitrates nothing cannot be the second arbiter — while putting the
+    // reason where the agent will actually read it.
+    let coordination = ackplane_core::resolve_coordination_mode(|name| std::env::var(name).ok());
+    let coordination_refusal = coordination.as_ref().err().map(|error| {
+        eprintln!("lodestar-mcp: {error}");
+        error.refusal_notice()
+    });
     let current = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let workspace = resolve_workspace_path(
         &current,
@@ -73,13 +84,14 @@ fn main() -> anyhow::Result<()> {
         "[lodestar-mcp] ready — intent plane at {db_path}; repository_id={}; origin={:?}; migrated_legacy={migrated_legacy}; coordination={}",
         database.repository_id.as_deref().unwrap_or("none"),
         database.origin,
-        coordination.as_str(),
+        coordination.as_ref().map_or("refused", |mode| mode.as_str()),
     );
     server::run(
         engine,
         sessions,
         storage_status,
         stale_build,
+        coordination_refusal,
         RunningBinary::observe(),
     )
 }

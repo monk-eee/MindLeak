@@ -9,7 +9,8 @@
   [ADR-0022](0022-learned-knowledge-loop.md) (the learned-knowledge loop),
   [ADR-0053](0053-the-graph-records-events-not-conclusions.md) (the graph records
   events, not conclusions); the gap fragment
-  `gaps.d/complete-task-learned-writes-conclusions-where-recall-cannot.md`
+  `gaps.d/complete-task-learned-writes-conclusions-where-recall-cannot.md`, which
+  this decision closed and whose file was removed once it shipped
 
 ## Context
 

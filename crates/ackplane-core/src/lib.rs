@@ -134,6 +134,26 @@ pub enum CoordinationModeError {
     NotEnrolled,
 }
 
+impl CoordinationModeError {
+    /// What the agent is told, in band, when this process settled no arbiter.
+    ///
+    /// The refusal is not new; being able to read it is. Exiting on this error
+    /// left the diagnosis in an MCP output pane no agent sees, so the operator
+    /// saw two planes dead from one variable and read it as "everything is
+    /// broken" rather than "one declaration is wrong". The server now stays up
+    /// purely to say this, which is why the notice has to promise that staying
+    /// up coordinated nothing.
+    pub fn refusal_notice(&self) -> String {
+        format!(
+            "{self}\n\nThis server started only to tell you that. Every tool call is \
+             refused until the declaration is corrected, and nothing has been \
+             coordinated meanwhile: no task, claim, lease, or evidence has been read or \
+             written by this process. Correct {COORDINATION_MODE_ENV} and restart the \
+             server."
+        )
+    }
+}
+
 /// Resolve the mode this repository declared, refusing any it cannot honour.
 ///
 /// An absent or blank declaration is `local`: a repository that has never heard
@@ -264,6 +284,39 @@ mod tests {
                     .ensure_supported(readiness)
                     .is_err(),
                 "{readiness:?} must refuse rather than resolve"
+            );
+        }
+    }
+
+    #[test]
+    fn a_refusal_notice_carries_its_cause_and_says_nothing_was_coordinated() {
+        // The refusal was always correct and never readable: both planes exited
+        // on it, so the agent saw a server that failed to start and the operator
+        // saw everything break at once. The notice is the in-band form, and it
+        // is only useful if it survives the two things a reader needs — which
+        // declaration was wrong, and whether the process did any damage while
+        // refusing. Fails pre-fix: there was no notice to read.
+        for error in [
+            CoordinationModeError::Unrecognised("cloud".to_string()),
+            CoordinationModeError::NoFederationClient,
+            CoordinationModeError::ArbiterUnreachable,
+            CoordinationModeError::NotEnrolled,
+        ] {
+            let notice = error.refusal_notice();
+
+            assert!(
+                notice.starts_with(&error.to_string()),
+                "the cause and its remedy must survive intact: {notice}"
+            );
+            assert!(
+                notice.contains(COORDINATION_MODE_ENV),
+                "the notice must name the variable to correct: {notice}"
+            );
+            // An agent that cannot tell whether a refusing process half-did
+            // something has to assume it did, which is the expensive reading.
+            assert!(
+                notice.contains("nothing has been coordinated"),
+                "the notice must settle whether work happened anyway: {notice}"
             );
         }
     }
