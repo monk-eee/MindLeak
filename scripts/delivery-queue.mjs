@@ -27,8 +27,45 @@
 // so nothing new has to be remembered or labelled.
 
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-import { describeSweep, sweepIfDue } from "./artefact-sweep.mjs";
+/** The sweep script beside this one, whatever checkout this is. */
+const SWEEP_SCRIPT = fileURLToPath(
+  new URL("./artefact-sweep.mjs", import.meta.url),
+);
+
+/**
+ * How the watcher asks for a sweep.
+ *
+ * NOT an import. Node loads a module once, at startup, and never re-reads it,
+ * but this process runs for days -- so an imported `sweepIfDue` keeps deleting
+ * by the rules it booted with, and nothing in git can see that because the file
+ * on disk is already correct. Measured 2026-08-13: a watcher a day old deleted
+ * the fleet host's `editors/vscode/node_modules` that PR #435 had specifically
+ * taught the sweep to spare, and PR #453's freshness guard could not help
+ * either, because a process that never re-reads its source never reaches it.
+ * A child process reads the rules at the moment it uses them, so the age of the
+ * watcher stops being a variable.
+ *
+ * `--if-due` because the cadence is the sweep's to keep: forcing here would run
+ * a disk walk every 60 seconds.
+ */
+export function sweepArgs(apply, script = SWEEP_SCRIPT) {
+  return apply ? [script, "--if-due", "--apply"] : [script, "--if-due"];
+}
+
+/**
+ * What to print for a sweep result, given what was printed last.
+ *
+ * A refused sweep never records a run, so it refuses again on every tick. Said
+ * each time, a stale-checkout refusal is 60 identical lines an hour, which is
+ * how a log becomes something nobody reads; said once, it is the one line that
+ * gets it fixed. Returns null for nothing to say.
+ */
+export function sweepAnnouncement(output, previous) {
+  const said = output.trim();
+  return !said || said === previous ? null : said;
+}
 
 /** Fields the decision needs. Kept small so the core stays pure and testable. */
 export const PR_FIELDS =
@@ -381,18 +418,23 @@ function main() {
   // Hygiene is deliberately outside `tick`: a disk walk must never sit on the
   // path that decides whose branch is updated next, and a sweep that throws
   // must not stop the queue draining. Its own cadence and lock make calling it
-  // every tick cheap -- all but one call in several hours returns "not due".
+  // every tick cheap -- all but one call in several hours returns "not due",
+  // which it says by printing nothing.
+  let saidLast = null;
   const sweepNow = () => {
     if (!sweeping) return;
     try {
-      const outcome = sweepIfDue({
-        anchor: process.cwd(),
-        commonDir: execFileSync("git", ["rev-parse", "--git-common-dir"], {
+      const said = sweepAnnouncement(
+        execFileSync(process.execPath, sweepArgs(apply), {
           encoding: "utf8",
-        }).trim(),
-        apply,
-      });
-      if (outcome.ran) console.log(describeSweep(outcome.result));
+          cwd: process.cwd(),
+        }),
+        saidLast,
+      );
+      if (said !== null) {
+        saidLast = said;
+        console.log(said);
+      }
     } catch (error) {
       // Housekeeping failing is not the queue failing.
       console.log(`artefact-sweep skipped: ${error.message.split("\n")[0]}`);
