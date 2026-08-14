@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -156,10 +156,10 @@ test("a tracked document deleted from the working tree is absent", () => {
   }
 });
 
-// The guard, live: this runs from pre-push via script-tests, so a living doc
-// that starts pointing at a moved or deleted file fails the push rather than
-// rotting unnoticed. `docs/adr/` is out of scope by design (see link-check.mjs).
-test("the repository's own living docs have no broken links", () => {
+// The guard, live: this runs from pre-push via script-tests, so a document that
+// starts pointing at a moved or deleted file fails the push rather than rotting
+// unnoticed. `docs/adr/` is in scope too (see link-check.mjs).
+test("the repository's own docs have no broken links", () => {
   const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
     encoding: "utf8",
   }).trim();
@@ -171,4 +171,34 @@ test("the repository's own living docs have no broken links", () => {
       .map((b) => `  ${b.file}:${b.line} -> ${b.target}`)
       .join("\n")}`,
   );
+});
+
+// Regression: an ADR cited a `gaps.d/` fragment, the fragment was deleted once
+// its defect was fixed — which is what the process asks for — and nothing
+// noticed. `adr-link-check.mjs` matches only sibling `NNNN-slug.md` targets, and
+// this tool skipped `docs/adr/` wholesale, so the citation dangled in a record
+// nobody re-reads. Fails against the excluded version: it reported nothing.
+test("an ADR citing a deleted gaps.d fragment is caught", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "mindleak-adr-link-"));
+  try {
+    mkdirSync(path.join(root, "docs", "adr"), { recursive: true });
+    mkdirSync(path.join(root, "gaps.d"), { recursive: true });
+    writeFileSync(path.join(root, "gaps.d", "note.md"), "- **A gap.**\n");
+    writeFileSync(
+      path.join(root, "docs", "adr", "0092-x.md"),
+      "Recorded in [note](../../gaps.d/note.md).\n",
+    );
+    execFileSync("git", ["init", "--quiet"], { cwd: root });
+    execFileSync("git", ["add", "."], { cwd: root });
+    rmSync(path.join(root, "gaps.d", "note.md"));
+
+    const broken = checkRepo(root);
+
+    assert.deepEqual(
+      broken.map(({ file, target }) => ({ file, target })),
+      [{ file: "docs/adr/0092-x.md", target: "../../gaps.d/note.md" }],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

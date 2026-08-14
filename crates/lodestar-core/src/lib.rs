@@ -45,10 +45,11 @@ pub use model::{
     BoardFinding, CertificationState, CertificationStatus, ClaimOverlap, ClaimOverlapReport,
     ClaimWindow, ClauseCoverage, ConformanceCheck, ConformanceCheckReference, ConformanceEvidence,
     ConformanceRecord, ConformanceResult, ConstitutionProposal, ConstitutionState,
-    ConstitutionStatus, ConstitutionVersion, EvidenceProvenance, Goal, GoalKind, GoalStatus,
-    GoverningClause, HumanQuestion, Knowledge, KnowledgeReach, OverlapSignal, RepeatedTitle,
-    ReworkReport, SignalPromotion, Task, TaskEvent, TaskEventKind, TaskQa, TaskReceipt, TaskScope,
-    TaskStatus, Verdict,
+    ConstitutionStatus, ConstitutionVersion, EvidenceProvenance, ExternalGoalImportDisposition,
+    ExternalGoalImportOutcome, ExternalGoalImportResult, ExternalGoalRecord, Goal, GoalKind,
+    GoalStatus, GoverningClause, HumanQuestion, Knowledge, KnowledgeReach, OverlapSignal,
+    RepeatedTitle, ReworkReport, SignalPromotion, Task, TaskEvent, TaskEventKind, TaskQa,
+    TaskReceipt, TaskScope, TaskStatus, Verdict,
 };
 pub use policy::{
     common_core_pack, fleet_delivery_pack, ConstitutionPack, PackClause, PackClauseDisposition,

@@ -5,9 +5,10 @@ use crate::waiver::Waiver;
 use crate::{
     common_core_pack, discovery::discover_project_facts, discovery::ProjectFact,
     fleet_delivery_pack, now_unix, ArtifactBindingMode, ConstitutionPack, ConstitutionProposal,
-    ConstitutionState, ConstitutionStatus, ConstitutionVersion, Goal, GoalKind, GoalStatus,
-    Lodestar, LodestarError, PackClause, PackClauseDisposition, PackClauseProposal,
-    PackClauseProvenance, PackProposalBatch, PackReviewOutcome, Result,
+    ConstitutionState, ConstitutionStatus, ConstitutionVersion, ExternalGoalImportResult,
+    ExternalGoalRecord, Goal, GoalKind, GoalStatus, Lodestar, LodestarError, PackClause,
+    PackClauseDisposition, PackClauseProposal, PackClauseProvenance, PackProposalBatch,
+    PackReviewOutcome, Result,
 };
 
 impl Lodestar {
@@ -25,6 +26,17 @@ impl Lodestar {
     pub fn supersede_goal(&self, old_id: &str, new_statement: &str, reason: &str) -> Result<Goal> {
         self.store
             .supersede_goal(old_id, new_statement, reason, now_unix())
+    }
+
+    /// Import structured records supplied by an external ADR system. This
+    /// deliberately never reads or parses the caller's source documents.
+    pub fn import_external_goals(
+        &self,
+        source_system: &str,
+        records: &[ExternalGoalRecord],
+    ) -> Result<ExternalGoalImportResult> {
+        self.store
+            .import_external_goals(source_system, records, now_unix())
     }
 
     /// The authoritative set an agent reads before acting.
