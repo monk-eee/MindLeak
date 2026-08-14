@@ -85,11 +85,11 @@ like they need a database.
 - `crates/ackplane-server` is a new workspace member, so the root `Cargo.toml`
   changes. That file is bound to
   `goal:adr-0030-unique-per-process-agent-identity`, which has nothing to do with
-  the workspace manifest, so every Ackplane crate task drifts at completion and
-  no agent-reachable verb can rebind it (see
-  `gaps.d/a-publication-can-report-an-unbound-file-no-agent-can-bind.md`). This
-  is a standing tax on the whole build-out, recorded here so it is not
-  rediscovered per task.
+  the workspace manifest, so every Ackplane crate task drifts at completion until
+  that binding is corrected. This was recorded as a standing tax no agent could
+  pay, and that was wrong: `constitution_define` has bound and unbound artefacts
+  since 2026-07-29. What remains is not a missing verb but a decision about which
+  goal should own the manifest, recorded here so it is not rediscovered per task.
 - `cargo build --locked --offline` is already failing in this workspace before
   any of this lands. Adding the first heavyweight dependency will be blamed for
   it unless that is fixed or understood first.

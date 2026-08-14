@@ -41,9 +41,12 @@ The task is graded against three files it will never touch.
 So every Ackplane change produces the same verdict. The server crate was
 published with `needs_human` and both of its new files reported `UNBOUND`, and
 neither outcome said anything about the change: the first measured the
-mislabelling, the second recorded that nothing exists to bind to. That a file
-cannot be bound by any agent-reachable verb is separately filed in
-`gaps.d/a-publication-can-report-an-unbound-file-no-agent-can-bind.md`.
+mislabelling, the second recorded that nothing exists to bind to. A fragment
+once filed that second half as "no agent-reachable verb can bind it", and that
+was wrong when it was written: `link_goal_to_artifact` had been in the tool
+surface since 2026-07-29, and is reachable as `constitution_define(action=
+"bind")`. The blocker was never the verb. It was the missing goal, which is what
+this decision supplies.
 
 The cost is not the individual verdict. It is that a signal which always reads
 the same way stops being read. ADR-0026 rejects mechanistic ratchets because a
