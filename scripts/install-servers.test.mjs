@@ -12,6 +12,7 @@ import path from "node:path";
 
 import {
   SERVERS,
+  SUPERSEDED_SUFFIXES,
   executableName,
   installDirectory,
   installOne,
@@ -86,6 +87,38 @@ test("an existing server is moved aside rather than overwritten, and its bytes a
   );
 
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("a binary renamed aside by a hand deploy is collected too, not just the installer's own", () => {
+  // The collector matched only `.old`, the name `installOne` writes. A deploy
+  // that copies a fresh build in by hand renames the live file to
+  // `.superseded` for the same lock reason, so those were never collected:
+  // measured 2026-08-14 at 8 orphans and 68.2 MiB in ~/.mindleak/bin.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "install-servers-"));
+  const bin = path.join(root, "bin");
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, "lodestar-mcp.exe"), "live");
+  fs.writeFileSync(path.join(bin, "lodestar-mcp.exe.superseded"), "aside");
+  fs.writeFileSync(
+    path.join(bin, "mindleak-mcp.exe.1785576682021.old"),
+    "aside",
+  );
+  fs.writeFileSync(path.join(bin, "lodestar-mcp-1551270.exe"), "pinned");
+
+  assert.equal(pruneSupersededInstalls(bin), 2);
+
+  assert.deepEqual(fs.readdirSync(bin).sort(), [
+    "lodestar-mcp-1551270.exe",
+    "lodestar-mcp.exe",
+  ]);
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("every suffix the collector takes is one something in this repository writes", () => {
+  // Guards the guard: widening this list is how the collector would start
+  // deleting a live binary rather than a set-aside copy.
+  assert.deepEqual(SUPERSEDED_SUFFIXES, [".old", ".superseded"]);
 });
 
 test("installing into an absent directory creates it", () => {
