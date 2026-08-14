@@ -120,17 +120,24 @@ fn handle_with_storage(
     }
 }
 
+/// The semantic version and the commit this binary was built from. Reported at
+/// `initialize` and by `storage_status`, because a client that never reads the
+/// handshake still has to be able to tell which build answered it.
+pub(crate) fn server_version() -> String {
+    format!(
+        "{}+{}",
+        env!("CARGO_PKG_VERSION"),
+        env!("MINDLEAK_BUILD_SHA")
+    )
+}
+
 fn initialize_result() -> Value {
     json!({
         "protocolVersion": PROTOCOL_VERSION,
         "capabilities": { "tools": { "listChanged": false } },
         "serverInfo": {
             "name": "lodestar-mcp",
-            "version": format!(
-                "{}+{}",
-                env!("CARGO_PKG_VERSION"),
-                env!("MINDLEAK_BUILD_SHA")
-            )
+            "version": server_version()
         }
     })
 }
@@ -246,6 +253,30 @@ mod tests {
         let resp = handle(&e, &sessions, &get).unwrap();
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("Zero token"));
+    }
+
+    #[test]
+    fn constitution_define_import_consumes_structured_records() {
+        let engine = engine();
+        let request = json!({
+            "jsonrpc": "2.0", "id": 31, "method": "tools/call",
+            "params": { "name": "constitution_define", "arguments": {
+                "action": "import", "source_system": "ringmaster", "records": [{
+                    "external_id": "ADR-447", "kind": "objective",
+                    "title": "Bootstrap external ADRs", "statement": "Import accepted ADRs.",
+                    "status": "accepted", "source_ref": "adr:447", "source_digest": "sha256:one"
+                }]
+            }}
+        });
+
+        let response = handle(&engine, &sessions(), &request).unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        let result: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(result["created"], 1);
+        assert_eq!(result["outcomes"][0]["external_id"], "ADR-447");
+        let goals = engine.get_constitution().unwrap();
+        assert_eq!(goals.len(), 1);
+        assert_eq!(goals[0].source_system.as_deref(), Some("ringmaster"));
     }
 
     #[test]

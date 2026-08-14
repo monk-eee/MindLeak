@@ -85,6 +85,10 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
         ("goals", "waivable", "INTEGER NOT NULL DEFAULT 0"),
         ("goals", "waiver_authority", "TEXT"),
         ("goals", "origin", "TEXT NOT NULL DEFAULT 'local'"),
+        ("goals", "source_system", "TEXT"),
+        ("goals", "external_id", "TEXT"),
+        ("goals", "source_ref", "TEXT"),
+        ("goals", "source_digest", "TEXT"),
         // Who stood a control down, and when (ADR-0034). NULL on every
         // pre-existing row is the honest answer: those retirements were not
         // recorded and cannot be reconstructed.
