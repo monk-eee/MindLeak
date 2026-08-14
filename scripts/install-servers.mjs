@@ -82,26 +82,44 @@ export function installOne(source, destination, now = Date.now()) {
   }
 }
 
-/** Delete the `.old` files earlier installs left behind, once unlocked. */
+/**
+ * Suffixes a set-aside binary can carry.
+ *
+ * `installOne` writes `.old`; a deploy that copies a fresh build in by hand
+ * renames the live file to `.superseded` for the same reason, so both land in
+ * this directory and both are this collector's to take.
+ */
+export const SUPERSEDED_SUFFIXES = [".old", ".superseded"];
+
+/** Delete the binaries earlier installs and deploys set aside, once unlocked. */
 export function pruneSupersededInstalls(directory) {
   let pruned = 0;
   for (const entry of fs.readdirSync(directory)) {
-    if (!entry.endsWith(".old")) continue;
+    if (!SUPERSEDED_SUFFIXES.some((suffix) => entry.endsWith(suffix))) continue;
     try {
       fs.rmSync(path.join(directory, entry));
       pruned += 1;
     } catch {
-      // Still held by a running server; the next install will get it.
+      // Still held by a running server; the next prune will get it.
     }
   }
   return pruned;
 }
 
 function main() {
+  const directory = installDirectory();
+
+  // Reachable on its own because the collector used to run only after a full
+  // install, and a deploy that copies a fresh build in by hand never performs
+  // one — which is how 68 MiB of set-aside binaries accumulated unnoticed.
+  if (process.argv.slice(2).includes("--prune")) {
+    reportPruned(pruneSupersededInstalls(directory), directory);
+    return;
+  }
+
   const workspace = execFileSync("git", ["rev-parse", "--show-toplevel"], {
     encoding: "utf8",
   }).trim();
-  const directory = installDirectory();
 
   const missing = SERVERS.filter((name) => !pickBuild(workspace, name));
   if (missing.length > 0) {
@@ -123,12 +141,20 @@ function main() {
   }
   const pruned = pruneSupersededInstalls(directory);
   if (pruned > 0) {
-    console.log(
-      `install-servers: removed ${pruned} superseded binar${pruned === 1 ? "y" : "ies"}`,
-    );
+    console.log(`install-servers: removed ${supersededCount(pruned)}`);
   }
   console.log(
     "install-servers: restart the MCP servers (or reload the window) so clients pick these up",
+  );
+}
+
+const supersededCount = (n) => `${n} superseded binar${n === 1 ? "y" : "ies"}`;
+
+function reportPruned(pruned, directory) {
+  console.log(
+    pruned > 0
+      ? `install-servers: removed ${supersededCount(pruned)} from ${directory}`
+      : `install-servers: nothing to collect in ${directory}; anything still held by a running server is taken on a later run`,
   );
 }
 

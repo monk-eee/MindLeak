@@ -38,11 +38,19 @@
   `lodestar-mcp-1551270.exe` every server was actually running. The install
   succeeds, reports success, and the fleet goes on serving the older build —
   which is precisely what `stale_build` then reports, one layer too late to have
-  prevented it. The same directory accumulates what nothing collects: besides
-  the two current binaries and the two the fleet runs, eight further copies
-  remain as `.old` and `.superseded`, roughly 70 MB.
+  prevented it.
 
-  Left open because the fix is a decision, not a patch: the sha-suffixed copy is
-  an operator workaround for a lock the installer already solves by renaming, so
-  what needs settling is which name the registration should spell, and who is
-  allowed to change it.
+  **No longer true: nothing collects the copies left beside them.** This
+  fragment reported roughly 70 MB of `.old` and `.superseded` binaries that
+  nothing reclaimed; measured on the same day at eight copies and 68.2 MiB. The
+  cause was narrower than "nothing collects it": `pruneSupersededInstalls`
+  already existed, but it matched only `.old` — the name `installOne` writes —
+  while a hand deploy renames the live file to `.superseded` for the same lock
+  reason, and it ran only as a side effect of a full install, which a deploy
+  that copies a build in by hand never performs. It now takes both suffixes and
+  is reachable on its own as `node scripts/install-servers.mjs --prune`.
+
+  Left open because the remaining fix is a decision, not a patch: the
+  sha-suffixed copy is an operator workaround for a lock the installer already
+  solves by renaming, so what needs settling is which name the registration
+  should spell, and who is allowed to change it.
