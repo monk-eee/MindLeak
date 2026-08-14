@@ -136,6 +136,17 @@ impl LedgerStore {
         Ok(Self { client })
     }
 
+    /// Resolve the signing key an envelope claims, judged as of acceptance.
+    ///
+    /// On the store because the store owns the connection; the decision itself
+    /// lives in `signing_keys` and is pure.
+    pub async fn resolve_signing_key(
+        &self,
+        binding: &crate::signing_keys::EnvelopeBinding<'_>,
+    ) -> Result<crate::signing_keys::KeyResolution, crate::signing_keys::SigningKeyError> {
+        crate::signing_keys::resolve(&self.client, binding).await
+    }
+
     /// The transaction ADR-0086 clauses 4, 5, 6 and 11 describe: lock the
     /// stream head, check the producer sequence, verify the digest, append at
     /// most one record, create its receipt, and advance the head — all before
