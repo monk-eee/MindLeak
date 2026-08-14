@@ -4,7 +4,9 @@
 // updates at a time. Every other behaviour exists to stop that invariant from
 // wedging the queue.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   checksFailing,
@@ -13,6 +15,8 @@ import {
   isQueued,
   nextAction,
   queueOrder,
+  sweepAnnouncement,
+  sweepArgs,
 } from "./delivery-queue.mjs";
 
 const NOW = Date.parse("2026-07-28T12:00:00Z");
@@ -387,4 +391,53 @@ test("effectiveMergeState leaves every non-DIRTY status untouched", () => {
       status,
     );
   }
+});
+
+// --- the sweep runs in a fresh process ------------------------------------
+
+test("the watcher never forces a sweep, and only deletes when applying", () => {
+  // `--if-due` is what keeps the cadence the sweep persists; without it every
+  // 60-second tick would force a full disk walk. `--apply` must track the
+  // queue's own mode, or a --dry-run watcher deletes for real.
+  assert.deepStrictEqual(sweepArgs(true, "S"), ["S", "--if-due", "--apply"]);
+  assert.deepStrictEqual(sweepArgs(false, "S"), ["S", "--if-due"]);
+});
+
+test("delivery-queue does not import the rules that decide what is deleted", () => {
+  // Regression, and the reason this task exists. Node loads a module once at
+  // startup and never re-reads it, so an imported `sweepIfDue` in a process
+  // that runs for days keeps deleting by the rules it booted with. Measured
+  // 2026-08-13: a day-old watcher deleted the fleet host's node_modules that a
+  // merged fix had taught the sweep to spare. Spawning is the fix; importing
+  // again would silently reinstate the defect, so the import is what is banned.
+  const source = readFileSync(
+    fileURLToPath(new URL("./delivery-queue.mjs", import.meta.url)),
+    "utf8",
+  );
+  const imports = source.match(/^import[\s\S]*?from\s+"[^"]+";$/gm) ?? [];
+  assert.deepStrictEqual(
+    imports.filter((line) => line.includes("artefact-sweep")),
+    [],
+  );
+});
+
+test("a repeated sweep refusal is said once, not on every tick", () => {
+  // A refused sweep never records a run, so it refuses again every tick. Said
+  // each time, a stale-checkout refusal is 60 identical lines an hour.
+  const stale = "artefact-sweep: nothing done (stale checkout: X differs)";
+  assert.equal(sweepAnnouncement(stale, null), stale);
+  assert.equal(sweepAnnouncement(stale, stale), null);
+});
+
+test("a sweep result that changed is always said", () => {
+  const first = "artefact-sweep: reclaimed 1.00 GiB across 2 directories";
+  const second = "artefact-sweep: reclaimed 3.00 GiB across 4 directories";
+  assert.equal(sweepAnnouncement(second, first), second);
+});
+
+test("a silent sweep says nothing at all", () => {
+  // `--if-due` prints nothing when the sweep is not due, which is almost every
+  // call. Whitespace must not read as news.
+  assert.equal(sweepAnnouncement("", null), null);
+  assert.equal(sweepAnnouncement("\n  \n", null), null);
 });
