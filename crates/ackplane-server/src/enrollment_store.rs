@@ -9,8 +9,10 @@ use thiserror::Error;
 use crate::enrollment::{
     public_key_fingerprint, verify_activation_proof, ActivationProofBinding, EnrollmentState,
 };
+use crate::signing_keys::{self, SigningKeyRecord};
 
 const MIGRATION: &str = include_str!("../migrations/0003_enrollment.sql");
+const SIGNING_KEY_MIGRATION: &str = include_str!("../migrations/0004_signing_keys.sql");
 pub const ACTIVATION_CHALLENGE_LIFETIME: Duration = Duration::from_secs(300);
 
 /// Immutable information a node presents when requesting enrollment.
@@ -108,6 +110,8 @@ pub enum EnrollmentStoreError {
     InvalidProof { request_id: String },
     #[error("enrollment database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("registering the activated signing key failed: {0}")]
+    SigningKey(#[from] crate::signing_keys::SigningKeyError),
     #[error("enrollment request contains an unknown stored state {value}")]
     UnknownState { value: i16 },
 }
@@ -127,6 +131,7 @@ impl EnrollmentStore {
             }
         });
         client.batch_execute(MIGRATION).await?;
+        client.batch_execute(SIGNING_KEY_MIGRATION).await?;
         Ok(Self { client })
     }
 
@@ -419,6 +424,7 @@ impl EnrollmentStore {
         &mut self,
         activation: &EnrollmentActivation,
         enrollment_receipt_id: &str,
+        signing_key_id: &str,
         now: SystemTime,
     ) -> Result<EnrollmentActivationResult, EnrollmentStoreError> {
         let request = &activation.request;
@@ -592,6 +598,22 @@ impl EnrollmentStore {
                 ],
             )
             .await?;
+        // Same transaction as the receipt: a node that is activated but whose
+        // key nothing can resolve would sign records no one could verify.
+        signing_keys::register(
+            &transaction,
+            &SigningKeyRecord {
+                signing_key_id: signing_key_id.to_owned(),
+                tenant_id: request.tenant_id.clone(),
+                repository_id: request.repository_id.clone(),
+                node_id: request.proposed_node_id.clone(),
+                public_key,
+                public_key_fingerprint: request.public_key_fingerprint.clone(),
+                activated_at: now,
+                expires_at: None,
+            },
+        )
+        .await?;
         transaction.commit().await?;
 
         Ok(EnrollmentActivationResult {
@@ -851,11 +873,16 @@ mod tests {
             signature: signature.to_bytes().to_vec(),
         };
         let first = store
-            .activate(&activation, "receipt-original", now)
+            .activate(&activation, "receipt-original", "signing-key-original", now)
             .await
             .expect("valid proof activates enrollment");
         let replay = store
-            .activate(&activation, "receipt-replay-must-not-persist", now)
+            .activate(
+                &activation,
+                "receipt-replay-must-not-persist",
+                "signing-key-replay-must-not-persist",
+                now,
+            )
             .await
             .expect("exact valid replay returns durable receipt");
 
