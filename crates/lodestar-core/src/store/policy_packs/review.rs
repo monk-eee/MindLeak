@@ -143,6 +143,10 @@ impl LodestarStore {
                 waivable: false,
                 waiver_authority: None,
                 origin: ClauseOrigin::Pack,
+                source_system: None,
+                external_id: None,
+                source_ref: None,
+                source_digest: None,
             };
             insert_goal_on(&transaction, &materialized)?;
             transaction.execute(

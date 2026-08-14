@@ -178,6 +178,10 @@ mod tests {
             waivable,
             waiver_authority: authority.map(|a| a.to_string()),
             origin: ClauseOrigin::Local,
+            source_system: None,
+            external_id: None,
+            source_ref: None,
+            source_digest: None,
         }
     }
 

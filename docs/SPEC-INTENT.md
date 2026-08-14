@@ -144,11 +144,24 @@ Durable and versioned. **Never decays.**
 | `parent_id` | optional — goal hierarchy |
 | `superseded_by` | id of the goal version that replaced this one |
 | `created_at` | unix seconds |
+| `source_system` / `external_id` | optional external provenance identity; unique together only when both are present |
+| `source_ref` / `source_digest` | optional caller-supplied source location and content identity |
 
 `constraint` / `invariant` goals are what Conformance checks against (e.g. an
 `invariant` mirroring "zero-token write path"). Superseding is the **only** way
 intent changes — an explicit, attributed, auditable version bump, never silent
 drift. That audit trail *is* the anti-dilution mechanism.
+
+### Structured external intent import
+
+`constitution_define(action="import")` accepts structured records supplied by
+the caller; Lodestar never scans or parses arbitrary Markdown. Every record
+names its external id, explicit kind, title, statement, status, source reference,
+and digest. Only accepted records create active goals. Proposed, rejected, and
+unknown records are reported as skipped; an identical external identity and
+digest is unchanged; a changed digest is a conflict and preserves stored intent.
+Malformed batches fail transactionally, and records omitted from a later import
+are never retired or deleted.
 
 ### Task (the Executive)
 
@@ -436,12 +449,21 @@ Caller-selected `agent`/`agent_id` values are not part of the public schema.
 
 1. `constitution_define(action="goal", title, statement, kind, parent_id?)` →
   an active `Goal` carrying its `id`.
-2. `supersede_goal(goal_id, new_statement, reason)` → new `goal_id` (version bump).
-3. `constitution_query(action="active")` → the authoritative active goals and
+2. `constitution_define(action="import", source_system, records[])` imports
+  caller-supplied structured ADR records. Each record carries `external_id`,
+  `kind`, `title`, `statement`, `status`, `source_ref`, and `source_digest`.
+  Lodestar does not scan repositories or parse arbitrary Markdown. Identity is
+  `(source_system, external_id)`: an accepted unseen record creates an active,
+  provenance-bearing goal; an identical digest is unchanged; a changed digest
+  reports a conflict without mutation; and proposed, rejected, or unknown
+  records are skipped. Omission from a later import never deletes or retires a
+  goal. The whole batch is rejected without writes when malformed.
+3. `supersede_goal(goal_id, new_statement, reason)` → new `goal_id` (version bump).
+4. `constitution_query(action="active")` → the authoritative active goals and
   constraints an agent reads **before acting**, including an empty list for a
   repository where none have been seeded.
-4. `link_goal_to_artifact(goal_id, node_ids[], mode="governed")` → the seam to MindLeak.
-5. `export_constitution(path?)` → write a committed, human-reviewable markdown
+5. `link_goal_to_artifact(goal_id, node_ids[], mode="governed")` → the seam to MindLeak.
+6. `export_constitution(path?)` → write a committed, human-reviewable markdown
    snapshot (durability + PR review without any network infra).
 
 **Executive**

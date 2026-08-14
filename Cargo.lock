@@ -4,14 +4,14 @@ version = 3
 
 [[package]]
 name = "ackplane-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "ackplane-protocol"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
@@ -21,7 +21,7 @@ dependencies = [
 
 [[package]]
 name = "ackplane-server"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "ackplane-protocol",
  "ed25519-dalek",
@@ -884,7 +884,7 @@ dependencies = [
 
 [[package]]
 name = "lodestar-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "globset",
  "mindleak-core",
@@ -901,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "lodestar-mcp"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "ackplane-core",
  "anyhow",
@@ -957,7 +957,7 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "mindleak-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "mindleak-model",
  "mindleak-storage",
@@ -977,7 +977,7 @@ dependencies = [
 
 [[package]]
 name = "mindleak-mcp"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "ackplane-core",
  "anyhow",
@@ -992,7 +992,7 @@ dependencies = [
 
 [[package]]
 name = "mindleak-model"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -1002,7 +1002,7 @@ dependencies = [
 
 [[package]]
 name = "mindleak-session"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -1011,7 +1011,7 @@ dependencies = [
 
 [[package]]
 name = "mindleak-storage"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "rusqlite",
  "serde",

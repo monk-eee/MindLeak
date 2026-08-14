@@ -170,6 +170,10 @@ mod tests {
             waivable: false,
             waiver_authority: None,
             origin: ClauseOrigin::Local,
+            source_system: None,
+            external_id: None,
+            source_ref: None,
+            source_digest: None,
         }
     }
 
