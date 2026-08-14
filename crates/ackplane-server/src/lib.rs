@@ -37,10 +37,18 @@ const LISTEN_ENV: &str = "ACKPLANE_LISTEN";
 const DURABILITY_ENV: &str = "ACKPLANE_DURABILITY";
 /// The synchronous standbys a `quorum_durable` claim rests on.
 const SYNCHRONOUS_STANDBYS_ENV: &str = "ACKPLANE_SYNCHRONOUS_STANDBYS";
+/// The number of event batches a node may have awaiting acknowledgement.
+const MAX_IN_FLIGHT_BATCHES_ENV: &str = "ACKPLANE_MAX_IN_FLIGHT_BATCHES";
+/// The largest encoded event batch a node may send.
+const MAX_BATCH_BYTES_ENV: &str = "ACKPLANE_MAX_BATCH_BYTES";
 
 /// A development deployment binds here, so a misconfigured server is reachable
 /// from the machine that started it and nowhere else.
 const DEFAULT_LISTEN: &str = "127.0.0.1:8443";
+/// A node may queue at most this many unacknowledged batches by default.
+pub const DEFAULT_MAX_IN_FLIGHT_BATCHES: u32 = 16;
+/// A node may send at most one mebibyte in a batch by default.
+pub const DEFAULT_MAX_BATCH_BYTES: u32 = 1_048_576;
 
 /// What a deployment is entitled to say about the durability of an
 /// acknowledgement (ADR-0086 clause 12).
@@ -91,6 +99,8 @@ pub struct ServerConfig {
     /// places it would leak are the banner and a debug dump.
     database_url: String,
     pub durability: DurabilityProfile,
+    pub max_in_flight_batches: u32,
+    pub max_batch_bytes: u32,
 }
 
 impl fmt::Debug for ServerConfig {
@@ -99,6 +109,8 @@ impl fmt::Debug for ServerConfig {
             .field("listen", &self.listen)
             .field("database_url", &"<redacted>")
             .field("durability", &self.durability)
+            .field("max_in_flight_batches", &self.max_in_flight_batches)
+            .field("max_batch_bytes", &self.max_batch_bytes)
             .finish()
     }
 }
@@ -142,10 +154,23 @@ impl ServerConfig {
             Some(other) => return Err(ConfigError::UnknownDurability(other.to_string())),
         };
 
+        let max_in_flight_batches = positive_limit(
+            value(MAX_IN_FLIGHT_BATCHES_ENV),
+            MAX_IN_FLIGHT_BATCHES_ENV,
+            DEFAULT_MAX_IN_FLIGHT_BATCHES,
+        )?;
+        let max_batch_bytes = positive_limit(
+            value(MAX_BATCH_BYTES_ENV),
+            MAX_BATCH_BYTES_ENV,
+            DEFAULT_MAX_BATCH_BYTES,
+        )?;
+
         Ok(Self {
             listen,
             database_url,
             durability,
+            max_in_flight_batches,
+            max_batch_bytes,
         })
     }
 
@@ -191,6 +216,26 @@ pub enum ConfigError {
          overstating what it can promise"
     )]
     UnknownDurability(String),
+    #[error("{variable} must be a positive unsigned integer, got `{value}`")]
+    InvalidLimit {
+        variable: &'static str,
+        value: String,
+    },
+}
+
+fn positive_limit(
+    value: Option<String>,
+    variable: &'static str,
+    default: u32,
+) -> Result<u32, ConfigError> {
+    match value {
+        None => Ok(default),
+        Some(value) => value
+            .parse::<u32>()
+            .ok()
+            .filter(|limit| *limit > 0)
+            .ok_or(ConfigError::InvalidLimit { variable, value }),
+    }
 }
 
 #[cfg(test)]
@@ -232,6 +277,38 @@ mod tests {
 
         assert_eq!(config.listen, "127.0.0.1:8443");
         assert_eq!(config.durability, DurabilityProfile::SingleNode);
+        assert_eq!(config.max_in_flight_batches, DEFAULT_MAX_IN_FLIGHT_BATCHES);
+        assert_eq!(config.max_batch_bytes, DEFAULT_MAX_BATCH_BYTES);
+    }
+
+    #[test]
+    fn flow_control_limits_are_resolved_from_explicit_deployment_configuration() {
+        let config = ServerConfig::resolve(env(&[
+            (DATABASE_URL_ENV, "postgres://dev@localhost/ackplane"),
+            (MAX_IN_FLIGHT_BATCHES_ENV, "7"),
+            (MAX_BATCH_BYTES_ENV, "8192"),
+        ]))
+        .unwrap();
+
+        assert_eq!(config.max_in_flight_batches, 7);
+        assert_eq!(config.max_batch_bytes, 8_192);
+    }
+
+    #[test]
+    fn an_invalid_flow_control_limit_is_refused_rather_than_silently_disabled() {
+        let error = ServerConfig::resolve(env(&[
+            (DATABASE_URL_ENV, "postgres://dev@localhost/ackplane"),
+            (MAX_IN_FLIGHT_BATCHES_ENV, "0"),
+        ]))
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            ConfigError::InvalidLimit {
+                variable: MAX_IN_FLIGHT_BATCHES_ENV,
+                value: "0".to_string(),
+            }
+        );
     }
 
     /// ADR-0086 clause 12: a `quorum_durable` claim means an acknowledged commit

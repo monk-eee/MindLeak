@@ -3,7 +3,7 @@
 use std::{net::SocketAddr, process::ExitCode};
 
 use ackplane_protocol::v1::{
-    node_enrollment_service_server::NodeEnrollmentServiceServer,
+    self, node_enrollment_service_server::NodeEnrollmentServiceServer,
     node_sync_service_server::NodeSyncServiceServer,
 };
 use ackplane_server::{
@@ -46,7 +46,13 @@ async fn main() -> ExitCode {
                 "ackplane-server: serving NodeSyncService.Synchronize and NodeEnrollmentService"
             );
             match tonic::transport::Server::builder()
-                .add_service(NodeSyncServiceServer::new(NodeSyncService::new(ledger)))
+                .add_service(NodeSyncServiceServer::new(NodeSyncService::new(
+                    ledger,
+                    v1::FlowControl {
+                        max_in_flight_batches: config.max_in_flight_batches,
+                        max_batch_bytes: config.max_batch_bytes,
+                    },
+                )))
                 .add_service(NodeEnrollmentServiceServer::new(
                     NodeEnrollmentService::new(enrollment_store),
                 ))
