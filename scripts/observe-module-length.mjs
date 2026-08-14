@@ -82,7 +82,8 @@ if (observation.status === "fail") {
   console.log(
     "observe-module-length: the count rose. Split the module, or accept a new baseline\n" +
       "  with accept_ratchet_baseline if cohesion genuinely demands it stays whole —\n" +
-      "  an accepted baseline is attributed, which is how the exception gets recorded.",
+      "  it requires a reason as well as your name, and that reason is the record of\n" +
+      "  the exception. Accept it for someone else's module and it is your name on it.",
   );
   for (const m of over) {
     console.log(`    ${String(m.lines).padStart(5)}  crates/${m.path}`);

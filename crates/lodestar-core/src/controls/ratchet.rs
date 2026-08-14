@@ -15,16 +15,24 @@ pub enum RatchetDirection {
     NonIncreasing,
 }
 
-/// The value a ratchet compares against, and who accepted it.
+/// The value a ratchet compares against, who accepted it, and why.
 ///
 /// A baseline is attributed on purpose. SPEC-CONSTITUTION §4 lists "whether the
 /// baseline was trustworthy" among the questions a ratchet cannot answer about
-/// itself, so the answer has to arrive from outside the mechanism.
+/// itself, so the answer has to arrive from outside the mechanism. A signature
+/// is not that answer: knowing who moved the number says nothing about whether
+/// moving it was justified, which is the question §4 actually asks.
+///
+/// `reason` is optional only because baselines accepted before this field
+/// existed genuinely have none. `None` records that honestly; it is not a
+/// permitted value for a new acceptance, which `with_reviewed_baseline`
+/// refuses.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RatchetBaseline {
     pub value: f64,
     pub reviewed_by: String,
     pub reviewed_at: i64,
+    pub reason: Option<String>,
 }
 
 /// A reviewed ratchet: one metric, one direction, one attributed baseline.
@@ -153,7 +161,7 @@ impl Ratchet {
         })
     }
 
-    /// Accept a new baseline. Attributed, and it bumps the control version.
+    /// Accept a new baseline. Attributed, justified, and it bumps the version.
     ///
     /// A ratchet never does this to itself. A mechanism that adopts whatever it
     /// last measured launders a regression into the new normal — one bad run and
@@ -165,11 +173,17 @@ impl Ratchet {
         &self,
         value: f64,
         reviewed_by: &str,
+        reason: &str,
         reviewed_at: i64,
     ) -> Result<Ratchet> {
         if reviewed_by.trim().is_empty() {
             return Err(LodestarError::Invalid(
                 "a ratchet baseline requires an attributed reviewer".to_string(),
+            ));
+        }
+        if reason.trim().is_empty() {
+            return Err(LodestarError::Invalid(
+                "a ratchet baseline requires a reason: who moved the number does not say whether moving it was justified".to_string(),
             ));
         }
         let value = finite(value, "ratchet baseline")?;
@@ -178,6 +192,7 @@ impl Ratchet {
                 value,
                 reviewed_by: reviewed_by.to_string(),
                 reviewed_at,
+                reason: Some(reason.trim().to_string()),
             }),
             version: self.version + 1,
             ..self.clone()
