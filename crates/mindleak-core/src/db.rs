@@ -5,11 +5,12 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, ErrorCode};
 use std::time::{Duration, Instant};
 
-use crate::error::Result;
+use crate::error::{MindLeakError, Result};
 
 const SCHEMA: &str = include_str!("schema.sql");
 const WAL_RETRY_DELAY: Duration = Duration::from_millis(25);
-const WAL_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
+const OPEN_BUSY_BUDGET: Duration = Duration::from_secs(5);
+const DEFAULT_BUSY_TIMEOUT_MS: i64 = 5000;
 
 /// Open (or create) a MindLeak database at `path`, apply the schema, and register
 /// the `effective_weight` scalar SQL function used by graph queries.
@@ -27,26 +28,77 @@ pub fn open_in_memory() -> Result<Connection> {
 }
 
 fn configure(conn: &Connection) -> Result<()> {
-    conn.pragma_update(None, "busy_timeout", 5000)?;
-    enable_wal(conn)?;
+    // One budget for the whole open. Many agents share one repository database,
+    // so losing a lock race here is ordinary operation rather than a test
+    // contrivance — but per-step budgets would add up into a wait no caller
+    // asked for, which `held_lock_does_not_multiply_wal_retry_timeout` forbids.
+    let deadline = Instant::now() + OPEN_BUSY_BUDGET;
+    retry_while_busy(conn, deadline, "enabling WAL journal mode", || {
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(MindLeakError::from)
+    })?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    conn.execute_batch(SCHEMA)?;
-    migrate(conn)?;
+    retry_while_busy(conn, deadline, "applying the schema", || {
+        conn.execute_batch(SCHEMA).map_err(MindLeakError::from)
+    })?;
+    // Safe to re-run: every migration step is conditional, and a busy attempt
+    // rolls its transaction back before returning.
+    retry_while_busy(conn, deadline, "migrating the schema", || migrate(conn))?;
     register_functions(conn)?;
     Ok(())
 }
 
-fn enable_wal(conn: &Connection) -> Result<()> {
-    let deadline = Instant::now() + WAL_RETRY_TIMEOUT;
+/// Retry `operation` while SQLite reports the database busy, until `deadline`.
+///
+/// `busy_timeout` covers waits inside a statement, but not every step honours
+/// it — `PRAGMA journal_mode = WAL` needs an exclusive lock and can refuse
+/// outright, which is why this retry existed for that call alone. The failure it
+/// produced named neither the step nor the cause, so a CI log said only
+/// "database is locked" and the next reader had to rediscover all of this.
+///
+/// Each attempt is given only the budget that remains. Checking the deadline
+/// between attempts is not enough: SQLite's own wait is not bounded by ours, so
+/// an attempt starting just before the deadline could block a further full
+/// timeout and overshoot by that much — the very multiplication
+/// `held_lock_does_not_multiply_wal_retry_timeout` exists to forbid.
+fn retry_while_busy<T>(
+    conn: &Connection,
+    deadline: Instant,
+    step: &'static str,
+    mut operation: impl FnMut() -> Result<T>,
+) -> Result<T> {
     loop {
-        match conn.pragma_update(None, "journal_mode", "WAL") {
-            Ok(()) => return Ok(()),
-            Err(error) if is_busy(&error) && Instant::now() < deadline => {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(busy_step(step));
+        }
+        conn.pragma_update(None, "busy_timeout", remaining.as_millis() as i64)?;
+        match operation() {
+            Ok(value) => {
+                conn.pragma_update(None, "busy_timeout", DEFAULT_BUSY_TIMEOUT_MS)?;
+                return Ok(value);
+            }
+            Err(error) if is_busy_error(&error) => {
+                if Instant::now() >= deadline {
+                    return Err(busy_step(step));
+                }
                 std::thread::sleep(WAL_RETRY_DELAY);
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(error),
         }
     }
+}
+
+fn busy_step(step: &'static str) -> MindLeakError {
+    MindLeakError::Busy(format!(
+        "{step} was still locked after {}s; another process is opening or \
+         migrating this database",
+        OPEN_BUSY_BUDGET.as_secs()
+    ))
+}
+
+fn is_busy_error(error: &MindLeakError) -> bool {
+    matches!(error, MindLeakError::Sqlite(error) if is_busy(error))
 }
 
 fn is_busy(error: &rusqlite::Error) -> bool {
@@ -218,8 +270,115 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::sync::{Arc, Barrier};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn busy() -> MindLeakError {
+        MindLeakError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(5),
+            Some("database is locked".into()),
+        ))
+    }
+
+    /// Raw, deliberately not through `open_in_memory`, which would itself run
+    /// the retry policy under test.
+    fn scratch() -> Connection {
+        Connection::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn a_step_that_is_not_busy_runs_once_and_returns_its_value() {
+        let conn = scratch();
+        let attempts = Cell::new(0);
+
+        let value = retry_while_busy(&conn, Instant::now() + OPEN_BUSY_BUDGET, "step", || {
+            attempts.set(attempts.get() + 1);
+            Ok(7)
+        })
+        .unwrap();
+
+        assert_eq!((value, attempts.get()), (7, 1));
+    }
+
+    #[test]
+    fn a_busy_step_is_retried_until_the_lock_clears() {
+        let conn = scratch();
+        let attempts = Cell::new(0);
+
+        let value = retry_while_busy(&conn, Instant::now() + OPEN_BUSY_BUDGET, "step", || {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() < 3 {
+                return Err(busy());
+            }
+            Ok("opened")
+        })
+        .unwrap();
+
+        assert_eq!((value, attempts.get()), ("opened", 3));
+    }
+
+    /// The failure this replaces said only "database is locked", so a CI log
+    /// named neither which of the open steps lost the race nor that a peer
+    /// process held the file.
+    #[test]
+    fn an_exhausted_budget_names_the_step_and_the_cause() {
+        let conn = scratch();
+
+        let error =
+            retry_while_busy::<()>(
+                &conn,
+                Instant::now(),
+                "migrating the schema",
+                || Err(busy()),
+            )
+            .unwrap_err();
+
+        let MindLeakError::Busy(message) = error else {
+            panic!("a busy step must report Busy, not a bare sqlite passthrough: {error:?}");
+        };
+        assert!(
+            message.contains("migrating the schema") && message.contains("another process"),
+            "unhelpful busy message: {message}"
+        );
+    }
+
+    /// Checking the deadline only between attempts lets one SQLite wait overrun
+    /// it by a whole busy timeout, which is how a "bounded" window doubles.
+    #[test]
+    fn no_attempt_is_allowed_to_outlive_the_deadline() {
+        let conn = scratch();
+        let budget = Duration::from_millis(200);
+        let started = Instant::now();
+
+        let error =
+            retry_while_busy::<()>(&conn, started + budget, "step", || Err(busy())).unwrap_err();
+
+        assert!(matches!(error, MindLeakError::Busy(_)));
+        let granted: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert!(
+            granted <= budget.as_millis() as i64,
+            "an attempt was granted {granted}ms against a {budget:?} budget"
+        );
+    }
+
+    #[test]
+    fn an_error_that_is_not_busy_is_returned_without_retrying() {
+        let conn = scratch();
+        let attempts = Cell::new(0);
+
+        let error =
+            retry_while_busy::<()>(&conn, Instant::now() + OPEN_BUSY_BUDGET, "step", || {
+                attempts.set(attempts.get() + 1);
+                Err(MindLeakError::InvalidArgument("no".into()))
+            })
+            .unwrap_err();
+
+        assert!(matches!(error, MindLeakError::InvalidArgument(_)));
+        assert_eq!(attempts.get(), 1, "a real error must not be retried");
+    }
 
     fn temp_db(tag: &str) -> String {
         let nanos = SystemTime::now()
