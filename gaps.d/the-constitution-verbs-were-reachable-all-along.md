@@ -1,61 +1,41 @@
-- **The constitution verbs were reachable all along; a tool profile made them
-  look missing, and the mistake reached an accepted ADR — OBSERVED 2026-08-13,
-  left OPEN.** `advertised_for` in `crates/lodestar-mcp/src/tools/mod.rs`
-  narrows `tools/list` to a 17-name `DEFAULT_PROFILE_TOOLS` allowlist under
-  ADR-0059. Dispatch is deliberately *not* narrowed, and the function's own
-  comment says so: "a specialist tool called by name still runs under the
-  default profile, so nothing the server can do becomes unreachable — it is
-  only no longer paid for up front."
+- **A narrowed `tools/list` does not say what it hides, so an absent tool is
+  indistinguishable from one that was never written — OBSERVED 2026-08-13,
+  still OPEN.** `advertised_for` in `crates/lodestar-mcp/src/tools/mod.rs`
+  filters the advertised surface down to `DEFAULT_PROFILE_TOOLS` under ADR-0059
+  and adds nothing beside it. Dispatch is deliberately *not* narrowed — the
+  function's own comment says "a specialist tool called by name still runs under
+  the default profile, so nothing the server can do becomes unreachable" — but
+  no part of the response tells a caller that, so an agent reading its own tool
+  list concludes the capability does not exist.
 
-  An agent that reads its own tool list therefore sees `advise` and
-  `governing_for_task` and no constitution verbs, and concludes the capability
-  does not exist. Measured under the default profile:
-
-  | Question | Answer |
-  |---|---|
-  | Does `tools/list` advertise `constitution_status` or `governing_goals`? | no |
-  | Does `tools/call constitution_status` answer? | yes — returned the live `constitution:v3` |
-  | Does `tools/call governing_goals` answer? | yes — returned `[]` for `ackplane-core` |
-
-  Both probes were read-only and mutated nothing. The verbs exist, dispatch,
-  and can be called by name today: `constitution_define` (which supersedes
-  `define_goal`), `supersede_goal`, `link_goal_to_artifact`,
-  `unlink_goal_from_artifact`, `governing_goals` and `constitution_query` in
-  `tools/constitution.rs`, plus the whole amendment lifecycle in
-  `tools/amendments.rs` — `propose_amendment`, `draft_clause`,
-  `complete_clause_contract`, `amend_constitution` (which promotes with an
-  attributed rationale and an explicit clause diff, superseding rather than
-  deleting) and `amendments` (the audit history, newest first, with each
-  rationale and stored diff).
-
-  The cost is what makes this worth a fragment rather than a note. The false
-  premise was written into ADR-0092 decision 5 — *"the Intent Plane exposes no
-  agent-reachable verb that defines a goal or binds code to one, so an agent
-  cannot adopt this even if it wanted to"* — and that ADR is now `Accepted` on
-  `main`, so the error is inside a constitutional record rather than beside it.
+  The cost has already been paid once. The false premise reached ADR-0092
+  decision 5 as *"the Intent Plane exposes no agent-reachable verb that defines
+  a goal or binds code to one, so an agent cannot adopt this even if it wanted
+  to"*, putting a factual error inside a record that was `Accepted` on `main`.
   It then authorised `task:6cd90c2d2b4f`, "Make an accepted ADR adoptable into
   the active constitution", whose acceptance describes append-only, auditable,
-  attributed adoption: clause for clause, the subsystem `amendments.rs` already
-  is. That task was blocked before anyone claimed it, so the rebuild did not
-  happen, but nothing structural stopped it — the board offered it as ordinary
-  open work.
+  attributed adoption — clause for clause, what `tools/amendments.rs` already
+  was. That task was blocked before anyone claimed it, but nothing structural
+  stopped it; the board offered it as ordinary open work.
 
-  What is genuinely unresolved is narrower and worth keeping: `amend_constitution`
-  takes a `rationale` but no `human` label distinct from the calling agent, so
-  the attributed-adoption shape ADR-0043 and ADR-0071 require may not be
-  expressible yet. That is the question to answer, not "write a constitution
-  API".
+  Everything that episode motivated is now repaired, and none of those repairs
+  is this gap: `constitution_define` and `constitution_query` are on the default
+  profile so a goal-less repository can bootstrap (PR #455), `amend_constitution`
+  requires an `approved_by` distinct from the calling agent (PR #441), ADR-0092
+  decision 5 carries its own correction (PR #443), and the Ackplane adoption
+  happened as `constitution:v4`. Each was a fix at one named site.
 
-  Left open because the two honest repairs are both human calls: correcting a
-  factual claim inside an `Accepted` ADR is an amendment under ADR-0043, and
-  performing the Ackplane adoption with the existing verbs is a constitutional
-  act. An agent surfacing them is the right move; an agent making them is not.
+  The general shape is untouched. `grant_waiver`, the design board, the policy
+  packs and the rest of the amendment lifecycle are still advertised nowhere by
+  default and still dispatch by name, so the next agent to look for one of them
+  can draw the same wrong conclusion. The fix, when it is wanted, is to make
+  absence legible rather than silent: have a narrowed `tools/list` state that
+  specialist tools exist and remain callable. Left open deliberately — it
+  changes a published response shape, so it wants a decision of its own rather
+  than a drive-by edit.
 
-  The narrow fix, if a mechanical one is wanted later, is to make absence
-  legible rather than silent: have `tools/list` under a narrowed profile say
-  that specialist tools exist and remain callable, so a reader cannot mistake
-  the advertisement for the capability. PORTABLE: an empty tool list is
-  evidence about what is advertised, never about what exists — a capability
-  behind a profile, a feature flag, or a stale client is indistinguishable from
-  one that was never written, and the cheap disambiguator is to call the verb
-  you believe is missing and read the source's aggregator.
+  PORTABLE: an empty tool list is evidence about what is advertised, never about
+  what exists — a capability behind a profile, a feature flag, or a stale client
+  is indistinguishable from one that was never written, and the cheap
+  disambiguator is to call the verb you believe is missing and read the source's
+  aggregator.
