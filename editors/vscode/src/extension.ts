@@ -14,6 +14,7 @@ import { McpClient } from "./mcpClient";
 import { ReadinessSnapshot, sessionAgentIdentity } from "./readiness";
 import { ReadinessController, RuntimeHealth } from "./readinessController";
 import { ReadinessViewProvider } from "./readinessViewProvider";
+import { RepositoryWorktrees } from "./repositoryWorktrees";
 import { TaskAllocationController } from "./taskAllocationController";
 import { TelemetryViewProvider } from "./telemetryViewProvider";
 import { TerminalCaptureConfig, TerminalSensor } from "./terminalSensor";
@@ -56,6 +57,7 @@ let designController: DesignBoardController | undefined;
 let evidenceBoard: EvidenceBoardViewProvider | undefined;
 let readinessView: ReadinessViewProvider | undefined;
 let readinessController: ReadinessController | undefined;
+let repositoryWorktrees: RepositoryWorktrees | undefined;
 let output: vscode.OutputChannel;
 let configuredAgentId = "vscode";
 const health: RuntimeHealth = {
@@ -80,6 +82,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   context.subscriptions.push(output);
 
   const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+  repositoryWorktrees = new RepositoryWorktrees(workspace);
   const config = vscode.workspace.getConfiguration("mindleak");
   const serverPath = resolveServerPath(
     config.get<string>("serverPath", "mindleak-mcp"),
@@ -585,6 +588,9 @@ async function onSave(doc: vscode.TextDocument): Promise<void> {
   if (!client?.isReady() || doc.uri.scheme !== "file") {
     return;
   }
+  if (!(await repositoryWorktrees?.contains(doc.uri.fsPath))) {
+    return;
+  }
   const sourcePath = serverFilePath(
     vscode.workspace.asRelativePath(doc.uri, false),
     doc.uri.fsPath
@@ -608,6 +614,9 @@ async function onSave(doc: vscode.TextDocument): Promise<void> {
 
 async function onDelete(uri: vscode.Uri): Promise<void> {
   if (!client?.isReady() || uri.scheme !== "file") {
+    return;
+  }
+  if (!(await repositoryWorktrees?.contains(uri.fsPath))) {
     return;
   }
   const sourcePath = serverFilePath(vscode.workspace.asRelativePath(uri, false), uri.fsPath);

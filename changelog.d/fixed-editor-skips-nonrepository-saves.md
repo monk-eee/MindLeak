@@ -1,0 +1,1 @@
+- Fixed the VS Code extension to ignore save and delete events outside the repository's registered worktrees, preventing unrelated files from entering workspace memory.
