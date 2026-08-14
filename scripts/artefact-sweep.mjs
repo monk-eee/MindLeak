@@ -456,15 +456,17 @@ export function describeSweep(result) {
   return skips ? `${head}\n${skips}${abandoned}` : `${head}${abandoned}`;
 }
 
-// The standalone diagnostic surface. The watcher is what makes this hygiene
-// continuous, so this exists to answer "what would it do, and why did it skip
-// that one" -- not as the mechanism. It reports by default for the same reason
-// `reclaim` does: no report can be un-deleted.
+// The command surface. The watcher drives this as a CHILD PROCESS rather than
+// importing it (see delivery-queue.mjs), so this is the mechanism as well as the
+// diagnostic. It reports by default for the same reason `reclaim` does: no
+// report can be un-deleted.
 //
-//   node scripts/artefact-sweep.mjs            report what is reclaimable
-//   node scripts/artefact-sweep.mjs --apply    delete it
+//   node scripts/artefact-sweep.mjs                     report what is reclaimable
+//   node scripts/artefact-sweep.mjs --apply             delete it
+//   node scripts/artefact-sweep.mjs --if-due [--apply]  obey the cadence (unattended)
 function main(argv) {
   const apply = argv.includes("--apply");
+  const ifDue = argv.includes("--if-due");
 
   // A run a person asked for is deliberate, so it ignores the cadence the
   // watcher observes. It still takes the common-dir lock, so a manual run and
@@ -475,10 +477,13 @@ function main(argv) {
       encoding: "utf8",
     }).trim(),
     apply,
-    force: true,
+    force: !ifDue,
   });
 
   if (!outcome.ran) {
+    // "not due" is the answer to almost every unattended call, so saying it
+    // would bury the refusals that need acting on under hours of noise.
+    if (ifDue && outcome.reason === "not due") return 0;
     console.log(`artefact-sweep: nothing done (${outcome.reason})`);
     return 0;
   }
