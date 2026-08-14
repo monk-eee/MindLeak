@@ -1,0 +1,1 @@
+- **Ackplane now advertises explicit node backpressure limits.** After accepting a node's Hello frame, the synchronization service sends configured in-flight batch and batch-byte bounds so the node can bound its unacknowledged queue before it publishes events.
