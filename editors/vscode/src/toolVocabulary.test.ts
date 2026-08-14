@@ -81,6 +81,8 @@ const DISCRIMINATORS: Record<string, { key: string; values: Set<string> }> = {
     key: "view",
     values: new Set([
       "board",
+      "doctor",
+      "rework",
       "next",
       "scope",
       "existing_work",

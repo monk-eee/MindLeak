@@ -8,6 +8,8 @@ import { WorkspaceChangeDetector } from "./changeDetector";
 import { DesignBoardController } from "./designBoardController";
 import { DesignBoardItem, DesignBoardViewProvider } from "./designBoardViewProvider";
 import { EvidenceBoardViewProvider, EvidenceNode } from "./evidenceBoardViewProvider";
+import { FleetController } from "./fleetController";
+import { FleetViewProvider } from "./fleetViewProvider";
 import { GitSensor } from "./gitSensor";
 import { GraphViewProvider } from "./graphViewProvider";
 import { McpClient } from "./mcpClient";
@@ -52,6 +54,8 @@ let telemetry: TelemetryViewProvider | undefined;
 let board: BoardViewProvider | undefined;
 let boardTree: vscode.TreeView<BoardItem> | undefined;
 let allocationController: TaskAllocationController | undefined;
+let fleetView: FleetViewProvider | undefined;
+let fleetController: FleetController | undefined;
 let designBoard: DesignBoardViewProvider | undefined;
 let designController: DesignBoardController | undefined;
 let evidenceBoard: EvidenceBoardViewProvider | undefined;
@@ -210,6 +214,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   }, telemetryRefreshMs);
   context.subscriptions.push({ dispose: () => clearInterval(telemetryTimer) });
 
+  fleetView = new FleetViewProvider(context.extensionUri, {
+    onReady: () => void fleetController?.refresh(),
+    onRefresh: () => void fleetController?.refresh(),
+    onAct: (verb, taskId, agentId) => void fleetController?.act(verb, taskId, agentId),
+    onOpenTask: (taskId) => void revealTask(taskId),
+  });
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(FleetViewProvider.viewType, fleetView)
+  );
+
   board = new BoardViewProvider(configuredAgentId);
   boardTree = vscode.window.createTreeView(BoardViewProvider.viewType, {
     treeDataProvider: board,
@@ -268,6 +282,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     (message) => output.appendLine(message),
     refreshBoard
   );
+  fleetController = new FleetController(
+    lodestar,
+    client,
+    fleetView,
+    configuredAgentId,
+    (message) => output.appendLine(message),
+    refreshBoard
+  );
+  // The pane polls only while visible: a fleet readout nobody is looking at is
+  // the request traffic that starves the idle maintenance worker.
+  const fleetTimer = setInterval(
+    () => {
+      if (fleetView?.isVisible()) {
+        void fleetController?.refresh();
+      }
+    },
+    Math.max(2, config.get<number>("fleetRefreshSecs", 5)) * 1000
+  );
+  context.subscriptions.push({ dispose: () => clearInterval(fleetTimer) });
   const adrWatcher = vscode.workspace.createFileSystemWatcher("**/docs/adr/*.md");
   context.subscriptions.push(
     adrWatcher,
@@ -380,6 +413,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
       readinessController?.refresh()
     ),
     vscode.commands.registerCommand("mindleak.refresh", () => refresh()),
+    vscode.commands.registerCommand("mindleak.fleet.refresh", () => fleetController?.refresh()),
     vscode.commands.registerCommand("mindleak.prune", () => prune()),
     vscode.commands.registerCommand("mindleak.reconcile", () => reconcileWorkspace()),
     vscode.commands.registerCommand("mindleak.export", () => exportSnapshot()),
@@ -765,6 +799,20 @@ async function resetMemory(): Promise<void> {
     await refresh();
   } catch (err) {
     vscode.window.showErrorMessage(`MindLeak reset failed: ${(err as Error).message}`);
+  }
+}
+
+/** Focus the board on one task, so a Fleet row can hand off to the fuller view. */
+async function revealTask(taskId: string): Promise<void> {
+  await refreshBoard();
+  const item = board?.find(taskId);
+  if (!item || !boardTree) {
+    return;
+  }
+  try {
+    await boardTree.reveal(item, { select: true, focus: true });
+  } catch {
+    // Revealing is a convenience; a tree that cannot reveal must not raise.
   }
 }
 
