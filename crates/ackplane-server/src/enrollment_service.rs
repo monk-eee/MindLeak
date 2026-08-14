@@ -90,11 +90,12 @@ impl v1::node_enrollment_service_server::NodeEnrollmentService for NodeEnrollmen
                 .map_err(Status::invalid_argument)?,
         };
         let receipt_id = new_receipt_id().map_err(Status::internal)?;
+        let signing_key_id = new_signing_key_id().map_err(Status::internal)?;
         let result = self
             .store
             .lock()
             .await
-            .activate(&activation, &receipt_id, SystemTime::now())
+            .activate(&activation, &receipt_id, &signing_key_id, SystemTime::now())
             .await
             .map_err(map_store_error)?;
         Ok(Response::new(v1::EnrollmentActivationResult {
@@ -222,6 +223,21 @@ fn new_receipt_id() -> Result<String, String> {
     Ok(format!("enrollment-{encoded}"))
 }
 
+/// Opaque, and deliberately not derived from the key or its fingerprint: this
+/// names one binding of a key to a node for one lifetime, so re-enrolling the
+/// same key material must produce a different id rather than collide with the
+/// history of the earlier binding.
+fn new_signing_key_id() -> Result<String, String> {
+    let mut bytes = [0_u8; 16];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|error| format!("could not generate signing key id: {error}"))?;
+    let encoded = bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!("signing-key-{encoded}"))
+}
+
 fn map_store_error(error: EnrollmentStoreError) -> Status {
     match error {
         EnrollmentStoreError::RequestConflict { .. } => Status::already_exists(error.to_string()),
@@ -239,9 +255,9 @@ fn map_store_error(error: EnrollmentStoreError) -> Status {
         | EnrollmentStoreError::ChallengeConsumed { .. } => {
             Status::failed_precondition(error.to_string())
         }
-        EnrollmentStoreError::Database(_) | EnrollmentStoreError::UnknownState { .. } => {
-            Status::internal(error.to_string())
-        }
+        EnrollmentStoreError::Database(_)
+        | EnrollmentStoreError::SigningKey(_)
+        | EnrollmentStoreError::UnknownState { .. } => Status::internal(error.to_string()),
     }
 }
 
