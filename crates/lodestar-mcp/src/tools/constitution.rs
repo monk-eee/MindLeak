@@ -8,7 +8,7 @@ pub(super) fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "constitution_define",
-            "description": "Write or rewrite constitutional intent (ADR-0059). `action` names the act: `goal` adds a durable objective, constraint or invariant; `import` records the caller-supplied `records` of one `source_system`, never scanning Markdown; `supersede` replaces one with a new active version, retiring rather than deleting the old, which is the only way intent changes; `bind` and `unbind` attach and prune the artefacts a clause governs, making `touched_task_goal` answerable. Read the constitution before acting.",
+            "description": "Write or rewrite constitutional intent (ADR-0059). `action` names the act: `goal` adds a durable objective, constraint or invariant; `import` records caller-supplied `records` for one `source_system`, never scanning Markdown; `supersede` retires a clause and replaces it, the only way intent changes; `bind` and `unbind` attach and prune the artefacts a clause governs. Read the constitution before acting.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -23,7 +23,18 @@ pub(super) fn definitions() -> Vec<Value> {
                     "node_ids": { "type": "array", "items": { "type": "string" }, "description": "Required for bind and unbind." },
                     "mode": { "type": "string", "enum": ["governed", "forbid_change"], "description": "Optional for bind; defaults to governed." },
                     "source_system": { "type": "string" },
-                    "records": { "type": "array" }
+                    "records": {
+                        "type": "array",
+                        // `items` is not decoration: a strict client validates
+                        // the advertised schema before it will load the server,
+                        // so a bare `{"type": "array"}` here rejected every
+                        // Lodestar tool, not just this one. The per-field record
+                        // contract stays in `ExternalGoalRecord`, which answers
+                        // a bad import by naming the offending field — the
+                        // default profile has no token budget left to advertise
+                        // it twice (see gaps.d/lodestar-default-profile-token-budget-saturated.md).
+                        "items": { "type": "object" }
+                    }
                 },
                 "required": ["action"]
             }

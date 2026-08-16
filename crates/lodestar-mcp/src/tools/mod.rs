@@ -2060,6 +2060,49 @@ mod tests {
         assert!(create["inputSchema"]["properties"]["blocked_by"].is_object());
     }
 
+    /// Regression: `constitution_define` advertised `records` as a bare
+    /// `{"type": "array"}` with no `items`. Strict MCP clients validate the
+    /// advertised schema before they will load a server, so that one omission
+    /// rejected the whole Lodestar tool surface with "tool parameters array
+    /// type must have items" — every tool became uncallable, not just the one
+    /// with the defect. The fix declares the structured record shape; this test
+    /// holds the rule for every array in every advertised schema, because the
+    /// next omission would be just as total and just as easy to miss.
+    #[test]
+    fn every_advertised_array_schema_declares_its_items() {
+        fn walk(schema: &Value, path: &str, failures: &mut Vec<String>) {
+            match schema {
+                Value::Object(fields) => {
+                    if fields.get("type").is_some_and(|ty| ty == "array")
+                        && !fields.contains_key("items")
+                    {
+                        failures.push(path.to_string());
+                    }
+                    for (key, value) in fields {
+                        walk(value, &format!("{path}.{key}"), failures);
+                    }
+                }
+                Value::Array(entries) => {
+                    for (index, value) in entries.iter().enumerate() {
+                        walk(value, &format!("{path}[{index}]"), failures);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut failures = Vec::new();
+        for tool in list() {
+            let name = tool["name"].as_str().unwrap_or("<unnamed>").to_string();
+            walk(&tool["inputSchema"], &name, &mut failures);
+        }
+
+        assert!(
+            failures.is_empty(),
+            "array schema without `items` rejects the whole server: {failures:?}"
+        );
+    }
+
     #[test]
     fn tools_list_exposes_no_duplicate_names() {
         // Regression: ADR-0022 copy-pasted the `consolidate` definition, so
