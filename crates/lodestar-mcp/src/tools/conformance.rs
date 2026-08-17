@@ -52,7 +52,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "advise",
-            "description": "Ask what governs an intended change BEFORE acting (ADR-0029). Given the node ids (artifact:/symbol:) you are about to change, any workflow: scopes for a procedural action you are about to take, and an optional covering task, returns the active constitutional clauses governing that scope plus one proportional disposition: advise (proceed, honour any in-scope clauses) / review (would drift outside a covering task, or the action is governed by a clause that can hard-block) / block (a forbid_change lock) / needs_human (no constitution adopted, or ambiguous). Evidence-free and state-free: it records no verdict and never gates a claim. Consult it at claim time and before editing governed code; retrospective check_conformance at complete_task remains the backstop.",
+            "description": "Pre-edit advice for artifact:/symbol: nodes: active clauses, up to three matching lessons, and an advise/review/block/needs_human disposition. Read-only; never gates a claim.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -220,6 +220,17 @@ fn render_advice(advice: &Advice) -> String {
                 clause.goal.kind.as_str(),
                 clause.mode.as_str(),
                 clause.node_id
+            ));
+        }
+    }
+    if !advice.known_context.is_empty() {
+        markdown.push_str("\n\n**Known context**\n");
+        for knowledge in &advice.known_context {
+            markdown.push_str(&format!(
+                "\n- {} (`{}`; {})",
+                knowledge.statement,
+                knowledge.id,
+                knowledge.matched_nodes.join(", ")
             ));
         }
     }
@@ -482,6 +493,13 @@ mod tests {
                 ArtifactBindingMode::Governed,
             )
             .unwrap();
+        engine
+            .record_knowledge(
+                "Payment parsing rejects unsigned amounts.",
+                &json!({ "nodes": [node.clone()] }).to_string(),
+                None,
+            )
+            .unwrap();
 
         // A governed node with no covering task would drift -> review, and the
         // governing clause is surfaced both in Markdown and structuredContent.
@@ -499,6 +517,14 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Advice: review"));
+        assert_eq!(
+            governed["structuredContent"]["known_context"][0]["statement"],
+            "Payment parsing rejects unsigned amounts."
+        );
+        assert!(governed["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("**Known context**"));
 
         // An unbound node under an existing constitution is clear to proceed.
         let unbound = call(

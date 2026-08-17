@@ -9,7 +9,7 @@ pub(super) fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "lodestar_stats",
-            "description": "Counts: active goals, open/claimed/done tasks, active knowledge.",
+            "description": "Goal/task/knowledge counts; zero active goals also returns goal/import bootstrap actions.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
@@ -45,7 +45,7 @@ pub(super) fn dispatch(
     match name {
         "lodestar_stats" => Some((|| {
             let stats = engine.stats().map_err(|e| e.to_string())?;
-            let markdown = format!(
+            let mut markdown = format!(
                 "| Intent Plane | Count |\n|---|--:|\n| Active goals | {} |\n| Open tasks | {} |\n| Claimed tasks | {} |\n| Done tasks | {} |\n| Active knowledge | {} |",
                 stats.active_goals,
                 stats.open_tasks,
@@ -53,6 +53,15 @@ pub(super) fn dispatch(
                 stats.done_tasks,
                 stats.active_knowledge
             );
+            if let Some(next) = &stats.next_step {
+                markdown.push_str(&format!("\n\n**Get started** - {}\n", next.summary));
+                for action in &next.actions {
+                    markdown.push_str(&format!(
+                        "\n- `{}` with `action=\"{}\"`: {}",
+                        action.tool, action.action, action.purpose
+                    ));
+                }
+            }
             rendered(markdown, &stats)
         })()),
         "backup_database" => Some((|| {
@@ -110,6 +119,26 @@ mod tests {
         assert_eq!(
             stats["structuredContent"]["active_knowledge"],
             active["count"]
+        );
+    }
+
+    #[test]
+    fn zero_goal_stats_return_actionable_bootstrap_routes() {
+        let engine = Lodestar::open_in_memory().unwrap();
+
+        let result = call(
+            &engine,
+            &json!({ "name": "lodestar_stats", "arguments": {} }),
+        )
+        .unwrap();
+        let markdown = result["content"][0]["text"].as_str().unwrap();
+
+        assert!(markdown.contains("**Get started**"));
+        assert!(markdown.contains("`constitution_define` with `action=\"goal\"`"));
+        assert!(markdown.contains("`constitution_define` with `action=\"import\"`"));
+        assert_eq!(
+            result["structuredContent"]["next_step"]["reason"],
+            "no_active_goals"
         );
     }
 

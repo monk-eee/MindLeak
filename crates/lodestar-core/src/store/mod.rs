@@ -73,6 +73,24 @@ pub struct Stats {
     pub claimed_tasks: i64,
     pub done_tasks: i64,
     pub active_knowledge: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_step: Option<StartupGuidance>,
+}
+
+/// One concrete route out of a fresh repository's zero-goal state.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct StartupAction {
+    pub tool: String,
+    pub action: String,
+    pub purpose: String,
+}
+
+/// Actionable startup advice returned only while no active goal exists.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct StartupGuidance {
+    pub reason: String,
+    pub summary: String,
+    pub actions: Vec<StartupAction>,
 }
 
 /// Counts removed by an explicitly confirmed intent-plane reset.

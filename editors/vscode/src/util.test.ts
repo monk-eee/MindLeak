@@ -1030,6 +1030,28 @@ describe("telemetryDashboard", () => {
     });
   });
 
+  it("uses graph health bundled into the telemetry snapshot", () => {
+    const dashboard = telemetryDashboard({
+      ...SNAPSHOT,
+      graph: { nodes: 23, active_edges: 41 },
+      retrospective: {
+        background_read_calls: 81_724,
+        preflight_read_calls: 265,
+        architectural_decision_calls: 13,
+        writing_sessions: 4,
+        writing_sessions_without_memory_read: 3,
+        recommendations: ["Run check_overlap before editing."],
+      },
+    });
+
+    expect(dashboard.nodes).toBe(23);
+    expect(dashboard.activeEdges).toBe(41);
+    expect(dashboard.backgroundReadCalls).toBe(81_724);
+    expect(dashboard.preflightReadCalls).toBe(265);
+    expect(dashboard.memoryPreflightMisses).toBe(3);
+    expect(dashboard.recommendations).toEqual(["Run check_overlap before editing."]);
+  });
+
   it("reports live failing-tool health distinct from the lifetime error tally", () => {
     // Regression: a tool with a resolved historical error (lifetime errors = 1)
     // whose most recent call succeeded must read as healthy — not an active
@@ -1087,6 +1109,38 @@ describe("telemetryDashboard", () => {
     expect(dashboard.tools[0].currentlyFailing).toBe(true);
   });
 
+  it("reports skipped optional maintenance as degraded rather than failing", () => {
+    const snapshot: TelemetrySnapshot = {
+      total_events: 1,
+      total_errors: 0,
+      currently_failing_tools: 0,
+      currently_degraded_tools: 1,
+      by_name: [
+        {
+          name: "autonomous_index",
+          calls: 1,
+          errors: 0,
+          total_ms: 9,
+          min_ms: 9,
+          max_ms: 9,
+          avg_ms: 9,
+          currently_failing: false,
+          currently_degraded: true,
+        },
+      ],
+      recent: [],
+    };
+
+    const dashboard = telemetryDashboard(snapshot);
+
+    expect(dashboard.failingTools).toBe(0);
+    expect(dashboard.degradedTools).toBe(1);
+    expect(dashboard.tools[0]).toMatchObject({
+      currentlyFailing: false,
+      currentlyDegraded: true,
+    });
+  });
+
   it("reports a clean 100% success readout when nothing has run yet", () => {
     const dashboard = telemetryDashboard(undefined, undefined);
     expect(dashboard).toMatchObject({
@@ -1095,6 +1149,7 @@ describe("telemetryDashboard", () => {
       totalEvents: 0,
       totalErrors: 0,
       failingTools: 0,
+      degradedTools: 0,
       successRatePct: 100,
       errorRatePct: 0,
       avgLatencyMs: 0,

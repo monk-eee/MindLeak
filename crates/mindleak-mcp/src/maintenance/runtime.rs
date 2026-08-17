@@ -13,8 +13,17 @@ use serde_json::json;
 use super::config::MaintenanceConfig;
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+const MAX_INDEX_BACKOFF: Duration = Duration::from_secs(3_600);
 #[cfg(test)]
 const WORKER_TEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IndexRunOutcome {
+    Idle,
+    Indexed,
+    Degraded,
+    Failed,
+}
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,6 +219,8 @@ fn run_worker(engine: MindLeak, activity: ActivitySignal, config: MaintenanceCon
     // expensive and spends local-model tokens.
     let mut last_prune: Option<Instant> = None;
     let mut last_index: Option<Instant> = None;
+    let mut last_index_outcome: Option<IndexRunOutcome> = None;
+    let mut index_interval = config.index_interval;
     let mut last_consolidation: Option<Instant> = None;
     // Cap each sleep so the loop re-evaluates periodically even when the next
     // deadline is far off or a tier is disabled. Shutdown wakes the worker
@@ -245,6 +256,7 @@ fn run_worker(engine: MindLeak, activity: ActivitySignal, config: MaintenanceCon
             match last_index {
                 Some(last) => config
                     .index_interval
+                    .max(index_interval)
                     .saturating_sub(now.saturating_duration_since(last)),
                 None => Duration::ZERO,
             }
@@ -303,7 +315,9 @@ fn run_worker(engine: MindLeak, activity: ActivitySignal, config: MaintenanceCon
             activity.record_worker_event(WorkerEvent::Pruned);
         }
         if index_due && !activity.is_shutdown() {
-            run_index(&engine, config.index_batch);
+            let outcome = run_index(&engine, config.index_batch, last_index_outcome);
+            index_interval = next_index_interval(config.index_interval, index_interval, outcome);
+            last_index_outcome = Some(outcome);
             last_index = Some(Instant::now());
         }
         if consolidate_due && !activity.is_shutdown() {
@@ -366,9 +380,27 @@ fn run_prune(engine: &MindLeak) {
 /// recorded and otherwise ignored -- recall already errors cleanly without one,
 /// and failing the whole maintenance loop over an optional feature would take
 /// the zero-token prune down with it.
-fn run_index(engine: &MindLeak, batch: usize) {
+fn run_index(
+    engine: &MindLeak,
+    batch: usize,
+    previous: Option<IndexRunOutcome>,
+) -> IndexRunOutcome {
     let started = Instant::now();
     match engine.index_nodes(batch) {
+        Ok(0) => {
+            if matches!(
+                previous,
+                Some(IndexRunOutcome::Degraded | IndexRunOutcome::Failed)
+            ) {
+                engine.record_maintenance(
+                    "autonomous_index",
+                    "ok",
+                    started.elapsed().as_millis() as i64,
+                    Some(json!({ "indexed": 0, "recovered": true })),
+                );
+            }
+            IndexRunOutcome::Idle
+        }
         Ok(indexed) => {
             engine.record_maintenance(
                 "autonomous_index",
@@ -379,6 +411,19 @@ fn run_index(engine: &MindLeak, batch: usize) {
             if indexed > 0 {
                 tracing::info!(nodes = indexed, "autonomous index embedded new nodes");
             }
+            IndexRunOutcome::Indexed
+        }
+        Err(error @ MindLeakError::Model(_)) => {
+            if previous != Some(IndexRunOutcome::Degraded) {
+                engine.record_maintenance(
+                    "autonomous_index",
+                    "skipped",
+                    started.elapsed().as_millis() as i64,
+                    Some(index_error_detail(&error)),
+                );
+            }
+            tracing::debug!(%error, "autonomous index degraded; retrying with backoff");
+            IndexRunOutcome::Degraded
         }
         Err(error) => {
             engine.record_maintenance(
@@ -387,8 +432,23 @@ fn run_index(engine: &MindLeak, batch: usize) {
                 started.elapsed().as_millis() as i64,
                 Some(index_error_detail(&error)),
             );
-            tracing::debug!(%error, "autonomous index skipped; no embedding server");
+            tracing::warn!(%error, "autonomous index failed");
+            IndexRunOutcome::Failed
         }
+    }
+}
+
+fn next_index_interval(
+    configured: Duration,
+    current: Duration,
+    outcome: IndexRunOutcome,
+) -> Duration {
+    if outcome == IndexRunOutcome::Degraded {
+        current
+            .saturating_mul(2)
+            .min(configured.max(MAX_INDEX_BACKOFF))
+    } else {
+        configured
     }
 }
 
@@ -450,35 +510,6 @@ fn run_consolidation(
                 Some(json!({ "category": error_category(&error) })),
             );
             tracing::warn!(%error, "autonomous consolidation failed");
-        }
-    }
-
-    // Best-effort embedding index refresh so semantic recall (ADR-0008)
-    // self-populates as new nodes accrue, instead of requiring a manual `index`.
-    // Off the deterministic hot path; a failure (e.g. the embed model is not
-    // reachable) is recorded and never crashes the worker or blocks consolidation.
-    if activity.is_shutdown() {
-        return;
-    }
-    let index_started = Instant::now();
-    match engine.index_nodes(max_nodes) {
-        Ok(0) => {}
-        Ok(indexed) => {
-            engine.record_maintenance(
-                "autonomous_index",
-                "ok",
-                index_started.elapsed().as_millis() as i64,
-                Some(json!({ "indexed": indexed })),
-            );
-            tracing::info!(indexed, "autonomous embedding index refreshed");
-        }
-        Err(error) => {
-            engine.record_maintenance(
-                "autonomous_index",
-                "error",
-                index_started.elapsed().as_millis() as i64,
-                Some(index_error_detail(&error)),
-            );
         }
     }
 }
@@ -668,13 +699,16 @@ mod tests {
             .ingest_file("src/auth.rs", "fn authentication_handler() {}")
             .unwrap();
 
-        run_index(&engine, 128);
+        let outcome = run_index(&engine, 128, None);
 
         let snapshot = engine.telemetry_snapshot(1).unwrap();
         let event = &snapshot.recent[0];
+        assert_eq!(outcome, IndexRunOutcome::Degraded);
         assert_eq!(event.kind, "maintenance");
         assert_eq!(event.name, "autonomous_index");
-        assert_eq!(event.outcome, "error");
+        assert_eq!(event.outcome, "skipped");
+        assert_eq!(snapshot.total_errors, 0);
+        assert_eq!(snapshot.currently_degraded_tools, 1);
         let detail = event.detail.as_ref().unwrap();
         assert_eq!(detail["category"], "unreachable");
         assert_eq!(detail["fallback"], "deterministic_graph");
@@ -682,6 +716,67 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("ollama pull nomic-embed-text"));
+    }
+
+    #[test]
+    fn idle_index_passes_are_silent_but_a_degraded_pass_reports_recovery() {
+        let engine = MindLeak::open_in_memory().unwrap();
+
+        assert_eq!(run_index(&engine, 128, None), IndexRunOutcome::Idle);
+        assert_eq!(engine.telemetry_snapshot(1).unwrap().total_events, 0);
+
+        assert_eq!(
+            run_index(&engine, 128, Some(IndexRunOutcome::Degraded)),
+            IndexRunOutcome::Idle
+        );
+        let snapshot = engine.telemetry_snapshot(1).unwrap();
+        assert_eq!(snapshot.total_events, 1);
+        assert_eq!(snapshot.recent[0].name, "autonomous_index");
+        assert_eq!(snapshot.recent[0].outcome, "ok");
+        assert_eq!(
+            snapshot.recent[0].detail.as_ref().unwrap()["recovered"],
+            true
+        );
+    }
+
+    #[test]
+    fn repeated_degraded_index_retries_do_not_repeat_the_same_health_event() {
+        let engine = MindLeak::open_in_memory()
+            .unwrap()
+            .with_embedder(Box::new(UnavailableIndexEmbedder));
+        engine
+            .ingest_file("src/auth.rs", "fn authentication_handler() {}")
+            .unwrap();
+
+        assert_eq!(run_index(&engine, 128, None), IndexRunOutcome::Degraded);
+        assert_eq!(
+            run_index(&engine, 128, Some(IndexRunOutcome::Degraded)),
+            IndexRunOutcome::Degraded
+        );
+
+        let snapshot = engine.telemetry_snapshot(10).unwrap();
+        assert_eq!(snapshot.total_events, 1);
+        assert_eq!(snapshot.recent[0].outcome, "skipped");
+    }
+
+    #[test]
+    fn degraded_index_uses_bounded_exponential_backoff() {
+        let configured = Duration::from_secs(300);
+        let first = next_index_interval(configured, configured, IndexRunOutcome::Degraded);
+        let second = next_index_interval(configured, first, IndexRunOutcome::Degraded);
+        let bounded = next_index_interval(
+            configured,
+            Duration::from_secs(3_600),
+            IndexRunOutcome::Degraded,
+        );
+
+        assert_eq!(first, Duration::from_secs(600));
+        assert_eq!(second, Duration::from_secs(1_200));
+        assert_eq!(bounded, MAX_INDEX_BACKOFF);
+        assert_eq!(
+            next_index_interval(configured, bounded, IndexRunOutcome::Indexed),
+            configured
+        );
     }
 
     #[test]
