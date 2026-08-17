@@ -1,5 +1,7 @@
 //! Shared test-only helpers for this crate's database-gated tests.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 /// A cheap, dependency-free way to keep each test run's tenant id unique
 /// without adding a `uuid` crate for two words of randomness.
 pub(crate) fn uuid_ish() -> u128 {
@@ -7,4 +9,25 @@ pub(crate) fn uuid_ish() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos()
+}
+
+/// A 32-byte activation-challenge nonce that is unique both within a single
+/// test binary invocation (an atomic counter guards two calls made in the
+/// same nanosecond) and across repeated runs against the same persistent
+/// `ACKPLANE_TEST_DATABASE_URL` container (seeded from wall-clock
+/// nanoseconds). `activation_challenges.nonce` carries a bare unique
+/// constraint, so a fixed literal nonce collides on the container's second
+/// run rather than the first — see
+/// gaps.d/ackplane-server-postgres-tests-are-not-isolated-across-runs.md.
+/// Real callers generate this the same way, via `getrandom`, in
+/// `enrollment_service.rs`; tests use a counter instead so the fixture stays
+/// dependency-free and deterministic to read in a failure message.
+pub(crate) fn unique_nonce() -> [u8; 32] {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let timestamp = uuid_ish();
+    let mut nonce = [0_u8; 32];
+    nonce[..16].copy_from_slice(&timestamp.to_be_bytes());
+    nonce[16..24].copy_from_slice(&counter.to_be_bytes());
+    nonce
 }
