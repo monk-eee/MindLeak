@@ -1,0 +1,1 @@
+- **Added:** a dedicated Board Doctor pane in the MindLeak activity bar. Duplicate task titles, work forked across goals, and blocked-with-no-gate findings (`task_query(view=doctor)`) are now a first-class, grouped tree view instead of a section buried inside the Fleet pane, with the activity bar badge showing the live finding count.

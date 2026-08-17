@@ -24,6 +24,15 @@ const EMBED_BATCH: usize = 64;
 /// for the same reason.
 const PREFLIGHT_IMPACT_LIMIT: usize = 32;
 
+/// Other agents' decay-active footprints a pre-flight will carry.
+///
+/// `agent_footprint_overlap` already ranks strongest-first and never caps: a
+/// busy shared repository accumulates one row per (agent, node) pair still
+/// inside its decay window, and a check over several heavily-edited files
+/// measured 43 KB from this array alone. The strongest overlaps are what a
+/// caller acts on; the count answers whether the view was cut.
+const PREFLIGHT_FOOTPRINT_LIMIT: usize = 20;
+
 impl MindLeak {
     /// Semantic recall: return nodes whose content is closest in meaning to
     /// `query`, via the optional local embedding index (ADR-0008). Complements
@@ -174,9 +183,11 @@ impl MindLeak {
     ) -> Result<Preflight> {
         let now = now_unix();
         let requested = self.preflight_seeds(paths, symbols);
-        let footprints = self
+        let mut footprints = self
             .store
             .agent_footprint_overlap(&requested, exclude_agent, now)?;
+        let footprint_total = footprints.len();
+        footprints.truncate(PREFLIGHT_FOOTPRINT_LIMIT);
 
         // Seed the impact traversal only from ids the graph actually holds, and
         // report the rest as unknown rather than letting them vanish into an
@@ -206,6 +217,7 @@ impl MindLeak {
             requested,
             unknown,
             footprints,
+            footprint_total,
             impact,
             impact_edges,
             impact_total,

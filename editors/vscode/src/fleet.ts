@@ -69,12 +69,85 @@ export interface StalledEntry {
   detail?: string | null;
 }
 
-/** One finding from `task_query(view=doctor)`. */
+/**
+ * One finding from `task_query(view=doctor)`. `subject` is what the finding is
+ * about — a repeated title, or the blocked task's own title — not a free-form
+ * `detail`: the wire field is `subject` (`crates/lodestar-core/src/model/executive.rs`
+ * `BoardFinding`), and nothing here ever read the old `detail` name.
+ */
 export interface BoardFinding {
   ailment?: string | null;
-  detail?: string | null;
+  subject?: string | null;
   remedy?: string | null;
   task_ids?: string[] | null;
+}
+
+/** A stable, worst-first order for grouping doctor findings by ailment. */
+const AILMENT_ORDER = ["blocked_without_gate", "same_title_across_goals", "duplicate_title"];
+
+/** A short, human label for one `BoardFinding.ailment`. */
+export function doctorAilmentLabel(ailment: string): string {
+  switch (ailment) {
+    case "duplicate_title":
+      return "Duplicate title";
+    case "same_title_across_goals":
+      return "Forked across goals";
+    case "blocked_without_gate":
+      return "Blocked with no gate";
+    default:
+      return ailment;
+  }
+}
+
+/** A `ThemeIcon` id for one `BoardFinding.ailment`. Pure — no vscode import. */
+export function doctorAilmentIcon(ailment: string): string {
+  switch (ailment) {
+    case "blocked_without_gate":
+      return "circle-slash";
+    case "same_title_across_goals":
+      return "type-hierarchy";
+    case "duplicate_title":
+      return "copy";
+    default:
+      return "question";
+  }
+}
+
+/** One ailment's findings, grouped for the Board Doctor pane. */
+export interface DoctorGroup {
+  ailment: string;
+  label: string;
+  findings: BoardFinding[];
+}
+
+/**
+ * Group `task_query(view=doctor)` findings by ailment, worst-first
+ * ({@link AILMENT_ORDER}), an unrecognised ailment sorting last. Pure: the
+ * tree just renders these. Empty ailments are omitted — an empty group is not
+ * a finding.
+ */
+export function doctorGroups(findings: BoardFinding[]): DoctorGroup[] {
+  const byAilment = new Map<string, BoardFinding[]>();
+  for (const finding of findings ?? []) {
+    const ailment = finding.ailment ?? "unknown";
+    const group = byAilment.get(ailment);
+    if (group) {
+      group.push(finding);
+    } else {
+      byAilment.set(ailment, [finding]);
+    }
+  }
+  const rank = (ailment: string) => {
+    const index = AILMENT_ORDER.indexOf(ailment);
+    return index === -1 ? AILMENT_ORDER.length : index;
+  };
+  return [...byAilment.entries()]
+    .sort(([a], [b]) => rank(a) - rank(b))
+    .map(([ailment, groupFindings]) => ({
+      ailment,
+      label: doctorAilmentLabel(ailment),
+      findings: groupFindings,
+    }));
 }
 
 /**
