@@ -232,6 +232,10 @@ enum RejectionReason {
   REJECTION_REASON_SEQUENCE_CONFLICT = 4;
   REJECTION_REASON_UNSUPPORTED_VERSION = 5;
   REJECTION_REASON_UNAVAILABLE = 6;
+  // Distinct from UNAUTHENTICATED: an administrator or incident workflow
+  // revoked this key (ADR-0085 decision 8), rather than the key simply not
+  // yet being active, expired, or retired by ordinary rotation.
+  REJECTION_REASON_NODE_REVOKED = 7;
 }
 
 message FlowControl {

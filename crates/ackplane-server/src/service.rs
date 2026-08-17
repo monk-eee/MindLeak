@@ -50,6 +50,20 @@ fn unauthenticated(key: &crate::ledger::DedupKey, refusal: SignatureRefusal) -> 
     }
 }
 
+/// Whether the connection that produced these frames must be closed. A
+/// revoked node must not be left free to keep sending records that will all
+/// be refused the same way (ADR-0085 decision 8) — every other rejection
+/// reason is retried or corrected by the sender on the same connection.
+fn must_terminate_after(frames: &[v1::AckplaneFrame]) -> bool {
+    frames.iter().any(|frame| {
+        matches!(
+            &frame.frame,
+            Some(v1::ackplane_frame::Frame::Rejection(rejection))
+                if rejection.reason == v1::RejectionReason::NodeRevoked as i32
+        )
+    })
+}
+
 /// Process one node frame with the supplied durable append operation.
 ///
 /// The transport supplies the real ledger append and key lookup; tests supply
@@ -215,10 +229,14 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
                             },
                         )
                         .await;
+                        let terminate = must_terminate_after(&responses);
                         for frame in responses {
                             if sender.send(Ok(frame)).await.is_err() {
                                 break 'stream;
                             }
+                        }
+                        if terminate {
+                            break 'stream;
                         }
                     }
                     Ok(None) => break,
@@ -547,8 +565,77 @@ mod tests {
         assert_eq!(appends, 0);
         assert_eq!(
             refusal_of(&response).reason,
-            v1::RejectionReason::Unauthenticated as i32
+            v1::RejectionReason::NodeRevoked as i32
         );
+        assert!(!refusal_of(&response).retryable);
+    }
+
+    /// The half of ADR-0085 decision 8 a per-record check alone cannot give:
+    /// a revoked node's connection must actually close, not merely keep
+    /// refusing one record after another forever.
+    #[tokio::test]
+    async fn a_revoked_key_s_rejection_terminates_the_connection() {
+        let key = node_key();
+        let mut lifecycle = lifecycle_for(&key);
+        lifecycle.revoked_at = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1));
+
+        let (response, _) = outcome_of(signed_envelope(b"fact", &key), resolving(lifecycle)).await;
+
+        assert!(must_terminate_after(&response));
+    }
+
+    /// Every OTHER rejection reason must leave the connection open: a
+    /// malformed record, a bad signature, or a not-yet-active key are all
+    /// things a sender can retry or correct on the same stream. Termination
+    /// is specific to revocation, not a blanket response to any refusal.
+    #[tokio::test]
+    async fn an_ordinary_rejection_does_not_terminate_the_connection() {
+        let mut invalid = envelope(b"fact");
+        invalid.payload_digest = Sha256::digest(b"different").to_vec();
+
+        let response = handle_frame(
+            v1::NodeFrame {
+                frame: Some(v1::node_frame::Frame::EventBatch(v1::EventBatch {
+                    events: vec![invalid],
+                })),
+            },
+            flow_control(),
+            |_| ready(Ok(AppendOutcome::Accepted { position: 1 })),
+            no_key,
+        )
+        .await;
+
+        assert!(!must_terminate_after(&response));
+    }
+
+    #[test]
+    fn must_terminate_after_is_true_only_for_a_node_revoked_rejection() {
+        let revoked = vec![v1::AckplaneFrame {
+            frame: Some(v1::ackplane_frame::Frame::Rejection(v1::Rejection {
+                record_id: "acme/repo/node-1@7".to_string(),
+                reason: v1::RejectionReason::NodeRevoked as i32,
+                retryable: false,
+                diagnostic: "revoked".to_string(),
+            })),
+        }];
+        let unauthenticated = vec![v1::AckplaneFrame {
+            frame: Some(v1::ackplane_frame::Frame::Rejection(v1::Rejection {
+                record_id: "acme/repo/node-1@7".to_string(),
+                reason: v1::RejectionReason::Unauthenticated as i32,
+                retryable: false,
+                diagnostic: "not in force".to_string(),
+            })),
+        }];
+        let receipt = vec![v1::AckplaneFrame {
+            frame: Some(v1::ackplane_frame::Frame::BatchReceipt(v1::BatchReceipt {
+                receipts: vec![],
+            })),
+        }];
+
+        assert!(must_terminate_after(&revoked));
+        assert!(!must_terminate_after(&unauthenticated));
+        assert!(!must_terminate_after(&receipt));
+        assert!(!must_terminate_after(&[]));
     }
 
     #[tokio::test]
