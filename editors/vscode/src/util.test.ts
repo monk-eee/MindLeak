@@ -311,6 +311,23 @@ describe("planMcpServers", () => {
     expect(plans[0].command).toContain(".mindleak");
     expect(plans[1].command).toContain(".mindleak");
   });
+
+  it("changes the definition version when a resolved binary is replaced", () => {
+    let generation = 1;
+    const options = {
+      platform: "linux" as const,
+      exists: () => true,
+      version: () => `generation-${generation}`,
+    };
+
+    const before = planMcpServers("/ws", "copilot", configured, options);
+    generation = 2;
+    const after = planMcpServers("/ws", "copilot", configured, options);
+
+    expect(after.map((plan) => plan.command)).toEqual(before.map((plan) => plan.command));
+    expect(before.map((plan) => plan.version)).toEqual(["generation-1", "generation-1"]);
+    expect(after.map((plan) => plan.version)).toEqual(["generation-2", "generation-2"]);
+  });
 });
 
 describe("boardRows", () => {

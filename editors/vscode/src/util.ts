@@ -142,6 +142,7 @@ export function filterChangedPaths(
 export interface ResolveServerOptions {
   platform?: NodeJS.Platform;
   exists?: (candidate: string) => boolean;
+  version?: (candidate: string) => string | undefined;
   extensionPath?: string;
   homeDir?: string;
 }
@@ -228,6 +229,7 @@ export interface McpServerPlan {
   readonly id: string;
   readonly label: string;
   readonly command: string;
+  readonly version?: string;
   readonly cwd: string;
   readonly env: Record<string, string>;
 }
@@ -262,11 +264,14 @@ export function planMcpServers(
   configured: ConfiguredServers,
   opts: ResolveServerOptions = {}
 ): McpServerPlan[] {
+  const memoryCommand = resolveBinaryPath(configured.memory, workspace, "mindleak-mcp", opts);
+  const intentCommand = resolveBinaryPath(configured.intent, workspace, "lodestar-mcp", opts);
   return [
     {
       id: "mindleak",
       label: "MindLeak memory",
-      command: resolveBinaryPath(configured.memory, workspace, "mindleak-mcp", opts),
+      command: memoryCommand,
+      version: opts.version?.(memoryCommand),
       cwd: workspace,
       env: {
         ...configuredPathEnvironment("MINDLEAK_DB", configured.memoryDatabase),
@@ -277,7 +282,8 @@ export function planMcpServers(
     {
       id: "lodestar",
       label: "Lodestar intent",
-      command: resolveBinaryPath(configured.intent, workspace, "lodestar-mcp", opts),
+      command: intentCommand,
+      version: opts.version?.(intentCommand),
       cwd: workspace,
       env: {
         ...configuredPathEnvironment("LODESTAR_DB", configured.intentDatabase),
