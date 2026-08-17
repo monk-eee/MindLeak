@@ -37,6 +37,38 @@ impl OwnedEnvelopeBinding {
     }
 }
 
+/// Where a `Synchronize` connection is in ADR-0098 decision 1's mandatory
+/// handshake. Threaded through every `handle_frame` call for one connection,
+/// so the gate cannot be bypassed by sending frames out of order: only the
+/// exact next expected frame advances it, and anything else moves it to
+/// `Rejected` instead of silently ignoring the surprise.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectionState {
+    /// No frame processed yet. Only a `Hello` naming a `signing_key_id` is
+    /// accepted.
+    AwaitingHello,
+    /// `Hello` was accepted and a nonce issued. Only a `ChallengeResponse` is
+    /// accepted next; everything else refuses and ends the connection.
+    AwaitingChallengeResponse {
+        nonce: Vec<u8>,
+        tenant_id: String,
+        repository_id: String,
+        producer_id: String,
+        signing_key_id: String,
+        last_accepted_position: u64,
+    },
+    /// The node proved possession of its enrolled key. Event batches and
+    /// heartbeats may now be exchanged.
+    Authenticated {
+        tenant_id: String,
+        repository_id: String,
+        producer_id: String,
+    },
+    /// The handshake failed or was violated; every further frame is ignored
+    /// because the connection is already being torn down.
+    Rejected,
+}
+
 /// Refuse a record whose sender could not be established.
 ///
 /// Non-retryable throughout: every one of these is a property of the bytes and
@@ -47,6 +79,21 @@ fn unauthenticated(key: &crate::ledger::DedupKey, refusal: SignatureRefusal) -> 
         reason: refusal.reason() as i32,
         retryable: false,
         diagnostic: refusal.diagnostic().to_string(),
+    }
+}
+
+/// Refuse the whole connection (ADR-0098 decision 1's handshake gate), distinct
+/// from `unauthenticated`: that rejects one record and lets the sender retry
+/// on the same stream, this ends the stream because nothing sent on it can be
+/// trusted without a completed handshake.
+fn connection_refused(diagnostic: &str) -> v1::AckplaneFrame {
+    v1::AckplaneFrame {
+        frame: Some(v1::ackplane_frame::Frame::Rejection(v1::Rejection {
+            record_id: String::new(),
+            reason: v1::RejectionReason::Unauthenticated as i32,
+            retryable: false,
+            diagnostic: diagnostic.to_string(),
+        })),
     }
 }
 
@@ -64,13 +111,178 @@ fn must_terminate_after(frames: &[v1::AckplaneFrame]) -> bool {
     })
 }
 
-/// Process one node frame with the supplied durable append operation.
+/// `Hello`'s half of the handshake: issue a fresh, single-use, domain-separated
+/// nonce and wait for the node to sign it with the key it just named. No
+/// database access here - a nonce challenge needs no lookup, only the answer
+/// to it does.
+fn handle_hello(hello: v1::Hello) -> (ConnectionState, Vec<v1::AckplaneFrame>) {
+    if hello.signing_key_id.is_empty() {
+        return (
+            ConnectionState::Rejected,
+            vec![connection_refused(
+                "Hello must name the signing_key_id this connection will authenticate with",
+            )],
+        );
+    }
+    let mut nonce = [0_u8; 32];
+    if getrandom::getrandom(&mut nonce).is_err() {
+        return (
+            ConnectionState::Rejected,
+            vec![connection_refused(
+                "could not generate a connection challenge nonce",
+            )],
+        );
+    }
+    let nonce = nonce.to_vec();
+    let state = ConnectionState::AwaitingChallengeResponse {
+        nonce: nonce.clone(),
+        tenant_id: hello.tenant_id,
+        repository_id: hello.repository_id,
+        producer_id: hello.producer_id,
+        signing_key_id: hello.signing_key_id,
+        last_accepted_position: hello.last_accepted_position,
+    };
+    let frames = vec![v1::AckplaneFrame {
+        frame: Some(v1::ackplane_frame::Frame::ConnectionChallenge(
+            v1::ConnectionChallenge { nonce },
+        )),
+    }];
+    (state, frames)
+}
+
+/// `ChallengeResponse`'s half of the handshake: resolve the named key as of
+/// now (a key revoked or expired after this instant must not retroactively
+/// invalidate a stream it was never used to open) and verify the signature
+/// over this connection's own nonce.
+#[allow(clippy::too_many_arguments)]
+async fn handle_challenge_response<R, RFut>(
+    response: v1::ChallengeResponse,
+    nonce: Vec<u8>,
+    tenant_id: String,
+    repository_id: String,
+    producer_id: String,
+    signing_key_id: String,
+    last_accepted_position: u64,
+    flow_control: v1::FlowControl,
+    resolve_key: &mut R,
+) -> (ConnectionState, Vec<v1::AckplaneFrame>)
+where
+    R: FnMut(OwnedEnvelopeBinding) -> RFut,
+    RFut: Future<Output = Result<KeyResolution, SigningKeyError>>,
+{
+    let resolution = match resolve_key(OwnedEnvelopeBinding {
+        signing_key_id: signing_key_id.clone(),
+        tenant_id: tenant_id.clone(),
+        repository_id: repository_id.clone(),
+        producer_id: producer_id.clone(),
+        accepted_at: SystemTime::now(),
+    })
+    .await
+    {
+        Ok(resolution) => resolution,
+        // A key store that cannot answer is not a node that cannot
+        // authenticate; refusing the whole connection non-retryably would be
+        // wrong for a very likely legitimate node.
+        Err(error) => {
+            tracing::error!(%error, "signing key lookup failed during connection authentication");
+            return (
+                ConnectionState::Rejected,
+                vec![v1::AckplaneFrame {
+                    frame: Some(v1::ackplane_frame::Frame::Rejection(v1::Rejection {
+                        record_id: String::new(),
+                        reason: v1::RejectionReason::Unavailable as i32,
+                        retryable: true,
+                        diagnostic: "the key registry was unavailable; retry the connection"
+                            .to_string(),
+                    })),
+                }],
+            );
+        }
+    };
+
+    let record = match resolution {
+        KeyResolution::Resolved(record) => record,
+        KeyResolution::Revoked => {
+            return (
+                ConnectionState::Rejected,
+                vec![v1::AckplaneFrame {
+                    frame: Some(v1::ackplane_frame::Frame::Rejection(v1::Rejection {
+                        record_id: String::new(),
+                        reason: v1::RejectionReason::NodeRevoked as i32,
+                        retryable: false,
+                        diagnostic: "this node's signing key has been revoked".to_string(),
+                    })),
+                }],
+            );
+        }
+        KeyResolution::Unknown
+        | KeyResolution::BindingMismatch
+        | KeyResolution::NotYetActive
+        | KeyResolution::Expired
+        | KeyResolution::Retired => {
+            return (
+                ConnectionState::Rejected,
+                vec![connection_refused(
+                    "the named signing_key_id is not an active, enrolled key for this \
+                     tenant/repository/node",
+                )],
+            );
+        }
+    };
+
+    let verified = crate::enrollment::verify_connection_challenge(
+        &record.public_key,
+        &response.signature,
+        crate::enrollment::ConnectionChallengeBinding {
+            nonce: &nonce,
+            tenant_id: &tenant_id,
+            repository_id: &repository_id,
+            producer_id: &producer_id,
+            signing_key_id: &signing_key_id,
+        },
+    );
+    if !verified {
+        return (
+            ConnectionState::Rejected,
+            vec![connection_refused(
+                "the connection challenge response does not verify under the named key",
+            )],
+        );
+    }
+
+    let state = ConnectionState::Authenticated {
+        tenant_id,
+        repository_id,
+        producer_id,
+    };
+    let frames = vec![
+        v1::AckplaneFrame {
+            frame: Some(v1::ackplane_frame::Frame::HelloAccepted(
+                v1::HelloAccepted {
+                    accepted_position: last_accepted_position,
+                    // A node's requested capabilities are not proof that the
+                    // server enables them. Advertise only capabilities this
+                    // transport has explicitly selected.
+                    enabled_capabilities: Vec::new(),
+                },
+            )),
+        },
+        v1::AckplaneFrame {
+            frame: Some(v1::ackplane_frame::Frame::FlowControl(flow_control)),
+        },
+    ];
+    (state, frames)
+}
+
+/// Process one node frame against this connection's handshake state, with the
+/// supplied durable append operation.
 ///
 /// The transport supplies the real ledger append and key lookup; tests supply
 /// deterministic ones, so protocol decisions stay testable without PostgreSQL.
 pub async fn handle_frame<F, Fut, R, RFut>(
     frame: v1::NodeFrame,
     flow_control: v1::FlowControl,
+    state: &mut ConnectionState,
     mut append: F,
     mut resolve_key: R,
 ) -> Vec<v1::AckplaneFrame>
@@ -80,130 +292,177 @@ where
     R: FnMut(OwnedEnvelopeBinding) -> RFut,
     RFut: Future<Output = Result<KeyResolution, SigningKeyError>>,
 {
-    let Some(frame) = frame.frame else {
+    let Some(inner) = frame.frame else {
         return Vec::new();
     };
-    let frame = match frame {
-        v1::node_frame::Frame::Hello(hello) => {
-            return vec![
-                v1::AckplaneFrame {
-                    frame: Some(v1::ackplane_frame::Frame::HelloAccepted(
-                        v1::HelloAccepted {
-                            accepted_position: hello.last_accepted_position,
-                            // A node's requested capabilities are not proof that
-                            // the server enables them. Advertise only capabilities
-                            // this transport has explicitly selected.
-                            enabled_capabilities: Vec::new(),
-                        },
-                    )),
-                },
-                v1::AckplaneFrame {
-                    frame: Some(v1::ackplane_frame::Frame::FlowControl(flow_control)),
-                },
-            ];
+
+    let current = std::mem::replace(state, ConnectionState::Rejected);
+    let (next_state, responses) = match (current, inner) {
+        (ConnectionState::AwaitingHello, v1::node_frame::Frame::Hello(hello)) => {
+            handle_hello(hello)
         }
-        v1::node_frame::Frame::Heartbeat(_) => return Vec::new(),
-        v1::node_frame::Frame::EventBatch(batch) => batch,
-    };
-
-    let batch_started = std::time::Instant::now();
-    let batch_records = frame.events.len() as u64;
-    let batch_bytes: u64 = frame
-        .events
-        .iter()
-        .map(|event| event.payload.len() as u64)
-        .sum();
-    let mut retry_count = 0u64;
-    let mut position = None;
-
-    let mut receipts = Vec::with_capacity(frame.events.len());
-    let responses = 'batch: {
-        for wire in frame.events {
-            let envelope = match sync::translate(&wire) {
-                Ok(envelope) => envelope,
-                Err(rejection) => {
-                    break 'batch vec![v1::AckplaneFrame {
-                        frame: Some(v1::ackplane_frame::Frame::Rejection(rejection)),
-                    }];
-                }
-            };
-            let key = envelope.key.clone();
-
-            // Judged as of now, because now is when this record is being accepted.
-            // A key revoked after this instant must not retroactively invalidate
-            // what it signed (ADR-0084 decision 12).
-            let resolution = match resolve_key(OwnedEnvelopeBinding {
-                signing_key_id: wire.signing_key_id.clone(),
-                tenant_id: key.tenant_id.clone(),
-                repository_id: key.repository_id.clone(),
-                producer_id: key.producer_id.clone(),
-                accepted_at: SystemTime::now(),
-            })
+        (ConnectionState::AwaitingHello, _) => (
+            ConnectionState::Rejected,
+            vec![connection_refused("a connection must send Hello first")],
+        ),
+        (
+            ConnectionState::AwaitingChallengeResponse {
+                nonce,
+                tenant_id,
+                repository_id,
+                producer_id,
+                signing_key_id,
+                last_accepted_position,
+            },
+            v1::node_frame::Frame::ChallengeResponse(response),
+        ) => {
+            handle_challenge_response(
+                response,
+                nonce,
+                tenant_id,
+                repository_id,
+                producer_id,
+                signing_key_id,
+                last_accepted_position,
+                flow_control,
+                &mut resolve_key,
+            )
             .await
-            {
-                Ok(resolution) => resolution,
-                // A key store that cannot answer is not a node that cannot
-                // authenticate. Refusing this as unauthenticated would be
-                // non-retryable, permanently rejecting a record whose sender is
-                // very likely legitimate.
-                Err(error) => {
-                    tracing::error!(%error, record = %sync::record_identity(&key), "signing key lookup failed");
-                    break 'batch vec![v1::AckplaneFrame {
-                        frame: Some(v1::ackplane_frame::Frame::Rejection(v1::Rejection {
-                            record_id: sync::record_identity(&key),
-                            reason: v1::RejectionReason::Unavailable as i32,
-                            retryable: true,
-                            diagnostic: "the key registry was unavailable; retry with backoff"
-                                .to_string(),
-                        })),
-                    }];
+        }
+        (ConnectionState::AwaitingChallengeResponse { .. }, _) => (
+            ConnectionState::Rejected,
+            vec![connection_refused(
+                "expected a ChallengeResponse to the issued connection challenge",
+            )],
+        ),
+        (authenticated @ ConnectionState::Authenticated { .. }, v1::node_frame::Frame::Heartbeat(_)) => {
+            (authenticated, Vec::new())
+        }
+        (
+            ConnectionState::Authenticated {
+                tenant_id,
+                repository_id,
+                producer_id,
+            },
+            v1::node_frame::Frame::EventBatch(frame),
+        ) => {
+            let batch_started = std::time::Instant::now();
+            let batch_records = frame.events.len() as u64;
+            let batch_bytes: u64 = frame
+                .events
+                .iter()
+                .map(|event| event.payload.len() as u64)
+                .sum();
+            let mut retry_count = 0u64;
+            let mut position = None;
+
+            let mut receipts = Vec::with_capacity(frame.events.len());
+            let responses = 'batch: {
+                for wire in frame.events {
+                    let envelope = match sync::translate(&wire) {
+                        Ok(envelope) => envelope,
+                        Err(rejection) => {
+                            break 'batch vec![v1::AckplaneFrame {
+                                frame: Some(v1::ackplane_frame::Frame::Rejection(rejection)),
+                            }];
+                        }
+                    };
+                    let key = envelope.key.clone();
+
+                    // Judged as of now, because now is when this record is being accepted.
+                    // A key revoked after this instant must not retroactively invalidate
+                    // what it signed (ADR-0084 decision 12).
+                    let resolution = match resolve_key(OwnedEnvelopeBinding {
+                        signing_key_id: wire.signing_key_id.clone(),
+                        tenant_id: key.tenant_id.clone(),
+                        repository_id: key.repository_id.clone(),
+                        producer_id: key.producer_id.clone(),
+                        accepted_at: SystemTime::now(),
+                    })
+                    .await
+                    {
+                        Ok(resolution) => resolution,
+                        // A key store that cannot answer is not a node that cannot
+                        // authenticate. Refusing this as unauthenticated would be
+                        // non-retryable, permanently rejecting a record whose sender is
+                        // very likely legitimate.
+                        Err(error) => {
+                            tracing::error!(%error, record = %sync::record_identity(&key), "signing key lookup failed");
+                            break 'batch vec![v1::AckplaneFrame {
+                                frame: Some(v1::ackplane_frame::Frame::Rejection(v1::Rejection {
+                                    record_id: sync::record_identity(&key),
+                                    reason: v1::RejectionReason::Unavailable as i32,
+                                    retryable: true,
+                                    diagnostic: "the key registry was unavailable; retry with backoff"
+                                        .to_string(),
+                                })),
+                            }];
+                        }
+                    };
+
+                    if let Err(refusal) =
+                        envelope_signature::verify(&wire, envelope.provenance, &resolution)
+                    {
+                        break 'batch vec![v1::AckplaneFrame {
+                            frame: Some(v1::ackplane_frame::Frame::Rejection(unauthenticated(
+                                &key, refusal,
+                            ))),
+                        }];
+                    }
+
+                    match append(envelope).await {
+                        Ok(outcome) => {
+                            if matches!(outcome, AppendOutcome::Duplicate { .. }) {
+                                retry_count += 1;
+                            }
+                            let receipt = sync::receipt(&key, outcome);
+                            position = Some(receipt.position);
+                            receipts.push(receipt);
+                        }
+                        Err(error) => {
+                            break 'batch vec![v1::AckplaneFrame {
+                                frame: Some(v1::ackplane_frame::Frame::Rejection(sync::rejection(
+                                    &key, &error,
+                                ))),
+                            }];
+                        }
+                    }
                 }
+
+                vec![v1::AckplaneFrame {
+                    frame: Some(v1::ackplane_frame::Frame::BatchReceipt(v1::BatchReceipt {
+                        receipts,
+                    })),
+                }]
             };
 
-            if let Err(refusal) =
-                envelope_signature::verify(&wire, envelope.provenance, &resolution)
-            {
-                break 'batch vec![v1::AckplaneFrame {
-                    frame: Some(v1::ackplane_frame::Frame::Rejection(unauthenticated(
-                        &key, refusal,
-                    ))),
-                }];
-            }
+            record_batch_observability(
+                &responses,
+                batch_started.elapsed(),
+                batch_records,
+                batch_bytes,
+                retry_count,
+                position,
+            );
 
-            match append(envelope).await {
-                Ok(outcome) => {
-                    if matches!(outcome, AppendOutcome::Duplicate { .. }) {
-                        retry_count += 1;
-                    }
-                    let receipt = sync::receipt(&key, outcome);
-                    position = Some(receipt.position);
-                    receipts.push(receipt);
-                }
-                Err(error) => {
-                    break 'batch vec![v1::AckplaneFrame {
-                        frame: Some(v1::ackplane_frame::Frame::Rejection(sync::rejection(
-                            &key, &error,
-                        ))),
-                    }];
-                }
-            }
+            (
+                ConnectionState::Authenticated {
+                    tenant_id,
+                    repository_id,
+                    producer_id,
+                },
+                responses,
+            )
         }
-
-        vec![v1::AckplaneFrame {
-            frame: Some(v1::ackplane_frame::Frame::BatchReceipt(v1::BatchReceipt {
-                receipts,
-            })),
-        }]
+        (ConnectionState::Authenticated { .. }, _) => (
+            ConnectionState::Rejected,
+            vec![connection_refused(
+                "Hello and the connection challenge are only valid once, at the start of the connection",
+            )],
+        ),
+        (ConnectionState::Rejected, _) => (ConnectionState::Rejected, Vec::new()),
     };
-
-    record_batch_observability(
-        &responses,
-        batch_started.elapsed(),
-        batch_records,
-        batch_bytes,
-        retry_count,
-        position,
-    );
+    *state = next_state;
     responses
 }
 
@@ -287,12 +546,14 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
 
         tokio::spawn(async move {
             let mut inbound = request.into_inner();
+            let mut state = ConnectionState::AwaitingHello;
             'stream: loop {
                 match inbound.message().await {
                     Ok(Some(frame)) => {
                         let responses = handle_frame(
                             frame,
                             flow_control,
+                            &mut state,
                             |envelope| {
                                 let ledger = Arc::clone(&ledger);
                                 async move { ledger.lock().await.append(&envelope).await }
@@ -309,7 +570,8 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
                             },
                         )
                         .await;
-                        let terminate = must_terminate_after(&responses);
+                        let terminate =
+                            must_terminate_after(&responses) || state == ConnectionState::Rejected;
                         for frame in responses {
                             if sender.send(Ok(frame)).await.is_err() {
                                 break 'stream;
@@ -438,21 +700,148 @@ mod tests {
         }
     }
 
+    /// The state most tests below start from: a connection that already
+    /// completed ADR-0098 decision 1's handshake, so EventBatch/Heartbeat
+    /// behaviour can be tested on its own without re-driving the handshake
+    /// in every one of them.
+    fn authenticated_state() -> ConnectionState {
+        ConnectionState::Authenticated {
+            tenant_id: "acme".to_string(),
+            repository_id: "repo".to_string(),
+            producer_id: "node-1".to_string(),
+        }
+    }
+
+    fn hello(signing_key_id: &str) -> v1::Hello {
+        v1::Hello {
+            tenant_id: "acme".to_string(),
+            repository_id: "repo".to_string(),
+            producer_id: "node-1".to_string(),
+            last_accepted_position: 12,
+            capabilities: vec!["evidence-v1".to_string()],
+            signing_key_id: signing_key_id.to_string(),
+        }
+    }
+
+    fn connection_challenge_signature(
+        nonce: &[u8],
+        key: &SigningKey,
+        signing_key_id: &str,
+    ) -> Vec<u8> {
+        key.sign(&crate::enrollment::connection_challenge_bytes(
+            &crate::enrollment::ConnectionChallengeBinding {
+                nonce,
+                tenant_id: "acme",
+                repository_id: "repo",
+                producer_id: "node-1",
+                signing_key_id,
+            },
+        ))
+        .to_bytes()
+        .to_vec()
+    }
+
     #[tokio::test]
-    async fn hello_is_acknowledged_without_advertising_unselected_capabilities() {
+    async fn hello_naming_a_signing_key_id_issues_a_connection_challenge() {
+        let mut state = ConnectionState::AwaitingHello;
         let response = handle_frame(
             v1::NodeFrame {
-                frame: Some(v1::node_frame::Frame::Hello(v1::Hello {
-                    tenant_id: "acme".to_string(),
-                    repository_id: "repo".to_string(),
-                    producer_id: "node-1".to_string(),
-                    last_accepted_position: 12,
-                    capabilities: vec!["evidence-v1".to_string()],
+                frame: Some(v1::node_frame::Frame::Hello(hello("key-1"))),
+            },
+            flow_control(),
+            &mut state,
+            |_| ready(Ok(AppendOutcome::Accepted { position: 1 })),
+            no_key,
+        )
+        .await;
+
+        assert!(matches!(
+            response.as_slice(),
+            [v1::AckplaneFrame {
+                frame: Some(v1::ackplane_frame::Frame::ConnectionChallenge(_))
+            }]
+        ));
+        assert!(matches!(
+            state,
+            ConnectionState::AwaitingChallengeResponse { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn hello_without_a_signing_key_id_is_refused_and_terminates() {
+        let mut state = ConnectionState::AwaitingHello;
+        let response = handle_frame(
+            v1::NodeFrame {
+                frame: Some(v1::node_frame::Frame::Hello(hello(""))),
+            },
+            flow_control(),
+            &mut state,
+            |_| ready(Ok(AppendOutcome::Accepted { position: 1 })),
+            no_key,
+        )
+        .await;
+
+        assert_eq!(
+            refusal_of(&response).reason,
+            v1::RejectionReason::Unauthenticated as i32
+        );
+        assert_eq!(state, ConnectionState::Rejected);
+    }
+
+    #[tokio::test]
+    async fn a_frame_before_hello_is_refused_and_terminates() {
+        let mut state = ConnectionState::AwaitingHello;
+        let response = handle_frame(
+            v1::NodeFrame {
+                frame: Some(v1::node_frame::Frame::EventBatch(v1::EventBatch {
+                    events: vec![envelope(b"fact")],
                 })),
             },
             flow_control(),
+            &mut state,
             |_| ready(Ok(AppendOutcome::Accepted { position: 1 })),
             no_key,
+        )
+        .await;
+
+        assert_eq!(
+            refusal_of(&response).reason,
+            v1::RejectionReason::Unauthenticated as i32
+        );
+        assert_eq!(state, ConnectionState::Rejected);
+    }
+
+    #[tokio::test]
+    async fn a_valid_challenge_response_authenticates_and_permits_event_batches() {
+        let key = node_key();
+        let mut state = ConnectionState::AwaitingHello;
+        handle_frame(
+            v1::NodeFrame {
+                frame: Some(v1::node_frame::Frame::Hello(hello("key-1"))),
+            },
+            flow_control(),
+            &mut state,
+            |_| ready(Ok(AppendOutcome::Accepted { position: 1 })),
+            no_key,
+        )
+        .await;
+        let ConnectionState::AwaitingChallengeResponse { nonce, .. } = state.clone() else {
+            panic!("expected AwaitingChallengeResponse after Hello, got {state:?}");
+        };
+        let signature = connection_challenge_signature(&nonce, &key, "key-1");
+        let mut lifecycle = lifecycle_for(&key);
+        lifecycle.record.signing_key_id = "key-1".to_string();
+
+        let response = handle_frame(
+            v1::NodeFrame {
+                frame: Some(v1::node_frame::Frame::ChallengeResponse(
+                    v1::ChallengeResponse { signature },
+                )),
+            },
+            flow_control(),
+            &mut state,
+            |_| ready(Ok(AppendOutcome::Accepted { position: 1 })),
+            resolving(lifecycle),
         )
         .await;
 
@@ -472,6 +861,132 @@ mod tests {
                 },
             ]
         );
+        assert_eq!(state, authenticated_state());
+    }
+
+    #[tokio::test]
+    async fn an_invalid_challenge_response_signature_is_refused_and_terminates() {
+        let key = node_key();
+        let impostor = SigningKey::from_bytes(&[11; 32]);
+        let mut state = ConnectionState::AwaitingChallengeResponse {
+            nonce: vec![1, 2, 3],
+            tenant_id: "acme".to_string(),
+            repository_id: "repo".to_string(),
+            producer_id: "node-1".to_string(),
+            signing_key_id: "key-1".to_string(),
+            last_accepted_position: 12,
+        };
+        let signature = connection_challenge_signature(&[1, 2, 3], &impostor, "key-1");
+        let mut lifecycle = lifecycle_for(&key);
+        lifecycle.record.signing_key_id = "key-1".to_string();
+
+        let response = handle_frame(
+            v1::NodeFrame {
+                frame: Some(v1::node_frame::Frame::ChallengeResponse(
+                    v1::ChallengeResponse { signature },
+                )),
+            },
+            flow_control(),
+            &mut state,
+            |_| ready(Ok(AppendOutcome::Accepted { position: 1 })),
+            resolving(lifecycle),
+        )
+        .await;
+
+        assert_eq!(
+            refusal_of(&response).reason,
+            v1::RejectionReason::Unauthenticated as i32
+        );
+        assert_eq!(state, ConnectionState::Rejected);
+    }
+
+    #[tokio::test]
+    async fn a_revoked_key_at_challenge_response_is_refused_and_terminates() {
+        let key = node_key();
+        let mut lifecycle = lifecycle_for(&key);
+        lifecycle.record.signing_key_id = "key-1".to_string();
+        lifecycle.revoked_at = Some(SystemTime::UNIX_EPOCH);
+        let mut state = ConnectionState::AwaitingChallengeResponse {
+            nonce: vec![1, 2, 3],
+            tenant_id: "acme".to_string(),
+            repository_id: "repo".to_string(),
+            producer_id: "node-1".to_string(),
+            signing_key_id: "key-1".to_string(),
+            last_accepted_position: 12,
+        };
+        let signature = connection_challenge_signature(&[1, 2, 3], &key, "key-1");
+
+        let response = handle_frame(
+            v1::NodeFrame {
+                frame: Some(v1::node_frame::Frame::ChallengeResponse(
+                    v1::ChallengeResponse { signature },
+                )),
+            },
+            flow_control(),
+            &mut state,
+            |_| ready(Ok(AppendOutcome::Accepted { position: 1 })),
+            resolving(lifecycle),
+        )
+        .await;
+
+        assert_eq!(
+            refusal_of(&response).reason,
+            v1::RejectionReason::NodeRevoked as i32
+        );
+        assert_eq!(state, ConnectionState::Rejected);
+    }
+
+    #[tokio::test]
+    async fn an_unexpected_frame_while_awaiting_a_challenge_response_is_refused_and_terminates() {
+        let mut state = ConnectionState::AwaitingChallengeResponse {
+            nonce: vec![1, 2, 3],
+            tenant_id: "acme".to_string(),
+            repository_id: "repo".to_string(),
+            producer_id: "node-1".to_string(),
+            signing_key_id: "key-1".to_string(),
+            last_accepted_position: 12,
+        };
+
+        let response = handle_frame(
+            v1::NodeFrame {
+                frame: Some(v1::node_frame::Frame::Heartbeat(v1::Heartbeat {
+                    last_accepted_position: 12,
+                })),
+            },
+            flow_control(),
+            &mut state,
+            |_| ready(Ok(AppendOutcome::Accepted { position: 1 })),
+            no_key,
+        )
+        .await;
+
+        assert_eq!(
+            refusal_of(&response).reason,
+            v1::RejectionReason::Unauthenticated as i32
+        );
+        assert_eq!(state, ConnectionState::Rejected);
+    }
+
+    #[tokio::test]
+    async fn a_second_hello_after_authentication_is_refused_and_terminates() {
+        let mut state = authenticated_state();
+
+        let response = handle_frame(
+            v1::NodeFrame {
+                frame: Some(v1::node_frame::Frame::Hello(hello("key-1"))),
+            },
+            flow_control(),
+            &mut state,
+            |_| ready(Ok(AppendOutcome::Accepted { position: 1 })),
+            no_key,
+        )
+        .await;
+
+        assert_eq!(
+            refusal_of(&response).reason,
+            v1::RejectionReason::Unauthenticated as i32
+        );
+        assert_eq!(state, ConnectionState::Rejected);
     }
 
     #[tokio::test]
@@ -483,6 +998,7 @@ mod tests {
                 })),
             },
             flow_control(),
+            &mut authenticated_state(),
             |_| ready(Ok(AppendOutcome::Accepted { position: 19 })),
             no_key,
         )
@@ -598,6 +1114,7 @@ mod tests {
                 })),
             },
             flow_control(),
+            &mut authenticated_state(),
             |_| ready(Ok(AppendOutcome::Accepted { position: 42 })),
             resolving(lifecycle_for(&key)),
         )
@@ -634,6 +1151,7 @@ mod tests {
                 })),
             },
             flow_control(),
+            &mut authenticated_state(),
             move |_| {
                 observed_calls.fetch_add(1, Ordering::SeqCst);
                 ready(Ok(AppendOutcome::Accepted { position: 1 }))
@@ -677,6 +1195,7 @@ mod tests {
                 })),
             },
             flow_control(),
+            &mut authenticated_state(),
             move |_| {
                 counted.fetch_add(1, Ordering::SeqCst);
                 ready(Ok(AppendOutcome::Accepted { position: 1 }))
@@ -798,6 +1317,7 @@ mod tests {
                 })),
             },
             flow_control(),
+            &mut authenticated_state(),
             |_| ready(Ok(AppendOutcome::Accepted { position: 1 })),
             no_key,
         )
@@ -919,6 +1439,7 @@ mod tests {
                 })),
             },
             flow_control(),
+            &mut authenticated_state(),
             |_| ready(Ok(AppendOutcome::Accepted { position: 1 })),
             no_key,
         )

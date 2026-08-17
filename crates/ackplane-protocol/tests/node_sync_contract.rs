@@ -16,6 +16,7 @@ fn hello_frame_round_trips_through_the_v1_wire_contract() {
             producer_id: "node-a".into(),
             last_accepted_position: 42,
             capabilities: vec!["receipts.v1".into()],
+            signing_key_id: "key-a".into(),
         })),
     };
 
@@ -34,6 +35,7 @@ fn v1_node_frames_tolerate_unknown_additive_fields() {
             producer_id: "node-a".into(),
             last_accepted_position: 42,
             capabilities: vec!["receipts.v1".into()],
+            signing_key_id: "key-a".into(),
         })),
     };
     let mut encoded = frame.encode_to_vec();
