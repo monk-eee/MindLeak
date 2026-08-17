@@ -15,6 +15,10 @@ use ackplane_server::{
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // JSON so decision 10's fields (method, outcome, reason, latency_ms,
+    // batch_records, batch_bytes, retry_count, position) stay structured
+    // rather than becoming another hand-parsed log line.
+    tracing_subscriber::fmt().json().init();
     match ServerConfig::resolve(|key| std::env::var(key).ok()) {
         Ok(config) => {
             println!("{}", config.banner());
