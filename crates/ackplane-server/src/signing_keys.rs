@@ -81,6 +81,73 @@ pub async fn register(
     Ok(())
 }
 
+/// Fetch a key's record and lifecycle inside the caller's transaction, locking
+/// the row so a concurrent rotation of the same key cannot race this one
+/// (ADR-0085 decision 7). `None` means no such key is registered at all.
+pub async fn fetch_lifecycle_for_update(
+    transaction: &Transaction<'_>,
+    signing_key_id: &str,
+) -> Result<Option<SigningKeyLifecycle>, SigningKeyError> {
+    let row = transaction
+        .query_opt(
+            "SELECT signing_key_id, tenant_id, repository_id, node_id, public_key, \
+             public_key_fingerprint, activated_at, expires_at, retired_at, revoked_at \
+             FROM signing_keys WHERE signing_key_id = $1 FOR UPDATE",
+            &[&signing_key_id],
+        )
+        .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    Ok(Some(SigningKeyLifecycle {
+        record: SigningKeyRecord {
+            signing_key_id: row.get(0),
+            tenant_id: row.get(1),
+            repository_id: row.get(2),
+            node_id: row.get(3),
+            public_key: row.get(4),
+            public_key_fingerprint: row.get(5),
+            activated_at: row.get(6),
+            expires_at: row.get(7),
+        },
+        retired_at: row.get(8),
+        revoked_at: row.get(9),
+    }))
+}
+
+/// Whether a signing key id is already registered, for rejecting a rotation
+/// whose proposed successor id collides with an existing binding.
+pub async fn key_exists(
+    transaction: &Transaction<'_>,
+    signing_key_id: &str,
+) -> Result<bool, SigningKeyError> {
+    Ok(transaction
+        .query_opt(
+            "SELECT 1 FROM signing_keys WHERE signing_key_id = $1",
+            &[&signing_key_id],
+        )
+        .await?
+        .is_some())
+}
+
+/// Mark a key retired at `retired_at`, ending its authority for records
+/// accepted afterward while everything it already signed stays resolvable
+/// (ADR-0085 decision 7's bounded rotation overlap).
+pub async fn retire(
+    transaction: &Transaction<'_>,
+    signing_key_id: &str,
+    retired_at: SystemTime,
+) -> Result<(), SigningKeyError> {
+    transaction
+        .execute(
+            "UPDATE signing_keys SET retired_at = $2 WHERE signing_key_id = $1",
+            &[&signing_key_id, &retired_at],
+        )
+        .await?;
+    Ok(())
+}
+
 /// A key together with the lifecycle events that may have ended its authority.
 ///
 /// Separate from `SigningKeyRecord` because these are the fields a verifier

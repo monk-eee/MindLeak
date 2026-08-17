@@ -65,6 +65,11 @@
           "type": "tree"
         },
         {
+          "id": "mindleak.doctorView",
+          "name": "Board Doctor",
+          "type": "tree"
+        },
+        {
           "id": "mindleak.designView",
           "name": "Design Board",
           "type": "tree"
@@ -224,6 +229,11 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "mindleak.doctor.refresh",
+        "title": "MindLeak: Refresh Board Doctor",
+        "icon": "$(refresh)"
+      },
+      {
         "command": "mindleak.telemetry.refresh",
         "title": "MindLeak: Refresh Telemetry",
         "icon": "$(refresh)"
@@ -326,6 +336,11 @@
         {
           "command": "mindleak.fleet.refresh",
           "when": "view == mindleak.fleetView",
+          "group": "navigation"
+        },
+        {
+          "command": "mindleak.doctor.refresh",
+          "when": "view == mindleak.doctorView",
           "group": "navigation"
         },
         {
@@ -476,6 +491,10 @@
         },
         {
           "command": "mindleak.board.refresh",
+          "when": "false"
+        },
+        {
+          "command": "mindleak.doctor.refresh",
           "when": "false"
         },
         {

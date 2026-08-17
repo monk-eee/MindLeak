@@ -25,4 +25,4 @@ tokio-postgres = { workspace = true }
 tokio-stream = "0.1"
 tonic = { workspace = true }
 tracing = { workspace = true }
-time = { version = "=0.3.36", features = ["formatting"] }
+time = { version = "=0.3.36", features = ["formatting", "parsing"] }

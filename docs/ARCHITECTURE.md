@@ -261,6 +261,12 @@ asynchronously replicated acknowledgement ADR-0086 clause 12 will not label as
 zero-loss. The database URL carries a password, so it is absent from the banner
 and redacted in a hand-written `Debug`.
 
+TLS is optional only for loopback development listeners. A deployment that sets
+`ACKPLANE_LISTEN` outside `127.0.0.1` or `::1` must also set both
+`ACKPLANE_TLS_CERTIFICATE_PATH` and `ACKPLANE_TLS_KEY_PATH` to PEM files; the
+server refuses partial or absent TLS material before accepting work (ADR-0083
+clause 8).
+
 The server exposes `NodeSyncService.Synchronize` from ADR-0083 and the initial
 enrollment path from ADR-0085. The synchronization stream acknowledges a hello,
 translates event batches into ledger appends, returns durable positions in
