@@ -100,10 +100,11 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0090](0090-certification-is-a-status-not-a-service.md) | Certification is a status, not a service | Accepted |
 | [0091](0091-ackplane-builds-and-tests-without-a-database.md) | Ackplane builds and tests without a database | Accepted |
 | [0092](0092-ackplane-is-governed-by-its-own-goal.md) | Ackplane is governed by its own goal | Accepted |
-| [0093](0093-tool-descriptions-are-a-contract-not-a-narrative.md) | Tool descriptions are a contract, not a narrative | Proposed |
-| [0094](0094-the-bridge-preserves-standalone-operation.md) | The Bridge preserves standalone operation | Proposed |
-| [0095](0095-the-bridge-uses-an-authenticated-projection-api.md) | The Bridge uses an authenticated projection API | Proposed |
-| [0096](0096-ackplane-arbitrates-federated-claims-through-leased-delegation.md) | Ackplane arbitrates federated claims through leased delegation | Proposed |
+| [0093](0093-tool-descriptions-are-a-contract-not-a-narrative.md) | Tool descriptions are a contract, not a narrative | Accepted |
+| [0094](0094-the-bridge-preserves-standalone-operation.md) | The Bridge preserves standalone operation | Accepted |
+| [0095](0095-the-bridge-uses-an-authenticated-projection-api.md) | The Bridge uses an authenticated projection API | Accepted |
+| [0096](0096-ackplane-arbitrates-federated-claims-through-leased-delegation.md) | Ackplane arbitrates federated claims through leased delegation | Accepted |
+| [0098](0098-connection-trust-reuses-the-enrolled-key-oidc-waits.md) | Connection trust reuses the enrolled node key; OIDC waits for a real second tenant | Proposed |
 
 ## Writing a new ADR
 
