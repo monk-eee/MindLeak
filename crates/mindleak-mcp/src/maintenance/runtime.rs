@@ -510,11 +510,14 @@ fn error_category(error: &MindLeakError) -> &'static str {
 mod tests {
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use mindleak_core::{Result as MindLeakResult, TextEmbedder};
     use mindleak_model::{failure, ModelFailureReason};
 
     use super::*;
+
+    static TEMPORARY_DATABASE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     struct UnavailableIndexEmbedder;
 
@@ -709,7 +712,7 @@ mod tests {
 
         runtime.shutdown();
         drop(inspector);
-        fs::remove_file(path).unwrap();
+        cleanup_database(&path);
     }
 
     #[test]
@@ -747,7 +750,7 @@ mod tests {
         activity.shutdown();
         worker.join().unwrap();
         drop(inspector);
-        fs::remove_file(path).unwrap();
+        cleanup_database(&path);
     }
 
     #[test]
@@ -795,19 +798,44 @@ mod tests {
         activity.shutdown();
         worker.join().unwrap();
         drop(inspector);
-        fs::remove_file(path).unwrap();
+        cleanup_database(&path);
         assert!(
             pruned,
             "autonomous prune never ran despite its cadence elapsing under load"
         );
     }
 
+    #[test]
+    fn temporary_databases_are_unique_and_cleanup_sqlite_sidecars() {
+        let first = temporary_database("isolation");
+        let second = temporary_database("isolation");
+        assert_ne!(first, second);
+
+        fs::write(&first, "database").unwrap();
+        fs::write(format!("{}-wal", first.display()), "wal").unwrap();
+        fs::write(format!("{}-shm", first.display()), "shm").unwrap();
+
+        cleanup_database(&first);
+
+        assert!(!first.exists());
+        assert!(!PathBuf::from(format!("{}-wal", first.display())).exists());
+        assert!(!PathBuf::from(format!("{}-shm", first.display())).exists());
+        cleanup_database(&second);
+    }
+
     fn temporary_database(name: &str) -> PathBuf {
+        let sequence = TEMPORARY_DATABASE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "mindleak-maintenance-{name}-{}.db",
-            std::process::id()
+            "mindleak-maintenance-{name}-{}-{sequence}.db",
+            std::process::id(),
         ));
-        let _ = fs::remove_file(&path);
+        cleanup_database(&path);
         path
+    }
+
+    fn cleanup_database(path: &PathBuf) {
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(format!("{}-wal", path.display()));
+        let _ = fs::remove_file(format!("{}-shm", path.display()));
     }
 }
