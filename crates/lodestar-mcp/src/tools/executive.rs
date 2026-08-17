@@ -7,12 +7,22 @@ use super::{
     required_for, str_array, text, Renamed,
 };
 use lodestar_core::{
-    now_unix, ConformanceCheckReference, GoverningClause, HumanQuestion, Lodestar, TaskScope,
+    now_unix, ConformanceCheckReference, GoverningClause, HumanQuestion, Lodestar, Task, TaskScope,
     TaskStatus,
 };
 use serde_json::{json, Value};
 
 const CLAIM_STEPS: [&str; 4] = ["claim", "renew", "release", "recover"];
+
+/// Task summaries `existing_work` and `task_create` will carry, most recent
+/// first.
+///
+/// `existing_work` is every task ever created under a goal or matching a
+/// scope, unbounded and un-truncated: creating this very task under a
+/// 149-task goal returned 25 KB from this array alone. The exact count still
+/// answers "how much", so nothing about the full total is lost — only the
+/// list a caller reads is capped, at the size most likely to matter first.
+const TASK_PREVIEW_LIMIT: usize = 20;
 
 const TRANSITIONS: [&str; 9] = [
     "complete", "resolve", "block", "reopen", "abandon", "pause", "resume", "ask", "answer",
@@ -330,11 +340,17 @@ pub(super) fn dispatch(
             // (ADR-0015) — a gate here would be wrong more often than right.
             // Six identical tasks reached the live board because the thing
             // creating them had no way to see the five before it.
-            let prior: Vec<Value> = engine
+            let prior_full: Vec<Task> = engine
                 .existing_work(Some(goal_id), &[])
                 .map_err(|e| e.to_string())?
                 .into_iter()
                 .filter(|t| t.id != task.id)
+                .collect();
+            let already_serving_this_goal = prior_full.len();
+            let (prior_bounded, prior_truncated) =
+                bounded_by_recency(prior_full, TASK_PREVIEW_LIMIT);
+            let prior: Vec<Value> = prior_bounded
+                .iter()
                 .map(|t| {
                     json!({
                         "task_id": t.id,
@@ -374,8 +390,12 @@ pub(super) fn dispatch(
                 .collect();
             let mut value = serde_json::to_value(&task).map_err(|e| e.to_string())?;
             if let Some(object) = value.as_object_mut() {
-                object.insert("already_serving_this_goal".into(), json!(prior.len()));
+                object.insert(
+                    "already_serving_this_goal".into(),
+                    json!(already_serving_this_goal),
+                );
                 object.insert("prior_work".into(), json!(prior));
+                object.insert("prior_work_truncated".into(), json!(prior_truncated));
                 if let Some(existing) = duplicate {
                     object.insert(
                         "duplicates".into(),
@@ -767,6 +787,21 @@ fn claim(engine: &Lodestar, task_id: &str, args: &Value) -> Result<Value, String
     ok(&response)
 }
 
+/// Newest-first truncation of a task list too long to send whole. The exact
+/// count of what was cut is computed by the caller before this runs, so
+/// nothing about "how much" is lost — only the list itself is capped.
+fn bounded_by_recency(mut tasks: Vec<Task>, limit: usize) -> (Vec<Task>, bool) {
+    tasks.sort_by(|left, right| {
+        right
+            .created_at
+            .cmp(&left.created_at)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    let truncated = tasks.len() > limit;
+    tasks.truncate(limit);
+    (tasks, truncated)
+}
+
 /// Has this already been done? Terminal work is included on purpose: a task
 /// that is already finished is the most useful answer, and the one the board
 /// hides (ADR-0015).
@@ -782,7 +817,13 @@ fn existing_work(engine: &Lodestar, args: &Value) -> Result<Value, String> {
     let found = engine
         .existing_work(goal_id.as_deref(), &paths)
         .map_err(|e| e.to_string())?;
-    let rows: Vec<Value> = found
+    let total = found.len();
+    let finished = found
+        .iter()
+        .filter(|task| task.status == TaskStatus::Done)
+        .count();
+    let (bounded, truncated) = bounded_by_recency(found, TASK_PREVIEW_LIMIT);
+    let rows: Vec<Value> = bounded
         .iter()
         .map(|task| {
             json!({
@@ -794,14 +835,11 @@ fn existing_work(engine: &Lodestar, args: &Value) -> Result<Value, String> {
             })
         })
         .collect();
-    let finished = found
-        .iter()
-        .filter(|task| task.status == TaskStatus::Done)
-        .count();
     ok(&json!({
-        "count": rows.len(),
+        "count": total,
         "already_done": finished,
         "work": rows,
+        "work_truncated": truncated,
     }))
 }
 
@@ -1187,7 +1225,9 @@ mod tests {
     use super::super::call;
     use super::*;
     use lodestar_core::llm::LlmClient;
-    use lodestar_core::{now_unix, ArtifactBindingMode, ConformanceEvidence, GoalKind};
+    use lodestar_core::{
+        now_unix, ArtifactBindingMode, ConformanceEvidence, EvidenceProvenance, GoalKind,
+    };
     use mindleak_session::SessionRegistry;
 
     /// The deprecation window has to be worth having: an old name must answer,
@@ -1306,6 +1346,122 @@ mod tests {
             body.get("duplicates").is_none(),
             "a different title is not a duplicate: {body}"
         );
+    }
+
+    /// Measured live: creating one task under a 149-task goal returned 25 KB
+    /// from `prior_work` alone, because the list was every task ever created
+    /// under the goal, unbounded. The exact count still travels; only the list
+    /// itself is capped.
+    #[test]
+    fn create_task_bounds_prior_work_while_reporting_the_full_count() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Busy", "many prior tasks", None)
+            .unwrap();
+        for index in 0..30 {
+            engine
+                .create_task(&goal.id, &format!("Prior task {index}"), "done")
+                .unwrap();
+        }
+
+        let created = call(
+            &engine,
+            &json!({
+                "name": "task_create",
+                "arguments": {
+                    "goal_id": goal.id,
+                    "title": "The new task",
+                    "acceptance": "done"
+                }
+            }),
+        )
+        .unwrap();
+        let text = created["content"][0]["text"].as_str().unwrap();
+        let body: Value = serde_json::from_str(text).unwrap();
+
+        assert!(
+            text.len() < 8_192,
+            "the response must stay well under the client spill threshold: {} bytes",
+            text.len()
+        );
+        assert_eq!(body["already_serving_this_goal"], 30);
+        let prior = body["prior_work"].as_array().unwrap();
+        assert!(prior.len() < 30, "the preview is capped: {}", prior.len());
+        assert_eq!(body["prior_work_truncated"], true);
+    }
+
+    /// Same defect, on the read side: `task_query(view="existing_work")`
+    /// returned 65 KB on a live board with 255 matching tasks. The exact
+    /// `count`/`already_done` still answer from the full set; the list is
+    /// capped.
+    #[test]
+    fn existing_work_view_bounds_the_list_while_reporting_the_full_count() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Busy", "many prior tasks", None)
+            .unwrap();
+        for index in 0..30 {
+            let title = format!("Historical task {index}");
+            let task = engine.create_task(&goal.id, &title, "done").unwrap();
+            if index % 3 == 0 {
+                engine.claim_task(&task.id, "agent-a", 300).unwrap();
+                let claimed = engine.store().get_task(&task.id).unwrap().unwrap();
+                let node_id = format!("artifact:src/historical-{index}.rs");
+                let execution_id = format!("execution:historical-{index}");
+                let evidence = ConformanceEvidence {
+                    schema_version: 1,
+                    task_id: Some(task.id.clone()),
+                    agent_id: "agent-a".into(),
+                    started_at: claimed.claim_started_at.unwrap(),
+                    ended_at: now_unix(),
+                    changed_node_ids: vec![node_id.clone()],
+                    failed_node_ids: Vec::new(),
+                    execution_ids: vec![execution_id.clone()],
+                    successful_execution_ids: vec![execution_id.clone()],
+                    commit_ids: Vec::new(),
+                    summary: "historical fixture".into(),
+                    provenance: vec![
+                        EvidenceProvenance {
+                            source_id: "agent:agent-a".into(),
+                            target_id: execution_id.clone(),
+                            relation: "observed".into(),
+                        },
+                        EvidenceProvenance {
+                            source_id: execution_id,
+                            target_id: node_id,
+                            relation: "modified".into(),
+                        },
+                    ],
+                };
+                let checked = engine.check_conformance(&evidence, Some(&task.id)).unwrap();
+                let completion = engine
+                    .complete_task(&task.id, "agent-a", &evidence, &checked, None)
+                    .unwrap();
+                assert!(completion.completed, "fixture task must reach done");
+            }
+        }
+
+        let result = call(
+            &engine,
+            &json!({
+                "name": "task_query",
+                "arguments": { "view": "existing_work", "goal_id": goal.id }
+            }),
+        )
+        .unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap();
+        let body: Value = serde_json::from_str(text).unwrap();
+
+        assert!(
+            text.len() < 8_192,
+            "the response must stay well under the client spill threshold: {} bytes",
+            text.len()
+        );
+        assert_eq!(body["count"], 30);
+        assert_eq!(body["already_done"], 10);
+        let work = body["work"].as_array().unwrap();
+        assert!(work.len() < 30, "the preview is capped: {}", work.len());
+        assert_eq!(body["work_truncated"], true);
     }
 
     /// Naming the prior work was not enough on its own. `prior_work` is every
