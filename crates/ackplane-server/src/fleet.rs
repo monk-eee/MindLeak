@@ -94,7 +94,7 @@ mod tests {
             ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
             EnrollmentSubmission,
         },
-        test_support::uuid_ish,
+        test_support::{unique_nonce, uuid_ish},
     };
 
     #[tokio::test]
@@ -147,7 +147,7 @@ mod tests {
             .await
             .expect("approve enrollment");
         let challenge = enrollment
-            .issue_challenge(&request, &[3; 32], now)
+            .issue_challenge(&request, &unique_nonce(), now)
             .await
             .expect("issue activation challenge");
         let signature = signing_key.sign(&activation_challenge_bytes(
