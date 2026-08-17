@@ -11,6 +11,7 @@ members = [
     "crates/ackplane-core",
     "crates/ackplane-protocol",
     "crates/ackplane-server",
+    "crates/ackplane-bridge",
 ]
 
 [workspace.package]
@@ -18,7 +19,7 @@ version = "0.1.7-alpha"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/monk-eee/MindLeak"
-rust-version = "1.75"
+rust-version = "1.85"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

@@ -1,0 +1,16 @@
+[package]
+name = "ackplane-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "The optional Ackplane browser assurance interface (ADR-0094 and ADR-0095)."
+
+[dependencies]
+ackplane-server = { path = "../ackplane-server" }
+axum = "0.7"
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
+tracing = { workspace = true }

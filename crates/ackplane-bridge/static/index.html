@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bridge Fleet</title>
+  <script>
+    (() => {
+      const param = new URLSearchParams(window.location.search).get("scoutTheme");
+      const theme =
+        param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
+  <style>
+    :root {
+      color-scheme: light;
+      --cp-bg: #f7f4ef;
+      --cp-bg-elevated: #fcfbf8;
+      --cp-surface: #ffffff;
+      --cp-surface-soft: #f5f5f5;
+      --cp-border: #dedede;
+      --cp-border-strong: #919191;
+      --cp-text: #242424;
+      --cp-text-muted: #5c5c5c;
+      --cp-text-soft: #6f6f6f;
+      --cp-accent: #b11f4b;
+      --cp-accent-hover: #9a1a41;
+      --cp-accent-soft: rgba(177, 31, 75, 0.08);
+      --cp-accent-fg: #ffffff;
+      --cp-success: #16a34a;
+      --cp-danger: #dc2626;
+      --cp-warning: #f59e0b;
+      --cp-link: #0078d4;
+      --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.12);
+      --cp-overlay: rgba(255, 255, 255, 0.8);
+      --cp-panel: rgba(255, 255, 255, 0.86);
+      --cp-panel-strong: rgba(255, 255, 255, 0.96);
+      --cp-sheen: rgba(255, 255, 255, 0.55);
+      --cp-highlight: rgba(177, 31, 75, 0.12);
+    }
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --cp-bg: #3d3b3a;
+      --cp-bg-elevated: #343231;
+      --cp-surface: #292929;
+      --cp-surface-soft: #2e2e2e;
+      --cp-border: #474747;
+      --cp-border-strong: #5f5f5f;
+      --cp-text: #dedede;
+      --cp-text-muted: #919191;
+      --cp-text-soft: #b0b0b0;
+      --cp-accent: #fd8ea1;
+      --cp-accent-hover: #fb7b91;
+      --cp-accent-soft: rgba(253, 142, 161, 0.14);
+      --cp-accent-fg: #1a1a1a;
+      --cp-success: #4ade80;
+      --cp-danger: #f87171;
+      --cp-warning: #fbbf24;
+      --cp-link: #4da6ff;
+      --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+      --cp-overlay: rgba(41, 41, 41, 0.88);
+      --cp-panel: rgba(41, 41, 41, 0.72);
+      --cp-panel-strong: rgba(41, 41, 41, 0.96);
+      --cp-sheen: rgba(255, 255, 255, 0.04);
+      --cp-highlight: rgba(253, 142, 161, 0.12);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--cp-bg); color: var(--cp-text); font-family: "Segoe UI", Aptos, Calibri, -apple-system, BlinkMacSystemFont, sans-serif; }
+    header { border-bottom: 1px solid var(--cp-border); background: var(--cp-bg-elevated); }
+    .masthead, main { width: min(1180px, calc(100% - 32px)); margin: 0 auto; }
+    .masthead { display: flex; align-items: baseline; justify-content: space-between; gap: 24px; padding: 22px 0 20px; }
+    h1 { margin: 0; font-size: 1.45rem; font-weight: 650; letter-spacing: 0; }
+    .scope { margin: 0; color: var(--cp-text-muted); font-size: 0.9rem; }
+    main { padding: 30px 0 48px; }
+    .summary { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+    .summary h2 { margin: 0; font-size: 1rem; font-weight: 650; }
+    #status { margin: 0; color: var(--cp-text-muted); font-size: 0.9rem; }
+    .fleet-table { width: 100%; border-collapse: collapse; background: var(--cp-surface); border: 1px solid var(--cp-border); }
+    th, td { padding: 15px 16px; text-align: left; border-bottom: 1px solid var(--cp-border); vertical-align: middle; }
+    th { background: var(--cp-surface-soft); color: var(--cp-text-muted); font-size: 0.78rem; font-weight: 650; letter-spacing: 0; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+    .repo { font-family: Consolas, "Courier New", Courier, monospace; font-size: 0.86rem; }
+    .state { color: var(--cp-success); font-weight: 600; }
+    .stale { color: var(--cp-warning); font-weight: 600; }
+    .empty { padding: 42px 16px; color: var(--cp-text-muted); text-align: center; }
+    @media (max-width: 700px) {
+      .masthead, .summary { align-items: flex-start; flex-direction: column; gap: 8px; }
+      .fleet-table thead { display: none; }
+      .fleet-table, .fleet-table tbody, .fleet-table tr, .fleet-table td { display: block; width: 100%; }
+      .fleet-table tr { border-bottom: 1px solid var(--cp-border); padding: 8px 0; }
+      .fleet-table tr:last-child { border-bottom: 0; }
+      .fleet-table td { border: 0; padding: 6px 16px; }
+      .fleet-table td::before { color: var(--cp-text-soft); content: attr(data-label) ": "; font-size: 0.78rem; }
+      .fleet-table td.empty::before { content: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="masthead">
+      <h1>Bridge Fleet</h1>
+      <p class="scope">Tenant assurance view | accepted Ackplane records</p>
+    </div>
+  </header>
+  <main>
+    <section aria-labelledby="fleet-heading">
+      <div class="summary">
+        <h2 id="fleet-heading">Enrolled repositories</h2>
+        <p id="status" aria-live="polite">Loading fleet...</p>
+      </div>
+      <table class="fleet-table">
+        <thead><tr><th>Repository</th><th>Active nodes</th><th>Projection</th><th>Last activated</th></tr></thead>
+        <tbody id="fleet"></tbody>
+      </table>
+    </section>
+  </main>
+  <script>
+    const status = document.getElementById("status");
+    const fleet = document.getElementById("fleet");
+    const timestamp = (seconds) => seconds ? new Date(seconds * 1000).toLocaleString() : "Unknown";
+    const cell = (label, value, className = "") => {
+      const element = document.createElement("td");
+      element.dataset.label = label;
+      element.textContent = value;
+      if (className) element.className = className;
+      return element;
+    };
+    async function loadFleet() {
+      try {
+        const response = await fetch("/api/v1/fleet");
+        if (!response.ok) throw new Error("Fleet request failed");
+        const data = await response.json();
+        fleet.replaceChildren();
+        if (!data.repositories.length) {
+          const row = document.createElement("tr");
+          const empty = cell("", "No active enrollment receipts are available for this tenant.", "empty");
+          empty.colSpan = 4;
+          row.append(empty);
+          fleet.append(row);
+        }
+        for (const repository of data.repositories) {
+          const row = document.createElement("tr");
+          const projected = repository.projection_stream_position === null
+            ? ["Not projected", "stale"]
+            : [`Position ${repository.projection_stream_position}`, "state"];
+          row.append(
+            cell("Repository", repository.repository_id, "repo"),
+            cell("Active nodes", String(repository.active_node_count)),
+            cell("Projection", projected[0], projected[1]),
+            cell("Last activated", timestamp(repository.last_activated_at_seconds))
+          );
+          fleet.append(row);
+        }
+        status.textContent = `${data.repositories.length === 1 ? "1 repository" : `${data.repositories.length} repositories`} visible`;
+      } catch (error) {
+        fleet.replaceChildren();
+        const row = document.createElement("tr");
+        const empty = cell("", "Fleet data is unavailable. The Ackplane read service may be disconnected.", "empty");
+        empty.colSpan = 4;
+        row.append(empty);
+        fleet.append(row);
+        status.textContent = "Fleet unavailable";
+      }
+    }
+    loadFleet();
+  </script>
+</body>
+</html>

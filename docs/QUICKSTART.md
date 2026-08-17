@@ -91,7 +91,7 @@ should not create repository evidence or own Lodestar tasks. See the full
 
 ### Option B — build from source
 
-Requires stable Rust 1.75+:
+Requires stable Rust 1.85+:
 
 ```bash
 cargo build --release --locked -p mindleak-mcp -p lodestar-mcp

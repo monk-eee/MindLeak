@@ -68,8 +68,13 @@ pub enum SignatureRefusal {
     UnknownKey,
     /// The key exists but is bound to a different tenant, repository or node.
     BindingMismatch,
-    /// The key's authority had not begun, or had ended, when this arrived.
+    /// The key's authority had not begun, or had ended by expiry or
+    /// retirement, when this arrived.
     KeyNotInForce,
+    /// An administrator or incident workflow revoked this key (ADR-0085
+    /// decision 8) — a distinct incident from ordinary lifecycle expiry, and
+    /// the one that must also end the connection that presented it.
+    Revoked,
     /// The bytes do not verify under the resolved key.
     BadSignature,
     /// The declared class is one this authority cannot substantiate.
@@ -83,6 +88,7 @@ impl SignatureRefusal {
     pub fn reason(self) -> v1::RejectionReason {
         match self {
             Self::BindingMismatch => v1::RejectionReason::Unauthorized,
+            Self::Revoked => v1::RejectionReason::NodeRevoked,
             _ => v1::RejectionReason::Unauthenticated,
         }
     }
@@ -100,8 +106,12 @@ impl SignatureRefusal {
                 "that signing key is enrolled to a different tenant, repository or node"
             }
             Self::KeyNotInForce => {
-                "the signing key was not in force when this record arrived: it is revoked, \
-                 expired, retired, or not yet activated"
+                "the signing key was not in force when this record arrived: it is expired, \
+                 retired, or not yet activated"
+            }
+            Self::Revoked => {
+                "the signing key has been revoked; this connection is being terminated and no \
+                 further records from it will be accepted"
             }
             Self::BadSignature => "the signature does not verify under the enrolled key",
             Self::Unsubstantiated => {
@@ -164,10 +174,10 @@ fn check_signature(
         KeyResolution::Resolved(record) => record,
         KeyResolution::Unknown => return Err(SignatureRefusal::UnknownKey),
         KeyResolution::BindingMismatch => return Err(SignatureRefusal::BindingMismatch),
-        KeyResolution::NotYetActive
-        | KeyResolution::Expired
-        | KeyResolution::Revoked
-        | KeyResolution::Retired => return Err(SignatureRefusal::KeyNotInForce),
+        KeyResolution::Revoked => return Err(SignatureRefusal::Revoked),
+        KeyResolution::NotYetActive | KeyResolution::Expired | KeyResolution::Retired => {
+            return Err(SignatureRefusal::KeyNotInForce)
+        }
     };
 
     let key = <&[u8; 32]>::try_from(record.public_key.as_slice())
