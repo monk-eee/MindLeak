@@ -100,6 +100,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0090](0090-certification-is-a-status-not-a-service.md) | Certification is a status, not a service | Accepted |
 | [0091](0091-ackplane-builds-and-tests-without-a-database.md) | Ackplane builds and tests without a database | Accepted |
 | [0092](0092-ackplane-is-governed-by-its-own-goal.md) | Ackplane is governed by its own goal | Accepted |
+| [0093](0093-tool-descriptions-are-a-contract-not-a-narrative.md) | Tool descriptions are a contract, not a narrative | Proposed |
 
 ## Writing a new ADR
 
