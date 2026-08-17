@@ -1,6 +1,6 @@
 # ADR-0094: The Bridge preserves standalone operation
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-17
 - Deciders: MindLeak maintainers
 - Depends on: [ADR-0016](0016-platform-packaging-and-registration.md)
