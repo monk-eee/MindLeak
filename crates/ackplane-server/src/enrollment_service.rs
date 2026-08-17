@@ -12,7 +12,8 @@ use crate::{
     enrollment::{public_key_fingerprint, EnrollmentState},
     enrollment_store::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentStatus, EnrollmentStore,
-        EnrollmentStoreError, EnrollmentSubmission,
+        EnrollmentStoreError, EnrollmentSubmission, KeyRotation, KeyRotationOutcome,
+        KeyRotationRejection,
     },
 };
 
@@ -109,11 +110,18 @@ impl v1::node_enrollment_service_server::NodeEnrollmentService for NodeEnrollmen
 
     async fn rotate_node_key(
         &self,
-        _request: Request<v1::KeyRotationRequest>,
+        request: Request<v1::KeyRotationRequest>,
     ) -> Result<Response<v1::KeyRotationResult>, Status> {
-        Err(Status::unimplemented(
-            "key rotation is not available until continuity proof is implemented",
-        ))
+        let rotation =
+            key_rotation_from_wire(request.into_inner()).map_err(Status::invalid_argument)?;
+        let result = self
+            .store
+            .lock()
+            .await
+            .rotate_key(&rotation, SystemTime::now())
+            .await
+            .map_err(map_store_error)?;
+        Ok(Response::new(key_rotation_result_to_wire(result)))
     }
 }
 
@@ -167,6 +175,83 @@ fn binding_from_proof(
             "public_key_fingerprint",
         )?,
     })
+}
+
+fn key_rotation_from_wire(request: v1::KeyRotationRequest) -> Result<KeyRotation, String> {
+    Ok(KeyRotation {
+        tenant_id: required(request.tenant_id, "tenant_id")?,
+        repository_id: required(request.repository_id, "repository_id")?,
+        node_id: required(request.node_id, "node_id")?,
+        current_key_id: required(request.current_key_id, "current_key_id")?,
+        successor_key_id: required(request.successor_key_id, "successor_key_id")?,
+        successor_public_key_fingerprint: required(
+            request.successor_public_key_fingerprint,
+            "successor_public_key_fingerprint",
+        )?,
+        successor_public_key: required_bytes(request.successor_public_key, "successor_public_key")?,
+        current_key_signature: required_bytes(
+            request.current_key_signature,
+            "current_key_signature",
+        )?,
+        successor_key_signature: required_bytes(
+            request.successor_key_signature,
+            "successor_key_signature",
+        )?,
+        requested_overlap_seconds: request.requested_overlap_seconds,
+    })
+}
+
+fn key_rotation_result_to_wire(
+    result: crate::enrollment_store::KeyRotationResult,
+) -> v1::KeyRotationResult {
+    let (outcome, rejection_reason, diagnostic) = match result.outcome {
+        KeyRotationOutcome::Applied => (
+            v1::KeyRotationOutcome::Applied,
+            v1::KeyRotationRejectionReason::Unspecified,
+            String::new(),
+        ),
+        KeyRotationOutcome::Rejected(reason) => (
+            v1::KeyRotationOutcome::Rejected,
+            key_rotation_rejection_to_wire(reason),
+            key_rotation_rejection_diagnostic(reason).to_owned(),
+        ),
+    };
+    v1::KeyRotationResult {
+        node_id: result.node_id,
+        current_key_id: result.current_key_id,
+        successor_key_id: result.successor_key_id,
+        outcome: outcome as i32,
+        rejection_reason: rejection_reason as i32,
+        diagnostic,
+    }
+}
+
+fn key_rotation_rejection_to_wire(reason: KeyRotationRejection) -> v1::KeyRotationRejectionReason {
+    match reason {
+        KeyRotationRejection::CurrentKeyNotActive => {
+            v1::KeyRotationRejectionReason::CurrentKeyNotActive
+        }
+        KeyRotationRejection::SuccessorKeyConflict => {
+            v1::KeyRotationRejectionReason::SuccessorKeyConflict
+        }
+        KeyRotationRejection::ContinuityProofInvalid => {
+            v1::KeyRotationRejectionReason::ContinuityProofInvalid
+        }
+        KeyRotationRejection::NodeRevoked => v1::KeyRotationRejectionReason::NodeRevoked,
+    }
+}
+
+fn key_rotation_rejection_diagnostic(reason: KeyRotationRejection) -> &'static str {
+    match reason {
+        KeyRotationRejection::CurrentKeyNotActive => {
+            "the current key is not an active signing key for this node"
+        }
+        KeyRotationRejection::SuccessorKeyConflict => "the successor key id is already registered",
+        KeyRotationRejection::ContinuityProofInvalid => {
+            "the continuity proof does not verify against both the current and successor keys"
+        }
+        KeyRotationRejection::NodeRevoked => "the current key has been revoked",
+    }
 }
 
 fn required(value: String, field: &str) -> Result<String, String> {
@@ -242,6 +327,9 @@ fn map_store_error(error: EnrollmentStoreError) -> Status {
     match error {
         EnrollmentStoreError::RequestConflict { .. } => Status::already_exists(error.to_string()),
         EnrollmentStoreError::PublicKeyFingerprintMismatch { .. } => {
+            Status::invalid_argument(error.to_string())
+        }
+        EnrollmentStoreError::InvalidTimestamp { .. } => {
             Status::invalid_argument(error.to_string())
         }
         EnrollmentStoreError::NotFound { .. } => Status::not_found(error.to_string()),

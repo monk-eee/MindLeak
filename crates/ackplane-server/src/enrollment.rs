@@ -90,6 +90,67 @@ pub fn verify_activation_proof(
         .is_ok()
 }
 
+const KEY_ROTATION_DOMAIN: &[u8] = b"mindleak.ackplane.v1.enrollment.key_rotation\0";
+
+/// The immutable values a rotation statement binds together (ADR-0085
+/// decision 7), bundled so encoding them takes one argument instead of eight.
+pub struct KeyRotationStatement<'a> {
+    pub tenant_id: &'a str,
+    pub repository_id: &'a str,
+    pub node_id: &'a str,
+    pub current_key_id: &'a str,
+    pub successor_key_id: &'a str,
+    pub successor_public_key_fingerprint: &'a str,
+    pub successor_public_key: &'a [u8],
+    pub requested_overlap_seconds: u64,
+}
+
+/// Encode the exact domain-separated bytes both the current and successor key
+/// must sign to authorise a rotation (ADR-0085 decision 7). Both signatures
+/// cover the identical bytes: verifying each against its own key is what
+/// proves continuity between them, rather than merely proving each key exists.
+pub fn key_rotation_bytes(statement: &KeyRotationStatement<'_>) -> Vec<u8> {
+    let fields: [&[u8]; 7] = [
+        statement.tenant_id.as_bytes(),
+        statement.repository_id.as_bytes(),
+        statement.node_id.as_bytes(),
+        statement.current_key_id.as_bytes(),
+        statement.successor_key_id.as_bytes(),
+        statement.successor_public_key_fingerprint.as_bytes(),
+        statement.successor_public_key,
+    ];
+    let overlap_bytes = statement.requested_overlap_seconds.to_be_bytes();
+    let mut bytes = Vec::with_capacity(
+        KEY_ROTATION_DOMAIN.len()
+            + fields.iter().map(|field| 4 + field.len()).sum::<usize>()
+            + overlap_bytes.len(),
+    );
+    bytes.extend_from_slice(KEY_ROTATION_DOMAIN);
+    for field in fields {
+        bytes.extend_from_slice(&(field.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(field);
+    }
+    bytes.extend_from_slice(&overlap_bytes);
+    bytes
+}
+
+/// Verify one key's signature over rotation bytes. The caller invokes this
+/// once with the current key and once with the successor key, both against
+/// the identical bytes from [`key_rotation_bytes`]; continuity holds only when
+/// both pass.
+pub fn verify_key_rotation_signature(public_key: &[u8], signature: &[u8], bytes: &[u8]) -> bool {
+    let Ok(public_key) = <&[u8; 32]>::try_from(public_key) else {
+        return false;
+    };
+    let Ok(verifying_key) = VerifyingKey::from_bytes(public_key) else {
+        return false;
+    };
+    let Ok(signature) = Signature::from_slice(signature) else {
+        return false;
+    };
+    verifying_key.verify(bytes, &signature).is_ok()
+}
+
 /// The authority-owned state of a node enrollment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnrollmentState {
@@ -171,9 +232,10 @@ mod tests {
     use ed25519_dalek::{Signer, SigningKey};
 
     use super::{
-        activation_challenge_bytes, public_key_fingerprint, verify_activation_proof,
-        ActivationChallenge, ActivationFailure, ActivationProofBinding, Enrollment,
-        EnrollmentState,
+        activation_challenge_bytes, key_rotation_bytes, public_key_fingerprint,
+        verify_activation_proof, verify_key_rotation_signature, ActivationChallenge,
+        ActivationFailure, ActivationProofBinding, Enrollment, EnrollmentState,
+        KeyRotationStatement,
     };
 
     fn approved_enrollment() -> Enrollment {
@@ -354,5 +416,120 @@ mod tests {
             public_key_fingerprint(&[0; 32]),
             "ed25519:66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925"
         );
+    }
+
+    #[test]
+    fn key_rotation_encoding_binds_each_field_unambiguously() {
+        let encoded = key_rotation_bytes(&KeyRotationStatement {
+            tenant_id: "tenant",
+            repository_id: "repository",
+            node_id: "node",
+            current_key_id: "key-current",
+            successor_key_id: "key-successor",
+            successor_public_key_fingerprint: "fingerprint",
+            successor_public_key: &[9, 9],
+            requested_overlap_seconds: 3_600,
+        });
+
+        assert_eq!(
+            encoded,
+            [
+                b"mindleak.ackplane.v1.enrollment.key_rotation\0".as_slice(),
+                &[0, 0, 0, 6],
+                b"tenant",
+                &[0, 0, 0, 10],
+                b"repository",
+                &[0, 0, 0, 4],
+                b"node",
+                &[0, 0, 0, 11],
+                b"key-current",
+                &[0, 0, 0, 13],
+                b"key-successor",
+                &[0, 0, 0, 11],
+                b"fingerprint",
+                &[0, 0, 0, 2, 9, 9],
+                &3_600_u64.to_be_bytes(),
+            ]
+            .concat()
+        );
+    }
+
+    /// The load-bearing property of decision 7: a rotation is authorised only
+    /// when BOTH the current key and the successor key sign the identical
+    /// statement. A signature valid for one node's rotation must not verify
+    /// for a different node's, or the continuity proof would prove nothing
+    /// about which node is rotating.
+    #[test]
+    fn continuity_proof_ties_both_signatures_to_the_same_rotation_statement() {
+        let current = SigningKey::from_bytes(&[1; 32]);
+        let successor = SigningKey::from_bytes(&[2; 32]);
+        let bytes = key_rotation_bytes(&KeyRotationStatement {
+            tenant_id: "tenant",
+            repository_id: "repository",
+            node_id: "node-1",
+            current_key_id: "key-current",
+            successor_key_id: "key-successor",
+            successor_public_key_fingerprint: &public_key_fingerprint(
+                &successor.verifying_key().to_bytes(),
+            ),
+            successor_public_key: &successor.verifying_key().to_bytes(),
+            requested_overlap_seconds: 3_600,
+        });
+        let current_signature = current.sign(&bytes);
+        let successor_signature = successor.sign(&bytes);
+
+        assert!(verify_key_rotation_signature(
+            &current.verifying_key().to_bytes(),
+            &current_signature.to_bytes(),
+            &bytes,
+        ));
+        assert!(verify_key_rotation_signature(
+            &successor.verifying_key().to_bytes(),
+            &successor_signature.to_bytes(),
+            &bytes,
+        ));
+
+        let bytes_for_another_node = key_rotation_bytes(&KeyRotationStatement {
+            tenant_id: "tenant",
+            repository_id: "repository",
+            node_id: "node-2",
+            current_key_id: "key-current",
+            successor_key_id: "key-successor",
+            successor_public_key_fingerprint: &public_key_fingerprint(
+                &successor.verifying_key().to_bytes(),
+            ),
+            successor_public_key: &successor.verifying_key().to_bytes(),
+            requested_overlap_seconds: 3_600,
+        });
+        assert!(!verify_key_rotation_signature(
+            &current.verifying_key().to_bytes(),
+            &current_signature.to_bytes(),
+            &bytes_for_another_node,
+        ));
+    }
+
+    #[test]
+    fn a_successor_signature_does_not_verify_against_the_current_key() {
+        let current = SigningKey::from_bytes(&[1; 32]);
+        let successor = SigningKey::from_bytes(&[2; 32]);
+        let bytes = key_rotation_bytes(&KeyRotationStatement {
+            tenant_id: "tenant",
+            repository_id: "repository",
+            node_id: "node-1",
+            current_key_id: "key-current",
+            successor_key_id: "key-successor",
+            successor_public_key_fingerprint: &public_key_fingerprint(
+                &successor.verifying_key().to_bytes(),
+            ),
+            successor_public_key: &successor.verifying_key().to_bytes(),
+            requested_overlap_seconds: 3_600,
+        });
+        let successor_signature = successor.sign(&bytes);
+
+        assert!(!verify_key_rotation_signature(
+            &current.verifying_key().to_bytes(),
+            &successor_signature.to_bytes(),
+            &bytes,
+        ));
     }
 }
