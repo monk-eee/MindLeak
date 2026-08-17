@@ -337,7 +337,7 @@ impl Projector {
                     &seeds,
                     &(max_fanout as i64),
                     &max_depth,
-                    &max_nodes,
+                    &(max_nodes as i64),
                 ],
             )
             .await?;

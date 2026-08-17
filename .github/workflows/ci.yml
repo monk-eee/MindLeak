@@ -78,6 +78,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          # This job's cache entry served pre-built test binaries that did not
+          # reflect the checked-out commit for an extended period: PR #484's
+          # own local-planes run passed without ever running the test it
+          # added. Bumping the prefix starts a fresh, correctly-keyed cache.
+          prefix-key: v1-local-planes
       - name: Fetch locked Rust dependencies
         run: cargo fetch --locked
       - name: Setup Node
