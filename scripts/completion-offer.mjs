@@ -11,6 +11,66 @@ import { join, relative, sep } from "node:path";
 import { callTools, resolveServer } from "./claim-gate.mjs";
 
 const SESSION_TOKEN = /^[0-9a-f]{32}$/;
+const FINDINGS_PREVIEW_ITEMS = 3;
+const FINDINGS_PREVIEW_BYTES = 2_048;
+
+const boundedFindings = (findings) => {
+  const preview = [];
+  let usedBytes = 0;
+  let truncated = false;
+
+  for (const finding of findings) {
+    if (
+      preview.length === FINDINGS_PREVIEW_ITEMS ||
+      usedBytes === FINDINGS_PREVIEW_BYTES
+    ) {
+      truncated = true;
+      break;
+    }
+    let delivered = "";
+    for (const character of String(finding)) {
+      const characterBytes = Buffer.byteLength(character, "utf8");
+      if (usedBytes + characterBytes > FINDINGS_PREVIEW_BYTES) {
+        truncated = true;
+        break;
+      }
+      delivered += character;
+      usedBytes += characterBytes;
+    }
+    if (delivered.length > 0 || String(finding).length === 0)
+      preview.push(delivered);
+    if (delivered !== String(finding)) break;
+  }
+
+  return {
+    preview,
+    truncated: truncated || preview.length < findings.length,
+  };
+};
+
+const compactCheck = (check) => {
+  const sourceFindings = Array.isArray(check.findings_preview)
+    ? check.findings_preview
+    : Array.isArray(check.findings)
+      ? check.findings
+      : [];
+  const findingCount = Number.isInteger(check.finding_count)
+    ? check.finding_count
+    : sourceFindings.length;
+  const bounded = boundedFindings(sourceFindings);
+  return {
+    check: { id: check.id, token: check.token },
+    conformance: {
+      verdict: check.verdict,
+      finding_count: findingCount,
+      findings_preview: bounded.preview,
+      findings_truncated:
+        check.findings_truncated === true ||
+        findingCount > sourceFindings.length ||
+        bounded.truncated,
+    },
+  };
+};
 
 /**
  * Assemble the exact objects an agent may explicitly submit to complete_task.
@@ -99,11 +159,12 @@ export const prepareCompletionOffer = ({
       return null;
     }
 
+    const compact = compactCheck(check);
     return {
-      schema: 1,
+      schema: 2,
       task_id: claim.id,
       evidence,
-      check,
+      ...compact,
     };
   } catch {
     return null;
@@ -132,7 +193,7 @@ export const persistCompletionOffer = ({
 
 /** One bounded notice. Ignoring it is the whole decline path. */
 export const completionOfferNotice = (offer, path) =>
-  `completion is ready for ${offer.task_id} (${offer.check.verdict})\n` +
+  `completion is ready for ${offer.task_id} (${offer.conformance.verdict})\n` +
   `  exact evidence + check: ${path}\n` +
   '  submit explicitly with task_transition(task_id, to="complete", evidence, check, learned?)\n' +
   "  or ignore this offer; the push has already succeeded";
