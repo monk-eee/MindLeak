@@ -9,7 +9,10 @@
   (standalone federation boundary),
   [ADR-0083](0083-grpc-is-the-ackplane-node-protocol.md) (node protocol)
 - Refined by: [ADR-0085](0085-node-enrolment-requires-proof-of-possession.md)
-  (key binding, rotation, and revocation ceremony)
+  (key binding, rotation, and revocation ceremony),
+  [ADR-0098](0098-connection-trust-reuses-the-enrolled-key-oidc-waits.md)
+  (decisions 1, 3, 9 narrowed to the actual single-operator, multi-repository
+  deployment; full OIDC federation deferred)
 - Related: [ADR-0009](0009-evidence-backed-conformance.md) (evidence-backed
   verdicts), [ADR-0031](0031-exportable-conformance-evidence.md) (portable
   receipts), [ADR-0054](0054-identity-is-the-session-not-the-process.md)

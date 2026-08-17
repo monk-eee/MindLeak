@@ -14,6 +14,9 @@
   (federated coordination mode),
   [ADR-0084](0084-ackplane-evidence-has-explicit-trust.md) (remote identity and
   signed evidence)
+- Refined by: [ADR-0098](0098-connection-trust-reuses-the-enrolled-key-oidc-waits.md)
+  (the same enrolled key now also authenticates the live connection, instead of
+  a second certificate authority)
 - Related: [ADR-0016](0016-platform-packaging-and-registration.md) (local
   installation), [ADR-0038](0038-isolated-worktrees-shared-repository-state.md)
   (repository identity), [ADR-0045](0045-a-fleet-is-a-distributed-system.md)
