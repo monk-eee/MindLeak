@@ -2,10 +2,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  doctorAilmentIcon,
+  doctorAilmentLabel,
+  doctorGroups,
   fleetDashboard,
   formatDuration,
   shortAgent,
   verbsForTask,
+  type BoardFinding,
   type FleetInput,
   type FleetSnapshot,
 } from "./fleet";
@@ -224,5 +228,79 @@ describe("formatDuration", () => {
 
   it("renders a lapsed span by magnitude, so the sign is the caller's to show", () => {
     expect(formatDuration(-90)).toBe("1m");
+  });
+});
+
+function boardFinding(overrides: Partial<BoardFinding> = {}): BoardFinding {
+  return {
+    ailment: "duplicate_title",
+    subject: "Some title",
+    remedy: "decide which is the work",
+    task_ids: ["task:1"],
+    ...overrides,
+  };
+}
+
+describe("doctorAilmentLabel", () => {
+  it("names each known ailment in plain language", () => {
+    expect(doctorAilmentLabel("duplicate_title")).toBe("Duplicate title");
+    expect(doctorAilmentLabel("same_title_across_goals")).toBe("Forked across goals");
+    expect(doctorAilmentLabel("blocked_without_gate")).toBe("Blocked with no gate");
+  });
+
+  it("falls back to the raw ailment for one it does not recognise", () => {
+    expect(doctorAilmentLabel("something_new")).toBe("something_new");
+  });
+});
+
+describe("doctorAilmentIcon", () => {
+  it("gives every known ailment its own icon", () => {
+    expect(doctorAilmentIcon("blocked_without_gate")).toBe("circle-slash");
+    expect(doctorAilmentIcon("same_title_across_goals")).toBe("type-hierarchy");
+    expect(doctorAilmentIcon("duplicate_title")).toBe("copy");
+  });
+
+  it("falls back to a question mark for one it does not recognise", () => {
+    expect(doctorAilmentIcon("something_new")).toBe("question");
+  });
+});
+
+describe("doctorGroups", () => {
+  it("groups findings by ailment, worst-first", () => {
+    const groups = doctorGroups([
+      boardFinding({ ailment: "duplicate_title" }),
+      boardFinding({ ailment: "blocked_without_gate" }),
+      boardFinding({ ailment: "same_title_across_goals" }),
+      boardFinding({ ailment: "duplicate_title" }),
+    ]);
+
+    expect(groups.map((group) => group.ailment)).toEqual([
+      "blocked_without_gate",
+      "same_title_across_goals",
+      "duplicate_title",
+    ]);
+    expect(groups.find((group) => group.ailment === "duplicate_title")?.findings).toHaveLength(2);
+  });
+
+  it("omits an ailment with no findings rather than an empty group", () => {
+    const groups = doctorGroups([boardFinding({ ailment: "duplicate_title" })]);
+
+    expect(groups).toHaveLength(1);
+  });
+
+  it("sorts an unrecognised ailment last", () => {
+    const groups = doctorGroups([
+      boardFinding({ ailment: "blocked_without_gate" }),
+      boardFinding({ ailment: "a_future_ailment" }),
+    ]);
+
+    expect(groups.map((group) => group.ailment)).toEqual([
+      "blocked_without_gate",
+      "a_future_ailment",
+    ]);
+  });
+
+  it("returns nothing for an empty findings list", () => {
+    expect(doctorGroups([])).toEqual([]);
   });
 });
