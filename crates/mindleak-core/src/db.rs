@@ -9,8 +9,15 @@ use crate::error::{MindLeakError, Result};
 
 const SCHEMA: &str = include_str!("schema.sql");
 const WAL_RETRY_DELAY: Duration = Duration::from_millis(25);
-const OPEN_BUSY_BUDGET: Duration = Duration::from_secs(5);
-const DEFAULT_BUSY_TIMEOUT_MS: i64 = 5000;
+// One open (WAL mode + schema DDL + migration) can share this deadline with a
+// concurrent opener of the same fresh database. 5s was enough on a dev
+// machine but not on GitHub's windows-latest runner, where the maintenance
+// runtime tests intermittently exhausted it applying `schema.sql`'s full DDL
+// under CI-load disk contention -- reproduced consistently there, never
+// locally (16x parallel, repeated runs). Widened for that headroom, not
+// because the retry design itself was wrong.
+const OPEN_BUSY_BUDGET: Duration = Duration::from_secs(15);
+const DEFAULT_BUSY_TIMEOUT_MS: i64 = 15_000;
 
 /// Open (or create) a MindLeak database at `path`, apply the schema, and register
 /// the `effective_weight` scalar SQL function used by graph queries.
@@ -616,9 +623,14 @@ mod tests {
         let elapsed = started.elapsed();
 
         assert!(result.is_err());
+        // Bounded by roughly 2x the budget (one step can start just before the
+        // deadline and still run a full further wait), plus slack for a slow
+        // CI disk -- scaled from the constant so widening OPEN_BUSY_BUDGET can
+        // never silently leave this assertion looser or tighter than intended.
+        let ceiling = OPEN_BUSY_BUDGET * 3;
         assert!(
-            elapsed < Duration::from_secs(12),
-            "open exceeded bounded retry window: {elapsed:?}"
+            elapsed < ceiling,
+            "open exceeded bounded retry window: {elapsed:?} (ceiling {ceiling:?})"
         );
         holder.execute_batch("ROLLBACK").unwrap();
         cleanup(&path);
