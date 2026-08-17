@@ -106,74 +106,154 @@ where
         v1::node_frame::Frame::EventBatch(batch) => batch,
     };
 
+    let batch_started = std::time::Instant::now();
+    let batch_records = frame.events.len() as u64;
+    let batch_bytes: u64 = frame
+        .events
+        .iter()
+        .map(|event| event.payload.len() as u64)
+        .sum();
+    let mut retry_count = 0u64;
+    let mut position = None;
+
     let mut receipts = Vec::with_capacity(frame.events.len());
-    for wire in frame.events {
-        let envelope = match sync::translate(&wire) {
-            Ok(envelope) => envelope,
-            Err(rejection) => {
-                return vec![v1::AckplaneFrame {
-                    frame: Some(v1::ackplane_frame::Frame::Rejection(rejection)),
-                }];
-            }
-        };
-        let key = envelope.key.clone();
+    let responses = 'batch: {
+        for wire in frame.events {
+            let envelope = match sync::translate(&wire) {
+                Ok(envelope) => envelope,
+                Err(rejection) => {
+                    break 'batch vec![v1::AckplaneFrame {
+                        frame: Some(v1::ackplane_frame::Frame::Rejection(rejection)),
+                    }];
+                }
+            };
+            let key = envelope.key.clone();
 
-        // Judged as of now, because now is when this record is being accepted.
-        // A key revoked after this instant must not retroactively invalidate
-        // what it signed (ADR-0084 decision 12).
-        let resolution = match resolve_key(OwnedEnvelopeBinding {
-            signing_key_id: wire.signing_key_id.clone(),
-            tenant_id: key.tenant_id.clone(),
-            repository_id: key.repository_id.clone(),
-            producer_id: key.producer_id.clone(),
-            accepted_at: SystemTime::now(),
-        })
-        .await
-        {
-            Ok(resolution) => resolution,
-            // A key store that cannot answer is not a node that cannot
-            // authenticate. Refusing this as unauthenticated would be
-            // non-retryable, permanently rejecting a record whose sender is
-            // very likely legitimate.
-            Err(error) => {
-                tracing::error!(%error, record = %sync::record_identity(&key), "signing key lookup failed");
-                return vec![v1::AckplaneFrame {
-                    frame: Some(v1::ackplane_frame::Frame::Rejection(v1::Rejection {
-                        record_id: sync::record_identity(&key),
-                        reason: v1::RejectionReason::Unavailable as i32,
-                        retryable: true,
-                        diagnostic: "the key registry was unavailable; retry with backoff"
-                            .to_string(),
-                    })),
-                }];
-            }
-        };
+            // Judged as of now, because now is when this record is being accepted.
+            // A key revoked after this instant must not retroactively invalidate
+            // what it signed (ADR-0084 decision 12).
+            let resolution = match resolve_key(OwnedEnvelopeBinding {
+                signing_key_id: wire.signing_key_id.clone(),
+                tenant_id: key.tenant_id.clone(),
+                repository_id: key.repository_id.clone(),
+                producer_id: key.producer_id.clone(),
+                accepted_at: SystemTime::now(),
+            })
+            .await
+            {
+                Ok(resolution) => resolution,
+                // A key store that cannot answer is not a node that cannot
+                // authenticate. Refusing this as unauthenticated would be
+                // non-retryable, permanently rejecting a record whose sender is
+                // very likely legitimate.
+                Err(error) => {
+                    tracing::error!(%error, record = %sync::record_identity(&key), "signing key lookup failed");
+                    break 'batch vec![v1::AckplaneFrame {
+                        frame: Some(v1::ackplane_frame::Frame::Rejection(v1::Rejection {
+                            record_id: sync::record_identity(&key),
+                            reason: v1::RejectionReason::Unavailable as i32,
+                            retryable: true,
+                            diagnostic: "the key registry was unavailable; retry with backoff"
+                                .to_string(),
+                        })),
+                    }];
+                }
+            };
 
-        if let Err(refusal) = envelope_signature::verify(&wire, envelope.provenance, &resolution) {
-            return vec![v1::AckplaneFrame {
-                frame: Some(v1::ackplane_frame::Frame::Rejection(unauthenticated(
-                    &key, refusal,
-                ))),
-            }];
-        }
-
-        match append(envelope).await {
-            Ok(outcome) => receipts.push(sync::receipt(&key, outcome)),
-            Err(error) => {
-                return vec![v1::AckplaneFrame {
-                    frame: Some(v1::ackplane_frame::Frame::Rejection(sync::rejection(
-                        &key, &error,
+            if let Err(refusal) =
+                envelope_signature::verify(&wire, envelope.provenance, &resolution)
+            {
+                break 'batch vec![v1::AckplaneFrame {
+                    frame: Some(v1::ackplane_frame::Frame::Rejection(unauthenticated(
+                        &key, refusal,
                     ))),
                 }];
             }
+
+            match append(envelope).await {
+                Ok(outcome) => {
+                    if matches!(outcome, AppendOutcome::Duplicate { .. }) {
+                        retry_count += 1;
+                    }
+                    let receipt = sync::receipt(&key, outcome);
+                    position = Some(receipt.position);
+                    receipts.push(receipt);
+                }
+                Err(error) => {
+                    break 'batch vec![v1::AckplaneFrame {
+                        frame: Some(v1::ackplane_frame::Frame::Rejection(sync::rejection(
+                            &key, &error,
+                        ))),
+                    }];
+                }
+            }
+        }
+
+        vec![v1::AckplaneFrame {
+            frame: Some(v1::ackplane_frame::Frame::BatchReceipt(v1::BatchReceipt {
+                receipts,
+            })),
+        }]
+    };
+
+    record_batch_observability(
+        &responses,
+        batch_started.elapsed(),
+        batch_records,
+        batch_bytes,
+        retry_count,
+        position,
+    );
+    responses
+}
+
+/// ADR-0083 decision 10: both ends record method, outcome, reason code,
+/// latency, batch count, byte count, retry count, and accepted position —
+/// never the payload, signing material, or evidence body content that
+/// travelled inside the batch.
+fn record_batch_observability(
+    responses: &[v1::AckplaneFrame],
+    latency: std::time::Duration,
+    batch_records: u64,
+    batch_bytes: u64,
+    retry_count: u64,
+    position: Option<u64>,
+) {
+    let rejection = responses.iter().find_map(|frame| match &frame.frame {
+        Some(v1::ackplane_frame::Frame::Rejection(rejection)) => Some(rejection),
+        _ => None,
+    });
+    match rejection {
+        Some(rejection) => {
+            let reason = v1::RejectionReason::try_from(rejection.reason)
+                .map(|reason| reason.as_str_name())
+                .unwrap_or("UNKNOWN");
+            tracing::info!(
+                method = "Synchronize",
+                outcome = "rejected",
+                reason,
+                retryable = rejection.retryable,
+                latency_ms = latency.as_millis() as u64,
+                batch_records,
+                batch_bytes,
+                retry_count,
+                position,
+                "processed event batch"
+            );
+        }
+        None => {
+            tracing::info!(
+                method = "Synchronize",
+                outcome = "accepted",
+                latency_ms = latency.as_millis() as u64,
+                batch_records,
+                batch_bytes,
+                retry_count,
+                position,
+                "processed event batch"
+            );
         }
     }
-
-    vec![v1::AckplaneFrame {
-        frame: Some(v1::ackplane_frame::Frame::BatchReceipt(v1::BatchReceipt {
-            receipts,
-        })),
-    }]
 }
 
 /// The concrete gRPC service. The ledger is deliberately serialized: its
@@ -420,6 +500,80 @@ mod tests {
                 })),
             }]
         );
+    }
+
+    /// A `tracing` writer that captures emitted lines into a shared buffer
+    /// instead of stdout, so a test can inspect exactly what would have been
+    /// recorded (ADR-0083 decision 10).
+    #[derive(Clone)]
+    struct CapturingWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturingWriter {
+        type Writer = CapturingWriter;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Decision 10 names exactly what must be recorded (method, outcome,
+    /// reason, latency, batch/byte counts, retry count, position) and
+    /// separately requires that payloads, credentials, and evidence body
+    /// content are excluded from transport logs. This proves both halves: the
+    /// structured fields are present, and a marker planted in the payload
+    /// never reaches the captured log line.
+    #[tokio::test]
+    async fn processed_batch_observability_excludes_payload_content() {
+        let buffer = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_writer(CapturingWriter(Arc::clone(&buffer)))
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        // A parallel test's subscriber-less call can cache this callsite as
+        // "not interested" first; rebuild so ours is actually asked.
+        tracing::callsite::rebuild_interest_cache();
+
+        let key = node_key();
+        let secret_payload = b"top-secret-payload-marker-4471";
+        let wire = signed_envelope(secret_payload, &key);
+
+        handle_frame(
+            v1::NodeFrame {
+                frame: Some(v1::node_frame::Frame::EventBatch(v1::EventBatch {
+                    events: vec![wire],
+                })),
+            },
+            flow_control(),
+            |_| ready(Ok(AppendOutcome::Accepted { position: 42 })),
+            resolving(lifecycle_for(&key)),
+        )
+        .await;
+
+        let logged = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert!(
+            !logged.contains("top-secret-payload-marker"),
+            "observability must not carry payload content: {logged}"
+        );
+        assert!(logged.contains("\"method\":\"Synchronize\""), "{logged}");
+        assert!(logged.contains("\"outcome\":\"accepted\""), "{logged}");
+        assert!(logged.contains("\"batch_records\":1"), "{logged}");
+        assert!(
+            logged.contains(&format!("\"batch_bytes\":{}", secret_payload.len())),
+            "{logged}"
+        );
+        assert!(logged.contains("\"retry_count\":0"), "{logged}");
+        assert!(logged.contains("\"position\":42"), "{logged}");
+        assert!(logged.contains("\"latency_ms\":"), "{logged}");
     }
 
     #[tokio::test]
