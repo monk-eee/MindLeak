@@ -502,15 +502,35 @@ mod tests {
         );
     }
 
-    /// A `tracing` writer that captures emitted lines into a shared buffer
-    /// instead of stdout, so a test can inspect exactly what would have been
-    /// recorded (ADR-0083 decision 10).
-    #[derive(Clone)]
-    struct CapturingWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+    thread_local! {
+        static CAPTURE_TARGET: std::cell::RefCell<Option<Arc<std::sync::Mutex<Vec<u8>>>>> =
+            const { std::cell::RefCell::new(None) };
+    }
 
-    impl std::io::Write for CapturingWriter {
+    /// A `tracing` writer that forwards emitted lines into whichever buffer
+    /// *this thread* has registered, and silently discards them otherwise.
+    ///
+    /// Installed once as the process-wide global default (see
+    /// `install_capturing_subscriber`), deliberately never per-test: a
+    /// thread-local `set_default` only shadows the ambient subscriber on one
+    /// thread, but `tracing`'s callsite interest cache is process-wide, so a
+    /// parallel test's subscriber-less call to this same callsite can cache
+    /// it as "nobody is interested" in the gap between this test's own
+    /// calls, silently swallowing the very event being asserted on
+    /// (reproduced 2026-08-17: intermittent under the default parallel test
+    /// runner, always passing alone or with `--test-threads=1`). A permanent
+    /// global default keeps that cache always "interested" from the first
+    /// event onward, so there is nothing left to race.
+    #[derive(Clone, Copy, Default)]
+    struct ThreadRoutedWriter;
+
+    impl std::io::Write for ThreadRoutedWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
+            CAPTURE_TARGET.with(|target| {
+                if let Some(buffer) = target.borrow().as_ref() {
+                    buffer.lock().unwrap().extend_from_slice(buf);
+                }
+            });
             Ok(buf.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
@@ -518,10 +538,41 @@ mod tests {
         }
     }
 
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturingWriter {
-        type Writer = CapturingWriter;
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for ThreadRoutedWriter {
+        type Writer = ThreadRoutedWriter;
         fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
+            *self
+        }
+    }
+
+    fn install_capturing_subscriber() {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            let subscriber = tracing_subscriber::fmt()
+                .json()
+                .with_writer(ThreadRoutedWriter)
+                .finish();
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("the global test subscriber is installed exactly once");
+        });
+    }
+
+    /// Routes this thread's `tracing` output into `buffer` for as long as the
+    /// guard lives, then stops routing (the global subscriber itself stays
+    /// installed for the rest of the test binary's run).
+    struct CaptureGuard;
+
+    impl CaptureGuard {
+        fn new(buffer: Arc<std::sync::Mutex<Vec<u8>>>) -> Self {
+            install_capturing_subscriber();
+            CAPTURE_TARGET.with(|target| *target.borrow_mut() = Some(buffer));
+            CaptureGuard
+        }
+    }
+
+    impl Drop for CaptureGuard {
+        fn drop(&mut self) {
+            CAPTURE_TARGET.with(|target| *target.borrow_mut() = None);
         }
     }
 
@@ -534,14 +585,7 @@ mod tests {
     #[tokio::test]
     async fn processed_batch_observability_excludes_payload_content() {
         let buffer = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .with_writer(CapturingWriter(Arc::clone(&buffer)))
-            .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
-        // A parallel test's subscriber-less call can cache this callsite as
-        // "not interested" first; rebuild so ours is actually asked.
-        tracing::callsite::rebuild_interest_cache();
+        let _capture = CaptureGuard::new(Arc::clone(&buffer));
 
         let key = node_key();
         let secret_payload = b"top-secret-payload-marker-4471";
