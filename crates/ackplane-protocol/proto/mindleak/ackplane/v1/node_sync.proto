@@ -13,6 +13,39 @@ service NodeEnrollmentService {
   rpc RotateNodeKey(KeyRotationRequest) returns (KeyRotationResult);
 }
 
+service ClaimDelegationService {
+  rpc DelegateClaim(ClaimLeaseRequest) returns (ClaimLeaseResult);
+}
+
+message ClaimLeaseRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string task_id = 3;
+  string owner_id = 4;
+  string branch = 5;
+  uint64 lease_seconds = 6;
+  repeated string paths = 7;
+  repeated string symbols = 8;
+}
+
+message ClaimLeaseResult {
+  ClaimLeaseOutcome outcome = 1;
+  string owner_id = 2;
+  string branch = 3;
+  string claim_started_at = 4;
+  string lease_expires_at = 5;
+  uint64 claim_lapses = 6;
+  repeated string paths = 7;
+  repeated string symbols = 8;
+  string diagnostic = 9;
+}
+
+enum ClaimLeaseOutcome {
+  CLAIM_LEASE_OUTCOME_UNSPECIFIED = 0;
+  CLAIM_LEASE_OUTCOME_GRANTED = 1;
+  CLAIM_LEASE_OUTCOME_REJECTED = 2;
+}
+
 message NodeFrame {
   oneof frame {
     Hello hello = 1;
