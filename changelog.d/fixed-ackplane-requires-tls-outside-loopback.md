@@ -1,0 +1,1 @@
+- Ackplane now refuses non-loopback gRPC listeners without certificate and key paths, preventing accidental plaintext federation traffic.

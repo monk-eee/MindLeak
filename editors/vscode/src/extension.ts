@@ -7,7 +7,9 @@ import { BoardItem, BoardViewProvider } from "./boardViewProvider";
 import { WorkspaceChangeDetector } from "./changeDetector";
 import { DesignBoardController } from "./designBoardController";
 import { DesignBoardItem, DesignBoardViewProvider } from "./designBoardViewProvider";
+import { DoctorViewProvider } from "./doctorViewProvider";
 import { EvidenceBoardViewProvider, EvidenceNode } from "./evidenceBoardViewProvider";
+import { doctorGroups } from "./fleet";
 import { FleetController } from "./fleetController";
 import { FleetViewProvider } from "./fleetViewProvider";
 import { GitSensor } from "./gitSensor";
@@ -59,6 +61,8 @@ let fleetController: FleetController | undefined;
 let designBoard: DesignBoardViewProvider | undefined;
 let designController: DesignBoardController | undefined;
 let evidenceBoard: EvidenceBoardViewProvider | undefined;
+let doctorBoard: DoctorViewProvider | undefined;
+let doctorTree: vscode.TreeView<import("./doctorViewProvider").DoctorNode> | undefined;
 let readinessView: ReadinessViewProvider | undefined;
 let readinessController: ReadinessController | undefined;
 let repositoryWorktrees: RepositoryWorktrees | undefined;
@@ -245,6 +249,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider(EvidenceBoardViewProvider.viewType, evidenceBoard)
   );
+  doctorBoard = new DoctorViewProvider();
+  doctorTree = vscode.window.createTreeView(DoctorViewProvider.viewType, {
+    treeDataProvider: doctorBoard,
+  });
+  context.subscriptions.push(doctorTree);
   const lodestarPath = resolveBinaryPath(
     config.get<string>("lodestarServerPath", "lodestar-mcp"),
     workspace,
@@ -436,6 +445,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
       await onSave(doc);
     }),
     vscode.commands.registerCommand("mindleak.board.refresh", () => refreshBoard()),
+    vscode.commands.registerCommand("mindleak.doctor.refresh", () => refreshDoctor()),
     vscode.commands.registerCommand("mindleak.evidence.refresh", () => refreshEvidence()),
     vscode.commands.registerCommand("mindleak.evidence.inspect", (node?: EvidenceNode) => {
       void inspectEvidenceNode(node);
@@ -855,6 +865,28 @@ async function refreshBoard(): Promise<void> {
     readinessController?.setActionableTasks(list.length);
   } catch (err) {
     output.appendLine(`board error: ${(err as Error).message}`);
+  }
+  // Doctor findings are cheap relative to the board read above and every
+  // trigger that changes the board (claim, complete, block...) can change
+  // them too, so this rides the same refresh rather than needing its own.
+  await refreshDoctor();
+}
+
+async function refreshDoctor(): Promise<void> {
+  if (!lodestar?.isReady() || !doctorBoard) {
+    return;
+  }
+  try {
+    const findings = await lodestar.callTool("task_query", { view: "doctor" });
+    const groups = doctorGroups(Array.isArray(findings) ? findings : []);
+    doctorBoard.update(groups);
+    if (doctorTree) {
+      doctorTree.badge = doctorBoard.findingCount
+        ? { value: doctorBoard.findingCount, tooltip: "Board Doctor findings" }
+        : undefined;
+    }
+  } catch (err) {
+    output.appendLine(`board doctor error: ${(err as Error).message}`);
   }
 }
 
