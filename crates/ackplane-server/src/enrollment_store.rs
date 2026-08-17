@@ -2,18 +2,23 @@
 
 use std::time::{Duration, SystemTime};
 
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio_postgres::{Client, NoTls};
 
 use thiserror::Error;
 
 use crate::enrollment::{
-    public_key_fingerprint, verify_activation_proof, ActivationProofBinding, EnrollmentState,
+    key_rotation_bytes, public_key_fingerprint, verify_activation_proof,
+    verify_key_rotation_signature, ActivationProofBinding, EnrollmentState, KeyRotationStatement,
 };
-use crate::signing_keys::{self, SigningKeyRecord};
+use crate::signing_keys::{self, KeyResolution, SigningKeyRecord};
 
 const MIGRATION: &str = include_str!("../migrations/0003_enrollment.sql");
 const SIGNING_KEY_MIGRATION: &str = include_str!("../migrations/0004_signing_keys.sql");
 pub const ACTIVATION_CHALLENGE_LIFETIME: Duration = Duration::from_secs(300);
+/// The most a retiring key may still settle in-flight records for after its
+/// successor takes over (ADR-0085 decision 7's "bounded overlap").
+pub const MAX_ROTATION_OVERLAP: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Immutable information a node presents when requesting enrollment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +89,50 @@ pub struct EnrollmentActivationResult {
     pub enrollment_receipt_id: String,
 }
 
+/// A node's request to replace its current signing key with a successor it
+/// already holds, proving continuity of both (ADR-0085 decision 7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyRotation {
+    pub tenant_id: String,
+    pub repository_id: String,
+    pub node_id: String,
+    pub current_key_id: String,
+    pub successor_key_id: String,
+    pub successor_public_key_fingerprint: String,
+    pub successor_public_key: Vec<u8>,
+    pub current_key_signature: Vec<u8>,
+    pub successor_key_signature: Vec<u8>,
+    pub requested_overlap_seconds: u64,
+}
+
+/// Why a rotation could not be applied. Each variant matches one wire
+/// `KeyRotationRejectionReason` (ADR-0085 decision 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyRotationRejection {
+    CurrentKeyNotActive,
+    SuccessorKeyConflict,
+    ContinuityProofInvalid,
+    NodeRevoked,
+}
+
+/// Whether a rotation was applied, folding the rejection reason into the one
+/// case it applies to rather than carrying a separate, sometimes-meaningless
+/// reason field alongside an "applied" outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyRotationOutcome {
+    Applied,
+    Rejected(KeyRotationRejection),
+}
+
+/// The durable result of a rotation attempt, applied or not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyRotationResult {
+    pub node_id: String,
+    pub current_key_id: String,
+    pub successor_key_id: String,
+    pub outcome: KeyRotationOutcome,
+}
+
 #[derive(Debug, Error)]
 pub enum EnrollmentStoreError {
     #[error("enrollment request {request_id} conflicts with the binding already recorded")]
@@ -114,6 +163,12 @@ pub enum EnrollmentStoreError {
     SigningKey(#[from] crate::signing_keys::SigningKeyError),
     #[error("enrollment request contains an unknown stored state {value}")]
     UnknownState { value: i16 },
+    #[error("enrollment request {request_id} has a malformed {field} timestamp {value:?}")]
+    InvalidTimestamp {
+        request_id: String,
+        field: &'static str,
+        value: String,
+    },
 }
 
 /// A connection to the authoritative enrollment state and audit history.
@@ -178,13 +233,17 @@ impl EnrollmentStore {
             });
         }
 
+        let created_at =
+            parse_rfc3339(&submission.request_id, "created_at", &submission.created_at)?;
+        let expires_at =
+            parse_rfc3339(&submission.request_id, "expires_at", &submission.expires_at)?;
         transaction
             .execute(
                 "INSERT INTO enrollment_requests (
                      tenant_id, repository_id, request_id, proposed_node_id, display_name,
                      public_key, public_key_fingerprint, requested_capabilities, created_at,
                      expires_at, state
-                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::timestamptz,$10::timestamptz,$11)",
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
                 &[
                     &submission.tenant_id,
                     &submission.repository_id,
@@ -194,8 +253,8 @@ impl EnrollmentStore {
                     &submission.public_key,
                     &submission.public_key_fingerprint,
                     &submission.requested_capabilities,
-                    &submission.created_at,
-                    &submission.expires_at,
+                    &created_at,
+                    &expires_at,
                     &state_as_i16(EnrollmentState::Pending),
                 ],
             )
@@ -622,6 +681,133 @@ impl EnrollmentStore {
             enrollment_receipt_id: enrollment_receipt_id.to_owned(),
         })
     }
+
+    /// Apply or reject a rotation, verifying continuity between the current
+    /// and successor keys before either is touched (ADR-0085 decision 7).
+    /// A rejection is a normal, non-error result: the wire contract carries a
+    /// typed outcome precisely so a node can distinguish "try again" from
+    /// "stop and re-enrol" without parsing a status message.
+    pub async fn rotate_key(
+        &mut self,
+        rotation: &KeyRotation,
+        now: SystemTime,
+    ) -> Result<KeyRotationResult, EnrollmentStoreError> {
+        let transaction = self.client.transaction().await?;
+
+        let current =
+            signing_keys::fetch_lifecycle_for_update(&transaction, &rotation.current_key_id)
+                .await?;
+        let Some(current) = current else {
+            return Ok(rejected(
+                rotation,
+                KeyRotationRejection::CurrentKeyNotActive,
+            ));
+        };
+        let resolution = signing_keys::judge(
+            &current,
+            &signing_keys::EnvelopeBinding {
+                signing_key_id: &rotation.current_key_id,
+                tenant_id: &rotation.tenant_id,
+                repository_id: &rotation.repository_id,
+                producer_id: &rotation.node_id,
+                accepted_at: now,
+            },
+        );
+        let current_public_key = match resolution {
+            KeyResolution::Resolved(record) => record.public_key,
+            KeyResolution::Revoked => {
+                return Ok(rejected(rotation, KeyRotationRejection::NodeRevoked));
+            }
+            KeyResolution::Unknown
+            | KeyResolution::BindingMismatch
+            | KeyResolution::NotYetActive
+            | KeyResolution::Expired
+            | KeyResolution::Retired => {
+                return Ok(rejected(
+                    rotation,
+                    KeyRotationRejection::CurrentKeyNotActive,
+                ));
+            }
+        };
+
+        if public_key_fingerprint(&rotation.successor_public_key)
+            != rotation.successor_public_key_fingerprint
+        {
+            return Ok(rejected(
+                rotation,
+                KeyRotationRejection::ContinuityProofInvalid,
+            ));
+        }
+        if signing_keys::key_exists(&transaction, &rotation.successor_key_id).await? {
+            return Ok(rejected(
+                rotation,
+                KeyRotationRejection::SuccessorKeyConflict,
+            ));
+        }
+
+        let statement = key_rotation_bytes(&KeyRotationStatement {
+            tenant_id: &rotation.tenant_id,
+            repository_id: &rotation.repository_id,
+            node_id: &rotation.node_id,
+            current_key_id: &rotation.current_key_id,
+            successor_key_id: &rotation.successor_key_id,
+            successor_public_key_fingerprint: &rotation.successor_public_key_fingerprint,
+            successor_public_key: &rotation.successor_public_key,
+            requested_overlap_seconds: rotation.requested_overlap_seconds,
+        });
+        let current_signed = verify_key_rotation_signature(
+            &current_public_key,
+            &rotation.current_key_signature,
+            &statement,
+        );
+        let successor_signed = verify_key_rotation_signature(
+            &rotation.successor_public_key,
+            &rotation.successor_key_signature,
+            &statement,
+        );
+        if !current_signed || !successor_signed {
+            return Ok(rejected(
+                rotation,
+                KeyRotationRejection::ContinuityProofInvalid,
+            ));
+        }
+
+        let overlap =
+            Duration::from_secs(rotation.requested_overlap_seconds).min(MAX_ROTATION_OVERLAP);
+        let retired_at = now + overlap;
+        signing_keys::retire(&transaction, &rotation.current_key_id, retired_at).await?;
+        signing_keys::register(
+            &transaction,
+            &SigningKeyRecord {
+                signing_key_id: rotation.successor_key_id.clone(),
+                tenant_id: rotation.tenant_id.clone(),
+                repository_id: rotation.repository_id.clone(),
+                node_id: rotation.node_id.clone(),
+                public_key: rotation.successor_public_key.clone(),
+                public_key_fingerprint: rotation.successor_public_key_fingerprint.clone(),
+                activated_at: now,
+                expires_at: None,
+            },
+        )
+        .await?;
+        transaction.commit().await?;
+
+        Ok(KeyRotationResult {
+            node_id: rotation.node_id.clone(),
+            current_key_id: rotation.current_key_id.clone(),
+            successor_key_id: rotation.successor_key_id.clone(),
+            outcome: KeyRotationOutcome::Applied,
+        })
+    }
+}
+
+fn rejected(rotation: &KeyRotation, reason: KeyRotationRejection) -> KeyRotationResult {
+    KeyRotationResult {
+        node_id: rotation.node_id.clone(),
+        current_key_id: rotation.current_key_id.clone(),
+        successor_key_id: rotation.successor_key_id.clone(),
+        outcome: KeyRotationOutcome::Rejected(reason),
+    }
 }
 
 fn validate_binding(
@@ -638,6 +824,25 @@ fn validate_binding(
             request_id: request.request_id.clone(),
         })
     }
+}
+
+/// Parse an RFC3339 timestamp into the typed value the `timestamptz` column
+/// requires. A `String` bound directly against that column fails Postgres's
+/// own type check (it describes the parameter as `timestamptz`, and `String`
+/// implements `ToSql` only for text-like types), so this must happen in Rust
+/// before the value ever reaches a query.
+fn parse_rfc3339(
+    request_id: &str,
+    field: &'static str,
+    value: &str,
+) -> Result<SystemTime, EnrollmentStoreError> {
+    OffsetDateTime::parse(value, &Rfc3339)
+        .map(SystemTime::from)
+        .map_err(|_| EnrollmentStoreError::InvalidTimestamp {
+            request_id: request_id.to_owned(),
+            field,
+            value: value.to_owned(),
+        })
 }
 
 async fn expire_enrollment(
@@ -739,6 +944,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use ed25519_dalek::{Signer, SigningKey};
+    use sha2::{Digest, Sha256};
 
     use super::*;
     use crate::enrollment::activation_challenge_bytes;
@@ -903,5 +1109,331 @@ mod tests {
                 },
             )
         );
+    }
+
+    /// Submit, approve, challenge and activate one node end to end, leaving it
+    /// with a live signing key a rotation test can then act on.
+    async fn activated_node(
+        store: &mut EnrollmentStore,
+        signing_key: &SigningKey,
+        signing_key_id: &str,
+        now: SystemTime,
+    ) -> EnrollmentSubmission {
+        let enrollment = submission_for(signing_key);
+        store.submit(&enrollment).await.expect("request persists");
+        store
+            .approve(&EnrollmentApproval {
+                request_id: enrollment.request_id.clone(),
+                tenant_id: enrollment.tenant_id.clone(),
+                repository_id: enrollment.repository_id.clone(),
+                public_key_fingerprint: enrollment.public_key_fingerprint.clone(),
+                approved_capabilities: enrollment.requested_capabilities.clone(),
+                approved_by: "administrator-test".to_owned(),
+            })
+            .await
+            .expect("request is approved");
+        let request = ActivationChallengeRequest {
+            request_id: enrollment.request_id.clone(),
+            tenant_id: enrollment.tenant_id.clone(),
+            repository_id: enrollment.repository_id.clone(),
+            proposed_node_id: enrollment.proposed_node_id.clone(),
+            public_key_fingerprint: enrollment.public_key_fingerprint.clone(),
+        };
+        let challenge = store
+            .issue_challenge(&request, &nonce_for(signing_key_id), now)
+            .await
+            .expect("approved request receives challenge");
+        let signature = signing_key.sign(&activation_challenge_bytes(
+            &challenge.nonce,
+            &request.request_id,
+            &request.tenant_id,
+            &request.repository_id,
+            &request.proposed_node_id,
+            &request.public_key_fingerprint,
+        ));
+        store
+            .activate(
+                &EnrollmentActivation {
+                    request,
+                    nonce: challenge.nonce,
+                    signature: signature.to_bytes().to_vec(),
+                },
+                &format!("receipt-{signing_key_id}"),
+                signing_key_id,
+                now,
+            )
+            .await
+            .expect("valid proof activates enrollment");
+        enrollment
+    }
+
+    fn signed_rotation(
+        current: &SigningKey,
+        successor: &SigningKey,
+        rotation: KeyRotation,
+    ) -> KeyRotation {
+        let statement = key_rotation_bytes(&KeyRotationStatement {
+            tenant_id: &rotation.tenant_id,
+            repository_id: &rotation.repository_id,
+            node_id: &rotation.node_id,
+            current_key_id: &rotation.current_key_id,
+            successor_key_id: &rotation.successor_key_id,
+            successor_public_key_fingerprint: &rotation.successor_public_key_fingerprint,
+            successor_public_key: &rotation.successor_public_key,
+            requested_overlap_seconds: rotation.requested_overlap_seconds,
+        });
+        KeyRotation {
+            current_key_signature: current.sign(&statement).to_bytes().to_vec(),
+            successor_key_signature: successor.sign(&statement).to_bytes().to_vec(),
+            ..rotation
+        }
+    }
+
+    #[tokio::test]
+    async fn a_continuity_proven_rotation_retires_the_old_key_and_activates_the_new_one() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let now = SystemTime::now();
+        let mut store = EnrollmentStore::connect(&database_url)
+            .await
+            .expect("test database connects");
+        let current_key = SigningKey::from_bytes(&[11; 32]);
+        let successor_key = SigningKey::from_bytes(&[12; 32]);
+        let signing_key_id = format!("signing-key-rotation-current-{}", node_suffix());
+        let successor_key_id = format!("signing-key-rotation-successor-{}", node_suffix());
+        let enrollment = activated_node(&mut store, &current_key, &signing_key_id, now).await;
+
+        let rotation = signed_rotation(
+            &current_key,
+            &successor_key,
+            KeyRotation {
+                tenant_id: enrollment.tenant_id.clone(),
+                repository_id: enrollment.repository_id.clone(),
+                node_id: enrollment.proposed_node_id.clone(),
+                current_key_id: signing_key_id.clone(),
+                successor_key_id: successor_key_id.clone(),
+                successor_public_key_fingerprint: public_key_fingerprint(
+                    &successor_key.verifying_key().to_bytes(),
+                ),
+                successor_public_key: successor_key.verifying_key().to_bytes().to_vec(),
+                current_key_signature: Vec::new(),
+                successor_key_signature: Vec::new(),
+                requested_overlap_seconds: 3_600,
+            },
+        );
+
+        let result = store
+            .rotate_key(&rotation, now)
+            .await
+            .expect("rotation with a valid continuity proof applies");
+
+        assert_eq!(
+            result,
+            KeyRotationResult {
+                node_id: enrollment.proposed_node_id,
+                current_key_id: signing_key_id.clone(),
+                successor_key_id: successor_key_id.clone(),
+                outcome: KeyRotationOutcome::Applied,
+            }
+        );
+
+        let current_after = signing_keys::resolve(
+            &store.client,
+            &signing_keys::EnvelopeBinding {
+                signing_key_id: &signing_key_id,
+                tenant_id: &rotation.tenant_id,
+                repository_id: &rotation.repository_id,
+                producer_id: &rotation.node_id,
+                accepted_at: now + Duration::from_secs(7_200),
+            },
+        )
+        .await
+        .expect("resolve queries succeed");
+        let successor_after = signing_keys::resolve(
+            &store.client,
+            &signing_keys::EnvelopeBinding {
+                signing_key_id: &successor_key_id,
+                tenant_id: &rotation.tenant_id,
+                repository_id: &rotation.repository_id,
+                producer_id: &rotation.node_id,
+                accepted_at: now,
+            },
+        )
+        .await
+        .expect("resolve queries succeed");
+
+        assert_eq!(current_after, signing_keys::KeyResolution::Retired);
+        assert!(matches!(
+            successor_after,
+            signing_keys::KeyResolution::Resolved(_)
+        ));
+    }
+
+    /// A rotation whose successor signature does not match the current key's
+    /// statement must be rejected rather than applied — otherwise anyone who
+    /// merely possesses a *successor* key, without the current key's
+    /// authorisation, could rotate a node away from its owner.
+    #[tokio::test]
+    async fn a_rotation_missing_the_current_keys_authorisation_is_rejected() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let now = SystemTime::now();
+        let mut store = EnrollmentStore::connect(&database_url)
+            .await
+            .expect("test database connects");
+        let current_key = SigningKey::from_bytes(&[13; 32]);
+        let successor_key = SigningKey::from_bytes(&[14; 32]);
+        let attacker_key = SigningKey::from_bytes(&[15; 32]);
+        let signing_key_id = format!("signing-key-rotation-current-{}", node_suffix());
+        let successor_key_id = format!("signing-key-rotation-successor-{}", node_suffix());
+        let enrollment = activated_node(&mut store, &current_key, &signing_key_id, now).await;
+
+        // Signed by an attacker's key instead of the node's actual current key.
+        let rotation = signed_rotation(
+            &attacker_key,
+            &successor_key,
+            KeyRotation {
+                tenant_id: enrollment.tenant_id.clone(),
+                repository_id: enrollment.repository_id.clone(),
+                node_id: enrollment.proposed_node_id.clone(),
+                current_key_id: signing_key_id.clone(),
+                successor_key_id: successor_key_id.clone(),
+                successor_public_key_fingerprint: public_key_fingerprint(
+                    &successor_key.verifying_key().to_bytes(),
+                ),
+                successor_public_key: successor_key.verifying_key().to_bytes().to_vec(),
+                current_key_signature: Vec::new(),
+                successor_key_signature: Vec::new(),
+                requested_overlap_seconds: 3_600,
+            },
+        );
+
+        let result = store
+            .rotate_key(&rotation, now)
+            .await
+            .expect("rejection is a normal result, not an error");
+
+        assert_eq!(
+            result.outcome,
+            KeyRotationOutcome::Rejected(KeyRotationRejection::ContinuityProofInvalid)
+        );
+
+        let successor_after = signing_keys::resolve(
+            &store.client,
+            &signing_keys::EnvelopeBinding {
+                signing_key_id: &successor_key_id,
+                tenant_id: &rotation.tenant_id,
+                repository_id: &rotation.repository_id,
+                producer_id: &rotation.node_id,
+                accepted_at: now,
+            },
+        )
+        .await
+        .expect("resolve queries succeed");
+        assert_eq!(
+            successor_after,
+            signing_keys::KeyResolution::Unknown,
+            "a rejected rotation must not register the successor key"
+        );
+    }
+
+    #[tokio::test]
+    async fn rotating_an_unknown_current_key_is_rejected_as_not_active() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let now = SystemTime::now();
+        let mut store = EnrollmentStore::connect(&database_url)
+            .await
+            .expect("test database connects");
+        let current_key = SigningKey::from_bytes(&[16; 32]);
+        let successor_key = SigningKey::from_bytes(&[17; 32]);
+
+        let rotation = signed_rotation(
+            &current_key,
+            &successor_key,
+            KeyRotation {
+                tenant_id: "tenant-test".to_owned(),
+                repository_id: "repository-test".to_owned(),
+                node_id: format!("node-{}", node_suffix()),
+                current_key_id: format!("signing-key-never-registered-{}", node_suffix()),
+                successor_key_id: format!("signing-key-rotation-successor-{}", node_suffix()),
+                successor_public_key_fingerprint: public_key_fingerprint(
+                    &successor_key.verifying_key().to_bytes(),
+                ),
+                successor_public_key: successor_key.verifying_key().to_bytes().to_vec(),
+                current_key_signature: Vec::new(),
+                successor_key_signature: Vec::new(),
+                requested_overlap_seconds: 3_600,
+            },
+        );
+
+        let result = store
+            .rotate_key(&rotation, now)
+            .await
+            .expect("rejection is a normal result, not an error");
+
+        assert_eq!(
+            result.outcome,
+            KeyRotationOutcome::Rejected(KeyRotationRejection::CurrentKeyNotActive)
+        );
+    }
+
+    fn node_suffix() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after the Unix epoch")
+            .as_nanos()
+    }
+
+    /// `activation_challenges.nonce` is globally unique, so every call to
+    /// `activated_node` across every test needs its own nonce rather than a
+    /// shared literal.
+    fn nonce_for(seed: &str) -> [u8; 32] {
+        let digest = Sha256::digest(seed.as_bytes());
+        digest.into()
+    }
+
+    /// Regression: `submit` used to bind `created_at`/`expires_at` straight
+    /// into a `timestamptz` column as raw text with a SQL-side `::timestamptz`
+    /// cast. Postgres describes that parameter's type from the prepared
+    /// statement, so the driver rejected every bound `String` with a
+    /// `WrongType` error before the query ever ran — every enrollment
+    /// submission against a real database failed, DB-gated tests included.
+    /// This needs no database: the defect was in Rust-side type conversion,
+    /// not in anything only Postgres could tell us.
+    #[test]
+    fn a_wellformed_rfc3339_timestamp_parses_to_the_same_instant() {
+        let parsed = parse_rfc3339("request-1", "created_at", "2026-01-01T00:00:00Z")
+            .expect("a valid RFC3339 timestamp parses");
+
+        assert_eq!(
+            parsed,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_767_225_600)
+        );
+    }
+
+    #[test]
+    fn a_malformed_timestamp_is_rejected_before_it_ever_reaches_a_query() {
+        let error = parse_rfc3339("request-1", "expires_at", "not-a-timestamp")
+            .expect_err("a malformed timestamp must not parse");
+
+        match error {
+            EnrollmentStoreError::InvalidTimestamp {
+                request_id,
+                field,
+                value,
+            } => {
+                assert_eq!(request_id, "request-1");
+                assert_eq!(field, "expires_at");
+                assert_eq!(value, "not-a-timestamp");
+            }
+            other => panic!("expected InvalidTimestamp, got {other:?}"),
+        }
     }
 }

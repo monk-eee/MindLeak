@@ -1,6 +1,6 @@
 //! The Ackplane federation service entry point (ADR-0082).
 
-use std::{net::SocketAddr, process::ExitCode};
+use std::{fs, process::ExitCode};
 
 use ackplane_protocol::v1::{
     self, node_enrollment_service_server::NodeEnrollmentServiceServer,
@@ -16,10 +16,10 @@ async fn main() -> ExitCode {
     match ServerConfig::resolve(|key| std::env::var(key).ok()) {
         Ok(config) => {
             println!("{}", config.banner());
-            let address = match config.listen.parse::<SocketAddr>() {
-                Ok(address) => address,
+            let tls = match config.tls.as_ref().map(load_tls).transpose() {
+                Ok(tls) => tls,
                 Err(error) => {
-                    eprintln!("ackplane-server: invalid ACKPLANE_LISTEN address: {error}");
+                    eprintln!("ackplane-server: could not load TLS material: {error}");
                     return ExitCode::FAILURE;
                 }
             };
@@ -45,7 +45,18 @@ async fn main() -> ExitCode {
             println!(
                 "ackplane-server: serving NodeSyncService.Synchronize and NodeEnrollmentService"
             );
-            match tonic::transport::Server::builder()
+            let server = tonic::transport::Server::builder();
+            let mut server = match tls {
+                Some(tls) => match server.tls_config(tls) {
+                    Ok(server) => server,
+                    Err(error) => {
+                        eprintln!("ackplane-server: could not configure TLS: {error}");
+                        return ExitCode::FAILURE;
+                    }
+                },
+                None => server,
+            };
+            match server
                 .add_service(NodeSyncServiceServer::new(NodeSyncService::new(
                     ledger,
                     v1::FlowControl {
@@ -56,7 +67,7 @@ async fn main() -> ExitCode {
                 .add_service(NodeEnrollmentServiceServer::new(
                     NodeEnrollmentService::new(enrollment_store),
                 ))
-                .serve(address)
+                .serve(config.listen)
                 .await
             {
                 Ok(()) => ExitCode::SUCCESS,
@@ -71,4 +82,14 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn load_tls(
+    paths: &ackplane_server::TlsPaths,
+) -> Result<tonic::transport::ServerTlsConfig, String> {
+    let certificate =
+        fs::read(&paths.certificate).map_err(|error| format!("{}: {error}", paths.certificate))?;
+    let key = fs::read(&paths.key).map_err(|error| format!("{}: {error}", paths.key))?;
+    Ok(tonic::transport::ServerTlsConfig::new()
+        .identity(tonic::transport::Identity::from_pem(certificate, key)))
 }

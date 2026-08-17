@@ -2140,6 +2140,14 @@ mod tests {
     /// tokens. Measured the same way `scripts/measure-tool-surface.mjs` does —
     /// the compact JSON of the advertised array, tokens as bytes/4 — so the test
     /// and the benchmark cannot disagree about whether the bar is met.
+    ///
+    /// The second assertion is ADR-0093's headroom bound, not the ADR-0059
+    /// ceiling repeated: a profile sitting at 5,976 of 6,000 tokens had no
+    /// room for the next legitimate schema addition, which is exactly what
+    /// happened (`gaps.d/lodestar-default-profile-token-budget-saturated.md`).
+    /// This fails on the addition that *would* saturate the budget, not only
+    /// on the one that finally breaches it — the margin is a decision this
+    /// test enforces rather than one a PR discovers by hitting the wall.
     #[test]
     fn the_default_profile_is_under_budget() {
         let advertised = advertised_for(Profile::Default);
@@ -2152,7 +2160,14 @@ mod tests {
         let tokens = bytes / 4;
         assert!(
             tokens < 6_000,
-            "default profile is ~{tokens} tokens ({bytes}B), the budget is under 6,000"
+            "default profile is ~{tokens} tokens ({bytes}B), the ADR-0059 ceiling is under 6,000"
+        );
+        assert!(
+            tokens < 5_500,
+            "default profile is ~{tokens} tokens ({bytes}B), the ADR-0093 headroom bound is under \
+             5,500 — some prior trim's margin has been spent; either trim narrative back out of a \
+             description (ADR-0093) or make a deliberate decision to spend the headroom, not both \
+             by accident"
         );
     }
 
