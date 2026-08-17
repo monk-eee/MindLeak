@@ -130,7 +130,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
             memoryDatabase: config.get<string>("databasePath", ""),
             intentDatabase: config.get<string>("lodestarDatabasePath", ""),
           },
-          { exists: fs.existsSync, extensionPath: context.extensionPath }
+          {
+            exists: fs.existsSync,
+            extensionPath: context.extensionPath,
+            version: (candidate) => {
+              const stat = fs.statSync(candidate, { throwIfNoEntry: false });
+              return stat?.isFile() ? `${stat.size}:${stat.mtimeMs}` : undefined;
+            },
+          }
         ).map((plan) => {
           const definition = new vscode.McpStdioServerDefinition(
             plan.label,
@@ -139,6 +146,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
             plan.env
           );
           definition.cwd = vscode.Uri.file(plan.cwd);
+          definition.version = plan.version;
           return definition;
         }),
     })

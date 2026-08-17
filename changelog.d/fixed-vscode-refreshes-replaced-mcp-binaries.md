@@ -1,0 +1,1 @@
+- VS Code now refreshes cached MCP tool schemas when a MindLeak or Lodestar server binary is replaced.
