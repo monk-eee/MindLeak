@@ -1,0 +1,1 @@
+- Maintenance runtime tests now isolate SQLite databases and remove WAL/SHM sidecars, preventing intermittent Windows schema-migration locks in CI.

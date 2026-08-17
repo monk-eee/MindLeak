@@ -237,8 +237,12 @@ pub struct Preflight {
     pub requested: Vec<String>,
     /// Requested ids with no node in the graph — nothing is known about these.
     pub unknown: Vec<String>,
-    /// Other agents' decay-active footprints on the requested ids.
+    /// Other agents' decay-active footprints on the requested ids, strongest
+    /// first, capped.
     pub footprints: Vec<AgentFootprintOverlap>,
+    /// How many overlapping (agent, node) pairs the full query found. Greater
+    /// than `footprints.len()` means the view was cut.
+    pub footprint_total: usize,
     /// Dependents, previously failing executions, and related intents — the
     /// most relevant first, capped, and without node content.
     pub impact: Vec<PreflightNode>,
