@@ -1,6 +1,6 @@
 # ADR-0093: Tool descriptions are a contract, not a narrative
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-17
 - Deciders: MindLeak maintainers
 - Depends on: [ADR-0059](0059-the-tool-surface-is-a-vocabulary.md) (the tool

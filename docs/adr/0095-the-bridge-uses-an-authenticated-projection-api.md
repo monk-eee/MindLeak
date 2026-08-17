@@ -1,6 +1,6 @@
 # ADR-0095: The Bridge uses an authenticated projection API
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-17
 - Deciders: MindLeak maintainers
 - Depends on: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md)

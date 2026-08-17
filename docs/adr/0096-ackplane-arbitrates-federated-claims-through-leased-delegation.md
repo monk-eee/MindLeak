@@ -1,8 +1,8 @@
 # ADR-0096: Ackplane arbitrates federated claims through leased delegation
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-17
-- Deciders: Pending human acceptance
+- Deciders: MindLeak maintainers
 - Depends on: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md)
   (Ackplane is a standalone federation service), [ADR-0045](0045-a-fleet-is-a-distributed-system.md)
   (one arbiter per shared resource)
