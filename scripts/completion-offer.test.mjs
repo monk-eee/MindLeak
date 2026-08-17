@@ -72,10 +72,16 @@ test("an aligned check becomes an exact offer without completing the task", () =
   });
 
   assert.deepEqual(offer, {
-    schema: 1,
+    schema: 2,
     task_id: "task:1",
     evidence,
-    check: { id: 7, token: "token", verdict: "aligned", findings: [] },
+    check: { id: 7, token: "token" },
+    conformance: {
+      verdict: "aligned",
+      finding_count: 0,
+      findings_preview: [],
+      findings_truncated: false,
+    },
   });
   const names = fake.calls.flatMap(({ requested }) =>
     requested.map(({ name }) => name),
@@ -93,6 +99,48 @@ test("an aligned check becomes an exact offer without completing the task", () =
   );
 });
 
+test("oversized legacy findings are reduced before a completion offer is persisted", () => {
+  const findings = Array.from(
+    { length: 40 },
+    (_, index) => `lesson ${index}: ${"x".repeat(1_024)}`,
+  );
+  const fake = fixture({
+    id: 99,
+    token: "large-check",
+    verdict: "needs_human",
+    findings,
+  });
+  const offer = prepareCompletionOffer({
+    repoRoot: "repo",
+    sessionId: SESSION,
+    claims: [claim()],
+    endedAt: NOW,
+    ...fake,
+  });
+
+  assert.deepEqual(offer.check, { id: 99, token: "large-check" });
+  assert.equal(offer.conformance.verdict, "needs_human");
+  assert.equal(offer.conformance.finding_count, findings.length);
+  assert.equal(offer.conformance.findings_truncated, true);
+  assert.ok(
+    offer.conformance.findings_preview.reduce(
+      (bytes, finding) => bytes + Buffer.byteLength(finding, "utf8"),
+      0,
+    ) <= 2_048,
+  );
+
+  const writes = [];
+  persistCompletionOffer({
+    repoRoot: "repo",
+    offer,
+    mkdir: () => {},
+    write: (_destination, contents) => writes.push(contents),
+  });
+  assert.ok(Buffer.byteLength(writes[0], "utf8") < 6_000);
+  assert.equal(JSON.parse(writes[0]).check.findings, undefined);
+  assert.equal(writes[0].includes(findings.at(-1)), false);
+});
+
 test("a needs_human check is still offered rather than disguised as success", () => {
   const fake = fixture({
     id: 8,
@@ -108,7 +156,7 @@ test("a needs_human check is still offered rather than disguised as success", ()
     ...fake,
   });
 
-  assert.equal(offer.check.verdict, "needs_human");
+  assert.equal(offer.conformance.verdict, "needs_human");
   assert.match(
     completionOfferNotice(offer, "target/offer.json"),
     /needs_human/,
@@ -234,10 +282,16 @@ test("an empty evidence bundle declines without running a conformance check", ()
 
 test("the exact offer is persisted outside Git and named in one bounded notice", () => {
   const offer = {
-    schema: 1,
+    schema: 2,
     task_id: "task:1",
     evidence,
-    check: { id: 7, token: "token", verdict: "aligned", findings: [] },
+    check: { id: 7, token: "token" },
+    conformance: {
+      verdict: "aligned",
+      finding_count: 0,
+      findings_preview: [],
+      findings_truncated: false,
+    },
   };
   const directories = [];
   const writes = [];

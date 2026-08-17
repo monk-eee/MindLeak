@@ -1,0 +1,1 @@
+- **Conformance checks no longer spill tens of kilobytes of advisory findings through clients and completion-offer files.** Lodestar keeps the complete canonical audit, while MCP callers receive a compact completion reference with bounded display metadata and publication persists only that compact handoff.
