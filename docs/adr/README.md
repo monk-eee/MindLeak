@@ -103,6 +103,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0093](0093-tool-descriptions-are-a-contract-not-a-narrative.md) | Tool descriptions are a contract, not a narrative | Proposed |
 | [0094](0094-the-bridge-preserves-standalone-operation.md) | The Bridge preserves standalone operation | Proposed |
 | [0095](0095-the-bridge-uses-an-authenticated-projection-api.md) | The Bridge uses an authenticated projection API | Proposed |
+| [0096](0096-ackplane-arbitrates-federated-claims-through-leased-delegation.md) | Ackplane arbitrates federated claims through leased delegation | Proposed |
 
 ## Writing a new ADR
 
