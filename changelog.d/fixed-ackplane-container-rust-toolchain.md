@@ -1,0 +1,1 @@
+- Ackplane's development container image now uses an Edition 2024-compatible Rust toolchain, so the supported Compose topology builds against the locked dependency graph.

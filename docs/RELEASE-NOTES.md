@@ -54,7 +54,7 @@ ingestion without adding model calls to the write path.
 - The native archive contains three additional skill files consumed by
   `install.mjs`. Existing installations can rerun the installer; locally edited
   managed skill files are preserved.
-- VS Code 1.101 or newer, Node.js 20 or newer for the installer, and Rust 1.75
+- VS Code 1.101 or newer, Node.js 20 or newer for the installer, and Rust 1.85
   for source builds remain unchanged. No third-party dependency was upgraded as
   part of the version bump.
 

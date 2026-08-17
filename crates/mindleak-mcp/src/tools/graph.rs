@@ -129,4 +129,47 @@ mod tests {
         assert!(body["unknown"].is_array());
         assert_eq!(body["requested"][0], "artifact:src/auth.rs");
     }
+
+    /// Measured 43 KB from `footprints` alone on a heavily-edited file in a
+    /// busy repository: `agent_footprint_overlap` ranks strongest-first and
+    /// never capped. Bounded the same way `impact` already is.
+    #[test]
+    fn the_overlap_tool_bounds_footprints_while_reporting_the_full_count() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        engine
+            .ingest_file("src/busy.rs", "fn shared() {}\n")
+            .unwrap();
+        for index in 0..30 {
+            engine
+                .ingest_file_for_agent(&format!("agent-{index}"), "src/busy.rs", "fn shared() {}\n")
+                .unwrap();
+        }
+
+        let result = dispatch(
+            &engine,
+            "check_overlap",
+            &json!({ "paths": ["src/busy.rs"] }),
+        )
+        .unwrap()
+        .unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap();
+        let body: Value = serde_json::from_str(text).unwrap();
+
+        assert!(
+            text.len() < 8_192,
+            "the bounded result must stay well under the client spill threshold: {} bytes",
+            text.len()
+        );
+        let footprints = body["footprints"].as_array().unwrap();
+        assert!(
+            footprints.len() < 30,
+            "the preview is capped: {}",
+            footprints.len()
+        );
+        assert_eq!(body["footprint_total"].as_u64().unwrap(), 30);
+        assert!(
+            body["impact"].is_array(),
+            "impact is unaffected by the footprint cap: {body}"
+        );
+    }
 }
