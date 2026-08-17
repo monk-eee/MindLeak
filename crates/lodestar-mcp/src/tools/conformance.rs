@@ -2,14 +2,45 @@
 //! Conformance tool definitions and dispatch.
 
 use super::{ok, opt_str, rendered, req_str, str_array};
-use lodestar_core::{Advice, CertificationStatus, ConformanceEvidence, Lodestar};
+use lodestar_core::{
+    Advice, CertificationStatus, ConformanceCheck, ConformanceEvidence, ConformanceResult,
+    Lodestar, Verdict,
+};
+use serde::Serialize;
 use serde_json::{json, Value};
+
+const FINDINGS_PREVIEW_ITEMS: usize = 3;
+const FINDINGS_PREVIEW_BYTES: usize = 2_048;
+
+#[derive(Serialize)]
+struct DeliveredConformanceCheck<'a> {
+    id: i64,
+    token: &'a str,
+    #[serde(flatten)]
+    conformance: DeliveredConformance,
+}
+
+#[derive(Serialize)]
+pub(super) struct DeliveredConformance {
+    verdict: Verdict,
+    finding_count: usize,
+    findings_preview: Vec<String>,
+    findings_truncated: bool,
+}
+
+#[derive(Serialize)]
+pub(super) struct DeliveredCompletionConformance {
+    verdict: Verdict,
+    finding_count: usize,
+    findings: Vec<String>,
+    findings_truncated: bool,
+}
 
 pub(super) fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "check_conformance",
-            "description": "Evaluate a versioned, provenance-bearing ADR-0009 evidence bundle without changing task state.",
+            "description": "Evaluate and durably record an ADR-0009 evidence bundle; returns a compact completion reference and bounded findings preview. Read full findings with conformance_history.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -69,7 +100,7 @@ pub(super) fn dispatch(
             let result = engine
                 .check_conformance(&evidence, opt_str(args, "task_id").as_deref())
                 .map_err(|e| e.to_string())?;
-            ok(&result)
+            ok(&delivered_check(&result))
         })()),
         "advise" => Some((|| {
             let node_ids = str_array(args, "node_ids");
@@ -95,6 +126,69 @@ pub(super) fn dispatch(
         })()),
         _ => None,
     }
+}
+
+fn delivered_check(check: &ConformanceCheck) -> DeliveredConformanceCheck<'_> {
+    DeliveredConformanceCheck {
+        id: check.id,
+        token: &check.token,
+        conformance: delivered_findings(check.verdict, &check.findings),
+    }
+}
+
+pub(super) fn delivered_completion_conformance(
+    result: &ConformanceResult,
+) -> DeliveredCompletionConformance {
+    let (findings, findings_truncated) = findings_preview(&result.findings);
+    DeliveredCompletionConformance {
+        verdict: result.verdict,
+        finding_count: result.findings.len(),
+        findings,
+        findings_truncated,
+    }
+}
+
+fn delivered_findings(verdict: Verdict, findings: &[String]) -> DeliveredConformance {
+    let (findings_preview, findings_truncated) = findings_preview(findings);
+    DeliveredConformance {
+        verdict,
+        finding_count: findings.len(),
+        findings_preview,
+        findings_truncated,
+    }
+}
+
+fn findings_preview(findings: &[String]) -> (Vec<String>, bool) {
+    let mut preview = Vec::new();
+    let mut used_bytes = 0;
+    let mut truncated = false;
+
+    for finding in findings {
+        if preview.len() == FINDINGS_PREVIEW_ITEMS || used_bytes == FINDINGS_PREVIEW_BYTES {
+            truncated = true;
+            break;
+        }
+        let remaining = FINDINGS_PREVIEW_BYTES - used_bytes;
+        let mut end = finding.len().min(remaining);
+        while !finding.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == 0 && !finding.is_empty() {
+            truncated = true;
+            break;
+        }
+        preview.push(finding[..end].to_string());
+        used_bytes += end;
+        if end < finding.len() {
+            truncated = true;
+            break;
+        }
+    }
+
+    (
+        preview,
+        truncated || findings.len() > FINDINGS_PREVIEW_ITEMS,
+    )
 }
 
 pub(super) fn parse_evidence(args: &Value) -> Result<ConformanceEvidence, String> {
@@ -181,7 +275,7 @@ fn render_status(status: &CertificationStatus) -> String {
 mod tests {
     use super::super::call;
     use super::*;
-    use lodestar_core::GoalKind;
+    use lodestar_core::{ArtifactBindingMode, GoalKind};
 
     #[test]
     fn malformed_evidence_is_rejected_at_the_tool_boundary() {
@@ -193,6 +287,130 @@ mod tests {
         assert!(call(&engine, &params)
             .unwrap_err()
             .contains("invalid evidence"));
+    }
+
+    #[test]
+    fn oversized_findings_stay_durable_while_the_tool_result_stays_bounded() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(
+                GoalKind::Objective,
+                "Bound checks",
+                "keep the audit usable",
+                None,
+            )
+            .unwrap();
+        let node = "artifact:src/bounded.rs";
+        engine
+            .link_goal_to_artifact(&goal.id, &[node.to_string()], ArtifactBindingMode::Governed)
+            .unwrap();
+        let task = engine
+            .create_task(&goal.id, "bound the result", "keep full findings durable")
+            .unwrap();
+        engine.claim_task(&task.id, "agent-a", 300).unwrap();
+
+        for index in 0..24 {
+            engine
+                .record_knowledge(
+                    &format!("lesson {index}: {}", "x".repeat(1_024)),
+                    &json!({ "nodes": [node] }).to_string(),
+                    None,
+                )
+                .unwrap();
+        }
+
+        let claimed = engine.store().get_task(&task.id).unwrap().unwrap();
+        let evidence = json!({
+            "schema_version": 1,
+            "task_id": task.id,
+            "agent_id": "agent-a",
+            "started_at": claimed.claim_started_at.unwrap(),
+            "ended_at": lodestar_core::now_unix(),
+            "changed_node_ids": [node],
+            "failed_node_ids": [],
+            "execution_ids": ["execution:proof"],
+            "successful_execution_ids": ["execution:proof"],
+            "commit_ids": [],
+            "summary": "bounded delivery",
+            "provenance": [
+                {
+                    "source_id": "agent:agent-a",
+                    "target_id": "execution:proof",
+                    "relation": "observed"
+                },
+                {
+                    "source_id": "execution:proof",
+                    "target_id": node,
+                    "relation": "modified"
+                }
+            ]
+        });
+        let result = call(
+            &engine,
+            &json!({
+                "name": "check_conformance",
+                "arguments": { "task_id": task.id, "evidence": evidence.clone() }
+            }),
+        )
+        .unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap();
+        let delivered: Value = serde_json::from_str(text).unwrap();
+
+        assert!(
+            text.len() < 4_096,
+            "the transport result must stay below the client spill threshold: {} bytes",
+            text.len()
+        );
+        assert!(delivered.get("findings").is_none());
+        assert!(delivered["finding_count"].as_u64().unwrap() >= 24);
+        assert_eq!(delivered["findings_truncated"], true);
+        let preview_bytes: usize = delivered["findings_preview"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|finding| finding.as_str().unwrap().len())
+            .sum();
+        assert!(preview_bytes <= 2_048);
+
+        let history = engine.conformance_history(&task.id).unwrap();
+        assert_eq!(history.len(), 1);
+        assert!(history[0].findings.len() > 20_000);
+        assert!(history[0].findings.contains("lesson 23"));
+
+        let completion = call(
+            &engine,
+            &json!({
+                "name": "task_transition",
+                "arguments": {
+                    "task_id": task.id,
+                    "to": "complete",
+                    "agent": "agent-a",
+                    "evidence": evidence,
+                    "check": delivered
+                }
+            }),
+        )
+        .unwrap();
+        let completion_text = completion["content"][0]["text"].as_str().unwrap();
+        let completion_body: Value = serde_json::from_str(completion_text).unwrap();
+        assert!(completion_text.len() < 4_096);
+        let completion_findings = completion_body["conformance"]["findings"]
+            .as_array()
+            .unwrap();
+        assert!(
+            completion_findings
+                .iter()
+                .map(|finding| finding.as_str().unwrap().len())
+                .sum::<usize>()
+                <= FINDINGS_PREVIEW_BYTES
+        );
+        assert!(
+            completion_body["conformance"]["finding_count"]
+                .as_u64()
+                .unwrap()
+                >= 24
+        );
+        assert_eq!(completion_body["conformance"]["findings_truncated"], true);
     }
 
     #[test]
