@@ -2,7 +2,7 @@
   "name": "mindleak",
   "displayName": "MindLeak — Agent Coordination OS",
   "description": "An operating system for agent coordination: shared memory, durable intent, arbitrated work, and provable completion. Packages both MCP servers, senses editor, shell, and Git activity passively, and visualizes the decay-weighted context graph. Coordination is advisory, never a lock.",
-  "version": "0.1.7-alpha",
+  "version": "0.1.7-alpha.1",
   "publisher": "monk-eee",
   "license": "MIT",
   "repository": {
