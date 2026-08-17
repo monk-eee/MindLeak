@@ -15,7 +15,7 @@
 //!
 //! [`ackplane-core`]: https://docs.rs/ackplane-core
 
-use std::fmt;
+use std::{fmt, net::SocketAddr};
 
 pub mod enrollment;
 pub mod enrollment_service;
@@ -43,6 +43,10 @@ const SYNCHRONOUS_STANDBYS_ENV: &str = "ACKPLANE_SYNCHRONOUS_STANDBYS";
 const MAX_IN_FLIGHT_BATCHES_ENV: &str = "ACKPLANE_MAX_IN_FLIGHT_BATCHES";
 /// The largest encoded event batch a node may send.
 const MAX_BATCH_BYTES_ENV: &str = "ACKPLANE_MAX_BATCH_BYTES";
+/// PEM certificate for network-reachable gRPC listeners.
+const TLS_CERTIFICATE_PATH_ENV: &str = "ACKPLANE_TLS_CERTIFICATE_PATH";
+/// PEM private key for network-reachable gRPC listeners.
+const TLS_KEY_PATH_ENV: &str = "ACKPLANE_TLS_KEY_PATH";
 
 /// A development deployment binds here, so a misconfigured server is reachable
 /// from the machine that started it and nowhere else.
@@ -51,6 +55,13 @@ const DEFAULT_LISTEN: &str = "127.0.0.1:8443";
 pub const DEFAULT_MAX_IN_FLIGHT_BATCHES: u32 = 16;
 /// A node may send at most one mebibyte in a batch by default.
 pub const DEFAULT_MAX_BATCH_BYTES: u32 = 1_048_576;
+
+/// The PEM files a Tonic listener needs to authenticate its endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TlsPaths {
+    pub certificate: String,
+    pub key: String,
+}
 
 /// What a deployment is entitled to say about the durability of an
 /// acknowledgement (ADR-0086 clause 12).
@@ -96,13 +107,14 @@ impl fmt::Display for DurabilityProfile {
 /// easily as through the banner.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ServerConfig {
-    pub listen: String,
+    pub listen: SocketAddr,
     /// Never rendered anywhere. A PostgreSQL URL carries a password, and the
     /// places it would leak are the banner and a debug dump.
     database_url: String,
     pub durability: DurabilityProfile,
     pub max_in_flight_batches: u32,
     pub max_batch_bytes: u32,
+    pub tls: Option<TlsPaths>,
 }
 
 impl fmt::Debug for ServerConfig {
@@ -113,6 +125,7 @@ impl fmt::Debug for ServerConfig {
             .field("durability", &self.durability)
             .field("max_in_flight_batches", &self.max_in_flight_batches)
             .field("max_batch_bytes", &self.max_batch_bytes)
+            .field("tls", &self.tls)
             .finish()
     }
 }
@@ -133,7 +146,27 @@ impl ServerConfig {
         // request happened to arrive first.
         let database_url = value(DATABASE_URL_ENV).ok_or(ConfigError::NoDatabase)?;
 
-        let listen = value(LISTEN_ENV).unwrap_or_else(|| DEFAULT_LISTEN.to_string());
+        let listen = value(LISTEN_ENV)
+            .unwrap_or_else(|| DEFAULT_LISTEN.to_string())
+            .parse::<SocketAddr>()
+            .map_err(|error| ConfigError::InvalidListen(error.to_string()))?;
+
+        let certificate = value(TLS_CERTIFICATE_PATH_ENV);
+        let key = value(TLS_KEY_PATH_ENV);
+        let tls = match (certificate, key) {
+            (Some(certificate), Some(key)) => Some(TlsPaths { certificate, key }),
+            (None, None) if listen.ip().is_loopback() => None,
+            (None, None) => return Err(ConfigError::NonLoopbackWithoutTls),
+            (certificate, _) => {
+                return Err(ConfigError::IncompleteTlsMaterial {
+                    missing: if certificate.is_none() {
+                        TLS_CERTIFICATE_PATH_ENV
+                    } else {
+                        TLS_KEY_PATH_ENV
+                    },
+                })
+            }
+        };
 
         let standbys: Vec<String> = value(SYNCHRONOUS_STANDBYS_ENV)
             .map(|raw| {
@@ -173,6 +206,7 @@ impl ServerConfig {
             durability,
             max_in_flight_batches,
             max_batch_bytes,
+            tls,
         })
     }
 
@@ -218,6 +252,18 @@ pub enum ConfigError {
          overstating what it can promise"
     )]
     UnknownDurability(String),
+    #[error("{LISTEN_ENV} is `{0}`, which is not a socket address such as `{DEFAULT_LISTEN}")]
+    InvalidListen(String),
+    #[error(
+        "{LISTEN_ENV} is not loopback but neither {TLS_CERTIFICATE_PATH_ENV} nor {TLS_KEY_PATH_ENV} is set; \
+         ADR-0083 clause 8 requires TLS outside loopback"
+    )]
+    NonLoopbackWithoutTls,
+    #[error(
+        "TLS material is incomplete: set both {TLS_CERTIFICATE_PATH_ENV} and {TLS_KEY_PATH_ENV}; \
+         missing {missing}"
+    )]
+    IncompleteTlsMaterial { missing: &'static str },
     #[error("{variable} must be a positive unsigned integer, got `{value}`")]
     InvalidLimit {
         variable: &'static str,
@@ -277,10 +323,59 @@ mod tests {
         )]))
         .unwrap();
 
-        assert_eq!(config.listen, "127.0.0.1:8443");
+        assert_eq!(config.listen, DEFAULT_LISTEN.parse().unwrap());
         assert_eq!(config.durability, DurabilityProfile::SingleNode);
         assert_eq!(config.max_in_flight_batches, DEFAULT_MAX_IN_FLIGHT_BATCHES);
         assert_eq!(config.max_batch_bytes, DEFAULT_MAX_BATCH_BYTES);
+        assert_eq!(config.tls, None);
+    }
+
+    /// ADR-0083 clause 8: a network-reachable Ackplane endpoint must never
+    /// accidentally serve plaintext gRPC because its TLS paths were omitted.
+    #[test]
+    fn a_non_loopback_listener_without_tls_material_refuses_to_start() {
+        let error = ServerConfig::resolve(env(&[
+            (DATABASE_URL_ENV, "postgres://dev@localhost/ackplane"),
+            (LISTEN_ENV, "0.0.0.0:8443"),
+        ]))
+        .unwrap_err();
+
+        assert_eq!(error, ConfigError::NonLoopbackWithoutTls);
+    }
+
+    #[test]
+    fn a_non_loopback_listener_resolves_both_tls_paths() {
+        let config = ServerConfig::resolve(env(&[
+            (DATABASE_URL_ENV, "postgres://dev@localhost/ackplane"),
+            (LISTEN_ENV, "0.0.0.0:8443"),
+            (TLS_CERTIFICATE_PATH_ENV, "cert.pem"),
+            (TLS_KEY_PATH_ENV, "key.pem"),
+        ]))
+        .unwrap();
+
+        assert_eq!(
+            config.tls,
+            Some(TlsPaths {
+                certificate: "cert.pem".to_string(),
+                key: "key.pem".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn partial_tls_material_is_refused_even_for_loopback() {
+        let error = ServerConfig::resolve(env(&[
+            (DATABASE_URL_ENV, "postgres://dev@localhost/ackplane"),
+            (TLS_CERTIFICATE_PATH_ENV, "cert.pem"),
+        ]))
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            ConfigError::IncompleteTlsMaterial {
+                missing: TLS_KEY_PATH_ENV
+            }
+        );
     }
 
     #[test]
