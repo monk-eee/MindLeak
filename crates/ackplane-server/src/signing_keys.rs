@@ -443,7 +443,13 @@ mod tests {
             repository_id: "repository-revoke-test".to_owned(),
             node_id: "node-revoke-test".to_owned(),
             public_key: vec![9; 32],
-            public_key_fingerprint: "ed25519:revoke-test".to_owned(),
+            // Derived from the caller's already-unique `signing_key_id`
+            // rather than a fixed literal: the unique constraint this row
+            // must satisfy is (tenant_id, repository_id, node_id,
+            // public_key_fingerprint, activated_at), which does not include
+            // signing_key_id, so two tests sharing a fixed fingerprint
+            // collide even though their key ids differ.
+            public_key_fingerprint: format!("ed25519:{signing_key_id}"),
             activated_at: at(1_000),
             expires_at: None,
         }
