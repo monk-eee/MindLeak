@@ -519,6 +519,25 @@ mod tests {
 
     static TEMPORARY_DATABASE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+    // These 3 tests each open a real file-backed SQLite database and run it
+    // through `MindLeak::open`'s WAL/schema migration. Each gets its own
+    // uniquely-named file (`temporary_database`), so they never contend for
+    // the same file -- but Rust's default parallel test runner still lets all
+    // 3 (and everything else in this binary) execute at once, and under a
+    // loaded CI runner that was enough general CPU/disk contention to push a
+    // normally sub-second migration past `OPEN_BUSY_BUDGET`'s 15s ceiling,
+    // failing with `Busy("...migrating the schema was still locked...")`.
+    // Serializing just these 3 keeps them from competing with each other for
+    // that same disk-bound work without slowing down the rest of this file's
+    // (in-memory, non-DB) tests, which stay fully parallel.
+    static DB_OPENING_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn serialize_db_test() -> std::sync::MutexGuard<'static, ()> {
+        DB_OPENING_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
     struct UnavailableIndexEmbedder;
 
     impl TextEmbedder for UnavailableIndexEmbedder {
@@ -686,6 +705,7 @@ mod tests {
 
     #[test]
     fn enabled_worker_runs_after_idle_and_joins_cleanly() {
+        let _serialize = serialize_db_test();
         let path = temporary_database("idle");
         let runtime = MaintenanceRuntime::start(
             MaintenanceConfig {
@@ -717,6 +737,7 @@ mod tests {
 
     #[test]
     fn active_request_blocks_idle_pass_until_completion() {
+        let _serialize = serialize_db_test();
         let path = temporary_database("active-request");
         let engine = MindLeak::open(path.to_str().unwrap()).unwrap();
         let inspector = MindLeak::open(path.to_str().unwrap()).unwrap();
@@ -762,6 +783,7 @@ mod tests {
         // was never reached and the autonomous prune never ran. Here the idle
         // window is an hour and requests arrive continuously, yet prune still
         // fires because its cadence is independent of request activity.
+        let _serialize = serialize_db_test();
         let path = temporary_database("prune-cadence");
         let engine = MindLeak::open(path.to_str().unwrap()).unwrap();
         let inspector = MindLeak::open(path.to_str().unwrap()).unwrap();
