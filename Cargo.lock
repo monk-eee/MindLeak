@@ -17,10 +17,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ackplane-client"
+version = "0.1.7-alpha"
+dependencies = [
+ "ackplane-protocol",
+ "thiserror",
+ "tokio",
+ "tonic",
+]
+
+[[package]]
 name = "ackplane-core"
 version = "0.1.7-alpha"
 dependencies = [
+ "ackplane-client",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
