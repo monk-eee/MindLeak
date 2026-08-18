@@ -68,6 +68,42 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
             diagnostic: String::new(),
         }))
     }
+
+    async fn renew_claim(
+        &self,
+        request: Request<v1::ClaimRenewRequest>,
+    ) -> Result<Response<v1::ClaimLeaseResult>, Status> {
+        let request = request.into_inner();
+        let tenant_id =
+            required(request.tenant_id, "tenant_id").map_err(Status::invalid_argument)?;
+        let repository_id =
+            required(request.repository_id, "repository_id").map_err(Status::invalid_argument)?;
+        let task_id = required(request.task_id, "task_id").map_err(Status::invalid_argument)?;
+        let owner_id = required(request.owner_id, "owner_id").map_err(Status::invalid_argument)?;
+        let lease = Duration::from_secs(request.lease_seconds);
+        if lease.is_zero() {
+            return Err(Status::invalid_argument(
+                "lease_seconds must be greater than zero",
+            ));
+        }
+        let result = self
+            .store
+            .lock()
+            .await
+            .renew(
+                &tenant_id,
+                &repository_id,
+                &task_id,
+                &owner_id,
+                lease,
+                std::time::SystemTime::now(),
+            )
+            .await
+            .map_err(map_store_error)?;
+        Ok(Response::new(
+            result_to_wire(result).map_err(Status::internal)?,
+        ))
+    }
 }
 
 fn request_from_wire(request: v1::ClaimLeaseRequest) -> Result<ClaimLeaseRequest, String> {

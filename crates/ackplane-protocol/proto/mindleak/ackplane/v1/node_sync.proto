@@ -16,6 +16,7 @@ service NodeEnrollmentService {
 service ClaimDelegationService {
   rpc DelegateClaim(ClaimLeaseRequest) returns (ClaimLeaseResult);
   rpc ReleaseClaim(ClaimReleaseRequest) returns (ClaimReleaseResult);
+  rpc RenewClaim(ClaimRenewRequest) returns (ClaimLeaseResult);
 }
 
 message ClaimLeaseRequest {
@@ -51,6 +52,14 @@ message ClaimReleaseRequest {
 message ClaimReleaseResult {
   bool released = 1;
   string diagnostic = 2;
+}
+
+message ClaimRenewRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string task_id = 3;
+  string owner_id = 4;
+  uint64 lease_seconds = 5;
 }
 
 enum ClaimLeaseOutcome {
