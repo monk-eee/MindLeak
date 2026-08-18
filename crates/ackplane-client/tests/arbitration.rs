@@ -2,20 +2,71 @@
 //! Proof that a claim is arbitrated by a real Ackplane deployment, not just
 //! accepted by a socket (ADR-0096, `task:727ae37b4f5a`'s PROOF requirement).
 //!
-//! Skipped unless `ACKPLANE_TEST_ENDPOINT` names a running `ackplane-server`
-//! (the compose topology in `docker-compose.yml` already provides one),
-//! mirroring `ackplane-server`'s own `ACKPLANE_TEST_DATABASE_URL` pattern so
-//! this never needs a live network to pass in CI.
+//! Skipped unless `ACKPLANE_TEST_DATABASE_URL` names the gated test PostgreSQL
+//! database. The test starts the real gRPC service on an ephemeral loopback
+//! port and enrolls its deterministic public key itself, so it never assumes
+//! an arbitrary external server already knows the corresponding test identity.
 //!
 //! Run against the compose topology with, e.g.:
 //! ```text
-//! docker compose up -d postgres migrate ackplane
-//! ACKPLANE_TEST_ENDPOINT=http://127.0.0.1:8443 cargo test -p ackplane-client --test arbitration
+//! docker compose up -d postgres
+//! ACKPLANE_TEST_DATABASE_URL=postgres://ackplane:ackplane-development-only-not-for-production@127.0.0.1:5432/ackplane cargo test -p ackplane-client --test arbitration
 //! ```
 
 use ackplane_client::{
     ClaimClient, ClaimLeaseOutcome, ClaimLeaseRequest, ClaimReleaseRequest, ClaimRenewRequest,
 };
+use ackplane_protocol::v1::{
+    claim_delegation_service_server::ClaimDelegationServiceServer, ClaimAuthentication,
+};
+use ackplane_server::{
+    claim_service::ClaimDelegationService,
+    claim_signature::claim_signing_bytes,
+    claim_store::ClaimStore,
+    enrollment_store::EnrollmentStore,
+    signing_keys::{self, SigningKeyRecord},
+};
+use ed25519_dalek::{Signer, SigningKey};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use tokio::sync::oneshot;
+use tokio_postgres::NoTls;
+use tokio_stream::wrappers::TcpListenerStream;
+use tonic::transport::Server;
+
+const SIGNING_KEY_ID: &str = "ackplane-client-test-key";
+const NODE_ID: &str = "ackplane-client-test-node";
+const TENANT_ID: &str = "ackplane-client-test-tenant";
+const REPOSITORY_ID: &str = "ackplane-client-test-repository";
+
+fn signing_key() -> SigningKey {
+    SigningKey::from_bytes(&[19; 32])
+}
+
+fn authentication(
+    tenant_id: &str,
+    repository_id: &str,
+    task_id: &str,
+    owner_id: &str,
+) -> ClaimAuthentication {
+    let mut authentication = ClaimAuthentication {
+        signing_key_id: SIGNING_KEY_ID.to_string(),
+        node_id: NODE_ID.to_string(),
+        signed_at: OffsetDateTime::now_utc().format(&Rfc3339).unwrap(),
+        nonce: unique_task_id().into_bytes(),
+        signature: Vec::new(),
+    };
+    authentication.signature = signing_key()
+        .sign(&claim_signing_bytes(
+            tenant_id,
+            repository_id,
+            task_id,
+            owner_id,
+            &authentication,
+        ))
+        .to_bytes()
+        .to_vec();
+    authentication
+}
 
 fn unique_task_id() -> String {
     let nanos = std::time::SystemTime::now()
@@ -25,18 +76,82 @@ fn unique_task_id() -> String {
     format!("ackplane-client-arbitration-{nanos}")
 }
 
+async fn register_test_key(database_url: &str) {
+    // Apply the enrollment and signing-key schemas through their production
+    // owner before inserting the fixture's already-approved key.
+    drop(
+        EnrollmentStore::connect(database_url)
+            .await
+            .expect("the gated test database should accept enrollment migrations"),
+    );
+
+    let (mut client, connection) = tokio_postgres::connect(database_url, NoTls)
+        .await
+        .expect("the gated test database should accept a signing-key connection");
+    tokio::spawn(async move {
+        connection
+            .await
+            .expect("the signing-key fixture connection should stay healthy");
+    });
+    let transaction = client
+        .transaction()
+        .await
+        .expect("the signing-key fixture should start a transaction");
+    let key = signing_key();
+    signing_keys::register(
+        &transaction,
+        &SigningKeyRecord {
+            signing_key_id: SIGNING_KEY_ID.to_string(),
+            tenant_id: TENANT_ID.to_string(),
+            repository_id: REPOSITORY_ID.to_string(),
+            node_id: NODE_ID.to_string(),
+            public_key: key.verifying_key().to_bytes().to_vec(),
+            public_key_fingerprint: SIGNING_KEY_ID.to_string(),
+            activated_at: std::time::SystemTime::UNIX_EPOCH,
+            expires_at: None,
+        },
+    )
+    .await
+    .expect("the fixture key should register through the production schema");
+    transaction
+        .commit()
+        .await
+        .expect("the fixture key should commit");
+}
+
 #[tokio::test]
 async fn a_second_owner_is_rejected_while_the_first_owners_lease_is_active() {
-    let Ok(endpoint) = std::env::var("ACKPLANE_TEST_ENDPOINT") else {
-        println!("skipped: ACKPLANE_TEST_ENDPOINT not set");
+    let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
     };
+    register_test_key(&database_url).await;
+    let store = ClaimStore::connect(&database_url)
+        .await
+        .expect("the gated test database should accept claim migrations");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("the authenticated test service should bind loopback");
+    let address = listener.local_addr().unwrap();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        Server::builder()
+            .add_service(ClaimDelegationServiceServer::new(
+                ClaimDelegationService::new(store),
+            ))
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("the authenticated test service should run");
+    });
+    let endpoint = format!("http://{address}");
     let mut client = ClaimClient::connect(&endpoint)
         .await
-        .expect("a running ackplane-server should accept the connection");
+        .expect("the in-process authenticated service should accept the connection");
 
-    let tenant_id = "ackplane-client-test-tenant".to_string();
-    let repository_id = "ackplane-client-test-repository".to_string();
+    let tenant_id = TENANT_ID.to_string();
+    let repository_id = REPOSITORY_ID.to_string();
     let task_id = unique_task_id();
 
     let granted = client
@@ -49,6 +164,12 @@ async fn a_second_owner_is_rejected_while_the_first_owners_lease_is_active() {
             lease_seconds: 60,
             paths: vec!["src/lib.rs".to_string()],
             symbols: vec![],
+            authentication: Some(authentication(
+                &tenant_id,
+                &repository_id,
+                &task_id,
+                "owner-a",
+            )),
         })
         .await
         .expect("delegate_claim should round-trip over the wire");
@@ -68,6 +189,12 @@ async fn a_second_owner_is_rejected_while_the_first_owners_lease_is_active() {
             lease_seconds: 60,
             paths: vec!["src/lib.rs".to_string()],
             symbols: vec![],
+            authentication: Some(authentication(
+                &tenant_id,
+                &repository_id,
+                &task_id,
+                "owner-b",
+            )),
         })
         .await
         .expect("delegate_claim should round-trip over the wire");
@@ -80,6 +207,12 @@ async fn a_second_owner_is_rejected_while_the_first_owners_lease_is_active() {
             task_id: task_id.clone(),
             owner_id: "owner-a".to_string(),
             lease_seconds: 120,
+            authentication: Some(authentication(
+                &tenant_id,
+                &repository_id,
+                &task_id,
+                "owner-a",
+            )),
         })
         .await
         .expect("renew_claim should round-trip over the wire");
@@ -92,6 +225,12 @@ async fn a_second_owner_is_rejected_while_the_first_owners_lease_is_active() {
             repository_id: repository_id.clone(),
             task_id: task_id.clone(),
             owner_id: "owner-a".to_string(),
+            authentication: Some(authentication(
+                &tenant_id,
+                &repository_id,
+                &task_id,
+                "owner-a",
+            )),
         })
         .await
         .expect("release_claim should round-trip over the wire");
@@ -101,17 +240,26 @@ async fn a_second_owner_is_rejected_while_the_first_owners_lease_is_active() {
     // was a real, stateful arbiter and not a stub that always grants.
     let granted_after_release = client
         .delegate_claim(ClaimLeaseRequest {
-            tenant_id,
-            repository_id,
-            task_id,
+            tenant_id: tenant_id.clone(),
+            repository_id: repository_id.clone(),
+            task_id: task_id.clone(),
             owner_id: "owner-b".to_string(),
             branch: "feat/owner-b".to_string(),
             lease_seconds: 60,
             paths: vec!["src/lib.rs".to_string()],
             symbols: vec![],
+            authentication: Some(authentication(
+                &tenant_id,
+                &repository_id,
+                &task_id,
+                "owner-b",
+            )),
         })
         .await
         .expect("delegate_claim should round-trip over the wire");
     assert_eq!(granted_after_release.outcome(), ClaimLeaseOutcome::Granted);
     assert_eq!(granted_after_release.owner_id, "owner-b");
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
 }

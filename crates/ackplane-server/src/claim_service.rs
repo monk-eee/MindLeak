@@ -1,11 +1,12 @@
 //! gRPC transport for Ackplane-authoritative delegated task claim leases.
 
-use std::{sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration, time::SystemTime};
 
 use ackplane_protocol::v1;
 use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
 
+use crate::claim_signature::{self, ClaimAuthRefusal};
 use crate::claim_store::{
     ClaimLeaseOutcome, ClaimLeaseRequest, ClaimRecoverRequest, ClaimStore, ClaimStoreError,
 };
@@ -20,6 +21,56 @@ impl ClaimDelegationService {
             store: Arc::new(Mutex::new(store)),
         }
     }
+
+    /// Verify a claim request's authentication before it reaches the store's
+    /// CAS logic (ADR-0096 clause 4's authentication gap). An absent,
+    /// unresolvable, mismatched-binding, not-yet-active, expired, retired, or
+    /// revoked key is refused here -- the CAS methods never see an
+    /// unauthenticated caller.
+    async fn authenticate(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        task_id: &str,
+        owner_id: &str,
+        authentication: Option<&v1::ClaimAuthentication>,
+    ) -> Result<(), Status> {
+        let Some(authentication) = authentication else {
+            return Err(Status::unauthenticated(
+                ClaimAuthRefusal::Unsigned.diagnostic(),
+            ));
+        };
+        let binding = crate::signing_keys::EnvelopeBinding {
+            signing_key_id: &authentication.signing_key_id,
+            tenant_id,
+            repository_id,
+            producer_id: &authentication.node_id,
+            accepted_at: SystemTime::now(),
+        };
+        let resolution = self
+            .store
+            .lock()
+            .await
+            .resolve_signing_key(&binding)
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?;
+
+        claim_signature::verify(
+            tenant_id,
+            repository_id,
+            task_id,
+            owner_id,
+            Some(authentication),
+            &resolution,
+        )
+        .map_err(|refusal| {
+            if refusal.is_authenticated_but_not_authorized() {
+                Status::permission_denied(refusal.diagnostic())
+            } else {
+                Status::unauthenticated(refusal.diagnostic())
+            }
+        })
+    }
 }
 
 #[tonic::async_trait]
@@ -28,7 +79,16 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
         &self,
         request: Request<v1::ClaimLeaseRequest>,
     ) -> Result<Response<v1::ClaimLeaseResult>, Status> {
-        let request = request_from_wire(request.into_inner()).map_err(Status::invalid_argument)?;
+        let wire = request.into_inner();
+        self.authenticate(
+            &wire.tenant_id,
+            &wire.repository_id,
+            &wire.task_id,
+            &wire.owner_id,
+            wire.authentication.as_ref(),
+        )
+        .await?;
+        let request = request_from_wire(wire).map_err(Status::invalid_argument)?;
         let result = self
             .store
             .lock()
@@ -52,6 +112,14 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
             required(request.repository_id, "repository_id").map_err(Status::invalid_argument)?;
         let task_id = required(request.task_id, "task_id").map_err(Status::invalid_argument)?;
         let owner_id = required(request.owner_id, "owner_id").map_err(Status::invalid_argument)?;
+        self.authenticate(
+            &tenant_id,
+            &repository_id,
+            &task_id,
+            &owner_id,
+            request.authentication.as_ref(),
+        )
+        .await?;
         let released = self
             .store
             .lock()
@@ -82,6 +150,14 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
             required(request.repository_id, "repository_id").map_err(Status::invalid_argument)?;
         let task_id = required(request.task_id, "task_id").map_err(Status::invalid_argument)?;
         let owner_id = required(request.owner_id, "owner_id").map_err(Status::invalid_argument)?;
+        self.authenticate(
+            &tenant_id,
+            &repository_id,
+            &task_id,
+            &owner_id,
+            request.authentication.as_ref(),
+        )
+        .await?;
         let lease = Duration::from_secs(request.lease_seconds);
         if lease.is_zero() {
             return Err(Status::invalid_argument(
@@ -121,6 +197,14 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
             required(request.expected_owner, "expected_owner").map_err(Status::invalid_argument)?;
         let owner_id = required(request.owner_id, "owner_id").map_err(Status::invalid_argument)?;
         let branch = required(request.branch, "branch").map_err(Status::invalid_argument)?;
+        self.authenticate(
+            &tenant_id,
+            &repository_id,
+            &task_id,
+            &owner_id,
+            request.authentication.as_ref(),
+        )
+        .await?;
         let lease = Duration::from_secs(request.lease_seconds);
         if lease.is_zero() {
             return Err(Status::invalid_argument(
