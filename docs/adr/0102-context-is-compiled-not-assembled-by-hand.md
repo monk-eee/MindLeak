@@ -1,8 +1,10 @@
 # ADR-0102: Context is compiled into a bounded packet, not assembled by hand
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-18
-- Deciders: Pending human acceptance
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-19 by the repository owner, authorized directly in
+  session — attributed human adoption after review.
 - Related: [ADR-0008](0008-semantic-recall-embedding-index.md) (semantic
   recall — one composed source), [ADR-0017](0017-working-memory-and-autonomous-consolidation.md)
   (working memory / `working_set` — another composed source),

@@ -1,8 +1,10 @@
 # ADR-0104: A reference consumer tests the tool surface's stability
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-18
-- Deciders: Pending human acceptance
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-19 by the repository owner, authorized directly in
+  session — attributed human adoption after review.
 - Related: [ADR-0059](0059-the-tool-surface-is-a-vocabulary.md) (the tool
   surface is a vocabulary), [ADR-0103](0103-the-mcp-client-is-packaged-once-not-reimplemented.md)
   (the MCP client is packaged once, not reimplemented — this gate's natural
