@@ -24,7 +24,6 @@ pub enum ClaimLeaseOutcome {
     Granted,
     Rejected,
 }
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimLeaseResult {
     pub outcome: ClaimLeaseOutcome,
@@ -165,12 +164,64 @@ impl ClaimStore {
         transaction.commit().await?;
         Ok(result)
     }
+
+    /// Voluntarily give back a live claim before its lease naturally expires
+    /// (ADR-0096 decision 6: holed, not extended). Owner-guarded: only the
+    /// exact current `owner_id` may release. Holes the lease immediately
+    /// (`lease_expires_at = now`) rather than deleting the row, so the
+    /// existing `delegate` CAS grants it to the next caller without waiting
+    /// out the original lease. Releasing a claim you do not hold, or one that
+    /// has already expired, is a no-op: there is nothing live to give back.
+    pub async fn release(
+        &mut self,
+        tenant_id: &str,
+        repository_id: &str,
+        task_id: &str,
+        owner_id: &str,
+        now: SystemTime,
+    ) -> Result<bool, ClaimStoreError> {
+        let transaction = self.client.transaction().await?;
+        let changed = transaction
+            .execute(
+                "UPDATE delegated_claims SET lease_expires_at = $5 \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 \
+                   AND owner_id = $4 AND lease_expires_at > $5",
+                &[&tenant_id, &repository_id, &task_id, &owner_id, &now],
+            )
+            .await?;
+        let released = changed == 1;
+        transaction
+            .execute(
+                "INSERT INTO delegated_claim_history (tenant_id, repository_id, task_id, requested_owner_id, \
+                 granted_owner_id, outcome, claim_started_at, lease_expires_at, claim_lapses, paths, symbols) \
+                 VALUES ($1,$2,$3,$4,$4,$5,$6,$6,0,ARRAY[]::text[],ARRAY[]::text[])",
+                &[
+                    &tenant_id,
+                    &repository_id,
+                    &task_id,
+                    &owner_id,
+                    &release_outcome_tag(released),
+                    &now,
+                ],
+            )
+            .await?;
+        transaction.commit().await?;
+        Ok(released)
+    }
 }
 
 fn outcome_tag(outcome: ClaimLeaseOutcome) -> i16 {
     match outcome {
         ClaimLeaseOutcome::Granted => 1,
         ClaimLeaseOutcome::Rejected => 2,
+    }
+}
+
+fn release_outcome_tag(released: bool) -> i16 {
+    if released {
+        3
+    } else {
+        4
     }
 }
 
@@ -225,5 +276,118 @@ mod tests {
         assert_eq!(reclaimed.owner_id, "owner-two");
         assert_eq!(reclaimed.claim_lapses, 1);
         assert_eq!(reclaimed.paths, second.paths);
+    }
+
+    #[tokio::test]
+    async fn the_live_owner_can_release_before_expiry_and_a_different_owner_claims_immediately() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let tenant_id = format!("claim-release-{}", crate::test_support::uuid_ish());
+        let task_id = "task";
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let first = request(&tenant_id, task_id, "owner-one");
+        let second = request(&tenant_id, task_id, "owner-two");
+        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+
+        store.delegate(&first, now).await.unwrap();
+
+        // Without a release, a different owner is refused while the lease is live.
+        let still_live = store
+            .delegate(&second, now + Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(still_live.outcome, ClaimLeaseOutcome::Rejected);
+
+        let released = store
+            .release(
+                &tenant_id,
+                "repository",
+                task_id,
+                "owner-one",
+                now + Duration::from_secs(2),
+            )
+            .await
+            .unwrap();
+        assert!(released, "the live owner must be able to release");
+
+        // Immediately grantable to a different owner, with no wait for the
+        // original 60-second lease to naturally expire.
+        let granted_after_release = store
+            .delegate(&second, now + Duration::from_secs(3))
+            .await
+            .unwrap();
+        assert_eq!(granted_after_release.outcome, ClaimLeaseOutcome::Granted);
+        assert_eq!(granted_after_release.owner_id, "owner-two");
+    }
+
+    #[tokio::test]
+    async fn a_non_owner_release_is_refused_and_does_not_affect_the_live_claim() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let tenant_id = format!("claim-release-refused-{}", crate::test_support::uuid_ish());
+        let task_id = "task";
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let first = request(&tenant_id, task_id, "owner-one");
+        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+
+        store.delegate(&first, now).await.unwrap();
+
+        let released = store
+            .release(
+                &tenant_id,
+                "repository",
+                task_id,
+                "owner-two",
+                now + Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+        assert!(
+            !released,
+            "a non-owner must never release someone else's claim"
+        );
+
+        // The original owner's lease is untouched: a competitor is still refused.
+        let still_rejected = store
+            .delegate(
+                &request(&tenant_id, task_id, "owner-two"),
+                now + Duration::from_secs(2),
+            )
+            .await
+            .unwrap();
+        assert_eq!(still_rejected.outcome, ClaimLeaseOutcome::Rejected);
+        assert_eq!(still_rejected.owner_id, "owner-one");
+    }
+
+    #[tokio::test]
+    async fn releasing_an_already_expired_claim_is_a_no_op() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let tenant_id = format!("claim-release-expired-{}", crate::test_support::uuid_ish());
+        let task_id = "task";
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let first = request(&tenant_id, task_id, "owner-one");
+        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+
+        store.delegate(&first, now).await.unwrap();
+
+        // Past the 60-second lease: nothing live remains to release.
+        let released = store
+            .release(
+                &tenant_id,
+                "repository",
+                task_id,
+                "owner-one",
+                now + Duration::from_secs(61),
+            )
+            .await
+            .unwrap();
+        assert!(!released, "releasing an already-expired lease is a no-op");
     }
 }
