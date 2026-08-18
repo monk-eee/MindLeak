@@ -98,6 +98,9 @@ relevance, constitution for authority, and evidence for completion.**
   sensors, readiness guidance, and graph, work, design, and telemetry views.
 - **Headless setup** — generated MCP configuration for clients such as GitHub
   Copilot CLI; the servers remain ordinary newline-delimited MCP over stdio.
+- **`clients/node/mindleak-client`** — a packaged, installable Node.js client
+  for either MCP stdio server, so consumers no longer hand-write their own
+  JSON-RPC framing (ADR-0103).
 
 Together these are **MindLeak Core**, the local tier and the only tier that ships
 today. *Ackplane* (the shared control plane) and *the Bridge* (assurance and
@@ -169,6 +172,7 @@ platform steps and the first useful query, continue with the
 | Operate data safely | [Data lifecycle](docs/DATA-LIFECYCLE.md) |
 | Author policy | [Policy packs](docs/POLICY-PACKS.md) |
 | Use the editor surface | [VS Code extension](editors/vscode/README.md) |
+| Build a custom MCP client | [Node client SDK](clients/node/mindleak-client/README.md) |
 | Build or contribute | [Developer guide](DEVELOPERS.md), [Contributing](docs/CONTRIBUTING.md), and [Agent constraints](AGENTS.md) |
 
 ## Architecture
