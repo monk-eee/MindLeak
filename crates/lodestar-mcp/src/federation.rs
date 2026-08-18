@@ -12,7 +12,7 @@
 
 use ackplane_client::{
     authenticate, ClaimClient, ClaimLeaseOutcome, ClaimLeaseRequest, ClaimLeaseResult,
-    ClaimRecoverRequest, ClaimReleaseRequest, ClaimRenewRequest, SeedSigner,
+    ClaimOperation, ClaimRecoverRequest, ClaimReleaseRequest, ClaimRenewRequest, SeedSigner,
 };
 use lodestar_core::{
     FederatedClaimAuthority, FederatedClaimGrant, FederatedClaimOutcome,
@@ -132,19 +132,27 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
         symbols: &[String],
     ) -> lodestar_core::Result<FederatedClaimOutcome> {
         let identity = &self.identity;
+        let branch = branch.unwrap_or_default();
+        let operation = ClaimOperation::Delegate {
+            branch,
+            lease_seconds: lease_secs.max(0) as u64,
+            paths,
+            symbols,
+        };
         let authentication = authenticate(
             &self.signer(),
             &identity.tenant_id,
             &identity.repository_id,
             task_id,
             owner,
+            &operation,
         );
         let request = ClaimLeaseRequest {
             tenant_id: identity.tenant_id.clone(),
             repository_id: identity.repository_id.clone(),
             task_id: task_id.to_string(),
             owner_id: owner.to_string(),
-            branch: branch.unwrap_or_default().to_string(),
+            branch: branch.to_string(),
             lease_seconds: lease_secs.max(0) as u64,
             paths: paths.to_vec(),
             symbols: symbols.to_vec(),
@@ -166,12 +174,16 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
         lease_secs: i64,
     ) -> lodestar_core::Result<FederatedClaimOutcome> {
         let identity = &self.identity;
+        let operation = ClaimOperation::Renew {
+            lease_seconds: lease_secs.max(0) as u64,
+        };
         let authentication = authenticate(
             &self.signer(),
             &identity.tenant_id,
             &identity.repository_id,
             task_id,
             owner,
+            &operation,
         );
         let request = ClaimRenewRequest {
             tenant_id: identity.tenant_id.clone(),
@@ -198,6 +210,7 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
             &identity.repository_id,
             task_id,
             owner,
+            &ClaimOperation::Release,
         );
         let request = ClaimReleaseRequest {
             tenant_id: identity.tenant_id.clone(),
@@ -220,12 +233,22 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
         request: &FederatedClaimRecoverRequest,
     ) -> lodestar_core::Result<FederatedClaimOutcome> {
         let identity = &self.identity;
+        let branch = request.branch.clone().unwrap_or_default();
+        let operation = ClaimOperation::Recover {
+            expected_owner: &request.expected_owner,
+            branch: &branch,
+            lease_seconds: request.lease_secs.max(0) as u64,
+            paths: &request.paths,
+            symbols: &request.symbols,
+            reason: &request.reason,
+        };
         let authentication = authenticate(
             &self.signer(),
             &identity.tenant_id,
             &identity.repository_id,
             &request.task_id,
             &request.owner,
+            &operation,
         );
         let wire_request = ClaimRecoverRequest {
             tenant_id: identity.tenant_id.clone(),
@@ -234,7 +257,7 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
             expected_owner: request.expected_owner.clone(),
             owner_id: request.owner.clone(),
             reason: request.reason.clone(),
-            branch: request.branch.clone().unwrap_or_default(),
+            branch,
             lease_seconds: request.lease_secs.max(0) as u64,
             paths: request.paths.clone(),
             symbols: request.symbols.clone(),

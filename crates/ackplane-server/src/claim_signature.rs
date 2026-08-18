@@ -8,6 +8,7 @@
 //! domain string, so a signature captured here can never be replayed as an
 //! envelope or a connection challenge response.
 
+use ackplane_protocol::claim_auth::ClaimOperation;
 use ackplane_protocol::v1;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use std::time::SystemTime;
@@ -97,11 +98,13 @@ impl ClaimAuthRefusal {
 /// Pure: no database, no network. The lookup (`ClaimStore::resolve_signing_key`)
 /// is the easy half; this is the half that decides whether the caller is who
 /// it claims to be.
+#[allow(clippy::too_many_arguments)]
 pub fn verify(
     tenant_id: &str,
     repository_id: &str,
     task_id: &str,
     owner_id: &str,
+    operation: &ClaimOperation,
     authentication: Option<&v1::ClaimAuthentication>,
     resolution: &KeyResolution,
     now: SystemTime,
@@ -133,7 +136,14 @@ pub fn verify(
         .ok_or(ClaimAuthRefusal::BadSignature)?;
     let signature = Signature::from_slice(&authentication.signature)
         .map_err(|_| ClaimAuthRefusal::BadSignature)?;
-    let bytes = claim_signing_bytes(tenant_id, repository_id, task_id, owner_id, authentication);
+    let bytes = claim_signing_bytes(
+        tenant_id,
+        repository_id,
+        task_id,
+        owner_id,
+        operation,
+        authentication,
+    );
 
     key.verify(&bytes, &signature)
         .map_err(|_| ClaimAuthRefusal::BadSignature)
@@ -177,7 +187,11 @@ mod tests {
         }
     }
 
-    fn signed_authentication(signing_key: &SigningKey, node_id: &str) -> v1::ClaimAuthentication {
+    fn signed_authentication(
+        signing_key: &SigningKey,
+        node_id: &str,
+        operation: &ClaimOperation,
+    ) -> v1::ClaimAuthentication {
         let mut authentication = v1::ClaimAuthentication {
             signing_key_id: "key-1".to_owned(),
             node_id: node_id.to_owned(),
@@ -185,10 +199,23 @@ mod tests {
             nonce: vec![7; 16],
             signature: Vec::new(),
         };
-        let bytes = claim_signing_bytes("tenant-a", "repo-a", "task-1", "owner-1", &authentication);
+        let bytes = claim_signing_bytes(
+            "tenant-a",
+            "repo-a",
+            "task-1",
+            "owner-1",
+            operation,
+            &authentication,
+        );
         authentication.signature = signing_key.sign(&bytes).to_bytes().to_vec();
         authentication
     }
+
+    /// Every identity/timestamp/nonce test below authenticates a `Release`
+    /// (no operation-specific fields) so those concerns stay decoupled from
+    /// which operation is being authorized; the operation-binding tests
+    /// further down are what actually vary this.
+    const RELEASE: ClaimOperation<'static> = ClaimOperation::Release;
 
     /// Matches `signed_authentication`'s hardcoded `signed_at`, so the
     /// freshness check every test must now also satisfy does not become a
@@ -202,7 +229,7 @@ mod tests {
     #[test]
     fn a_validly_signed_request_verifies() {
         let signing_key = SigningKey::from_bytes(&[9; 32]);
-        let authentication = signed_authentication(&signing_key, "node-1");
+        let authentication = signed_authentication(&signing_key, "node-1", &RELEASE);
         let resolution =
             KeyResolution::Resolved(record(signing_key.verifying_key().to_bytes().to_vec()));
 
@@ -212,6 +239,7 @@ mod tests {
                 "repo-a",
                 "task-1",
                 "owner-1",
+                &RELEASE,
                 Some(&authentication),
                 &resolution,
                 fixed_now(),
@@ -232,6 +260,7 @@ mod tests {
                 "repo-a",
                 "task-1",
                 "owner-1",
+                &RELEASE,
                 None,
                 &resolution,
                 fixed_now(),
@@ -243,7 +272,7 @@ mod tests {
     #[test]
     fn a_signature_from_an_unenrolled_key_is_refused() {
         let signing_key = SigningKey::from_bytes(&[9; 32]);
-        let authentication = signed_authentication(&signing_key, "node-1");
+        let authentication = signed_authentication(&signing_key, "node-1", &RELEASE);
 
         assert_eq!(
             verify(
@@ -251,6 +280,7 @@ mod tests {
                 "repo-a",
                 "task-1",
                 "owner-1",
+                &RELEASE,
                 Some(&authentication),
                 &KeyResolution::Unknown,
                 fixed_now(),
@@ -262,13 +292,14 @@ mod tests {
     #[test]
     fn a_binding_mismatch_is_refused_as_unauthorized_not_unauthenticated() {
         let signing_key = SigningKey::from_bytes(&[9; 32]);
-        let authentication = signed_authentication(&signing_key, "node-1");
+        let authentication = signed_authentication(&signing_key, "node-1", &RELEASE);
 
         let refusal = verify(
             "tenant-a",
             "repo-a",
             "task-1",
             "owner-1",
+            &RELEASE,
             Some(&authentication),
             &KeyResolution::BindingMismatch,
             fixed_now(),
@@ -282,7 +313,7 @@ mod tests {
     #[test]
     fn a_revoked_key_is_refused() {
         let signing_key = SigningKey::from_bytes(&[9; 32]);
-        let authentication = signed_authentication(&signing_key, "node-1");
+        let authentication = signed_authentication(&signing_key, "node-1", &RELEASE);
 
         assert_eq!(
             verify(
@@ -290,6 +321,7 @@ mod tests {
                 "repo-a",
                 "task-1",
                 "owner-1",
+                &RELEASE,
                 Some(&authentication),
                 &KeyResolution::Revoked,
                 fixed_now(),
@@ -301,7 +333,7 @@ mod tests {
     #[test]
     fn a_signature_over_a_different_claim_does_not_verify() {
         let signing_key = SigningKey::from_bytes(&[9; 32]);
-        let authentication = signed_authentication(&signing_key, "node-1");
+        let authentication = signed_authentication(&signing_key, "node-1", &RELEASE);
         let resolution =
             KeyResolution::Resolved(record(signing_key.verifying_key().to_bytes().to_vec()));
 
@@ -313,6 +345,7 @@ mod tests {
                 "repo-a",
                 "task-2",
                 "owner-1",
+                &RELEASE,
                 Some(&authentication),
                 &resolution,
                 fixed_now(),
@@ -324,7 +357,7 @@ mod tests {
     #[test]
     fn a_stale_timestamp_is_refused() {
         let signing_key = SigningKey::from_bytes(&[9; 32]);
-        let authentication = signed_authentication(&signing_key, "node-1");
+        let authentication = signed_authentication(&signing_key, "node-1", &RELEASE);
         let resolution =
             KeyResolution::Resolved(record(signing_key.verifying_key().to_bytes().to_vec()));
         let too_late = fixed_now() + Duration::from_secs(MAX_CLAIM_AUTH_SKEW_SECS as u64 + 1);
@@ -335,6 +368,7 @@ mod tests {
                 "repo-a",
                 "task-1",
                 "owner-1",
+                &RELEASE,
                 Some(&authentication),
                 &resolution,
                 too_late,
@@ -346,7 +380,7 @@ mod tests {
     #[test]
     fn a_timestamp_too_far_in_the_future_is_refused() {
         let signing_key = SigningKey::from_bytes(&[9; 32]);
-        let authentication = signed_authentication(&signing_key, "node-1");
+        let authentication = signed_authentication(&signing_key, "node-1", &RELEASE);
         let resolution =
             KeyResolution::Resolved(record(signing_key.verifying_key().to_bytes().to_vec()));
         let too_early = fixed_now() - Duration::from_secs(MAX_CLAIM_AUTH_SKEW_SECS as u64 + 1);
@@ -357,6 +391,7 @@ mod tests {
                 "repo-a",
                 "task-1",
                 "owner-1",
+                &RELEASE,
                 Some(&authentication),
                 &resolution,
                 too_early,
@@ -368,7 +403,7 @@ mod tests {
     #[test]
     fn an_unparseable_timestamp_is_refused() {
         let signing_key = SigningKey::from_bytes(&[9; 32]);
-        let mut authentication = signed_authentication(&signing_key, "node-1");
+        let mut authentication = signed_authentication(&signing_key, "node-1", &RELEASE);
         authentication.signed_at = "not a timestamp".to_owned();
         let resolution =
             KeyResolution::Resolved(record(signing_key.verifying_key().to_bytes().to_vec()));
@@ -379,6 +414,7 @@ mod tests {
                 "repo-a",
                 "task-1",
                 "owner-1",
+                &RELEASE,
                 Some(&authentication),
                 &resolution,
                 fixed_now(),
@@ -390,7 +426,7 @@ mod tests {
     #[test]
     fn a_timestamp_just_inside_the_skew_window_still_verifies() {
         let signing_key = SigningKey::from_bytes(&[9; 32]);
-        let authentication = signed_authentication(&signing_key, "node-1");
+        let authentication = signed_authentication(&signing_key, "node-1", &RELEASE);
         let resolution =
             KeyResolution::Resolved(record(signing_key.verifying_key().to_bytes().to_vec()));
         let just_inside = fixed_now() + Duration::from_secs(MAX_CLAIM_AUTH_SKEW_SECS as u64 - 1);
@@ -401,11 +437,161 @@ mod tests {
                 "repo-a",
                 "task-1",
                 "owner-1",
+                &RELEASE,
                 Some(&authentication),
                 &resolution,
                 just_inside,
             ),
             Ok(())
+        );
+    }
+
+    /// ADR-0100 decision 10/12: a signature is over one exact operation, not
+    /// merely one identity. A `Delegate` authentication does not verify as a
+    /// `Renew` even though every identity field, timestamp, and nonce is
+    /// unchanged.
+    #[test]
+    fn a_signature_for_one_operation_does_not_verify_as_another() {
+        let signing_key = SigningKey::from_bytes(&[9; 32]);
+        let delegate = ClaimOperation::Delegate {
+            branch: "feat/x",
+            lease_seconds: 60,
+            paths: &[],
+            symbols: &[],
+        };
+        let authentication = signed_authentication(&signing_key, "node-1", &delegate);
+        let resolution =
+            KeyResolution::Resolved(record(signing_key.verifying_key().to_bytes().to_vec()));
+
+        assert_eq!(
+            verify(
+                "tenant-a",
+                "repo-a",
+                "task-1",
+                "owner-1",
+                &ClaimOperation::Renew { lease_seconds: 60 },
+                Some(&authentication),
+                &resolution,
+                fixed_now(),
+            ),
+            Err(ClaimAuthRefusal::BadSignature)
+        );
+    }
+
+    /// A `Delegate` authentication signed for a 60-second lease does not
+    /// verify for the identical request with a 120-second lease: the
+    /// operation's own fields are bound, not merely its name.
+    #[test]
+    fn a_signature_does_not_verify_after_its_operation_fields_change() {
+        let signing_key = SigningKey::from_bytes(&[9; 32]);
+        let signed = ClaimOperation::Delegate {
+            branch: "feat/x",
+            lease_seconds: 60,
+            paths: &["src/lib.rs".to_string()],
+            symbols: &[],
+        };
+        let authentication = signed_authentication(&signing_key, "node-1", &signed);
+        let resolution =
+            KeyResolution::Resolved(record(signing_key.verifying_key().to_bytes().to_vec()));
+
+        let lib_rs = vec!["src/lib.rs".to_string()];
+        let other_rs = vec!["src/other.rs".to_string()];
+        let cases: Vec<ClaimOperation> = vec![
+            ClaimOperation::Delegate {
+                branch: "feat/y",
+                lease_seconds: 60,
+                paths: &lib_rs,
+                symbols: &[],
+            },
+            ClaimOperation::Delegate {
+                branch: "feat/x",
+                lease_seconds: 120,
+                paths: &lib_rs,
+                symbols: &[],
+            },
+            ClaimOperation::Delegate {
+                branch: "feat/x",
+                lease_seconds: 60,
+                paths: &other_rs,
+                symbols: &[],
+            },
+        ];
+        for changed in cases {
+            assert_eq!(
+                verify(
+                    "tenant-a",
+                    "repo-a",
+                    "task-1",
+                    "owner-1",
+                    &changed,
+                    Some(&authentication),
+                    &resolution,
+                    fixed_now(),
+                ),
+                Err(ClaimAuthRefusal::BadSignature)
+            );
+        }
+    }
+
+    /// `Recover` carries `expected_owner` and `reason` beyond what any other
+    /// operation signs; both are bound too.
+    #[test]
+    fn a_recover_signature_does_not_verify_after_expected_owner_or_reason_change() {
+        let signing_key = SigningKey::from_bytes(&[9; 32]);
+        let signed = ClaimOperation::Recover {
+            expected_owner: "stranded-agent",
+            branch: "feat/x",
+            lease_seconds: 300,
+            paths: &[],
+            symbols: &[],
+            reason: "lease expired",
+        };
+        let authentication = signed_authentication(&signing_key, "node-1", &signed);
+        let resolution =
+            KeyResolution::Resolved(record(signing_key.verifying_key().to_bytes().to_vec()));
+
+        let different_owner = ClaimOperation::Recover {
+            expected_owner: "a-different-agent",
+            branch: "feat/x",
+            lease_seconds: 300,
+            paths: &[],
+            symbols: &[],
+            reason: "lease expired",
+        };
+        assert_eq!(
+            verify(
+                "tenant-a",
+                "repo-a",
+                "task-1",
+                "owner-1",
+                &different_owner,
+                Some(&authentication),
+                &resolution,
+                fixed_now(),
+            ),
+            Err(ClaimAuthRefusal::BadSignature)
+        );
+
+        let different_reason = ClaimOperation::Recover {
+            expected_owner: "stranded-agent",
+            branch: "feat/x",
+            lease_seconds: 300,
+            paths: &[],
+            symbols: &[],
+            reason: "a made-up reason",
+        };
+        assert_eq!(
+            verify(
+                "tenant-a",
+                "repo-a",
+                "task-1",
+                "owner-1",
+                &different_reason,
+                Some(&authentication),
+                &resolution,
+                fixed_now(),
+            ),
+            Err(ClaimAuthRefusal::BadSignature)
         );
     }
 }

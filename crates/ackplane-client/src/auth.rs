@@ -13,6 +13,7 @@
 use ed25519_dalek::{Signer, SigningKey};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
+pub use ackplane_protocol::claim_auth::ClaimOperation;
 pub use ackplane_protocol::v1::ClaimAuthentication;
 
 /// A repository node's capability to prove its identity for a claim request.
@@ -61,17 +62,19 @@ impl ClaimSigner for SeedSigner {
 /// Build and sign a `ClaimAuthentication` for one claim request.
 ///
 /// The nonce is fresh random bytes per call (`getrandom`, the same source
-/// `ackplane-server`'s enrolment challenges use) -- not itself a freshness
-/// guarantee the server enforces yet
-/// (`gaps.d/claim-authentication-can-be-replayed-across-operations.md`
-/// remains the tracked follow-up), but there is no reason to sign a
-/// predictable value where an unpredictable one is this cheap.
+/// `ackplane-server`'s enrolment challenges use); the server durably consumes
+/// each `(signing_key_id, nonce)` pair exactly once and bounds `signed_at` to
+/// a clock-skew window, so a captured request cannot be replayed
+/// indefinitely. `operation` binds this signature to the exact RPC and its
+/// fields (ADR-0100 decision 10), so it can never verify for a different
+/// operation or changed field values over the same task/owner.
 pub fn authenticate(
     signer: &dyn ClaimSigner,
     tenant_id: &str,
     repository_id: &str,
     task_id: &str,
     owner_id: &str,
+    operation: &ClaimOperation,
 ) -> ClaimAuthentication {
     let mut nonce = [0u8; 16];
     getrandom::getrandom(&mut nonce).expect("the OS random source should be available");
@@ -89,6 +92,7 @@ pub fn authenticate(
         repository_id,
         task_id,
         owner_id,
+        operation,
         &authentication,
     );
     authentication.signature = signer.sign(&bytes);

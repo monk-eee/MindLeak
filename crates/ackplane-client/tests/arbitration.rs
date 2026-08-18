@@ -14,7 +14,8 @@
 //! ```
 
 use ackplane_client::{
-    ClaimClient, ClaimLeaseOutcome, ClaimLeaseRequest, ClaimReleaseRequest, ClaimRenewRequest,
+    ClaimClient, ClaimLeaseOutcome, ClaimLeaseRequest, ClaimOperation, ClaimReleaseRequest,
+    ClaimRenewRequest,
 };
 use ackplane_protocol::v1::{
     claim_delegation_service_server::ClaimDelegationServiceServer, ClaimAuthentication,
@@ -47,6 +48,7 @@ fn authentication(
     repository_id: &str,
     task_id: &str,
     owner_id: &str,
+    operation: &ClaimOperation,
 ) -> ClaimAuthentication {
     let mut authentication = ClaimAuthentication {
         signing_key_id: SIGNING_KEY_ID.to_string(),
@@ -61,6 +63,7 @@ fn authentication(
             repository_id,
             task_id,
             owner_id,
+            operation,
             &authentication,
         ))
         .to_bytes()
@@ -169,6 +172,12 @@ async fn a_second_owner_is_rejected_while_the_first_owners_lease_is_active() {
                 &repository_id,
                 &task_id,
                 "owner-a",
+                &ClaimOperation::Delegate {
+                    branch: "feat/owner-a",
+                    lease_seconds: 60,
+                    paths: &["src/lib.rs".to_string()],
+                    symbols: &[],
+                },
             )),
         })
         .await
@@ -194,6 +203,12 @@ async fn a_second_owner_is_rejected_while_the_first_owners_lease_is_active() {
                 &repository_id,
                 &task_id,
                 "owner-b",
+                &ClaimOperation::Delegate {
+                    branch: "feat/owner-b",
+                    lease_seconds: 60,
+                    paths: &["src/lib.rs".to_string()],
+                    symbols: &[],
+                },
             )),
         })
         .await
@@ -212,6 +227,7 @@ async fn a_second_owner_is_rejected_while_the_first_owners_lease_is_active() {
                 &repository_id,
                 &task_id,
                 "owner-a",
+                &ClaimOperation::Renew { lease_seconds: 120 },
             )),
         })
         .await
@@ -230,6 +246,7 @@ async fn a_second_owner_is_rejected_while_the_first_owners_lease_is_active() {
                 &repository_id,
                 &task_id,
                 "owner-a",
+                &ClaimOperation::Release,
             )),
         })
         .await
@@ -253,6 +270,12 @@ async fn a_second_owner_is_rejected_while_the_first_owners_lease_is_active() {
                 &repository_id,
                 &task_id,
                 "owner-b",
+                &ClaimOperation::Delegate {
+                    branch: "feat/owner-b",
+                    lease_seconds: 60,
+                    paths: &["src/lib.rs".to_string()],
+                    symbols: &[],
+                },
             )),
         })
         .await
