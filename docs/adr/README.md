@@ -106,6 +106,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0096](0096-ackplane-arbitrates-federated-claims-through-leased-delegation.md) | Ackplane arbitrates federated claims through leased delegation | Accepted |
 | [0098](0098-connection-trust-reuses-the-enrolled-key-oidc-waits.md) | Connection trust reuses the enrolled node key; OIDC waits for a real second tenant | Proposed |
 | [0099](0099-a-claim-also-checks-for-a-live-twin-by-title.md) | A claim also checks for a live twin by title, not only by scope | Accepted |
+| [0100](0100-repository-node-owns-one-non-exporting-signer.md) | The repository node owns one non-exporting signer | Proposed |
 
 ## Writing a new ADR
 
