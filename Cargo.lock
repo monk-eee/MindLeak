@@ -21,8 +21,13 @@ name = "ackplane-client"
 version = "0.1.7-alpha"
 dependencies = [
  "ackplane-protocol",
+ "ackplane-server",
+ "ed25519-dalek",
  "thiserror",
+ "time",
  "tokio",
+ "tokio-postgres",
+ "tokio-stream",
  "tonic",
 ]
 

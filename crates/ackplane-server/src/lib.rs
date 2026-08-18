@@ -18,6 +18,7 @@
 use std::{fmt, net::SocketAddr};
 
 pub mod claim_service;
+pub mod claim_signature;
 pub mod claim_store;
 pub mod enrollment;
 pub mod enrollment_service;

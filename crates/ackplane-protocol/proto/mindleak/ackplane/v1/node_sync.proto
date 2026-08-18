@@ -21,6 +21,19 @@ service ClaimDelegationService {
   rpc ListActiveClaims(ActiveClaimsRequest) returns (ActiveClaimsResult);
 }
 
+// The enrolled node's proof that it, not just its bearer credentials, is
+// asking for this claim (ADR-0096 clause 4's authentication gap). Reuses the
+// same Ed25519 signing key and domain-separated verification
+// `signing_keys::resolve` already provides for envelopes and connections
+// (ADR-0084, ADR-0098) -- not a new trust scheme.
+message ClaimAuthentication {
+  string signing_key_id = 1;
+  string node_id = 2;
+  string signed_at = 3;
+  bytes nonce = 4;
+  bytes signature = 5;
+}
+
 message ClaimLeaseRequest {
   string tenant_id = 1;
   string repository_id = 2;
@@ -30,6 +43,7 @@ message ClaimLeaseRequest {
   uint64 lease_seconds = 6;
   repeated string paths = 7;
   repeated string symbols = 8;
+  ClaimAuthentication authentication = 9;
 }
 
 message ClaimLeaseResult {
@@ -49,6 +63,7 @@ message ClaimReleaseRequest {
   string repository_id = 2;
   string task_id = 3;
   string owner_id = 4;
+  ClaimAuthentication authentication = 5;
 }
 
 message ClaimReleaseResult {
@@ -62,6 +77,7 @@ message ClaimRenewRequest {
   string task_id = 3;
   string owner_id = 4;
   uint64 lease_seconds = 5;
+  ClaimAuthentication authentication = 6;
 }
 
 message ClaimRecoverRequest {
@@ -75,6 +91,7 @@ message ClaimRecoverRequest {
   uint64 lease_seconds = 8;
   repeated string paths = 9;
   repeated string symbols = 10;
+  ClaimAuthentication authentication = 11;
 }
 
 // ADR-0096 clause 5: for a federated repository, overlap detection reads

@@ -12,3 +12,11 @@ ackplane-protocol = { path = "../ackplane-protocol" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
+
+[dev-dependencies]
+ackplane-server = { path = "../ackplane-server" }
+ed25519-dalek = "2.1"
+time = { version = "=0.3.36", features = ["formatting"] }
+tokio = { workspace = true, features = ["net", "sync"] }
+tokio-postgres = { workspace = true }
+tokio-stream = { version = "0.1", features = ["net"] }
