@@ -62,6 +62,7 @@ impl ClaimDelegationService {
             owner_id,
             Some(authentication),
             &resolution,
+            SystemTime::now(),
         )
         .map_err(|refusal| {
             if refusal.is_authenticated_but_not_authorized() {
@@ -69,7 +70,27 @@ impl ClaimDelegationService {
             } else {
                 Status::unauthenticated(refusal.diagnostic())
             }
-        })
+        })?;
+
+        // Only after a genuine signature is confirmed: a forged request must
+        // never be able to burn a legitimate nonce out from under its owner.
+        let fresh = self
+            .store
+            .lock()
+            .await
+            .consume_claim_nonce(
+                &authentication.signing_key_id,
+                &authentication.nonce,
+                SystemTime::now(),
+            )
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?;
+        if !fresh {
+            return Err(Status::unauthenticated(
+                ClaimAuthRefusal::Replayed.diagnostic(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -333,5 +354,210 @@ fn map_store_error(error: ClaimStoreError) -> Status {
         ClaimStoreError::Database(_) | ClaimStoreError::InvalidLapseCount => {
             Status::internal(error.to_string())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ed25519_dalek::{Signer, SigningKey};
+    use tokio_postgres::NoTls;
+
+    // The trait's simple name collides with this module's `struct
+    // ClaimDelegationService`; `as _` brings its methods into scope for
+    // direct method-call syntax without trying to bind the colliding name.
+    use ackplane_protocol::v1::claim_delegation_service_server::ClaimDelegationService as _;
+
+    use super::*;
+    use crate::signing_keys::{self, SigningKeyRecord};
+
+    /// Deterministic key material across every test -- like `arbitration.rs`'s
+    /// fixture -- but each test registers it under its own fresh identity
+    /// (see `TestIdentity::fresh`), so two tests in the same binary can never
+    /// collide on `signing_keys`' secondary uniqueness constraint over
+    /// `(tenant_id, repository_id, node_id, public_key_fingerprint,
+    /// activated_at)`.
+    fn signing_key() -> SigningKey {
+        SigningKey::from_bytes(&[21; 32])
+    }
+
+    /// One test's fully-isolated tenant/repository/node/key identity, so
+    /// tests in the same binary never share a row and never depend on
+    /// registration order.
+    struct TestIdentity {
+        signing_key_id: String,
+        node_id: String,
+        tenant_id: String,
+        repository_id: String,
+    }
+
+    impl TestIdentity {
+        fn fresh(label: &str) -> Self {
+            let suffix = crate::test_support::uuid_ish();
+            Self {
+                signing_key_id: format!("claim-service-{label}-key-{suffix}"),
+                node_id: format!("claim-service-{label}-node-{suffix}"),
+                tenant_id: format!("claim-service-{label}-tenant-{suffix}"),
+                repository_id: format!("claim-service-{label}-repository-{suffix}"),
+            }
+        }
+    }
+
+    async fn register_test_key(database_url: &str, identity: &TestIdentity) {
+        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls)
+            .await
+            .expect("the gated test database should accept a signing-key connection");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let transaction = client
+            .transaction()
+            .await
+            .expect("a transaction should open for key registration");
+        let key = signing_key();
+        signing_keys::register(
+            &transaction,
+            &SigningKeyRecord {
+                signing_key_id: identity.signing_key_id.clone(),
+                tenant_id: identity.tenant_id.clone(),
+                repository_id: identity.repository_id.clone(),
+                node_id: identity.node_id.clone(),
+                public_key: key.verifying_key().to_bytes().to_vec(),
+                public_key_fingerprint: identity.signing_key_id.clone(),
+                activated_at: SystemTime::UNIX_EPOCH,
+                expires_at: None,
+            },
+        )
+        .await
+        .expect("registering the test key should succeed");
+        transaction
+            .commit()
+            .await
+            .expect("the registration transaction should commit");
+    }
+
+    /// A validly-signed wire request over `task_id`/`owner_id`, `signed_at`
+    /// pinned to "now" and `nonce` distinguished by the caller so two
+    /// requests in the same test can be deliberately identical or distinct.
+    fn authenticated_request(
+        identity: &TestIdentity,
+        task_id: &str,
+        owner_id: &str,
+        nonce_byte: u8,
+    ) -> v1::ClaimLeaseRequest {
+        let key = signing_key();
+        let mut authentication = v1::ClaimAuthentication {
+            signing_key_id: identity.signing_key_id.clone(),
+            node_id: identity.node_id.clone(),
+            signed_at: time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+            nonce: vec![nonce_byte; 16],
+            signature: Vec::new(),
+        };
+        let bytes = claim_signature::claim_signing_bytes(
+            &identity.tenant_id,
+            &identity.repository_id,
+            task_id,
+            owner_id,
+            &authentication,
+        );
+        authentication.signature = key.sign(&bytes).to_bytes().to_vec();
+        v1::ClaimLeaseRequest {
+            tenant_id: identity.tenant_id.clone(),
+            repository_id: identity.repository_id.clone(),
+            task_id: task_id.to_owned(),
+            owner_id: owner_id.to_owned(),
+            branch: format!("branch/{owner_id}"),
+            lease_seconds: 60,
+            paths: vec!["src/lib.rs".to_owned()],
+            symbols: vec![],
+            authentication: Some(authentication),
+        }
+    }
+
+    /// Proves `authenticate` actually wires nonce consumption into the RPC
+    /// path: the identical wire request granted the first time is refused
+    /// the second time on the same (signing_key_id, nonce) pair. Without
+    /// this, a captured `delegate_claim` request stays replayable forever --
+    /// a same-owner renewal looks legitimate at the CAS layer, which is
+    /// exactly why the refusal has to happen before the CAS ever sees it.
+    #[tokio::test]
+    async fn an_identical_request_is_granted_once_then_refused_as_replayed() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let identity = TestIdentity::fresh("replay");
+        register_test_key(&database_url, &identity).await;
+        let store = ClaimStore::connect(&database_url)
+            .await
+            .expect("the gated test database should accept a claim-store connection");
+        let service = ClaimDelegationService::new(store);
+        let wire = authenticated_request(&identity, "task", "owner-a", 91);
+
+        let granted = service
+            .delegate_claim(Request::new(wire.clone()))
+            .await
+            .expect("the first, fresh request must be authenticated and granted");
+        assert_eq!(
+            granted.into_inner().outcome,
+            v1::ClaimLeaseOutcome::Granted as i32
+        );
+
+        let replayed = service
+            .delegate_claim(Request::new(wire))
+            .await
+            .expect_err("the identical (signing_key_id, nonce) pair must be refused");
+        assert_eq!(replayed.code(), tonic::Code::Unauthenticated);
+        assert!(
+            replayed.message().contains("already been used"),
+            "unexpected diagnostic: {}",
+            replayed.message()
+        );
+    }
+
+    /// A `signed_at` far outside the accepted clock-skew window is refused
+    /// before the request ever reaches the nonce store or the CAS --
+    /// freshness protects a captured signature from staying usable
+    /// indefinitely, independent of whether its nonce has been seen before.
+    #[tokio::test]
+    async fn a_stale_signed_at_is_refused_before_the_cas_runs() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let identity = TestIdentity::fresh("stale");
+        register_test_key(&database_url, &identity).await;
+        let store = ClaimStore::connect(&database_url)
+            .await
+            .expect("the gated test database should accept a claim-store connection");
+        let service = ClaimDelegationService::new(store);
+        let mut wire = authenticated_request(&identity, "task", "owner-a", 92);
+        // Re-sign over a `signed_at` far outside the skew window -- the
+        // signature must cover the stale timestamp, or this would only prove
+        // the diagnostic string exists, not that verification used it.
+        let key = signing_key();
+        let mut authentication = wire.authentication.take().unwrap();
+        authentication.signed_at = "2020-01-01T00:00:00Z".to_owned();
+        let bytes = claim_signature::claim_signing_bytes(
+            &wire.tenant_id,
+            &wire.repository_id,
+            &wire.task_id,
+            &wire.owner_id,
+            &authentication,
+        );
+        authentication.signature = key.sign(&bytes).to_bytes().to_vec();
+        wire.authentication = Some(authentication);
+
+        let refused = service
+            .delegate_claim(Request::new(wire))
+            .await
+            .expect_err("a signed_at far outside the skew window must be refused");
+        assert_eq!(refused.code(), tonic::Code::Unauthenticated);
+        assert!(
+            refused.message().contains("clock-skew"),
+            "unexpected diagnostic: {}",
+            refused.message()
+        );
     }
 }
