@@ -376,7 +376,11 @@ shared `structuredContent`-preferring result parser (ADR-0027), extracted as a
 pure function so it is unit-testable without a real subprocess. MindLeak ships
 the generic client and transport; a domain-specific consumer supplies its own
 services against the same protocol, mirroring the ADR-0101 boundary rule of
-"generic belongs here, domain-specific belongs downstream."
+"generic belongs here, domain-specific belongs downstream." CI's
+`reference-consumer` job (ADR-0104) spawns both servers through this same
+client and exercises one representative read-only call per tool family, so a
+breaking change to either tool surface is caught before merge rather than
+surfacing first as this package's own failure.
 
 ## Data model
 
