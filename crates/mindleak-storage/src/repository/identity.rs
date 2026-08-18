@@ -69,6 +69,24 @@ fn read_repository_id(workspace: &Path) -> Result<Option<String>, RepositoryStor
     Ok((!value.is_empty()).then_some(value))
 }
 
+/// Read one `git config --local` key from this workspace, or `None` if
+/// unset, blank, or the read fails for any reason -- the same scope
+/// `repository_id` already reads, generalised for other repository-scoped
+/// declarations (e.g. coordination mode, ADR-0082 decision 3) that want to
+/// opt out of a process-local environment variable.
+pub fn read_local_git_config(workspace: &Path, key: &str) -> Option<String> {
+    let output = git_command()
+        .args(["config", "--local", "--get", key])
+        .current_dir(workspace)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
 fn write_repository_id(
     workspace: &Path,
     repository_id: &str,

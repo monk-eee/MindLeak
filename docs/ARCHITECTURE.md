@@ -243,8 +243,12 @@ not the order to call them in.
 
 The repository side of the Ackplane federation boundary (ADR-0082). What a
 repository must settle before it coordinates at all is which arbiter owns its
-claims. A repository declares `MINDLEAK_COORDINATION_MODE` as `local` or
-`federated`, and both planes resolve it once at startup rather than per call. An
+claims. A repository declares its mode via the `mindleak.coordinationMode`
+git config key (repository-scoped, ADR-0082 decision 3) and/or the
+`MINDLEAK_COORDINATION_MODE` environment variable (a process-local override);
+declaring both is fine when they agree, and refused when they do not, so two
+processes for the same repository can never silently settle on two different
+arbiters. Both planes resolve it once at startup rather than per call. An
 unrecognised value, or a `federated` repository this build has no client to
 reach, is refused rather than quietly arbitrated locally: that downgrade would
 be the second arbiter ADR-0045 forbids.
