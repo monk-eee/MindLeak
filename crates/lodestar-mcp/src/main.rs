@@ -6,6 +6,9 @@
 mod server;
 mod tools;
 
+#[cfg(feature = "federation-client")]
+mod federation;
+
 use lodestar_core::Lodestar;
 use mindleak_session::SessionRegistry;
 use mindleak_storage::{
@@ -24,10 +27,52 @@ fn main() -> anyhow::Result<()> {
     // that arbitrates nothing cannot be the second arbiter — while putting the
     // reason where the agent will actually read it.
     let coordination = ackplane_core::resolve_coordination_mode(|name| std::env::var(name).ok());
-    let coordination_refusal = coordination.as_ref().err().map(|error| {
+    // Only mutated when built with `federation-client` (see below); the
+    // default build never touches it after this point.
+    #[cfg_attr(not(feature = "federation-client"), allow(unused_mut))]
+    let mut coordination_refusal = coordination.as_ref().err().map(|error| {
         eprintln!("lodestar-mcp: {error}");
         error.refusal_notice()
     });
+
+    // ADR-0096 clauses 2-4: a resolved `Federated` mode still needs its own
+    // claim identity (tenant/repository/node/signing key) before `task_claim`
+    // has anywhere authenticated to route to. Incomplete configuration is
+    // refused through the exact same mechanism as an unresolved coordination
+    // mode — never a silent fall back to local arbitration (ADR-0082,
+    // ADR-0045).
+    #[cfg(feature = "federation-client")]
+    let federated_claim_authority: Option<
+        std::sync::Arc<dyn lodestar_core::FederatedClaimAuthority>,
+    > = if matches!(
+        coordination.as_ref(),
+        Ok(&ackplane_core::CoordinationMode::Federated)
+    ) {
+        match federation::resolve_identity(|name| std::env::var(name).ok()) {
+            Some(identity) => Some(std::sync::Arc::new(
+                federation::AckplaneClaimAuthority::new(identity),
+            )),
+            None => {
+                let message = format!(
+                    "MINDLEAK_COORDINATION_MODE is `federated`, but the claim identity \
+                         configuration is incomplete. Every one of these must be set: {}. \
+                         Continuing to coordinate claims locally would create a second \
+                         arbiter for claims this repository expects Ackplane to own \
+                         (ADR-0082, ADR-0045), so this is refused rather than downgraded.",
+                    federation::IDENTITY_ENV_VARS.join(", "),
+                );
+                eprintln!("lodestar-mcp: {message}");
+                coordination_refusal.get_or_insert(message);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    #[cfg(not(feature = "federation-client"))]
+    let federated_claim_authority: Option<
+        std::sync::Arc<dyn lodestar_core::FederatedClaimAuthority>,
+    > = None;
     let current = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let workspace = resolve_workspace_path(
         &current,
@@ -79,7 +124,10 @@ fn main() -> anyhow::Result<()> {
     // without forking the identity of a session they both host.
     let display_name = std::env::var("LODESTAR_AGENT").unwrap_or_else(|_| "agent".to_string());
     let sessions = SessionRegistry::new(&display_name).map_err(anyhow::Error::msg)?;
-    let engine = Lodestar::open(&db_path)?.with_workspace_root(workspace.to_string_lossy());
+    let mut engine = Lodestar::open(&db_path)?.with_workspace_root(workspace.to_string_lossy());
+    if let Some(authority) = federated_claim_authority {
+        engine = engine.with_federated_claim_authority(authority);
+    }
     eprintln!(
         "[lodestar-mcp] ready — intent plane at {db_path}; repository_id={}; origin={:?}; migrated_legacy={migrated_legacy}; coordination={}",
         database.repository_id.as_deref().unwrap_or("none"),

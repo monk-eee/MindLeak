@@ -31,3 +31,16 @@ pub(crate) fn unique_nonce() -> [u8; 32] {
     nonce[16..24].copy_from_slice(&counter.to_be_bytes());
     nonce
 }
+
+/// A `prefix` suffixed with a wall-clock-seeded, atomic-counter-guarded
+/// identifier -- unique within one test binary invocation and across repeated
+/// runs against the same persistent `ACKPLANE_TEST_DATABASE_URL` container,
+/// same reasoning as [`unique_nonce`]. For primary-key-like string columns
+/// (e.g. `enrollment_receipts.enrollment_receipt_id`) where a fixed literal
+/// collides on the container's second run — see
+/// gaps.d/ackplane-server-postgres-tests-are-not-isolated-across-runs.md.
+pub(crate) fn unique_id(prefix: &str) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{}-{counter}", uuid_ish())
+}

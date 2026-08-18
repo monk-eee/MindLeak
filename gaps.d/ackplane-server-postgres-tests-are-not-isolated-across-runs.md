@@ -59,3 +59,16 @@
   the nonce now is. The root cause named above — no per-run isolation from
   the shared container — is unchanged; this is the same gap, not a new one,
   just caught mid-fix rather than fully closed.**
+
+  **UPDATE 2026-08-18 (found while validating a third, unrelated task — the
+  push hook's isolated test run hit the same failure): this specific
+  literal is now fixed too, the same way the nonce was —
+  `test_support::unique_id(prefix)` (wall-clock-seeded, atomic-counter-
+  guarded, mirroring `unique_nonce`) generates the receipt id once per test
+  invocation and every assertion in the test reads that one value back,
+  rather than a literal repeated three times. Verified by running the test
+  twice in a row against the same non-fresh container; both passed. The
+  general gap — no per-run isolation for this crate's Postgres-gated tests
+  as a whole, so a *different* not-yet-hit hardcoded literal could still
+  collide the same way — is unchanged and still open; this closes the one
+  instance that was actually failing, not the class of instance.**
