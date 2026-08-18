@@ -17,6 +17,7 @@ service ClaimDelegationService {
   rpc DelegateClaim(ClaimLeaseRequest) returns (ClaimLeaseResult);
   rpc ReleaseClaim(ClaimReleaseRequest) returns (ClaimReleaseResult);
   rpc RenewClaim(ClaimRenewRequest) returns (ClaimLeaseResult);
+  rpc RecoverClaim(ClaimRecoverRequest) returns (ClaimLeaseResult);
 }
 
 message ClaimLeaseRequest {
@@ -62,6 +63,19 @@ message ClaimRenewRequest {
   uint64 lease_seconds = 5;
 }
 
+message ClaimRecoverRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string task_id = 3;
+  string expected_owner = 4;
+  string owner_id = 5;
+  string reason = 6;
+  string branch = 7;
+  uint64 lease_seconds = 8;
+  repeated string paths = 9;
+  repeated string symbols = 10;
+}
+
 enum ClaimLeaseOutcome {
   CLAIM_LEASE_OUTCOME_UNSPECIFIED = 0;
   CLAIM_LEASE_OUTCOME_GRANTED = 1;
@@ -73,6 +87,7 @@ message NodeFrame {
     Hello hello = 1;
     EventBatch event_batch = 2;
     Heartbeat heartbeat = 3;
+    ChallengeResponse challenge_response = 4;
   }
 }
 
@@ -83,6 +98,7 @@ message AckplaneFrame {
     Rejection rejection = 3;
     FlowControl flow_control = 4;
     Notice notice = 5;
+    ConnectionChallenge connection_challenge = 6;
   }
 }
 
@@ -92,6 +108,24 @@ message Hello {
   string producer_id = 3;
   uint64 last_accepted_position = 4;
   repeated string capabilities = 5;
+  // Which enrolled key this node will use to answer the connection
+  // challenge (ADR-0098 decision 1). Required: a Hello without one cannot be
+  // challenged against any key and is refused.
+  string signing_key_id = 6;
+}
+
+// Issued once, immediately after a Hello that names a signing key, and never
+// reused: it authenticates this one live connection, not an envelope or an
+// enrolment (ADR-0098 decision 1's domain separation from ADR-0085's
+// activation nonce).
+message ConnectionChallenge {
+  bytes nonce = 1;
+}
+
+// The node's proof of possession of the key it named in Hello, over this
+// connection's nonce.
+message ChallengeResponse {
+  bytes signature = 1;
 }
 
 message EnrollmentRequest {
