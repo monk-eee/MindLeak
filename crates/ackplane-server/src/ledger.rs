@@ -126,13 +126,18 @@ impl LedgerStore {
     /// Compose topology; this repeats safely, it does not race a concurrent
     /// first application).
     pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
+        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
         tokio::spawn(async move {
             if let Err(error) = connection.await {
                 tracing::error!(%error, "ackplane ledger connection closed with an error");
             }
         });
-        client.batch_execute(MIGRATION).await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::LEDGER,
+            MIGRATION,
+        )
+        .await?;
         Ok(Self { client })
     }
 

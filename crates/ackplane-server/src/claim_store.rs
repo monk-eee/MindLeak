@@ -83,14 +83,24 @@ pub struct ClaimStore {
 
 impl ClaimStore {
     pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
+        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
         tokio::spawn(async move {
             if let Err(error) = connection.await {
                 tracing::error!(%error, "ackplane claim delegation connection closed with an error");
             }
         });
-        client.batch_execute(MIGRATION).await?;
-        client.batch_execute(NONCE_MIGRATION).await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::CLAIM_DELEGATION,
+            MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::CLAIM_AUTHENTICATION_NONCES,
+            NONCE_MIGRATION,
+        )
+        .await?;
         Ok(Self { client })
     }
 
