@@ -1,8 +1,10 @@
 # ADR-0101: A digest is a compiled view of the graph, not a hand-authored document
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-18
-- Deciders: Pending human acceptance
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-19 by the repository owner, authorized directly in
+  session — attributed human adoption after review.
 - Related: [ADR-0056](0056-the-changelog-is-assembled-not-edited.md) (the
   changelog is assembled, not edited — the direct precedent this generalises),
   [ADR-0049](0049-publication-requires-a-claim.md),
