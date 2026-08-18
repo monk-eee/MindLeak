@@ -4,6 +4,8 @@ import { test } from "node:test";
 
 import {
   claimsUnderAnotherIdShape,
+  commitBeforeClaimNotice,
+  commitsBeforeClaim,
   missingClaimAdvice,
   publishVerdict,
   reconciliationOf,
@@ -243,4 +245,61 @@ test("an answered ledger that did not identify the session does not read as unre
   assert.match(verdict.message, /did not identify this session/);
   assert.doesNotMatch(verdict.message, /cargo build/);
   assert.doesNotMatch(verdict.message, /is unreachable/);
+});
+
+// gaps.d/commit-then-claim-puts-evidence-before-its-claim.md: a commit's own
+// timestamp, not the claim's, decides whether check_conformance can ever
+// certify it.
+test("a commit before the earliest held claim is flagged", () => {
+  const flagged = commitsBeforeClaim(
+    [{ sha: "aaa", timestamp: NOW - 10 }],
+    [{ claim_started_at: NOW }],
+  );
+  assert.equal(flagged.length, 1);
+  assert.equal(flagged[0].sha, "aaa");
+});
+
+test("a commit after the claim it will be certified under is not flagged", () => {
+  const flagged = commitsBeforeClaim(
+    [{ sha: "aaa", timestamp: NOW + 10 }],
+    [{ claim_started_at: NOW }],
+  );
+  assert.deepEqual(flagged, []);
+});
+
+// The whole point of comparing against the EARLIEST claim: a second, later
+// claim must never make an already-uncovered commit look flagged, nor may it
+// hide one only an earlier claim could have covered.
+test("a commit covered by any one held claim is not flagged, even if another started later", () => {
+  const flagged = commitsBeforeClaim(
+    [{ sha: "aaa", timestamp: NOW - 5 }],
+    [{ claim_started_at: NOW - 100 }, { claim_started_at: NOW + 100 }],
+  );
+  assert.deepEqual(flagged, []);
+});
+
+test("no held claims produces no findings", () => {
+  assert.deepEqual(
+    commitsBeforeClaim([{ sha: "aaa", timestamp: NOW }], []),
+    [],
+  );
+});
+
+test("the notice names every flagged commit and points at the gap fragment", () => {
+  const notice = commitBeforeClaimNotice([
+    { sha: "aaaaaaaaaaaa", timestamp: NOW - 10 },
+    { sha: "bbbbbbbbbbbb", timestamp: NOW - 5 },
+  ]);
+  assert.match(notice, /2 commit\(s\)/);
+  assert.match(notice, /aaaaaaa/);
+  assert.match(notice, /bbbbbbb/);
+  assert.match(
+    notice,
+    /gaps\.d\/commit-then-claim-puts-evidence-before-its-claim\.md/,
+  );
+  assert.match(notice, /This push still succeeds/);
+});
+
+test("no flagged commits produces no notice", () => {
+  assert.equal(commitBeforeClaimNotice([]), null);
 });
