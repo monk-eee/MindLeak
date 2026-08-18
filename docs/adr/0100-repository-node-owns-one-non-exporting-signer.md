@@ -1,8 +1,10 @@
 # ADR-0100: The repository node owns one non-exporting signer
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-18
-- Deciders: Pending human acceptance
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-18 by the repository owner, authorized directly in
+  session — attributed human adoption after review.
 - Depends on: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md)
   (Ackplane is a standalone federation service),
   [ADR-0085](0085-node-enrolment-requires-proof-of-possession.md) (node
