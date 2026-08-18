@@ -18,8 +18,10 @@ pub struct FleetRepository {
     pub repository_id: String,
     pub active_node_count: i64,
     pub last_activated_at: SystemTime,
+    pub ledger_stream_position: i64,
     pub projection_stream_position: Option<i64>,
     pub projection_updated_at: Option<SystemTime>,
+    pub freshness: RepositoryFreshness,
 }
 
 /// Whether a repository's graph projection has caught up with its ledger,
@@ -39,6 +41,21 @@ pub enum RepositoryFreshness {
     Lagging,
     /// The projection's stream position matches the ledger head.
     Fresh,
+}
+
+/// Classify a projection's currency against the ledger head (ADR-0095
+/// decision 6), shared by every read that reports freshness so the Fleet
+/// list and a single repository's detail can never disagree about what
+/// "lagging" means.
+fn classify_freshness(
+    ledger_stream_position: i64,
+    projection_stream_position: Option<i64>,
+) -> RepositoryFreshness {
+    match projection_stream_position {
+        None => RepositoryFreshness::NeverProjected,
+        Some(projected) if projected < ledger_stream_position => RepositoryFreshness::Lagging,
+        Some(_) => RepositoryFreshness::Fresh,
+    }
 }
 
 /// One repository's coordination, ledger, and projection state (ADR-0095
@@ -97,6 +114,7 @@ impl FleetStore {
             .client
             .query(
                 "SELECT request.repository_id, count(*)::BIGINT, max(receipt.activated_at), \
+                        COALESCE(head.position, 0), \
                         state.stream_position, state.projected_at \
                  FROM enrollment_requests AS request \
                  INNER JOIN enrollment_receipts AS receipt \
@@ -106,8 +124,12 @@ impl FleetStore {
                  LEFT JOIN projection_state AS state \
                     ON state.tenant_id = request.tenant_id \
                    AND state.repository_id = request.repository_id \
+                 LEFT JOIN stream_heads AS head \
+                    ON head.tenant_id = request.tenant_id \
+                   AND head.repository_id = request.repository_id \
                  WHERE request.tenant_id = $1 \
-                 GROUP BY request.repository_id, state.stream_position, state.projected_at \
+                 GROUP BY request.repository_id, head.position, \
+                          state.stream_position, state.projected_at \
                  ORDER BY request.repository_id ASC",
                 &[&tenant_id],
             )
@@ -115,12 +137,21 @@ impl FleetStore {
 
         Ok(rows
             .into_iter()
-            .map(|row| FleetRepository {
-                repository_id: row.get(0),
-                active_node_count: row.get(1),
-                last_activated_at: row.get(2),
-                projection_stream_position: row.get(3),
-                projection_updated_at: row.get(4),
+            .map(|row| {
+                let ledger_stream_position: i64 = row.get(3);
+                let projection_stream_position: Option<i64> = row.get(4);
+                FleetRepository {
+                    repository_id: row.get(0),
+                    active_node_count: row.get(1),
+                    last_activated_at: row.get(2),
+                    ledger_stream_position,
+                    freshness: classify_freshness(
+                        ledger_stream_position,
+                        projection_stream_position,
+                    ),
+                    projection_stream_position,
+                    projection_updated_at: row.get(5),
+                }
             })
             .collect())
     }
@@ -165,11 +196,7 @@ impl FleetStore {
 
         let ledger_stream_position: i64 = row.get(3);
         let projection_stream_position: Option<i64> = row.get(4);
-        let freshness = match projection_stream_position {
-            None => RepositoryFreshness::NeverProjected,
-            Some(projected) if projected < ledger_stream_position => RepositoryFreshness::Lagging,
-            Some(_) => RepositoryFreshness::Fresh,
-        };
+        let freshness = classify_freshness(ledger_stream_position, projection_stream_position);
 
         Ok(Some(RepositoryDetail {
             repository_id: row.get(0),
