@@ -11,8 +11,9 @@
 //! state to manage between calls.
 
 use ackplane_client::{
-    authenticate, ClaimClient, ClaimLeaseOutcome, ClaimLeaseRequest, ClaimLeaseResult,
-    ClaimOperation, ClaimRecoverRequest, ClaimReleaseRequest, ClaimRenewRequest, SeedSigner,
+    authenticate, decode_seed, ClaimClient, ClaimLeaseOutcome, ClaimLeaseRequest, ClaimLeaseResult,
+    ClaimOperation, ClaimRecoverRequest, ClaimReleaseRequest, ClaimRenewRequest, ClaimSigner,
+    CredentialFacilitySigner, SeedSigner,
 };
 use lodestar_core::{
     FederatedClaimAuthority, FederatedClaimGrant, FederatedClaimOutcome,
@@ -29,67 +30,89 @@ pub struct FederationIdentity {
     pub repository_id: String,
     pub node_id: String,
     pub signing_key_id: String,
-    /// The node's Ed25519 seed. Interim sourcing only (see
-    /// `resolve_identity`'s doc comment); the type itself carries no opinion
-    /// about where the bytes came from.
-    pub signing_key_seed: [u8; 32],
+    pub signer_source: SignerSource,
+}
+
+/// Where this node's Ed25519 signing seed comes from (ADR-0100 decision 5).
+pub enum SignerSource {
+    /// Interim, explicit-configuration seed (`SeedSigner`). Non-hardened;
+    /// selected only when `MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED` is set.
+    /// See `gaps.d/the-node-signing-key-has-no-credential-facility-yet.md`.
+    Seed([u8; 32]),
+    /// The OS credential facility (Windows Credential Manager, macOS
+    /// Keychain, or Linux Secret Service), looked up by `service`/`account`.
+    /// The default when the seed env var is unset.
+    CredentialFacility { service: String, account: String },
 }
 
 const TENANT_ID_ENV: &str = "MINDLEAK_ACKPLANE_TENANT_ID";
 const REPOSITORY_ID_ENV: &str = "MINDLEAK_ACKPLANE_REPOSITORY_ID";
 const NODE_ID_ENV: &str = "MINDLEAK_ACKPLANE_NODE_ID";
 const SIGNING_KEY_ID_ENV: &str = "MINDLEAK_ACKPLANE_SIGNING_KEY_ID";
-/// The interim, explicit-configuration key source (a hex-encoded 32-byte
-/// Ed25519 seed), the same posture already accepted here for
-/// `MINDLEAK_LLM_API_KEY`. ADR-0085 decision 2's OS-credential-facility
-/// storage remains future hardening -- see
+/// The interim, explicit-configuration key source override (a hex-encoded
+/// 32-byte Ed25519 seed), the same posture already accepted here for
+/// `MINDLEAK_LLM_API_KEY`. Optional: unset resolves to the OS credential
+/// facility instead (ADR-0100 decision 5's default seam). See
 /// `gaps.d/the-node-signing-key-has-no-credential-facility-yet.md`. Never
 /// logged.
 const NODE_SIGNING_KEY_SEED_ENV: &str = "MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED";
+/// The service name every node's signing seed is stored under in the OS
+/// credential facility; the account name is derived per node so one shared
+/// service can hold every enrolled node's seed without collision.
+const CREDENTIAL_FACILITY_SERVICE: &str = "mindleak-ackplane-node-signing-key";
 
 /// Read this repository's federated claim identity from explicit environment
-/// variables. `None` if any is unset, blank, or malformed -- the caller
-/// decides what that means (this binary: refuse to serve rather than guess).
+/// variables. `None` if any required variable is unset, blank, or
+/// malformed -- the caller decides what that means (this binary: refuse to
+/// serve rather than guess).
 pub fn resolve_identity<F>(environment: F) -> Option<FederationIdentity>
 where
     F: Fn(&str) -> Option<String>,
 {
+    let tenant_id = non_empty(environment(TENANT_ID_ENV))?;
+    let repository_id = non_empty(environment(REPOSITORY_ID_ENV))?;
+    let node_id = non_empty(environment(NODE_ID_ENV))?;
+    let signer_source = match non_empty(environment(NODE_SIGNING_KEY_SEED_ENV)) {
+        Some(hex) => SignerSource::Seed(decode_seed(&hex)?),
+        None => SignerSource::CredentialFacility {
+            service: CREDENTIAL_FACILITY_SERVICE.to_string(),
+            account: credential_facility_account(&tenant_id, &repository_id, &node_id),
+        },
+    };
     Some(FederationIdentity {
         endpoint: non_empty(environment(ackplane_core::ACKPLANE_ENDPOINT_ENV))?,
-        tenant_id: non_empty(environment(TENANT_ID_ENV))?,
-        repository_id: non_empty(environment(REPOSITORY_ID_ENV))?,
-        node_id: non_empty(environment(NODE_ID_ENV))?,
+        tenant_id,
+        repository_id,
+        node_id,
         signing_key_id: non_empty(environment(SIGNING_KEY_ID_ENV))?,
-        signing_key_seed: decode_seed(&non_empty(environment(NODE_SIGNING_KEY_SEED_ENV))?)?,
+        signer_source,
     })
 }
 
-/// Every configuration variable [`resolve_identity`] reads, for a refusal
-/// message that names what is missing rather than only that something is.
+/// The account name a node's seed is stored under in the credential
+/// facility: unique per tenant/repository/node so one shared service name
+/// never collides across enrolled repositories or nodes on the same host.
+fn credential_facility_account(tenant_id: &str, repository_id: &str, node_id: &str) -> String {
+    format!("{tenant_id}:{repository_id}:{node_id}")
+}
+
+/// Every configuration variable [`resolve_identity`] always requires, for a
+/// refusal message that names what is missing rather than only that
+/// something is. `NODE_SIGNING_KEY_SEED_ENV` is a documented optional
+/// override and is deliberately not listed here: its absence is the default
+/// path (the OS credential facility), not an incomplete configuration.
 pub const IDENTITY_ENV_VARS: &[&str] = &[
     ackplane_core::ACKPLANE_ENDPOINT_ENV,
     TENANT_ID_ENV,
     REPOSITORY_ID_ENV,
     NODE_ID_ENV,
     SIGNING_KEY_ID_ENV,
-    NODE_SIGNING_KEY_SEED_ENV,
 ];
 
 fn non_empty(value: Option<String>) -> Option<String> {
     value
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
-}
-
-fn decode_seed(hex: &str) -> Option<[u8; 32]> {
-    if hex.len() != 64 {
-        return None;
-    }
-    let mut seed = [0u8; 32];
-    for (index, byte) in seed.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).ok()?;
-    }
-    Some(seed)
 }
 
 pub struct AckplaneClaimAuthority {
@@ -101,12 +124,29 @@ impl AckplaneClaimAuthority {
         Self { identity }
     }
 
-    fn signer(&self) -> SeedSigner {
-        SeedSigner::new(
-            self.identity.signing_key_id.clone(),
-            self.identity.node_id.clone(),
-            &self.identity.signing_key_seed,
-        )
+    fn signer(&self) -> lodestar_core::Result<Box<dyn ClaimSigner>> {
+        match &self.identity.signer_source {
+            SignerSource::Seed(seed) => Ok(Box::new(SeedSigner::new(
+                self.identity.signing_key_id.clone(),
+                self.identity.node_id.clone(),
+                seed,
+            ))),
+            SignerSource::CredentialFacility { service, account } => {
+                CredentialFacilitySigner::load(
+                    self.identity.signing_key_id.clone(),
+                    self.identity.node_id.clone(),
+                    service,
+                    account,
+                )
+                .map(|signer| Box::new(signer) as Box<dyn ClaimSigner>)
+                .map_err(|error| {
+                    LodestarError::Federated(format!(
+                        "could not read this node's signing key from the OS credential \
+                         facility (service {service:?}, account {account:?}): {error}"
+                    ))
+                })
+            }
+        }
     }
 
     fn runtime() -> lodestar_core::Result<tokio::runtime::Runtime> {
@@ -139,8 +179,9 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
             paths,
             symbols,
         };
+        let signer = self.signer()?;
         let authentication = authenticate(
-            &self.signer(),
+            signer.as_ref(),
             &identity.tenant_id,
             &identity.repository_id,
             task_id,
@@ -177,8 +218,9 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
         let operation = ClaimOperation::Renew {
             lease_seconds: lease_secs.max(0) as u64,
         };
+        let signer = self.signer()?;
         let authentication = authenticate(
-            &self.signer(),
+            signer.as_ref(),
             &identity.tenant_id,
             &identity.repository_id,
             task_id,
@@ -204,8 +246,9 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
 
     fn release(&self, task_id: &str, owner: &str) -> lodestar_core::Result<bool> {
         let identity = &self.identity;
+        let signer = self.signer()?;
         let authentication = authenticate(
-            &self.signer(),
+            signer.as_ref(),
             &identity.tenant_id,
             &identity.repository_id,
             task_id,
@@ -242,8 +285,9 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
             symbols: &request.symbols,
             reason: &request.reason,
         };
+        let signer = self.signer()?;
         let authentication = authenticate(
-            &self.signer(),
+            signer.as_ref(),
             &identity.tenant_id,
             &identity.repository_id,
             &request.task_id,
@@ -344,7 +388,7 @@ mod tests {
     use tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
 
-    use super::{AckplaneClaimAuthority, FederationIdentity};
+    use super::{AckplaneClaimAuthority, FederationIdentity, SignerSource};
 
     const SIGNING_KEY_ID: &str = "lodestar-mcp-federation-test-key";
     const NODE_ID: &str = "lodestar-mcp-federation-test-node";
@@ -441,7 +485,7 @@ mod tests {
             repository_id: REPOSITORY_ID.to_string(),
             node_id: NODE_ID.to_string(),
             signing_key_id: SIGNING_KEY_ID.to_string(),
-            signing_key_seed: seed(),
+            signer_source: SignerSource::Seed(seed()),
         };
         let authority = Arc::new(AckplaneClaimAuthority::new(identity));
 

@@ -20,6 +20,4 @@
 
   Distinct from
   [`the-coordination-mode-is-declared-per-process-not-per-repository.md`](the-coordination-mode-is-declared-per-process-not-per-repository.md),
-  which covers *where* the mode is declared, and from
-  [`the-node-signing-key-has-no-credential-facility-yet.md`](the-node-signing-key-has-no-credential-facility-yet.md),
-  which covers how the identity authenticating these calls is held.
+  which covers *where* the mode is declared.
