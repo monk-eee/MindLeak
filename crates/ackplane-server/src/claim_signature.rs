@@ -10,6 +10,8 @@
 
 use ackplane_protocol::v1;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use std::time::SystemTime;
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::signing_keys::KeyResolution;
 
@@ -18,6 +20,13 @@ use crate::signing_keys::KeyResolution;
 /// the two sides can never construct incompatible serializations of the same
 /// fields. Re-exported here so existing callers of this module are unaffected.
 pub use ackplane_protocol::claim_auth::claim_signing_bytes;
+
+/// How far `authentication.signed_at` may drift from the verifier's clock, in
+/// either direction, before a request is refused as stale rather than merely
+/// old. Bounding it is what makes a captured signature stop being usable
+/// after a while, rather than only after its (unenforced, until this) nonce
+/// happens to collide.
+const MAX_CLAIM_AUTH_SKEW_SECS: i64 = 300;
 
 /// Why a claim request was refused at the trust boundary.
 ///
@@ -41,6 +50,14 @@ pub enum ClaimAuthRefusal {
     Revoked,
     /// The bytes do not verify under the resolved key.
     BadSignature,
+    /// `signed_at` is not a parseable RFC3339 timestamp.
+    MalformedTimestamp,
+    /// `signed_at` is outside the bounded clock-skew window around now.
+    StaleTimestamp,
+    /// This exact (signing_key_id, nonce) pair already authenticated a
+    /// request; the caller (not `verify`, which is pure) is the one that
+    /// discovers this, since it needs the durable nonce store.
+    Replayed,
 }
 
 impl ClaimAuthRefusal {
@@ -64,6 +81,13 @@ impl ClaimAuthRefusal {
             }
             Self::Revoked => "the signing key has been revoked",
             Self::BadSignature => "the signature does not verify under the enrolled key",
+            Self::MalformedTimestamp => "authentication.signed_at is not a valid RFC3339 timestamp",
+            Self::StaleTimestamp => {
+                "authentication.signed_at is outside the accepted clock-skew window"
+            }
+            Self::Replayed => {
+                "this claim authentication (signing_key_id, nonce) has already been used"
+            }
         }
     }
 }
@@ -80,6 +104,7 @@ pub fn verify(
     owner_id: &str,
     authentication: Option<&v1::ClaimAuthentication>,
     resolution: &KeyResolution,
+    now: SystemTime,
 ) -> Result<(), ClaimAuthRefusal> {
     let Some(authentication) = authentication else {
         return Err(ClaimAuthRefusal::Unsigned);
@@ -90,6 +115,7 @@ pub fn verify(
     if authentication.signature.is_empty() {
         return Err(ClaimAuthRefusal::Unsigned);
     }
+    check_freshness(&authentication.signed_at, now)?;
 
     let record = match resolution {
         KeyResolution::Resolved(record) => record,
@@ -113,9 +139,25 @@ pub fn verify(
         .map_err(|_| ClaimAuthRefusal::BadSignature)
 }
 
+/// Pure clock-skew bound on `signed_at`, checked before any signature or
+/// database work. A malformed timestamp and one merely too old/new are
+/// different security stories: one is a protocol/client bug, the other is
+/// what a captured-and-replayed request looks like before its nonce is even
+/// considered.
+fn check_freshness(signed_at: &str, now: SystemTime) -> Result<(), ClaimAuthRefusal> {
+    let signed_at = OffsetDateTime::parse(signed_at, &Rfc3339)
+        .map_err(|_| ClaimAuthRefusal::MalformedTimestamp)?;
+    let now = OffsetDateTime::from(now);
+    let skew = (signed_at - now).abs();
+    if skew > time::Duration::seconds(MAX_CLAIM_AUTH_SKEW_SECS) {
+        return Err(ClaimAuthRefusal::StaleTimestamp);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use std::time::SystemTime;
+    use std::time::{Duration, SystemTime};
 
     use ed25519_dalek::{Signer, SigningKey};
 
@@ -148,6 +190,15 @@ mod tests {
         authentication
     }
 
+    /// Matches `signed_authentication`'s hardcoded `signed_at`, so the
+    /// freshness check every test must now also satisfy does not become a
+    /// second, uncoordinated place to keep a timestamp in sync.
+    fn fixed_now() -> SystemTime {
+        OffsetDateTime::parse("2026-01-01T00:00:00Z", &Rfc3339)
+            .unwrap()
+            .into()
+    }
+
     #[test]
     fn a_validly_signed_request_verifies() {
         let signing_key = SigningKey::from_bytes(&[9; 32]);
@@ -163,6 +214,7 @@ mod tests {
                 "owner-1",
                 Some(&authentication),
                 &resolution,
+                fixed_now(),
             ),
             Ok(())
         );
@@ -175,7 +227,15 @@ mod tests {
             KeyResolution::Resolved(record(signing_key.verifying_key().to_bytes().to_vec()));
 
         assert_eq!(
-            verify("tenant-a", "repo-a", "task-1", "owner-1", None, &resolution),
+            verify(
+                "tenant-a",
+                "repo-a",
+                "task-1",
+                "owner-1",
+                None,
+                &resolution,
+                fixed_now(),
+            ),
             Err(ClaimAuthRefusal::Unsigned)
         );
     }
@@ -193,6 +253,7 @@ mod tests {
                 "owner-1",
                 Some(&authentication),
                 &KeyResolution::Unknown,
+                fixed_now(),
             ),
             Err(ClaimAuthRefusal::UnknownKey)
         );
@@ -210,6 +271,7 @@ mod tests {
             "owner-1",
             Some(&authentication),
             &KeyResolution::BindingMismatch,
+            fixed_now(),
         )
         .unwrap_err();
 
@@ -230,6 +292,7 @@ mod tests {
                 "owner-1",
                 Some(&authentication),
                 &KeyResolution::Revoked,
+                fixed_now(),
             ),
             Err(ClaimAuthRefusal::Revoked)
         );
@@ -252,8 +315,97 @@ mod tests {
                 "owner-1",
                 Some(&authentication),
                 &resolution,
+                fixed_now(),
             ),
             Err(ClaimAuthRefusal::BadSignature)
+        );
+    }
+
+    #[test]
+    fn a_stale_timestamp_is_refused() {
+        let signing_key = SigningKey::from_bytes(&[9; 32]);
+        let authentication = signed_authentication(&signing_key, "node-1");
+        let resolution =
+            KeyResolution::Resolved(record(signing_key.verifying_key().to_bytes().to_vec()));
+        let too_late = fixed_now() + Duration::from_secs(MAX_CLAIM_AUTH_SKEW_SECS as u64 + 1);
+
+        assert_eq!(
+            verify(
+                "tenant-a",
+                "repo-a",
+                "task-1",
+                "owner-1",
+                Some(&authentication),
+                &resolution,
+                too_late,
+            ),
+            Err(ClaimAuthRefusal::StaleTimestamp)
+        );
+    }
+
+    #[test]
+    fn a_timestamp_too_far_in_the_future_is_refused() {
+        let signing_key = SigningKey::from_bytes(&[9; 32]);
+        let authentication = signed_authentication(&signing_key, "node-1");
+        let resolution =
+            KeyResolution::Resolved(record(signing_key.verifying_key().to_bytes().to_vec()));
+        let too_early = fixed_now() - Duration::from_secs(MAX_CLAIM_AUTH_SKEW_SECS as u64 + 1);
+
+        assert_eq!(
+            verify(
+                "tenant-a",
+                "repo-a",
+                "task-1",
+                "owner-1",
+                Some(&authentication),
+                &resolution,
+                too_early,
+            ),
+            Err(ClaimAuthRefusal::StaleTimestamp)
+        );
+    }
+
+    #[test]
+    fn an_unparseable_timestamp_is_refused() {
+        let signing_key = SigningKey::from_bytes(&[9; 32]);
+        let mut authentication = signed_authentication(&signing_key, "node-1");
+        authentication.signed_at = "not a timestamp".to_owned();
+        let resolution =
+            KeyResolution::Resolved(record(signing_key.verifying_key().to_bytes().to_vec()));
+
+        assert_eq!(
+            verify(
+                "tenant-a",
+                "repo-a",
+                "task-1",
+                "owner-1",
+                Some(&authentication),
+                &resolution,
+                fixed_now(),
+            ),
+            Err(ClaimAuthRefusal::MalformedTimestamp)
+        );
+    }
+
+    #[test]
+    fn a_timestamp_just_inside_the_skew_window_still_verifies() {
+        let signing_key = SigningKey::from_bytes(&[9; 32]);
+        let authentication = signed_authentication(&signing_key, "node-1");
+        let resolution =
+            KeyResolution::Resolved(record(signing_key.verifying_key().to_bytes().to_vec()));
+        let just_inside = fixed_now() + Duration::from_secs(MAX_CLAIM_AUTH_SKEW_SECS as u64 - 1);
+
+        assert_eq!(
+            verify(
+                "tenant-a",
+                "repo-a",
+                "task-1",
+                "owner-1",
+                Some(&authentication),
+                &resolution,
+                just_inside,
+            ),
+            Ok(())
         );
     }
 }
