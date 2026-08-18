@@ -1,8 +1,10 @@
 # ADR-0103: The MCP client is packaged once, not reimplemented per consumer
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-18
 - Deciders: Pending human acceptance
+- Accepted: 2026-08-18 by the repository owner, authorized directly in
+  session — attributed human adoption after review.
 - Related: [ADR-0059](0059-the-tool-surface-is-a-vocabulary.md) (the tool
   surface is a vocabulary), [ADR-0030](0030-discrete-per-agent-identity.md)
   (discrete per-agent identity — the handshake this wraps),

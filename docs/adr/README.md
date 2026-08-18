@@ -109,7 +109,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0100](0100-repository-node-owns-one-non-exporting-signer.md) | The repository node owns one non-exporting signer | Accepted |
 | [0101](0101-a-digest-is-compiled-not-hand-authored.md) | A digest is a compiled view of the graph, not a hand-authored document | Proposed |
 | [0102](0102-context-is-compiled-not-assembled-by-hand.md) | Context is compiled into a bounded packet, not assembled by hand | Proposed |
-| [0103](0103-the-mcp-client-is-packaged-once-not-reimplemented.md) | The MCP client is packaged once, not reimplemented per consumer | Proposed |
+| [0103](0103-the-mcp-client-is-packaged-once-not-reimplemented.md) | The MCP client is packaged once, not reimplemented per consumer | Accepted |
 | [0104](0104-a-reference-consumer-tests-the-tool-surfaces-stability.md) | A reference consumer tests the tool surface's stability | Proposed |
 
 ## Writing a new ADR
