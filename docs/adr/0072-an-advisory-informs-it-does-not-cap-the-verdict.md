@@ -1,7 +1,10 @@
 # ADR-0072: An advisory informs; it does not cap the verdict
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-30
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-18 by the repository owner, authorized directly in
+  session — attributed human adoption after review.
 - Amends: [ADR-0022](0022-learned-knowledge-loop.md) §4
   (consolidated knowledge advises conformance)
 - Related: [ADR-0060](0060-work-whose-product-is-not-code-must-still-conform.md) (a finding is not a

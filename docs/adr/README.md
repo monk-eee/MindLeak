@@ -79,10 +79,10 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0069](0069-resolutions-that-predate-attribution-are-accepted-as-historical.md) | Resolutions that predate attribution are accepted as historical | Accepted |
 | [0070](0070-paused-work-must-find-its-owner-or-a-successor.md) | Paused work must find its owner or a successor | Accepted |
 | [0071](0071-task-resolution-records-an-unverified-reviewer-label.md) | Task resolution records an unverified reviewer label | Accepted |
-| [0072](0072-an-advisory-informs-it-does-not-cap-the-verdict.md) | An advisory informs; it does not cap the verdict | Proposed |
+| [0072](0072-an-advisory-informs-it-does-not-cap-the-verdict.md) | An advisory informs; it does not cap the verdict | Accepted |
 | [0073](0073-each-window-roots-its-servers-at-the-worktree-it-edits.md) | Each window roots its servers at the worktree it edits | Accepted |
 | [0074](0074-coverage-is-a-prediction-until-conformance-speaks.md) | Coverage is a prediction until conformance speaks | Accepted |
-| [0075](0075-a-hit-must-stand-out-from-its-own-querys-field.md) | A hit must stand out from its own query's field | Proposed |
+| [0075](0075-a-hit-must-stand-out-from-its-own-querys-field.md) | A hit must stand out from its own query's field | Accepted |
 | [0076](0076-evidence-is-judged-against-the-window-that-authorised-it.md) | Evidence is judged against the window that authorised the work | Accepted |
 | [0077](0077-a-crowded-board-is-not-a-decision.md) | A crowded board is not a decision | Accepted |
 | [0078](0078-an-unbound-file-is-reported-at-publication.md) | An unbound file is reported at publication | Accepted |
@@ -104,7 +104,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0094](0094-the-bridge-preserves-standalone-operation.md) | The Bridge preserves standalone operation | Accepted |
 | [0095](0095-the-bridge-uses-an-authenticated-projection-api.md) | The Bridge uses an authenticated projection API | Accepted |
 | [0096](0096-ackplane-arbitrates-federated-claims-through-leased-delegation.md) | Ackplane arbitrates federated claims through leased delegation | Accepted |
-| [0098](0098-connection-trust-reuses-the-enrolled-key-oidc-waits.md) | Connection trust reuses the enrolled node key; OIDC waits for a real second tenant | Proposed |
+| [0098](0098-connection-trust-reuses-the-enrolled-key-oidc-waits.md) | Connection trust reuses the enrolled node key; OIDC waits for a real second tenant | Accepted |
 | [0099](0099-a-claim-also-checks-for-a-live-twin-by-title.md) | A claim also checks for a live twin by title, not only by scope | Accepted |
 | [0100](0100-repository-node-owns-one-non-exporting-signer.md) | The repository node owns one non-exporting signer | Accepted |
 
