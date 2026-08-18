@@ -6,6 +6,7 @@ use thiserror::Error;
 use tokio_postgres::{Client, NoTls};
 
 const MIGRATION: &str = include_str!("../migrations/0005_claim_delegation.sql");
+const NONCE_MIGRATION: &str = include_str!("../migrations/0006_claim_authentication_nonces.sql");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimLeaseRequest {
@@ -89,6 +90,7 @@ impl ClaimStore {
             }
         });
         client.batch_execute(MIGRATION).await?;
+        client.batch_execute(NONCE_MIGRATION).await?;
         Ok(Self { client })
     }
 
@@ -101,6 +103,29 @@ impl ClaimStore {
         binding: &crate::signing_keys::EnvelopeBinding<'_>,
     ) -> Result<crate::signing_keys::KeyResolution, crate::signing_keys::SigningKeyError> {
         crate::signing_keys::resolve(&self.client, binding).await
+    }
+
+    /// Consume a (signing_key_id, nonce) pair exactly once (anti-replay for
+    /// `ClaimDelegationService` authentication --
+    /// gaps.d/claim-authentication-can-be-replayed-across-operations.md).
+    /// Returns true the first time a pair is seen, false on every later
+    /// attempt with the identical pair -- the insert's own uniqueness is the
+    /// enforcement, so this needs no read-then-write race.
+    pub async fn consume_claim_nonce(
+        &mut self,
+        signing_key_id: &str,
+        nonce: &[u8],
+        now: SystemTime,
+    ) -> Result<bool, ClaimStoreError> {
+        let inserted = self
+            .client
+            .execute(
+                "INSERT INTO claim_authentication_nonces (signing_key_id, nonce, consumed_at) \
+                 VALUES ($1, $2, $3) ON CONFLICT (signing_key_id, nonce) DO NOTHING",
+                &[&signing_key_id, &nonce, &now],
+            )
+            .await?;
+        Ok(inserted == 1)
     }
 
     pub async fn delegate(
@@ -1089,6 +1114,47 @@ mod tests {
         assert!(
             after_expiry.is_empty(),
             "an expired claim must not appear in the active list"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_nonce_is_consumed_exactly_once_per_signing_key() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let signing_key_id = format!("claim-nonce-{}", crate::test_support::uuid_ish());
+        let nonce = b"a fixed nonce value".to_vec();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+
+        let first = store
+            .consume_claim_nonce(&signing_key_id, &nonce, now)
+            .await
+            .unwrap();
+        assert!(
+            first,
+            "a fresh (signing_key_id, nonce) pair must be consumable"
+        );
+
+        let second = store
+            .consume_claim_nonce(&signing_key_id, &nonce, now + Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(
+            !second,
+            "the identical (signing_key_id, nonce) pair must never be consumable twice"
+        );
+
+        // A different nonce under the same key is an unrelated pair and is
+        // still fresh -- the primary key is the *pair*, not the key alone.
+        let different_nonce = store
+            .consume_claim_nonce(&signing_key_id, b"a different nonce value", now)
+            .await
+            .unwrap();
+        assert!(
+            different_nonce,
+            "a different nonce under the same signing key is its own, unconsumed pair"
         );
     }
 }

@@ -37,3 +37,25 @@
   schema/transaction it rolls back rather than committing against the shared
   container — the latter also protects every other Postgres-gated test in
   this crate from the same class of collision, not just this one.
+
+  **UPDATE 2026-08-18 (found while validating an unrelated task, out of
+  scope for it too): the nonce half of this was fixed (commit
+  `3c4e08f fix(ackplane): random nonces per test call, not a fixed literal`),
+  but the same test still fails the same way on the *second* run against a
+  non-fresh container, now on a different literal:
+
+  ```text
+  thread 'enrollment_store::tests::activation_reuses_its_live_challenge_and_exact_replay_receipt'
+  panicked at crates\ackplane-server\src\enrollment_store.rs:1085:14:
+  valid proof activates enrollment: Database(Error { kind: Db, cause: Some(DbError {
+    code: SqlState(E23505), message: "duplicate key value violates unique constraint
+    \"enrollment_receipts_pkey\"", detail: Some("Key (enrollment_receipt_id)=(receipt-original)
+    already exists.") }) })
+  ```
+
+  `enrollment_receipt_id: "receipt-original".to_owned()` appears three times
+  in this test (two fixture struct literals plus the `.activate(...)` call
+  argument) and is still a fixed literal, not randomised per invocation like
+  the nonce now is. The root cause named above — no per-run isolation from
+  the shared container — is unchanged; this is the same gap, not a new one,
+  just caught mid-fix rather than fully closed.**
