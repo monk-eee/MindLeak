@@ -25,6 +25,15 @@ RUN cargo build --release --locked -p ackplane-server --bin ackplane-server --bi
 # builder stage used.
 FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS runtime
 
+# The one runtime package this image carries beyond the pinned base (ADR-0088
+# clause 4 still holds: minimal, not zero). Compose's healthcheck needs
+# something that can prove the gRPC port accepts connections; netcat-openbsd is
+# the smallest tool that does a bare TCP connect without pulling in curl's TLS
+# stack or a shell the entrypoint does not otherwise need.
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+
 # Runs as an unprivileged, non-root user (ADR-0088 clause 4). No secrets or
 # credentials are baked into the image; ACKPLANE_DATABASE_URL and friends are
 # supplied at container start by the Compose topology's environment.
