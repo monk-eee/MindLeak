@@ -21,6 +21,9 @@ pub enum LodestarError {
 
     #[error("invalid: {0}")]
     Invalid(String),
+
+    #[error("federated claim source error: {0}")]
+    Federated(String),
 }
 
 impl LodestarError {

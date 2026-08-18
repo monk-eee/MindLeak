@@ -204,6 +204,57 @@ impl LodestarStore {
         })
     }
 
+    /// The federated counterpart to [`check_claim_overlap`](Self::check_claim_overlap):
+    /// reads active claims from `source` (a federated repository's Ackplane
+    /// claim registry, ADR-0096 clause 5) instead of the local `tasks` table,
+    /// then applies the identical scope-intersection and branch-signal logic
+    /// so a caller sees one report shape regardless of coordination mode.
+    pub fn check_federated_claim_overlap(
+        &self,
+        source: &dyn FederatedClaimSource,
+        requested: &TaskScope,
+        exclude_task_id: Option<&str>,
+        requester: Option<&str>,
+    ) -> Result<ClaimOverlapReport> {
+        let requested = normalize_scope_values(requested);
+        let requester_branch = self.declared_branch(requester)?;
+        let claims = source.active_claims(exclude_task_id)?;
+        let mut overlaps = Vec::new();
+        for claim in claims {
+            let scope = TaskScope {
+                paths: claim.paths,
+                symbols: claim.symbols,
+            };
+            let matching_paths = intersect_paths(&requested.paths, &scope.paths)?;
+            let matching_symbols = requested
+                .symbols
+                .iter()
+                .filter(|symbol| scope.symbols.contains(symbol))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !matching_paths.is_empty() || !matching_symbols.is_empty() {
+                let signal = OverlapSignal::classify(
+                    requester_branch.as_deref(),
+                    claim.owner_branch.as_deref(),
+                );
+                overlaps.push(ClaimOverlap {
+                    task_id: claim.task_id,
+                    owner: claim.owner,
+                    lease_expires_at: claim.lease_expires_at,
+                    scope,
+                    matching_paths,
+                    matching_symbols,
+                    owner_branch: claim.owner_branch,
+                    signal,
+                });
+            }
+        }
+        Ok(ClaimOverlapReport {
+            requester_branch,
+            claims: overlaps,
+        })
+    }
+
     /// The branch an agent declared, treating an unregistered agent and a blank
     /// declaration alike: both are "said nothing", not "said empty".
     fn declared_branch(&self, agent: Option<&str>) -> Result<Option<String>> {
@@ -387,6 +438,7 @@ mod tests {
     use super::super::tests::working_on;
     use super::*;
     use crate::store::test_support::*;
+    use crate::FederatedClaim;
     use mindleak_session::SessionContext;
     use rusqlite::params;
 
@@ -748,6 +800,90 @@ mod tests {
                 NOW + 2
             )
             .unwrap());
+    }
+
+    struct FakeFederatedClaims(Vec<FederatedClaim>);
+
+    impl FederatedClaimSource for FakeFederatedClaims {
+        fn active_claims(
+            &self,
+            exclude_task_id: Option<&str>,
+        ) -> crate::Result<Vec<FederatedClaim>> {
+            Ok(self
+                .0
+                .iter()
+                .filter(|claim| Some(claim.task_id.as_str()) != exclude_task_id)
+                .cloned()
+                .collect())
+        }
+    }
+
+    /// ADR-0096 clause 5: a federated repository's overlap answer comes from
+    /// Ackplane's claim registry, never the local `tasks` table - even when a
+    /// local task happens to declare the exact same scope.
+    #[test]
+    fn federated_claim_overlap_reads_from_the_injected_source_not_the_local_table() {
+        let store = store();
+        let goal = goal(&store);
+        store
+            .declare_session_context("bob", &branch_context("fleet/a"), NOW)
+            .unwrap();
+        let scope = TaskScope {
+            paths: vec!["src/lib.rs".to_string()],
+            symbols: vec![],
+        };
+        let source = FakeFederatedClaims(vec![FederatedClaim {
+            task_id: "task:remote-1".to_string(),
+            owner: "remote-agent".to_string(),
+            owner_branch: Some("fleet/a".to_string()),
+            lease_expires_at: NOW + 60,
+            paths: scope.paths.clone(),
+            symbols: vec![],
+        }]);
+
+        let report = store
+            .check_federated_claim_overlap(&source, &scope, None, Some("bob"))
+            .unwrap();
+        assert_eq!(report.requester_branch.as_deref(), Some("fleet/a"));
+        assert_eq!(report.claims.len(), 1);
+        assert_eq!(report.claims[0].task_id, "task:remote-1");
+        assert_eq!(report.claims[0].owner, "remote-agent");
+        assert_eq!(report.claims[0].signal, OverlapSignal::SameBranchCollision);
+
+        // A local task claiming the identical scope in the SAME store is
+        // invisible here: the local table is never consulted for this path.
+        let local = store.create_task(&goal.id, "local", "", None, NOW).unwrap();
+        assert!(store
+            .claim_task_with_scope(&local.id, "alice", 60, &scope, NOW)
+            .unwrap());
+        let report_again = store
+            .check_federated_claim_overlap(&source, &scope, None, Some("bob"))
+            .unwrap();
+        assert_eq!(report_again.claims.len(), 1);
+        assert_eq!(report_again.claims[0].task_id, "task:remote-1");
+    }
+
+    #[test]
+    fn federated_claim_overlap_excludes_the_named_task() {
+        let store = store();
+        let scope = TaskScope {
+            paths: vec!["src/lib.rs".to_string()],
+            symbols: vec![],
+        };
+        let source = FakeFederatedClaims(vec![FederatedClaim {
+            task_id: "task:remote-1".to_string(),
+            owner: "remote-agent".to_string(),
+            owner_branch: None,
+            lease_expires_at: NOW + 60,
+            paths: scope.paths.clone(),
+            symbols: vec![],
+        }]);
+
+        let report = store
+            .check_federated_claim_overlap(&source, &scope, Some("task:remote-1"), None)
+            .unwrap();
+
+        assert!(report.claims.is_empty());
     }
 
     #[test]
