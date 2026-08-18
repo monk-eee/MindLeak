@@ -20,7 +20,10 @@ use thiserror::Error;
 use tonic::transport::Channel;
 
 pub mod auth;
-pub use auth::{authenticate, ClaimOperation, ClaimSigner, SeedSigner};
+pub use auth::{
+    authenticate, decode_seed, encode_seed, ClaimOperation, ClaimSigner, CredentialFacilityError,
+    CredentialFacilitySigner, SeedSigner,
+};
 
 pub use ackplane_protocol::v1::{
     ClaimLeaseOutcome, ClaimLeaseRequest, ClaimLeaseResult, ClaimRecoverRequest,

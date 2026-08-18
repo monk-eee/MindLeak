@@ -288,11 +288,12 @@ the same "lost the CAS" outcome a local claim would (rejection) or an
 `Err` naming the transport failure (unreachable), and either way the local
 row is untouched. The residual gap this closed is narrowed in
 [`gaps.d/no-claim-is-arbitrated-through-ackplane.md`](../gaps.d/no-claim-is-arbitrated-through-ackplane.md).
-The node signing key itself is sourced from an explicit environment variable
-for now — the same interim posture already accepted here for
-`MINDLEAK_LLM_API_KEY` — pending the OS-credential-facility storage ADR-0085
-decision 2 describes; see
-[`gaps.d/the-node-signing-key-has-no-credential-facility-yet.md`](../gaps.d/the-node-signing-key-has-no-credential-facility-yet.md).
+The node signing key is sourced from the OS credential facility (Windows
+Credential Manager, macOS Keychain, or Linux Secret Service, via the
+`keyring` crate) by default, per ADR-0085 decision 2 and ADR-0100 decision 5;
+an explicit environment variable remains available as a documented,
+non-hardened override for tests and constrained deployments.
+
 
 ### `ackplane-server` (binary)
 

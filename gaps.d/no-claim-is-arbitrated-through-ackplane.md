@@ -21,6 +21,4 @@
   Distinct from *where* the coordination mode is declared (was
   gaps.d/the-coordination-mode-is-declared-per-process-not-per-repository.md,
   now closed: it is a repository-scoped git config declaration, not only a
-  process environment variable), and from
-  [`the-node-signing-key-has-no-credential-facility-yet.md`](the-node-signing-key-has-no-credential-facility-yet.md),
-  which covers how the identity authenticating these calls is held.
+  process environment variable).
