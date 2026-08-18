@@ -1,10 +1,13 @@
 # ADR-0075: A hit must stand out from its own query's field
 
-- Status: Proposed
+- Status: Accepted
 - Corrected: 2026-07-30, after measurement — see "Correction" at the foot. The
   decision stands; one claimed consequence did not survive contact with a real
   index and is restated there rather than left standing.
 - Date: 2026-07-30
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-18 by the repository owner, authorized directly in
+  session — attributed human adoption after review.
 - Related: [ADR-0008](0008-semantic-recall-embedding-index.md) (the optional
   semantic recall index), [ADR-0053](0053-the-graph-records-events-not-conclusions.md)
   (the floor, and why saying nothing is an answer),

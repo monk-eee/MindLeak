@@ -1,8 +1,10 @@
 # ADR-0098: Connection trust reuses the enrolled node key; OIDC waits for a real second tenant
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-17
 - Deciders: MindLeak maintainers
+- Accepted: 2026-08-18 by the repository owner, authorized directly in
+  session — attributed human adoption after review.
 - Depends on: [ADR-0084](0084-ackplane-evidence-has-explicit-trust.md) (Ackplane
   evidence has explicit trust), [ADR-0085](0085-node-enrolment-requires-proof-of-possession.md)
   (node enrolment requires proof of possession)
