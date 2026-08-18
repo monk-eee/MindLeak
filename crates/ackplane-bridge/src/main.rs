@@ -36,6 +36,7 @@ struct FleetSummary {
     last_activated_at_seconds: Option<u64>,
     projection_stream_position: Option<i64>,
     projection_updated_at_seconds: Option<u64>,
+    freshness: &'static str,
 }
 
 impl From<FleetRepository> for FleetSummary {
@@ -46,6 +47,7 @@ impl From<FleetRepository> for FleetSummary {
             last_activated_at_seconds: unix_seconds(repository.last_activated_at),
             projection_stream_position: repository.projection_stream_position,
             projection_updated_at_seconds: repository.projection_updated_at.and_then(unix_seconds),
+            freshness: freshness_label(repository.freshness),
         }
     }
 }
@@ -55,6 +57,17 @@ fn unix_seconds(timestamp: SystemTime) -> Option<u64> {
         .duration_since(UNIX_EPOCH)
         .ok()
         .map(|duration| duration.as_secs())
+}
+
+/// Shared with `RepositoryDetailResponse` so the Fleet list and a single
+/// repository's detail can never report the same freshness under two
+/// different strings.
+fn freshness_label(freshness: RepositoryFreshness) -> &'static str {
+    match freshness {
+        RepositoryFreshness::NeverProjected => "never_projected",
+        RepositoryFreshness::Lagging => "lagging",
+        RepositoryFreshness::Fresh => "fresh",
+    }
 }
 
 #[derive(Serialize)]
@@ -70,11 +83,6 @@ struct RepositoryDetailResponse {
 
 impl From<RepositoryDetail> for RepositoryDetailResponse {
     fn from(detail: RepositoryDetail) -> Self {
-        let freshness = match detail.freshness {
-            RepositoryFreshness::NeverProjected => "never_projected",
-            RepositoryFreshness::Lagging => "lagging",
-            RepositoryFreshness::Fresh => "fresh",
-        };
         Self {
             repository_id: detail.repository_id,
             active_node_count: detail.active_node_count,
@@ -82,7 +90,7 @@ impl From<RepositoryDetail> for RepositoryDetailResponse {
             ledger_stream_position: detail.ledger_stream_position,
             projection_stream_position: detail.projection_stream_position,
             projection_updated_at_seconds: detail.projection_updated_at.and_then(unix_seconds),
-            freshness,
+            freshness: freshness_label(detail.freshness),
         }
     }
 }

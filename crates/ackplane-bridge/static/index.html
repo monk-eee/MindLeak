@@ -84,6 +84,15 @@
     .state { color: var(--cp-success); font-weight: 600; }
     .stale { color: var(--cp-warning); font-weight: 600; }
     .empty { padding: 42px 16px; color: var(--cp-text-muted); text-align: center; }
+    .filters { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+    .filters label { font-size: 0.82rem; color: var(--cp-text-muted); display: flex; gap: 6px; align-items: center; }
+    .filters select { font: inherit; padding: 4px 8px; border: 1px solid var(--cp-border); border-radius: 4px; background: var(--cp-surface); color: var(--cp-text); }
+    .never_projected { color: var(--cp-text-soft); font-weight: 600; }
+    .lagging { color: var(--cp-warning); font-weight: 600; }
+    .fresh { color: var(--cp-success); font-weight: 600; }
+    .detail-link { color: var(--cp-link); background: none; border: 0; font: inherit; cursor: pointer; padding: 0; text-decoration: underline; }
+    .detail-row td { background: var(--cp-surface-soft); }
+    .detail-row pre { margin: 0; white-space: pre-wrap; font-size: 0.82rem; }
     @media (max-width: 700px) {
       .masthead, .summary { align-items: flex-start; flex-direction: column; gap: 8px; }
       .fleet-table thead { display: none; }
@@ -109,8 +118,25 @@
         <h2 id="fleet-heading">Enrolled repositories</h2>
         <p id="status" aria-live="polite">Loading fleet...</p>
       </div>
+      <div class="filters">
+        <label>Freshness
+          <select id="freshness-filter">
+            <option value="">All</option>
+            <option value="fresh">Fresh</option>
+            <option value="lagging">Lagging</option>
+            <option value="never_projected">Never projected</option>
+          </select>
+        </label>
+        <label>Coordination
+          <select id="coordination-filter">
+            <option value="">All</option>
+            <option value="active">Active nodes</option>
+            <option value="none">No active nodes</option>
+          </select>
+        </label>
+      </div>
       <table class="fleet-table">
-        <thead><tr><th>Repository</th><th>Active nodes</th><th>Projection</th><th>Last activated</th></tr></thead>
+        <thead><tr><th>Repository</th><th>Active nodes</th><th>Projection</th><th>Freshness</th><th>Last activated</th><th></th></tr></thead>
         <tbody id="fleet"></tbody>
       </table>
     </section>
@@ -118,7 +144,12 @@
   <script>
     const status = document.getElementById("status");
     const fleet = document.getElementById("fleet");
+    const freshnessFilter = document.getElementById("freshness-filter");
+    const coordinationFilter = document.getElementById("coordination-filter");
     const timestamp = (seconds) => seconds ? new Date(seconds * 1000).toLocaleString() : "Unknown";
+    const freshnessLabel = { fresh: "Fresh", lagging: "Lagging", never_projected: "Never projected" };
+    let repositories = [];
+    let openDetailId = null;
     const cell = (label, value, className = "") => {
       const element = document.createElement("td");
       element.dataset.label = label;
@@ -126,38 +157,100 @@
       if (className) element.className = className;
       return element;
     };
+    async function loadRepositoryDetail(repositoryId) {
+      const [detail, timeline] = await Promise.all([
+        fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}`).then((r) => (r.ok ? r.json() : null)),
+        fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/timeline`).then((r) => (r.ok ? r.json() : null)),
+      ]);
+      return { detail, timeline };
+    }
+    function renderRows() {
+      const freshness = freshnessFilter.value;
+      const coordination = coordinationFilter.value;
+      const visible = repositories.filter((repository) => {
+        if (freshness && repository.freshness !== freshness) return false;
+        if (coordination === "active" && repository.active_node_count <= 0) return false;
+        if (coordination === "none" && repository.active_node_count > 0) return false;
+        return true;
+      });
+      fleet.replaceChildren();
+      if (!visible.length) {
+        const row = document.createElement("tr");
+        const empty = cell(
+          "",
+          repositories.length
+            ? "No repositories match the current filters."
+            : "No active enrollment receipts are available for this tenant.",
+          "empty"
+        );
+        empty.colSpan = 6;
+        row.append(empty);
+        fleet.append(row);
+        status.textContent = repositories.length
+          ? `0 of ${repositories.length} repositories visible`
+          : "0 repositories visible";
+        return;
+      }
+      for (const repository of visible) {
+        const row = document.createElement("tr");
+        const projected = repository.projection_stream_position === null
+          ? ["Not projected", "stale"]
+          : [`Position ${repository.projection_stream_position}`, "state"];
+        const detailCell = document.createElement("td");
+        detailCell.dataset.label = "";
+        const detailButton = document.createElement("button");
+        detailButton.type = "button";
+        detailButton.className = "detail-link";
+        detailButton.textContent = openDetailId === repository.repository_id ? "Hide" : "Detail";
+        detailButton.addEventListener("click", () => toggleDetail(repository.repository_id));
+        detailCell.append(detailButton);
+        row.append(
+          cell("Repository", repository.repository_id, "repo"),
+          cell("Active nodes", String(repository.active_node_count)),
+          cell("Projection", projected[0], projected[1]),
+          cell("Freshness", freshnessLabel[repository.freshness] ?? repository.freshness, repository.freshness),
+          cell("Last activated", timestamp(repository.last_activated_at_seconds)),
+          detailCell
+        );
+        fleet.append(row);
+        if (openDetailId === repository.repository_id) {
+          const detailRow = document.createElement("tr");
+          detailRow.className = "detail-row";
+          const detailCellExpanded = cell("", "Loading detail...");
+          detailCellExpanded.colSpan = 6;
+          detailRow.append(detailCellExpanded);
+          fleet.append(detailRow);
+          loadRepositoryDetail(repository.repository_id).then(({ detail, timeline }) => {
+            const pre = document.createElement("pre");
+            pre.textContent = JSON.stringify({ detail, timeline }, null, 2);
+            detailCellExpanded.textContent = "";
+            detailCellExpanded.append(pre);
+          });
+        }
+      }
+      status.textContent = visible.length === repositories.length
+        ? `${repositories.length === 1 ? "1 repository" : `${repositories.length} repositories`} visible`
+        : `${visible.length} of ${repositories.length} repositories visible`;
+    }
+    function toggleDetail(repositoryId) {
+      openDetailId = openDetailId === repositoryId ? null : repositoryId;
+      renderRows();
+    }
+    freshnessFilter.addEventListener("change", renderRows);
+    coordinationFilter.addEventListener("change", renderRows);
     async function loadFleet() {
       try {
         const response = await fetch("/api/v1/fleet");
         if (!response.ok) throw new Error("Fleet request failed");
         const data = await response.json();
-        fleet.replaceChildren();
-        if (!data.repositories.length) {
-          const row = document.createElement("tr");
-          const empty = cell("", "No active enrollment receipts are available for this tenant.", "empty");
-          empty.colSpan = 4;
-          row.append(empty);
-          fleet.append(row);
-        }
-        for (const repository of data.repositories) {
-          const row = document.createElement("tr");
-          const projected = repository.projection_stream_position === null
-            ? ["Not projected", "stale"]
-            : [`Position ${repository.projection_stream_position}`, "state"];
-          row.append(
-            cell("Repository", repository.repository_id, "repo"),
-            cell("Active nodes", String(repository.active_node_count)),
-            cell("Projection", projected[0], projected[1]),
-            cell("Last activated", timestamp(repository.last_activated_at_seconds))
-          );
-          fleet.append(row);
-        }
-        status.textContent = `${data.repositories.length === 1 ? "1 repository" : `${data.repositories.length} repositories`} visible`;
+        repositories = data.repositories;
+        renderRows();
       } catch (error) {
+        repositories = [];
         fleet.replaceChildren();
         const row = document.createElement("tr");
         const empty = cell("", "Fleet data is unavailable. The Ackplane read service may be disconnected.", "empty");
-        empty.colSpan = 4;
+        empty.colSpan = 6;
         row.append(empty);
         fleet.append(row);
         status.textContent = "Fleet unavailable";
