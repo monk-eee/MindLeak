@@ -232,7 +232,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "task_claim",
-            "description": "Ownership and the lease, chosen by `step`. `claim`: atomic claim + lease with optional advisory `paths`/MindLeak `symbols`; `won=true` only if this agent won, and a loss names why. Omitting `paths`/`symbols` on re-claim preserves that part of the existing scope; an explicit array (including `[]`) replaces or clears it. A won claim resolves active clauses against those paths (`scope_advice`; `review` names an uncovered goal to add via `also_serves`), reports `title_twin` naming a live task under a different goal sharing this exact title if one exists (ADR-0099), and returns the evidence window completion later validates against. `also_serves` can extend a held claim until conformance has judged it — refused after. `renew`: extends a still-live lease owned by this agent; after expiry only a fresh `claim` opens a new window. `release`: hands the claim back to open, owner-guarded. `recover`: takes an expired claim under a compatible legacy identity, or transfers a paused task before its seven-day grace with a named human reviewer (`expected_owner` and `reason` required; `human` is attributed, not authenticated, and must differ from both owners).",
+            "description": "Ownership and the lease, chosen by `step`. `claim`: atomic claim + lease with optional advisory `paths`/MindLeak `symbols`; `won=true` only if this agent won, and a loss names why. Omitting `paths`/`symbols` on re-claim preserves that part of the existing scope; an explicit array (including `[]`) replaces or clears it. A won claim resolves active clauses against those paths (`scope_advice`; `review` names an uncovered goal to add via `also_serves`), reports `title_twin` naming another live task under this same goal sharing this exact title if one exists (ADR-0099), and returns the evidence window completion later validates against. `also_serves` can extend a held claim until conformance has judged it — refused after. `renew`: extends a still-live lease owned by this agent; after expiry only a fresh `claim` opens a new window. `release`: hands the claim back to open, owner-guarded. `recover`: takes an expired claim under a compatible legacy identity, or transfers a paused task before its seven-day grace with a named human reviewer (`expected_owner` and `reason` required; `human` is attributed, not authenticated, and must differ from both owners).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -737,15 +737,18 @@ fn claim(engine: &Lodestar, task_id: &str, args: &Value) -> Result<Value, String
                 // ADR-0099: a scope-less claim is invisible to check_overlap and
                 // view="drafts" alike, since both key on declared scope. This
                 // check does not: it is title-based and runs regardless of what
-                // scope (if any) was just declared, reporting a live task under
-                // a different goal sharing this exact title. Never blocks
-                // (ADR-0015) -- it only makes the collision visible instead of
+                // scope (if any) was just declared, reporting another live task
+                // under this same goal sharing this exact title -- the same
+                // (title, goal_id) collision existing_work already answers, now
+                // asked automatically. A different-goal same-title claim is
+                // legitimate (ADR-0015) and stays this check's non-concern;
+                // that signal is already task_create's same_title_under_other_goals.
+                // Never blocks -- only makes the collision visible instead of
                 // relying on the claimant to think to run existing_work.
                 let twin = engine
-                    .live_tasks_titled_elsewhere(&task.goal_id, &task.title)
+                    .live_task_titled(&task.goal_id, &task.title)
                     .map_err(|e| e.to_string())?
-                    .into_iter()
-                    .next();
+                    .filter(|existing| existing.id != task.id);
                 if let Some(twin) = twin {
                     obj.insert(
                         "title_twin".to_string(),
@@ -2785,22 +2788,20 @@ mod tests {
         assert!(free_body["governing"].as_array().unwrap().is_empty());
     }
 
-    /// ADR-0099: a claim reports a live task under a *different* goal sharing
-    /// its exact title, regardless of what scope (if any) either declared.
-    /// Never blocks -- only the sibling task's identity, owner, and branch.
+    /// ADR-0099: a claim reports another live task under the SAME goal
+    /// sharing its exact title, regardless of what scope (if any) either
+    /// declared. Never blocks -- only the sibling task's identity, owner,
+    /// and branch.
     #[test]
-    fn claim_reports_a_live_title_twin_under_a_different_goal() {
+    fn claim_reports_a_live_title_twin_under_the_same_goal() {
         let engine = Lodestar::open_in_memory().unwrap();
-        let goal_a = engine
+        let goal = engine
             .define_goal(GoalKind::Objective, "Goal A", "a", None)
             .unwrap();
-        let goal_b = engine
-            .define_goal(GoalKind::Objective, "Goal B", "b", None)
-            .unwrap();
-        let title = "Implement: ADR-0100: same title, two goals";
-        let twin = engine.create_task(&goal_a.id, title, "x").unwrap();
+        let title = "Implement: ADR-0100: same title, same goal";
+        let twin = engine.create_task(&goal.id, title, "x").unwrap();
         assert!(engine.claim_task(&twin.id, "agent-a", 300).unwrap());
-        let mine = engine.create_task(&goal_b.id, title, "y").unwrap();
+        let mine = engine.create_task(&goal.id, title, "y").unwrap();
 
         let claimed = call(
             &engine,
@@ -2811,7 +2812,7 @@ mod tests {
             serde_json::from_str(claimed["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(body["won"], true);
         assert_eq!(body["title_twin"]["task_id"], twin.id);
-        assert_eq!(body["title_twin"]["goal_id"], goal_a.id);
+        assert_eq!(body["title_twin"]["goal_id"], goal.id);
         assert_eq!(body["title_twin"]["owner"], "agent-a");
     }
 
@@ -2838,19 +2839,23 @@ mod tests {
         assert!(body.get("title_twin").is_none());
     }
 
-    /// A same-titled sibling under the SAME goal is decompose_goal's existing
-    /// idempotency, not this check's concern -- ADR-0015 already permits a
-    /// second same-goal task deliberately, so it must not be reported here.
+    /// A same-titled task under a DIFFERENT goal is legitimate (ADR-0015 --
+    /// one piece of work can serve several goals) and is already reported at
+    /// create time via task_create's same_title_under_other_goals; ADR-0099's
+    /// consequences section explicitly says this stays unaffected here.
     #[test]
-    fn claim_does_not_report_a_same_goal_title_twin() {
+    fn claim_does_not_report_a_different_goal_title_twin() {
         let engine = Lodestar::open_in_memory().unwrap();
-        let goal = engine
-            .define_goal(GoalKind::Objective, "One goal", "one", None)
+        let goal_a = engine
+            .define_goal(GoalKind::Objective, "Goal A", "a", None)
             .unwrap();
-        let title = "duplicate title, same goal";
-        let sibling = engine.create_task(&goal.id, title, "x").unwrap();
+        let goal_b = engine
+            .define_goal(GoalKind::Objective, "Goal B", "b", None)
+            .unwrap();
+        let title = "duplicate title, two goals";
+        let sibling = engine.create_task(&goal_a.id, title, "x").unwrap();
         assert!(engine.claim_task(&sibling.id, "agent-a", 300).unwrap());
-        let mine = engine.create_task(&goal.id, title, "y").unwrap();
+        let mine = engine.create_task(&goal_b.id, title, "y").unwrap();
 
         let claimed = call(
             &engine,

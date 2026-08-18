@@ -52,6 +52,18 @@ pub struct ClaimRecoverRequest {
     pub symbols: Vec<String>,
 }
 
+/// One claim whose lease has not yet expired, as `list_active` reports it
+/// (ADR-0096 clause 5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveClaim {
+    pub task_id: String,
+    pub owner_id: String,
+    pub branch: String,
+    pub lease_expires_at: SystemTime,
+    pub paths: Vec<String>,
+    pub symbols: Vec<String>,
+}
+
 #[derive(Debug, Error)]
 pub enum ClaimStoreError {
     #[error("claim delegation database error: {0}")]
@@ -452,6 +464,41 @@ impl ClaimStore {
             .await?;
         transaction.commit().await?;
         Ok(result)
+    }
+
+    /// Every claim in this repository whose lease has not yet expired
+    /// (ADR-0096 clause 5) - the federated counterpart to `lodestar-core`'s
+    /// local `check_claim_overlap`, which has no way to see a delegated
+    /// claim at all. Read-only: unlike `delegate`/`release`/`renew`/`recover`,
+    /// this never writes `delegated_claim_history`, because listing a claim
+    /// changes nothing about it.
+    pub async fn list_active(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        now: SystemTime,
+    ) -> Result<Vec<ActiveClaim>, ClaimStoreError> {
+        let rows = self
+            .client
+            .query(
+                "SELECT task_id, owner_id, branch, lease_expires_at, paths, symbols \
+                 FROM delegated_claims \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND lease_expires_at > $3 \
+                 ORDER BY task_id ASC",
+                &[&tenant_id, &repository_id, &now],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| ActiveClaim {
+                task_id: row.get(0),
+                owner_id: row.get(1),
+                branch: row.get(2),
+                lease_expires_at: row.get(3),
+                paths: row.get(4),
+                symbols: row.get(5),
+            })
+            .collect())
     }
 }
 
@@ -887,7 +934,7 @@ mod tests {
         assert_eq!(recovered.outcome, ClaimLeaseOutcome::Granted);
         assert_eq!(
             recovered.claim_started_at, granted.claim_started_at,
-            "a same-owner recovery must preserve claim_started_at (ADR-0048)"
+            "a same-owner recovery must preserve claim_started_at"
         );
         assert_eq!(
             recovered.branch, granted.branch,
@@ -957,5 +1004,80 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, ClaimStoreError::MissingReason));
+    }
+
+    #[tokio::test]
+    async fn list_active_reports_every_unexpired_claim_scoped_to_its_tenant_and_repository() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let tenant_id = format!("claim-list-active-{}", crate::test_support::uuid_ish());
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+
+        store
+            .delegate(&request(&tenant_id, "task-one", "owner-one"), now)
+            .await
+            .unwrap();
+        store
+            .delegate(&request(&tenant_id, "task-two", "owner-two"), now)
+            .await
+            .unwrap();
+        // A different tenant's claim must never appear in this tenant's list.
+        store
+            .delegate(
+                &request(&format!("{tenant_id}-other"), "task-one", "owner-three"),
+                now,
+            )
+            .await
+            .unwrap();
+
+        let active = store
+            .list_active(&tenant_id, "repository", now)
+            .await
+            .unwrap();
+
+        assert_eq!(active.len(), 2);
+        assert_eq!(active[0].task_id, "task-one");
+        assert_eq!(active[0].owner_id, "owner-one");
+        assert_eq!(active[0].branch, "branch/owner-one");
+        assert_eq!(active[0].paths, vec!["src/owner-one.rs".to_string()]);
+        assert_eq!(active[0].lease_expires_at, now + Duration::from_secs(60));
+        assert_eq!(active[1].task_id, "task-two");
+        assert_eq!(active[1].owner_id, "owner-two");
+    }
+
+    #[tokio::test]
+    async fn list_active_excludes_a_claim_whose_lease_has_expired() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let tenant_id = format!("claim-list-expired-{}", crate::test_support::uuid_ish());
+        let task_id = "task";
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+
+        store
+            .delegate(&request(&tenant_id, task_id, "owner-one"), now)
+            .await
+            .unwrap();
+
+        let still_active = store
+            .list_active(&tenant_id, "repository", now + Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(still_active.len(), 1);
+
+        // Past the 60-second lease: nothing live remains to report.
+        let after_expiry = store
+            .list_active(&tenant_id, "repository", now + Duration::from_secs(61))
+            .await
+            .unwrap();
+        assert!(
+            after_expiry.is_empty(),
+            "an expired claim must not appear in the active list"
+        );
     }
 }

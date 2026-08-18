@@ -152,6 +152,30 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
             result_to_wire(result).map_err(Status::internal)?,
         ))
     }
+
+    async fn list_active_claims(
+        &self,
+        request: Request<v1::ActiveClaimsRequest>,
+    ) -> Result<Response<v1::ActiveClaimsResult>, Status> {
+        let request = request.into_inner();
+        let tenant_id =
+            required(request.tenant_id, "tenant_id").map_err(Status::invalid_argument)?;
+        let repository_id =
+            required(request.repository_id, "repository_id").map_err(Status::invalid_argument)?;
+        let claims = self
+            .store
+            .lock()
+            .await
+            .list_active(&tenant_id, &repository_id, std::time::SystemTime::now())
+            .await
+            .map_err(map_store_error)?;
+        let claims = claims
+            .into_iter()
+            .map(active_claim_to_wire)
+            .collect::<Result<Vec<_>, String>>()
+            .map_err(Status::internal)?;
+        Ok(Response::new(v1::ActiveClaimsResult { claims }))
+    }
 }
 
 fn request_from_wire(request: v1::ClaimLeaseRequest) -> Result<ClaimLeaseRequest, String> {
@@ -196,6 +220,19 @@ fn required(value: String, field: &str) -> Result<String, String> {
     } else {
         Ok(value)
     }
+}
+
+fn active_claim_to_wire(
+    claim: crate::claim_store::ActiveClaim,
+) -> Result<v1::ActiveClaimSummary, String> {
+    Ok(v1::ActiveClaimSummary {
+        task_id: claim.task_id,
+        owner_id: claim.owner_id,
+        branch: claim.branch,
+        lease_expires_at: rfc3339(claim.lease_expires_at)?,
+        paths: claim.paths,
+        symbols: claim.symbols,
+    })
 }
 
 fn rfc3339(timestamp: std::time::SystemTime) -> Result<String, String> {
