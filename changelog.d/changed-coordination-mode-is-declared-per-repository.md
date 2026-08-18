@@ -1,0 +1,1 @@
+- Coordination mode (ADR-0082 decision 3) is now a declared property of the repository, not just of the process: `mindleak.coordinationMode` in `git config --local` is consulted alongside `MINDLEAK_COORDINATION_MODE`, and the two are refused rather than silently reconciled if they disagree.

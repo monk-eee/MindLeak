@@ -17,6 +17,11 @@ use mindleak_storage::{
 };
 
 fn main() -> anyhow::Result<()> {
+    let current = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let workspace = resolve_workspace_path(
+        &current,
+        std::env::var("MINDLEAK_WORKSPACE").ok().as_deref(),
+    );
     // Which arbiter owns this repository's coordination (ADR-0082), settled
     // once here rather than per call, and before any store is opened.
     //
@@ -26,7 +31,15 @@ fn main() -> anyhow::Result<()> {
     // refuses every tool call, which keeps the ADR-0082 guarantee — a process
     // that arbitrates nothing cannot be the second arbiter — while putting the
     // reason where the agent will actually read it.
-    let coordination = ackplane_core::resolve_coordination_mode(|name| std::env::var(name).ok());
+    let coordination = ackplane_core::resolve_coordination_mode(
+        |name| std::env::var(name).ok(),
+        || {
+            mindleak_storage::read_local_git_config(
+                &workspace,
+                ackplane_core::COORDINATION_MODE_GIT_CONFIG_KEY,
+            )
+        },
+    );
     // Only mutated when built with `federation-client` (see below); the
     // default build never touches it after this point.
     #[cfg_attr(not(feature = "federation-client"), allow(unused_mut))]
@@ -73,11 +86,6 @@ fn main() -> anyhow::Result<()> {
     let federated_claim_authority: Option<
         std::sync::Arc<dyn lodestar_core::FederatedClaimAuthority>,
     > = None;
-    let current = std::env::current_dir().unwrap_or_else(|_| ".".into());
-    let workspace = resolve_workspace_path(
-        &current,
-        std::env::var("MINDLEAK_WORKSPACE").ok().as_deref(),
-    );
     // Say plainly when this binary is a stale build of the checkout it serves.
     // The version has always been reported at `initialize`; nobody compared it,
     // and a two-day-old local build cost a night of misdirected debugging.
