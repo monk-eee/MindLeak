@@ -17,6 +17,7 @@ service ClaimDelegationService {
   rpc DelegateClaim(ClaimLeaseRequest) returns (ClaimLeaseResult);
   rpc ReleaseClaim(ClaimReleaseRequest) returns (ClaimReleaseResult);
   rpc RenewClaim(ClaimRenewRequest) returns (ClaimLeaseResult);
+  rpc RecoverClaim(ClaimRecoverRequest) returns (ClaimLeaseResult);
 }
 
 message ClaimLeaseRequest {
@@ -60,6 +61,19 @@ message ClaimRenewRequest {
   string task_id = 3;
   string owner_id = 4;
   uint64 lease_seconds = 5;
+}
+
+message ClaimRecoverRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string task_id = 3;
+  string expected_owner = 4;
+  string owner_id = 5;
+  string reason = 6;
+  string branch = 7;
+  uint64 lease_seconds = 8;
+  repeated string paths = 9;
+  repeated string symbols = 10;
 }
 
 enum ClaimLeaseOutcome {

@@ -36,6 +36,22 @@ pub struct ClaimLeaseResult {
     pub symbols: Vec<String>,
 }
 
+/// Everything `ClaimStore::recover` needs, bundled to keep the method's own
+/// argument count sane (`delegate` does the same with `ClaimLeaseRequest`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimRecoverRequest {
+    pub tenant_id: String,
+    pub repository_id: String,
+    pub task_id: String,
+    pub expected_owner: String,
+    pub owner_id: String,
+    pub reason: String,
+    pub branch: String,
+    pub lease: Duration,
+    pub paths: Vec<String>,
+    pub symbols: Vec<String>,
+}
+
 #[derive(Debug, Error)]
 pub enum ClaimStoreError {
     #[error("claim delegation database error: {0}")]
@@ -44,6 +60,8 @@ pub enum ClaimStoreError {
     InvalidLease,
     #[error("claim_lapses cannot be negative")]
     InvalidLapseCount,
+    #[error("claim recovery requires a reason")]
+    MissingReason,
 }
 
 pub struct ClaimStore {
@@ -314,6 +332,127 @@ impl ClaimStore {
         transaction.commit().await?;
         Ok(result)
     }
+
+    /// Take over a claim the caller believes is stranded (ADR-0096 clauses 3
+    /// and 6, matching `lodestar-core`'s `recover_claim`). `expected_owner`
+    /// must match the row's actual current owner -- a mismatch means the
+    /// owner changed concurrently and is rejected rather than blindly
+    /// overwritten, which `delegate` does not check. `reason` is required and
+    /// travels into the history for audit. Recovery only succeeds once the
+    /// lease has genuinely expired: a live lease is never recoverable out
+    /// from under its holder (ADR-0096 clause 6, "holed, not extended"). A
+    /// same-owner recovery preserves `claim_started_at` and `branch`, exactly
+    /// as `delegate`'s same-owner reclaim does (ADR-0048); a different owner
+    /// resets both and records the lapse.
+    pub async fn recover(
+        &mut self,
+        request: &ClaimRecoverRequest,
+        now: SystemTime,
+    ) -> Result<ClaimLeaseResult, ClaimStoreError> {
+        if request.reason.trim().is_empty() {
+            return Err(ClaimStoreError::MissingReason);
+        }
+        if request.lease.is_zero() {
+            return Err(ClaimStoreError::InvalidLease);
+        }
+        let expires_at = now + request.lease;
+        let transaction = self.client.transaction().await?;
+        let existing = transaction
+            .query_opt(
+                "SELECT owner_id, branch, claim_started_at, lease_expires_at, claim_lapses, paths, symbols \
+                 FROM delegated_claims WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 FOR UPDATE",
+                &[&request.tenant_id, &request.repository_id, &request.task_id],
+            )
+            .await?;
+
+        let result = match existing {
+            Some(row) => {
+                let existing_owner: String = row.get(0);
+                let existing_branch: String = row.get(1);
+                let claim_started_at: SystemTime = row.get(2);
+                let previous_expiry: SystemTime = row.get(3);
+                let previous_lapses: i64 = row.get(4);
+                let existing_paths: Vec<String> = row.get(5);
+                let existing_symbols: Vec<String> = row.get(6);
+                let claim_lapses = u64::try_from(previous_lapses)
+                    .map_err(|_| ClaimStoreError::InvalidLapseCount)?;
+                if existing_owner != request.expected_owner || previous_expiry >= now {
+                    ClaimLeaseResult {
+                        outcome: ClaimLeaseOutcome::Rejected,
+                        owner_id: existing_owner,
+                        branch: existing_branch,
+                        claim_started_at,
+                        lease_expires_at: previous_expiry,
+                        claim_lapses,
+                        paths: existing_paths,
+                        symbols: existing_symbols,
+                    }
+                } else {
+                    let same_owner = existing_owner == request.owner_id;
+                    let granted_branch = if same_owner {
+                        existing_branch
+                    } else {
+                        request.branch.clone()
+                    };
+                    let granted_started_at = if same_owner { claim_started_at } else { now };
+                    let next_lapses = claim_lapses + 1;
+                    transaction
+                        .execute(
+                            "UPDATE delegated_claims SET owner_id = $4, branch = $5, claim_started_at = $6, \
+                             lease_expires_at = $7, claim_lapses = $8, paths = $9, symbols = $10 \
+                             WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3",
+                            &[&request.tenant_id, &request.repository_id, &request.task_id, &request.owner_id,
+                              &granted_branch, &granted_started_at, &expires_at, &(next_lapses as i64),
+                              &request.paths, &request.symbols],
+                        )
+                        .await?;
+                    ClaimLeaseResult {
+                        outcome: ClaimLeaseOutcome::Granted,
+                        owner_id: request.owner_id.clone(),
+                        branch: granted_branch,
+                        claim_started_at: granted_started_at,
+                        lease_expires_at: expires_at,
+                        claim_lapses: next_lapses,
+                        paths: request.paths.clone(),
+                        symbols: request.symbols.clone(),
+                    }
+                }
+            }
+            None => ClaimLeaseResult {
+                outcome: ClaimLeaseOutcome::Rejected,
+                owner_id: request.expected_owner.clone(),
+                branch: String::new(),
+                claim_started_at: now,
+                lease_expires_at: now,
+                claim_lapses: 0,
+                paths: Vec::new(),
+                symbols: Vec::new(),
+            },
+        };
+
+        transaction
+            .execute(
+                "INSERT INTO delegated_claim_history (tenant_id, repository_id, task_id, requested_owner_id, \
+                 granted_owner_id, outcome, claim_started_at, lease_expires_at, claim_lapses, paths, symbols) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+                &[
+                    &request.tenant_id,
+                    &request.repository_id,
+                    &request.task_id,
+                    &request.owner_id,
+                    &result.owner_id,
+                    &outcome_tag(result.outcome),
+                    &result.claim_started_at,
+                    &result.lease_expires_at,
+                    &(result.claim_lapses as i64),
+                    &result.paths,
+                    &result.symbols,
+                ],
+            )
+            .await?;
+        transaction.commit().await?;
+        Ok(result)
+    }
 }
 
 fn outcome_tag(outcome: ClaimLeaseOutcome) -> i16 {
@@ -343,6 +482,27 @@ mod tests {
             owner_id: owner_id.to_owned(),
             branch: format!("branch/{owner_id}"),
             lease: Duration::from_secs(60),
+            paths: vec![format!("src/{owner_id}.rs")],
+            symbols: vec![format!("symbol:{owner_id}")],
+        }
+    }
+
+    fn recover_request(
+        tenant_id: &str,
+        task_id: &str,
+        expected_owner: &str,
+        owner_id: &str,
+        reason: &str,
+    ) -> ClaimRecoverRequest {
+        ClaimRecoverRequest {
+            tenant_id: tenant_id.to_owned(),
+            repository_id: "repository".to_owned(),
+            task_id: task_id.to_owned(),
+            expected_owner: expected_owner.to_owned(),
+            owner_id: owner_id.to_owned(),
+            reason: reason.to_owned(),
+            branch: format!("branch/{owner_id}"),
+            lease: Duration::from_secs(300),
             paths: vec![format!("src/{owner_id}.rs")],
             symbols: vec![format!("symbol:{owner_id}")],
         }
@@ -621,5 +781,181 @@ mod tests {
             ClaimLeaseOutcome::Rejected,
             "an expired lease needs a fresh claim, not a renewal"
         );
+    }
+
+    #[tokio::test]
+    async fn an_expired_claim_can_be_recovered_by_a_new_owner_with_a_reason() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let tenant_id = format!("claim-recover-{}", crate::test_support::uuid_ish());
+        let task_id = "task";
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let first = request(&tenant_id, task_id, "owner-one");
+        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+
+        store.delegate(&first, now).await.unwrap();
+
+        // Past the 60-second lease: genuinely stranded.
+        let recovered = store
+            .recover(
+                &recover_request(
+                    &tenant_id,
+                    task_id,
+                    "owner-one",
+                    "owner-two",
+                    "owner-one went silent",
+                ),
+                now + Duration::from_secs(61),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(recovered.outcome, ClaimLeaseOutcome::Granted);
+        assert_eq!(recovered.owner_id, "owner-two");
+        assert_eq!(recovered.branch, "branch/owner-two");
+        assert_eq!(recovered.claim_lapses, 1, "a lapse is recorded, not hidden");
+        assert_eq!(recovered.paths, vec!["src/owner-two.rs".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn recovering_a_still_live_claim_is_refused() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let tenant_id = format!("claim-recover-live-{}", crate::test_support::uuid_ish());
+        let task_id = "task";
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let first = request(&tenant_id, task_id, "owner-one");
+        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+
+        let granted = store.delegate(&first, now).await.unwrap();
+
+        let rejected = store
+            .recover(
+                &recover_request(
+                    &tenant_id,
+                    task_id,
+                    "owner-one",
+                    "owner-two",
+                    "trying to take over early",
+                ),
+                now + Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            rejected.outcome,
+            ClaimLeaseOutcome::Rejected,
+            "a live lease is never recoverable out from under its holder"
+        );
+        assert_eq!(rejected.owner_id, "owner-one");
+        assert_eq!(rejected.lease_expires_at, granted.lease_expires_at);
+    }
+
+    #[tokio::test]
+    async fn the_same_owner_can_recover_their_own_expired_claim_and_started_at_is_preserved() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let tenant_id = format!("claim-recover-self-{}", crate::test_support::uuid_ish());
+        let task_id = "task";
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let first = request(&tenant_id, task_id, "owner-one");
+        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+
+        let granted = store.delegate(&first, now).await.unwrap();
+
+        let recovered = store
+            .recover(
+                &recover_request(
+                    &tenant_id,
+                    task_id,
+                    "owner-one",
+                    "owner-one",
+                    "reconnecting after a network partition",
+                ),
+                now + Duration::from_secs(61),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(recovered.outcome, ClaimLeaseOutcome::Granted);
+        assert_eq!(
+            recovered.claim_started_at, granted.claim_started_at,
+            "a same-owner recovery must preserve claim_started_at (ADR-0048)"
+        );
+        assert_eq!(
+            recovered.branch, granted.branch,
+            "a same-owner recovery must preserve the declared branch"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_mismatched_expected_owner_is_refused_even_though_the_lease_expired() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let tenant_id = format!("claim-recover-mismatch-{}", crate::test_support::uuid_ish());
+        let task_id = "task";
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let first = request(&tenant_id, task_id, "owner-one");
+        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+
+        store.delegate(&first, now).await.unwrap();
+
+        let rejected = store
+            .recover(
+                &recover_request(
+                    &tenant_id,
+                    task_id,
+                    "owner-wrong-guess",
+                    "owner-three",
+                    "taking over what I believe is stranded",
+                ),
+                now + Duration::from_secs(61),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            rejected.outcome,
+            ClaimLeaseOutcome::Rejected,
+            "the owner changed concurrently from what the caller expected"
+        );
+        assert_eq!(rejected.owner_id, "owner-one");
+    }
+
+    #[tokio::test]
+    async fn recovery_without_a_reason_is_refused() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let tenant_id = format!(
+            "claim-recover-no-reason-{}",
+            crate::test_support::uuid_ish()
+        );
+        let task_id = "task";
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let first = request(&tenant_id, task_id, "owner-one");
+        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+
+        store.delegate(&first, now).await.unwrap();
+
+        let error = store
+            .recover(
+                &recover_request(&tenant_id, task_id, "owner-one", "owner-two", "   "),
+                now + Duration::from_secs(61),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ClaimStoreError::MissingReason));
     }
 }
