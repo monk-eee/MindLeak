@@ -92,6 +92,17 @@ impl ClaimStore {
         Ok(Self { client })
     }
 
+    /// Resolve the signing key a claim request's authentication claims,
+    /// judged as of now. Mirrors `LedgerStore::resolve_signing_key`: the
+    /// decision itself lives in `signing_keys` and is pure, this only owns
+    /// the connection.
+    pub async fn resolve_signing_key(
+        &self,
+        binding: &crate::signing_keys::EnvelopeBinding<'_>,
+    ) -> Result<crate::signing_keys::KeyResolution, crate::signing_keys::SigningKeyError> {
+        crate::signing_keys::resolve(&self.client, binding).await
+    }
+
     pub async fn delegate(
         &mut self,
         request: &ClaimLeaseRequest,
