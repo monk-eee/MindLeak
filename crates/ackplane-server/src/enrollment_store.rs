@@ -1079,8 +1079,9 @@ mod tests {
             nonce: challenge.nonce.clone(),
             signature: signature.to_bytes().to_vec(),
         };
+        let receipt_id = crate::test_support::unique_id("receipt-original");
         let first = store
-            .activate(&activation, "receipt-original", "signing-key-original", now)
+            .activate(&activation, &receipt_id, "signing-key-original", now)
             .await
             .expect("valid proof activates enrollment");
         let replay = store
@@ -1101,12 +1102,12 @@ mod tests {
                 EnrollmentActivationResult {
                     request_id: enrollment.request_id.clone(),
                     state: EnrollmentState::Activating,
-                    enrollment_receipt_id: "receipt-original".to_owned(),
+                    enrollment_receipt_id: receipt_id.clone(),
                 },
                 EnrollmentActivationResult {
                     request_id: enrollment.request_id,
                     state: EnrollmentState::Activating,
-                    enrollment_receipt_id: "receipt-original".to_owned(),
+                    enrollment_receipt_id: receipt_id,
                 },
             )
         );
