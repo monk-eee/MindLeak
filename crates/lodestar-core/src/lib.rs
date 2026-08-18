@@ -48,9 +48,11 @@ pub use model::{
     ConformanceRecord, ConformanceResult, ConstitutionProposal, ConstitutionState,
     ConstitutionStatus, ConstitutionVersion, EvidenceProvenance, ExternalGoalImportDisposition,
     ExternalGoalImportOutcome, ExternalGoalImportResult, ExternalGoalRecord, FederatedClaim,
-    FederatedClaimSource, Goal, GoalKind, GoalStatus, GoverningClause, HumanQuestion, Knowledge,
-    KnowledgeReach, OverlapSignal, RepeatedTitle, ReworkReport, SignalPromotion, Task, TaskEvent,
-    TaskEventKind, TaskQa, TaskReceipt, TaskScope, TaskStatus, Verdict,
+    FederatedClaimAuthority, FederatedClaimGrant, FederatedClaimOutcome,
+    FederatedClaimRecoverRequest, FederatedClaimSource, Goal, GoalKind, GoalStatus,
+    GoverningClause, HumanQuestion, Knowledge, KnowledgeReach, OverlapSignal, RepeatedTitle,
+    ReworkReport, SignalPromotion, Task, TaskEvent, TaskEventKind, TaskQa, TaskReceipt, TaskScope,
+    TaskStatus, Verdict,
 };
 pub use policy::{
     common_core_pack, fleet_delivery_pack, ConstitutionPack, PackClause, PackClauseDisposition,
@@ -85,6 +87,10 @@ pub struct Lodestar {
     /// today's local-`tasks`-table behavior, unchanged. The concrete Ackplane
     /// client lives outside this crate; tests inject a fixed implementation.
     federated_claim_source: Option<Arc<dyn FederatedClaimSource>>,
+    /// Where `claim`/`renew`/`release`/`recover` ask Ackplane to decide
+    /// ownership when set (ADR-0096 clauses 2-4, 6). `None` (the default) is
+    /// `CoordinationMode::Local`: today's local CAS, unchanged.
+    federated_claim_authority: Option<Arc<dyn FederatedClaimAuthority>>,
     #[cfg(test)]
     test_judge: Option<Box<TestJudge>>,
 }
@@ -99,6 +105,7 @@ impl Lodestar {
             llm: LlmClient::default(),
             workspace_root: None,
             federated_claim_source: None,
+            federated_claim_authority: None,
             #[cfg(test)]
             test_judge: None,
         })
@@ -110,6 +117,7 @@ impl Lodestar {
             llm: LlmClient::default(),
             workspace_root: None,
             federated_claim_source: None,
+            federated_claim_authority: None,
             #[cfg(test)]
             test_judge: None,
         })
@@ -135,6 +143,19 @@ impl Lodestar {
     /// `check_claim_overlap` exactly as it was.
     pub fn with_federated_claim_source(mut self, source: Arc<dyn FederatedClaimSource>) -> Self {
         self.federated_claim_source = Some(source);
+        self
+    }
+
+    /// Route `claim`/`renew`/`release`/`recover` through a federated
+    /// repository's Ackplane claim CAS instead of the local `tasks` table
+    /// deciding them (ADR-0096 clauses 2-4, 6). Not calling this at all is
+    /// `CoordinationMode::Local` and leaves every one of those exactly as it
+    /// was.
+    pub fn with_federated_claim_authority(
+        mut self,
+        authority: Arc<dyn FederatedClaimAuthority>,
+    ) -> Self {
+        self.federated_claim_authority = Some(authority);
         self
     }
 

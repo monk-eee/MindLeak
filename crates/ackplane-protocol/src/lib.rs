@@ -6,3 +6,5 @@
 pub mod v1 {
     tonic::include_proto!("mindleak.ackplane.v1");
 }
+
+pub mod claim_auth;

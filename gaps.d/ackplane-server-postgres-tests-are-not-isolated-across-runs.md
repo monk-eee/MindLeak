@@ -1,0 +1,74 @@
+- **`ackplane-server`'s Postgres-gated tests are not isolated from a
+  persistent database, so a second run against the same container fails on
+  leftover state. MEASURED 2026-08-17, left OPEN — out of scope for the
+  `bounded_neighborhood` LIMIT-parameter task that surfaced it.**
+
+  `enrollment_store::tests::activation_reuses_its_live_challenge_and_exact_replay_receipt`
+  calls `store.issue_challenge(&request, &[1; 32], now)` — a fixed, hardcoded
+  nonce, deterministic by design for the test's own assertions. Against a fresh
+  database this passes. Run a second time against the *same* running
+  `docker-compose` Postgres container (the normal way to validate a fix
+  locally, per `ACKPLANE_TEST_DATABASE_URL`), it fails:
+
+  ```text
+  thread 'enrollment_store::tests::activation_reuses_its_live_challenge_and_exact_replay_receipt'
+  panicked at crates\ackplane-server\src\enrollment_store.rs:1063:14:
+  approved request receives challenge: Database(Error { kind: Db, cause: Some(DbError {
+    code: SqlState(E23505), message: "duplicate key value violates unique constraint
+    \"activation_challenges_nonce_key\"" }) })
+  ```
+
+  Unlike the local planes' SQLite tests, which each get a fresh temp-file
+  database, this crate's Postgres-gated tests share one persistent container
+  across every invocation — nothing truncates `activation_challenges` (or the
+  other tables) between runs, and this test's nonce is fixed rather than
+  randomised per call. The first run against a clean container passes; every
+  run after that fails, on the same test, for a reason that has nothing to do
+  with what changed.
+
+  How this was found: validating `crates/ackplane-server/src/projection.rs`'s
+  `bounded_neighborhood` LIMIT-parameter fix required running this crate's
+  full Postgres-gated suite (not just the one test) against the container
+  already up from the Bridge foundation work. `projection::tests::*` passed
+  clean; this unrelated test failed on the second invocation.
+
+  Fix direction (not attempted here): either randomise the nonce per test
+  invocation like a real caller would, or give each test run a disposable
+  schema/transaction it rolls back rather than committing against the shared
+  container — the latter also protects every other Postgres-gated test in
+  this crate from the same class of collision, not just this one.
+
+  **UPDATE 2026-08-18 (found while validating an unrelated task, out of
+  scope for it too): the nonce half of this was fixed (commit
+  `3c4e08f fix(ackplane): random nonces per test call, not a fixed literal`),
+  but the same test still fails the same way on the *second* run against a
+  non-fresh container, now on a different literal:
+
+  ```text
+  thread 'enrollment_store::tests::activation_reuses_its_live_challenge_and_exact_replay_receipt'
+  panicked at crates\ackplane-server\src\enrollment_store.rs:1085:14:
+  valid proof activates enrollment: Database(Error { kind: Db, cause: Some(DbError {
+    code: SqlState(E23505), message: "duplicate key value violates unique constraint
+    \"enrollment_receipts_pkey\"", detail: Some("Key (enrollment_receipt_id)=(receipt-original)
+    already exists.") }) })
+  ```
+
+  `enrollment_receipt_id: "receipt-original".to_owned()` appears three times
+  in this test (two fixture struct literals plus the `.activate(...)` call
+  argument) and is still a fixed literal, not randomised per invocation like
+  the nonce now is. The root cause named above — no per-run isolation from
+  the shared container — is unchanged; this is the same gap, not a new one,
+  just caught mid-fix rather than fully closed.**
+
+  **UPDATE 2026-08-18 (found while validating a third, unrelated task — the
+  push hook's isolated test run hit the same failure): this specific
+  literal is now fixed too, the same way the nonce was —
+  `test_support::unique_id(prefix)` (wall-clock-seeded, atomic-counter-
+  guarded, mirroring `unique_nonce`) generates the receipt id once per test
+  invocation and every assertion in the test reads that one value back,
+  rather than a literal repeated three times. Verified by running the test
+  twice in a row against the same non-fresh container; both passed. The
+  general gap — no per-run isolation for this crate's Postgres-gated tests
+  as a whole, so a *different* not-yet-hit hardcoded literal could still
+  collide the same way — is unchanged and still open; this closes the one
+  instance that was actually failing, not the class of instance.**

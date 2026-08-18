@@ -19,6 +19,9 @@ use ackplane_protocol::v1::claim_delegation_service_client::ClaimDelegationServi
 use thiserror::Error;
 use tonic::transport::Channel;
 
+pub mod auth;
+pub use auth::{authenticate, ClaimOperation, ClaimSigner, SeedSigner};
+
 pub use ackplane_protocol::v1::{
     ClaimLeaseOutcome, ClaimLeaseRequest, ClaimLeaseResult, ClaimRecoverRequest,
     ClaimReleaseRequest, ClaimReleaseResult, ClaimRenewRequest,

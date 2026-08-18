@@ -2,6 +2,7 @@
 
 use std::{sync::Arc, time::Duration, time::SystemTime};
 
+use ackplane_protocol::claim_auth::ClaimOperation;
 use ackplane_protocol::v1;
 use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
@@ -33,6 +34,7 @@ impl ClaimDelegationService {
         repository_id: &str,
         task_id: &str,
         owner_id: &str,
+        operation: &ClaimOperation<'_>,
         authentication: Option<&v1::ClaimAuthentication>,
     ) -> Result<(), Status> {
         let Some(authentication) = authentication else {
@@ -60,6 +62,7 @@ impl ClaimDelegationService {
             repository_id,
             task_id,
             owner_id,
+            operation,
             Some(authentication),
             &resolution,
             SystemTime::now(),
@@ -101,11 +104,18 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
         request: Request<v1::ClaimLeaseRequest>,
     ) -> Result<Response<v1::ClaimLeaseResult>, Status> {
         let wire = request.into_inner();
+        let operation = ClaimOperation::Delegate {
+            branch: &wire.branch,
+            lease_seconds: wire.lease_seconds,
+            paths: &wire.paths,
+            symbols: &wire.symbols,
+        };
         self.authenticate(
             &wire.tenant_id,
             &wire.repository_id,
             &wire.task_id,
             &wire.owner_id,
+            &operation,
             wire.authentication.as_ref(),
         )
         .await?;
@@ -138,6 +148,7 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
             &repository_id,
             &task_id,
             &owner_id,
+            &ClaimOperation::Release,
             request.authentication.as_ref(),
         )
         .await?;
@@ -176,6 +187,9 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
             &repository_id,
             &task_id,
             &owner_id,
+            &ClaimOperation::Renew {
+                lease_seconds: request.lease_seconds,
+            },
             request.authentication.as_ref(),
         )
         .await?;
@@ -223,6 +237,14 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
             &repository_id,
             &task_id,
             &owner_id,
+            &ClaimOperation::Recover {
+                expected_owner: &expected_owner,
+                branch: &branch,
+                lease_seconds: request.lease_seconds,
+                paths: &request.paths,
+                symbols: &request.symbols,
+                reason: &request.reason,
+            },
             request.authentication.as_ref(),
         )
         .await?;
@@ -445,6 +467,10 @@ mod tests {
         nonce_byte: u8,
     ) -> v1::ClaimLeaseRequest {
         let key = signing_key();
+        let branch = format!("branch/{owner_id}");
+        let paths = vec!["src/lib.rs".to_owned()];
+        let symbols: Vec<String> = vec![];
+        let lease_seconds = 60;
         let mut authentication = v1::ClaimAuthentication {
             signing_key_id: identity.signing_key_id.clone(),
             node_id: identity.node_id.clone(),
@@ -454,11 +480,18 @@ mod tests {
             nonce: vec![nonce_byte; 16],
             signature: Vec::new(),
         };
+        let operation = ClaimOperation::Delegate {
+            branch: &branch,
+            lease_seconds,
+            paths: &paths,
+            symbols: &symbols,
+        };
         let bytes = claim_signature::claim_signing_bytes(
             &identity.tenant_id,
             &identity.repository_id,
             task_id,
             owner_id,
+            &operation,
             &authentication,
         );
         authentication.signature = key.sign(&bytes).to_bytes().to_vec();
@@ -467,10 +500,10 @@ mod tests {
             repository_id: identity.repository_id.clone(),
             task_id: task_id.to_owned(),
             owner_id: owner_id.to_owned(),
-            branch: format!("branch/{owner_id}"),
-            lease_seconds: 60,
-            paths: vec!["src/lib.rs".to_owned()],
-            symbols: vec![],
+            branch,
+            lease_seconds,
+            paths,
+            symbols,
             authentication: Some(authentication),
         }
     }
@@ -539,11 +572,18 @@ mod tests {
         let key = signing_key();
         let mut authentication = wire.authentication.take().unwrap();
         authentication.signed_at = "2020-01-01T00:00:00Z".to_owned();
+        let operation = ClaimOperation::Delegate {
+            branch: &wire.branch,
+            lease_seconds: wire.lease_seconds,
+            paths: &wire.paths,
+            symbols: &wire.symbols,
+        };
         let bytes = claim_signature::claim_signing_bytes(
             &wire.tenant_id,
             &wire.repository_id,
             &wire.task_id,
             &wire.owner_id,
+            &operation,
             &authentication,
         );
         authentication.signature = key.sign(&bytes).to_bytes().to_vec();
