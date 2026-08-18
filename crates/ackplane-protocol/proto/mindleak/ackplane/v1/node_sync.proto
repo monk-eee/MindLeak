@@ -18,6 +18,7 @@ service ClaimDelegationService {
   rpc ReleaseClaim(ClaimReleaseRequest) returns (ClaimReleaseResult);
   rpc RenewClaim(ClaimRenewRequest) returns (ClaimLeaseResult);
   rpc RecoverClaim(ClaimRecoverRequest) returns (ClaimLeaseResult);
+  rpc ListActiveClaims(ActiveClaimsRequest) returns (ActiveClaimsResult);
 }
 
 message ClaimLeaseRequest {
@@ -74,6 +75,26 @@ message ClaimRecoverRequest {
   uint64 lease_seconds = 8;
   repeated string paths = 9;
   repeated string symbols = 10;
+}
+
+// ADR-0096 clause 5: for a federated repository, overlap detection reads
+// Ackplane's claim registry instead of the local task table.
+message ActiveClaimsRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+}
+
+message ActiveClaimSummary {
+  string task_id = 1;
+  string owner_id = 2;
+  string branch = 3;
+  string lease_expires_at = 4;
+  repeated string paths = 5;
+  repeated string symbols = 6;
+}
+
+message ActiveClaimsResult {
+  repeated ActiveClaimSummary claims = 1;
 }
 
 enum ClaimLeaseOutcome {
