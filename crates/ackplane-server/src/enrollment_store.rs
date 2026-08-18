@@ -1058,11 +1058,12 @@ mod tests {
         store.approve(&approval).await.expect("request is approved");
 
         let challenge = store
-            .issue_challenge(&request, &[1; 32], now)
+            .issue_challenge(&request, &crate::test_support::unique_nonce(), now)
             .await
             .expect("approved request receives challenge");
+        let live_nonce = challenge.nonce.clone();
         let challenge_retry = store
-            .issue_challenge(&request, &[2; 32], now)
+            .issue_challenge(&request, &crate::test_support::unique_nonce(), now)
             .await
             .expect("live challenge is returned on retry");
         let signature = signing_key.sign(&activation_challenge_bytes(
@@ -1095,8 +1096,8 @@ mod tests {
         assert_eq!(
             (challenge.nonce, challenge_retry.nonce, first, replay),
             (
-                vec![1; 32],
-                vec![1; 32],
+                live_nonce.clone(),
+                live_nonce,
                 EnrollmentActivationResult {
                     request_id: enrollment.request_id.clone(),
                     state: EnrollmentState::Activating,
