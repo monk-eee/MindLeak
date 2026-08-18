@@ -243,6 +243,32 @@ unrecognised value, or a `federated` repository this build has no client to
 reach, is refused rather than quietly arbitrated locally: that downgrade would
 be the second arbiter ADR-0045 forbids.
 
+`compiled_federation_readiness` distinguishes *why* federation is unusable —
+`NoClient` (the `federation-client` cargo feature is off, so
+`ackplane-client` is not linked), `ArbiterUnreachable` (the feature is on but
+`MINDLEAK_ACKPLANE_ENDPOINT` is unset or the deployment did not answer) — so
+the refusal a repository sees names its actual remedy instead of asserting a
+rebuild that would not help.
+
+### `ackplane-client` (library)
+
+The repository-side gRPC client for `ClaimDelegationService`
+(`task:727ae37b4f5a`, ADR-0096): `delegate_claim`, `renew_claim`,
+`release_claim`, `recover_claim`, and a bare `probe_reachable` used only for
+mode resolution. It depends on `ackplane-protocol` alone — never
+`mindleak-core` or `lodestar-core` (ADR-0082 clause 1's boundary runs through
+this crate too: the client sits on the repository side and must not smuggle a
+plane dependency back). `ackplane-core` links it only behind the
+`federation-client` cargo feature, off by default, so `mindleak-mcp` and
+`lodestar-mcp` remain network- and async-runtime-free in their default,
+standalone build (ADR-0094 decision 1).
+
+What this crate does not yet do: route an actual claim through Ackplane.
+`lodestar-core`'s claim compare-and-swap still decides every claim locally
+regardless of the resolved coordination mode — wiring that is deliberately
+its own follow-on task, tracked in
+[`gaps.d/no-claim-is-arbitrated-through-ackplane.md`](../gaps.d/no-claim-is-arbitrated-through-ackplane.md).
+
 ### `ackplane-server` (binary)
 
 The service side of the same boundary, and a separate deployable rather than a

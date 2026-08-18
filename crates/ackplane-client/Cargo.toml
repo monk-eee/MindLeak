@@ -1,0 +1,14 @@
+[package]
+name = "ackplane-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Repository-side gRPC client for Ackplane's delegated claim-lease contract."
+
+[dependencies]
+ackplane-protocol = { path = "../ackplane-protocol" }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }

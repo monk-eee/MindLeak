@@ -11,6 +11,11 @@ use thiserror::Error;
 /// Where a repository declares the arbiter it has chosen.
 const COORDINATION_MODE_ENV: &str = "MINDLEAK_COORDINATION_MODE";
 
+/// Where a `federated` repository declares its Ackplane deployment (e.g.
+/// `http://127.0.0.1:8443`). Read only when a real probe is compiled in and
+/// only for a `federated` declaration; a `local` repository never needs it.
+pub const ACKPLANE_ENDPOINT_ENV: &str = "MINDLEAK_ACKPLANE_ENDPOINT";
+
 /// Which arbiter owns this repository's shared task namespace, cross-machine
 /// sessions, and claims (ADR-0082 decision 3).
 ///
@@ -90,10 +95,46 @@ pub enum FederationReadiness {
 
 /// What federation the running build can actually perform.
 ///
-/// No Ackplane client exists in this workspace yet, so `NoClient` is the only
-/// honest answer. When one lands this probes instead, and nothing else in the
-/// resolution below changes.
-pub fn compiled_federation_readiness() -> FederationReadiness {
+/// A pure function of the injected `environment`, resolved lazily: it is
+/// never called for `CoordinationMode::Local`, so a repository-local build
+/// never attempts a connection it does not need (ADR-0094's local path stays
+/// network-free regardless of which cargo features this workspace enables).
+#[cfg(feature = "federation-client")]
+pub fn compiled_federation_readiness<F>(environment: &F) -> FederationReadiness
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let endpoint = match environment(ACKPLANE_ENDPOINT_ENV) {
+        Some(raw) if !raw.trim().is_empty() => raw,
+        // A `federated` declaration with nowhere to reach is the same
+        // remedy as an arbiter that did not answer: check the deployment,
+        // or declare `local`. It is not a fourth cause.
+        _ => return FederationReadiness::ArbiterUnreachable,
+    };
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(_) => return FederationReadiness::ArbiterUnreachable,
+    };
+    if runtime.block_on(ackplane_client::probe_reachable(&endpoint)) {
+        FederationReadiness::Ready
+    } else {
+        FederationReadiness::ArbiterUnreachable
+    }
+}
+
+/// What federation the running build can actually perform.
+///
+/// No Ackplane client is compiled into this build, so `NoClient` is the only
+/// honest answer. Enable the `federation-client` cargo feature to link the
+/// real probe instead; nothing else in the resolution below changes.
+#[cfg(not(feature = "federation-client"))]
+pub fn compiled_federation_readiness<F>(_environment: &F) -> FederationReadiness
+where
+    F: Fn(&str) -> Option<String>,
+{
     FederationReadiness::NoClient
 }
 
@@ -171,7 +212,13 @@ where
             .ok_or_else(|| CoordinationModeError::Unrecognised(raw.trim().to_string()))?,
         _ => CoordinationMode::Local,
     };
-    mode.ensure_supported(compiled_federation_readiness())?;
+    // Local arbitration is decided above and never touches federation: a
+    // repository-local build must not attempt a connection it does not need,
+    // and `compiled_federation_readiness` is only ever meaningful for a
+    // `federated` declaration.
+    if mode == CoordinationMode::Federated {
+        mode.ensure_supported(compiled_federation_readiness(&environment))?;
+    }
     Ok(mode)
 }
 
@@ -181,9 +228,13 @@ mod tests {
 
     fn declared(value: Option<&str>) -> Result<CoordinationMode, CoordinationModeError> {
         let value = value.map(str::to_string);
-        resolve_coordination_mode(|name| {
-            assert_eq!(name, COORDINATION_MODE_ENV);
-            value.clone()
+        resolve_coordination_mode(move |name| match name {
+            COORDINATION_MODE_ENV => value.clone(),
+            // A federated declaration may also consult the endpoint, when a
+            // real probe is compiled in; an undeclared endpoint reads as
+            // absent, exactly like production.
+            ACKPLANE_ENDPOINT_ENV => None,
+            other => panic!("unexpected environment lookup: {other}"),
         })
     }
 
@@ -203,6 +254,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "federation-client"))]
     fn a_federated_repository_is_refused_not_arbitrated_locally() {
         // ADR-0082 decision 3: authority never falls back according to
         // reachability. Answering `local` here would be the second arbiter.
@@ -347,12 +399,71 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "federation-client"))]
     fn this_build_reports_that_it_carries_no_client() {
-        // The one honest answer while no client crate exists; the resolution
+        // The one honest answer while no client is linked in; the resolution
         // path above depends on it, so it is stated rather than assumed.
         assert_eq!(
-            compiled_federation_readiness(),
+            compiled_federation_readiness(&|_: &str| None),
             FederationReadiness::NoClient
         );
+    }
+
+    #[cfg(feature = "federation-client")]
+    mod federation_client {
+        use super::*;
+
+        #[test]
+        fn a_federated_repository_with_the_real_probe_compiled_in_is_still_refused_without_an_endpoint(
+        ) {
+            // The cause changes once a client is compiled in (there is now
+            // something to ask), but the outcome does not: still refused,
+            // never arbitrated locally.
+            assert_eq!(
+                declared(Some("federated")),
+                Err(CoordinationModeError::ArbiterUnreachable)
+            );
+        }
+
+        #[test]
+        fn a_federated_repository_with_no_endpoint_declared_is_unreachable() {
+            // Nowhere to reach is the same remedy as an arbiter that did not
+            // answer, not a fourth cause: check the deployment or declare
+            // `local`.
+            assert_eq!(
+                compiled_federation_readiness(&|_: &str| None),
+                FederationReadiness::ArbiterUnreachable
+            );
+        }
+
+        #[test]
+        fn an_endpoint_nothing_is_listening_on_is_unreachable() {
+            // Port 1 is reserved/unassigned; connecting to it on loopback
+            // fails fast (ECONNREFUSED), so this arm is deterministic and
+            // needs no live Ackplane deployment to test.
+            let env = |name: &str| {
+                (name == ACKPLANE_ENDPOINT_ENV).then(|| "http://127.0.0.1:1".to_string())
+            };
+            assert_eq!(
+                compiled_federation_readiness(&env),
+                FederationReadiness::ArbiterUnreachable
+            );
+        }
+
+        #[test]
+        fn a_federated_declaration_with_no_reachable_arbiter_is_refused_end_to_end() {
+            // Exercises the full `resolve_coordination_mode` path (not just
+            // `ensure_supported` in isolation) with the real probe compiled
+            // in, proving the refusal survives the plumbing between them.
+            let env = |name: &str| match name {
+                "MINDLEAK_COORDINATION_MODE" => Some("federated".to_string()),
+                "MINDLEAK_ACKPLANE_ENDPOINT" => Some("http://127.0.0.1:1".to_string()),
+                _ => None,
+            };
+            assert_eq!(
+                resolve_coordination_mode(env),
+                Err(CoordinationModeError::ArbiterUnreachable)
+            );
+        }
     }
 }
