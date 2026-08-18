@@ -359,6 +359,25 @@ warnings remain explicitly overridable. Review-needed rows call `task_transition
 complete Evidence Board remains an advanced, hidden-by-default audit view
 (ADR-0040).
 
+### `clients/node/mindleak-client` (package)
+
+A packaged, installable Node.js client for either MCP stdio server (ADR-0103),
+replacing the pattern of every consumer hand-writing its own JSON-RPC framing —
+the problem this closed first-hand while bootstrapping CompLeak. `McpConnection`
+(`protocol.ts`) is the transport: newline-delimited JSON-RPC request/response
+correlation by id, `notify` for one-way messages, and per-request timeouts,
+independent of any specific server binary. `MindLeakClient` (`client.ts`) wraps
+it with the `initialize` handshake, `open_session` (ADR-0030), and typed
+`callTool`; it spawns the command it is given rather than bundling or assuming a
+server binary. Thin per-domain services (`services/`) — `KnowledgeService`,
+`TaskService`, `EvidenceService`, `GraphService` — wrap individual tool calls
+without adding tool surface of their own. `parseToolResult` (`util.ts`) is the
+shared `structuredContent`-preferring result parser (ADR-0027), extracted as a
+pure function so it is unit-testable without a real subprocess. MindLeak ships
+the generic client and transport; a domain-specific consumer supplies its own
+services against the same protocol, mirroring the ADR-0101 boundary rule of
+"generic belongs here, domain-specific belongs downstream."
+
 ## Data model
 
 - **Nodes** — `symbol` · `artifact` · `execution` · `intent` · `agent` ·
