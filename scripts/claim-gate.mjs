@@ -103,6 +103,51 @@ export const liveClaims = (tasks, agent, now) =>
   );
 
 /**
+ * Commits that landed before any held claim could possibly cover them
+ * (gaps.d/commit-then-claim-puts-evidence-before-its-claim.md).
+ *
+ * `check_conformance` bounds an evidence bundle by `claim_started_at`, so a
+ * commit whose own timestamp is earlier than every claim this session holds
+ * can never be certified, no matter how the evidence window is drawn
+ * afterward — the moment it happened was not authorised by anything. That is
+ * a fact about the commit and the earliest claim alone; a later claim cannot
+ * retroactively cover it, but an earlier one might, so this only flags a
+ * commit that predates ALL held claims, never one merely older than some of
+ * them.
+ *
+ * Deliberately advisory-only and computed here rather than gating on it: the
+ * claim gate above already establishes, at ADR-0048's own choosing, that
+ * commits stay ungated and only publication requires a claim. Blocking here
+ * too would reintroduce exactly the failure the gate's design note warns
+ * against — inventing a task after the fact to get past a check.
+ */
+export const commitsBeforeClaim = (commits, claims) => {
+  const starts = (claims ?? [])
+    .map((claim) => claim.claim_started_at)
+    .filter(Number.isFinite);
+  if (starts.length === 0) return [];
+  const earliestClaim = Math.min(...starts);
+  return (commits ?? []).filter(
+    (commit) =>
+      typeof commit.timestamp === "number" && commit.timestamp < earliestClaim,
+  );
+};
+
+/** The advisory printed when `commitsBeforeClaim` finds any. Never blocks. */
+export const commitBeforeClaimNotice = (commits) => {
+  if (!commits || commits.length === 0) return null;
+  const shas = commits.map((commit) => commit.sha.slice(0, 7)).join(", ");
+  return (
+    `${commits.length} commit(s) on this branch (${shas}) landed before this session's earliest ` +
+    "held claim began. check_conformance will report their evidence as outside the claim window no " +
+    "matter how the bundle is built afterward " +
+    "(gaps.d/commit-then-claim-puts-evidence-before-its-claim.md). This push still succeeds; " +
+    "completing the task may need merge_evidence (verifies a commit from git directly, once it has " +
+    "reached main) or a human resolve, rather than a hand-built evidence window."
+  );
+};
+
+/**
  * The finished task this branch belongs to, when the push only reconciles it.
  *
  * Completing a task releases its claim, so a delivered branch could never be
