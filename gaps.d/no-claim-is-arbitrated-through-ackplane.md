@@ -1,3 +1,21 @@
+- **`crates/ackplane-client` now exists and can call `DelegateClaim` against a
+  real server (`task:727ae37b4f5a`) — NARROWED again 2026-08-18, still OPEN.**
+  The paragraph below is now stale on one point: "no such path, no such
+  dependency in any `Cargo.toml`" is no longer true. What is still true, and
+  is now the entire residual gap: `lodestar-core` and `lodestar-mcp` do not
+  call it. `resolve_coordination_mode` can answer `Federated` (behind the
+  opt-in `federation-client` cargo feature), but nothing reads that answer to
+  route an actual `task_claim`/`renew`/`release`/`recover` call to Ackplane —
+  `crates/lodestar-core/src/store/coordination/claim.rs` still decides every
+  claim locally regardless of declared mode. A `federated` resolution today
+  means "a client exists and this deployment's arbiter is reachable," exactly
+  the reachability-as-arbitration gap this fragment warned an implementer
+  against shipping alone — it is not shipped alone here because nothing yet
+  treats that resolution as a reason to stop arbitrating locally. Wiring
+  `lodestar-core`'s claim call sites to route through `ClaimClient` when
+  `Federated`, and to treat the granted lease as authoritative over local
+  state (ADR-0096 decision 2), is the next concrete step and its own task.
+
 - **No repository-side client calls Ackplane's claim arbitration, so resolving
   `federated` would still report an authority that is never exercised — NARROWED
   2026-08-18, still OPEN.** The prior evidence table below is stale: it said

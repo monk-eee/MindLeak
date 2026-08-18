@@ -19,5 +19,11 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 
+[features]
+# Off by default (ADR-0094 decision 1's standalone product mode): a
+# repository-local build carries no Ackplane client or async network stack
+# unless this is explicitly requested.
+federation-client = ["ackplane-core/federation-client"]
+
 [dev-dependencies]
 mindleak-model = { path = "../mindleak-model", features = ["test-support"] }
