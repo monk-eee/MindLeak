@@ -17,6 +17,7 @@ use mindleak_storage::{
 
 fn main() -> anyhow::Result<()> {
     mindleak_core::telemetry::init_tracing();
+    let workspace = resolve_workspace();
     // Which arbiter owns this repository's coordination (ADR-0082), settled
     // once here rather than per call, and before any store is opened.
     //
@@ -26,7 +27,15 @@ fn main() -> anyhow::Result<()> {
     // refuses every tool call, which keeps the ADR-0082 guarantee — a process
     // that arbitrates nothing cannot be the second arbiter — while putting the
     // reason where the agent will actually read it.
-    let coordination = ackplane_core::resolve_coordination_mode(|name| std::env::var(name).ok());
+    let coordination = ackplane_core::resolve_coordination_mode(
+        |name| std::env::var(name).ok(),
+        || {
+            mindleak_storage::read_local_git_config(
+                &workspace,
+                ackplane_core::COORDINATION_MODE_GIT_CONFIG_KEY,
+            )
+        },
+    );
     let coordination_refusal = coordination.as_ref().err().map(|error| {
         tracing::error!(%error, "refusing to coordinate");
         error.refusal_notice()
@@ -37,7 +46,6 @@ fn main() -> anyhow::Result<()> {
             .map_or("refused", |mode| mode.as_str()),
         "resolved coordination mode"
     );
-    let workspace = resolve_workspace();
     let stale_build = report_build_identity(&workspace);
     // Observed now, while the file on disk is still the one being executed.
     // Asked again on every open_session, because a swap happens after this
