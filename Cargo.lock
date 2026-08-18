@@ -23,6 +23,7 @@ dependencies = [
  "ackplane-protocol",
  "ackplane-server",
  "ed25519-dalek",
+ "getrandom 0.2.17",
  "thiserror",
  "time",
  "tokio",
@@ -943,13 +944,22 @@ dependencies = [
 name = "lodestar-mcp"
 version = "0.1.7-alpha"
 dependencies = [
+ "ackplane-client",
  "ackplane-core",
+ "ackplane-protocol",
+ "ackplane-server",
  "anyhow",
+ "ed25519-dalek",
  "lodestar-core",
  "mindleak-session",
  "mindleak-storage",
  "serde",
  "serde_json",
+ "time",
+ "tokio",
+ "tokio-postgres",
+ "tokio-stream",
+ "tonic",
 ]
 
 [[package]]

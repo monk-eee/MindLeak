@@ -131,7 +131,13 @@ scope, and heartbeat), `transitions` (block/reopen/abandon/resolve and progressi
 handoffs), `questions` (ask/answer, pause/resume, waits, and thread notes),
 `conformance` (audit recording and checked transitions), and `query` (board,
 next-task, and existing-work reads). Audited legacy/session recovery remains in
-the already-separate `store/claim_transfer.rs` module.
+the already-separate `store/claim_transfer.rs` module. For a federated
+repository (ADR-0096), `claim`/`renew`/`release`/`recover` and `check_claim_overlap`
+route through two injected seams — `FederatedClaimAuthority` and
+`FederatedClaimSource` — instead of deciding locally; `None` (the default) is
+`CoordinationMode::Local`, unchanged. The crate itself stays local and
+network-free either way: only whichever binary composes it with a live,
+authenticated `ackplane-client` gives either seam a real implementation.
 Facade behavior is grouped under
 `facade/`: `constitution`, `executive`, `design`, `design_materialization`,
 `conformance/`, `controls`, `amendments`, `waivers`, `advice`, `fleet`,
@@ -263,11 +269,26 @@ plane dependency back). `ackplane-core` links it only behind the
 `lodestar-mcp` remain network- and async-runtime-free in their default,
 standalone build (ADR-0094 decision 1).
 
-What this crate does not yet do: route an actual claim through Ackplane.
-`lodestar-core`'s claim compare-and-swap still decides every claim locally
-regardless of the resolved coordination mode — wiring that is deliberately
-its own follow-on task, tracked in
+What this crate does not do: decide *when* to call itself, or what to do with
+the answer. `lodestar-mcp`'s `federation.rs` (built only behind
+`federation-client`) is the one place both `lodestar-core`'s
+`FederatedClaimAuthority` trait and this crate's `ClaimClient` are both
+reachable: it resolves this repository's federated identity (endpoint,
+tenant, repository, node, signing key) from explicit configuration, signs
+every request with `ackplane-client::authenticate`, bridges each synchronous
+call to this crate's async methods with a fresh current-thread runtime
+(mirroring `compiled_federation_readiness`), and projects a grant into the
+local task cache through `lodestar-core`'s cache-projection APIs. A rejection
+or transport failure never falls back to local arbitration — it resolves to
+the same "lost the CAS" outcome a local claim would (rejection) or an
+`Err` naming the transport failure (unreachable), and either way the local
+row is untouched. The residual gap this closed is narrowed in
 [`gaps.d/no-claim-is-arbitrated-through-ackplane.md`](../gaps.d/no-claim-is-arbitrated-through-ackplane.md).
+The node signing key itself is sourced from an explicit environment variable
+for now — the same interim posture already accepted here for
+`MINDLEAK_LLM_API_KEY` — pending the OS-credential-facility storage ADR-0085
+decision 2 describes; see
+[`gaps.d/the-node-signing-key-has-no-credential-facility-yet.md`](../gaps.d/the-node-signing-key-has-no-credential-facility-yet.md).
 
 ### `ackplane-server` (binary)
 

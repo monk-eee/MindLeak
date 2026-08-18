@@ -7,7 +7,8 @@ use crate::llm::{ModelCallProvenance, ModelCallSource};
 use crate::stalls::{stalls, Stall, StallKind};
 use crate::{
     now_unix, BoardFinding, ClaimOverlap, ClaimOverlapReport, ClaimTransfer, ClaimWindow,
-    HumanQuestion, Lodestar, LodestarError, Result, ReworkReport, Task, TaskQa, TaskScope,
+    FederatedClaimOutcome, HumanQuestion, Lodestar, LodestarError, Result, ReworkReport, Task,
+    TaskEventKind, TaskQa, TaskScope,
 };
 
 /// One task a decomposition resolved to, with additive model-call provenance.
@@ -235,6 +236,14 @@ impl Lodestar {
     }
 
     /// Claim work while replacing only explicitly supplied scope fields.
+    ///
+    /// Routes through a federated repository's Ackplane claim CAS when
+    /// [`with_federated_claim_authority`](Self::with_federated_claim_authority)
+    /// was called (ADR-0096 clauses 2-4): Ackplane is the sole authority, so
+    /// no local CAS decision runs before or after the remote request. A
+    /// rejection or transport failure leaves the local row untouched — the
+    /// former resolves to `Ok(false)` exactly like a lost local CAS, the
+    /// latter surfaces as `Err` rather than being silently treated as a loss.
     pub fn claim_task_with_partial_scope(
         &self,
         id: &str,
@@ -244,6 +253,32 @@ impl Lodestar {
         symbols: Option<&[String]>,
     ) -> Result<bool> {
         let agent = self.resolve_agent(agent)?;
+        if let Some(authority) = &self.federated_claim_authority {
+            let branch = self.store.declared_branch(Some(agent))?;
+            let existing = self.store.task_scope(id)?;
+            let paths = paths.map(<[String]>::to_vec).unwrap_or(existing.paths);
+            let symbols = symbols.map(<[String]>::to_vec).unwrap_or(existing.symbols);
+            return match authority.delegate(
+                id,
+                agent,
+                branch.as_deref(),
+                lease_secs,
+                &paths,
+                &symbols,
+            )? {
+                FederatedClaimOutcome::Granted(grant) => {
+                    self.store.apply_federated_grant(
+                        id,
+                        agent,
+                        &grant,
+                        TaskEventKind::Claimed,
+                        now_unix(),
+                    )?;
+                    Ok(true)
+                }
+                FederatedClaimOutcome::Rejected { .. } => Ok(false),
+            };
+        }
         self.store
             .claim_task_with_partial_scope(id, agent, lease_secs, paths, symbols, now_unix())
     }
@@ -303,8 +338,25 @@ impl Lodestar {
             .check_claim_overlap(scope, exclude_task_id, requester, now_unix())
     }
 
+    /// Extend a still-live lease. Routes through Ackplane in federated mode,
+    /// same rules as [`claim_task_with_partial_scope`](Self::claim_task_with_partial_scope).
     pub fn renew_lease(&self, id: &str, agent: &str, lease_secs: i64) -> Result<bool> {
         let agent = self.resolve_agent(agent)?;
+        if let Some(authority) = &self.federated_claim_authority {
+            return match authority.renew(id, agent, lease_secs)? {
+                FederatedClaimOutcome::Granted(grant) => {
+                    self.store.apply_federated_grant(
+                        id,
+                        agent,
+                        &grant,
+                        TaskEventKind::LeaseRenewed,
+                        now_unix(),
+                    )?;
+                    Ok(true)
+                }
+                FederatedClaimOutcome::Rejected { .. } => Ok(false),
+            };
+        }
         self.store.renew_lease(id, agent, lease_secs, now_unix())
     }
 
@@ -419,11 +471,26 @@ impl Lodestar {
         }
     }
 
+    /// Hand the claim back to open. Routes through Ackplane in federated
+    /// mode: a live lease is holed immediately rather than deleted (ADR-0096
+    /// clause 6), same as the local behavior it replaces.
     pub fn release_task(&self, id: &str, agent: &str) -> Result<bool> {
         let agent = self.resolve_agent(agent)?;
+        if let Some(authority) = &self.federated_claim_authority {
+            let released = authority.release(id, agent)?;
+            if released {
+                self.store.apply_federated_release(id, agent, now_unix())?;
+            }
+            return Ok(released);
+        }
         self.store.release_task(id, agent, now_unix())
     }
 
+    /// Take over a stranded claim. Routes through Ackplane in federated mode,
+    /// recovering only an expired lease (ADR-0096 clause 6): the wire
+    /// contract has no reviewer field, so a paused-task transfer before its
+    /// grace expires — the one path that needs a human reviewer locally —
+    /// is refused rather than silently attempted without one.
     pub fn recover_claim(
         &self,
         id: &str,
@@ -435,6 +502,40 @@ impl Lodestar {
     ) -> Result<bool> {
         let (agent, name) = recovering;
         let agent = self.resolve_agent(agent)?;
+        if let Some(authority) = &self.federated_claim_authority {
+            if reviewer.is_some() {
+                return Err(LodestarError::Federated(
+                    "federated recovery does not yet support a paused-task transfer with a \
+                     human reviewer; only an expired lease can be recovered (ADR-0096 clause 6)"
+                        .to_string(),
+                ));
+            }
+            let branch = self.store.declared_branch(Some(agent))?;
+            let scope = self.store.task_scope(id)?;
+            let request = crate::FederatedClaimRecoverRequest {
+                task_id: id.to_string(),
+                expected_owner: expected_owner.to_string(),
+                owner: agent.to_string(),
+                branch,
+                reason: reason.to_string(),
+                lease_secs,
+                paths: scope.paths,
+                symbols: scope.symbols,
+            };
+            return match authority.recover(&request)? {
+                FederatedClaimOutcome::Granted(grant) => {
+                    self.store.apply_federated_grant(
+                        id,
+                        agent,
+                        &grant,
+                        TaskEventKind::ClaimRecovered,
+                        now_unix(),
+                    )?;
+                    Ok(true)
+                }
+                FederatedClaimOutcome::Rejected { .. } => Ok(false),
+            };
+        }
         self.store.recover_claim_authorized(
             id,
             expected_owner,
@@ -693,7 +794,7 @@ mod tests {
     use crate::error::ModelFailureReason;
     use crate::facade::test_support::engine;
     use crate::llm::ModelCallSource;
-    use crate::{GoalKind, TaskScope, TaskStatus};
+    use crate::{GoalKind, LodestarError, TaskScope, TaskStatus};
 
     /// The regression case: four tasks titled "Run the merge queue ourselves"
     /// against one goal, and six titled "Carry controls across an amendment"
@@ -846,6 +947,287 @@ mod tests {
         assert_eq!(report.claims.len(), 1);
         assert_eq!(report.claims[0].task_id, "task:remote-1");
         assert_eq!(report.claims[0].owner, "remote-agent");
+    }
+
+    /// Fixed-answer `FederatedClaimAuthority`: one of `delegate`/`renew`/
+    /// `recover` returns `outcome` (cloned each call), `release` reports
+    /// whether `outcome` was a grant, and every call is counted so a test can
+    /// prove the remote boundary was (or was not) actually reached rather than
+    /// inferring it from the result alone.
+    struct FakeFederatedAuthority {
+        outcome: std::result::Result<crate::FederatedClaimOutcome, String>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FakeFederatedAuthority {
+        fn granting(grant: crate::FederatedClaimGrant) -> Self {
+            Self {
+                outcome: Ok(crate::FederatedClaimOutcome::Granted(grant)),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn rejecting(diagnostic: &str) -> Self {
+            Self {
+                outcome: Ok(crate::FederatedClaimOutcome::Rejected {
+                    diagnostic: diagnostic.to_string(),
+                }),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn unreachable(detail: &str) -> Self {
+            Self {
+                outcome: Err(detail.to_string()),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn record_call(&self) -> crate::Result<crate::FederatedClaimOutcome> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.outcome.clone().map_err(LodestarError::Federated)
+        }
+    }
+
+    impl crate::FederatedClaimAuthority for FakeFederatedAuthority {
+        fn delegate(
+            &self,
+            _task_id: &str,
+            _owner: &str,
+            _branch: Option<&str>,
+            _lease_secs: i64,
+            _paths: &[String],
+            _symbols: &[String],
+        ) -> crate::Result<crate::FederatedClaimOutcome> {
+            self.record_call()
+        }
+
+        fn renew(
+            &self,
+            _task_id: &str,
+            _owner: &str,
+            _lease_secs: i64,
+        ) -> crate::Result<crate::FederatedClaimOutcome> {
+            self.record_call()
+        }
+
+        fn release(&self, _task_id: &str, _owner: &str) -> crate::Result<bool> {
+            match self.record_call()? {
+                crate::FederatedClaimOutcome::Granted(_) => Ok(true),
+                crate::FederatedClaimOutcome::Rejected { .. } => Ok(false),
+            }
+        }
+
+        fn recover(
+            &self,
+            _request: &crate::FederatedClaimRecoverRequest,
+        ) -> crate::Result<crate::FederatedClaimOutcome> {
+            self.record_call()
+        }
+    }
+
+    fn federated_grant() -> crate::FederatedClaimGrant {
+        crate::FederatedClaimGrant {
+            owner: "remote-agent".to_string(),
+            branch: Some("feat/remote".to_string()),
+            claim_started_at: 500,
+            lease_expires_at: 800,
+            claim_lapses: 3,
+            paths: vec!["src/lib.rs".to_string()],
+            symbols: vec!["symbol:src/lib.rs:run".to_string()],
+        }
+    }
+
+    /// ADR-0096 clauses 2-4: without `with_federated_claim_authority`,
+    /// `claim_task_with_partial_scope` never invokes any remote boundary —
+    /// there is none configured, so this is unchanged local CAS behavior.
+    #[test]
+    fn claim_task_with_partial_scope_without_a_federated_authority_is_unchanged() {
+        let e = engine();
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "Edit the tools", "done").unwrap();
+
+        let won = e
+            .claim_task_with_partial_scope(&task.id, "agent-a", 300, None, None)
+            .unwrap();
+        assert!(won);
+    }
+
+    /// A grant updates the local cache exactly with what Ackplane returned —
+    /// owner, branch, claim window, and scope — rather than anything the
+    /// local CAS would itself have computed (ADR-0096 clause 3).
+    #[test]
+    fn claim_task_with_partial_scope_with_a_federated_authority_applies_the_grant_exactly() {
+        let authority = std::sync::Arc::new(FakeFederatedAuthority::granting(federated_grant()));
+        let e = engine().with_federated_claim_authority(authority.clone());
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "Edit the tools", "done").unwrap();
+
+        let won = e
+            .claim_task_with_partial_scope(&task.id, "local-agent", 300, None, None)
+            .unwrap();
+        assert!(won);
+        assert_eq!(authority.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let after = e.store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(after.owner.as_deref(), Some("remote-agent"));
+        assert_eq!(after.branch.as_deref(), Some("feat/remote"));
+        assert_eq!(after.claim_started_at, Some(500));
+        assert_eq!(after.lease_expires_at, Some(800));
+        let scope = e.task_scope(&task.id).unwrap();
+        assert_eq!(scope.paths, vec!["src/lib.rs".to_string()]);
+        assert_eq!(scope.symbols, vec!["symbol:src/lib.rs:run".to_string()]);
+    }
+
+    /// A rejection resolves like a lost local CAS (`Ok(false)`) and leaves the
+    /// task row untouched — never falls back to deciding locally (ADR-0096
+    /// clause 3).
+    #[test]
+    fn claim_task_with_partial_scope_with_a_federated_authority_rejection_preserves_local_state() {
+        let authority = std::sync::Arc::new(FakeFederatedAuthority::rejecting("already held"));
+        let e = engine().with_federated_claim_authority(authority);
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "Edit the tools", "done").unwrap();
+        let before = e.store.get_task(&task.id).unwrap().unwrap();
+
+        let won = e
+            .claim_task_with_partial_scope(&task.id, "local-agent", 300, None, None)
+            .unwrap();
+        assert!(!won);
+        let after = e.store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(before.owner, after.owner);
+        assert_eq!(before.status, after.status);
+        assert_eq!(before.lease_expires_at, after.lease_expires_at);
+    }
+
+    /// A transport/protocol failure is `Err`, distinct from a business
+    /// rejection, and never silently arbitrated locally (ADR-0096 clause 3's
+    /// "actionable typed refusal").
+    #[test]
+    fn claim_task_with_partial_scope_with_an_unreachable_authority_errors_and_preserves_state() {
+        let authority = std::sync::Arc::new(FakeFederatedAuthority::unreachable("connect refused"));
+        let e = engine().with_federated_claim_authority(authority);
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "Edit the tools", "done").unwrap();
+        let before = e.store.get_task(&task.id).unwrap().unwrap();
+
+        let error = e
+            .claim_task_with_partial_scope(&task.id, "local-agent", 300, None, None)
+            .unwrap_err();
+        assert!(matches!(error, LodestarError::Federated(_)));
+        let after = e.store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(before.status, after.status);
+        assert_eq!(before.owner, after.owner);
+    }
+
+    /// `renew_lease` routes through the same authority (ADR-0096 clause 2).
+    #[test]
+    fn renew_lease_with_a_federated_authority_applies_the_grant() {
+        let authority = std::sync::Arc::new(FakeFederatedAuthority::granting(federated_grant()));
+        let e = engine().with_federated_claim_authority(authority.clone());
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "Edit the tools", "done").unwrap();
+
+        assert!(e.renew_lease(&task.id, "local-agent", 300).unwrap());
+        assert_eq!(authority.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let after = e.store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(after.lease_expires_at, Some(800));
+    }
+
+    /// `release_task` routes through the authority and, on success, clears the
+    /// local cache to `open` exactly as a local release does (ADR-0096
+    /// clause 3, clause 6's "holed, not extended").
+    #[test]
+    fn release_task_with_a_federated_authority_clears_the_local_cache() {
+        let authority = std::sync::Arc::new(FakeFederatedAuthority::granting(federated_grant()));
+        let e = engine().with_federated_claim_authority(authority.clone());
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "Edit the tools", "done").unwrap();
+
+        assert!(e.release_task(&task.id, "local-agent").unwrap());
+        assert_eq!(authority.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let after = e.store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(after.status, TaskStatus::Open);
+        assert_eq!(after.owner, None);
+        assert_eq!(after.lease_expires_at, None);
+    }
+
+    /// A federated release that Ackplane refuses (already expired, foreign
+    /// owner) is a no-op locally too — nothing to clear, matching the local
+    /// `release_task`'s own no-op semantics.
+    #[test]
+    fn release_task_with_a_federated_authority_rejection_is_a_no_op() {
+        let authority = std::sync::Arc::new(FakeFederatedAuthority::rejecting("not the owner"));
+        let e = engine().with_federated_claim_authority(authority);
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "Edit the tools", "done").unwrap();
+
+        assert!(!e.release_task(&task.id, "local-agent").unwrap());
+    }
+
+    /// `recover_claim` routes through the authority for the plain (no human
+    /// reviewer) path (ADR-0096 clause 6).
+    #[test]
+    fn recover_claim_with_a_federated_authority_applies_the_grant() {
+        let authority = std::sync::Arc::new(FakeFederatedAuthority::granting(federated_grant()));
+        let e = engine().with_federated_claim_authority(authority.clone());
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "Edit the tools", "done").unwrap();
+
+        let won = e
+            .recover_claim(
+                &task.id,
+                "stranded-agent",
+                ("local-agent", "Local Agent"),
+                "lease expired",
+                None,
+                300,
+            )
+            .unwrap();
+        assert!(won);
+        assert_eq!(authority.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// The wire contract has no reviewer field (ADR-0096 clause 7 defers it),
+    /// so a federated recovery naming a human reviewer is refused rather than
+    /// silently attempted without one — the authority is never even called.
+    #[test]
+    fn recover_claim_with_a_federated_authority_and_a_reviewer_is_refused() {
+        let authority = std::sync::Arc::new(FakeFederatedAuthority::granting(federated_grant()));
+        let e = engine().with_federated_claim_authority(authority.clone());
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "Edit the tools", "done").unwrap();
+
+        let error = e
+            .recover_claim(
+                &task.id,
+                "stranded-agent",
+                ("local-agent", "Local Agent"),
+                "paused past grace",
+                Some("a-human"),
+                300,
+            )
+            .unwrap_err();
+        assert!(matches!(error, LodestarError::Federated(_)));
+        assert_eq!(authority.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     /// Asking about nothing must not answer "nothing exists" — that reads as a

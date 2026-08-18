@@ -13,44 +13,11 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
 use crate::signing_keys::KeyResolution;
 
-/// Domain separation for claim-request signatures.
-const CLAIM_DOMAIN: &[u8] = b"mindleak.ackplane.v1.claim\0";
-
-/// The exact bytes a node signs to authenticate a claim request.
-///
-/// Binds the authentication to this specific claim's identity -- tenant,
-/// repository, task, and the owner it is requesting on behalf of -- so a
-/// signature valid for one claim can never verify against another, even from
-/// the same key. Every field is length-delimited, following
-/// `envelope_signature::envelope_signing_bytes`.
-pub fn claim_signing_bytes(
-    tenant_id: &str,
-    repository_id: &str,
-    task_id: &str,
-    owner_id: &str,
-    authentication: &v1::ClaimAuthentication,
-) -> Vec<u8> {
-    let fields: [&[u8]; 8] = [
-        authentication.signing_key_id.as_bytes(),
-        authentication.node_id.as_bytes(),
-        authentication.signed_at.as_bytes(),
-        &authentication.nonce,
-        tenant_id.as_bytes(),
-        repository_id.as_bytes(),
-        task_id.as_bytes(),
-        owner_id.as_bytes(),
-    ];
-
-    let mut bytes = Vec::with_capacity(
-        CLAIM_DOMAIN.len() + fields.iter().map(|field| 4 + field.len()).sum::<usize>(),
-    );
-    bytes.extend_from_slice(CLAIM_DOMAIN);
-    for field in fields {
-        bytes.extend_from_slice(&(field.len() as u32).to_be_bytes());
-        bytes.extend_from_slice(field);
-    }
-    bytes
-}
+/// The signed-bytes contract lives in `ackplane-protocol` (the lowest layer
+/// both this verifier and `ackplane-client`'s request signer depend on), so
+/// the two sides can never construct incompatible serializations of the same
+/// fields. Re-exported here so existing callers of this module are unaffected.
+pub use ackplane_protocol::claim_auth::claim_signing_bytes;
 
 /// Why a claim request was refused at the trust boundary.
 ///
