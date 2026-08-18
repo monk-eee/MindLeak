@@ -305,6 +305,35 @@ pub struct ClaimOverlapReport {
     pub claims: Vec<ClaimOverlap>,
 }
 
+/// One active claim as reported by a federated repository's Ackplane claim
+/// registry (ADR-0096 clause 5) — the federated counterpart to reading a row
+/// from the local `tasks`/`task_scopes` tables.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederatedClaim {
+    pub task_id: String,
+    pub owner: String,
+    /// The branch Ackplane recorded for the owner, if any.
+    pub owner_branch: Option<String>,
+    pub lease_expires_at: i64,
+    pub paths: Vec<String>,
+    pub symbols: Vec<String>,
+}
+
+/// Where `check_federated_claim_overlap` reads active claims from when a
+/// repository's coordination mode is federated (ADR-0096 clause 5).
+///
+/// A seam, not an implementation: `lodestar-core` stays local and
+/// stdio-only (ADR-0004), so the concrete Ackplane RPC client lives outside
+/// this crate. Tests inject a fixed in-memory implementation; a real one is
+/// wired in by whichever binary composes this store with a live client.
+pub trait FederatedClaimSource: Send + Sync {
+    /// Every currently-active claim in the federated repository, excluding
+    /// `exclude_task_id` if given. Ackplane decides what "active" means
+    /// (whether a lease has actually expired); this seam does not filter or
+    /// second-guess that answer.
+    fn active_claims(&self, exclude_task_id: Option<&str>) -> crate::Result<Vec<FederatedClaim>>;
+}
+
 /// One durable, append-only entry in a task's dialogue thread (ADR-0020,
 /// ADR-0046): a `needs_input` question from the owning agent, its `answer`, or
 /// a `note` recording why a state change parked or blocked the work.

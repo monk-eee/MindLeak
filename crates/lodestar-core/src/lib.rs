@@ -30,6 +30,7 @@ mod util;
 pub mod waiver;
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use design::{
@@ -46,10 +47,10 @@ pub use model::{
     ClaimWindow, ClauseCoverage, ConformanceCheck, ConformanceCheckReference, ConformanceEvidence,
     ConformanceRecord, ConformanceResult, ConstitutionProposal, ConstitutionState,
     ConstitutionStatus, ConstitutionVersion, EvidenceProvenance, ExternalGoalImportDisposition,
-    ExternalGoalImportOutcome, ExternalGoalImportResult, ExternalGoalRecord, Goal, GoalKind,
-    GoalStatus, GoverningClause, HumanQuestion, Knowledge, KnowledgeReach, OverlapSignal,
-    RepeatedTitle, ReworkReport, SignalPromotion, Task, TaskEvent, TaskEventKind, TaskQa,
-    TaskReceipt, TaskScope, TaskStatus, Verdict,
+    ExternalGoalImportOutcome, ExternalGoalImportResult, ExternalGoalRecord, FederatedClaim,
+    FederatedClaimSource, Goal, GoalKind, GoalStatus, GoverningClause, HumanQuestion, Knowledge,
+    KnowledgeReach, OverlapSignal, RepeatedTitle, ReworkReport, SignalPromotion, Task, TaskEvent,
+    TaskEventKind, TaskQa, TaskReceipt, TaskScope, TaskStatus, Verdict,
 };
 pub use policy::{
     common_core_pack, fleet_delivery_pack, ConstitutionPack, PackClause, PackClauseDisposition,
@@ -79,6 +80,11 @@ pub struct Lodestar {
     /// against whatever directory the server happened to start in is how you
     /// prove a commit landed in somebody else's checkout.
     workspace_root: Option<String>,
+    /// Where `check_claim_overlap` reads active claims from when set
+    /// (ADR-0096 clause 5). `None` (the default) is `CoordinationMode::Local`:
+    /// today's local-`tasks`-table behavior, unchanged. The concrete Ackplane
+    /// client lives outside this crate; tests inject a fixed implementation.
+    federated_claim_source: Option<Arc<dyn FederatedClaimSource>>,
     #[cfg(test)]
     test_judge: Option<Box<TestJudge>>,
 }
@@ -92,6 +98,7 @@ impl Lodestar {
             store: LodestarStore::new(db::open(path)?),
             llm: LlmClient::default(),
             workspace_root: None,
+            federated_claim_source: None,
             #[cfg(test)]
             test_judge: None,
         })
@@ -102,6 +109,7 @@ impl Lodestar {
             store: LodestarStore::new(db::open_in_memory()?),
             llm: LlmClient::default(),
             workspace_root: None,
+            federated_claim_source: None,
             #[cfg(test)]
             test_judge: None,
         })
@@ -118,6 +126,15 @@ impl Lodestar {
     /// deterministic no-model fallback regardless of any local server).
     pub fn with_llm(mut self, llm: LlmClient) -> Self {
         self.llm = llm;
+        self
+    }
+
+    /// Route `check_claim_overlap` through a federated repository's Ackplane
+    /// claim registry instead of the local `tasks` table (ADR-0096 clause 5).
+    /// Not calling this at all is `CoordinationMode::Local` and leaves
+    /// `check_claim_overlap` exactly as it was.
+    pub fn with_federated_claim_source(mut self, source: Arc<dyn FederatedClaimSource>) -> Self {
+        self.federated_claim_source = Some(source);
         self
     }
 

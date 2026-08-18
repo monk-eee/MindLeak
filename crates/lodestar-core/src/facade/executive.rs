@@ -281,12 +281,24 @@ impl Lodestar {
     /// `requester` is optional so an agent that never registered a session still
     /// gets today's answer — the signal degrades to `undeclared` rather than the
     /// check refusing to run (ADR-0035 decision 5).
+    ///
+    /// Routes through a federated repository's Ackplane claim registry when
+    /// [`with_federated_claim_source`](Self::with_federated_claim_source) was
+    /// called (ADR-0096 clause 5); otherwise unchanged local-table behavior.
     pub fn check_claim_overlap(
         &self,
         scope: &TaskScope,
         exclude_task_id: Option<&str>,
         requester: Option<&str>,
     ) -> Result<ClaimOverlapReport> {
+        if let Some(source) = &self.federated_claim_source {
+            return self.store.check_federated_claim_overlap(
+                source.as_ref(),
+                scope,
+                exclude_task_id,
+                requester,
+            );
+        }
         self.store
             .check_claim_overlap(scope, exclude_task_id, requester, now_unix())
     }
@@ -766,6 +778,74 @@ mod tests {
             .existing_work(None, &["editors/vscode/src/util.ts".to_string()])
             .unwrap();
         assert!(miss.is_empty(), "an unrelated file is not");
+    }
+
+    /// ADR-0096 clause 5: without `with_federated_claim_source`, nothing about
+    /// `check_claim_overlap` changes - the local-table behaviour it always had.
+    #[test]
+    fn check_claim_overlap_without_a_federated_source_is_unchanged() {
+        let e = engine();
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "Edit the tools", "done").unwrap();
+        let scope = TaskScope {
+            paths: vec!["src/lib.rs".to_string()],
+            symbols: Vec::new(),
+        };
+        e.claim_task_with_scope(&task.id, "agent-a", 300, &scope)
+            .unwrap();
+
+        let report = e.check_claim_overlap(&scope, None, None).unwrap();
+        assert_eq!(report.claims.len(), 1);
+        assert_eq!(report.claims[0].task_id, task.id);
+    }
+
+    struct FakeFederatedSource(Vec<crate::FederatedClaim>);
+
+    impl crate::FederatedClaimSource for FakeFederatedSource {
+        fn active_claims(
+            &self,
+            exclude_task_id: Option<&str>,
+        ) -> crate::Result<Vec<crate::FederatedClaim>> {
+            Ok(self
+                .0
+                .iter()
+                .filter(|claim| Some(claim.task_id.as_str()) != exclude_task_id)
+                .cloned()
+                .collect())
+        }
+    }
+
+    /// `with_federated_claim_source` routes `check_claim_overlap` through the
+    /// injected source instead - a local claim with the identical scope, made
+    /// in the SAME engine, is invisible (ADR-0096 clause 5).
+    #[test]
+    fn check_claim_overlap_with_a_federated_source_reads_from_it_not_the_local_table() {
+        let scope = TaskScope {
+            paths: vec!["src/lib.rs".to_string()],
+            symbols: Vec::new(),
+        };
+        let source = std::sync::Arc::new(FakeFederatedSource(vec![crate::FederatedClaim {
+            task_id: "task:remote-1".to_string(),
+            owner: "remote-agent".to_string(),
+            owner_branch: None,
+            lease_expires_at: 60,
+            paths: scope.paths.clone(),
+            symbols: Vec::new(),
+        }]));
+        let e = engine().with_federated_claim_source(source);
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let local = e.create_task(&goal.id, "Edit the tools", "done").unwrap();
+        e.claim_task_with_scope(&local.id, "agent-a", 300, &scope)
+            .unwrap();
+
+        let report = e.check_claim_overlap(&scope, None, None).unwrap();
+        assert_eq!(report.claims.len(), 1);
+        assert_eq!(report.claims[0].task_id, "task:remote-1");
+        assert_eq!(report.claims[0].owner, "remote-agent");
     }
 
     /// Asking about nothing must not answer "nothing exists" — that reads as a
