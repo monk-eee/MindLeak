@@ -1,0 +1,39 @@
+- **The credential-facility-backed `ClaimSigner` has only ever been verified
+  by hand, on Windows, once — OBSERVED 2026-08-18, left OPEN.**
+  `CredentialFacilitySigner` (`crates/ackplane-client/src/auth.rs`, ADR-0100
+  decision 5) is real, shipped code that stores/loads a signing seed through
+  the `keyring` crate, which claims uniform support for Windows Credential
+  Manager, macOS Keychain, and Linux Secret Service. Its own regression test,
+  `a_stored_seed_round_trips_through_the_real_credential_facility`, is
+  deliberately written to skip (not fail) when the facility is unavailable in
+  the running environment — the same pattern this repo already uses for its
+  Postgres-gated `ackplane-server` tests.
+
+  The CI matrix (`.github/workflows/ci.yml`) runs only `ubuntu-latest` and
+  `windows-latest`; there is no `macos-latest` job anywhere in this
+  repository. GitHub's hosted `ubuntu-latest` runners have no D-Bus session
+  bus / Secret Service daemon running by default, so on every CI run this
+  test almost certainly hits its own skip branch there and never actually
+  exercises the store/load round trip. The Windows CI job may or may not
+  have a usable Credential Manager in that sandboxed context either --
+  unconfirmed either way. The one time this test has demonstrably *not*
+  skipped and produced a real pass was a manual, interactive run on this
+  developer's own Windows machine, during the same session the feature was
+  written.
+
+  Impact: `resolve_identity` in `lodestar-mcp::federation` now *defaults* to
+  `SignerSource::CredentialFacility` for any federated deployment that
+  hasn't set `MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED` explicitly -- meaning
+  the default, most-likely-to-be-used code path in this feature has never
+  been proven to work in the project's own CI on any platform, and never at
+  all on macOS. A regression in the keyring integration (a `keyring` crate
+  upgrade changing its Linux backend selection, for instance) could land and
+  merge with every check green, because the check that would catch it always
+  reports "skipped" rather than "passed" or "failed" in this CI environment.
+
+  Left OPEN: no fix attempted this run. Closing it needs either (a) a CI job
+  that installs/starts a real Secret Service provider (e.g. `gnome-keyring`
+  headless) on the Linux runner so the existing test stops skipping there,
+  or (b) an explicit, visible CI summary line distinguishing "skipped: no
+  facility" from "passed: round-tripped for real," so a permanently-skipping
+  gate is at least legible rather than indistinguishable from a passing one.
