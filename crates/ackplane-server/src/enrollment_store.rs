@@ -1061,6 +1061,10 @@ mod tests {
             approved_by: "administrator-test".to_owned(),
         };
         let now = SystemTime::now();
+        // Unique per run: `enrollment_receipts` carries a bare primary key on
+        // this id, so a fixed literal collides on a container's second run
+        // (gaps.d/ackplane-server-postgres-tests-are-not-isolated-across-runs.md).
+        let receipt_id = format!("receipt-original-{}", crate::test_support::uuid_ish());
         let mut store = EnrollmentStore::connect(&database_url)
             .await
             .expect("test database connects");
@@ -1090,7 +1094,7 @@ mod tests {
             signature: signature.to_bytes().to_vec(),
         };
         let first = store
-            .activate(&activation, "receipt-original", "signing-key-original", now)
+            .activate(&activation, &receipt_id, "signing-key-original", now)
             .await
             .expect("valid proof activates enrollment");
         let replay = store
@@ -1111,12 +1115,12 @@ mod tests {
                 EnrollmentActivationResult {
                     request_id: enrollment.request_id.clone(),
                     state: EnrollmentState::Activating,
-                    enrollment_receipt_id: "receipt-original".to_owned(),
+                    enrollment_receipt_id: receipt_id.clone(),
                 },
                 EnrollmentActivationResult {
                     request_id: enrollment.request_id,
                     state: EnrollmentState::Activating,
-                    enrollment_receipt_id: "receipt-original".to_owned(),
+                    enrollment_receipt_id: receipt_id,
                 },
             )
         );
