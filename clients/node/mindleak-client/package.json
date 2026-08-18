@@ -1,0 +1,20 @@
+{
+  "name": "mindleak-client",
+  "version": "0.1.0",
+  "description": "Typed Node.js client for MindLeak's mindleak-mcp and lodestar-mcp stdio JSON-RPC servers (ADR-0103).",
+  "type": "module",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "pretest": "npm run build",
+    "test": "node --test dist/test/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.4"
+  }
+}
