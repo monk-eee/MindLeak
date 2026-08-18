@@ -26,6 +26,7 @@ pub mod enrollment_store;
 pub mod envelope_signature;
 pub mod fleet;
 pub mod ledger;
+mod migration_lock;
 pub mod projection;
 pub mod service;
 pub mod signing_keys;
