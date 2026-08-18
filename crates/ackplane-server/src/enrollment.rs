@@ -90,6 +90,65 @@ pub fn verify_activation_proof(
         .is_ok()
 }
 
+// Its own domain, distinct from activation and envelope signing (ADR-0098
+// decision 1): a signature over one of those must never verify as a
+// connection challenge response, or a replayed activation/envelope signature
+// could open a live stream it was never meant to authenticate.
+const CONNECTION_DOMAIN: &[u8] = b"mindleak.ackplane.v1.node_sync.connection\0";
+
+/// The immutable values a `Synchronize` connection's challenge binds together.
+pub struct ConnectionChallengeBinding<'a> {
+    pub nonce: &'a [u8],
+    pub tenant_id: &'a str,
+    pub repository_id: &'a str,
+    pub producer_id: &'a str,
+    pub signing_key_id: &'a str,
+}
+
+/// Encode the exact domain-separated bytes a node signs to prove it holds the
+/// key it named in `Hello`, over this connection's nonce. Same
+/// length-delimited construction as [`activation_challenge_bytes`], so no
+/// field can be reinterpreted as part of an adjacent one.
+pub fn connection_challenge_bytes(binding: &ConnectionChallengeBinding<'_>) -> Vec<u8> {
+    let fields = [
+        binding.nonce,
+        binding.tenant_id.as_bytes(),
+        binding.repository_id.as_bytes(),
+        binding.producer_id.as_bytes(),
+        binding.signing_key_id.as_bytes(),
+    ];
+    let mut bytes = Vec::with_capacity(
+        CONNECTION_DOMAIN.len() + fields.iter().map(|field| 4 + field.len()).sum::<usize>(),
+    );
+    bytes.extend_from_slice(CONNECTION_DOMAIN);
+    for field in fields {
+        bytes.extend_from_slice(&(field.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(field);
+    }
+    bytes
+}
+
+/// Verify a node's proof of possession of the enrolled key it named, over the
+/// nonce this connection issued.
+pub fn verify_connection_challenge(
+    public_key: &[u8],
+    signature: &[u8],
+    binding: ConnectionChallengeBinding<'_>,
+) -> bool {
+    let Ok(public_key) = <&[u8; 32]>::try_from(public_key) else {
+        return false;
+    };
+    let Ok(verifying_key) = VerifyingKey::from_bytes(public_key) else {
+        return false;
+    };
+    let Ok(signature) = Signature::from_slice(signature) else {
+        return false;
+    };
+    verifying_key
+        .verify(&connection_challenge_bytes(&binding), &signature)
+        .is_ok()
+}
+
 const KEY_ROTATION_DOMAIN: &[u8] = b"mindleak.ackplane.v1.enrollment.key_rotation\0";
 
 /// The immutable values a rotation statement binds together (ADR-0085
@@ -232,9 +291,10 @@ mod tests {
     use ed25519_dalek::{Signer, SigningKey};
 
     use super::{
-        activation_challenge_bytes, key_rotation_bytes, public_key_fingerprint,
-        verify_activation_proof, verify_key_rotation_signature, ActivationChallenge,
-        ActivationFailure, ActivationProofBinding, Enrollment, EnrollmentState,
+        activation_challenge_bytes, connection_challenge_bytes, key_rotation_bytes,
+        public_key_fingerprint, verify_activation_proof, verify_connection_challenge,
+        verify_key_rotation_signature, ActivationChallenge, ActivationFailure,
+        ActivationProofBinding, ConnectionChallengeBinding, Enrollment, EnrollmentState,
         KeyRotationStatement,
     };
 
@@ -530,6 +590,123 @@ mod tests {
             &current.verifying_key().to_bytes(),
             &successor_signature.to_bytes(),
             &bytes,
+        ));
+    }
+
+    fn connection_binding<'a>(
+        nonce: &'a [u8],
+        signing_key_id: &'a str,
+    ) -> ConnectionChallengeBinding<'a> {
+        ConnectionChallengeBinding {
+            nonce,
+            tenant_id: "tenant",
+            repository_id: "repository",
+            producer_id: "node-1",
+            signing_key_id,
+        }
+    }
+
+    #[test]
+    fn connection_challenge_encoding_binds_each_field_unambiguously() {
+        let encoded = connection_challenge_bytes(&connection_binding(&[7, 8], "key-1"));
+
+        assert_eq!(
+            encoded,
+            [
+                b"mindleak.ackplane.v1.node_sync.connection\0".as_slice(),
+                &[0, 0, 0, 2, 7, 8],
+                &[0, 0, 0, 6],
+                b"tenant",
+                &[0, 0, 0, 10],
+                b"repository",
+                &[0, 0, 0, 6],
+                b"node-1",
+                &[0, 0, 0, 5],
+                b"key-1",
+            ]
+            .concat()
+        );
+    }
+
+    #[test]
+    fn a_valid_connection_response_verifies_against_its_own_key() {
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let nonce = [1, 2, 3];
+        let signature = key.sign(&connection_challenge_bytes(&connection_binding(
+            &nonce, "key-1",
+        )));
+
+        assert!(verify_connection_challenge(
+            &key.verifying_key().to_bytes(),
+            &signature.to_bytes(),
+            connection_binding(&nonce, "key-1"),
+        ));
+    }
+
+    /// Decision 1's whole point: a connection challenge is its own domain, so
+    /// a signature produced for enrolment activation (same key, same nonce
+    /// bytes reused as a raw nonce) must not verify as a connection response,
+    /// and vice versa. Without domain separation, a captured activation proof
+    /// could be replayed to open a live stream it was never meant to
+    /// authenticate.
+    #[test]
+    fn a_connection_response_does_not_verify_as_an_activation_proof_or_the_reverse() {
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let nonce = [1, 2, 3];
+
+        let connection_signature = key.sign(&connection_challenge_bytes(&connection_binding(
+            &nonce, "key-1",
+        )));
+        let activation_signature = key.sign(&activation_challenge_bytes(
+            &nonce,
+            "request",
+            "tenant",
+            "repository",
+            "node-1",
+            "key-1",
+        ));
+
+        assert!(!verify_activation_proof(
+            &key.verifying_key().to_bytes(),
+            &connection_signature.to_bytes(),
+            ActivationProofBinding {
+                nonce: &nonce,
+                request_id: "request",
+                tenant_id: "tenant",
+                repository_id: "repository",
+                node_id: "node-1",
+                public_key_fingerprint: "key-1",
+            },
+        ));
+        assert!(!verify_connection_challenge(
+            &key.verifying_key().to_bytes(),
+            &activation_signature.to_bytes(),
+            connection_binding(&nonce, "key-1"),
+        ));
+    }
+
+    #[test]
+    fn connection_response_signed_for_a_different_node_does_not_verify() {
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let nonce = [1, 2, 3];
+        let signature = key.sign(&connection_challenge_bytes(&ConnectionChallengeBinding {
+            nonce: &nonce,
+            tenant_id: "tenant",
+            repository_id: "repository",
+            producer_id: "node-1",
+            signing_key_id: "key-1",
+        }));
+
+        assert!(!verify_connection_challenge(
+            &key.verifying_key().to_bytes(),
+            &signature.to_bytes(),
+            ConnectionChallengeBinding {
+                nonce: &nonce,
+                tenant_id: "tenant",
+                repository_id: "repository",
+                producer_id: "node-2",
+                signing_key_id: "key-1",
+            },
         ));
     }
 }

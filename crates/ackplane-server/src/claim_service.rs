@@ -6,7 +6,9 @@ use ackplane_protocol::v1;
 use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
 
-use crate::claim_store::{ClaimLeaseOutcome, ClaimLeaseRequest, ClaimStore, ClaimStoreError};
+use crate::claim_store::{
+    ClaimLeaseOutcome, ClaimLeaseRequest, ClaimRecoverRequest, ClaimStore, ClaimStoreError,
+};
 
 pub struct ClaimDelegationService {
     store: Arc<Mutex<ClaimStore>>,
@@ -104,6 +106,52 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
             result_to_wire(result).map_err(Status::internal)?,
         ))
     }
+
+    async fn recover_claim(
+        &self,
+        request: Request<v1::ClaimRecoverRequest>,
+    ) -> Result<Response<v1::ClaimLeaseResult>, Status> {
+        let request = request.into_inner();
+        let tenant_id =
+            required(request.tenant_id, "tenant_id").map_err(Status::invalid_argument)?;
+        let repository_id =
+            required(request.repository_id, "repository_id").map_err(Status::invalid_argument)?;
+        let task_id = required(request.task_id, "task_id").map_err(Status::invalid_argument)?;
+        let expected_owner =
+            required(request.expected_owner, "expected_owner").map_err(Status::invalid_argument)?;
+        let owner_id = required(request.owner_id, "owner_id").map_err(Status::invalid_argument)?;
+        let branch = required(request.branch, "branch").map_err(Status::invalid_argument)?;
+        let lease = Duration::from_secs(request.lease_seconds);
+        if lease.is_zero() {
+            return Err(Status::invalid_argument(
+                "lease_seconds must be greater than zero",
+            ));
+        }
+        let result = self
+            .store
+            .lock()
+            .await
+            .recover(
+                &ClaimRecoverRequest {
+                    tenant_id,
+                    repository_id,
+                    task_id,
+                    expected_owner,
+                    owner_id,
+                    reason: request.reason,
+                    branch,
+                    lease,
+                    paths: request.paths,
+                    symbols: request.symbols,
+                },
+                std::time::SystemTime::now(),
+            )
+            .await
+            .map_err(map_store_error)?;
+        Ok(Response::new(
+            result_to_wire(result).map_err(Status::internal)?,
+        ))
+    }
 }
 
 fn request_from_wire(request: v1::ClaimLeaseRequest) -> Result<ClaimLeaseRequest, String> {
@@ -158,7 +206,9 @@ fn rfc3339(timestamp: std::time::SystemTime) -> Result<String, String> {
 
 fn map_store_error(error: ClaimStoreError) -> Status {
     match error {
-        ClaimStoreError::InvalidLease => Status::invalid_argument(error.to_string()),
+        ClaimStoreError::InvalidLease | ClaimStoreError::MissingReason => {
+            Status::invalid_argument(error.to_string())
+        }
         ClaimStoreError::Database(_) | ClaimStoreError::InvalidLapseCount => {
             Status::internal(error.to_string())
         }

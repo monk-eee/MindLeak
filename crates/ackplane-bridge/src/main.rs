@@ -119,7 +119,25 @@ const TIMELINE_LIMIT: i64 = 50;
 
 #[tokio::main]
 async fn main() {
-    let config = match BridgeConfig::resolve(|key| std::env::var(key).ok()) {
+    let salt_path = match std::env::var("ACKPLANE_BRIDGE_SALT_PATH") {
+        Ok(raw) if !raw.trim().is_empty() => std::path::PathBuf::from(raw.trim()),
+        _ => {
+            eprintln!(
+                "ackplane-bridge: ACKPLANE_BRIDGE_SALT_PATH must be set for the loopback developer profile"
+            );
+            return;
+        }
+    };
+    let salt = match ackplane_bridge::load_or_generate_salt(&salt_path) {
+        Ok(salt) => salt,
+        Err(error) => {
+            eprintln!(
+                "ackplane-bridge: could not load or generate the developer-tenant salt: {error}"
+            );
+            return;
+        }
+    };
+    let config = match BridgeConfig::resolve(|key| std::env::var(key).ok(), &salt) {
         Ok(config) => config,
         Err(error) => {
             eprintln!("ackplane-bridge: {error}");
@@ -135,7 +153,7 @@ async fn main() {
     };
     let state = AppState {
         fleet: fleet_store,
-        tenant_id: Arc::from(config.development_tenant),
+        tenant_id: Arc::from(config.development_tenant_token),
     };
     let application = Router::new()
         .route("/", get(fleet_page))
