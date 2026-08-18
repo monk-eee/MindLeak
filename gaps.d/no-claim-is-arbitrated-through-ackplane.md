@@ -18,6 +18,7 @@
   claim/renew/release/recover and left the rest to a later decision if one
   turns out to be needed.
 
-  Distinct from
-  [`the-coordination-mode-is-declared-per-process-not-per-repository.md`](the-coordination-mode-is-declared-per-process-not-per-repository.md),
-  which covers *where* the mode is declared.
+  Distinct from *where* the coordination mode is declared (was
+  gaps.d/the-coordination-mode-is-declared-per-process-not-per-repository.md,
+  now closed: it is a repository-scoped git config declaration, not only a
+  process environment variable).

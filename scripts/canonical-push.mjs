@@ -14,6 +14,8 @@ import {
 } from "./auto-merge-guard.mjs";
 import {
   callTools,
+  commitBeforeClaimNotice,
+  commitsBeforeClaim,
   declaredContext,
   identityCollisionNotice,
   overlapNotice,
@@ -262,13 +264,33 @@ if (server && /^[0-9a-f]{32}$/.test(sessionId)) {
 // it to the task that delivered the branch instead of demanding a fresh one for
 // work that was already recorded. Marked per commit rather than counted, so
 // "only merges" stays a fact about every commit rather than a guess from a total.
+//
+// Each commit's own timestamp travels with it too (a second, equally cheap git
+// call), so the commit-before-claim advisory below can compare it against a
+// held claim's `claim_started_at` without a third pass over the same range.
+const commitTimestamps = remoteBranchExists
+  ? new Map(
+      git(["log", "--format=%H%x09%ct", `${remoteRef}..HEAD`])
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => {
+          const [sha, ts] = line.split("\t");
+          return [sha, Number(ts)];
+        }),
+    )
+  : new Map();
+
 const newCommits = remoteBranchExists
   ? git(["rev-list", "--parents", `${remoteRef}..HEAD`])
       .split(/\r?\n/)
       .filter(Boolean)
       .map((line) => {
         const [sha, ...parents] = line.trim().split(/\s+/);
-        return { sha, isMerge: parents.length > 1 };
+        return {
+          sha,
+          isMerge: parents.length > 1,
+          timestamp: commitTimestamps.get(sha),
+        };
       })
   : [];
 
@@ -313,6 +335,13 @@ const collision = identityCollisionNotice({
 });
 if (collision) {
   console.warn(`canonical-push: ${collision}`);
+}
+
+const tooEarly = commitBeforeClaimNotice(
+  commitsBeforeClaim(newCommits, verdict.claims),
+);
+if (tooEarly) {
+  console.warn(`canonical-push: ${tooEarly}`);
 }
 
 const promise = publishPromisedBranch({

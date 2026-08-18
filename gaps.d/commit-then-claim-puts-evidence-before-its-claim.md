@@ -26,3 +26,14 @@
   are a human `resolve_task` or abandoning provable work. If that keeps
   happening, the honest fix is to make claiming first easier or to make the
   breach visible at commit time, not to loosen what evidence means.
+
+  **Visibility half shipped, gap itself unchanged.** `canonical-push.mjs` now
+  warns — advisory only, never blocking — when a branch being published
+  carries a commit whose own timestamp predates every claim this session
+  holds, naming the affected commits and this fragment. It does not make
+  claiming first any easier, and it fires at publish time rather than commit
+  time (deliberately: ADR-0048's own design note is that gating at commit time
+  teaches people to invent tasks to get past the check, and a warning that can
+  only be seen after the push offers no earlier exit anyway). The underlying
+  limitation is exactly as open as before; what changed is that the breach is
+  now reported instead of discovered later at `complete_task`.
