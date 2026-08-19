@@ -433,6 +433,16 @@ LRU is persisted. Repeated observations spanning the existing signal window
 become rehearsal evidence only while the target remains inside that agent's
 top-K; the write path remains zero-token.
 
+**Compiled context (ADR-0102).** `MindLeak::compile_context` composes `recall`,
+`working_set`, and optionally `evidence_for` into one bounded, ranked,
+token-budgeted packet — no new source of truth, only ranking (each source's own
+already-decayed relevance score) and a `max_tokens` (bytes/4) budget applied
+highest-ranked-first. `budget_report.excluded` names what was cut for budget
+reasons alone. `governing` is a caller-supplied pass-through of Lodestar's
+`advise()` result: this crate has no dependency on `lodestar-core`, so
+cross-plane data arrives as an argument, the same seam `promote_signals`
+already crosses.
+
 **Autonomous consolidation (ADR-0017 phase 2).** An off-by-default scheduler in
 `mindleak-mcp` tracks stdio request activity with a condition variable. After a
 bounded idle period it calls the same `MindLeak::consolidate_signal` path through
