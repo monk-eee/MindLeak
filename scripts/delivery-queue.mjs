@@ -372,6 +372,84 @@ export function verifyDirtyWithGit(pr) {
   }
 }
 
+/**
+ * Whether an already-succeeded `update-branch` call actually produced the
+ * merge it was expected to, rather than the tree its clean exit code merely
+ * implied. `null` on either side means "could not verify" (a fetch failed, or
+ * the pre-check itself hit a real conflict) and must never read as a
+ * mismatch -- only two actually-computed, differing tree hashes do.
+ *
+ * gaps.d/update-branch-can-silently-drop-a-conflicts-losing-side.md: PR #507's
+ * `update-branch` exited 0 and reported no conflict, yet the resulting tree
+ * silently dropped one side of a real three-way merge -- no conflict marker,
+ * no failing check, nothing in the normal signal path caught it.
+ */
+export function updateBranchMismatch(expectedTree, actualTree) {
+  if (expectedTree === null || actualTree === null) return false;
+  return expectedTree !== actualTree;
+}
+
+/**
+ * The tree `git merge-tree --write-tree` would produce for `base` merged with
+ * `head`, or `null` when the merge conflicts or either ref cannot be read --
+ * both mean there is nothing to compare, not that the merge is fine.
+ */
+function mergeTreeHash(base, head) {
+  try {
+    const output = execFileSync(
+      "git",
+      ["merge-tree", "--write-tree", base, head],
+      { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    return output.trim().split("\n")[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+/** The tree a ref currently points at, or `null` when the ref cannot be read. */
+function refTreeHash(ref) {
+  try {
+    return execFileSync("git", ["rev-parse", `${ref}^{tree}`], {
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The tree `origin/main` merged with `origin/<branch>` is expected to
+ * produce right now, fetching first so a stale local remote-tracking ref
+ * cannot silently compare against an old `main` or an old branch tip.
+ */
+function expectedMergeTree(branch) {
+  try {
+    execFileSync("git", ["fetch", "origin", "main", branch, "--quiet"], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch {
+    return null;
+  }
+  return mergeTreeHash("origin/main", `origin/${branch}`);
+}
+
+/**
+ * The tree `origin/<branch>` actually points at after its update, re-fetching
+ * first since `update-branch` moved the branch server-side, not locally.
+ */
+function actualMergeTree(branch) {
+  try {
+    execFileSync("git", ["fetch", "origin", branch, "--quiet"], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch {
+    return null;
+  }
+  return refTreeHash(`origin/${branch}`);
+}
+
 const USAGE = `delivery-queue -- take branch-update turns in order (ADR-0062)
 
   node scripts/delivery-queue.mjs [--watch] [--dry-run]
@@ -451,9 +529,24 @@ function main() {
       console.log("(dry run: no branch was updated)");
       return action.kind;
     }
+    const branch = action.pr.headRefName;
+    const expectedTree = expectedMergeTree(branch);
     try {
       gh(["pr", "update-branch", String(action.pr.number)]);
-      console.log(`updated #${action.pr.number}`);
+      const actualTree = actualMergeTree(branch);
+      if (updateBranchMismatch(expectedTree, actualTree)) {
+        // The exact defect gaps.d/update-branch-can-silently-drop-a-conflicts-
+        // losing-side.md records: a clean exit and no reported conflict, yet
+        // the resulting tree is not the merge it was supposed to be.
+        console.log(
+          `updated #${action.pr.number} BUT ITS TREE DOES NOT MATCH THE EXPECTED MERGE -- ` +
+            `gh pr update-branch may have silently dropped a side. Reconcile ` +
+            `#${action.pr.number} by hand: fetch and diff origin/${branch} ` +
+            `against a fresh local \`git merge origin/main\` before trusting it.`,
+        );
+      } else {
+        console.log(`updated #${action.pr.number}`);
+      }
     } catch (error) {
       // `update-branch` fails when GitHub cannot merge main in cleanly. That is
       // information, not a crash: the branch needs reconciling in its own
