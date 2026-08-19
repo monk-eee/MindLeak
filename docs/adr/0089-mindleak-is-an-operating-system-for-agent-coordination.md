@@ -5,6 +5,11 @@
 - Deciders: MindLeak maintainers
 - Accepted: 2026-08-10 by the repository owner — attributed human adoption after
   review.
+- Amended by: [ADR-0106](0106-ackplane-closes-the-agentic-operating-loop.md)
+  (the Industrial profile closes the centralized learning and guidance loop),
+  [ADR-0107](0107-registered-agents-accept-authenticated-control-directives.md)
+  (authenticated Industrial agents accept typed preemptive controls; Local
+  remains cooperative)
 - Related: [ADR-0028](0028-external-adoption-evidence-gate.md) (claim tiers and
   evidence discipline), [ADR-0045](0045-a-fleet-is-a-distributed-system.md) (a
   fleet is a distributed system), [ADR-0059](0059-the-tool-surface-is-a-vocabulary.md)

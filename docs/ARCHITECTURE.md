@@ -334,6 +334,14 @@ atomically consumes it while recording `activating`. Key rotation remains
 explicitly unavailable until the continuity proof required by ADR-0085 is
 implemented.
 
+`register-me` (`src/bin/register-me.rs`) drives that ceremony from the command
+line as three subcommands — `request`, `approve`, `activate` — mirroring the
+real actors: a node runs `request`/`activate` unattended; `approve` is a
+documented local-dev database shortcut standing in for the administrative
+approval RPC/UI that does not exist yet. `activate` proves possession, opens
+one real `NodeSync` stream, and sends a signed heartbeat event using the
+`signing_key_id` `EnrollmentActivationResult` returns directly.
+
 ### `editors/vscode` (extension)
 
 Passive editor, shell-execution, workspace-mutation, and Git commit sensors plus

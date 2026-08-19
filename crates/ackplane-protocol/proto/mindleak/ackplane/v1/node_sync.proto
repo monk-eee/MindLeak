@@ -232,6 +232,7 @@ message EnrollmentActivationResult {
   string enrolment_receipt_id = 3;
   EnrollmentRejectionReason rejection_reason = 4;
   string diagnostic = 5;
+  string signing_key_id = 6;
 }
 
 message KeyRotationRequest {
