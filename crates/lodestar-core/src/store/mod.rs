@@ -73,6 +73,12 @@ pub struct Stats {
     pub claimed_tasks: i64,
     pub done_tasks: i64,
     pub active_knowledge: i64,
+    /// Every task ever created, any status, any goal -- the one number that
+    /// tells a `board`/`stalled` caller whether their own empty `[]` means
+    /// nothing has ever been set up here, or that everything is genuinely
+    /// clean. `open_tasks + claimed_tasks + done_tasks` is not that number:
+    /// it omits blocked, in_review, and abandoned tasks.
+    pub total_tasks: i64,
 }
 
 /// Counts removed by an explicitly confirmed intent-plane reset.
