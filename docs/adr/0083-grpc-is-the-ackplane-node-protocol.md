@@ -5,6 +5,8 @@
 - Deciders: MindLeak maintainers
 - Accepted: 2026-08-10 by the repository owner — attributed human adoption after
   review.
+- Amended by: [ADR-0107](0107-registered-agents-accept-authenticated-control-directives.md)
+  (the reviewed server-initiated control contract anticipated by decision 3)
 - Depends on: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md)
   (standalone federation boundary)
 - Related: [ADR-0010](0010-observability-and-resilience.md) (bounded network

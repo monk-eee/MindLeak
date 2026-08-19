@@ -112,6 +112,8 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0103](0103-the-mcp-client-is-packaged-once-not-reimplemented.md) | The MCP client is packaged once, not reimplemented per consumer | Accepted |
 | [0104](0104-a-reference-consumer-tests-the-tool-surfaces-stability.md) | A reference consumer tests the tool surface's stability | Accepted |
 | [0105](0105-bridge-is-the-server-version-of-the-vsix.md) | The Bridge is the server version of the VSIX | Accepted |
+| [0106](0106-ackplane-closes-the-agentic-operating-loop.md) | Ackplane closes the agentic operating loop | Accepted |
+| [0107](0107-registered-agents-accept-authenticated-control-directives.md) | Registered agents accept authenticated control directives | Accepted |
 
 ## Writing a new ADR
 

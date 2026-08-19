@@ -9,6 +9,10 @@
   (the Bridge as a separate assurance-only product surface)
 - Refines: [ADR-0095](0095-the-bridge-uses-an-authenticated-projection-api.md)
   (the first read-only API is a delivery slice, not the product ceiling)
+- Refined by: [ADR-0106](0106-ackplane-closes-the-agentic-operating-loop.md)
+  (the centralized Industrial learning and guidance loop),
+  [ADR-0107](0107-registered-agents-accept-authenticated-control-directives.md)
+  (direct authenticated control of registered agents)
 - Depends on: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md)
   (federation authority), [ADR-0083](0083-grpc-is-the-ackplane-node-protocol.md)
   (typed node protocol), [ADR-0088](0088-the-ackplane-runs-in-containers-the-planes-do-not.md)
@@ -102,9 +106,10 @@ shell in a browser.
   work, report evidence, exchange durable task context, publish corroborated
   signals or lessons, and query what the fleet has learned. Shared knowledge
   remains scoped, attributed, provenance-bearing, revalidated, and decaying;
-  central storage does not turn an observation into policy. Ackplane
-  coordinates agent runtimes but does not host models, schedule their compute,
-  edit source, or execute the agents themselves.
+  central storage does not turn an observation into policy. Ackplane may use a
+  configured model off the deterministic ingestion path to compile guidance and
+  propose decisions, and may direct registered agent supervisors under
+  ADR-0107. It does not host worker-agent compute or edit source itself.
 
 5. **The first Industrial workflow is coordinating agents from the Bridge.**
   Before broader feature parity, the Bridge becomes the human control room for
@@ -113,8 +118,9 @@ shell in a browser.
   completion state. An authorized operator can create and route work, assign
   or delegate it, release or recover leases, pause and resume work, answer
   durable questions, inspect overlap and stalls, and follow evidence through
-  review and completion. These are typed coordination mutations against
-  Ackplane authority, not commands to an operating-system process.
+  review and completion. They include ADR-0107's typed authenticated controls
+  over registered supervisors, never arbitrary commands against an unmanaged
+  operating-system process.
 
 6. **Feature parity is measured against the MindLeak VSIX; storage changes the
   implementation.** The VSIX's contributed views and commands define the
@@ -260,10 +266,10 @@ because the Industrial product is a coordination and learning substrate for
 agent runtimes. AgentD, Agency, and other clients must be able to use the
 published contracts without pretending to be an editor extension.
 
-**Run agents or models inside Ackplane.** Rejected because Ackplane owns shared
-coordination, knowledge, and proof, not agent compute. Hosting execution would
-mix the arbiter with the actors it arbitrates and turn a backplane into another
-agent platform.
+**Run worker agents inside Ackplane.** Rejected because Ackplane owns shared
+coordination, knowledge, guidance, and proof, not worker compute. It may call a
+configured model to compile guidance, but hosting the workers it arbitrates
+would turn the backplane into another agent platform.
 
 **Forward MCP or expose a generic remote execution endpoint.** Rejected because
 it erases the authority boundary, turns a cooperative coordination plane into a
