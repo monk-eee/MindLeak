@@ -7,6 +7,7 @@ import {
   commitBeforeClaimNotice,
   commitsBeforeClaim,
   missingClaimAdvice,
+  parseCallResult,
   publishVerdict,
   reconciliationOf,
 } from "./claim-gate.mjs";
@@ -302,4 +303,45 @@ test("the notice names every flagged commit and points at the gap fragment", () 
 
 test("no flagged commits produces no notice", () => {
   assert.equal(commitBeforeClaimNotice([]), null);
+});
+
+// --- parsing a tools/call result ------------------------------------------
+
+/// A tool migrated to the dual Markdown-plus-structuredContent format (e.g.
+/// lodestar_stats) must read as the structured object, not the Markdown table
+/// string sitting beside it in content[0].text -- reading only content[0].text
+/// here silently returned prose instead of data, and every field off it read
+/// as undefined.
+test("structuredContent is preferred over the Markdown text block", () => {
+  const result = {
+    content: [{ type: "text", text: "| Count |\n|--:|\n| 3 |" }],
+    structuredContent: { open_tasks: 3 },
+  };
+  assert.deepEqual(parseCallResult(result), { open_tasks: 3 });
+});
+
+/// The overwhelmingly common shape for a tool that has not been migrated:
+/// its only content is a JSON array or object string.
+test("a text block that is valid JSON parses to that value when there is no structuredContent", () => {
+  const result = { content: [{ type: "text", text: "[]" }] };
+  assert.deepEqual(parseCallResult(result), []);
+});
+
+/// A tool answering in genuine prose (no structured form at all) must not
+/// throw or vanish -- it is returned as the raw string.
+test("a non-JSON text block falls back to the raw string", () => {
+  const result = { content: [{ type: "text", text: "no claimable task" }] };
+  assert.equal(parseCallResult(result), "no claimable task");
+});
+
+test("a result with neither structuredContent nor a text block is undefined", () => {
+  assert.equal(parseCallResult({}), undefined);
+  assert.equal(parseCallResult({ content: [] }), undefined);
+});
+
+/// `null` is how a tool would spell "nothing structured", not "here is null" --
+/// it must fall through to the text block exactly like an absent field.
+test("a null structuredContent falls through to the text block", () => {
+  const result = { content: [{ text: "[1,2]" }], structuredContent: null };
+  assert.deepEqual(parseCallResult(result), [1, 2]);
 });
