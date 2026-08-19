@@ -18,11 +18,12 @@ mod types;
 mod writes;
 
 pub use types::{
-    AgentActivity, AgentFootprintOverlap, ArtifactStub, ConformanceEvidence, Direction,
-    EvidenceProvenance, ForgetOutcome, GraphExport, Preflight, PreflightNode, PromotionCandidate,
-    PruneOutcome, ReconcileOutcome, RepairOutcome, ResetOutcome, ScoredNode,
-    SessionConsolidationOutcome, SignalCandidate, SignalConsolidationOutcome, Subgraph,
-    WeightedEdge, WorkingSetItem, WriteOutcome, STRUCTURE_EXTRACTOR_VERSION,
+    AgentActivity, AgentFootprintOverlap, ArtifactStub, BudgetReport, CompiledContext,
+    ConformanceEvidence, Direction, EvidenceProvenance, ExcludedCandidate, ForgetOutcome,
+    GraphExport, Preflight, PreflightNode, PromotionCandidate, PruneOutcome, ReconcileOutcome,
+    RepairOutcome, ResetOutcome, ScoredNode, SessionConsolidationOutcome, SignalCandidate,
+    SignalConsolidationOutcome, Subgraph, WeightedEdge, WorkingSetItem, WriteOutcome,
+    STRUCTURE_EXTRACTOR_VERSION,
 };
 
 /// The persistent graph store.
