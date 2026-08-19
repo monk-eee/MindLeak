@@ -105,6 +105,7 @@ impl v1::node_enrollment_service_server::NodeEnrollmentService for NodeEnrollmen
             enrolment_receipt_id: result.enrollment_receipt_id,
             rejection_reason: v1::EnrollmentRejectionReason::Unspecified as i32,
             diagnostic: String::new(),
+            signing_key_id: result.signing_key_id,
         }))
     }
 
