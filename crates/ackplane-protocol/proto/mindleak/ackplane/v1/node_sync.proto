@@ -126,6 +126,7 @@ message NodeFrame {
     EventBatch event_batch = 2;
     Heartbeat heartbeat = 3;
     ChallengeResponse challenge_response = 4;
+    DirectiveReceipt directive_receipt = 5;
   }
 }
 
@@ -137,7 +138,140 @@ message AckplaneFrame {
     FlowControl flow_control = 4;
     Notice notice = 5;
     ConnectionChallenge connection_challenge = 6;
+    AgentDirective agent_directive = 7;
   }
+}
+
+// One immutable, authorized instruction for an enrolled agent supervisor
+// (ADR-0107). The metadata is common to every directive; the oneof keeps the
+// action vocabulary closed and prevents this stream becoming a generic command
+// transport.
+message AgentDirective {
+  string directive_id = 1;
+  string tenant_id = 2;
+  string project_id = 3;
+  string repository_id = 4;
+  string target_node_id = 5;
+  string target_agent_session_id = 6;
+  DirectiveKind kind = 7;
+  string schema_version = 8;
+  string issuing_principal_id = 9;
+  string rationale = 10;
+  string task_id = 11;
+  string goal_id = 12;
+  string context_packet_id = 13;
+  string created_at = 14;
+  string expires_at = 15;
+  uint64 sequence = 16;
+  string idempotency_key = 17;
+  bytes payload_digest = 18;
+  string required_capability = 19;
+  repeated string policy_refs = 20;
+  repeated string knowledge_refs = 21;
+  repeated string evidence_refs = 22;
+
+  oneof payload {
+    NotifyDirective notify = 30;
+    PromptDirective prompt = 31;
+    AssignDirective assign = 32;
+    SteerDirective steer = 33;
+    PauseDirective pause = 34;
+    ResumeDirective resume = 35;
+    DrainDirective drain = 36;
+    TerminateDirective terminate = 37;
+  }
+}
+
+enum DirectiveKind {
+  DIRECTIVE_KIND_UNSPECIFIED = 0;
+  DIRECTIVE_KIND_NOTIFY = 1;
+  DIRECTIVE_KIND_PROMPT = 2;
+  DIRECTIVE_KIND_ASSIGN = 3;
+  DIRECTIVE_KIND_STEER = 4;
+  DIRECTIVE_KIND_PAUSE = 5;
+  DIRECTIVE_KIND_RESUME = 6;
+  DIRECTIVE_KIND_DRAIN = 7;
+  DIRECTIVE_KIND_TERMINATE = 8;
+}
+
+message NotifyDirective {
+  string message = 1;
+}
+
+message PromptDirective {
+  string instruction = 1;
+}
+
+message AssignDirective {}
+
+message SteerDirective {
+  string instruction = 1;
+  bool checkpoint_required = 2;
+}
+
+message PauseDirective {
+  bool checkpoint_required = 1;
+}
+
+message ResumeDirective {}
+
+message DrainDirective {
+  string deadline = 1;
+}
+
+message TerminateDirective {
+  TerminationMode mode = 1;
+  string graceful_deadline = 2;
+}
+
+enum TerminationMode {
+  TERMINATION_MODE_UNSPECIFIED = 0;
+  TERMINATION_MODE_GRACEFUL = 1;
+  TERMINATION_MODE_FORCE_AFTER_DEADLINE = 2;
+  TERMINATION_MODE_FORCE = 3;
+}
+
+// Acknowledges what the enrolled supervisor did, not merely that Ackplane put
+// a directive on the stream. The original payload digest binds the receipt to
+// the exact immutable directive that was evaluated.
+message DirectiveReceipt {
+  string directive_id = 1;
+  string tenant_id = 2;
+  string project_id = 3;
+  string repository_id = 4;
+  string node_id = 5;
+  string agent_session_id = 6;
+  DirectiveReceiptStatus status = 7;
+  DirectiveReceiptReason reason = 8;
+  string occurred_at = 9;
+  bytes payload_digest = 10;
+  repeated string checkpoint_refs = 11;
+  repeated string evidence_refs = 12;
+  uint64 directive_sequence = 13;
+  string diagnostic = 14;
+}
+
+enum DirectiveReceiptStatus {
+  DIRECTIVE_RECEIPT_STATUS_UNSPECIFIED = 0;
+  DIRECTIVE_RECEIPT_STATUS_ACCEPTED = 1;
+  DIRECTIVE_RECEIPT_STATUS_REFUSED = 2;
+  DIRECTIVE_RECEIPT_STATUS_APPLIED = 3;
+  DIRECTIVE_RECEIPT_STATUS_FAILED = 4;
+  DIRECTIVE_RECEIPT_STATUS_EXPIRED = 5;
+}
+
+enum DirectiveReceiptReason {
+  DIRECTIVE_RECEIPT_REASON_UNSPECIFIED = 0;
+  DIRECTIVE_RECEIPT_REASON_NONE = 1;
+  DIRECTIVE_RECEIPT_REASON_EXPIRED = 2;
+  DIRECTIVE_RECEIPT_REASON_UNSUPPORTED_KIND = 3;
+  DIRECTIVE_RECEIPT_REASON_UNSUPPORTED_VERSION = 4;
+  DIRECTIVE_RECEIPT_REASON_CAPABILITY_MISSING = 5;
+  DIRECTIVE_RECEIPT_REASON_UNAUTHORIZED = 6;
+  DIRECTIVE_RECEIPT_REASON_INVALID_STATE = 7;
+  DIRECTIVE_RECEIPT_REASON_CHECKPOINT_FAILED = 8;
+  DIRECTIVE_RECEIPT_REASON_SUPERVISOR_FAILED = 9;
+  DIRECTIVE_RECEIPT_REASON_PAYLOAD_DIGEST_MISMATCH = 10;
 }
 
 message Hello {
