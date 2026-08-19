@@ -1,6 +1,6 @@
 # ADR-0094: The Bridge preserves standalone operation
 
-- Status: Accepted
+- Status: Superseded by [ADR-0105](0105-bridge-is-the-server-version-of-the-vsix.md)
 - Date: 2026-08-17
 - Deciders: MindLeak maintainers
 - Depends on: [ADR-0016](0016-platform-packaging-and-registration.md)
