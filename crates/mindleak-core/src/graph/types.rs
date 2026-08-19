@@ -289,3 +289,42 @@ pub struct ConformanceEvidence {
     pub summary: String,
     pub provenance: Vec<EvidenceProvenance>,
 }
+
+/// One candidate cut from a compiled context packet for budget reasons alone
+/// (ADR-0102 decision 4) — distinct from a candidate that never matched at
+/// all, the same "unknown is not an all-clear" discipline `Preflight.unknown`
+/// already applies.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExcludedCandidate {
+    pub id: String,
+    pub rank: f64,
+}
+
+/// What a `compile_context` call spent its token budget on (ADR-0102 decision
+/// 3): the budget requested, the estimate actually used, and exactly what was
+/// cut to stay under it. `tokens_used` bytes/4-approximates the same way the
+/// advertised MCP tool surface already does (`scripts/measure-tool-surface.mjs`).
+#[derive(Debug, Clone, Serialize)]
+pub struct BudgetReport {
+    pub tokens_requested: usize,
+    pub tokens_used: usize,
+    pub excluded: Vec<ExcludedCandidate>,
+}
+
+/// One bounded, ranked, token-budgeted context packet (ADR-0102): composition
+/// over `recall`/`multi_hop_query`, `working_set`, and `evidence_for` — no
+/// field here is invented data, each is exactly what its own tool already
+/// returns. `governing` crosses the loose MindLeak/Lodestar seam the same way
+/// `ConformanceEvidence` does: the caller supplies its own `advise()` result
+/// (Lodestar-side; MindLeak has no dependency on lodestar-core) rather than
+/// this reaching across planes to fetch it, mirroring how `promote_signals`
+/// already takes MindLeak's `promotion_candidates` as an argument instead of
+/// calling back into this plane internally (ADR-0022).
+#[derive(Debug, Clone, Serialize)]
+pub struct CompiledContext {
+    pub facts: Vec<ScoredNode>,
+    pub working_set: Vec<WorkingSetItem>,
+    pub governing: serde_json::Value,
+    pub evidence: Option<ConformanceEvidence>,
+    pub budget_report: BudgetReport,
+}
