@@ -214,14 +214,28 @@ mod tests {
     /// A unique account per test run: the OS credential facility is process-
     /// wide state, and a fixed name would collide across concurrent test
     /// runs on the same machine (this repository's own fleet regularly runs
-    /// several worktrees at once).
+    /// several worktrees at once). Counter-guarded, not just nanosecond-
+    /// timestamped, matching `ackplane-server::test_support::unique_id` --
+    /// two threads can read the identical `SystemTime::now()` value.
     fn unique_account() -> String {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        format!("mindleak-ackplane-client-test-{nanos}")
+        format!("mindleak-ackplane-client-test-{nanos}-{counter}")
     }
+
+    /// Serializes this module's tests against the real OS credential
+    /// facility. Each test already uses its own account name, but
+    /// `a_stored_seed_round_trips_through_the_real_credential_facility`
+    /// still failed its own immediately-following load with
+    /// `Facility(NoEntry)` under Rust's default parallel test threading
+    /// (~1 run in 4, never reproduced at `--test-threads=1`) -- so whatever
+    /// the facility's contention is, per-account isolation alone does not
+    /// avoid it.
+    static CREDENTIAL_FACILITY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// The real OS credential facility, round-tripped. Skips rather than
     /// fails when the facility itself is unreachable in this environment
@@ -231,6 +245,7 @@ mod tests {
     /// reason.
     #[test]
     fn a_stored_seed_round_trips_through_the_real_credential_facility() {
+        let _guard = CREDENTIAL_FACILITY_TEST_LOCK.lock().unwrap();
         let service = "mindleak-ackplane-client-test";
         let account = unique_account();
         let seed = [42u8; 32];
@@ -250,6 +265,7 @@ mod tests {
 
     #[test]
     fn a_missing_credential_is_reported_as_a_facility_error_not_a_panic() {
+        let _guard = CREDENTIAL_FACILITY_TEST_LOCK.lock().unwrap();
         let service = "mindleak-ackplane-client-test";
         let account = format!("{}-never-stored", unique_account());
         match CredentialFacilitySigner::load("key-1", "node-1", service, &account) {
