@@ -34,6 +34,15 @@ Readiness, and local lifecycle workflows. The Bridge can only inspect a Fleet
 projection. Calling the latter the human operations interface while excluding
 the operations makes the product boundary depend on which UI a person opened.
 
+The VSIX also imposes two practical ceilings that do not belong in the
+Industrial product boundary. Repository-local SQLite and an extension-hosted UI
+have shown scaling and concurrency pressure in larger workspaces, and operating
+several substantial views inside VS Code is difficult to manage. More
+fundamentally, not every developer or agent runtime uses VS Code. An Industrial
+human interface must work in a browser independently of editor choice. These
+observations justify a server profile and benchmarks; they do not by themselves
+prove PostgreSQL is faster for every workload.
+
 The load-bearing boundary is storage authority, not feature category, developer
 count, or fleet size. The VSIX runs the planes against repository-local SQLite.
 Ackplane runs the server product against its own PostgreSQL store. SQLite is the
@@ -59,13 +68,13 @@ deliberately higher bar compared with opening the SQLite-backed VSIX.
 
 AgentD, Agency, VSIX-connected repository nodes, and other agent runtimes can
 use the same Industrial service without adopting one editor or one agent
-framework. Bridge is the human client of that backplane; it is not the only
-client and it is not the place agents themselves run.
+framework. Bridge is the canonical editor-neutral human client of that
+backplane; machine clients use SDKs and gRPC, and editor adapters provide local
+sensing without owning the product UI.
 
 "Server version of the VSIX" therefore means the same capability model and
-human workflows over a different storage implementation. It does not mean
-exposing or replicating local SQLite, forwarding raw MCP, or putting a remote
-shell in a browser.
+human workflows over a different storage implementation and host. It does not
+mean exposing or replicating local SQLite or forwarding raw MCP.
 
 ## Decision
 
@@ -75,16 +84,18 @@ shell in a browser.
   `spec.db`. It needs no Ackplane, account, PostgreSQL, Docker, or network
   reachability. The VSIX also owns VS Code-specific integration: editor and
   workspace context, terminal and Git sensors, opening source and ADR files,
-  local binary registration, and activation lifecycle.
+  local binary registration, and activation lifecycle. It is an optional
+  lightweight VS Code client, not a prerequisite for the Industrial product.
 
 2. **The Industrial profile is the PostgreSQL-backed Ackplane and Bridge.**
   Ackplane's PostgreSQL database is the authoritative store for shared server
   state, durable records, arbitration, and projections; it is not a cache of a
-  chosen developer's SQLite files. The Bridge is its human operations
-  interface and the server counterpart of the VSIX. It is intended for large
-  codebases and coordination complexity, whether that means one developer
-  running many agents, multiple developers, one or many projects, one or many
-  repositories, several machines, or any combination of those.
+  chosen developer's SQLite files. Bridge is its canonical browser-based human
+  operations interface and the server counterpart of the VSIX. It requires no
+  VS Code installation. It is intended for large codebases and coordination
+  complexity, whether that means one developer running many agents, multiple
+  developers, one or many projects, one or many repositories, several machines,
+  or any combination of those.
 
 3. **Setup selects Local, Industrial, or both explicitly.** Local installs the
   VSIX and SQLite-backed planes. Industrial connects to a hosted Ackplane or
@@ -124,8 +135,22 @@ shell in a browser.
 
 6. **Feature parity is measured against the MindLeak VSIX; storage changes the
   implementation.** The VSIX's contributed views and commands define the
-  parity inventory: Context, Fleet, Work, Board Doctor, Design, Evidence,
-  Knowledge, Telemetry, Readiness, backup/export, and lifecycle operations.
+  parity inventory. Industrial parity is not complete until each row below has
+  a Bridge implementation or an explicit reviewed decision explaining why the
+  server meaning differs:
+
+  | MindLeak VSIX surface | Industrial Bridge capability |
+  |---|---|
+  | Workspace / Readiness | Project, repository, node, and agent readiness |
+  | Context Graph | Repository, project, and fleet context projections |
+  | Fleet | Projects, repositories, enrolled nodes, agents, and freshness |
+  | Work / Board Doctor | Tasks, allocation, leases, overlap, stalls, and waits |
+  | Design Board | ADR discovery, review, materialization, and provenance |
+  | Evidence Board | Evidence, conformance, receipts, and review state |
+  | Knowledge | Search, provenance, reach, revalidation, and retirement |
+  | Telemetry | Fleet, transport, directive, storage, and tool health |
+  | Backup / export / reset | Authorized Industrial administration and audit export |
+
   Unrelated products and their workflows are integrations or consumers, not
   this product's baseline. A Bridge workflow may aggregate several enrolled
   repositories or name one explicitly, but it does not disappear merely
@@ -137,9 +162,11 @@ shell in a browser.
   HTTP, or PostgreSQL directly. The local adapter composes the packaged MCP
   client with the VSIX host and the SQLite-backed planes. The server adapter
   calls the Bridge's versioned, authenticated API over Ackplane's
-  PostgreSQL-backed authority and projections. Shared components and state
-  models are reused where the hosts permit it; neither storage implementation
-  invents different task, evidence, knowledge, or design semantics.
+  PostgreSQL-backed authority and projections. Browser-oriented workflow and
+  state modules are shared rather than reimplemented in each editor. Shared
+  components are reused where the hosts permit it; neither storage
+  implementation invents different task, evidence, knowledge, or design
+  semantics.
 
 8. **The VSIX remains the local device driver, not the server's storage
   gateway.** Browser code cannot observe editor focus, terminal completion,
@@ -148,7 +175,9 @@ shell in a browser.
   planes; in Industrial an enrolled node publishes typed domain records that
   Ackplane accepts into PostgreSQL. The Bridge never reads SQLite through an
   extension tunnel, and PostgreSQL never becomes a block-level replica of
-  either local database.
+  either local database. Other editors and headless environments provide the
+  same role through supervisor, SDK, and protocol adapters; VS Code is one
+  integration, not the Industrial product boundary.
 
 9. **Server-owned actions use typed Ackplane APIs.** Claims, leases, shared
    coordination, enrolment, and future server-owned policy or review actions
@@ -163,7 +192,10 @@ shell in a browser.
    similar operations cannot execute inside the Bridge service. A remote form
    needs a reviewed command contract, explicit repository and capability scope,
    local authorization, bounded deadlines and retries, idempotency, and a
-   durable request/result receipt. ADR-0083's prohibition remains load-bearing:
+  durable request/result receipt. This is also how Bridge represents VSIX-only
+  actions such as ingesting the active file or opening a source/ADR location:
+  the capability remains visible and the selected enrolled node performs the
+  host-specific action when supported. ADR-0083's prohibition remains load-bearing:
    no arbitrary shell, terminal input, source patch, untyped `execute` payload,
    or raw MCP tunnel becomes the implementation shortcut.
 
@@ -184,11 +216,12 @@ shell in a browser.
    expected Bridge work rather than categorically excluded.
 
 13. **Packaging preserves both entry points without forking the product.** The
-    VSIX packages the local client, sensors, and binaries. A server deployment
-    packages Ackplane and the Bridge. Shared client, capability, and UI modules
-    are versioned once where feasible, and the reference-consumer gate verifies
-    the protocol they share. Installing the VSIX never silently starts a server;
-    running Ackplane never makes local planes depend on server availability.
+  optional VSIX packages the Local client, VS Code sensors, and binaries. A
+  server deployment packages Ackplane and the canonical Bridge UI. Shared
+  client, capability, and browser workflow modules are versioned once where
+  feasible, and the reference-consumer gate verifies the protocol they share.
+  Installing the VSIX never silently starts a server; running Ackplane never
+  makes local planes depend on server availability.
 
 ## Consequences
 
@@ -200,9 +233,10 @@ shell in a browser.
   Evidence, Knowledge, Context, Telemetry, Readiness, and reviewed operations
   follow as explicit server-roadmap surfaces.
 - The extension must progressively separate reusable workflow state and views
-  from VS Code-only sensors and commands. ADR-0103's packaged client is the
-  natural protocol boundary; duplicating its MCP implementation in each host is
-  not accepted.
+  from VS Code-only sensors and commands. Reusable human workflows move toward
+  Bridge/browser modules; the extension keeps editor integration. ADR-0103's
+  packaged client is the natural Local protocol boundary; duplicating its MCP
+  implementation in each host is not accepted.
 - Industrial capabilities need first-class PostgreSQL schemas and projections
   that implement the shared domain contracts. The server never queries or
   copies a local SQLite database wholesale; enrolled nodes publish typed
@@ -224,6 +258,10 @@ shell in a browser.
   plus PostgreSQL, identity, migration, and service operation when codebase
   size, durability, or coordination complexity justifies them - even for one
   developer. Running both is a supported development and operating shape.
+- Performance and scale claims require representative benchmarks: graph and
+  knowledge query latency, concurrent agent writes, projection lag, UI load,
+  and recovery under the same repository/fleet corpus. PostgreSQL and Bridge
+  are the Industrial architecture, not an exemption from measuring them.
 - Product copy must stop calling the Bridge assurance-only. It is the human
   operations interface for the server product, with assurance as one
   capability among the same MindLeak coordination workflows.
@@ -238,6 +276,12 @@ scope grows.
 **Remove the VSIX and require Ackplane for one developer.** Rejected because
 local-first, offline operation is a real capability and the VSIX owns editor
 integration a browser cannot reproduce.
+
+**Keep the VSIX as the canonical UI and make Bridge secondary.** Rejected
+because it binds the Industrial product to one editor, preserves the extension
+management ceiling, and excludes developers and agents that do not use VS Code.
+The VSIX is a valuable Local client and sensor adapter; Bridge is the canonical
+Industrial human interface.
 
 **Make Local and Industrial mutually exclusive installations.** Rejected
 because a developer must be able to keep the lightweight SQLite workflow while

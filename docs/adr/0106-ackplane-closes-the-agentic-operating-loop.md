@@ -106,11 +106,13 @@ memory, intent, governance, evidence, and decisions must survive them.
    guidance. A failure therefore changes the next attempt rather than merely
    ending the current one.
 
-9. **Bridge exposes the brain, not only the telemetry.** A person can inspect
-   why work was assigned, what knowledge and policy shaped a prompt, which
-   agent is acting, what changed, what evidence exists, and why the system
-   decided to continue, review, resteer, pause, or terminate. Human decisions
-   enter the same durable log as automated ones.
+9. **Bridge is the canonical editor-neutral surface for the brain.** From a
+  browser, without requiring VS Code, a person can inspect why work was
+  assigned, what knowledge and policy shaped a prompt, which agent is acting,
+  what changed, what evidence exists, and why the system decided to continue,
+  review, resteer, pause, or terminate. Human decisions enter the same durable
+  log as automated ones. Editor extensions contribute sensing and host actions
+  but do not own a separate Industrial decision experience.
 
 10. **MCP is a Local compatibility surface, not the Industrial nervous
     system.** The VSIX and Local planes may continue to expose stdio MCP tools.
