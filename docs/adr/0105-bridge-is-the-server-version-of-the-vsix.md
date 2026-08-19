@@ -11,7 +11,8 @@
   (the first read-only API is a delivery slice, not the product ceiling)
 - Depends on: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md)
   (federation authority), [ADR-0083](0083-grpc-is-the-ackplane-node-protocol.md)
-  (typed node protocol), [ADR-0089](0089-mindleak-is-an-operating-system-for-agent-coordination.md)
+  (typed node protocol), [ADR-0088](0088-the-ackplane-runs-in-containers-the-planes-do-not.md)
+  (local container topology), [ADR-0089](0089-mindleak-is-an-operating-system-for-agent-coordination.md)
   (product and capability vocabulary), [ADR-0103](0103-the-mcp-client-is-packaged-once-not-reimplemented.md)
   (one packaged client boundary)
 
@@ -38,13 +39,22 @@ work across agents, developers, projects, repositories, or machines. One
 developer may need the industrial profile; several developers do not redefine
 the product.
 
-The user chooses that deployment profile during setup. MindLeak does not infer
-it from repository size, silently switch when a second agent appears, or fall
-back from PostgreSQL authority to SQLite when Ackplane is unavailable.
+Setup may enable Local, Industrial, or both. MindLeak does not infer that choice
+from repository size, silently switch when a second agent appears, or fall back
+from PostgreSQL authority to SQLite when Ackplane is unavailable. Running both
+stacks is useful and supported; treating both as the writer for one shared
+resource is not.
 
-The Industrial profile is a hosted backplane for both coordination and
-learning. AgentD, Agency, VSIX-connected repository nodes, and other agent
-runtimes can use the same service without adopting one editor or one agent
+The Industrial profile is a deployable backplane for both coordination and
+learning. It may be hosted remotely or self-hosted on the developer's machine.
+Local Industrial operation is essential for development and testing and uses
+ADR-0088's Docker Compose topology: PostgreSQL, explicit migration, and
+Ackplane, with Bridge running alongside the stack or packaged as an additional
+service. Requiring Docker, PostgreSQL, migrations, and service lifecycle is the
+deliberately higher bar compared with opening the SQLite-backed VSIX.
+
+AgentD, Agency, VSIX-connected repository nodes, and other agent runtimes can
+use the same Industrial service without adopting one editor or one agent
 framework. Bridge is the human client of that backplane; it is not the only
 client and it is not the place agents themselves run.
 
@@ -63,8 +73,7 @@ shell in a browser.
   workspace context, terminal and Git sensors, opening source and ADR files,
   local binary registration, and activation lifecycle.
 
-2. **The Industrial profile is the hosted, PostgreSQL-backed Ackplane and
-  Bridge.**
+2. **The Industrial profile is the PostgreSQL-backed Ackplane and Bridge.**
   Ackplane's PostgreSQL database is the authoritative store for shared server
   state, durable records, arbitration, and projections; it is not a cache of a
   chosen developer's SQLite files. The Bridge is its human operations
@@ -73,12 +82,19 @@ shell in a browser.
   running many agents, multiple developers, one or many projects, one or many
   repositories, several machines, or any combination of those.
 
-3. **Setup selects the storage profile explicitly.** A user chooses Local or
-  Industrial when configuring a project or installation. The choice is
-  persisted and visible. No runtime heuristic promotes a repository because
-  it became large or gained another agent; no connectivity failure demotes an
-  Industrial deployment to Local authority. Moving between profiles is an
-  explicit, auditable migration workflow, not an automatic fallback.
+3. **Setup selects Local, Industrial, or both explicitly.** Local installs the
+  VSIX and SQLite-backed planes. Industrial connects to a hosted Ackplane or
+  starts the supported local Docker Compose stack and Bridge. Both keeps the
+  lightweight local experience available while also connecting enrolled nodes
+  and agent clients to Industrial coordination. The choice is persisted and
+  visible; neither stack's presence disables the other.
+
+  Coexistence never means dual authority. Each shared mutable resource and task
+  namespace declares one arbiter - local SQLite or Ackplane PostgreSQL - and
+  every client routes mutations there. No runtime heuristic promotes a
+  repository because it became large or gained another agent; no connectivity
+  failure demotes an Industrial resource to Local authority. Moving authority
+  between stores is an explicit, auditable migration workflow, not fallback.
 
 4. **Ackplane is agent-runtime neutral and makes coordination and learning
   first-class server capabilities.** AgentD, Agency, enrolled repository
@@ -100,13 +116,15 @@ shell in a browser.
   review and completion. These are typed coordination mutations against
   Ackplane authority, not commands to an operating-system process.
 
-6. **Feature parity is the target; storage changes the implementation.** The Bridge must
-   provide the server meaning of the VSIX's human workflows: Context, Fleet,
-   Work, Board Doctor, Design, Evidence, Knowledge, Telemetry, Readiness,
-   backup/export, and lifecycle operations. A workflow may aggregate several
-   enrolled repositories or name one repository explicitly, but it does not
-   disappear merely because its source of truth is remote. A missing Bridge
-   counterpart is an implementation gap, not deliberate product separation.
+6. **Feature parity is measured against the MindLeak VSIX; storage changes the
+  implementation.** The VSIX's contributed views and commands define the
+  parity inventory: Context, Fleet, Work, Board Doctor, Design, Evidence,
+  Knowledge, Telemetry, Readiness, backup/export, and lifecycle operations.
+  Unrelated products and their workflows are integrations or consumers, not
+  this product's baseline. A Bridge workflow may aggregate several enrolled
+  repositories or name one explicitly, but it does not disappear merely
+  because its source of truth is remote. A missing Bridge counterpart is an
+  implementation gap, not deliberate product separation.
 
 7. **One capability model sits behind two storage adapters.** Human workflow
   modules depend on a typed capability interface rather than VS Code, SQLite,
@@ -169,10 +187,12 @@ shell in a browser.
 ## Consequences
 
 - The current Bridge Fleet page is a real vertical slice but not a complete
-  product boundary. The immediate next slice is the PostgreSQL-backed Agents
-  and Work control room described above; Design, Evidence, Knowledge, Context,
-  Telemetry, Readiness, and reviewed operations follow as explicit
-  server-roadmap surfaces.
+  product boundary. At adoption it exposes only Fleet, repository detail, and
+  accepted-record timeline reads; its "coordination" filter is enrolled-node
+  presence, not task or lease state. The immediate next slice is the
+  PostgreSQL-backed Agents and Work control room described above. Design,
+  Evidence, Knowledge, Context, Telemetry, Readiness, and reviewed operations
+  follow as explicit server-roadmap surfaces.
 - The extension must progressively separate reusable workflow state and views
   from VS Code-only sensors and commands. ADR-0103's packaged client is the
   natural protocol boundary; duplicating its MCP implementation in each host is
@@ -194,9 +214,10 @@ shell in a browser.
   idempotency, receipts, and failure recovery are product requirements rather
   than infrastructure details.
 - Setup makes the cost and capability choice explicit. Local minimizes moving
-  parts for a small solo project. Industrial pays for PostgreSQL, identity, and
-  service operation when codebase size, durability, or coordination complexity
-  justifies them - even for one developer.
+  parts for a small solo project. Industrial pays for Docker when self-hosted,
+  plus PostgreSQL, identity, migration, and service operation when codebase
+  size, durability, or coordination complexity justifies them - even for one
+  developer. Running both is a supported development and operating shape.
 - Product copy must stop calling the Bridge assurance-only. It is the human
   operations interface for the server product, with assurance as one
   capability among the same MindLeak coordination workflows.
@@ -211,6 +232,12 @@ scope grows.
 **Remove the VSIX and require Ackplane for one developer.** Rejected because
 local-first, offline operation is a real capability and the VSIX owns editor
 integration a browser cannot reproduce.
+
+**Make Local and Industrial mutually exclusive installations.** Rejected
+because a developer must be able to keep the lightweight SQLite workflow while
+running a local Docker-backed Ackplane for testing or connecting the same
+machine to a hosted deployment. Exclusivity is unnecessary; single authority
+per shared resource is the actual invariant.
 
 **Fork the VSIX workflows into unrelated Bridge implementations.** Rejected
 because task, evidence, knowledge, and design semantics would drift by host.
