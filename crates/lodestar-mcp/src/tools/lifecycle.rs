@@ -9,7 +9,7 @@ pub(super) fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "lodestar_stats",
-            "description": "Counts: active goals, open/claimed/done tasks, active knowledge.",
+            "description": "Counts: active goals, open/claimed/done/total tasks, active knowledge. `total_tasks` is every task ever created, any status -- the number that tells a `board`/`stalled` caller whether its own empty result means nothing has ever been set up, or that everything is genuinely clean.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
@@ -46,11 +46,12 @@ pub(super) fn dispatch(
         "lodestar_stats" => Some((|| {
             let stats = engine.stats().map_err(|e| e.to_string())?;
             let markdown = format!(
-                "| Intent Plane | Count |\n|---|--:|\n| Active goals | {} |\n| Open tasks | {} |\n| Claimed tasks | {} |\n| Done tasks | {} |\n| Active knowledge | {} |",
+                "| Intent Plane | Count |\n|---|--:|\n| Active goals | {} |\n| Open tasks | {} |\n| Claimed tasks | {} |\n| Done tasks | {} |\n| Total tasks (any status) | {} |\n| Active knowledge | {} |",
                 stats.active_goals,
                 stats.open_tasks,
                 stats.claimed_tasks,
                 stats.done_tasks,
+                stats.total_tasks,
                 stats.active_knowledge
             );
             rendered(markdown, &stats)
@@ -111,6 +112,31 @@ mod tests {
             stats["structuredContent"]["active_knowledge"],
             active["count"]
         );
+    }
+
+    /// `total_tasks` is the one number that tells a `board`/`stalled` caller
+    /// seeing an empty result whether nothing has ever been created here or
+    /// everything is genuinely clean -- it must count a task regardless of
+    /// which status it is currently in, unlike `open_tasks`.
+    #[test]
+    fn total_tasks_is_reported_and_the_markdown_names_it() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Counted", "count every task", None)
+            .unwrap();
+        engine.create_task(&goal.id, "Work", "done").unwrap();
+
+        let stats = call(
+            &engine,
+            &json!({ "name": "lodestar_stats", "arguments": {} }),
+        )
+        .unwrap();
+
+        assert_eq!(stats["structuredContent"]["total_tasks"], json!(1));
+        assert!(stats["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Total tasks"));
     }
 
     #[test]

@@ -415,8 +415,15 @@ export const resolveServer = (repoRoot, plane = "lodestar") => {
  * is also the seam the publisher's own tests use to stand up a ledger without
  * building the Rust binary — a test that cannot reach the ledger could only
  * assert refusal, which would leave the publish path itself untested.
+ *
+ * `maxBuffer` defaults to `execFileSync`'s own 1 MiB default so every existing
+ * caller's behaviour is unchanged; a caller reading a view whose payload can
+ * grow with the repository's history (`task_query view=board` on a board with
+ * hundreds of terminal tasks measured well past 1 MiB) must raise it
+ * explicitly rather than this function silently guessing a bigger number for
+ * everyone.
  */
-export const callTools = (binary, cwd, calls) => {
+export const callTools = (binary, cwd, calls, maxBuffer = 1024 * 1024) => {
   const [command, leadingArgs] = binary.endsWith(".mjs")
     ? [process.execPath, [binary]]
     : [binary, []];
@@ -444,6 +451,7 @@ export const callTools = (binary, cwd, calls) => {
     input: requests.map((request) => JSON.stringify(request)).join("\n") + "\n",
     stdio: ["pipe", "pipe", "pipe"],
     timeout: 30_000,
+    maxBuffer,
   });
   const byId = new Map();
   for (const line of raw.split(/\r?\n/)) {
@@ -455,13 +463,34 @@ export const callTools = (binary, cwd, calls) => {
       continue;
     }
     if (message.id === undefined || !message.result) continue;
-    const text = message.result?.content?.[0]?.text;
-    if (text === undefined) continue;
-    try {
-      byId.set(message.id, JSON.parse(text));
-    } catch {
-      byId.set(message.id, text);
-    }
+    byId.set(message.id, parseCallResult(message.result));
   }
   return calls.map((_, index) => byId.get(index + 1));
 };
+
+/**
+ * Parse one `tools/call` result the same way the extension's own
+ * `parseToolResult` (editors/vscode/src/util.ts) already does: prefer the
+ * machine-readable `structuredContent` a tool renders Markdown-for-chat
+ * alongside, falling back to the first text-content block parsed as JSON
+ * (or the raw text) for tools that never carry one. Reading only
+ * `content[0].text` here silently returned prose instead of data for every
+ * tool already migrated to that dual format -- `lodestar_stats` answered
+ * with a Markdown table string, not a `{active_goals, ...}` object, and every
+ * field read off it was `undefined`.
+ */
+export function parseCallResult(result) {
+  if (
+    result?.structuredContent !== undefined &&
+    result?.structuredContent !== null
+  ) {
+    return result.structuredContent;
+  }
+  const text = result?.content?.[0]?.text;
+  if (typeof text !== "string") return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
