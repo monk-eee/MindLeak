@@ -1,5 +1,6 @@
 - **`gh pr update-branch` can silently drop a real conflict's losing side instead
-  of failing — MEASURED 2026-08-18, left OPEN, not fully diagnosed.** The
+  of failing — MEASURED 2026-08-18, GUARDED 2026-08-19, OPEN: the root cause in
+  GitHub's own merge algorithm is still undiagnosed.** The
   delivery queue (`scripts/delivery-queue.mjs`) brings an armed PR's branch up
   to date by calling `gh pr update-branch <number>`, and its own comment says
   "`update-branch` fails when GitHub cannot merge main in cleanly" — treating a
@@ -35,8 +36,23 @@
   push sequence, is unconfirmed. Left open rather than asserting a root cause
   the evidence does not actually establish.
 
+  **Guarded 2026-08-19:** `scripts/delivery-queue.mjs`'s own `update-branch`
+  call now computes the expected post-merge tree locally
+  (`git merge-tree --write-tree origin/main origin/<branch>`) immediately
+  before calling it, and compares the branch's actual tree against that
+  expectation once it returns. A mismatch is reported loudly
+  (`updated #N BUT ITS TREE DOES NOT MATCH THE EXPECTED MERGE`) instead of the
+  plain "updated #N" line, so this exact call site can no longer repeat PR
+  #507's failure unnoticed (`updateBranchMismatch`, unit- and
+  sabotage-verified in `delivery-queue.test.mjs`). This catches the symptom at
+  its one known call site, not the cause: the underlying behaviour in
+  GitHub's `update-branch` remains undiagnosed, and a manual
+  `gh pr update-branch` run outside the queue, or a merge produced any other
+  way, is not covered by this guard.
+
   **What this changes for now:** do not trust "the PR merged with green checks"
   as proof a diff landed intact when the branch went through an automated
-  `update-branch` step against a `main` that moved concurrently. Diff the
+  `update-branch` step against a `main` that moved concurrently, unless that
+  step was this queue's own guarded call. Diff the
   actual files on `origin/main` against what the PR's own commits show,
   especially for any file two recently-merged PRs both touched.

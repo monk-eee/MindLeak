@@ -17,6 +17,7 @@ import {
   queueOrder,
   sweepAnnouncement,
   sweepArgs,
+  updateBranchMismatch,
 } from "./delivery-queue.mjs";
 
 const NOW = Date.parse("2026-07-28T12:00:00Z");
@@ -391,6 +392,31 @@ test("effectiveMergeState leaves every non-DIRTY status untouched", () => {
       status,
     );
   }
+});
+
+// --- verifying update-branch actually did what it claimed -------------------
+
+/// gaps.d/update-branch-can-silently-drop-a-conflicts-losing-side.md: PR #507's
+/// update-branch call exited 0 and reported no conflict, yet the resulting
+/// tree silently dropped one side of a real three-way merge. Two genuinely
+/// different tree hashes is the one case this must catch.
+test("update-branch producing a different tree than the expected merge is a mismatch", () => {
+  assert.equal(updateBranchMismatch("tree-a", "tree-b"), true);
+});
+
+/// The ordinary, overwhelmingly common case: the branch update produced
+/// exactly the merge it was expected to.
+test("update-branch producing the expected tree is not a mismatch", () => {
+  assert.equal(updateBranchMismatch("tree-a", "tree-a"), false);
+});
+
+/// An unverifiable computation (a fetch failed, or the pre-check itself hit a
+/// real conflict) must fall back to the old, unverified behaviour -- it must
+/// never read as a false-positive mismatch just because one side is missing.
+test("an unverifiable expected or actual tree is never reported as a mismatch", () => {
+  assert.equal(updateBranchMismatch(null, "tree-a"), false);
+  assert.equal(updateBranchMismatch("tree-a", null), false);
+  assert.equal(updateBranchMismatch(null, null), false);
 });
 
 // --- the sweep runs in a fresh process ------------------------------------
