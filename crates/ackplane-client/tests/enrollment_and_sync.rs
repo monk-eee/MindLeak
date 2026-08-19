@@ -183,22 +183,8 @@ async fn a_fresh_node_enrolls_activates_and_synchronizes_one_real_event() {
         .into_inner();
     assert_eq!(activation.state(), v1::EnrollmentState::Activating);
     assert!(!activation.enrolment_receipt_id.is_empty());
-
-    let (db_client, connection) = tokio_postgres::connect(&database_url, tokio_postgres::NoTls)
-        .await
-        .expect("the gated test database should accept a signing-key read connection");
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
-    let signing_key_id: String = db_client
-        .query_one(
-            "SELECT signing_key_id FROM signing_keys WHERE public_key_fingerprint = $1 \
-             ORDER BY activated_at DESC LIMIT 1",
-            &[&fingerprint],
-        )
-        .await
-        .expect("activation should have registered a signing key")
-        .get(0);
+    assert!(!activation.signing_key_id.is_empty());
+    let signing_key_id = activation.signing_key_id.clone();
 
     let mut sync_client = NodeSyncServiceClient::connect(endpoint)
         .await

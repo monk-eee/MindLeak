@@ -187,24 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?
         .into_inner();
     println!("activate_enrollment -> {activation:?}");
-
-    // The wire contract does not return the server-assigned signing_key_id to
-    // the node that just activated (see
-    // gaps.d/enrolment-activation-never-returns-the-assigned-signing-key-id.md);
-    // read it back the only way available today: query the registry directly
-    // by fingerprint, which only this example's administrator stand-in can do.
-    let (db_client, connection) = tokio_postgres::connect(&db_url, tokio_postgres::NoTls).await?;
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
-    let row = db_client
-        .query_one(
-            "SELECT signing_key_id FROM signing_keys WHERE public_key_fingerprint = $1 \
-             ORDER BY activated_at DESC LIMIT 1",
-            &[&fingerprint],
-        )
-        .await?;
-    let signing_key_id: String = row.get(0);
+    let signing_key_id = activation.signing_key_id.clone();
     println!("assigned signing_key_id = {signing_key_id}");
 
     // 4. The real NodeSync stream: Hello -> ConnectionChallenge ->
