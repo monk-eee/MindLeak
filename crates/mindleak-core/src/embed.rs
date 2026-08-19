@@ -302,6 +302,9 @@ fn kind_prior(kind: Option<NodeType>) -> f32 {
     match kind {
         // A conclusion, decision, or commit rationale: what a question is for.
         Some(NodeType::Intent) => 1.00,
+        // A compiled digest is itself a distilled answer, the same reason
+        // Intent ranks highest -- it exists to be read as a conclusion.
+        Some(NodeType::Digest) => 1.00,
         Some(NodeType::Artifact) => 0.92,
         Some(NodeType::Symbol) => 0.85,
         Some(NodeType::Execution) => 0.85,
