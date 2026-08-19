@@ -101,7 +101,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0091](0091-ackplane-builds-and-tests-without-a-database.md) | Ackplane builds and tests without a database | Accepted |
 | [0092](0092-ackplane-is-governed-by-its-own-goal.md) | Ackplane is governed by its own goal | Accepted |
 | [0093](0093-tool-descriptions-are-a-contract-not-a-narrative.md) | Tool descriptions are a contract, not a narrative | Accepted |
-| [0094](0094-the-bridge-preserves-standalone-operation.md) | The Bridge preserves standalone operation | Accepted |
+| [0094](0094-the-bridge-preserves-standalone-operation.md) | The Bridge preserves standalone operation | Superseded by [ADR-0105](0105-bridge-is-the-server-version-of-the-vsix.md) |
 | [0095](0095-the-bridge-uses-an-authenticated-projection-api.md) | The Bridge uses an authenticated projection API | Accepted |
 | [0096](0096-ackplane-arbitrates-federated-claims-through-leased-delegation.md) | Ackplane arbitrates federated claims through leased delegation | Accepted |
 | [0098](0098-connection-trust-reuses-the-enrolled-key-oidc-waits.md) | Connection trust reuses the enrolled node key; OIDC waits for a real second tenant | Accepted |
@@ -111,6 +111,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0102](0102-context-is-compiled-not-assembled-by-hand.md) | Context is compiled into a bounded packet, not assembled by hand | Accepted |
 | [0103](0103-the-mcp-client-is-packaged-once-not-reimplemented.md) | The MCP client is packaged once, not reimplemented per consumer | Accepted |
 | [0104](0104-a-reference-consumer-tests-the-tool-surfaces-stability.md) | A reference consumer tests the tool surface's stability | Accepted |
+| [0105](0105-bridge-is-the-server-version-of-the-vsix.md) | The Bridge is the server version of the VSIX | Accepted |
 
 ## Writing a new ADR
 
