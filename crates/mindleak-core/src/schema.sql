@@ -6,7 +6,7 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS nodes (
     id               TEXT PRIMARY KEY,        -- e.g. "artifact:src/auth.ts"
-    type             TEXT NOT NULL,           -- symbol | artifact | execution | intent | agent | package
+    type             TEXT NOT NULL,           -- symbol | artifact | execution | intent | agent | package | digest
     label            TEXT NOT NULL,           -- human-readable name
     content          TEXT,                    -- code snippet, commit msg, or log excerpt
     created_at       INTEGER NOT NULL,        -- unix seconds

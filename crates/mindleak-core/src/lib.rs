@@ -34,10 +34,11 @@ pub use error::{
 };
 pub use graph::{
     AgentActivity, AgentFootprintOverlap, ArtifactStub, BudgetReport, CompiledContext,
-    ConformanceEvidence, Direction, EvidenceProvenance, ExcludedCandidate, ForgetOutcome,
-    GraphExport, GraphStore, Preflight, PreflightNode, PromotionCandidate, PruneOutcome,
-    ReconcileOutcome, ResetOutcome, ScoredNode, SessionConsolidationOutcome, SignalCandidate,
-    SignalConsolidationOutcome, Subgraph, WeightedEdge, WorkingSetItem, WriteOutcome,
+    ConformanceEvidence, Digest, DigestSourceSnapshot, DigestStatus, DigestStatusReport, Direction,
+    EvidenceProvenance, ExcludedCandidate, ForgetOutcome, GraphExport, GraphStore, Preflight,
+    PreflightNode, PromotionCandidate, PruneOutcome, ReconcileOutcome, ResetOutcome, ScoredNode,
+    SessionConsolidationOutcome, SignalCandidate, SignalConsolidationOutcome, Subgraph,
+    WeightedEdge, WorkingSetItem, WriteOutcome,
 };
 pub use model::{Edge, Node, NodeType, RelationType};
 

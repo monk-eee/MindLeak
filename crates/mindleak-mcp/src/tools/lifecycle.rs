@@ -104,6 +104,29 @@ pub(super) fn context_definitions() -> Vec<Value> {
                 "required": ["max_tokens"]
             }
         }),
+        json!({
+            "name": "compile_digest",
+            "description": "Compile one named, typed digest -- a playbook/runbook/repository-guide rendering of current graph state -- through a deterministic template (ADR-0101). Never hand-edited: to change a digest, change what it compiles from and recompile. Ships `repository_guide` (agent roster, recent decisions, recently active files).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "digest_type": { "type": "string", "description": "Which template to compile. MindLeak ships repository_guide." },
+                    "limit": { "type": "integer", "default": 20, "description": "Bound on recent nodes the template reads." }
+                },
+                "required": ["digest_type"]
+            }
+        }),
+        json!({
+            "name": "digest_status",
+            "description": "Whether a compiled digest's source snapshot still matches live graph state: current while every node it read from still exists, stale once any has been forgotten or reaped. Never regenerates on its own; names exactly which source node ids went missing.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "digest_id": { "type": "string", "description": "The digest node id returned by compile_digest." }
+                },
+                "required": ["digest_id"]
+            }
+        }),
     ]
 }
 
@@ -264,6 +287,21 @@ pub(super) fn dispatch(
                 )
                 .map_err(|e| e.to_string())?;
             Ok(text_result(&json!(packet)))
+        })()),
+        "compile_digest" => Some((|| {
+            let digest_type = req_str(args, "digest_type")?;
+            let limit = opt_i64(args, "limit", 20).max(0) as usize;
+            let digest = engine
+                .compile_digest(&digest_type, limit)
+                .map_err(|e| e.to_string())?;
+            Ok(text_result(&json!(digest)))
+        })()),
+        "digest_status" => Some((|| {
+            let digest_id = req_str(args, "digest_id")?;
+            let status = engine
+                .digest_status(&digest_id)
+                .map_err(|e| e.to_string())?;
+            Ok(text_result(&json!(status)))
         })()),
         _ => None,
     }
@@ -476,6 +514,74 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("agent"));
+    }
+
+    #[test]
+    fn compile_digest_renders_a_repository_guide() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        call_ok(
+            &engine,
+            "ingest_file",
+            json!({ "path": "src/a.rs", "content": "fn a() {}", "agent": "agent-a" }),
+        );
+
+        let result = call_ok(
+            &engine,
+            "compile_digest",
+            json!({ "digest_type": "repository_guide" }),
+        );
+        let payload: Value = serde_json::from_str(&content_text(&result)).unwrap();
+
+        assert!(payload["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("digest:repository_guide:"));
+        assert!(payload["markdown"]
+            .as_str()
+            .unwrap()
+            .contains("# Repository guide"));
+    }
+
+    #[test]
+    fn compile_digest_rejects_an_unknown_digest_type() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        let error = call(
+            &engine,
+            &json!({ "name": "compile_digest", "arguments": { "digest_type": "weekly_report" } }),
+        )
+        .unwrap_err();
+        assert!(error.contains("unsupported digest_type"));
+    }
+
+    #[test]
+    fn digest_status_reports_current_then_stale() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        call_ok(
+            &engine,
+            "ingest_file",
+            json!({ "path": "src/a.rs", "content": "fn a() {}", "agent": "agent-a" }),
+        );
+        let compiled = call_ok(
+            &engine,
+            "compile_digest",
+            json!({ "digest_type": "repository_guide" }),
+        );
+        let digest: Value = serde_json::from_str(&content_text(&compiled)).unwrap();
+        let digest_id = digest["id"].as_str().unwrap().to_string();
+
+        let current = call_ok(&engine, "digest_status", json!({ "digest_id": digest_id }));
+        assert_eq!(
+            serde_json::from_str::<Value>(&content_text(&current)).unwrap()["status"],
+            "current"
+        );
+
+        call_ok(&engine, "forget_file", json!({ "path": "src/a.rs" }));
+
+        let stale = call_ok(&engine, "digest_status", json!({ "digest_id": digest_id }));
+        assert_eq!(
+            serde_json::from_str::<Value>(&content_text(&stale)).unwrap()["status"],
+            "stale"
+        );
     }
 
     #[test]

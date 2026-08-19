@@ -443,6 +443,17 @@ reasons alone. `governing` is a caller-supplied pass-through of Lodestar's
 cross-plane data arrives as an argument, the same seam `promote_signals`
 already crosses.
 
+**Compiled digests (ADR-0101).** `MindLeak::compile_digest` renders a named,
+typed digest — a playbook/runbook/repository-guide — from current graph state
+through a deterministic template, storing the result as a `digest` node
+(`NodeType::Digest`) rather than hand-authored prose. A digest is never edited:
+to change one, change what it compiles from and recompile, the same discipline
+ADR-0056 already applies to the changelog, generalised to any typed document.
+`MindLeak::digest_status` reports whether a digest's recorded source snapshot
+still matches live graph state — `current` while every source node id it read
+still exists, `stale` once any has been forgotten or reaped — and never
+regenerates the digest on its own.
+
 **Autonomous consolidation (ADR-0017 phase 2).** An off-by-default scheduler in
 `mindleak-mcp` tracks stdio request activity with a condition variable. After a
 bounded idle period it calls the same `MindLeak::consolidate_signal` path through

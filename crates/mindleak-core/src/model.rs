@@ -18,6 +18,10 @@ pub enum NodeType {
     Agent,
     /// External dependency referenced by a bare import specifier.
     Package,
+    /// A compiled, regenerable rendering of current graph state (ADR-0101):
+    /// playbook, runbook, weekly report, etc. Content is always regenerated
+    /// output, never hand-authored or hand-edited (ADR-0056's precedent).
+    Digest,
 }
 
 impl NodeType {
@@ -29,6 +33,7 @@ impl NodeType {
             NodeType::Intent => "intent",
             NodeType::Agent => "agent",
             NodeType::Package => "package",
+            NodeType::Digest => "digest",
         }
     }
 
@@ -40,6 +45,7 @@ impl NodeType {
             "intent" => Some(NodeType::Intent),
             "agent" => Some(NodeType::Agent),
             "package" => Some(NodeType::Package),
+            "digest" => Some(NodeType::Digest),
             _ => None,
         }
     }
