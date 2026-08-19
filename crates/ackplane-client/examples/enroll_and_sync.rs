@@ -1,6 +1,7 @@
 //! Enroll one real node with a running `ackplane-server` over genuine gRPC,
-//! then publish one real signed event, so the Bridge Fleet view has a real
-//! repository to show (ADR-0085, ADR-0083, ADR-0084).
+//! then publish one real signed structural fact, so the Bridge Fleet view has
+//! a real, projected repository to show (ADR-0085, ADR-0083, ADR-0084,
+//! ADR-0086 clause 9, ADR-0087).
 //!
 //! An administrator must approve every enrollment request (ADR-0085: a node
 //! is never allowed to approve itself, and the wire contract deliberately has
@@ -46,6 +47,7 @@ use ackplane_server::enrollment::{
 };
 use ackplane_server::enrollment_store::{EnrollmentApproval, EnrollmentStore};
 use ackplane_server::envelope_signature::envelope_signing_bytes;
+use ackplane_server::projection::{StructuralFact, STRUCTURAL_FACT_PAYLOAD_TYPE};
 
 fn now_rfc3339() -> String {
     time::OffsetDateTime::now_utc()
@@ -264,9 +266,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("stream closed before FlowControl")?;
     println!("flow_control -> {flow_control_frame:?}");
 
-    // 5. One real signed event so the ledger's stream head actually moves,
-    // and the Bridge Fleet view has genuine activity to render.
-    let payload = b"enroll_and_sync example: repository activity".to_vec();
+    // 5. One real signed event carrying a genuine structural fact -- one node
+    // representing this repository -- so the ledger's stream head actually
+    // moves AND the projection worker (ADR-0086 clause 9) has something real
+    // to fold into the Bridge Fleet view's graph projection. An opaque
+    // payload would move the ledger position but the projector's
+    // `payload_type` filter would ignore it forever.
+    let fact = StructuralFact {
+        node_id: format!("repository:{repository_id}"),
+        node_type: "repository".to_string(),
+        label: repository_id.clone(),
+        edges: Vec::new(),
+    };
+    let payload = serde_json::to_vec(&fact)?;
     let payload_digest = Sha256::digest(&payload).to_vec();
     let mut wire = v1::EventEnvelope {
         tenant_id: tenant_id.clone(),
@@ -277,7 +289,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         payload_digest,
         schema_version: "1".to_string(),
         occurred_at: now_rfc3339(),
-        payload_type: "example.repository_activity".to_string(),
+        payload_type: STRUCTURAL_FACT_PAYLOAD_TYPE.to_string(),
         previous_envelope_digest: Vec::new(),
         signing_key_id: signing_key_id.clone(),
         signature: Vec::new(),

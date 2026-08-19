@@ -8,9 +8,14 @@ use ackplane_protocol::v1::{
     node_sync_service_server::NodeSyncServiceServer,
 };
 use ackplane_server::{
-    claim_service::ClaimDelegationService, claim_store::ClaimStore,
-    enrollment_service::NodeEnrollmentService, enrollment_store::EnrollmentStore,
-    ledger::LedgerStore, service::NodeSyncService, ServerConfig,
+    claim_service::ClaimDelegationService,
+    claim_store::ClaimStore,
+    enrollment_service::NodeEnrollmentService,
+    enrollment_store::EnrollmentStore,
+    ledger::LedgerStore,
+    projection::{run_projection_worker, Projector},
+    service::NodeSyncService,
+    ServerConfig,
 };
 
 #[tokio::main]
@@ -56,6 +61,22 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            let projector = match Projector::connect(config.database_url()).await {
+                Ok(projector) => projector,
+                Err(error) => {
+                    eprintln!(
+                        "ackplane-server: could not connect to the configured projection store: {error}"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            };
+            // ADR-0086 clause 9: a projection worker reads the durable ledger
+            // through checkpoints on its own cadence, decoupled from request
+            // handling; a stalled or errored tick never stops the gRPC server.
+            tokio::spawn(run_projection_worker(
+                projector,
+                std::time::Duration::from_secs(config.projection_interval_secs as u64),
+            ));
 
             println!(
                 "ackplane-server: serving NodeSyncService.Synchronize, NodeEnrollmentService, and ClaimDelegationService"
