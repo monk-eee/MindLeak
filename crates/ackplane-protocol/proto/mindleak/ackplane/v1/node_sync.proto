@@ -21,6 +21,15 @@ service ClaimDelegationService {
   rpc ListActiveClaims(ActiveClaimsRequest) returns (ActiveClaimsResult);
 }
 
+// ADR-0106 decision 3: knowledge is one of the PostgreSQL-backed Industrial
+// domains -- first slice: record, recall (ranked by pgvector similarity
+// search when a query embedding is supplied, else by recency), and retire.
+service KnowledgeService {
+  rpc RecordKnowledge(RecordKnowledgeRequest) returns (KnowledgeRecord);
+  rpc RecallKnowledge(RecallKnowledgeRequest) returns (RecallKnowledgeResult);
+  rpc RetireKnowledge(RetireKnowledgeRequest) returns (RetireKnowledgeResult);
+}
+
 // The enrolled node's proof that it, not just its bearer credentials, is
 // asking for this claim (ADR-0096 clause 4's authentication gap). Reuses the
 // same Ed25519 signing key and domain-separated verification
@@ -112,6 +121,69 @@ message ActiveClaimSummary {
 
 message ActiveClaimsResult {
   repeated ActiveClaimSummary claims = 1;
+}
+
+// The embedding field is omitted (not zero-length) when the caller has no
+// embedder configured: knowledge without one still records and recalls by
+// recency, matching the local planes' own graceful degradation (ADR-0080).
+message RecordKnowledgeRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string content = 3;
+  string source_ref = 4;
+  double half_life_hours = 5;
+  string embedding_model = 6;
+  repeated float embedding = 7;
+}
+
+message KnowledgeRecord {
+  string knowledge_id = 1;
+  string tenant_id = 2;
+  string repository_id = 3;
+  string content = 4;
+  string source_ref = 5;
+  double half_life_hours = 6;
+  string confirmed_at = 7;
+}
+
+// `query_embedding` empty means "no semantic ranking available or
+// requested" -- the result still returns, ordered by recency instead of
+// dropping the caller's request.
+message RecallKnowledgeRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string embedding_model = 3;
+  repeated float query_embedding = 4;
+  uint32 limit = 5;
+}
+
+message ActiveKnowledgeEntry {
+  string knowledge_id = 1;
+  string content = 2;
+  string source_ref = 3;
+  // Computed at query time from half_life_hours and confirmed_at
+  // (mindleak-core::decay::effective_weight's own formula), never stored.
+  double effective_weight = 4;
+  string confirmed_at = 5;
+}
+
+message RecallKnowledgeResult {
+  repeated ActiveKnowledgeEntry entries = 1;
+  // False when query_embedding was empty or named a model nothing here was
+  // embedded under -- entries are still recency-ordered, not withheld.
+  bool ranked_by_similarity = 2;
+}
+
+message RetireKnowledgeRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string knowledge_id = 3;
+  string reason = 4;
+  string retired_by = 5;
+}
+
+message RetireKnowledgeResult {
+  bool retired = 1;
 }
 
 enum ClaimLeaseOutcome {

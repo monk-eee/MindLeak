@@ -25,6 +25,8 @@ pub mod enrollment_service;
 pub mod enrollment_store;
 pub mod envelope_signature;
 pub mod fleet;
+pub mod knowledge_service;
+pub mod knowledge_store;
 pub mod ledger;
 mod migration_lock;
 pub mod projection;
