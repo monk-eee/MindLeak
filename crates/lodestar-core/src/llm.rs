@@ -55,6 +55,15 @@ pub struct LlmClient {
     pub base_url: String,
     pub model: String,
     pub api_key: String,
+    /// The token usage reported by the most recent `/chat/completions` call,
+    /// consumed by [`last_usage`](Self::last_usage). A `Cell`, not a return
+    /// value threaded through `decompose`/`judge`/`draft_question`, because
+    /// those already return the caller's parsed result and changing their
+    /// signature would ripple through every call site for a fact only
+    /// telemetry needs. Safe because this server processes one request at a
+    /// time (newline-delimited stdio JSON-RPC): no two calls on the same
+    /// client are ever in flight together to race the same cell.
+    last_usage: std::cell::Cell<Option<crate::telemetry::TokenUsage>>,
 }
 
 // Manual Debug so the bearer token never reaches a log, panic, or error chain.
@@ -82,6 +91,7 @@ impl Default for LlmClient {
                 .unwrap_or_else(|_| "http://localhost:11434/v1".to_string()),
             model: std::env::var("LODESTAR_MODEL").unwrap_or_else(|_| "glm4:9b".to_string()),
             api_key: std::env::var("LODESTAR_LLM_API_KEY").unwrap_or_default(),
+            last_usage: std::cell::Cell::new(None),
         }
     }
 }
@@ -97,7 +107,36 @@ impl LlmClient {
             base_url: "http://127.0.0.1:1/v1".to_string(),
             model: "unreachable".to_string(),
             api_key: String::new(),
+            last_usage: std::cell::Cell::new(None),
         }
+    }
+
+    /// A client with no endpoint or model set at all, distinct from
+    /// [`unreachable`](Self::unreachable): [`model_health`](Self::model_health)
+    /// reports this one as `configured: false` rather than attempting (and
+    /// failing) a request. `last_usage` has no meaning for a client that never
+    /// connects, but the field is private to this crate regardless, so
+    /// downstream crates need a named constructor rather than a struct literal
+    /// to build one for tests.
+    pub fn not_configured() -> Self {
+        LlmClient {
+            base_url: String::new(),
+            model: String::new(),
+            api_key: String::new(),
+            last_usage: std::cell::Cell::new(None),
+        }
+    }
+
+    /// Token usage reported by the most recently completed `/chat/completions`
+    /// call on this client, or `None` when that call failed, is still in
+    /// flight, or never happened.
+    ///
+    /// Read-once: taking the value clears it, so a caller that reads it right
+    /// after `decompose`/`judge`/`draft_question` gets exactly that call's
+    /// usage, and a second read (or a read before any call) sees `None`
+    /// rather than silently repeating stale numbers into telemetry.
+    pub fn last_usage(&self) -> Option<crate::telemetry::TokenUsage> {
+        self.last_usage.take()
     }
 
     /// Probe the configured model only when a caller explicitly asks for it.
@@ -133,6 +172,11 @@ impl LlmClient {
         user: &str,
         policy: HttpPolicy,
     ) -> Result<serde_json::Value> {
+        // Cleared up front, not just set on success: a failed call (timeout,
+        // connection refused, bad JSON) must report no usage rather than
+        // silently reusing whatever the last *successful* call happened to
+        // leave behind, which would misattribute those tokens to this call.
+        self.last_usage.set(None);
         let body = json!({
             "model": self.model,
             "stream": false,
@@ -172,6 +216,8 @@ impl LlmClient {
                 Err(error) => return Err(classify_ureq_error(error).into()),
             }
         };
+        self.last_usage
+            .set(crate::telemetry::TokenUsage::from_response(&value));
         let content = value
             .get("choices")
             .and_then(|c| c.get(0))
@@ -347,6 +393,7 @@ mod tests {
             base_url: "http://localhost:11434/v1".to_string(),
             model: "glm4:9b".to_string(),
             api_key: SECRET.to_string(),
+            ..LlmClient::default()
         };
         let shown = format!("{configured:?}");
         assert!(
@@ -396,12 +443,7 @@ mod tests {
 
     #[test]
     fn model_health_distinguishes_not_configured_from_unreachable() {
-        let not_configured = LlmClient {
-            base_url: String::new(),
-            model: String::new(),
-            api_key: String::new(),
-        }
-        .model_health();
+        let not_configured = LlmClient::not_configured().model_health();
         assert!(!not_configured.configured);
         assert_eq!(not_configured.failure_reason, None);
 
@@ -422,6 +464,7 @@ mod tests {
             base_url,
             model: "test".to_string(),
             api_key: String::new(),
+            ..LlmClient::default()
         }
         .model_health();
         server.join().unwrap();
@@ -443,6 +486,7 @@ mod tests {
             base_url,
             model: "test".to_string(),
             api_key: String::new(),
+            ..LlmClient::default()
         };
 
         let result = client.chat_json_with_policy("system", "user", model_test_policy());
@@ -463,6 +507,7 @@ mod tests {
             base_url,
             model: "test".to_string(),
             api_key: String::new(),
+            ..LlmClient::default()
         };
 
         let result = client.chat_json_with_policy("system", "user", model_test_policy());
@@ -486,6 +531,7 @@ mod tests {
             base_url,
             model: "missing".to_string(),
             api_key: String::new(),
+            ..LlmClient::default()
         };
         let policy = HttpPolicy {
             connect_timeout: Duration::from_secs(2),
