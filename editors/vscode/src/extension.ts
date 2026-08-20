@@ -335,7 +335,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     }
     setHealth("memory", "memory connected");
     output.appendLine(
-      `Connected to ${serverPath} (source: ${resolvedServer.source}; db: ${databasePathOverride.trim() || "shared repository state"})`
+      `Connected to ${serverPath} (source: ${resolvedServer.source}; build: ${client.serverIdentity()?.version ?? "unknown"}; db: ${databasePathOverride.trim() || "shared repository state"})`
     );
     if (config.get<boolean>("autoIngestOnSave", true)) {
       void reconcileWorkspace();
@@ -354,7 +354,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     }
     setHealth("intent", "intent connected");
     output.appendLine(
-      `Connected to ${lodestarPath} (source: ${lodestarResolved.source}; intent plane: ${lodestarDatabasePathOverride.trim() || "shared repository state"})`
+      `Connected to ${lodestarPath} (source: ${lodestarResolved.source}; build: ${lodestar.serverIdentity()?.version ?? "unknown"}; intent plane: ${lodestarDatabasePathOverride.trim() || "shared repository state"})`
     );
     void refreshBoard();
     void refreshEvidence();
