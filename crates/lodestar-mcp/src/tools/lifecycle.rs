@@ -9,7 +9,7 @@ pub(super) fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "lodestar_stats",
-            "description": "Counts: active goals, open/claimed/done/total tasks, active knowledge. `total_tasks` is every task ever created, any status -- the number that tells a `board`/`stalled` caller whether its own empty result means nothing has ever been set up, or that everything is genuinely clean.",
+            "description": "Counts: active goals, open/claimed/done/total tasks, active knowledge. `total_tasks` counts every task ever created, any status. `done_verdicts` breaks `done_tasks` down by aligned/needs_human/drift/violation/unresolved -- `done` means shipped, not that conformance affirmed it.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
@@ -50,7 +50,7 @@ pub(super) fn dispatch(
     match name {
         "lodestar_stats" => Some((|| {
             let stats = engine.stats().map_err(|e| e.to_string())?;
-            let markdown = format!(
+            let mut markdown = format!(
                 "| Intent Plane | Count |\n|---|--:|\n| Active goals | {} |\n| Open tasks | {} |\n| Claimed tasks | {} |\n| Done tasks | {} |\n| Total tasks (any status) | {} |\n| Active knowledge | {} |",
                 stats.active_goals,
                 stats.open_tasks,
@@ -59,6 +59,20 @@ pub(super) fn dispatch(
                 stats.total_tasks,
                 stats.active_knowledge
             );
+            let v = &stats.done_verdicts;
+            markdown.push_str(&format!(
+                "\n\n**Done tasks by verdict** - {} aligned, {} needs_human, {} drift",
+                v.aligned, v.needs_human, v.drift
+            ));
+            if v.violation > 0 {
+                markdown.push_str(&format!(", {} violation", v.violation));
+            }
+            if v.unresolved > 0 {
+                markdown.push_str(&format!(
+                    ", {} unresolved (no conformance record)",
+                    v.unresolved
+                ));
+            }
             rendered(markdown, &stats)
         })()),
         "model_telemetry" => Some((|| {
@@ -171,6 +185,79 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Total tasks"));
+    }
+
+    /// gaps.d/done-does-not-mean-aligned.md: `done_tasks` alone cannot tell an
+    /// automated `aligned` affirmation apart from a human-resolved override.
+    /// The override/unresolved buckets are exercised at the store layer
+    /// (crates/lodestar-core/src/store/lifecycle.rs), which has the private
+    /// access needed to force those states directly; this proves the wiring
+    /// through the real public claim/complete path reports the same field.
+    #[test]
+    fn done_verdicts_are_reported_and_the_markdown_names_them() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship search", "add FTS", None)
+            .unwrap();
+        let task = engine
+            .create_task(&goal.id, "wire fts", "tests pass")
+            .unwrap();
+        engine
+            .link_goal_to_artifact(
+                &goal.id,
+                &["artifact:src/search.rs".to_string()],
+                lodestar_core::ArtifactBindingMode::Governed,
+            )
+            .unwrap();
+        engine.claim_task(&task.id, "agent-a", 300).unwrap();
+        let claim = engine.store().get_task(&task.id).unwrap().unwrap();
+        let evidence = lodestar_core::ConformanceEvidence {
+            schema_version: 1,
+            task_id: Some(task.id.clone()),
+            agent_id: "agent-a".into(),
+            started_at: claim.claim_started_at.unwrap(),
+            ended_at: lodestar_core::now_unix(),
+            changed_node_ids: vec!["artifact:src/search.rs".into()],
+            failed_node_ids: Vec::new(),
+            execution_ids: vec!["execution:proof".into()],
+            successful_execution_ids: vec!["execution:proof".into()],
+            commit_ids: Vec::new(),
+            summary: "wired fts".into(),
+            provenance: vec![
+                lodestar_core::EvidenceProvenance {
+                    source_id: "agent:agent-a".into(),
+                    target_id: "execution:proof".into(),
+                    relation: "observed".into(),
+                },
+                lodestar_core::EvidenceProvenance {
+                    source_id: "execution:proof".into(),
+                    target_id: "artifact:src/search.rs".into(),
+                    relation: "modified".into(),
+                },
+            ],
+        };
+        let check = engine.check_conformance(&evidence, Some(&task.id)).unwrap();
+        assert!(
+            engine
+                .complete_task(&task.id, "agent-a", &evidence, &check, None)
+                .unwrap()
+                .completed
+        );
+
+        let stats = call(
+            &engine,
+            &json!({ "name": "lodestar_stats", "arguments": {} }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            stats["structuredContent"]["done_verdicts"]["aligned"],
+            json!(1)
+        );
+        assert!(stats["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("1 aligned"));
     }
 
     #[test]
