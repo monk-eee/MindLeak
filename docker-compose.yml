@@ -9,9 +9,12 @@
 name: ackplane
 
 services:
-  # Pinned by tag and digest (clause 4).
+  # Pinned by tag and digest (clause 4). pgvector/pgvector:pg16 is upstream
+  # postgres:16 with the pgvector extension already installed (ADR-0106
+  # decision 3's knowledge domain needs it) -- same major version, same
+  # data format, nothing else about the topology changes.
   postgres:
-    image: postgres:16-bookworm@sha256:64154d0babcb1741988719e703419af0382b19953706149f9872fbd0f438efa8
+    image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
     environment:
       # Development-only credentials (clause 6). Never used outside this
       # Compose stack, and never the production deployment's answer.

@@ -5,6 +5,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_build::configure()
         .build_server(true)
         .build_client(true)
+        .boxed(".mindleak.ackplane.v1.AckplaneFrame.frame.agent_directive")
         .compile_protos(&["proto/mindleak/ackplane/v1/node_sync.proto"], &["proto"])?;
 
     println!("cargo:rerun-if-changed=proto/mindleak/ackplane/v1/node_sync.proto");

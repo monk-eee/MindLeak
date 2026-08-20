@@ -342,6 +342,25 @@ approval RPC/UI that does not exist yet. `activate` proves possession, opens
 one real `NodeSync` stream, and sends a signed heartbeat event using the
 `signing_key_id` `EnrollmentActivationResult` returns directly.
 
+`KnowledgeService` (`knowledge_store.rs`/`knowledge_service.rs`) is the first
+slice of Ackplane's PostgreSQL-backed knowledge domain (ADR-0106 decision 3;
+distinct from `clients/node/mindleak-client`'s same-named service, which
+wraps the *local* planes' own knowledge tools instead): `RecordKnowledge`,
+`RecallKnowledge`, `RetireKnowledge`. Effective weight is the same decay
+formula as `mindleak-core::decay::effective_weight`
+(`W_eff = W_base * 2^(-Δt_hours / half_life)`), expressed as a Postgres `CASE`
+expression and computed at read time — never stored — matching this
+repository's standing decay invariant on Ackplane's side too. A recall with a
+query embedding ranks by pgvector's own `<=>` cosine-distance operator
+entirely inside Postgres; without one, entries recall by effective weight
+(recency, decay-adjusted) instead, the same graceful degradation ADR-0080
+established for the local planes. Embeddings are fixed at 768 dimensions
+(`nomic-embed-text`, this repository's shared default embedder) for this
+first slice; a second model at a different dimension needs its own column or
+table, not a redesign. Unlike `ClaimDelegationService`, these RPCs are
+unauthenticated in this slice — see
+[`gaps.d/ackplane-knowledge-service-rpcs-are-unauthenticated.md`](../gaps.d/ackplane-knowledge-service-rpcs-are-unauthenticated.md).
+
 ### `editors/vscode` (extension)
 
 Passive editor, shell-execution, workspace-mutation, and Git commit sensors plus
