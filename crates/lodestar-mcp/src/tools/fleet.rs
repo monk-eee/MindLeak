@@ -1,4 +1,4 @@
-use lodestar_core::fleet::{FleetView, Staleness};
+use lodestar_core::fleet::{FleetView, Presence, Staleness};
 use lodestar_core::Lodestar;
 use serde_json::{json, Value};
 
@@ -7,7 +7,7 @@ use super::rendered;
 pub(super) fn definitions() -> Vec<Value> {
     vec![json!({
         "name": "fleet_view",
-        "description": "Read-only: who is working where, derived from the context sessions declared on open_session (ADR-0035). Reports each live session's branch/head/base, how far behind its base it said it was, and whether live sessions disagree about their base. Advisory only — every value is self-reported, so under the ADR-0034 ceiling rule this caps at review and can never block. Undeclared values report unknown rather than being guessed.",
+        "description": "Read-only: who is working where, derived from the context sessions declared on open_session (ADR-0035). Reports each live session's branch/head/base, how far behind its base it said it was, and whether live sessions disagree about their base. Each session also carries presence (live while it holds a claim, else quiet/stale by how long since it last declared context) -- a different question from staleness, which is about a declared base, not whether the session itself still shows a pulse. Advisory only -- every value is self-reported, so under the ADR-0034 ceiling rule this caps at review and can never block. Undeclared values report unknown rather than being guessed.",
         "inputSchema": { "type": "object", "properties": {} }
     })]
 }
@@ -33,14 +33,17 @@ fn render(view: &FleetView) -> String {
     if view.sessions.is_empty() {
         out.push_str("No session has declared where it is working.\n\n");
     } else {
-        out.push_str("| Agent | Branch | Base | Behind | Claims |\n|---|---|---|---|---|\n");
+        out.push_str(
+            "| Agent | Branch | Base | Behind | Presence | Claims |\n|---|---|---|---|---|---|\n",
+        );
         for session in &view.sessions {
             out.push_str(&format!(
-                "| {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} |\n",
                 session.agent_id,
                 session.context.branch.as_deref().unwrap_or("unknown"),
                 session.context.base.as_deref().unwrap_or("unknown"),
                 staleness_label(session.staleness),
+                presence_label(session.presence),
                 session.claimed_task_ids.len()
             ));
         }
@@ -69,6 +72,14 @@ fn staleness_label(staleness: Staleness) -> String {
         Staleness::Unknown => "unknown".to_string(),
         Staleness::Current => "current".to_string(),
         Staleness::Behind(count) => format!("{count}"),
+    }
+}
+
+fn presence_label(presence: Presence) -> String {
+    match presence {
+        Presence::Live => "live".to_string(),
+        Presence::Quiet(secs) => format!("quiet ({secs}s)"),
+        Presence::Stale(secs) => format!("stale ({secs}s)"),
     }
 }
 

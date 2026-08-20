@@ -112,7 +112,12 @@ seam, `coordination` task/handoff/conformance ledger, transactional
 `policy_packs` proposal/disposition/provenance ledger, reviewed `design/`
 materialization plus validation, `amendments` and `waivers`, learned
 `knowledge`, and `lifecycle` operations), `llm` (optional OpenAI-compatible model
-client), `embed` (optional semantic index over knowledge — a deliberate copy of
+client), `telemetry` (best-effort local record of each model call this crate
+makes — operation, outcome, duration, and token usage when the endpoint
+reports it — read back through the `model_telemetry` tool; mirrors
+`mindleak-core::telemetry`'s shape but owns a separate table, since a model
+call is not a coordination event), `embed` (optional semantic index over
+knowledge — a deliberate copy of
 `mindleak-core::embed`, because ADR-0004 keeps that crate a dev-dependency only,
 so the Intent Plane cannot reach it at runtime), and
 `lib` (the `Lodestar` facade wiring). `store/design/` is split by
@@ -360,6 +365,25 @@ first slice; a second model at a different dimension needs its own column or
 table, not a redesign. Unlike `ClaimDelegationService`, these RPCs are
 unauthenticated in this slice — see
 [`gaps.d/ackplane-knowledge-service-rpcs-are-unauthenticated.md`](../gaps.d/ackplane-knowledge-service-rpcs-are-unauthenticated.md).
+
+### `ackplane-bridge` (binary)
+
+A separate axum HTTP server for the Bridge (assurance operations, ADR-0090):
+read-only Fleet views over Ackplane's accepted Postgres state for one
+development tenant, resolved from a loopback-only salt file
+(`ACKPLANE_BRIDGE_SALT_PATH`). It links `ackplane-server::fleet` directly and
+never writes — enrolment, claims, and the ledger are mutated only through
+Ackplane's own gRPC services. Current routes, each 404 on a repository the
+tenant has not enrolled rather than leaking a distinguishable error:
+
+| Route | Serves |
+|---|---|
+| `GET /` | The Fleet page (static HTML/JS). |
+| `GET /api/v1/fleet` | Every repository enrolled for the tenant, with freshness. |
+| `GET /api/v1/repositories/:repository_id` | One repository's ledger/projection detail. |
+| `GET /api/v1/repositories/:repository_id/timeline` | Its most recent accepted ledger events. |
+| `GET /api/v1/repositories/:repository_id/claims` | Its live delegated claims (`FleetStore::active_work`). |
+| `GET /api/v1/repositories/:repository_id/signing-keys` | Every enrolled signing key, judged as of now (`FleetStore::signing_keys`), reusing `signing_keys::judge` — the same rule an accepted envelope's own verification applies — rather than a second judgment invented for the health view. |
 
 ### `editors/vscode` (extension)
 
