@@ -218,6 +218,10 @@ describe("isAdrFile", () => {
 describe("every ADR in this repository is readable", () => {
   const adrDir = path.resolve(__dirname, "..", "..", "..", "docs", "adr");
 
+  // Reading and parsing 70+ (and growing) real files finishes in well under
+  // a second in isolation, but reliably exceeds vitest's 5000ms default
+  // under full-suite resource contention. Sized generously for the corpus's
+  // current count.
   it("parses every numbered ADR file, skipping none", () => {
     const files = fs.readdirSync(adrDir).filter((name) => isAdrFile(name));
     expect(files.length).toBeGreaterThan(70);
@@ -229,7 +233,7 @@ describe("every ADR in this repository is readable", () => {
     );
 
     expect(unreadable).toEqual([]);
-  });
+  }, 20_000);
 });
 
 describe("extractAdrSummary", () => {

@@ -209,8 +209,7 @@ export interface ResolvedBinary {
  * stale-build problem — for every window.
  *
  * Named which candidate won (not only the path) so a stale packaged binary
- * silently outranking a rebuilt one is diagnosable rather than invisible
- * (gaps.d/packaged-extension-binary-outranks-fixed-install.md).
+ * silently outranking a rebuilt one is diagnosable rather than invisible.
  */
 export function resolveBinaryPathDetailed(
   configured: string,
