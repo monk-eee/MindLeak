@@ -5,7 +5,8 @@ use std::{
 
 use ackplane_bridge::BridgeConfig;
 use ackplane_server::fleet::{
-    FleetRepository, FleetStore, RepositoryDetail, RepositoryFreshness, TimelineEvent,
+    ActiveWorkItem, FleetRepository, FleetStore, RepositoryDetail, RepositoryFreshness,
+    TimelineEvent,
 };
 use axum::{
     extract::{Path, State},
@@ -119,11 +120,40 @@ impl From<TimelineEvent> for TimelineEventSummary {
     }
 }
 
+#[derive(Serialize)]
+struct ActiveWorkResponse {
+    claims: Vec<ActiveWorkSummary>,
+}
+
+#[derive(Serialize)]
+struct ActiveWorkSummary {
+    task_id: String,
+    owner_id: String,
+    branch: String,
+    lease_expires_at_seconds: Option<u64>,
+    paths: Vec<String>,
+    symbols: Vec<String>,
+}
+
+impl From<ActiveWorkItem> for ActiveWorkSummary {
+    fn from(item: ActiveWorkItem) -> Self {
+        Self {
+            task_id: item.task_id,
+            owner_id: item.owner_id,
+            branch: item.branch,
+            lease_expires_at_seconds: unix_seconds(item.lease_expires_at),
+            paths: item.paths,
+            symbols: item.symbols,
+        }
+    }
+}
+
 /// How many timeline events one request returns. A first, fixed slice rather
 /// than caller-controlled paging - ADR-0095 does not yet define a paging
 /// contract, and an unbounded limit would let a request pull an entire
 /// repository's ledger history through the Bridge.
 const TIMELINE_LIMIT: i64 = 50;
+const ACTIVE_WORK_LIMIT: i64 = 50;
 
 #[tokio::main]
 async fn main() {
@@ -173,6 +203,10 @@ async fn main() {
         .route(
             "/api/v1/repositories/:repository_id/timeline",
             get(repository_timeline),
+        )
+        .route(
+            "/api/v1/repositories/:repository_id/claims",
+            get(repository_claims),
         )
         .with_state(state);
     let listener = match tokio::net::TcpListener::bind(config.listen).await {
@@ -262,6 +296,31 @@ async fn repository_timeline(
         })),
         Err(error) => {
             tracing::error!(%error, "Bridge repository timeline query failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn repository_claims(
+    State(state): State<AppState>,
+    Path(repository_id): Path<String>,
+) -> Result<Json<ActiveWorkResponse>, StatusCode> {
+    match state
+        .fleet
+        .active_work(
+            &state.tenant_id,
+            &repository_id,
+            SystemTime::now(),
+            ACTIVE_WORK_LIMIT,
+        )
+        .await
+    {
+        Ok(Some(claims)) => Ok(Json(ActiveWorkResponse {
+            claims: claims.into_iter().map(ActiveWorkSummary::from).collect(),
+        })),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository active-work query failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
