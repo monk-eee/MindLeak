@@ -2592,11 +2592,9 @@ mod tests {
 
     #[test]
     fn storage_status_probes_model_health_only_when_requested() {
-        let engine = Lodestar::open_in_memory().unwrap().with_llm(LlmClient {
-            base_url: String::new(),
-            model: String::new(),
-            api_key: String::new(),
-        });
+        let engine = Lodestar::open_in_memory()
+            .unwrap()
+            .with_llm(LlmClient::not_configured());
         let status = StorageStatus {
             plane: "lodestar".into(),
             repository_id: None,

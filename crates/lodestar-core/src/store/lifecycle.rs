@@ -72,6 +72,49 @@ impl LodestarStore {
         })
     }
 
+    /// Record one model call (decompose/judge/draft_question) for observability
+    /// (ADR-0010's Lodestar-side counterpart). Best-effort: callers log and
+    /// swallow a write failure so instrumentation never changes the result of
+    /// the call it observes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_model_call(
+        &self,
+        ts: i64,
+        operation: &str,
+        outcome: &str,
+        duration_ms: Option<i64>,
+        model: Option<&str>,
+        usage: Option<crate::telemetry::TokenUsage>,
+    ) -> Result<()> {
+        crate::telemetry::record(
+            &self.conn,
+            ts,
+            operation,
+            outcome,
+            duration_ms,
+            model,
+            usage,
+        )
+    }
+
+    /// A point-in-time snapshot of every recorded model call.
+    pub fn model_telemetry(&self) -> Result<crate::telemetry::ModelCallSnapshot> {
+        crate::telemetry::snapshot(&self.conn)
+    }
+
+    /// Test-only: sabotage a durable-write path by pre-creating its table with
+    /// an incompatible schema, so the real `CREATE TABLE IF NOT EXISTS` leaves
+    /// it alone and the next write against it fails. `pub(crate)`, not
+    /// `#[cfg(test)]`-gated on the fn itself, so it stays usable from another
+    /// module's test build without needing its own `#[cfg(test)]` on the call
+    /// site's dependency edge; the whole point is only ever exercised by tests.
+    #[cfg(test)]
+    pub(crate) fn sabotage_table_for_test(&self, create_incompatible_table_sql: &str) {
+        self.conn
+            .execute_batch(create_incompatible_table_sql)
+            .unwrap();
+    }
+
     /// Create a consistent SQLite backup while this store remains online.
     pub fn backup_database(&self, destination: &Path) -> Result<()> {
         mindleak_storage::backup_database(&self.conn, destination)?;

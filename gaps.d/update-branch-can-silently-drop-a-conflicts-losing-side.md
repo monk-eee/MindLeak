@@ -46,13 +46,19 @@
   #507's failure unnoticed (`updateBranchMismatch`, unit- and
   sabotage-verified in `delivery-queue.test.mjs`). This catches the symptom at
   its one known call site, not the cause: the underlying behaviour in
-  GitHub's `update-branch` remains undiagnosed, and a manual
-  `gh pr update-branch` run outside the queue, or a merge produced any other
-  way, is not covered by this guard.
+  GitHub's `update-branch` remains undiagnosed.
+
+  **Guarded 2026-08-20 for the manual call site too:** `scripts/update-branch-
+  safely.mjs <pr-number>` is the same check, reusing `updateBranchMismatch`/
+  `expectedMergeTree`/`actualMergeTree` verbatim, for anyone reconciling a
+  branch by hand outside the queue. What remains open is the underlying
+  GitHub behaviour itself, and a merge produced any other way (for example
+  the web UI merge button), which no local guard can see.
 
   **What this changes for now:** do not trust "the PR merged with green checks"
   as proof a diff landed intact when the branch went through an automated
   `update-branch` step against a `main` that moved concurrently, unless that
-  step was this queue's own guarded call. Diff the
+  step was this queue's own guarded call, or a manual run through
+  `scripts/update-branch-safely.mjs`. Diff the
   actual files on `origin/main` against what the PR's own commits show,
   especially for any file two recently-merged PRs both touched.

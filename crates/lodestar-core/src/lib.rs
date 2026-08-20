@@ -26,6 +26,7 @@ pub mod policy;
 pub mod scope;
 pub mod stalls;
 pub mod store;
+pub mod telemetry;
 mod util;
 pub mod waiver;
 
@@ -59,6 +60,7 @@ pub use policy::{
     PackClauseProposal, PackClauseProvenance, PackConflict, PackProposalBatch, PackReviewOutcome,
 };
 pub use store::{ClaimTransfer, LodestarStore, ResetOutcome, Stats, TransferSource};
+pub use telemetry::{ModelCallSnapshot, OperationMetric, TokenUsage};
 
 use llm::LlmClient;
 /// Current unix time in whole seconds.
@@ -178,7 +180,16 @@ impl Lodestar {
         if let Some(judge) = self.test_judge.as_ref() {
             return judge(constraint, summary);
         }
-        self.llm.judge(constraint, summary)
+        let started = std::time::Instant::now();
+        let result = self.llm.judge(constraint, summary);
+        self.record_model_call(
+            "judge",
+            result.is_ok(),
+            started.elapsed().as_millis() as i64,
+            Some(&self.llm.model),
+            self.llm.last_usage(),
+        );
+        result
     }
 
     pub fn store(&self) -> &LodestarStore {

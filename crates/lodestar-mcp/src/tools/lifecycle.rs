@@ -13,6 +13,11 @@ pub(super) fn definitions() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
+            "name": "model_telemetry",
+            "description": "Token usage and cost observability for Lodestar's own model calls (decompose/judge/draft_question): lifetime calls/errors and prompt/completion/total token counts, overall and broken down per operation. Reads a durable local record, not a live model -- answers even when no model is configured or reachable.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
             "name": "backup_database",
             "description": "Create a verified online SQLite backup of the complete Lodestar intent plane. The destination must not already exist.",
             "inputSchema": {
@@ -64,6 +69,35 @@ pub(super) fn dispatch(
                 }
             }
             rendered(markdown, &stats)
+        })()),
+        "model_telemetry" => Some((|| {
+            let snapshot = engine.model_telemetry().map_err(|e| e.to_string())?;
+            let mut markdown = format!(
+                "| Lodestar model calls | Count |\n|---|--:|\n| Total calls | {} |\n| Lifetime errors | {} |\n| Prompt tokens | {} |\n| Completion tokens | {} |\n| Total tokens | {} |\n",
+                snapshot.total_calls,
+                snapshot.total_errors,
+                snapshot.total_prompt_tokens,
+                snapshot.total_completion_tokens,
+                snapshot.total_tokens
+            );
+            if !snapshot.by_operation.is_empty() {
+                markdown.push_str(
+                    "\n| Operation | Calls | Errors | Prompt tokens | Completion tokens | Total tokens | Avg ms |\n|---|--:|--:|--:|--:|--:|--:|\n",
+                );
+                for metric in &snapshot.by_operation {
+                    markdown.push_str(&format!(
+                        "| {} | {} | {} | {} | {} | {} | {:.1} |\n",
+                        metric.operation,
+                        metric.calls,
+                        metric.errors,
+                        metric.total_prompt_tokens,
+                        metric.total_completion_tokens,
+                        metric.total_tokens,
+                        metric.avg_ms
+                    ));
+                }
+            }
+            rendered(markdown, &snapshot)
         })()),
         "backup_database" => Some((|| {
             let path = req_str(args, "path")?;
@@ -166,6 +200,53 @@ mod tests {
             result["structuredContent"]["next_step"]["reason"],
             "no_active_goals"
         );
+    }
+
+    #[test]
+    fn model_telemetry_reports_calls_and_tokens_per_operation() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        engine.record_model_call(
+            "decompose",
+            true,
+            42,
+            Some("glm4:9b"),
+            Some(lodestar_core::TokenUsage {
+                prompt_tokens: Some(100),
+                completion_tokens: Some(20),
+                total_tokens: Some(120),
+            }),
+        );
+        engine.record_model_call("judge", false, 5, Some("glm4:9b"), None);
+
+        let result = call(
+            &engine,
+            &json!({ "name": "model_telemetry", "arguments": {} }),
+        )
+        .unwrap();
+
+        assert_eq!(result["structuredContent"]["total_calls"], json!(2));
+        assert_eq!(result["structuredContent"]["total_errors"], json!(1));
+        assert_eq!(result["structuredContent"]["total_tokens"], json!(120));
+        let markdown = result["content"][0]["text"].as_str().unwrap();
+        assert!(markdown.contains("decompose"));
+        assert!(markdown.contains("judge"));
+    }
+
+    /// A fresh Lodestar with no model calls ever made must report a zeroed
+    /// snapshot -- never an error -- since "nothing recorded yet" is a fact,
+    /// not a failure, and the table is created lazily.
+    #[test]
+    fn model_telemetry_on_a_fresh_engine_is_zero_not_an_error() {
+        let engine = Lodestar::open_in_memory().unwrap();
+
+        let result = call(
+            &engine,
+            &json!({ "name": "model_telemetry", "arguments": {} }),
+        )
+        .unwrap();
+
+        assert_eq!(result["structuredContent"]["total_calls"], json!(0));
+        assert_eq!(result["structuredContent"]["by_operation"], json!([]));
     }
 
     #[test]

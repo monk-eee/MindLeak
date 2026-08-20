@@ -328,3 +328,47 @@ pub struct CompiledContext {
     pub evidence: Option<ConformanceEvidence>,
     pub budget_report: BudgetReport,
 }
+
+/// Deterministic source data a digest was compiled from (ADR-0101 decision
+/// 1): exactly the node ids its template read, so `digest_status` can later
+/// tell whether that snapshot is still current graph state.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DigestSourceSnapshot {
+    pub node_ids: Vec<String>,
+}
+
+/// A compiled, regenerable rendering of current graph state (ADR-0101) —
+/// never hand-edited. To change a digest, change what it is compiled from and
+/// recompile; this mirrors ADR-0056's "assembled, not edited" changelog
+/// precedent at the scope of any typed document, not only the changelog.
+#[derive(Debug, Clone, Serialize)]
+pub struct Digest {
+    pub id: String,
+    pub digest_type: String,
+    pub template_id: String,
+    pub generated_at: i64,
+    pub source_snapshot: DigestSourceSnapshot,
+    pub markdown: String,
+}
+
+/// Whether a compiled digest's source snapshot still matches live graph state
+/// (ADR-0101 decision 4) — the same "reports stale once evidence moves on"
+/// read `certification_status` (ADR-0090) already applies to a task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DigestStatus {
+    Current,
+    Stale,
+}
+
+/// `digest_status`'s answer: never a bare true/false. `missing_node_ids`
+/// names exactly what the digest's snapshot lost, the same "unknown is not an
+/// all-clear" discipline `Preflight.unknown` already applies to paths the
+/// graph has never seen.
+#[derive(Debug, Clone, Serialize)]
+pub struct DigestStatusReport {
+    pub digest_id: String,
+    pub status: DigestStatus,
+    pub generated_at: i64,
+    pub missing_node_ids: Vec<String>,
+}

@@ -32,6 +32,7 @@ import {
   releaseTaskRequest,
   renewTaskRequest,
   resolveBinaryPath,
+  resolveBinaryPathDetailed,
   resolveServerPath,
   serverFilePath,
   shouldCaptureCommand,
@@ -237,6 +238,61 @@ describe("resolveBinaryPath", () => {
       exists: () => true,
     });
     expect(resolved).toBe("/ext/bin/lodestar-mcp".replace(/\//g, path.sep));
+  });
+});
+
+describe("resolveBinaryPathDetailed", () => {
+  it("names explicit-config for a non-default configured path", () => {
+    expect(
+      resolveBinaryPathDetailed("/opt/lodestar-mcp", "/ws", "lodestar-mcp", { exists: () => true })
+    ).toStrictEqual({ path: "/opt/lodestar-mcp", source: "explicit-config" });
+  });
+
+  it("names packaged when the extension's bundled binary exists", () => {
+    const resolved = resolveBinaryPathDetailed("lodestar-mcp", "/ws", "lodestar-mcp", {
+      platform: "linux",
+      homeDir: "/home/dev",
+      extensionPath: "/ext",
+      exists: () => true,
+    });
+    expect(resolved).toStrictEqual({
+      path: "/ext/bin/lodestar-mcp".replace(/\//g, path.sep),
+      source: "packaged",
+    });
+  });
+
+  it("names shared-install when only the per-machine install exists (ADR-0073)", () => {
+    const resolved = resolveBinaryPathDetailed("lodestar-mcp", "/ws", "lodestar-mcp", {
+      platform: "linux",
+      homeDir: "/home/dev",
+      exists: (p) => !p.includes("/ext/"),
+    });
+    expect(resolved.source).toBe("shared-install");
+    expect(resolved.path).toContain(".mindleak");
+  });
+
+  it("names workspace-release when only a release build exists", () => {
+    const resolved = resolveBinaryPathDetailed("lodestar-mcp", "/ws", "lodestar-mcp", {
+      platform: "linux",
+      exists: (p) => p.includes("release"),
+    });
+    expect(resolved.source).toBe("workspace-release");
+    expect(resolved.path).toContain("release");
+  });
+
+  it("names workspace-debug when only a debug build exists", () => {
+    const resolved = resolveBinaryPathDetailed("lodestar-mcp", "/ws", "lodestar-mcp", {
+      platform: "linux",
+      exists: (p) => p.includes("debug"),
+    });
+    expect(resolved.source).toBe("workspace-debug");
+    expect(resolved.path).toContain("debug");
+  });
+
+  it("names fallback when nothing exists anywhere", () => {
+    expect(
+      resolveBinaryPathDetailed("lodestar-mcp", "/ws", "lodestar-mcp", { exists: () => false })
+    ).toStrictEqual({ path: "lodestar-mcp", source: "fallback" });
   });
 });
 

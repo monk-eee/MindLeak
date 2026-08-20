@@ -112,7 +112,12 @@ seam, `coordination` task/handoff/conformance ledger, transactional
 `policy_packs` proposal/disposition/provenance ledger, reviewed `design/`
 materialization plus validation, `amendments` and `waivers`, learned
 `knowledge`, and `lifecycle` operations), `llm` (optional OpenAI-compatible model
-client), `embed` (optional semantic index over knowledge — a deliberate copy of
+client), `telemetry` (best-effort local record of each model call this crate
+makes — operation, outcome, duration, and token usage when the endpoint
+reports it — read back through the `model_telemetry` tool; mirrors
+`mindleak-core::telemetry`'s shape but owns a separate table, since a model
+call is not a coordination event), `embed` (optional semantic index over
+knowledge — a deliberate copy of
 `mindleak-core::embed`, because ADR-0004 keeps that crate a dev-dependency only,
 so the Intent Plane cannot reach it at runtime), and
 `lib` (the `Lodestar` facade wiring). `store/design/` is split by
@@ -361,6 +366,25 @@ table, not a redesign. Unlike `ClaimDelegationService`, these RPCs are
 unauthenticated in this slice — see
 [`gaps.d/ackplane-knowledge-service-rpcs-are-unauthenticated.md`](../gaps.d/ackplane-knowledge-service-rpcs-are-unauthenticated.md).
 
+### `ackplane-bridge` (binary)
+
+A separate axum HTTP server for the Bridge (assurance operations, ADR-0090):
+read-only Fleet views over Ackplane's accepted Postgres state for one
+development tenant, resolved from a loopback-only salt file
+(`ACKPLANE_BRIDGE_SALT_PATH`). It links `ackplane-server::fleet` directly and
+never writes — enrolment, claims, and the ledger are mutated only through
+Ackplane's own gRPC services. Current routes, each 404 on a repository the
+tenant has not enrolled rather than leaking a distinguishable error:
+
+| Route | Serves |
+|---|---|
+| `GET /` | The Fleet page (static HTML/JS). |
+| `GET /api/v1/fleet` | Every repository enrolled for the tenant, with freshness. |
+| `GET /api/v1/repositories/:repository_id` | One repository's ledger/projection detail. |
+| `GET /api/v1/repositories/:repository_id/timeline` | Its most recent accepted ledger events. |
+| `GET /api/v1/repositories/:repository_id/claims` | Its live delegated claims (`FleetStore::active_work`). |
+| `GET /api/v1/repositories/:repository_id/signing-keys` | Every enrolled signing key, judged as of now (`FleetStore::signing_keys`), reusing `signing_keys::judge` — the same rule an accepted envelope's own verification applies — rather than a second judgment invented for the health view. |
+
 ### `editors/vscode` (extension)
 
 Passive editor, shell-execution, workspace-mutation, and Git commit sensors plus
@@ -461,6 +485,17 @@ reasons alone. `governing` is a caller-supplied pass-through of Lodestar's
 `advise()` result: this crate has no dependency on `lodestar-core`, so
 cross-plane data arrives as an argument, the same seam `promote_signals`
 already crosses.
+
+**Compiled digests (ADR-0101).** `MindLeak::compile_digest` renders a named,
+typed digest — a playbook/runbook/repository-guide — from current graph state
+through a deterministic template, storing the result as a `digest` node
+(`NodeType::Digest`) rather than hand-authored prose. A digest is never edited:
+to change one, change what it compiles from and recompile, the same discipline
+ADR-0056 already applies to the changelog, generalised to any typed document.
+`MindLeak::digest_status` reports whether a digest's recorded source snapshot
+still matches live graph state — `current` while every source node id it read
+still exists, `stale` once any has been forgotten or reaped — and never
+regenerates the digest on its own.
 
 **Autonomous consolidation (ADR-0017 phase 2).** An off-by-default scheduler in
 `mindleak-mcp` tracks stdio request activity with a condition variable. After a

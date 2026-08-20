@@ -116,6 +116,43 @@ pub async fn fetch_lifecycle_for_update(
     }))
 }
 
+/// Every key ever registered for a repository, newest first, for a read-only
+/// health view (the Bridge repository detail resource) -- not `FOR UPDATE`,
+/// since nothing here is about to mutate a row.
+pub async fn for_repository(
+    client: &Client,
+    tenant_id: &str,
+    repository_id: &str,
+) -> Result<Vec<SigningKeyLifecycle>, SigningKeyError> {
+    let rows = client
+        .query(
+            "SELECT signing_key_id, tenant_id, repository_id, node_id, public_key, \
+             public_key_fingerprint, activated_at, expires_at, retired_at, revoked_at \
+             FROM signing_keys WHERE tenant_id = $1 AND repository_id = $2 \
+             ORDER BY activated_at DESC",
+            &[&tenant_id, &repository_id],
+        )
+        .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| SigningKeyLifecycle {
+            record: SigningKeyRecord {
+                signing_key_id: row.get(0),
+                tenant_id: row.get(1),
+                repository_id: row.get(2),
+                node_id: row.get(3),
+                public_key: row.get(4),
+                public_key_fingerprint: row.get(5),
+                activated_at: row.get(6),
+                expires_at: row.get(7),
+            },
+            retired_at: row.get(8),
+            revoked_at: row.get(9),
+        })
+        .collect())
+}
+
 /// Whether a signing key id is already registered, for rejecting a rotation
 /// whose proposed successor id collides with an existing binding.
 pub async fn key_exists(
@@ -565,5 +602,70 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(resolution, KeyResolution::Revoked);
+    }
+
+    /// A separate tenant/repository per test, not `test_record`'s shared
+    /// fixed pair -- `for_repository` filters by them, and sharing would let
+    /// this test see a sibling's rows in the same persistent database.
+    fn health_view_record(
+        unique: &str,
+        signing_key_id: &str,
+        activated_at: SystemTime,
+    ) -> SigningKeyRecord {
+        SigningKeyRecord {
+            signing_key_id: signing_key_id.to_owned(),
+            tenant_id: format!("tenant-health-{unique}"),
+            repository_id: format!("repository-health-{unique}"),
+            node_id: "node-health".to_owned(),
+            public_key: vec![3; 32],
+            public_key_fingerprint: format!("ed25519:{signing_key_id}"),
+            activated_at,
+            expires_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn for_repository_returns_every_key_newest_first_and_none_from_another_repository() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let mut client = connect_and_migrate(&database_url).await;
+        let unique = crate::test_support::uuid_ish().to_string();
+        let older = health_view_record(
+            &unique,
+            &format!("signing-key-health-older-{unique}"),
+            at(1_000),
+        );
+        let newer = health_view_record(
+            &unique,
+            &format!("signing-key-health-newer-{unique}"),
+            at(2_000),
+        );
+        let other_repository = SigningKeyRecord {
+            repository_id: format!("repository-health-other-{unique}"),
+            ..health_view_record(
+                &unique,
+                &format!("signing-key-health-other-{unique}"),
+                at(1_500),
+            )
+        };
+
+        let transaction = client.transaction().await.unwrap();
+        register(&transaction, &older).await.unwrap();
+        register(&transaction, &newer).await.unwrap();
+        register(&transaction, &other_repository).await.unwrap();
+        transaction.commit().await.unwrap();
+
+        let keys = for_repository(&client, &older.tenant_id, &older.repository_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            keys.iter()
+                .map(|k| &k.record.signing_key_id)
+                .collect::<Vec<_>>(),
+            vec![&newer.signing_key_id, &older.signing_key_id],
+            "newest activated_at first, and never a key registered under a different repository_id"
+        );
     }
 }
