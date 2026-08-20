@@ -1,10 +1,10 @@
 - **A branch whose pull request already merged has no tooling signal that
-  further commits on it will strand — OBSERVED 2026-08-19, left OPEN.**
+  further commits on it will strand — OBSERVED 2026-08-19, GUARDED.**
   `canonical-push.mjs` checks for a live Lodestar claim, a clean tree, and
-  divergence from the remote, but never asks GitHub whether the current
+  divergence from the remote, but never asked GitHub whether the current
   branch already has a *merged* pull request. Neither does
   `worktree-owner.mjs --adopt-worktree`, nor any pre-commit hook. A branch
-  is not terminal the way a task or a PR is, so nothing refuses a commit
+  is not terminal the way a task or a PR is, so nothing refused a commit
   onto one whose PR closed weeks ago.
 
   Observed twice in one session, on the same underlying branch:
@@ -45,3 +45,15 @@
   is already `MERGED`, and warns (or refuses) before accepting a new commit
   on it, the same way `abandon_task` already refuses to retire a task whose
   recorded branch might still carry open work.
+
+  GUARDED: `canonical-push.mjs` now checks the current branch's most recent
+  pull request (`scripts/merged-branch-warning.mjs`, ordered by PR number so
+  API response order can't hide a later one) and warns, naming the merged PR
+  and the `gh pr create --head <branch>` remedy, right before pushing.
+  A warning, not a refusal: these new commits are not themselves harmful,
+  and opening a fresh PR from the same branch afterward is the documented,
+  working way to publish them -- the harm this guards is nobody remembering
+  to take that step. Still relies on the rescuer/committer reading the
+  warning; does not (and by design cannot) stop a commit from landing in the
+  first place, since the earlier two incidents were both caught only by
+  accident well before any push.
