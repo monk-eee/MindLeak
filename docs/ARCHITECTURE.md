@@ -362,9 +362,13 @@ entirely inside Postgres; without one, entries recall by effective weight
 established for the local planes. Embeddings are fixed at 768 dimensions
 (`nomic-embed-text`, this repository's shared default embedder) for this
 first slice; a second model at a different dimension needs its own column or
-table, not a redesign. Unlike `ClaimDelegationService`, these RPCs are
-unauthenticated in this slice — see
-[`gaps.d/ackplane-knowledge-service-rpcs-are-unauthenticated.md`](../gaps.d/ackplane-knowledge-service-rpcs-are-unauthenticated.md).
+table, not a redesign. Like `ClaimDelegationService`, these RPCs authenticate
+every mutating request with a signed `KnowledgeAuthentication` (ADR-0108):
+its own domain separator (`knowledge_auth::KNOWLEDGE_DOMAIN`), its own
+`KnowledgeOperation` enum binding each RPC's operation-specific fields into
+the signed bytes, and its own `knowledge_authentication_nonces` table —
+mirrored, not shared with claims', so the two domains' replay protection and
+signed-byte encodings can never collide or drift into each other.
 
 ### `ackplane-bridge` (binary)
 
