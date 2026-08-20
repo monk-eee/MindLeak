@@ -9,10 +9,13 @@ use std::time::SystemTime;
 
 use tokio_postgres::{Client, NoTls};
 
+use crate::signing_keys::{self, EnvelopeBinding, KeyResolution, SigningKeyError};
+
 const ENROLLMENT_MIGRATION: &str = include_str!("../migrations/0003_enrollment.sql");
 const PROJECTION_MIGRATION: &str = include_str!("../migrations/0002_projection.sql");
 const LEDGER_MIGRATION: &str = include_str!("../migrations/0001_ledger.sql");
 const CLAIM_MIGRATION: &str = include_str!("../migrations/0005_claim_delegation.sql");
+const SIGNING_KEYS_MIGRATION: &str = include_str!("../migrations/0004_signing_keys.sql");
 
 /// One repository represented in a tenant's Fleet view.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +98,19 @@ pub struct ActiveWorkItem {
     pub symbols: Vec<String>,
 }
 
+/// One enrolled node's signing key, judged as of now rather than as of some
+/// past envelope's acceptance -- the Bridge repository detail resource that
+/// answers "is this repository's coordination about to lose its signer"
+/// before it actually does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SigningKeyStatus {
+    pub signing_key_id: String,
+    pub node_id: String,
+    pub public_key_fingerprint: String,
+    pub status: KeyResolution,
+    pub expires_at: Option<SystemTime>,
+}
+
 /// Read-only access to Fleet summaries derived from Ackplane's accepted state.
 pub struct FleetStore {
     client: Client,
@@ -131,6 +147,12 @@ impl FleetStore {
             &mut client,
             crate::migration_lock::key::CLAIM_DELEGATION,
             CLAIM_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::SIGNING_KEYS,
+            SIGNING_KEYS_MIGRATION,
         )
         .await?;
         Ok(Self { client })
@@ -310,6 +332,47 @@ impl FleetStore {
                     lease_expires_at: row.get(3),
                     paths: row.get(4),
                     symbols: row.get(5),
+                })
+                .collect(),
+        ))
+    }
+
+    /// Every signing key this repository has ever enrolled, judged as of now.
+    ///
+    /// Reuses `signing_keys::judge` -- the same rule an accepted envelope is
+    /// checked against -- with a binding built from each record's own
+    /// identity, so it always matches by construction; only the lifecycle
+    /// timestamps compared against `now` can move the answer. This is
+    /// deliberately not a second judgment invented for a health view.
+    pub async fn signing_keys(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+    ) -> Result<Option<Vec<SigningKeyStatus>>, SigningKeyError> {
+        if self.repository(tenant_id, repository_id).await?.is_none() {
+            return Ok(None);
+        }
+        let now = SystemTime::now();
+        let keys = signing_keys::for_repository(&self.client, tenant_id, repository_id).await?;
+        Ok(Some(
+            keys.into_iter()
+                .map(|lifecycle| {
+                    let binding = EnvelopeBinding {
+                        signing_key_id: &lifecycle.record.signing_key_id,
+                        tenant_id: &lifecycle.record.tenant_id,
+                        repository_id: &lifecycle.record.repository_id,
+                        producer_id: &lifecycle.record.node_id,
+                        accepted_at: now,
+                    };
+                    let status = signing_keys::judge(&lifecycle, &binding);
+                    let record = lifecycle.record;
+                    SigningKeyStatus {
+                        signing_key_id: record.signing_key_id,
+                        node_id: record.node_id,
+                        public_key_fingerprint: record.public_key_fingerprint,
+                        status,
+                        expires_at: record.expires_at,
+                    }
                 })
                 .collect(),
         ))
@@ -657,5 +720,123 @@ mod tests {
             .await
             .expect("query wrong tenant")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn signing_keys_reports_none_for_a_repository_that_is_not_enrolled() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let (tenant_id, repository_id) =
+            enroll_and_activate(&database_url, &unique_id.to_string()).await;
+
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+
+        // Right repository, wrong tenant: must read exactly like "not
+        // enrolled", never like a cross-tenant peek at another tenant's keys.
+        assert!(fleet
+            .signing_keys(&format!("{tenant_id}-other"), &repository_id)
+            .await
+            .expect("query wrong tenant")
+            .is_none());
+
+        // Right tenant, a repository id nobody ever enrolled.
+        assert!(fleet
+            .signing_keys(&tenant_id, &format!("{repository_id}-other"))
+            .await
+            .expect("query never-enrolled repository")
+            .is_none());
+    }
+
+    /// `enroll_and_activate` already registers one key as a side effect of
+    /// activation; a second key is registered directly and revoked, so the
+    /// enrolled repository ends up with one resolved key and one revoked key
+    /// -- proving `signing_keys` reports each key's OWN judged status rather
+    /// than the whole repository's status collapsing to a single value.
+    #[tokio::test]
+    async fn signing_keys_judges_each_enrolled_key_independently_as_of_now() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let (tenant_id, repository_id) =
+            enroll_and_activate(&database_url, &unique_id.to_string()).await;
+        let activated_signing_key_id = format!("fleet-signing-key-{unique_id}");
+
+        let (mut client, connection) =
+            tokio_postgres::connect(&database_url, tokio_postgres::NoTls)
+                .await
+                .expect("test database connects");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+
+        let revoked_signing_key_id = format!("fleet-signing-key-revoked-{unique_id}");
+        let revoked_record = signing_keys::SigningKeyRecord {
+            signing_key_id: revoked_signing_key_id.clone(),
+            tenant_id: tenant_id.clone(),
+            repository_id: repository_id.clone(),
+            node_id: format!("fleet-node-revoked-{unique_id}"),
+            public_key: vec![9; 32],
+            public_key_fingerprint: format!("ed25519:{revoked_signing_key_id}"),
+            activated_at: SystemTime::now(),
+            expires_at: None,
+        };
+        let transaction = client.transaction().await.expect("begin transaction");
+        signing_keys::register(&transaction, &revoked_record)
+            .await
+            .expect("register second key");
+        transaction.commit().await.expect("commit registration");
+
+        let transaction = client.transaction().await.expect("begin transaction");
+        signing_keys::revoke(
+            &transaction,
+            &signing_keys::KeyRevocation {
+                signing_key_id: revoked_signing_key_id.clone(),
+                reason: "fleet test revocation".to_owned(),
+            },
+            SystemTime::now(),
+        )
+        .await
+        .expect("revoke second key");
+        transaction.commit().await.expect("commit revocation");
+
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+        let keys = fleet
+            .signing_keys(&tenant_id, &repository_id)
+            .await
+            .expect("query signing keys")
+            .expect("repository is enrolled");
+
+        assert_eq!(keys.len(), 2, "the activation key plus the revoked key");
+
+        let activated = keys
+            .iter()
+            .find(|key| key.signing_key_id == activated_signing_key_id)
+            .expect("the activation-issued key is present");
+        assert!(
+            matches!(activated.status, KeyResolution::Resolved(_)),
+            "a freshly activated key must still be resolved: {:?}",
+            activated.status
+        );
+
+        let revoked = keys
+            .iter()
+            .find(|key| key.signing_key_id == revoked_signing_key_id)
+            .expect("the manually revoked key is present");
+        assert_eq!(revoked.node_id, revoked_record.node_id);
+        assert_eq!(
+            revoked.public_key_fingerprint,
+            revoked_record.public_key_fingerprint
+        );
+        assert_eq!(revoked.status, KeyResolution::Revoked);
+        assert_eq!(revoked.expires_at, None);
     }
 }

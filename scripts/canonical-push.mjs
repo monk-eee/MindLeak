@@ -29,6 +29,10 @@ import {
   prepareCompletionOffer,
 } from "./completion-offer.mjs";
 import {
+  mergedBranchWarning,
+  mostRecentPullRequest,
+} from "./merged-branch-warning.mjs";
+import {
   memoryPlaneRefusal,
   recordPublication,
 } from "./publication-record.mjs";
@@ -342,6 +346,14 @@ const tooEarly = commitBeforeClaimNotice(
 );
 if (tooEarly) {
   console.warn(`canonical-push: ${tooEarly}`);
+}
+
+const mergedNotice = mergedBranchWarning({
+  branch,
+  ...mostRecentPullRequest({ branch, cwd: repoRoot }),
+});
+if (mergedNotice) {
+  console.warn(`canonical-push: ${mergedNotice}`);
 }
 
 const promise = publishPromisedBranch({

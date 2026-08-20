@@ -366,6 +366,25 @@ table, not a redesign. Unlike `ClaimDelegationService`, these RPCs are
 unauthenticated in this slice — see
 [`gaps.d/ackplane-knowledge-service-rpcs-are-unauthenticated.md`](../gaps.d/ackplane-knowledge-service-rpcs-are-unauthenticated.md).
 
+### `ackplane-bridge` (binary)
+
+A separate axum HTTP server for the Bridge (assurance operations, ADR-0090):
+read-only Fleet views over Ackplane's accepted Postgres state for one
+development tenant, resolved from a loopback-only salt file
+(`ACKPLANE_BRIDGE_SALT_PATH`). It links `ackplane-server::fleet` directly and
+never writes — enrolment, claims, and the ledger are mutated only through
+Ackplane's own gRPC services. Current routes, each 404 on a repository the
+tenant has not enrolled rather than leaking a distinguishable error:
+
+| Route | Serves |
+|---|---|
+| `GET /` | The Fleet page (static HTML/JS). |
+| `GET /api/v1/fleet` | Every repository enrolled for the tenant, with freshness. |
+| `GET /api/v1/repositories/:repository_id` | One repository's ledger/projection detail. |
+| `GET /api/v1/repositories/:repository_id/timeline` | Its most recent accepted ledger events. |
+| `GET /api/v1/repositories/:repository_id/claims` | Its live delegated claims (`FleetStore::active_work`). |
+| `GET /api/v1/repositories/:repository_id/signing-keys` | Every enrolled signing key, judged as of now (`FleetStore::signing_keys`), reusing `signing_keys::judge` — the same rule an accepted envelope's own verification applies — rather than a second judgment invented for the health view. |
+
 ### `editors/vscode` (extension)
 
 Passive editor, shell-execution, workspace-mutation, and Git commit sensors plus

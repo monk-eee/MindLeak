@@ -6,8 +6,9 @@ use std::{
 use ackplane_bridge::BridgeConfig;
 use ackplane_server::fleet::{
     ActiveWorkItem, FleetRepository, FleetStore, RepositoryDetail, RepositoryFreshness,
-    TimelineEvent,
+    SigningKeyStatus, TimelineEvent,
 };
+use ackplane_server::signing_keys::KeyResolution;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -148,6 +149,46 @@ impl From<ActiveWorkItem> for ActiveWorkSummary {
     }
 }
 
+#[derive(Serialize)]
+struct SigningKeysResponse {
+    keys: Vec<SigningKeyStatusSummary>,
+}
+
+#[derive(Serialize)]
+struct SigningKeyStatusSummary {
+    signing_key_id: String,
+    node_id: String,
+    public_key_fingerprint: String,
+    status: &'static str,
+    expires_at_seconds: Option<u64>,
+}
+
+impl From<SigningKeyStatus> for SigningKeyStatusSummary {
+    fn from(key: SigningKeyStatus) -> Self {
+        Self {
+            signing_key_id: key.signing_key_id,
+            node_id: key.node_id,
+            public_key_fingerprint: key.public_key_fingerprint,
+            status: key_resolution_label(&key.status),
+            expires_at_seconds: key.expires_at.and_then(unix_seconds),
+        }
+    }
+}
+
+/// A repository detail page's key-health row must read the same status word
+/// an envelope's own verification would report for a key at this instant.
+fn key_resolution_label(resolution: &KeyResolution) -> &'static str {
+    match resolution {
+        KeyResolution::Resolved(_) => "resolved",
+        KeyResolution::Unknown => "unknown",
+        KeyResolution::BindingMismatch => "binding_mismatch",
+        KeyResolution::NotYetActive => "not_yet_active",
+        KeyResolution::Expired => "expired",
+        KeyResolution::Revoked => "revoked",
+        KeyResolution::Retired => "retired",
+    }
+}
+
 /// How many timeline events one request returns. A first, fixed slice rather
 /// than caller-controlled paging - ADR-0095 does not yet define a paging
 /// contract, and an unbounded limit would let a request pull an entire
@@ -207,6 +248,10 @@ async fn main() {
         .route(
             "/api/v1/repositories/:repository_id/claims",
             get(repository_claims),
+        )
+        .route(
+            "/api/v1/repositories/:repository_id/signing-keys",
+            get(repository_signing_keys),
         )
         .with_state(state);
     let listener = match tokio::net::TcpListener::bind(config.listen).await {
@@ -321,6 +366,29 @@ async fn repository_claims(
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(error) => {
             tracing::error!(%error, "Bridge repository active-work query failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn repository_signing_keys(
+    State(state): State<AppState>,
+    Path(repository_id): Path<String>,
+) -> Result<Json<SigningKeysResponse>, StatusCode> {
+    match state
+        .fleet
+        .signing_keys(&state.tenant_id, &repository_id)
+        .await
+    {
+        Ok(Some(keys)) => Ok(Json(SigningKeysResponse {
+            keys: keys
+                .into_iter()
+                .map(SigningKeyStatusSummary::from)
+                .collect(),
+        })),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository signing-key health query failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }

@@ -1,5 +1,6 @@
-- **The credential-facility-backed `ClaimSigner` has only ever been verified
-  by hand, on Windows, once — OBSERVED 2026-08-18, left OPEN.**
+- **The credential-facility-backed `ClaimSigner` was verified by hand, on
+  Windows, only once, and never for real in CI on any platform —
+  OBSERVED 2026-08-18, narrowed 2026-08-20, left OPEN for macOS only.**
   `CredentialFacilitySigner` (`crates/ackplane-client/src/auth.rs`, ADR-0100
   decision 5) is real, shipped code that stores/loads a signing seed through
   the `keyring` crate, which claims uniform support for Windows Credential
@@ -31,9 +32,32 @@
   merge with every check green, because the check that would catch it always
   reports "skipped" rather than "passed" or "failed" in this CI environment.
 
-  Left OPEN: no fix attempted this run. Closing it needs either (a) a CI job
-  that installs/starts a real Secret Service provider (e.g. `gnome-keyring`
-  headless) on the Linux runner so the existing test stops skipping there,
-  or (b) an explicit, visible CI summary line distinguishing "skipped: no
-  facility" from "passed: round-tripped for real," so a permanently-skipping
-  gate is at least legible rather than indistinguishable from a passing one.
+  **Guarded 2026-08-20 for legibility, not for real coverage:** the `rust` CI
+  job now re-runs this one test with `--nocapture` on `ubuntu-latest`, and
+  the test itself now prints "passed: round-tripped for real through the OS
+  credential facility" on success as well as its existing "skipped: ..."
+  line on failure to store -- closing option (b). This makes a
+  permanently-skipping gate visible in the log; it does not make the gate
+  real. Option (a) -- a CI job that installs/starts a real Secret Service
+  provider so the test stops skipping on Linux at all -- remains open and
+  unattempted.
+
+  **Option (a) attempted 2026-08-20 and CONFIRMED CLOSED against the actual
+  CI log, not just the YAML.** `ubuntu-latest` now installs `gnome-keyring` +
+  `dbus-x11` before the credential-facility step (`continue-on-error: true`,
+  so a failed install cannot turn the check red) and, when both
+  `dbus-run-session` and `gnome-keyring-daemon` are present, wraps the test
+  in a private D-Bus session with an empty-password login keyring primed via
+  `gnome-keyring-daemon --unlock`. The real run (job 96311109671, PR #561)
+  printed the test's own "passed: round-tripped for real through the OS
+  credential facility" line and `test result: ok. 1 passed; 0 failed` --
+  read directly from `gh api .../jobs/<id>/logs`, not assumed from the YAML.
+  This is the first time this code path has been proven to work anywhere in
+  this project's own CI, on either platform it runs.
+
+  **What remains open: macOS is still wholly unverified.** There is no
+  `macos-latest` job anywhere in this repository's CI matrix, so `keyring`'s
+  Keychain backend has never been exercised at all, by hand or by CI.
+  Closing that needs a `macos-latest` job added to the matrix, which is
+  separate scope from installing a Linux Secret Service provider -- the CI
+  platforms available and their setup steps are not the same problem.
