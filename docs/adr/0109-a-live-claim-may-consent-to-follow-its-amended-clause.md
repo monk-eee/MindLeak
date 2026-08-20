@@ -1,8 +1,10 @@
 # ADR-0109: A live claim may consent to follow its amended clause
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-20
-- Deciders: Pending human acceptance
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-20 by the repository owner, authorized directly in
+  session - attributed human adoption after review.
 - Refines: [ADR-0068](0068-an-amendment-carries-the-work-it-renames.md) (an
   amendment carries the work it renames) — narrows decision 5's "a live claim
   does not move either" to add one explicit, owner-consented exception
