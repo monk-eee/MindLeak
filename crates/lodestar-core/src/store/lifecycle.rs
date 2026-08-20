@@ -6,7 +6,9 @@ use rusqlite::params;
 use crate::decay::ACTIVE_THRESHOLD;
 use crate::error::{LodestarError, Result};
 
-use super::{LodestarStore, ResetOutcome, StartupAction, StartupGuidance, Stats};
+use super::{
+    DoneVerdictBreakdown, LodestarStore, ResetOutcome, StartupAction, StartupGuidance, Stats,
+};
 
 fn zero_goal_guidance() -> StartupGuidance {
     StartupGuidance {
@@ -61,6 +63,7 @@ impl LodestarStore {
             params![now, ACTIVE_THRESHOLD],
             |r| r.get(0),
         )?;
+        let done_verdicts = self.done_verdict_breakdown()?;
         Ok(Stats {
             active_goals,
             open_tasks,
@@ -69,7 +72,36 @@ impl LodestarStore {
             active_knowledge,
             total_tasks,
             next_step: (active_goals == 0).then(zero_goal_guidance),
+            done_verdicts,
         })
+    }
+
+    /// The exact query gaps.d/done-does-not-mean-aligned.md's 2026-08-01 audit
+    /// ran by hand (157 aligned / 133 needs_human / 40 drift of 330), now live:
+    /// `resolved_conformance_id` when a human resolved an override, otherwise
+    /// the task's own latest conformance record by `checked_at`.
+    fn done_verdict_breakdown(&self) -> Result<DoneVerdictBreakdown> {
+        let mut statement = self.conn.prepare(
+            "SELECT COALESCE(
+                (SELECT rc.verdict FROM conformance rc WHERE rc.id = t.resolved_conformance_id),
+                (SELECT lc.verdict FROM conformance lc
+                    WHERE lc.task_id = t.id
+                    ORDER BY lc.checked_at DESC, lc.id DESC LIMIT 1)
+             )
+             FROM tasks t WHERE t.status = 'done'",
+        )?;
+        let mut breakdown = DoneVerdictBreakdown::default();
+        let rows = statement.query_map([], |row| row.get::<_, Option<String>>(0))?;
+        for verdict in rows {
+            match verdict?.as_deref() {
+                Some("aligned") => breakdown.aligned += 1,
+                Some("needs_human") => breakdown.needs_human += 1,
+                Some("drift") => breakdown.drift += 1,
+                Some("violation") => breakdown.violation += 1,
+                _ => breakdown.unresolved += 1,
+            }
+        }
+        Ok(breakdown)
     }
 
     /// Record one model call (decompose/judge/draft_question) for observability
@@ -212,6 +244,103 @@ mod tests {
         assert_eq!(
             stats.total_tasks, 3,
             "every task, including the one blocking moved out of open"
+        );
+    }
+
+    /// gaps.d/done-does-not-mean-aligned.md: `done_tasks` alone cannot tell an
+    /// automated `aligned` affirmation apart from a human-resolved override.
+    #[test]
+    fn done_verdict_breakdown_counts_an_aligned_completion() {
+        let store = store();
+        let goal = goal(&store);
+        let task = store
+            .create_task(&goal.id, "wire fts", "tests pass", None, NOW)
+            .unwrap();
+        store.claim_task(&task.id, "agent-a", 60, NOW).unwrap();
+        store
+            .record_conformance_and_transition(
+                &task.id,
+                "agent-a",
+                ConformanceAudit {
+                    evidence_schema_version: 1,
+                    evidence: "{}",
+                    verdict: Verdict::Aligned,
+                    findings: "",
+                },
+                TaskStatus::Done,
+                NOW,
+            )
+            .unwrap();
+
+        let breakdown = store.stats(NOW).unwrap().done_verdicts;
+        assert_eq!(breakdown.aligned, 1);
+        assert_eq!(breakdown.needs_human, 0);
+    }
+
+    /// A human resolving an in_review task overrules a specific conformance
+    /// record (`resolved_conformance_id`), not necessarily the task's most
+    /// recent one -- the breakdown must report THAT verdict, not silently
+    /// promote the resolution to `aligned`.
+    #[test]
+    fn a_human_resolved_override_reports_the_overruled_verdict_not_aligned() {
+        let store = store();
+        let goal = goal(&store);
+        let task = store
+            .create_task(&goal.id, "wire fts", "tests pass", None, NOW)
+            .unwrap();
+        store.claim_task(&task.id, "agent-a", 60, NOW).unwrap();
+        store
+            .record_conformance_and_transition(
+                &task.id,
+                "agent-a",
+                ConformanceAudit {
+                    evidence_schema_version: 1,
+                    evidence: "{}",
+                    verdict: Verdict::NeedsHuman,
+                    findings: "evidence does not touch code bound to the task goal",
+                },
+                TaskStatus::InReview,
+                NOW,
+            )
+            .unwrap();
+
+        assert!(store.resolve_in_review(&task.id, "Reviewer", NOW).unwrap());
+
+        let breakdown = store.stats(NOW).unwrap().done_verdicts;
+        assert_eq!(
+            breakdown.needs_human, 1,
+            "the overruled verdict, not aligned"
+        );
+        assert_eq!(breakdown.aligned, 0);
+    }
+
+    /// Reachable only by forcing `in_review` with no conformance record ever
+    /// written (a state the public API cannot produce on its own) --
+    /// `resolve_in_review` still resolves it (`overruled` is `None`), and the
+    /// breakdown must count it rather than silently miscounting it as any one
+    /// verdict.
+    #[test]
+    fn a_resolved_task_with_no_conformance_record_counts_as_unresolved() {
+        let store = store();
+        let goal = goal(&store);
+        let task = store
+            .create_task(&goal.id, "wire fts", "tests pass", None, NOW)
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE tasks SET status = 'in_review' WHERE id = ?1",
+                params![task.id],
+            )
+            .unwrap();
+
+        assert!(store.resolve_in_review(&task.id, "Reviewer", NOW).unwrap());
+
+        let breakdown = store.stats(NOW).unwrap().done_verdicts;
+        assert_eq!(breakdown.unresolved, 1);
+        assert_eq!(
+            breakdown.aligned + breakdown.needs_human + breakdown.drift,
+            0
         );
     }
 

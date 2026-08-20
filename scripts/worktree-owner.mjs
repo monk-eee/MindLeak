@@ -63,6 +63,70 @@ export function refusalMessage({ owner, session }) {
 const capture = (args, cwd) =>
   execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
+const ghCapture = (args, cwd) =>
+  execFileSync("gh", args, { cwd, encoding: "utf8" }).trim();
+
+// Adopting a lapsed-lease worktree only ever consults the task ledger and
+// local git state, and both can be genuinely clean while the original owner
+// already pushed and opened a PR seconds before their lease lapsed --
+// observed for real (gaps.d/rescuing-a-lapsed-lease-can-duplicate-a-published-pr.md):
+// a rescue cherry-picked an already-shipped commit onto a fresh branch,
+// republishing it as a second, duplicate PR. Neither the ledger nor local git
+// reads GitHub, so this is the one place that does. Never a hard refusal --
+// a closed/abandoned PR, or a stale/unauthenticated `gh` call, must not block
+// a genuine rescue; the point is to make the possibility loud, not to gate it.
+export function checkExistingPullRequests({
+  branch,
+  cwd = process.cwd(),
+  capture: ghCall = ghCapture,
+} = {}) {
+  let raw;
+  try {
+    raw = ghCall(
+      [
+        "pr",
+        "list",
+        "--head",
+        branch,
+        "--state",
+        "all",
+        "--json",
+        "number,state,url",
+      ],
+      cwd,
+    );
+  } catch {
+    return { checked: false, pullRequests: [] };
+  }
+  try {
+    return { checked: true, pullRequests: JSON.parse(raw) };
+  } catch {
+    return { checked: false, pullRequests: [] };
+  }
+}
+
+/// Render the pre-flight result as a message for the rescuer, or `null` when
+/// there is nothing to say. Pure, so every case is testable without `gh`.
+export function existingPullRequestWarning({ branch, checked, pullRequests }) {
+  if (!checked) {
+    return (
+      `worktree-owner: could not check GitHub for an existing pull request on '${branch}'\n` +
+      "  (gh unavailable, unauthenticated, or the call failed) -- adopting anyway.\n" +
+      `  Verify by hand before publishing: gh pr list --head ${branch} --state all`
+    );
+  }
+  if (!pullRequests || pullRequests.length === 0) return null;
+  const named = pullRequests
+    .map((pr) => `#${pr.number} (${pr.state}) ${pr.url}`)
+    .join(", ");
+  return (
+    `worktree-owner: '${branch}' already has a published pull request: ${named}\n` +
+    "  Rescuing this worktree can republish work its original owner already shipped\n" +
+    "  (gaps.d/rescuing-a-lapsed-lease-can-duplicate-a-published-pr.md). Check the PR\n" +
+    "  before cherry-picking or committing further."
+  );
+}
+
 /// Resolve the verdict for a working tree, recording ownership when it is
 /// unclaimed. Returns the verdict so callers decide how loudly to fail.
 export function checkWorktreeOwnership({
@@ -101,9 +165,16 @@ if (
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
   const isPostCheckout = process.argv.includes("--stage=post-checkout");
-  const verdict = checkWorktreeOwnership({
-    adopt: process.argv.includes("--adopt-worktree"),
-  });
+  const adopt = process.argv.includes("--adopt-worktree");
+  const verdict = checkWorktreeOwnership({ adopt });
+  if (adopt) {
+    const branch = capture(["branch", "--show-current"], process.cwd());
+    const warning = existingPullRequestWarning({
+      branch,
+      ...checkExistingPullRequests({ branch }),
+    });
+    if (warning) console.error(warning);
+  }
   if (verdict.action === "refuse") {
     if (isPostCheckout) {
       console.error(
