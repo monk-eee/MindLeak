@@ -345,7 +345,8 @@
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/timeline`).then((r) => (r.ok ? r.json() : null)),
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/claims`).then((r) => (r.ok ? r.json() : null)),
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/signing-keys`).then((r) => (r.ok ? r.json() : null)),
-      ]).then(([detail, timeline, claims, signingKeys]) => ({ detail, timeline, claims, signingKeys }));
+        fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/knowledge`).then((r) => (r.ok ? r.json() : null)),
+      ]).then(([detail, timeline, claims, signingKeys, knowledge]) => ({ detail, timeline, claims, signingKeys, knowledge }));
       detailCache.set(repositoryId, promise);
       return promise;
     }
@@ -363,7 +364,7 @@
 
     function renderDetail(container, repositoryId) {
       container.innerHTML = '<div class="skeleton"></div>';
-      loadRepositoryDetail(repositoryId).then(({ detail, timeline, claims, signingKeys }) => {
+      loadRepositoryDetail(repositoryId).then(({ detail, timeline, claims, signingKeys, knowledge }) => {
         if (!detail) {
           container.innerHTML = '<p class="timeline-empty">Detail is unavailable for this repository.</p>';
           return;
@@ -371,6 +372,7 @@
         const events = timeline?.events ?? [];
         const activeClaims = claims?.claims ?? [];
         const keys = signingKeys?.keys ?? [];
+        const knowledgeEntries = knowledge?.entries ?? [];
         container.innerHTML = `
           <div class="detail-grid">
             <div><span class="stat-label">Ledger position</span><span class="stat-value">${detail.ledger_stream_position}</span></div>
@@ -421,6 +423,20 @@
                     <span class="when" title="${absoluteTime(event.occurred_at_seconds)}">${relativeTime(event.occurred_at_seconds)}</span>
                   </li>`).join("")}</ul>`
               : '<p class="timeline-empty">No accepted records yet.</p>'}
+          </div>
+          <div>
+            <p class="timeline-title">Knowledge</p>
+            ${knowledge === null
+              ? '<p class="timeline-empty">Knowledge search is unavailable.</p>'
+              : knowledgeEntries.length
+                ? `<ul class="timeline work-list">${knowledgeEntries.map((entry) => `
+                    <li>
+                      <span class="payload">${escapeHtml(entry.content)}</span>
+                      <span class="producer">${entry.source_ref ? escapeHtml(entry.source_ref) : "No source"}</span>
+                      <span class="branch">weight ${entry.effective_weight.toFixed(2)}</span>
+                      <span class="when" title="${escapeHtml(absoluteTime(entry.confirmed_at_seconds))}">${escapeHtml(relativeTime(entry.confirmed_at_seconds))}</span>
+                    </li>`).join("")}</ul>`
+                : '<p class="timeline-empty">No knowledge recorded yet.</p>'}
           </div>
         `;
       });

@@ -227,12 +227,13 @@ mean exposing or replicating local SQLite or forwarding raw MCP.
 
 - The current Bridge Fleet page is a real vertical slice but not a complete
   product boundary. It exposes Fleet, repository detail, accepted-record
-  timeline, active delegated work, and enrolled signing-key health reads; its
-  "coordination" filter is enrolled-node presence, not task or lease state.
-  The immediate next slice is the PostgreSQL-backed Agents and Work control
-  room described above. Design, Evidence, Knowledge, Context, Telemetry,
-  Readiness, and reviewed operations follow as explicit server-roadmap
-  surfaces.
+  timeline, active delegated work, enrolled signing-key health reads, and
+  knowledge search; its "coordination" filter is enrolled-node presence, not
+  task or lease state, and its knowledge search does not yet cover
+  provenance, reach, revalidation, or retirement. The immediate next slice is
+  the PostgreSQL-backed Agents and Work control room described above.
+  Design, Evidence, Context, Telemetry, Readiness, and reviewed operations
+  follow as explicit server-roadmap surfaces.
 - The extension must progressively separate reusable workflow state and views
   from VS Code-only sensors and commands. Reusable human workflows move toward
   Bridge/browser modules; the extension keeps editor integration. ADR-0103's
