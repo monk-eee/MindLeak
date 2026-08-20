@@ -69,6 +69,17 @@ pub struct GoverningClause {
     pub mode: ArtifactBindingMode,
 }
 
+/// One active lesson delivered with pre-edit advice because it names a node in
+/// the intended change scope.
+#[derive(Debug, Clone, Serialize)]
+pub struct KnowledgeAdvisory {
+    pub id: String,
+    pub statement: String,
+    pub weight: f64,
+    pub confirmed_at: i64,
+    pub matched_nodes: Vec<String>,
+}
+
 /// The result of `advise` (ADR-0029): the active clauses governing an intended
 /// change scope plus one proportional disposition. It carries no evidence and
 /// records no verdict — a read-only projection of the adopted constitution.
@@ -79,6 +90,7 @@ pub struct Advice {
     pub reason: Option<AdviceReason>,
     pub governing: Vec<GoverningClause>,
     pub findings: Vec<String>,
+    pub known_context: Vec<KnowledgeAdvisory>,
 }
 
 /// One MindLeak graph fact supporting an evidence claim.

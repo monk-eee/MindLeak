@@ -51,9 +51,9 @@ pub use model::{
     ExternalGoalImportOutcome, ExternalGoalImportResult, ExternalGoalRecord, FederatedClaim,
     FederatedClaimAuthority, FederatedClaimGrant, FederatedClaimOutcome,
     FederatedClaimRecoverRequest, FederatedClaimSource, Goal, GoalKind, GoalStatus,
-    GoverningClause, HumanQuestion, Knowledge, KnowledgeReach, OverlapSignal, RepeatedTitle,
-    ReworkReport, SignalPromotion, Task, TaskEvent, TaskEventKind, TaskQa, TaskReceipt, TaskScope,
-    TaskStatus, Verdict,
+    GoverningClause, HumanQuestion, Knowledge, KnowledgeAdvisory, KnowledgeReach, OverlapSignal,
+    RepeatedTitle, ReworkReport, SignalPromotion, Task, TaskEvent, TaskEventKind, TaskQa,
+    TaskReceipt, TaskScope, TaskStatus, Verdict,
 };
 pub use policy::{
     common_core_pack, fleet_delivery_pack, ConstitutionPack, PackClause, PackClauseDisposition,

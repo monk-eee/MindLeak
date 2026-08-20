@@ -143,6 +143,9 @@ export class TelemetryViewProvider implements vscode.WebviewViewProvider {
     .value.bad {
       color: var(--vscode-testing-iconFailed, #e5534b);
     }
+    .value.warn {
+      color: var(--vscode-editorWarning-foreground, #cca700);
+    }
     h3 {
       margin: 10px 8px 4px;
       font-size: 11px;
@@ -173,6 +176,9 @@ export class TelemetryViewProvider implements vscode.WebviewViewProvider {
     td.ok {
       color: var(--vscode-testing-iconPassed, #3fbf6f);
     }
+    td.warn {
+      color: var(--vscode-editorWarning-foreground, #cca700);
+    }
     #log {
       margin: 4px 8px 12px;
       padding: 6px;
@@ -192,6 +198,14 @@ export class TelemetryViewProvider implements vscode.WebviewViewProvider {
       opacity: 0.6;
       font-size: 11px;
     }
+    #actions {
+      margin: 4px 8px 12px;
+      padding-left: 18px;
+      font-size: 11px;
+    }
+    #actions li + li {
+      margin-top: 5px;
+    }
   </style>
 </head>
 <body>
@@ -209,6 +223,10 @@ export class TelemetryViewProvider implements vscode.WebviewViewProvider {
     </thead>
     <tbody></tbody>
   </table>
+  <div id="actionsSection" style="display:none">
+    <h3>Next actions</h3>
+    <ul id="actions"></ul>
+  </div>
   <div id="logSection" style="display:none">
     <h3>Live log</h3>
     <div id="log"></div>

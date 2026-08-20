@@ -266,8 +266,11 @@ path.
 | `MINDLEAK_INDEX_INTERVAL_SECS` | `300` | autonomous index cadence (30-86400) |
 | `MINDLEAK_INDEX_BATCH` | `128` | nodes attempted per pass (1-1000) |
 
-When the embedding endpoint is unavailable, explicit `index` calls and
-autonomous-index telemetry name the model, URL, and remediation. The MCP
+When the embedding endpoint is unavailable, explicit `index` calls name the
+model, URL, and remediation. Autonomous indexing records one degraded `skipped`
+transition, silences identical retries, backs off exponentially to one hour on
+the default cadence (never shorter than configured), and records one recovery;
+an idle pass emits nothing. The MCP
 `recall` boundary instead returns FTS-seeded deterministic graph traversal in
 its existing `results` field, with fallback metadata that recommends installing
 and starting Ollama plus `ollama pull nomic-embed-text`, or configuring another
@@ -285,9 +288,10 @@ confirms an agent did what was asked. Three parts, all local and all stdout-safe
 - **Durable audit trail.** Every tool call is recorded to an append-only
   `telemetry_events` table the telemetry module owns — never graph state, never
   decayed. The `telemetry_snapshot` tool returns per-tool lifetime counts, error
-  counts, latency, per-tool current health (whether the most recent call failed,
-  distinct from the cumulative lifetime error tally), and recent events: the
-  queryable record of what ran and whether it worked.
+  counts, latency, per-tool current health (failing, degraded, or healthy), graph
+  health, recent events, per-session read-before-write habits, and a bounded
+  deterministic usage retrospective. Current failure is distinct from both the
+  cumulative lifetime error tally and skipped optional work.
 - **Network resilience** (`net`). All optional HTTP (embeddings, consolidation,
   LLM) gets explicit timeouts, bounded retry with backoff, and a per-endpoint
   circuit breaker, so a degraded server fast-fails instead of hanging the agent.

@@ -31,7 +31,6 @@ import {
   evidenceRequestForTask,
   formatTaskEvidence,
   GoverningClause,
-  GraphCounts,
   healthSummary,
   leaseActionFor,
   LodestarTask,
@@ -219,7 +218,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(TelemetryViewProvider.viewType, telemetry)
   );
-  const telemetryRefreshMs = Math.max(1, config.get<number>("telemetryRefreshSecs", 3)) * 1000;
+  const telemetryRefreshMs = Math.max(1, config.get<number>("telemetryRefreshSecs", 30)) * 1000;
   const telemetryTimer = setInterval(() => {
     if (telemetry && shouldPollTelemetry(telemetry.isVisible(), telemetry.isLive())) {
       void refreshTelemetry();
@@ -317,7 +316,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
         void fleetController?.refresh();
       }
     },
-    Math.max(2, config.get<number>("fleetRefreshSecs", 5)) * 1000
+    Math.max(2, config.get<number>("fleetRefreshSecs", 30)) * 1000
   );
   context.subscriptions.push({ dispose: () => clearInterval(fleetTimer) });
   const adrWatcher = vscode.workspace.createFileSystemWatcher("**/docs/adr/*.md");
@@ -972,11 +971,10 @@ async function refreshTelemetry(): Promise<void> {
   }
   const live = telemetry.isLive();
   try {
-    const counts = (await client.callTool("graph_stats", {})) as GraphCounts;
     const snapshot = (await client.callTool("telemetry_snapshot", {
       limit: live ? 200 : 20,
     })) as TelemetrySnapshot;
-    telemetry.update(telemetryDashboard(snapshot, counts), logLines(snapshot, live), live);
+    telemetry.update(telemetryDashboard(snapshot), logLines(snapshot, live), live);
   } catch (err) {
     output.appendLine(`telemetry error: ${(err as Error).message}`);
   }
