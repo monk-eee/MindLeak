@@ -117,6 +117,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0107](0107-registered-agents-accept-authenticated-control-directives.md) | Registered agents accept authenticated control directives | Accepted |
 | [0108](0108-knowledge-rpcs-authenticate-with-operation-signing.md) | Knowledge RPCs authenticate with an operation-signing scheme mirroring claims | Proposed |
 | [0109](0109-a-live-claim-may-consent-to-follow-its-amended-clause.md) | A live claim may consent to follow its amended clause | Proposed |
+| [0110](0110-a-ledger-act-is-independently-verifiable-evidence.md) | A Lodestar ledger act is independently verifiable evidence | Proposed |
 
 ## Writing a new ADR
 

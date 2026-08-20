@@ -8,6 +8,7 @@ use ackplane_server::fleet::{
     ActiveWorkItem, FleetRepository, FleetStore, RepositoryDetail, RepositoryFreshness,
     SigningKeyStatus, TimelineEvent,
 };
+use ackplane_server::knowledge_store::{ActiveKnowledge, KnowledgeStore};
 use ackplane_server::signing_keys::KeyResolution;
 use axum::{
     extract::{Path, State},
@@ -23,6 +24,7 @@ const FLEET_PAGE: &str = include_str!("../static/index.html");
 #[derive(Clone)]
 struct AppState {
     fleet: Arc<FleetStore>,
+    knowledge: Arc<KnowledgeStore>,
     tenant_id: Arc<str>,
 }
 
@@ -108,6 +110,13 @@ struct TimelineEventSummary {
     occurred_at_seconds: Option<u64>,
     payload_type: String,
     producer_id: String,
+    signing_key_id: Option<String>,
+    /// The same status word a repository's signing-keys list would report
+    /// for this key at this instant (ADR-0084 decision 12), so a timeline
+    /// entry can visibly flag a key that has since been revoked without
+    /// altering the event's own recorded fields above. `None` when the
+    /// event carries no signing key.
+    key_status: Option<&'static str>,
 }
 
 impl From<TimelineEvent> for TimelineEventSummary {
@@ -117,6 +126,8 @@ impl From<TimelineEvent> for TimelineEventSummary {
             occurred_at_seconds: unix_seconds(event.occurred_at),
             payload_type: event.payload_type,
             producer_id: event.producer_id,
+            signing_key_id: event.signing_key_id,
+            key_status: event.key_status.as_ref().map(key_resolution_label),
         }
     }
 }
@@ -195,6 +206,34 @@ fn key_resolution_label(resolution: &KeyResolution) -> &'static str {
 /// repository's ledger history through the Bridge.
 const TIMELINE_LIMIT: i64 = 50;
 const ACTIVE_WORK_LIMIT: i64 = 50;
+/// Same fixed-slice rationale as `TIMELINE_LIMIT`, applied to a knowledge recall.
+const KNOWLEDGE_LIMIT: i64 = 50;
+
+#[derive(Serialize)]
+struct KnowledgeResponse {
+    entries: Vec<KnowledgeEntrySummary>,
+}
+
+#[derive(Serialize)]
+struct KnowledgeEntrySummary {
+    knowledge_id: String,
+    content: String,
+    source_ref: Option<String>,
+    effective_weight: f64,
+    confirmed_at_seconds: Option<u64>,
+}
+
+impl From<ActiveKnowledge> for KnowledgeEntrySummary {
+    fn from(entry: ActiveKnowledge) -> Self {
+        Self {
+            knowledge_id: entry.knowledge_id,
+            content: entry.content,
+            source_ref: entry.source_ref,
+            effective_weight: entry.effective_weight,
+            confirmed_at_seconds: unix_seconds(entry.confirmed_at),
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -230,8 +269,16 @@ async fn main() {
             return;
         }
     };
+    let knowledge_store = match KnowledgeStore::connect(config.database_url()).await {
+        Ok(knowledge) => Arc::new(knowledge),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane knowledge domain: {error}");
+            return;
+        }
+    };
     let state = AppState {
         fleet: fleet_store,
+        knowledge: knowledge_store,
         tenant_id: Arc::from(config.development_tenant_token),
     };
     let application = Router::new()
@@ -252,6 +299,10 @@ async fn main() {
         .route(
             "/api/v1/repositories/:repository_id/signing-keys",
             get(repository_signing_keys),
+        )
+        .route(
+            "/api/v1/repositories/:repository_id/knowledge",
+            get(repository_knowledge),
         )
         .with_state(state);
     let listener = match tokio::net::TcpListener::bind(config.listen).await {
@@ -389,6 +440,45 @@ async fn repository_signing_keys(
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(error) => {
             tracing::error!(%error, "Bridge repository signing-key health query failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn repository_knowledge(
+    State(state): State<AppState>,
+    Path(repository_id): Path<String>,
+) -> Result<Json<KnowledgeResponse>, StatusCode> {
+    // Same enrolment-first check as `repository_timeline`: a repository
+    // outside the caller's tenant must read exactly like one that was never
+    // enrolled, not leak a 200 for a repository this tenant cannot see.
+    match state
+        .fleet
+        .repository(&state.tenant_id, &repository_id)
+        .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository knowledge lookup failed");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    match state
+        .knowledge
+        .recall(&state.tenant_id, &repository_id, None, KNOWLEDGE_LIMIT)
+        .await
+    {
+        Ok(result) => Ok(Json(KnowledgeResponse {
+            entries: result
+                .entries
+                .into_iter()
+                .map(KnowledgeEntrySummary::from)
+                .collect(),
+        })),
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository knowledge query failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }

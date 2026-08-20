@@ -7,10 +7,18 @@
 
 const MAIN_RS: &str = include_str!("../src/main.rs");
 const FLEET_RS: &str = include_str!("../../ackplane-server/src/fleet.rs");
+const KNOWLEDGE_STORE_RS: &str = include_str!("../../ackplane-server/src/knowledge_store.rs");
 
 /// `FleetStore::connect` is the connection constructor, not a query or
 /// mutation - it has no tenant to scope to yet.
 const FLEET_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &["connect"];
+
+/// `KnowledgeStore::connect` is the connection constructor - same exemption
+/// as `FleetStore::connect` above. `record` is exempt for a different reason:
+/// it takes a `RecordKnowledgeRequest` whose own `tenant_id: String` field
+/// still carries the scope - the guard's plain-text check only recognises a
+/// direct `tenant_id: &str` parameter, not one nested inside a request struct.
+const KNOWLEDGE_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &["connect", "record"];
 
 /// `fleet_page` serves a static asset and never touches the store - it has
 /// nothing to scope.
@@ -30,6 +38,25 @@ fn every_fleet_store_query_requires_an_explicit_tenant_id() {
         assert!(
             signature.contains("tenant_id: &str"),
             "FleetStore::{name} does not take an explicit tenant_id: &str parameter \
+             (ADR-0098 decision 5 requires every query/mutation to carry a tenant scope): {signature}"
+        );
+    }
+}
+
+#[test]
+fn every_knowledge_store_query_requires_an_explicit_tenant_id() {
+    let methods = extract_impl_methods(KNOWLEDGE_STORE_RS, "KnowledgeStore");
+    assert!(
+        !methods.is_empty(),
+        "expected to find at least one KnowledgeStore method - the parser may be broken"
+    );
+    for (name, signature) in methods {
+        if KNOWLEDGE_STORE_METHODS_WITHOUT_A_TENANT.contains(&name.as_str()) {
+            continue;
+        }
+        assert!(
+            signature.contains("tenant_id: &str"),
+            "KnowledgeStore::{name} does not take an explicit tenant_id: &str parameter \
              (ADR-0098 decision 5 requires every query/mutation to carry a tenant scope): {signature}"
         );
     }

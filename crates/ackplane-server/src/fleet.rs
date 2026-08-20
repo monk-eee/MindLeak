@@ -5,6 +5,7 @@
 //! projection's freshness state. This module is read-only: neither browser
 //! views nor their API may change enrolment, claims, or ledger records.
 
+use std::collections::HashMap;
 use std::time::SystemTime;
 
 use tokio_postgres::{Client, NoTls};
@@ -85,6 +86,15 @@ pub struct TimelineEvent {
     pub occurred_at: SystemTime,
     pub payload_type: String,
     pub producer_id: String,
+    pub signing_key_id: Option<String>,
+    /// The signing key's status judged as of now, not as of when this record
+    /// was accepted (ADR-0084 decision 12: an existing receipt "retain[s]
+    /// the key status known at acceptance and gain[s] a visible
+    /// later-compromise annotation"). The record above never changes; only
+    /// this derived field can move, e.g. from `Resolved` to `Revoked`, as the
+    /// key's own lifecycle changes. `None` when the record carries no
+    /// signing key at all (e.g. `unverified_attribution` provenance).
+    pub key_status: Option<KeyResolution>,
 }
 
 /// One live delegated claim in a repository's Bridge Work view.
@@ -269,16 +279,22 @@ impl FleetStore {
     /// (ADR-0095 decision 4's timeline resource). Only accepted records are
     /// ever persisted (ADR-0086), so this names accepted positions, never
     /// rejections.
+    ///
+    /// Each event's `key_status` is judged as of now via the same
+    /// `signing_keys::judge` rule `FleetStore::signing_keys` uses (ADR-0084
+    /// decision 12) -- one repository-wide key fetch, not one query per
+    /// event, since a handful of enrolled keys typically sign every event in
+    /// a bounded timeline page.
     pub async fn timeline(
         &self,
         tenant_id: &str,
         repository_id: &str,
         limit: i64,
-    ) -> Result<Vec<TimelineEvent>, tokio_postgres::Error> {
+    ) -> Result<Vec<TimelineEvent>, SigningKeyError> {
         let rows = self
             .client
             .query(
-                "SELECT stream_position, occurred_at, payload_type, producer_id \
+                "SELECT stream_position, occurred_at, payload_type, producer_id, signing_key_id \
                  FROM ledger_records \
                  WHERE tenant_id = $1 AND repository_id = $2 \
                  ORDER BY stream_position DESC \
@@ -287,13 +303,41 @@ impl FleetStore {
             )
             .await?;
 
+        let keys_by_id: HashMap<String, _> =
+            signing_keys::for_repository(&self.client, tenant_id, repository_id)
+                .await?
+                .into_iter()
+                .map(|lifecycle| (lifecycle.record.signing_key_id.clone(), lifecycle))
+                .collect();
+        let now = SystemTime::now();
+
         Ok(rows
             .into_iter()
-            .map(|row| TimelineEvent {
-                stream_position: row.get(0),
-                occurred_at: row.get(1),
-                payload_type: row.get(2),
-                producer_id: row.get(3),
+            .map(|row| {
+                let signing_key_id: Option<String> = row.get(4);
+                let key_status = signing_key_id.as_deref().map(|signing_key_id| {
+                    match keys_by_id.get(signing_key_id) {
+                        Some(lifecycle) => {
+                            let binding = EnvelopeBinding {
+                                signing_key_id: &lifecycle.record.signing_key_id,
+                                tenant_id: &lifecycle.record.tenant_id,
+                                repository_id: &lifecycle.record.repository_id,
+                                producer_id: &lifecycle.record.node_id,
+                                accepted_at: now,
+                            };
+                            signing_keys::judge(lifecycle, &binding)
+                        }
+                        None => KeyResolution::Unknown,
+                    }
+                });
+                TimelineEvent {
+                    stream_position: row.get(0),
+                    occurred_at: row.get(1),
+                    payload_type: row.get(2),
+                    producer_id: row.get(3),
+                    signing_key_id,
+                    key_status,
+                }
             })
             .collect())
     }
@@ -838,5 +882,150 @@ mod tests {
         );
         assert_eq!(revoked.status, KeyResolution::Revoked);
         assert_eq!(revoked.expires_at, None);
+    }
+
+    /// A ledger record's own fields never change, but its `key_status`
+    /// annotation is judged as of now (ADR-0084 decision 12): the same event
+    /// reads `Resolved` while its signing key is healthy and `Revoked` once
+    /// that key is later revoked, without the record itself being touched.
+    #[tokio::test]
+    async fn timeline_key_status_reflects_a_later_revocation_without_changing_the_record() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let (tenant_id, repository_id) =
+            enroll_and_activate(&database_url, &unique_id.to_string()).await;
+        let signing_key_id = format!("fleet-signing-key-{unique_id}");
+
+        let mut ledger = LedgerStore::connect(&database_url)
+            .await
+            .expect("connect ledger store");
+        let envelope = EventEnvelope {
+            key: DedupKey {
+                tenant_id: tenant_id.clone(),
+                repository_id: repository_id.clone(),
+                producer_id: format!("fleet-producer-{unique_id}"),
+                producer_sequence: 1,
+            },
+            payload: b"{}".to_vec(),
+            payload_digest: vec![1, 2, 3],
+            schema_version: "v1".to_string(),
+            occurred_at: SystemTime::now(),
+            payload_type: "structural_fact".to_string(),
+            previous_envelope_digest: None,
+            signing_key_id: Some(signing_key_id.clone()),
+            signature: None,
+            provenance: ProvenanceClass::EnrolledNode,
+        };
+        ledger.append(&envelope).await.expect("append envelope");
+
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+        let before_revocation = fleet
+            .timeline(&tenant_id, &repository_id, 50)
+            .await
+            .expect("query timeline before revocation");
+        assert_eq!(before_revocation.len(), 1);
+        assert_eq!(
+            before_revocation[0].signing_key_id,
+            Some(signing_key_id.clone())
+        );
+        assert!(
+            matches!(
+                before_revocation[0].key_status,
+                Some(KeyResolution::Resolved(_))
+            ),
+            "a freshly activated key must still be resolved: {:?}",
+            before_revocation[0].key_status
+        );
+
+        let (mut client, connection) =
+            tokio_postgres::connect(&database_url, tokio_postgres::NoTls)
+                .await
+                .expect("test database connects");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let transaction = client.transaction().await.expect("begin transaction");
+        signing_keys::revoke(
+            &transaction,
+            &signing_keys::KeyRevocation {
+                signing_key_id: signing_key_id.clone(),
+                reason: "timeline test revocation".to_owned(),
+            },
+            SystemTime::now(),
+        )
+        .await
+        .expect("revoke the signing key");
+        transaction.commit().await.expect("commit revocation");
+
+        let after_revocation = fleet
+            .timeline(&tenant_id, &repository_id, 50)
+            .await
+            .expect("query timeline after revocation");
+        assert_eq!(after_revocation.len(), 1);
+        // The underlying record is untouched: same position, same payload.
+        assert_eq!(
+            after_revocation[0].stream_position,
+            before_revocation[0].stream_position
+        );
+        assert_eq!(
+            after_revocation[0].payload_type,
+            before_revocation[0].payload_type
+        );
+        assert_eq!(after_revocation[0].key_status, Some(KeyResolution::Revoked));
+    }
+
+    /// An event with no signing key at all (e.g. unverified-attribution
+    /// provenance) must not be misreported as a healthy or unhealthy key --
+    /// it has none, and `key_status` says so with `None` rather than
+    /// `Unknown`, which is reserved for a `signing_key_id` that does not
+    /// resolve to any registered key.
+    #[tokio::test]
+    async fn timeline_key_status_is_none_when_the_record_carries_no_signing_key() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let (tenant_id, repository_id) =
+            enroll_and_activate(&database_url, &unique_id.to_string()).await;
+
+        let mut ledger = LedgerStore::connect(&database_url)
+            .await
+            .expect("connect ledger store");
+        let envelope = EventEnvelope {
+            key: DedupKey {
+                tenant_id: tenant_id.clone(),
+                repository_id: repository_id.clone(),
+                producer_id: format!("fleet-producer-{unique_id}"),
+                producer_sequence: 1,
+            },
+            payload: b"{}".to_vec(),
+            payload_digest: vec![1, 2, 3],
+            schema_version: "v1".to_string(),
+            occurred_at: SystemTime::now(),
+            payload_type: "structural_fact".to_string(),
+            previous_envelope_digest: None,
+            signing_key_id: None,
+            signature: None,
+            provenance: ProvenanceClass::UnverifiedAttribution,
+        };
+        ledger.append(&envelope).await.expect("append envelope");
+
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+        let timeline = fleet
+            .timeline(&tenant_id, &repository_id, 50)
+            .await
+            .expect("query timeline");
+
+        assert_eq!(timeline.len(), 1);
+        assert_eq!(timeline[0].signing_key_id, None);
+        assert_eq!(timeline[0].key_status, None);
     }
 }
