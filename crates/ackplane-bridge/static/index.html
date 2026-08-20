@@ -213,6 +213,8 @@
     .badge.lagging::before { background: var(--ml-amber); }
     .badge.never_projected { color: var(--ml-ink-soft); background: var(--ml-surface-soft); }
     .badge.never_projected::before { background: var(--ml-ink-soft); }
+    .badge.revoked { color: var(--ml-pink-ink); background: var(--ml-pink-soft); }
+    .badge.revoked::before { background: var(--ml-pink); }
     .chevron { width: 18px; height: 18px; color: var(--ml-ink-soft); transition: transform 0.18s ease; justify-self: end; }
     .repo-card[data-open="true"] .chevron { transform: rotate(90deg); color: var(--ml-pink); }
     .detail-panel {
@@ -233,6 +235,7 @@
     .timeline .payload { font-weight: 600; flex: 1; }
     .timeline .producer { color: var(--ml-ink-muted); }
     .timeline .when { color: var(--ml-ink-soft); white-space: nowrap; }
+    .timeline .badge { font-size: 0.7rem; padding: 3px 9px; }
     .timeline-empty { font-size: 0.82rem; color: var(--ml-ink-soft); padding: 10px 2px; }
     .work-list li { flex-wrap: wrap; }
     .work-list .branch { color: var(--ml-ink-soft); font-family: "Cascadia Code", Consolas, monospace; font-size: 0.76rem; }
@@ -420,6 +423,7 @@
                     <span class="pos">#${event.stream_position}</span>
                     <span class="payload">${escapeHtml(event.payload_type)}</span>
                     <span class="producer">${escapeHtml(event.producer_id)}</span>
+                    ${event.key_status === "revoked" ? '<span class="badge revoked" title="Signed by a key that has since been revoked">key revoked</span>' : ""}
                     <span class="when" title="${absoluteTime(event.occurred_at_seconds)}">${relativeTime(event.occurred_at_seconds)}</span>
                   </li>`).join("")}</ul>`
               : '<p class="timeline-empty">No accepted records yet.</p>'}

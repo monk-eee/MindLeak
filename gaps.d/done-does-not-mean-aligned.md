@@ -23,3 +23,14 @@
   creation, claim before the first commit, keep the lease live, submit the
   publication offer promptly, and show both completion route and verdict in
   aggregate product metrics.
+
+  NARROWED FURTHER, 2026-08-19: the aligned/needs_human/drift split above
+  required a one-time manual audit query. `lodestar_stats` now reports it
+  directly as `done_verdicts` (aligned/needs_human/drift/violation/unresolved),
+  computed the same way -- human `resolved_conformance_id` when present,
+  otherwise the task's latest conformance check, otherwise `unresolved`. Any
+  caller can watch the ratio move without re-deriving the query each time. This
+  closes the measurement gap, not the underlying fact: `done` still means
+  shipped, not that conformance affirmed it, and a human can still resolve a
+  non-aligned receipt for a good reason. Dashboards and agents should read
+  `done_verdicts` rather than treating `done_tasks` as a proxy for correctness.

@@ -79,6 +79,28 @@ pub struct Stats {
     /// clean. `open_tasks + claimed_tasks + done_tasks` is not that number:
     /// it omits blocked, in_review, and abandoned tasks.
     pub total_tasks: i64,
+    /// What actually backed each `done` task's status (gaps.d/done-does-not-
+    /// mean-aligned.md): `done` means shipped, never that conformance
+    /// affirmed it. A human can resolve a `needs_human`/`drift` receipt to
+    /// `done` (an auditable decision), which `done_tasks` alone cannot tell
+    /// apart from automated `aligned` affirmation.
+    pub done_verdicts: DoneVerdictBreakdown,
+}
+
+/// Per-verdict counts among `done` tasks, keyed by whichever conformance
+/// record actually backs each one: a human `resolve`'s `resolved_conformance_id`
+/// when present (that is the record a person overrode, not necessarily the
+/// task's most recent), otherwise the task's own latest conformance check by
+/// `checked_at`. `unresolved` counts a `done` task with no conformance record
+/// at all -- reachable only through `merge_evidence`/legacy import paths, and
+/// worth surfacing rather than silently miscounting as any one verdict.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
+pub struct DoneVerdictBreakdown {
+    pub aligned: i64,
+    pub needs_human: i64,
+    pub drift: i64,
+    pub violation: i64,
+    pub unresolved: i64,
 }
 
 /// Counts removed by an explicitly confirmed intent-plane reset.

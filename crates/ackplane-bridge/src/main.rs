@@ -110,6 +110,13 @@ struct TimelineEventSummary {
     occurred_at_seconds: Option<u64>,
     payload_type: String,
     producer_id: String,
+    signing_key_id: Option<String>,
+    /// The same status word a repository's signing-keys list would report
+    /// for this key at this instant (ADR-0084 decision 12), so a timeline
+    /// entry can visibly flag a key that has since been revoked without
+    /// altering the event's own recorded fields above. `None` when the
+    /// event carries no signing key.
+    key_status: Option<&'static str>,
 }
 
 impl From<TimelineEvent> for TimelineEventSummary {
@@ -119,6 +126,8 @@ impl From<TimelineEvent> for TimelineEventSummary {
             occurred_at_seconds: unix_seconds(event.occurred_at),
             payload_type: event.payload_type,
             producer_id: event.producer_id,
+            signing_key_id: event.signing_key_id,
+            key_status: event.key_status.as_ref().map(key_resolution_label),
         }
     }
 }
