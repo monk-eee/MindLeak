@@ -344,7 +344,8 @@
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}`).then((r) => (r.ok ? r.json() : null)),
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/timeline`).then((r) => (r.ok ? r.json() : null)),
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/claims`).then((r) => (r.ok ? r.json() : null)),
-      ]).then(([detail, timeline, claims]) => ({ detail, timeline, claims }));
+        fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/signing-keys`).then((r) => (r.ok ? r.json() : null)),
+      ]).then(([detail, timeline, claims, signingKeys]) => ({ detail, timeline, claims, signingKeys }));
       detailCache.set(repositoryId, promise);
       return promise;
     }
@@ -362,13 +363,14 @@
 
     function renderDetail(container, repositoryId) {
       container.innerHTML = '<div class="skeleton"></div>';
-      loadRepositoryDetail(repositoryId).then(({ detail, timeline, claims }) => {
+      loadRepositoryDetail(repositoryId).then(({ detail, timeline, claims, signingKeys }) => {
         if (!detail) {
           container.innerHTML = '<p class="timeline-empty">Detail is unavailable for this repository.</p>';
           return;
         }
         const events = timeline?.events ?? [];
         const activeClaims = claims?.claims ?? [];
+        const keys = signingKeys?.keys ?? [];
         container.innerHTML = `
           <div class="detail-grid">
             <div><span class="stat-label">Ledger position</span><span class="stat-value">${detail.ledger_stream_position}</span></div>
@@ -393,6 +395,20 @@
                     </li>`;
                   }).join("")}</ul>`
                 : '<p class="timeline-empty">No active delegated work.</p>'}
+          </div>
+          <div>
+            <p class="timeline-title">Signing keys</p>
+            ${signingKeys === null
+              ? '<p class="timeline-empty">Signing-key health is unavailable.</p>'
+              : keys.length
+                ? `<ul class="timeline work-list">${keys.map((key) => `
+                    <li>
+                      <span class="payload">${escapeHtml(key.node_id)}</span>
+                      <span class="producer">${escapeHtml(key.public_key_fingerprint)}</span>
+                      <span class="branch">${escapeHtml(key.status)}</span>
+                      <span class="when" title="${escapeHtml(absoluteTime(key.expires_at_seconds))}">${key.expires_at_seconds ? `expires ${escapeHtml(relativeTime(key.expires_at_seconds))}` : "No expiry"}</span>
+                    </li>`).join("")}</ul>`
+                : '<p class="timeline-empty">No signing keys enrolled.</p>'}
           </div>
           <div>
             <p class="timeline-title">Recent activity</p>
