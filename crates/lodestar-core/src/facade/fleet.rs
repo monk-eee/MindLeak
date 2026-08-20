@@ -1,8 +1,8 @@
 use mindleak_session::SessionContext;
 
 use crate::fleet::{
-    stale_waits, wait_cycles, Divergence, FleetSession, FleetView, Staleness, ADVISORY_NOTE,
-    STALE_WAIT_GRACE_SECS,
+    stale_waits, wait_cycles, Divergence, FleetSession, FleetView, Presence, Staleness,
+    ADVISORY_NOTE, SESSION_QUIET_GRACE_SECS, STALE_WAIT_GRACE_SECS,
 };
 use crate::model::TaskStatus;
 use crate::{now_unix, Lodestar, Result};
@@ -34,6 +34,7 @@ impl Lodestar {
     /// human answering a question, and a view that blocked on its own
     /// observation would be a control nobody asked for.
     pub fn fleet_view(&self) -> Result<FleetView> {
+        let now = now_unix();
         let live: Vec<_> = self
             .store
             .board(false)?
@@ -49,8 +50,15 @@ impl Lodestar {
                 .filter(|(owner, _)| *owner == agent_id)
                 .map(|(_, task_id)| task_id.clone())
                 .collect();
+            let presence = Presence::from_session(
+                !claimed_task_ids.is_empty(),
+                declared_at,
+                now,
+                SESSION_QUIET_GRACE_SECS,
+            );
             sessions.push(FleetSession {
                 staleness: Staleness::from_declared(context.behind),
+                presence,
                 agent_id,
                 context,
                 declared_at,
@@ -74,6 +82,10 @@ impl Lodestar {
                     context: SessionContext::default(),
                     declared_at: 0,
                     staleness: Staleness::Unknown,
+                    // Holds a live claim by construction (it is in `live`), so
+                    // it is unconditionally `Live` regardless of the placeholder
+                    // `declared_at: 0` above.
+                    presence: Presence::Live,
                     claimed_task_ids: vec![task_id.clone()],
                 }),
             }

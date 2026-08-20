@@ -112,7 +112,12 @@ seam, `coordination` task/handoff/conformance ledger, transactional
 `policy_packs` proposal/disposition/provenance ledger, reviewed `design/`
 materialization plus validation, `amendments` and `waivers`, learned
 `knowledge`, and `lifecycle` operations), `llm` (optional OpenAI-compatible model
-client), `embed` (optional semantic index over knowledge — a deliberate copy of
+client), `telemetry` (best-effort local record of each model call this crate
+makes — operation, outcome, duration, and token usage when the endpoint
+reports it — read back through the `model_telemetry` tool; mirrors
+`mindleak-core::telemetry`'s shape but owns a separate table, since a model
+call is not a coordination event), `embed` (optional semantic index over
+knowledge — a deliberate copy of
 `mindleak-core::embed`, because ADR-0004 keeps that crate a dev-dependency only,
 so the Intent Plane cannot reach it at runtime), and
 `lib` (the `Lodestar` facade wiring). `store/design/` is split by
