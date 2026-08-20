@@ -33,6 +33,11 @@ export interface FleetSession {
   context?: FleetSessionContext | null;
   declared_at?: number | null;
   staleness?: { commits?: number | null; state?: string | null } | null;
+  /**
+   * Whether the session itself still shows a pulse -- distinct from
+   * `staleness`, which is about its declared base, not its presence.
+   */
+  presence?: { quiet_for_secs?: number | null; state?: string | null } | null;
 }
 
 /** The `fleet_view` payload (subset the pane renders). */

@@ -179,6 +179,24 @@ export function resolveServerPath(
 }
 
 /**
+ * Which candidate {@link resolveBinaryPathDetailed} resolved to, in the same
+ * priority order it checks them.
+ */
+export type BinarySource =
+  | "explicit-config"
+  | "packaged"
+  | "shared-install"
+  | "workspace-release"
+  | "workspace-debug"
+  | "fallback";
+
+/** A resolved binary path, and which candidate produced it. */
+export interface ResolvedBinary {
+  readonly path: string;
+  readonly source: BinarySource;
+}
+
+/**
  * Prefer the packaged binary, then the shared per-machine install, then a
  * workspace build, when the configured path is the bare default name. Generic
  * over both MCP server binaries; filesystem inputs are injectable so this stays
@@ -189,39 +207,56 @@ export function resolveServerPath(
  * measuring 56 worktrees holding 184 GB of `target/`, and searching the
  * worktree first would quietly reinstate the per-worktree binary — and its
  * stale-build problem — for every window.
+ *
+ * Named which candidate won (not only the path) so a stale packaged binary
+ * silently outranking a rebuilt one is diagnosable rather than invisible
+ * (gaps.d/packaged-extension-binary-outranks-fixed-install.md).
  */
-export function resolveBinaryPath(
+export function resolveBinaryPathDetailed(
   configured: string,
   workspace: string,
   binaryName: string,
   opts: ResolveServerOptions = {}
-): string {
+): ResolvedBinary {
   const platform = opts.platform ?? process.platform;
   const exists = opts.exists ?? (() => false);
   if (configured && configured !== binaryName) {
-    return configured;
+    return { path: configured, source: "explicit-config" };
   }
   const exe = platform === "win32" ? `${binaryName}.exe` : binaryName;
   if (opts.extensionPath) {
     const packaged = path.join(opts.extensionPath, "bin", exe);
     if (exists(packaged)) {
-      return packaged;
+      return { path: packaged, source: "packaged" };
     }
   }
   const home = opts.homeDir ?? os.homedir();
   if (home) {
     const installed = path.join(home, ".mindleak", "bin", exe);
     if (exists(installed)) {
-      return installed;
+      return { path: installed, source: "shared-install" };
     }
   }
-  for (const profile of ["release", "debug"]) {
+  for (const profile of ["release", "debug"] as const) {
     const candidate = path.join(workspace, "target", profile, exe);
     if (exists(candidate)) {
-      return candidate;
+      return {
+        path: candidate,
+        source: profile === "release" ? "workspace-release" : "workspace-debug",
+      };
     }
   }
-  return configured || binaryName;
+  return { path: configured || binaryName, source: "fallback" };
+}
+
+/** Thin wrapper over {@link resolveBinaryPathDetailed} for callers that only need the path. */
+export function resolveBinaryPath(
+  configured: string,
+  workspace: string,
+  binaryName: string,
+  opts: ResolveServerOptions = {}
+): string {
+  return resolveBinaryPathDetailed(configured, workspace, binaryName, opts).path;
 }
 
 /** One MCP server the extension contributes to the editor, resolved and rooted. */

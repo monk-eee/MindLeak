@@ -188,7 +188,17 @@ impl Lodestar {
         title: &str,
         statement: &str,
     ) -> (Vec<(String, String)>, ModelCallProvenance) {
-        match self.llm.decompose(title, statement) {
+        let started = std::time::Instant::now();
+        let result = self.llm.decompose(title, statement);
+        let ok = matches!(&result, Ok(drafts) if !drafts.is_empty());
+        self.record_model_call(
+            "decompose",
+            ok,
+            started.elapsed().as_millis() as i64,
+            Some(&self.llm.model),
+            self.llm.last_usage(),
+        );
+        match result {
             Ok(drafts) if !drafts.is_empty() => (
                 drafts
                     .into_iter()
@@ -453,10 +463,18 @@ impl Lodestar {
                 },
             );
         }
-        match self
+        let started = std::time::Instant::now();
+        let result = self
             .llm
-            .draft_question(my_title, their_title, &shared.join(", "))
-        {
+            .draft_question(my_title, their_title, &shared.join(", "));
+        self.record_model_call(
+            "draft_question",
+            result.is_ok(),
+            started.elapsed().as_millis() as i64,
+            Some(&self.llm.model),
+            self.llm.last_usage(),
+        );
+        match result {
             Ok(question) => (question, DraftedBy::Model, ModelCallProvenance::model()),
             Err(error) => (
                 template,
