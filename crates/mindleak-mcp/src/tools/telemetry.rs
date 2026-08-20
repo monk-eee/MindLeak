@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 pub(super) fn definitions() -> Vec<Value> {
     vec![json!({
         "name": "telemetry_snapshot",
-        "description": "Return the observability record (ADR-0010): per-tool lifetime calls/errors/latency, current health, recent invocations, and bounded per-session memory-read-before-first-write habits. Lifetime errors are cumulative history; current health follows each tool's latest call.",
+        "description": "Return the observability record (ADR-0010): graph health, per-tool lifetime calls/errors/latency, current health, recent invocations, bounded per-session memory-read-before-first-write habits, and a deterministic usage retrospective with actionable recommendations. Lifetime errors are cumulative history; current health follows each tool's latest call.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -27,13 +27,19 @@ pub(super) fn dispatch(
             let snapshot = engine
                 .telemetry_snapshot(limit)
                 .map_err(|e| e.to_string())?;
-            let health = if snapshot.currently_failing_tools == 0 {
-                "all tools healthy".to_string()
-            } else {
-                format!(
-                    "{} tool(s) currently failing",
-                    snapshot.currently_failing_tools
-                )
+            let (nodes, active_edges) = engine.counts().map_err(|e| e.to_string())?;
+            let (unembedded_nodes, split_identity_nodes) =
+                engine.health().map_err(|e| e.to_string())?;
+            let health = match (
+                snapshot.currently_failing_tools,
+                snapshot.currently_degraded_tools,
+            ) {
+                (0, 0) => "all tools healthy".to_string(),
+                (failing, 0) => format!("{failing} tool(s) currently failing"),
+                (0, degraded) => format!("{degraded} tool(s) currently degraded"),
+                (failing, degraded) => {
+                    format!("{failing} tool(s) failing, {degraded} degraded")
+                }
             };
             let mut markdown = format!(
                 "**MindLeak telemetry** - {} events, {} lifetime errors, {}\n\nLifetime errors are cumulative history; **Health** reflects each tool's most recent call.\n\n| Tool | Calls | Lifetime errors | Health | Avg ms | Max ms |\n|---|--:|--:|:--|--:|--:|\n",
@@ -42,6 +48,8 @@ pub(super) fn dispatch(
             for metric in &snapshot.by_name {
                 let tool_health = if metric.currently_failing {
                     "failing"
+                } else if metric.currently_degraded {
+                    "degraded"
                 } else {
                     "ok"
                 };
@@ -71,7 +79,30 @@ pub(super) fn dispatch(
                     ));
                 }
             }
-            Ok(rendered_result(markdown, &json!(snapshot)))
+            let retrospective = &snapshot.retrospective;
+            markdown.push_str(&format!(
+                "\n**Usage retrospective** - calls are lifetime totals; writing-session habits are the bounded latest 10,000 attributed events / 32 sessions.\n\n| Signal | Calls / sessions |\n|---|--:|\n| Background reads | {} |\n| Intentional memory preflights | {} |\n| Architectural decisions recorded | {} |\n| Writing sessions (sample) | {} |\n| Skipped memory preflight (sample) | {} |\n",
+                retrospective.background_read_calls,
+                retrospective.preflight_read_calls,
+                retrospective.architectural_decision_calls,
+                retrospective.writing_sessions,
+                retrospective.writing_sessions_without_memory_read,
+            ));
+            if !retrospective.recommendations.is_empty() {
+                markdown.push_str("\n**Next actions**\n");
+                for recommendation in &retrospective.recommendations {
+                    markdown.push_str(&format!("\n- {recommendation}"));
+                }
+                markdown.push('\n');
+            }
+            let mut structured = json!(snapshot);
+            structured["graph"] = json!({
+                "nodes": nodes,
+                "active_edges": active_edges,
+                "unembedded_nodes": unembedded_nodes,
+                "split_identity_nodes": split_identity_nodes,
+            });
+            Ok(rendered_result(markdown, &structured))
         })()),
         _ => None,
     }
@@ -99,5 +130,57 @@ mod tests {
             result["structuredContent"]["memory_habits"][0]["read_before_first_write"],
             true
         );
+        assert_eq!(result["structuredContent"]["graph"]["nodes"], 0);
+        assert_eq!(result["structuredContent"]["graph"]["active_edges"], 0);
+        assert_eq!(result["structuredContent"]["graph"]["unembedded_nodes"], 0);
+        assert_eq!(
+            result["structuredContent"]["graph"]["split_identity_nodes"],
+            0
+        );
+    }
+
+    #[test]
+    fn snapshot_turns_a_skipped_memory_preflight_into_an_action() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        engine.record_tool_call("open_session", true, 0, None, Some("session:skipped"));
+        engine.record_tool_call("ingest_file", true, 1, None, Some("session:skipped"));
+
+        let result = dispatch(&engine, "telemetry_snapshot", &json!({}))
+            .unwrap()
+            .unwrap();
+        let markdown = result["content"][0]["text"].as_str().unwrap();
+
+        assert!(markdown.contains("**Usage retrospective**"));
+        assert!(markdown.contains("| Skipped memory preflight (sample) | 1 |"));
+        assert!(markdown.contains("run check_overlap"));
+        assert_eq!(
+            result["structuredContent"]["retrospective"]["writing_sessions_without_memory_read"],
+            1
+        );
+    }
+
+    #[test]
+    fn snapshot_renders_skipped_optional_maintenance_as_degraded() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        engine.record_maintenance(
+            "autonomous_index",
+            "skipped",
+            3,
+            Some(json!({
+                "category": "misconfigured",
+                "error": "run ollama pull nomic-embed-text"
+            })),
+        );
+
+        let result = dispatch(&engine, "telemetry_snapshot", &json!({}))
+            .unwrap()
+            .unwrap();
+        let markdown = result["content"][0]["text"].as_str().unwrap();
+
+        assert!(markdown.contains("1 tool(s) currently degraded"));
+        assert!(markdown.contains("| autonomous_index | 1 | 0 | degraded |"));
+        assert!(markdown.contains("run ollama pull nomic-embed-text"));
+        assert_eq!(result["structuredContent"]["currently_failing_tools"], 0);
+        assert_eq!(result["structuredContent"]["currently_degraded_tools"], 1);
     }
 }

@@ -4,6 +4,8 @@
 
   const cardsEl = document.getElementById("cards");
   const toolsBody = document.querySelector("#tools tbody");
+  const actionsSection = document.getElementById("actionsSection");
+  const actionsEl = document.getElementById("actions");
   const logSection = document.getElementById("logSection");
   const logEl = document.getElementById("log");
   const liveEl = document.getElementById("live");
@@ -34,9 +36,27 @@
       card(String(d.activeEdges), "Active edges"),
       card(d.successRatePct + "%", "Lifetime success", d.successRatePct >= 95 ? "good" : "bad"),
       card(String(d.failingTools), "Failing now", d.failingTools > 0 ? "bad" : "good"),
+      card(String(d.degradedTools), "Degraded now", d.degradedTools > 0 ? "warn" : "good"),
       card(String(d.totalErrors), "Lifetime errors"),
-      card(d.avgLatencyMs + " ms", "Avg latency")
+      card(d.avgLatencyMs + " ms", "Avg latency"),
+      card(String(d.backgroundReadCalls), "Background reads"),
+      card(String(d.preflightReadCalls), "Preflight reads"),
+      card(
+        String(d.memoryPreflightMisses),
+        "Skipped preflight (sample)",
+        d.memoryPreflightMisses > 0 ? "bad" : "good"
+      )
     );
+  }
+
+  function renderActions(recommendations) {
+    actionsSection.style.display = recommendations.length ? "" : "none";
+    actionsEl.replaceChildren();
+    for (const recommendation of recommendations) {
+      const item = document.createElement("li");
+      item.textContent = recommendation;
+      actionsEl.append(item);
+    }
   }
 
   function renderTools(tools) {
@@ -53,11 +73,16 @@
     }
     for (const tool of tools) {
       const row = document.createElement("tr");
+      const health = tool.currentlyFailing
+        ? ["failing", "err"]
+        : tool.currentlyDegraded
+          ? ["degraded", "warn"]
+          : ["ok", "ok"];
       const cells = [
         [tool.name, ""],
         [String(tool.calls), ""],
         [tool.errorRatePct + "%", ""],
-        [tool.currentlyFailing ? "failing" : "ok", tool.currentlyFailing ? "err" : "ok"],
+        health,
         [String(tool.avgMs), ""],
       ];
       for (const [text, cls] of cells) {
@@ -103,6 +128,7 @@
     }
     renderCards(message.dashboard);
     renderTools(message.dashboard.tools || []);
+    renderActions(message.dashboard.recommendations || []);
     renderLog(message.logLines || [], Boolean(message.live));
   });
 

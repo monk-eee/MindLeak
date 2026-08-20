@@ -403,6 +403,9 @@ pub fn call_with_storage(
         if let Some(notice) = running.replaced_notice() {
             body["replaced_binary"] = json!(notice);
         }
+        if let Some(next) = engine.stats().map_err(|error| error.to_string())?.next_step {
+            body["get_started"] = json!(next);
+        }
         // Work that finished and is waiting on a person, told to the agent
         // because the agent is the only thing the human talks to.
         //
@@ -641,7 +644,7 @@ fn is_heartbeat(name: &str, args: &Value) -> bool {
 fn session_definition() -> Value {
     json!({
         "name": "open_session",
-        "description": "Register one client-minted 128-bit session id and return its stable cross-plane agent identity. Optionally declare where this session is working (branch, head_sha, base, dirty); the server records what you declare and never inspects Git itself. Non-empty attention fields are delivered here because every agent calls it: awaiting_a_human for completed work needing a person, rescue_work for lapsed claims, pauses beyond their seven-day grace, or deadlocks another agent can inspect and take, waiting_on_you for addressed questions, and paused_by_you for owned suspended work. All are read-only; opening a session never transfers or closes work. Reuse the same session_id on every identity-bearing tool call and after server restarts.",
+        "description": "Register a client-minted 128-bit session id; return its stable cross-plane identity and optional declared branch/head/base/dirty context. Zero-goal repositories receive goal/import startup actions. Non-empty attention fields report human review, rescue, addressed questions and owned pauses. Read-only; never transfers or closes work. Reuse the token after restarts.",
         "inputSchema": session_input_schema()
     })
 }
@@ -1599,6 +1602,35 @@ mod tests {
             reported.get("rescue_work").is_none(),
             "human-review work is not offered for agent rescue"
         );
+    }
+
+    #[test]
+    fn open_session_guides_a_fresh_repository_and_stops_after_goal_creation() {
+        let engine = Lodestar::open_in_memory().expect("in-memory engine");
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+        let body = || -> Value {
+            let params = json!({ "name": "open_session", "arguments": { "session_id": TOKEN } });
+            let bound = bind_session(&params, &sessions).expect("session binds");
+            let result = call(&engine, &bound).expect("open_session succeeds");
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap())
+                .expect("body is JSON")
+        };
+
+        let fresh = body();
+        assert_eq!(fresh["get_started"]["reason"], "no_active_goals");
+        assert_eq!(fresh["get_started"]["actions"][0]["action"], "goal");
+        assert_eq!(fresh["get_started"]["actions"][1]["action"], "import");
+
+        engine
+            .define_goal(
+                lodestar_core::GoalKind::Objective,
+                "Coordinate this repository",
+                "Give tasks durable intent",
+                None,
+            )
+            .unwrap();
+        assert!(body().get("get_started").is_none());
     }
 
     /// A dead owner cannot read a PR comment or answer an addressed question.
