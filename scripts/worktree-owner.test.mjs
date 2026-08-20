@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 
 import {
   MARKER_NAME,
+  checkExistingPullRequests,
+  existingPullRequestWarning,
   ownershipVerdict,
   refusalMessage,
 } from "./worktree-owner.mjs";
@@ -164,4 +166,98 @@ test("post-checkout warns rather than refusing when another session owns it", ()
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// The regression this fix exists for: `view=next`/`view=overlap` and local git
+// state can both read clean while the original owner already pushed and
+// opened a PR seconds before their lease lapsed, so a rescue can cherry-pick
+// an already-shipped commit onto a fresh branch and republish it as a second,
+// duplicate PR (gaps.d/rescuing-a-lapsed-lease-can-duplicate-a-published-pr.md).
+// `capture` is injected so these never spawn a real `gh` process.
+
+test("an existing pull request is reported through the injected gh call", () => {
+  const calls = [];
+  const result = checkExistingPullRequests({
+    branch: "feat/example",
+    capture: (args, cwd) => {
+      calls.push({ args, cwd });
+      return JSON.stringify([
+        { number: 414, state: "OPEN", url: "https://example/pulls/414" },
+      ]);
+    },
+  });
+  assert.deepEqual(result, {
+    checked: true,
+    pullRequests: [
+      { number: 414, state: "OPEN", url: "https://example/pulls/414" },
+    ],
+  });
+  assert.deepEqual(calls[0].args, [
+    "pr",
+    "list",
+    "--head",
+    "feat/example",
+    "--state",
+    "all",
+    "--json",
+    "number,state,url",
+  ]);
+});
+
+test("no pull requests reports an empty, checked result", () => {
+  const result = checkExistingPullRequests({
+    branch: "feat/example",
+    capture: () => "[]",
+  });
+  assert.deepEqual(result, { checked: true, pullRequests: [] });
+});
+
+test("gh being unavailable or unauthenticated degrades to unchecked, not a throw", () => {
+  const result = checkExistingPullRequests({
+    branch: "feat/example",
+    capture: () => {
+      throw new Error("gh: command not found");
+    },
+  });
+  assert.deepEqual(result, { checked: false, pullRequests: [] });
+});
+
+test("malformed gh output degrades to unchecked rather than crashing", () => {
+  const result = checkExistingPullRequests({
+    branch: "feat/example",
+    capture: () => "not json",
+  });
+  assert.deepEqual(result, { checked: false, pullRequests: [] });
+});
+
+test("no warning is raised when the branch has no pull request", () => {
+  const warning = existingPullRequestWarning({
+    branch: "feat/example",
+    checked: true,
+    pullRequests: [],
+  });
+  assert.equal(warning, null);
+});
+
+test("an existing pull request is named in the warning, not just counted", () => {
+  const warning = existingPullRequestWarning({
+    branch: "feat/example",
+    checked: true,
+    pullRequests: [
+      { number: 414, state: "OPEN", url: "https://example/pulls/414" },
+    ],
+  });
+  assert.match(warning, /feat\/example/);
+  assert.match(warning, /#414 \(OPEN\) https:\/\/example\/pulls\/414/);
+  assert.match(warning, /rescuing-a-lapsed-lease-can-duplicate-a-published-pr/);
+});
+
+test("an unchecked result still warns, naming the fallback command", () => {
+  const warning = existingPullRequestWarning({
+    branch: "feat/example",
+    checked: false,
+    pullRequests: [],
+  });
+  assert.match(warning, /could not check GitHub/);
+  assert.match(warning, /gh pr list --head feat\/example --state all/);
 });
