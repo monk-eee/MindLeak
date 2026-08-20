@@ -1,0 +1,1 @@
+- `ClaimDelegationService` authentication now refuses a `signed_at` outside a bounded five-minute clock-skew window and durably consumes each `(signing_key_id, nonce)` pair exactly once, closing the replay half of gaps.d/claim-authentication-can-be-replayed-across-operations.md.

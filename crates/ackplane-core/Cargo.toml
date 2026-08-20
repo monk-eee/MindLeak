@@ -8,4 +8,13 @@ rust-version.workspace = true
 description = "The repository side of the Ackplane federation boundary: which arbiter owns this repository's coordination (ADR-0082)."
 
 [dependencies]
+ackplane-client = { path = "../ackplane-client", optional = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, optional = true }
+
+[features]
+# Off by default: a repository-local build (the standalone VSIX, and the
+# CI "Local planes" job) stays free of any async runtime or network stack
+# unless it explicitly asks to be able to federate (ADR-0094 decision 1's
+# two product modes). See docs/ARCHITECTURE.md's Ackplane section.
+federation-client = ["dep:ackplane-client", "dep:tokio"]

@@ -9,7 +9,7 @@
   <a href="https://github.com/monk-eee/MindLeak/actions/workflows/release.yml"><img src="https://github.com/monk-eee/MindLeak/actions/workflows/release.yml/badge.svg" alt="Release"></a>
   <a href="https://github.com/monk-eee/MindLeak/releases"><img src="https://img.shields.io/github/v/release/monk-eee/MindLeak?include_prereleases&sort=semver&label=release" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-  <img src="https://img.shields.io/badge/rust-1.75%2B-orange.svg" alt="Rust 1.75+">
+  <img src="https://img.shields.io/badge/rust-1.85%2B-orange.svg" alt="Rust 1.85+">
   <img src="https://img.shields.io/badge/protocol-MCP-8A2BE2.svg" alt="Model Context Protocol">
 </p>
 
@@ -98,6 +98,9 @@ relevance, constitution for authority, and evidence for completion.**
   sensors, readiness guidance, and graph, work, design, and telemetry views.
 - **Headless setup** — generated MCP configuration for clients such as GitHub
   Copilot CLI; the servers remain ordinary newline-delimited MCP over stdio.
+- **`clients/node/mindleak-client`** — a packaged, installable Node.js client
+  for either MCP stdio server, so consumers no longer hand-write their own
+  JSON-RPC framing (ADR-0103).
 
 Together these are **MindLeak Core**, the local tier and the only tier that ships
 today. *Ackplane* (the shared control plane) and *the Bridge* (assurance and
@@ -169,6 +172,7 @@ platform steps and the first useful query, continue with the
 | Operate data safely | [Data lifecycle](docs/DATA-LIFECYCLE.md) |
 | Author policy | [Policy packs](docs/POLICY-PACKS.md) |
 | Use the editor surface | [VS Code extension](editors/vscode/README.md) |
+| Build a custom MCP client | [Node client SDK](clients/node/mindleak-client/README.md) |
 | Build or contribute | [Developer guide](DEVELOPERS.md), [Contributing](docs/CONTRIBUTING.md), and [Agent constraints](AGENTS.md) |
 
 ## Architecture

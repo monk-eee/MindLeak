@@ -87,6 +87,7 @@ pub struct EnrollmentActivationResult {
     pub request_id: String,
     pub state: EnrollmentState,
     pub enrollment_receipt_id: String,
+    pub signing_key_id: String,
 }
 
 /// A node's request to replace its current signing key with a successor it
@@ -179,14 +180,24 @@ pub struct EnrollmentStore {
 impl EnrollmentStore {
     /// Connect and apply the idempotent enrollment schema.
     pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
+        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
         tokio::spawn(async move {
             if let Err(error) = connection.await {
                 tracing::error!(%error, "ackplane enrollment connection closed with an error");
             }
         });
-        client.batch_execute(MIGRATION).await?;
-        client.batch_execute(SIGNING_KEY_MIGRATION).await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::ENROLLMENT,
+            MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::SIGNING_KEYS,
+            SIGNING_KEY_MIGRATION,
+        )
+        .await?;
         Ok(Self { client })
     }
 
@@ -575,11 +586,29 @@ impl EnrollmentStore {
                     ],
                 )
                 .await?;
+            // A replay must return the key actually assigned on the ORIGINAL
+            // activation, not the fresh id the caller generated for this
+            // retry -- signing_keys has no request_id column, so the same
+            // (tenant, repository, node) lookup an external node would have
+            // to do resolves it, ordered by recency in case of a later
+            // rotation.
+            let signing_key = transaction
+                .query_one(
+                    "SELECT signing_key_id FROM signing_keys WHERE tenant_id = $1 \
+                     AND repository_id = $2 AND node_id = $3 ORDER BY activated_at DESC LIMIT 1",
+                    &[
+                        &request.tenant_id,
+                        &request.repository_id,
+                        &request.proposed_node_id,
+                    ],
+                )
+                .await?;
             transaction.commit().await?;
             return Ok(EnrollmentActivationResult {
                 request_id: request.request_id.clone(),
                 state,
                 enrollment_receipt_id: receipt.get(0),
+                signing_key_id: signing_key.get(0),
             });
         }
         if state != EnrollmentState::Approved {
@@ -679,6 +708,7 @@ impl EnrollmentStore {
             request_id: request.request_id.clone(),
             state: EnrollmentState::Activating,
             enrollment_receipt_id: enrollment_receipt_id.to_owned(),
+            signing_key_id: signing_key_id.to_owned(),
         })
     }
 
@@ -1058,11 +1088,12 @@ mod tests {
         store.approve(&approval).await.expect("request is approved");
 
         let challenge = store
-            .issue_challenge(&request, &[1; 32], now)
+            .issue_challenge(&request, &crate::test_support::unique_nonce(), now)
             .await
             .expect("approved request receives challenge");
+        let live_nonce = challenge.nonce.clone();
         let challenge_retry = store
-            .issue_challenge(&request, &[2; 32], now)
+            .issue_challenge(&request, &crate::test_support::unique_nonce(), now)
             .await
             .expect("live challenge is returned on retry");
         let signature = signing_key.sign(&activation_challenge_bytes(
@@ -1078,8 +1109,10 @@ mod tests {
             nonce: challenge.nonce.clone(),
             signature: signature.to_bytes().to_vec(),
         };
+        let receipt_id = crate::test_support::unique_id("receipt-original");
+        let signing_key_id = crate::test_support::unique_id("signing-key-original");
         let first = store
-            .activate(&activation, "receipt-original", "signing-key-original", now)
+            .activate(&activation, &receipt_id, &signing_key_id, now)
             .await
             .expect("valid proof activates enrollment");
         let replay = store
@@ -1095,17 +1128,23 @@ mod tests {
         assert_eq!(
             (challenge.nonce, challenge_retry.nonce, first, replay),
             (
-                vec![1; 32],
-                vec![1; 32],
+                live_nonce.clone(),
+                live_nonce,
                 EnrollmentActivationResult {
                     request_id: enrollment.request_id.clone(),
                     state: EnrollmentState::Activating,
-                    enrollment_receipt_id: "receipt-original".to_owned(),
+                    enrollment_receipt_id: receipt_id.clone(),
+                    signing_key_id: signing_key_id.clone(),
                 },
                 EnrollmentActivationResult {
                     request_id: enrollment.request_id,
                     state: EnrollmentState::Activating,
-                    enrollment_receipt_id: "receipt-original".to_owned(),
+                    enrollment_receipt_id: receipt_id,
+                    // Must be the ORIGINAL key, not the replay call's throwaway
+                    // value above -- proves the replay resolves the key that
+                    // was actually registered, not whatever the caller passed
+                    // in on this retry.
+                    signing_key_id,
                 },
             )
         );

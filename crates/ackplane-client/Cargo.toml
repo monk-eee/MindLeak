@@ -1,0 +1,26 @@
+[package]
+name = "ackplane-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Repository-side gRPC client for Ackplane's delegated claim-lease contract."
+
+[dependencies]
+ackplane-protocol = { path = "../ackplane-protocol" }
+ed25519-dalek = "2.1"
+getrandom = "0.2"
+keyring = "2"
+thiserror = { workspace = true }
+time = { version = "=0.3.36", features = ["formatting"] }
+tokio = { workspace = true }
+tonic = { workspace = true }
+
+[dev-dependencies]
+ackplane-server = { path = "../ackplane-server" }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["net", "sync"] }
+tokio-postgres = { workspace = true }
+tokio-stream = { version = "0.1", features = ["net"] }

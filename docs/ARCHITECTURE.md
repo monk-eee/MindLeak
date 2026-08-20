@@ -131,7 +131,13 @@ scope, and heartbeat), `transitions` (block/reopen/abandon/resolve and progressi
 handoffs), `questions` (ask/answer, pause/resume, waits, and thread notes),
 `conformance` (audit recording and checked transitions), and `query` (board,
 next-task, and existing-work reads). Audited legacy/session recovery remains in
-the already-separate `store/claim_transfer.rs` module.
+the already-separate `store/claim_transfer.rs` module. For a federated
+repository (ADR-0096), `claim`/`renew`/`release`/`recover` and `check_claim_overlap`
+route through two injected seams — `FederatedClaimAuthority` and
+`FederatedClaimSource` — instead of deciding locally; `None` (the default) is
+`CoordinationMode::Local`, unchanged. The crate itself stays local and
+network-free either way: only whichever binary composes it with a live,
+authenticated `ackplane-client` gives either seam a real implementation.
 Facade behavior is grouped under
 `facade/`: `constitution`, `executive`, `design`, `design_materialization`,
 `conformance/`, `controls`, `amendments`, `waivers`, `advice`, `fleet`,
@@ -237,11 +243,57 @@ not the order to call them in.
 
 The repository side of the Ackplane federation boundary (ADR-0082). What a
 repository must settle before it coordinates at all is which arbiter owns its
-claims. A repository declares `MINDLEAK_COORDINATION_MODE` as `local` or
-`federated`, and both planes resolve it once at startup rather than per call. An
+claims. A repository declares its mode via the `mindleak.coordinationMode`
+git config key (repository-scoped, ADR-0082 decision 3) and/or the
+`MINDLEAK_COORDINATION_MODE` environment variable (a process-local override);
+declaring both is fine when they agree, and refused when they do not, so two
+processes for the same repository can never silently settle on two different
+arbiters. Both planes resolve it once at startup rather than per call. An
 unrecognised value, or a `federated` repository this build has no client to
 reach, is refused rather than quietly arbitrated locally: that downgrade would
 be the second arbiter ADR-0045 forbids.
+
+`compiled_federation_readiness` distinguishes *why* federation is unusable —
+`NoClient` (the `federation-client` cargo feature is off, so
+`ackplane-client` is not linked), `ArbiterUnreachable` (the feature is on but
+`MINDLEAK_ACKPLANE_ENDPOINT` is unset or the deployment did not answer) — so
+the refusal a repository sees names its actual remedy instead of asserting a
+rebuild that would not help.
+
+### `ackplane-client` (library)
+
+The repository-side gRPC client for `ClaimDelegationService`
+(`task:727ae37b4f5a`, ADR-0096): `delegate_claim`, `renew_claim`,
+`release_claim`, `recover_claim`, and a bare `probe_reachable` used only for
+mode resolution. It depends on `ackplane-protocol` alone — never
+`mindleak-core` or `lodestar-core` (ADR-0082 clause 1's boundary runs through
+this crate too: the client sits on the repository side and must not smuggle a
+plane dependency back). `ackplane-core` links it only behind the
+`federation-client` cargo feature, off by default, so `mindleak-mcp` and
+`lodestar-mcp` remain network- and async-runtime-free in their default,
+standalone build (ADR-0094 decision 1).
+
+What this crate does not do: decide *when* to call itself, or what to do with
+the answer. `lodestar-mcp`'s `federation.rs` (built only behind
+`federation-client`) is the one place both `lodestar-core`'s
+`FederatedClaimAuthority` trait and this crate's `ClaimClient` are both
+reachable: it resolves this repository's federated identity (endpoint,
+tenant, repository, node, signing key) from explicit configuration, signs
+every request with `ackplane-client::authenticate`, bridges each synchronous
+call to this crate's async methods with a fresh current-thread runtime
+(mirroring `compiled_federation_readiness`), and projects a grant into the
+local task cache through `lodestar-core`'s cache-projection APIs. A rejection
+or transport failure never falls back to local arbitration — it resolves to
+the same "lost the CAS" outcome a local claim would (rejection) or an
+`Err` naming the transport failure (unreachable), and either way the local
+row is untouched. The residual gap this closed is narrowed in
+[`gaps.d/no-claim-is-arbitrated-through-ackplane.md`](../gaps.d/no-claim-is-arbitrated-through-ackplane.md).
+The node signing key is sourced from the OS credential facility (Windows
+Credential Manager, macOS Keychain, or Linux Secret Service, via the
+`keyring` crate) by default, per ADR-0085 decision 2 and ADR-0100 decision 5;
+an explicit environment variable remains available as a documented,
+non-hardened override for tests and constrained deployments.
+
 
 ### `ackplane-server` (binary)
 
@@ -282,6 +334,33 @@ atomically consumes it while recording `activating`. Key rotation remains
 explicitly unavailable until the continuity proof required by ADR-0085 is
 implemented.
 
+`register-me` (`src/bin/register-me.rs`) drives that ceremony from the command
+line as three subcommands — `request`, `approve`, `activate` — mirroring the
+real actors: a node runs `request`/`activate` unattended; `approve` is a
+documented local-dev database shortcut standing in for the administrative
+approval RPC/UI that does not exist yet. `activate` proves possession, opens
+one real `NodeSync` stream, and sends a signed heartbeat event using the
+`signing_key_id` `EnrollmentActivationResult` returns directly.
+
+`KnowledgeService` (`knowledge_store.rs`/`knowledge_service.rs`) is the first
+slice of Ackplane's PostgreSQL-backed knowledge domain (ADR-0106 decision 3;
+distinct from `clients/node/mindleak-client`'s same-named service, which
+wraps the *local* planes' own knowledge tools instead): `RecordKnowledge`,
+`RecallKnowledge`, `RetireKnowledge`. Effective weight is the same decay
+formula as `mindleak-core::decay::effective_weight`
+(`W_eff = W_base * 2^(-Δt_hours / half_life)`), expressed as a Postgres `CASE`
+expression and computed at read time — never stored — matching this
+repository's standing decay invariant on Ackplane's side too. A recall with a
+query embedding ranks by pgvector's own `<=>` cosine-distance operator
+entirely inside Postgres; without one, entries recall by effective weight
+(recency, decay-adjusted) instead, the same graceful degradation ADR-0080
+established for the local planes. Embeddings are fixed at 768 dimensions
+(`nomic-embed-text`, this repository's shared default embedder) for this
+first slice; a second model at a different dimension needs its own column or
+table, not a redesign. Unlike `ClaimDelegationService`, these RPCs are
+unauthenticated in this slice — see
+[`gaps.d/ackplane-knowledge-service-rpcs-are-unauthenticated.md`](../gaps.d/ackplane-knowledge-service-rpcs-are-unauthenticated.md).
+
 ### `editors/vscode` (extension)
 
 Passive editor, shell-execution, workspace-mutation, and Git commit sensors plus
@@ -306,6 +385,29 @@ warnings remain explicitly overridable. Review-needed rows call `task_transition
 (`to="resolve"` / `to="reopen"`) and the `conformance_history` tool in place; the
 complete Evidence Board remains an advanced, hidden-by-default audit view
 (ADR-0040).
+
+### `clients/node/mindleak-client` (package)
+
+A packaged, installable Node.js client for either MCP stdio server (ADR-0103),
+replacing the pattern of every consumer hand-writing its own JSON-RPC framing —
+the problem this closed first-hand while bootstrapping CompLeak. `McpConnection`
+(`protocol.ts`) is the transport: newline-delimited JSON-RPC request/response
+correlation by id, `notify` for one-way messages, and per-request timeouts,
+independent of any specific server binary. `MindLeakClient` (`client.ts`) wraps
+it with the `initialize` handshake, `open_session` (ADR-0030), and typed
+`callTool`; it spawns the command it is given rather than bundling or assuming a
+server binary. Thin per-domain services (`services/`) — `KnowledgeService`,
+`TaskService`, `EvidenceService`, `GraphService` — wrap individual tool calls
+without adding tool surface of their own. `parseToolResult` (`util.ts`) is the
+shared `structuredContent`-preferring result parser (ADR-0027), extracted as a
+pure function so it is unit-testable without a real subprocess. MindLeak ships
+the generic client and transport; a domain-specific consumer supplies its own
+services against the same protocol, mirroring the ADR-0101 boundary rule of
+"generic belongs here, domain-specific belongs downstream." CI's
+`reference-consumer` job (ADR-0104) spawns both servers through this same
+client and exercises one representative read-only call per tool family, so a
+breaking change to either tool surface is caught before merge rather than
+surfacing first as this package's own failure.
 
 ## Data model
 
@@ -349,6 +451,16 @@ per-agent, capacity-bounded focus view from active `observed` edges. No buffer o
 LRU is persisted. Repeated observations spanning the existing signal window
 become rehearsal evidence only while the target remains inside that agent's
 top-K; the write path remains zero-token.
+
+**Compiled context (ADR-0102).** `MindLeak::compile_context` composes `recall`,
+`working_set`, and optionally `evidence_for` into one bounded, ranked,
+token-budgeted packet — no new source of truth, only ranking (each source's own
+already-decayed relevance score) and a `max_tokens` (bytes/4) budget applied
+highest-ranked-first. `budget_report.excluded` names what was cut for budget
+reasons alone. `governing` is a caller-supplied pass-through of Lodestar's
+`advise()` result: this crate has no dependency on `lodestar-core`, so
+cross-plane data arrives as an argument, the same seam `promote_signals`
+already crosses.
 
 **Autonomous consolidation (ADR-0017 phase 2).** An off-by-default scheduler in
 `mindleak-mcp` tracks stdio request activity with a condition variable. After a

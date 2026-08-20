@@ -1,0 +1,1 @@
+- Ackplane's `NodeSyncService.Synchronize` now records structured, JSON-formatted observability for every processed batch — method, outcome, reason code, latency, batch record and byte counts, retry count, and the resulting ledger position — with payload, signing, and credential content deliberately excluded (ADR-0083 decision 10).

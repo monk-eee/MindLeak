@@ -103,6 +103,51 @@ export const liveClaims = (tasks, agent, now) =>
   );
 
 /**
+ * Commits that landed before any held claim could possibly cover them
+ * (gaps.d/commit-then-claim-puts-evidence-before-its-claim.md).
+ *
+ * `check_conformance` bounds an evidence bundle by `claim_started_at`, so a
+ * commit whose own timestamp is earlier than every claim this session holds
+ * can never be certified, no matter how the evidence window is drawn
+ * afterward — the moment it happened was not authorised by anything. That is
+ * a fact about the commit and the earliest claim alone; a later claim cannot
+ * retroactively cover it, but an earlier one might, so this only flags a
+ * commit that predates ALL held claims, never one merely older than some of
+ * them.
+ *
+ * Deliberately advisory-only and computed here rather than gating on it: the
+ * claim gate above already establishes, at ADR-0048's own choosing, that
+ * commits stay ungated and only publication requires a claim. Blocking here
+ * too would reintroduce exactly the failure the gate's design note warns
+ * against — inventing a task after the fact to get past a check.
+ */
+export const commitsBeforeClaim = (commits, claims) => {
+  const starts = (claims ?? [])
+    .map((claim) => claim.claim_started_at)
+    .filter(Number.isFinite);
+  if (starts.length === 0) return [];
+  const earliestClaim = Math.min(...starts);
+  return (commits ?? []).filter(
+    (commit) =>
+      typeof commit.timestamp === "number" && commit.timestamp < earliestClaim,
+  );
+};
+
+/** The advisory printed when `commitsBeforeClaim` finds any. Never blocks. */
+export const commitBeforeClaimNotice = (commits) => {
+  if (!commits || commits.length === 0) return null;
+  const shas = commits.map((commit) => commit.sha.slice(0, 7)).join(", ");
+  return (
+    `${commits.length} commit(s) on this branch (${shas}) landed before this session's earliest ` +
+    "held claim began. check_conformance will report their evidence as outside the claim window no " +
+    "matter how the bundle is built afterward " +
+    "(gaps.d/commit-then-claim-puts-evidence-before-its-claim.md). This push still succeeds; " +
+    "completing the task may need merge_evidence (verifies a commit from git directly, once it has " +
+    "reached main) or a human resolve, rather than a hand-built evidence window."
+  );
+};
+
+/**
  * The finished task this branch belongs to, when the push only reconciles it.
  *
  * Completing a task releases its claim, so a delivered branch could never be
@@ -370,8 +415,15 @@ export const resolveServer = (repoRoot, plane = "lodestar") => {
  * is also the seam the publisher's own tests use to stand up a ledger without
  * building the Rust binary — a test that cannot reach the ledger could only
  * assert refusal, which would leave the publish path itself untested.
+ *
+ * `maxBuffer` defaults to `execFileSync`'s own 1 MiB default so every existing
+ * caller's behaviour is unchanged; a caller reading a view whose payload can
+ * grow with the repository's history (`task_query view=board` on a board with
+ * hundreds of terminal tasks measured well past 1 MiB) must raise it
+ * explicitly rather than this function silently guessing a bigger number for
+ * everyone.
  */
-export const callTools = (binary, cwd, calls) => {
+export const callTools = (binary, cwd, calls, maxBuffer = 1024 * 1024) => {
   const [command, leadingArgs] = binary.endsWith(".mjs")
     ? [process.execPath, [binary]]
     : [binary, []];
@@ -399,6 +451,7 @@ export const callTools = (binary, cwd, calls) => {
     input: requests.map((request) => JSON.stringify(request)).join("\n") + "\n",
     stdio: ["pipe", "pipe", "pipe"],
     timeout: 30_000,
+    maxBuffer,
   });
   const byId = new Map();
   for (const line of raw.split(/\r?\n/)) {
@@ -410,13 +463,34 @@ export const callTools = (binary, cwd, calls) => {
       continue;
     }
     if (message.id === undefined || !message.result) continue;
-    const text = message.result?.content?.[0]?.text;
-    if (text === undefined) continue;
-    try {
-      byId.set(message.id, JSON.parse(text));
-    } catch {
-      byId.set(message.id, text);
-    }
+    byId.set(message.id, parseCallResult(message.result));
   }
   return calls.map((_, index) => byId.get(index + 1));
 };
+
+/**
+ * Parse one `tools/call` result the same way the extension's own
+ * `parseToolResult` (editors/vscode/src/util.ts) already does: prefer the
+ * machine-readable `structuredContent` a tool renders Markdown-for-chat
+ * alongside, falling back to the first text-content block parsed as JSON
+ * (or the raw text) for tools that never carry one. Reading only
+ * `content[0].text` here silently returned prose instead of data for every
+ * tool already migrated to that dual format -- `lodestar_stats` answered
+ * with a Markdown table string, not a `{active_goals, ...}` object, and every
+ * field read off it was `undefined`.
+ */
+export function parseCallResult(result) {
+  if (
+    result?.structuredContent !== undefined &&
+    result?.structuredContent !== null
+  ) {
+    return result.structuredContent;
+  }
+  const text = result?.content?.[0]?.text;
+  if (typeof text !== "string") return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}

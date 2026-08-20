@@ -86,6 +86,24 @@ pub(super) fn context_definitions() -> Vec<Value> {
                 "required": ["started_at", "ended_at"]
             }
         }),
+        json!({
+            "name": "compile_context",
+            "description": "One bounded, ranked, token-budgeted context packet (ADR-0102): composes recall, working_set and, when a window is given, evidence_for -- ranked by each source's own decay/attention score, kept highest-first until max_tokens (bytes/4) is spent. `governing` passes through Lodestar's advise() result unfiltered, since this server has no dependency on that plane.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Optional recall query; omit to compile from working_set alone." },
+                    "recall_limit": { "type": "integer", "default": 5, "description": "Max recall hits considered as candidates." },
+                    "working_set_limit": { "type": "integer", "minimum": 1, "maximum": 32, "description": "Optional working_set cap; cannot exceed the configured hard cap." },
+                    "max_tokens": { "type": "integer", "description": "Token budget (bytes/4) for the ranked facts+working_set candidates." },
+                    "task_id": { "type": "string", "description": "Optional Lodestar task id for the evidence window." },
+                    "started_at": { "type": "integer", "description": "Inclusive evidence-window start; requires ended_at." },
+                    "ended_at": { "type": "integer", "description": "Inclusive evidence-window end; requires started_at." },
+                    "governing": { "description": "Optional pass-through of Lodestar's own advise() result for the target node ids." }
+                },
+                "required": ["max_tokens"]
+            }
+        }),
     ]
 }
 
@@ -216,6 +234,36 @@ pub(super) fn dispatch(
                 });
             }
             Ok(text_result(&json!(evidence)))
+        })()),
+        "compile_context" => Some((|| {
+            let agent = req_str(args, "agent")?;
+            let query = opt_str(args, "query");
+            let recall_limit = opt_i64(args, "recall_limit", 5).max(0) as usize;
+            let working_set_limit = args
+                .get("working_set_limit")
+                .and_then(Value::as_i64)
+                .map(|value| value.clamp(1, 32) as usize);
+            let max_tokens = required_i64(args, "max_tokens")?.max(0) as usize;
+            let task_id = opt_str(args, "task_id");
+            let started_at = args.get("started_at").and_then(Value::as_i64);
+            let ended_at = args.get("ended_at").and_then(Value::as_i64);
+            let evidence_window = match (started_at, ended_at) {
+                (Some(started), Some(ended)) => Some((task_id.as_deref(), started, ended)),
+                _ => None,
+            };
+            let governing = args.get("governing").cloned().unwrap_or(Value::Null);
+            let packet = engine
+                .compile_context(
+                    &agent,
+                    query.as_deref(),
+                    recall_limit,
+                    working_set_limit,
+                    max_tokens,
+                    evidence_window,
+                    governing,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(text_result(&json!(packet)))
         })()),
         _ => None,
     }
@@ -350,6 +398,83 @@ mod tests {
     fn working_set_errors_without_bound_session_agent() {
         let engine = MindLeak::open_in_memory().unwrap();
         let error = call(&engine, &json!({ "name": "working_set", "arguments": {} })).unwrap_err();
+        assert!(error.contains("agent"));
+    }
+
+    #[test]
+    fn compile_context_composes_working_set_into_a_budgeted_packet() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        call_ok(
+            &engine,
+            "ingest_file",
+            json!({ "path": "src/a.rs", "content": "fn a() {}", "agent": "agent-a" }),
+        );
+
+        let result = call_ok(
+            &engine,
+            "compile_context",
+            json!({ "max_tokens": 10_000, "agent": "agent-a" }),
+        );
+        let payload: Value = serde_json::from_str(&content_text(&result)).unwrap();
+
+        assert!(payload["facts"].as_array().unwrap().is_empty());
+        assert_eq!(payload["working_set"].as_array().unwrap().len(), 1);
+        assert!(payload["budget_report"]["excluded"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(payload["budget_report"]["tokens_requested"], 10_000);
+    }
+
+    #[test]
+    fn compile_context_reports_a_zero_budget_exclusion_explicitly() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        call_ok(
+            &engine,
+            "ingest_file",
+            json!({ "path": "src/a.rs", "content": "fn a() {}", "agent": "agent-a" }),
+        );
+
+        let result = call_ok(
+            &engine,
+            "compile_context",
+            json!({ "max_tokens": 0, "agent": "agent-a" }),
+        );
+        let payload: Value = serde_json::from_str(&content_text(&result)).unwrap();
+
+        assert!(payload["working_set"].as_array().unwrap().is_empty());
+        assert_eq!(
+            payload["budget_report"]["excluded"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn compile_context_passes_governing_through_unfiltered() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        let governing = json!({ "disposition": "advise", "findings": ["proceed"] });
+
+        let result = call_ok(
+            &engine,
+            "compile_context",
+            json!({ "max_tokens": 10_000, "agent": "agent-a", "governing": governing }),
+        );
+        let payload: Value = serde_json::from_str(&content_text(&result)).unwrap();
+
+        assert_eq!(payload["governing"]["disposition"], "advise");
+    }
+
+    #[test]
+    fn compile_context_errors_without_bound_session_agent() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        let error = call(
+            &engine,
+            &json!({ "name": "compile_context", "arguments": { "max_tokens": 100 } }),
+        )
+        .unwrap_err();
         assert!(error.contains("agent"));
     }
 

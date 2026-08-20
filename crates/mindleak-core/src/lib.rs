@@ -33,11 +33,11 @@ pub use error::{
     MindLeakError, ModelCallProvenance, ModelCallSource, ModelFailure, ModelFailureReason, Result,
 };
 pub use graph::{
-    AgentActivity, AgentFootprintOverlap, ArtifactStub, ConformanceEvidence, Direction,
-    EvidenceProvenance, ForgetOutcome, GraphExport, GraphStore, Preflight, PreflightNode,
-    PromotionCandidate, PruneOutcome, ReconcileOutcome, ResetOutcome, ScoredNode,
-    SessionConsolidationOutcome, SignalCandidate, SignalConsolidationOutcome, Subgraph,
-    WeightedEdge, WorkingSetItem, WriteOutcome,
+    AgentActivity, AgentFootprintOverlap, ArtifactStub, BudgetReport, CompiledContext,
+    ConformanceEvidence, Direction, EvidenceProvenance, ExcludedCandidate, ForgetOutcome,
+    GraphExport, GraphStore, Preflight, PreflightNode, PromotionCandidate, PruneOutcome,
+    ReconcileOutcome, ResetOutcome, ScoredNode, SessionConsolidationOutcome, SignalCandidate,
+    SignalConsolidationOutcome, Subgraph, WeightedEdge, WorkingSetItem, WriteOutcome,
 };
 pub use model::{Edge, Node, NodeType, RelationType};
 

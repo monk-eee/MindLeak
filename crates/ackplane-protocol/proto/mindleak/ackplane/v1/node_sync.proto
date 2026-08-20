@@ -13,11 +13,191 @@ service NodeEnrollmentService {
   rpc RotateNodeKey(KeyRotationRequest) returns (KeyRotationResult);
 }
 
+service ClaimDelegationService {
+  rpc DelegateClaim(ClaimLeaseRequest) returns (ClaimLeaseResult);
+  rpc ReleaseClaim(ClaimReleaseRequest) returns (ClaimReleaseResult);
+  rpc RenewClaim(ClaimRenewRequest) returns (ClaimLeaseResult);
+  rpc RecoverClaim(ClaimRecoverRequest) returns (ClaimLeaseResult);
+  rpc ListActiveClaims(ActiveClaimsRequest) returns (ActiveClaimsResult);
+}
+
+// ADR-0106 decision 3: knowledge is one of the PostgreSQL-backed Industrial
+// domains -- first slice: record, recall (ranked by pgvector similarity
+// search when a query embedding is supplied, else by recency), and retire.
+service KnowledgeService {
+  rpc RecordKnowledge(RecordKnowledgeRequest) returns (KnowledgeRecord);
+  rpc RecallKnowledge(RecallKnowledgeRequest) returns (RecallKnowledgeResult);
+  rpc RetireKnowledge(RetireKnowledgeRequest) returns (RetireKnowledgeResult);
+}
+
+// The enrolled node's proof that it, not just its bearer credentials, is
+// asking for this claim (ADR-0096 clause 4's authentication gap). Reuses the
+// same Ed25519 signing key and domain-separated verification
+// `signing_keys::resolve` already provides for envelopes and connections
+// (ADR-0084, ADR-0098) -- not a new trust scheme.
+message ClaimAuthentication {
+  string signing_key_id = 1;
+  string node_id = 2;
+  string signed_at = 3;
+  bytes nonce = 4;
+  bytes signature = 5;
+}
+
+message ClaimLeaseRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string task_id = 3;
+  string owner_id = 4;
+  string branch = 5;
+  uint64 lease_seconds = 6;
+  repeated string paths = 7;
+  repeated string symbols = 8;
+  ClaimAuthentication authentication = 9;
+}
+
+message ClaimLeaseResult {
+  ClaimLeaseOutcome outcome = 1;
+  string owner_id = 2;
+  string branch = 3;
+  string claim_started_at = 4;
+  string lease_expires_at = 5;
+  uint64 claim_lapses = 6;
+  repeated string paths = 7;
+  repeated string symbols = 8;
+  string diagnostic = 9;
+}
+
+message ClaimReleaseRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string task_id = 3;
+  string owner_id = 4;
+  ClaimAuthentication authentication = 5;
+}
+
+message ClaimReleaseResult {
+  bool released = 1;
+  string diagnostic = 2;
+}
+
+message ClaimRenewRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string task_id = 3;
+  string owner_id = 4;
+  uint64 lease_seconds = 5;
+  ClaimAuthentication authentication = 6;
+}
+
+message ClaimRecoverRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string task_id = 3;
+  string expected_owner = 4;
+  string owner_id = 5;
+  string reason = 6;
+  string branch = 7;
+  uint64 lease_seconds = 8;
+  repeated string paths = 9;
+  repeated string symbols = 10;
+  ClaimAuthentication authentication = 11;
+}
+
+// ADR-0096 clause 5: for a federated repository, overlap detection reads
+// Ackplane's claim registry instead of the local task table.
+message ActiveClaimsRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+}
+
+message ActiveClaimSummary {
+  string task_id = 1;
+  string owner_id = 2;
+  string branch = 3;
+  string lease_expires_at = 4;
+  repeated string paths = 5;
+  repeated string symbols = 6;
+}
+
+message ActiveClaimsResult {
+  repeated ActiveClaimSummary claims = 1;
+}
+
+// The embedding field is omitted (not zero-length) when the caller has no
+// embedder configured: knowledge without one still records and recalls by
+// recency, matching the local planes' own graceful degradation (ADR-0080).
+message RecordKnowledgeRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string content = 3;
+  string source_ref = 4;
+  double half_life_hours = 5;
+  string embedding_model = 6;
+  repeated float embedding = 7;
+}
+
+message KnowledgeRecord {
+  string knowledge_id = 1;
+  string tenant_id = 2;
+  string repository_id = 3;
+  string content = 4;
+  string source_ref = 5;
+  double half_life_hours = 6;
+  string confirmed_at = 7;
+}
+
+// `query_embedding` empty means "no semantic ranking available or
+// requested" -- the result still returns, ordered by recency instead of
+// dropping the caller's request.
+message RecallKnowledgeRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string embedding_model = 3;
+  repeated float query_embedding = 4;
+  uint32 limit = 5;
+}
+
+message ActiveKnowledgeEntry {
+  string knowledge_id = 1;
+  string content = 2;
+  string source_ref = 3;
+  // Computed at query time from half_life_hours and confirmed_at
+  // (mindleak-core::decay::effective_weight's own formula), never stored.
+  double effective_weight = 4;
+  string confirmed_at = 5;
+}
+
+message RecallKnowledgeResult {
+  repeated ActiveKnowledgeEntry entries = 1;
+  // False when query_embedding was empty or named a model nothing here was
+  // embedded under -- entries are still recency-ordered, not withheld.
+  bool ranked_by_similarity = 2;
+}
+
+message RetireKnowledgeRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string knowledge_id = 3;
+  string reason = 4;
+  string retired_by = 5;
+}
+
+message RetireKnowledgeResult {
+  bool retired = 1;
+}
+
+enum ClaimLeaseOutcome {
+  CLAIM_LEASE_OUTCOME_UNSPECIFIED = 0;
+  CLAIM_LEASE_OUTCOME_GRANTED = 1;
+  CLAIM_LEASE_OUTCOME_REJECTED = 2;
+}
+
 message NodeFrame {
   oneof frame {
     Hello hello = 1;
     EventBatch event_batch = 2;
     Heartbeat heartbeat = 3;
+    ChallengeResponse challenge_response = 4;
   }
 }
 
@@ -28,6 +208,7 @@ message AckplaneFrame {
     Rejection rejection = 3;
     FlowControl flow_control = 4;
     Notice notice = 5;
+    ConnectionChallenge connection_challenge = 6;
   }
 }
 
@@ -37,6 +218,24 @@ message Hello {
   string producer_id = 3;
   uint64 last_accepted_position = 4;
   repeated string capabilities = 5;
+  // Which enrolled key this node will use to answer the connection
+  // challenge (ADR-0098 decision 1). Required: a Hello without one cannot be
+  // challenged against any key and is refused.
+  string signing_key_id = 6;
+}
+
+// Issued once, immediately after a Hello that names a signing key, and never
+// reused: it authenticates this one live connection, not an envelope or an
+// enrolment (ADR-0098 decision 1's domain separation from ADR-0085's
+// activation nonce).
+message ConnectionChallenge {
+  bytes nonce = 1;
+}
+
+// The node's proof of possession of the key it named in Hello, over this
+// connection's nonce.
+message ChallengeResponse {
+  bytes signature = 1;
 }
 
 message EnrollmentRequest {
@@ -105,6 +304,7 @@ message EnrollmentActivationResult {
   string enrolment_receipt_id = 3;
   EnrollmentRejectionReason rejection_reason = 4;
   string diagnostic = 5;
+  string signing_key_id = 6;
 }
 
 message KeyRotationRequest {
@@ -232,6 +432,10 @@ enum RejectionReason {
   REJECTION_REASON_SEQUENCE_CONFLICT = 4;
   REJECTION_REASON_UNSUPPORTED_VERSION = 5;
   REJECTION_REASON_UNAVAILABLE = 6;
+  // Distinct from UNAUTHENTICATED: an administrator or incident workflow
+  // revoked this key (ADR-0085 decision 8), rather than the key simply not
+  // yet being active, expired, or retired by ordinary rotation.
+  REJECTION_REASON_NODE_REVOKED = 7;
 }
 
 message FlowControl {

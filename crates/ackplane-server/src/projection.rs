@@ -113,6 +113,16 @@ pub struct BoundedNeighborhood {
     pub freshness: Option<ProjectionFreshness>,
 }
 
+/// One repository whose committed structural facts are ahead of its
+/// projection checkpoint (ADR-0086 clause 9): either it has never been
+/// projected, or the ledger has moved past the position it was last
+/// projected at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaleProjection {
+    pub tenant_id: String,
+    pub repository_id: String,
+}
+
 #[derive(Debug, Error)]
 pub enum ProjectionError {
     #[error("structural fact at stream position {position} could not be decoded: {source}")]
@@ -134,13 +144,18 @@ impl Projector {
     /// Connect and apply the projection schema. Every statement in the
     /// migration is idempotent, matching [`crate::ledger::LedgerStore::connect`].
     pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
+        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
         tokio::spawn(async move {
             if let Err(error) = connection.await {
                 tracing::error!(%error, "ackplane projection connection closed with an error");
             }
         });
-        client.batch_execute(MIGRATION).await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::PROJECTION,
+            MIGRATION,
+        )
+        .await?;
         Ok(Self { client })
     }
 
@@ -262,6 +277,73 @@ impl Projector {
         })
     }
 
+    /// Every repository whose committed structural facts are ahead of its
+    /// projection checkpoint (ADR-0086 clause 9): a missing `projection_state`
+    /// row reads as checkpoint zero, so a repository that has never been
+    /// projected but has at least one structural fact is included too. A
+    /// repository with zero structural-fact records never appears here —
+    /// there is nothing for `rebuild` to give it.
+    async fn stale_projections(&self) -> Result<Vec<StaleProjection>, tokio_postgres::Error> {
+        let rows = self
+            .client
+            .query(
+                "SELECT lr.tenant_id, lr.repository_id \
+                 FROM ledger_records lr \
+                 LEFT JOIN projection_state ps \
+                    ON ps.tenant_id = lr.tenant_id AND ps.repository_id = lr.repository_id \
+                 WHERE lr.payload_type = $1 \
+                 GROUP BY lr.tenant_id, lr.repository_id, ps.stream_position \
+                 HAVING max(lr.stream_position) > COALESCE(ps.stream_position, 0)",
+                &[&STRUCTURAL_FACT_PAYLOAD_TYPE],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| StaleProjection {
+                tenant_id: row.get(0),
+                repository_id: row.get(1),
+            })
+            .collect())
+    }
+
+    /// One polling pass (ADR-0086 clause 9): rebuild every repository
+    /// [`stale_projections`](Self::stale_projections) finds. One repository's
+    /// rebuild failing is logged and does not stop the rest, or the caller's
+    /// next tick — a projection worker's job is to catch a stream back up,
+    /// not to guarantee every tick succeeds. Returns how many repositories
+    /// were actually rebuilt.
+    pub async fn rebuild_stale(&mut self) -> Result<usize, ProjectionError> {
+        let stale = self.stale_projections().await?;
+        let mut rebuilt = 0;
+        for repository in &stale {
+            match self
+                .rebuild(&repository.tenant_id, &repository.repository_id)
+                .await
+            {
+                Ok(summary) => {
+                    tracing::info!(
+                        tenant_id = %repository.tenant_id,
+                        repository_id = %repository.repository_id,
+                        nodes = summary.nodes,
+                        edges = summary.edges,
+                        stream_position = summary.stream_position,
+                        "rebuilt a repository's graph projection"
+                    );
+                    rebuilt += 1;
+                }
+                Err(error) => {
+                    tracing::error!(
+                        tenant_id = %repository.tenant_id,
+                        repository_id = %repository.repository_id,
+                        %error,
+                        "projection rebuild failed for one repository; continuing with the rest"
+                    );
+                }
+            }
+        }
+        Ok(rebuilt)
+    }
+
     /// This repository's projection freshness, or `None` if it has never
     /// been projected (ADR-0087 clause 10).
     pub async fn freshness(
@@ -337,7 +419,7 @@ impl Projector {
                     &seeds,
                     &(max_fanout as i64),
                     &max_depth,
-                    &max_nodes,
+                    &(max_nodes as i64),
                 ],
             )
             .await?;
@@ -409,6 +491,22 @@ impl Projector {
             edges,
             freshness,
         })
+    }
+}
+
+/// Run [`Projector::rebuild_stale`] on `interval` forever (ADR-0086 clause 9:
+/// "Projection workers read the durable ledger through checkpoints").
+/// Intended to run as its own background task (`tokio::spawn`) alongside the
+/// gRPC server; a tick's database error is logged and the loop keeps polling
+/// rather than exiting, since a missed tick is simply caught up by the next
+/// one, not a fatal condition for the worker.
+pub async fn run_projection_worker(mut projector: Projector, interval: std::time::Duration) {
+    let mut ticker = tokio::time::interval(interval);
+    loop {
+        ticker.tick().await;
+        if let Err(error) = projector.rebuild_stale().await {
+            tracing::error!(%error, "could not check for stale projections this tick");
+        }
     }
 }
 
@@ -650,5 +748,132 @@ mod tests {
         assert_eq!(neighborhood.edges.len(), 1);
         assert_eq!(neighborhood.edges[0].source_id, "artifact:a");
         assert_eq!(neighborhood.edges[0].target_id, "artifact:b");
+    }
+
+    #[tokio::test]
+    async fn stale_projections_finds_a_repository_ahead_of_its_checkpoint_and_rebuild_stale_catches_it_up(
+    ) {
+        let url = require_test_database!();
+        let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
+        let mut projector = Projector::connect(&url).await.expect("connect projector");
+        let tenant = format!("t-{}", uuid_ish());
+        let repo = "repo-stale".to_string();
+
+        let fact = StructuralFact {
+            node_id: "artifact:src/lib.rs".to_string(),
+            node_type: "artifact".to_string(),
+            label: "src/lib.rs".to_string(),
+            edges: vec![],
+        };
+        ledger
+            .append(&structural_fact_envelope(
+                DedupKey {
+                    tenant_id: tenant.clone(),
+                    repository_id: repo.clone(),
+                    producer_id: "producer-a".to_string(),
+                    producer_sequence: 1,
+                },
+                b"digest-1",
+                &fact,
+            ))
+            .await
+            .expect("append fact");
+
+        let stale = projector.stale_projections().await.expect("stale query");
+        assert!(stale.contains(&StaleProjection {
+            tenant_id: tenant.clone(),
+            repository_id: repo.clone(),
+        }));
+
+        // `rebuilt` counts every stale repository across every tenant in the
+        // shared test database, not just this one (other tests may be
+        // running concurrently against it), so only a lower bound on the
+        // count is safe to assert here; `freshness` below is the assertion
+        // that actually proves THIS repository was rebuilt.
+        let rebuilt = projector.rebuild_stale().await.expect("rebuild_stale");
+        assert!(
+            rebuilt >= 1,
+            "expected at least this repository to be rebuilt, got {rebuilt}"
+        );
+
+        let freshness = projector
+            .freshness(&tenant, &repo)
+            .await
+            .expect("freshness")
+            .expect("projected after rebuild_stale");
+        assert_eq!(freshness.stream_position, 1);
+    }
+
+    #[tokio::test]
+    async fn a_repository_already_caught_up_is_not_reported_stale_or_redundantly_rebuilt() {
+        let url = require_test_database!();
+        let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
+        let mut projector = Projector::connect(&url).await.expect("connect projector");
+        let tenant = format!("t-{}", uuid_ish());
+        let repo = "repo-caught-up".to_string();
+
+        let fact = StructuralFact {
+            node_id: "artifact:src/lib.rs".to_string(),
+            node_type: "artifact".to_string(),
+            label: "src/lib.rs".to_string(),
+            edges: vec![],
+        };
+        ledger
+            .append(&structural_fact_envelope(
+                DedupKey {
+                    tenant_id: tenant.clone(),
+                    repository_id: repo.clone(),
+                    producer_id: "producer-a".to_string(),
+                    producer_sequence: 1,
+                },
+                b"digest-1",
+                &fact,
+            ))
+            .await
+            .expect("append fact");
+
+        // Catch it up directly (not through rebuild_stale, which scans every
+        // tenant and would make this setup step depend on concurrent test
+        // activity in the shared test database).
+        projector
+            .rebuild(&tenant, &repo)
+            .await
+            .expect("catch up directly");
+
+        // Nothing new has been appended, so this repository must no longer
+        // be reported as stale. `rebuild_stale` only ever rebuilds what this
+        // query returns (it is a plain for-loop over it), so excluding this
+        // repository here is exactly what proves it can never be redundantly
+        // rebuilt -- a second, separate timing-based check would only repeat
+        // the same guarantee less reliably under concurrent test load.
+        let stale = projector.stale_projections().await.expect("stale query");
+        assert!(!stale.contains(&StaleProjection {
+            tenant_id: tenant.clone(),
+            repository_id: repo.clone(),
+        }));
+    }
+
+    #[tokio::test]
+    async fn a_repository_with_zero_structural_facts_is_never_marked_projected() {
+        let url = require_test_database!();
+        let mut projector = Projector::connect(&url).await.expect("connect projector");
+        let tenant = format!("t-{}", uuid_ish());
+        let repo = "repo-never-published-a-structural-fact".to_string();
+
+        let stale = projector.stale_projections().await.expect("stale query");
+        assert!(!stale
+            .iter()
+            .any(|repository| repository.tenant_id == tenant && repository.repository_id == repo));
+
+        // A pass may rebuild other tenants' stale repositories concurrently;
+        // the count is not asserted here, only that this specific repository
+        // stays unprojected afterward.
+        projector.rebuild_stale().await.expect("rebuild_stale");
+
+        let freshness = projector
+            .freshness(&tenant, &repo)
+            .await
+            .expect("freshness query");
+        assert_eq!(freshness, None);
     }
 }

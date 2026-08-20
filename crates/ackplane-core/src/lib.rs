@@ -11,6 +11,16 @@ use thiserror::Error;
 /// Where a repository declares the arbiter it has chosen.
 const COORDINATION_MODE_ENV: &str = "MINDLEAK_COORDINATION_MODE";
 
+/// Where a repository declares its coordination mode independent of any one
+/// process's environment (ADR-0082 decision 3) -- the same `git config
+/// --local` scope `mindleak.repositoryId` already uses.
+pub const COORDINATION_MODE_GIT_CONFIG_KEY: &str = "mindleak.coordinationMode";
+
+/// Where a `federated` repository declares its Ackplane deployment (e.g.
+/// `http://127.0.0.1:8443`). Read only when a real probe is compiled in and
+/// only for a `federated` declaration; a `local` repository never needs it.
+pub const ACKPLANE_ENDPOINT_ENV: &str = "MINDLEAK_ACKPLANE_ENDPOINT";
+
 /// Which arbiter owns this repository's shared task namespace, cross-machine
 /// sessions, and claims (ADR-0082 decision 3).
 ///
@@ -31,7 +41,6 @@ impl CoordinationMode {
             Self::Federated => "federated",
         }
     }
-
     fn from_tag(tag: &str) -> Option<Self> {
         let tag = tag.trim();
         if tag.eq_ignore_ascii_case("local") {
@@ -71,6 +80,12 @@ impl CoordinationMode {
     }
 }
 
+impl std::fmt::Display for CoordinationMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// What this repository can currently do about a `federated` declaration.
 ///
 /// Three separable failures, because they have three different remedies and
@@ -90,10 +105,46 @@ pub enum FederationReadiness {
 
 /// What federation the running build can actually perform.
 ///
-/// No Ackplane client exists in this workspace yet, so `NoClient` is the only
-/// honest answer. When one lands this probes instead, and nothing else in the
-/// resolution below changes.
-pub fn compiled_federation_readiness() -> FederationReadiness {
+/// A pure function of the injected `environment`, resolved lazily: it is
+/// never called for `CoordinationMode::Local`, so a repository-local build
+/// never attempts a connection it does not need (ADR-0094's local path stays
+/// network-free regardless of which cargo features this workspace enables).
+#[cfg(feature = "federation-client")]
+pub fn compiled_federation_readiness<F>(environment: &F) -> FederationReadiness
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let endpoint = match environment(ACKPLANE_ENDPOINT_ENV) {
+        Some(raw) if !raw.trim().is_empty() => raw,
+        // A `federated` declaration with nowhere to reach is the same
+        // remedy as an arbiter that did not answer: check the deployment,
+        // or declare `local`. It is not a fourth cause.
+        _ => return FederationReadiness::ArbiterUnreachable,
+    };
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(_) => return FederationReadiness::ArbiterUnreachable,
+    };
+    if runtime.block_on(ackplane_client::probe_reachable(&endpoint)) {
+        FederationReadiness::Ready
+    } else {
+        FederationReadiness::ArbiterUnreachable
+    }
+}
+
+/// What federation the running build can actually perform.
+///
+/// No Ackplane client is compiled into this build, so `NoClient` is the only
+/// honest answer. Enable the `federation-client` cargo feature to link the
+/// real probe instead; nothing else in the resolution below changes.
+#[cfg(not(feature = "federation-client"))]
+pub fn compiled_federation_readiness<F>(_environment: &F) -> FederationReadiness
+where
+    F: Fn(&str) -> Option<String>,
+{
     FederationReadiness::NoClient
 }
 
@@ -132,6 +183,19 @@ pub enum CoordinationModeError {
          or declare `local`."
     )]
     NotEnrolled,
+    #[error(
+        "{COORDINATION_MODE_ENV} declares `{process}`. The repository's \
+         `{COORDINATION_MODE_GIT_CONFIG_KEY}` git config declares `{repository}`. Refusing \
+         to silently prefer either -- a repository's coordination mode is a property of the \
+         repository (ADR-0082 decision 3), not of whichever process happens to read a \
+         differently-set environment variable, so two processes disagreeing here is \
+         exactly the second-arbiter risk ADR-0045 forbids. Make the two agree, or remove \
+         one of the two declarations."
+    )]
+    ConflictingDeclaration {
+        repository: CoordinationMode,
+        process: CoordinationMode,
+    },
 }
 
 impl CoordinationModeError {
@@ -156,22 +220,57 @@ impl CoordinationModeError {
 
 /// Resolve the mode this repository declared, refusing any it cannot honour.
 ///
-/// An absent or blank declaration is `local`: a repository that has never heard
-/// of Ackplane is already locally arbitrated. Any other unrecognised value is
-/// an error rather than a default, because quietly answering `local` would
-/// decide the one question the operator got wrong.
-pub fn resolve_coordination_mode<F>(
+/// Checked from two independent sources: the repository-scoped
+/// [`COORDINATION_MODE_GIT_CONFIG_KEY`] git config key (ADR-0082 decision 3 --
+/// the mode is a property of the repository, not of whichever process
+/// happens to read a differently-set environment variable) and
+/// `MINDLEAK_COORDINATION_MODE`, kept as a process-local override for cases
+/// such as local development where committing a git config value is not
+/// wanted. Declaring both is fine when they agree; when they disagree
+/// neither silently wins, because that would let two processes for the same
+/// repository settle on two different arbiters (ADR-0045).
+///
+/// An absent or blank declaration on both sides is `local`: a repository that
+/// has never heard of Ackplane is already locally arbitrated. Any other
+/// unrecognised value is an error rather than a default, because quietly
+/// answering `local` would decide the one question the operator got wrong.
+pub fn resolve_coordination_mode<F, R>(
     environment: F,
+    repository_declared: R,
 ) -> Result<CoordinationMode, CoordinationModeError>
 where
     F: Fn(&str) -> Option<String>,
+    R: Fn() -> Option<String>,
 {
-    let mode = match environment(COORDINATION_MODE_ENV) {
-        Some(raw) if !raw.trim().is_empty() => CoordinationMode::from_tag(&raw)
-            .ok_or_else(|| CoordinationModeError::Unrecognised(raw.trim().to_string()))?,
-        _ => CoordinationMode::Local,
+    let parse = |raw: Option<String>| -> Result<Option<CoordinationMode>, CoordinationModeError> {
+        match raw {
+            Some(value) if !value.trim().is_empty() => CoordinationMode::from_tag(&value)
+                .map(Some)
+                .ok_or_else(|| CoordinationModeError::Unrecognised(value.trim().to_string())),
+            _ => Ok(None),
+        }
     };
-    mode.ensure_supported(compiled_federation_readiness())?;
+
+    let repository_mode = parse(repository_declared())?;
+    let process_mode = parse(environment(COORDINATION_MODE_ENV))?;
+
+    let mode = match (repository_mode, process_mode) {
+        (Some(repository), Some(process)) if repository != process => {
+            return Err(CoordinationModeError::ConflictingDeclaration {
+                repository,
+                process,
+            })
+        }
+        (Some(mode), _) | (None, Some(mode)) => mode,
+        (None, None) => CoordinationMode::Local,
+    };
+    // Local arbitration is decided above and never touches federation: a
+    // repository-local build must not attempt a connection it does not need,
+    // and `compiled_federation_readiness` is only ever meaningful for a
+    // `federated` declaration.
+    if mode == CoordinationMode::Federated {
+        mode.ensure_supported(compiled_federation_readiness(&environment))?;
+    }
     Ok(mode)
 }
 
@@ -180,11 +279,26 @@ mod tests {
     use super::*;
 
     fn declared(value: Option<&str>) -> Result<CoordinationMode, CoordinationModeError> {
-        let value = value.map(str::to_string);
-        resolve_coordination_mode(|name| {
-            assert_eq!(name, COORDINATION_MODE_ENV);
-            value.clone()
-        })
+        declared_with_repository(value, None)
+    }
+
+    fn declared_with_repository(
+        process: Option<&str>,
+        repository: Option<&str>,
+    ) -> Result<CoordinationMode, CoordinationModeError> {
+        let process = process.map(str::to_string);
+        let repository = repository.map(str::to_string);
+        resolve_coordination_mode(
+            move |name| match name {
+                COORDINATION_MODE_ENV => process.clone(),
+                // A federated declaration may also consult the endpoint, when a
+                // real probe is compiled in; an undeclared endpoint reads as
+                // absent, exactly like production.
+                ACKPLANE_ENDPOINT_ENV => None,
+                other => panic!("unexpected environment lookup: {other}"),
+            },
+            move || repository.clone(),
+        )
     }
 
     #[test]
@@ -203,6 +317,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "federation-client"))]
     fn a_federated_repository_is_refused_not_arbitrated_locally() {
         // ADR-0082 decision 3: authority never falls back according to
         // reachability. Answering `local` here would be the second arbiter.
@@ -217,6 +332,55 @@ mod tests {
     fn an_unrecognised_mode_is_refused_not_defaulted() {
         assert_eq!(
             declared(Some("cloud")),
+            Err(CoordinationModeError::Unrecognised("cloud".to_string()))
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "federation-client"))]
+    fn a_repository_declared_mode_is_honoured_when_the_process_declares_nothing() {
+        // Proof the repository source is actually read: an undeclared process
+        // defaults to `Local` (Ok) on its own (see the test above), so this
+        // refusal can only come from the repository's `federated` declaration.
+        assert_eq!(
+            declared_with_repository(None, Some("federated")),
+            Err(CoordinationModeError::NoFederationClient)
+        );
+    }
+
+    #[test]
+    fn a_process_declared_mode_is_still_honoured_when_the_repository_declares_nothing() {
+        assert_eq!(
+            declared_with_repository(Some("local"), None),
+            Ok(CoordinationMode::Local)
+        );
+    }
+
+    #[test]
+    fn matching_repository_and_process_declarations_are_fine() {
+        assert_eq!(
+            declared_with_repository(Some("local"), Some("local")),
+            Ok(CoordinationMode::Local)
+        );
+    }
+
+    #[test]
+    fn conflicting_repository_and_process_declarations_are_refused_not_arbitrarily_resolved() {
+        // Detected before federation readiness is ever consulted, so this
+        // holds regardless of which cargo features are compiled in.
+        assert_eq!(
+            declared_with_repository(Some("local"), Some("federated")),
+            Err(CoordinationModeError::ConflictingDeclaration {
+                repository: CoordinationMode::Federated,
+                process: CoordinationMode::Local,
+            })
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_repository_declaration_is_refused_not_defaulted() {
+        assert_eq!(
+            declared_with_repository(None, Some("cloud")),
             Err(CoordinationModeError::Unrecognised("cloud".to_string()))
         );
     }
@@ -301,6 +465,10 @@ mod tests {
             CoordinationModeError::NoFederationClient,
             CoordinationModeError::ArbiterUnreachable,
             CoordinationModeError::NotEnrolled,
+            CoordinationModeError::ConflictingDeclaration {
+                repository: CoordinationMode::Federated,
+                process: CoordinationMode::Local,
+            },
         ] {
             let notice = error.refusal_notice();
 
@@ -347,12 +515,83 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "federation-client"))]
     fn this_build_reports_that_it_carries_no_client() {
-        // The one honest answer while no client crate exists; the resolution
+        // The one honest answer while no client is linked in; the resolution
         // path above depends on it, so it is stated rather than assumed.
         assert_eq!(
-            compiled_federation_readiness(),
+            compiled_federation_readiness(&|_: &str| None),
             FederationReadiness::NoClient
         );
+    }
+
+    #[cfg(feature = "federation-client")]
+    mod federation_client {
+        use super::*;
+
+        #[test]
+        fn a_federated_repository_with_the_real_probe_compiled_in_is_still_refused_without_an_endpoint(
+        ) {
+            // The cause changes once a client is compiled in (there is now
+            // something to ask), but the outcome does not: still refused,
+            // never arbitrated locally.
+            assert_eq!(
+                declared(Some("federated")),
+                Err(CoordinationModeError::ArbiterUnreachable)
+            );
+        }
+
+        #[test]
+        fn a_federated_repository_with_no_endpoint_declared_is_unreachable() {
+            // Nowhere to reach is the same remedy as an arbiter that did not
+            // answer, not a fourth cause: check the deployment or declare
+            // `local`.
+            assert_eq!(
+                compiled_federation_readiness(&|_: &str| None),
+                FederationReadiness::ArbiterUnreachable
+            );
+        }
+
+        #[test]
+        fn an_endpoint_nothing_is_listening_on_is_unreachable() {
+            // Port 1 is reserved/unassigned; connecting to it on loopback
+            // fails fast (ECONNREFUSED), so this arm is deterministic and
+            // needs no live Ackplane deployment to test.
+            let env = |name: &str| {
+                (name == ACKPLANE_ENDPOINT_ENV).then(|| "http://127.0.0.1:1".to_string())
+            };
+            assert_eq!(
+                compiled_federation_readiness(&env),
+                FederationReadiness::ArbiterUnreachable
+            );
+        }
+
+        #[test]
+        fn a_federated_declaration_with_no_reachable_arbiter_is_refused_end_to_end() {
+            // Exercises the full `resolve_coordination_mode` path (not just
+            // `ensure_supported` in isolation) with the real probe compiled
+            // in, proving the refusal survives the plumbing between them.
+            let env = |name: &str| match name {
+                "MINDLEAK_COORDINATION_MODE" => Some("federated".to_string()),
+                "MINDLEAK_ACKPLANE_ENDPOINT" => Some("http://127.0.0.1:1".to_string()),
+                _ => None,
+            };
+            assert_eq!(
+                resolve_coordination_mode(env, || None),
+                Err(CoordinationModeError::ArbiterUnreachable)
+            );
+        }
+
+        #[test]
+        fn a_repository_declared_federated_mode_is_honoured_when_the_process_declares_nothing() {
+            // Same proof as the non-feature build's counterpart, with the real
+            // probe compiled in: the repository source alone drives resolution
+            // to `Federated`, reaching the network-probe refusal rather than
+            // the default `Local`.
+            assert_eq!(
+                declared_with_repository(None, Some("federated")),
+                Err(CoordinationModeError::ArbiterUnreachable)
+            );
+        }
     }
 }

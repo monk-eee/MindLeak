@@ -1,41 +1,24 @@
-- **No claim is arbitrated through Ackplane, so resolving `federated` would
-  report an authority that is never exercised — and nothing tracks the adapter
-  that would make it real. MEASURED 2026-08-14, left OPEN.** The pieces now look
-  connectable, which is what makes this a trap rather than ordinary
-  incompleteness.
+- **Claim ownership (`claim`/`renew`/`release`/`recover`) and overlap detection
+  now both route through Ackplane for a federated repository — NARROWED
+  2026-08-18, residual left OPEN.** `Lodestar::with_federated_claim_authority`
+  (ADR-0096 clauses 2-4, 6) and `Lodestar::with_federated_claim_source`
+  (clause 5) are both real, tested seams; `lodestar-mcp`'s `federation.rs`
+  wires an authenticated `ackplane-client` implementation of the former
+  behind the `federation-client` cargo feature, proven end-to-end against a
+  real `ackplane-server` and Postgres. Every ownership-affecting call — claim,
+  renew, release, recover, and the overlap pre-flight — that this repository
+  exposes today is covered.
 
-  What is actually true on `origin/main` at `1551270`:
+  What remains outside the wire contract: `park` (a task entering
+  `needs_input`/`paused`) and `answer` (returning it to `claimed`) have no
+  `ClaimDelegationService` RPC, so a federated repository still decides those
+  locally regardless of coordination mode. Whether that is a gap worth closing
+  depends on whether a parked task's ownership needs to be federated at all —
+  deliberately no design here; ADR-0096 itself scoped the wire contract to
+  claim/renew/release/recover and left the rest to a later decision if one
+  turns out to be needed.
 
-  | | |
-  |---|---|
-  | `NodeSyncService.Synchronize` | accepts every `Hello`; no enrolment or repository-authority lookup, so a handshake cannot distinguish `Ready` from `NotEnrolled` |
-  | `mindleak-mcp`, `lodestar-mcp` | still hold their local Lodestar and MindLeak stores |
-  | claims routed elsewhere | none — grepping the two MCP crates and `lodestar-core` for `arbitrat` returns one file, `lodestar-core/src/llm.rs`, unrelated |
-
-  So a successful `federated` resolution would mean only that something answered
-  on a socket.
-
-  **Why this is a trap.** The transport answers, `CoordinationMode::Federated`
-  exists, `ensure_supported` is one line from accepting it, and a client task
-  sits on the board. An implementer who wires *handshake succeeded, therefore
-  federated resolves* ships reachability presented as arbitration — the false
-  authority ADR-0082 decision 3 refuses, and the second arbiter for one
-  repository's claims that ADR-0045 exists to prevent. The trap gets more
-  convincing as the transport matures, not less, because each landed piece makes
-  the last step look smaller.
-
-  **What is missing.** Two things. A server-side enrolment and authority
-  contract, in flight under `task:c265276db1ba`. And a plane-to-Ackplane claim
-  arbitration adapter, which no task tracks — the larger piece, and the one that
-  makes `federated` *mean* something rather than merely resolve.
-
-  Deliberately no design here. Where arbitration crosses the plane boundary —
-  whether a claim is proxied, mirrored or leased, and what becomes of the local
-  store while it is — belongs in a decision taken with ADR-0082 and ADR-0045
-  open, not settled inside a gap fragment by whoever noticed the hole.
-
-  Distinct from
-  [`the-coordination-mode-is-declared-per-process-not-per-repository.md`](the-coordination-mode-is-declared-per-process-not-per-repository.md),
-  which covers *where* the mode is declared and defers its own impact to "the
-  moment an Ackplane client exists". This fragment is about what must be true
-  before that client can mean anything.
+  Distinct from *where* the coordination mode is declared (was
+  gaps.d/the-coordination-mode-is-declared-per-process-not-per-repository.md,
+  now closed: it is a repository-scoped git config declaration, not only a
+  process environment variable).

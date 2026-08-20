@@ -1,0 +1,1 @@
+- `ackplane-server`'s five stores now serialise their cold-start schema migrations on a Postgres advisory lock, fixing a real catalog race that failed 14 of 92 tests on a fresh container.

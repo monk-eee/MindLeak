@@ -10,6 +10,7 @@ name = "lodestar-mcp"
 path = "src/main.rs"
 
 [dependencies]
+ackplane-client = { path = "../ackplane-client", optional = true }
 ackplane-core = { path = "../ackplane-core" }
 lodestar-core = { path = "../lodestar-core" }
 mindleak-session = { path = "../mindleak-session" }
@@ -17,3 +18,23 @@ mindleak-storage = { path = "../mindleak-storage" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+time = { version = "=0.3.36", features = ["formatting", "parsing"], optional = true }
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Only exercised by federation.rs's own opt-in, Postgres-gated round-trip
+# test, mirroring ackplane-client's arbitration.rs fixture rather than
+# inventing a second one.
+ackplane-protocol = { path = "../ackplane-protocol" }
+ackplane-server = { path = "../ackplane-server" }
+ed25519-dalek = "2.1"
+tokio = { workspace = true, features = ["net", "sync"] }
+tokio-postgres = { workspace = true }
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic = { workspace = true }
+
+[features]
+# Off by default (ADR-0094 decision 1's standalone product mode): a
+# repository-local build carries no Ackplane client or async network stack
+# unless this is explicitly requested.
+federation-client = ["ackplane-core/federation-client", "dep:ackplane-client", "dep:time", "dep:tokio"]

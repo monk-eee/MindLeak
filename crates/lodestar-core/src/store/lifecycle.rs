@@ -51,6 +51,9 @@ impl LodestarStore {
             [],
             |r| r.get(0),
         )?;
+        let total_tasks: i64 = self
+            .conn
+            .query_row("SELECT COUNT(1) FROM tasks", [], |r| r.get(0))?;
         let active_knowledge: i64 = self.conn.query_row(
                         "SELECT COUNT(1) FROM knowledge
                             WHERE retired_at IS NULL
@@ -64,6 +67,7 @@ impl LodestarStore {
             claimed_tasks,
             done_tasks,
             active_knowledge,
+            total_tasks,
             next_step: (active_goals == 0).then(zero_goal_guidance),
         })
     }
@@ -130,6 +134,42 @@ mod tests {
 
         assert_eq!(store.active_knowledge(NOW).unwrap().len(), 1);
         assert_eq!(store.stats(NOW).unwrap().active_knowledge, 1);
+    }
+
+    /// `open_tasks + claimed_tasks + done_tasks` omits blocked, in_review, and
+    /// abandoned tasks -- it is not "every task", and a caller relying on it
+    /// to answer "has anything ever been created here" gets a false negative
+    /// the moment a task sits in one of those other statuses. `total_tasks`
+    /// exists to answer that question directly.
+    #[test]
+    fn total_tasks_counts_every_status_not_just_open_claimed_and_done() {
+        let store = store();
+        let goal = goal(&store);
+        store
+            .create_task(&goal.id, "stays open one", "", None, NOW)
+            .unwrap();
+        store
+            .create_task(&goal.id, "stays open two", "", None, NOW)
+            .unwrap();
+        let to_block = store
+            .create_task(&goal.id, "gets blocked", "", None, NOW)
+            .unwrap();
+        store
+            .block_task(
+                &to_block.id,
+                None,
+                Some("waiting on a decision"),
+                "Reviewer",
+                NOW,
+            )
+            .unwrap();
+
+        let stats = store.stats(NOW).unwrap();
+        assert_eq!(stats.open_tasks, 2, "the two un-blocked tasks");
+        assert_eq!(
+            stats.total_tasks, 3,
+            "every task, including the one blocking moved out of open"
+        );
     }
 
     #[test]

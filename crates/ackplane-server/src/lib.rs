@@ -17,11 +17,18 @@
 
 use std::{fmt, net::SocketAddr};
 
+pub mod claim_service;
+pub mod claim_signature;
+pub mod claim_store;
 pub mod enrollment;
 pub mod enrollment_service;
 pub mod enrollment_store;
 pub mod envelope_signature;
+pub mod fleet;
+pub mod knowledge_service;
+pub mod knowledge_store;
 pub mod ledger;
+mod migration_lock;
 pub mod projection;
 pub mod service;
 pub mod signing_keys;
@@ -47,6 +54,9 @@ const MAX_BATCH_BYTES_ENV: &str = "ACKPLANE_MAX_BATCH_BYTES";
 const TLS_CERTIFICATE_PATH_ENV: &str = "ACKPLANE_TLS_CERTIFICATE_PATH";
 /// PEM private key for network-reachable gRPC listeners.
 const TLS_KEY_PATH_ENV: &str = "ACKPLANE_TLS_KEY_PATH";
+/// How often the projection worker polls for stale repositories (ADR-0086
+/// clause 9).
+const PROJECTION_INTERVAL_SECS_ENV: &str = "ACKPLANE_PROJECTION_INTERVAL_SECS";
 
 /// A development deployment binds here, so a misconfigured server is reachable
 /// from the machine that started it and nowhere else.
@@ -55,6 +65,9 @@ const DEFAULT_LISTEN: &str = "127.0.0.1:8443";
 pub const DEFAULT_MAX_IN_FLIGHT_BATCHES: u32 = 16;
 /// A node may send at most one mebibyte in a batch by default.
 pub const DEFAULT_MAX_BATCH_BYTES: u32 = 1_048_576;
+/// How often, in seconds, the projection worker checks for repositories whose
+/// ledger has moved past their projection checkpoint.
+pub const DEFAULT_PROJECTION_INTERVAL_SECS: u32 = 5;
 
 /// The PEM files a Tonic listener needs to authenticate its endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +127,7 @@ pub struct ServerConfig {
     pub durability: DurabilityProfile,
     pub max_in_flight_batches: u32,
     pub max_batch_bytes: u32,
+    pub projection_interval_secs: u32,
     pub tls: Option<TlsPaths>,
 }
 
@@ -125,6 +139,7 @@ impl fmt::Debug for ServerConfig {
             .field("durability", &self.durability)
             .field("max_in_flight_batches", &self.max_in_flight_batches)
             .field("max_batch_bytes", &self.max_batch_bytes)
+            .field("projection_interval_secs", &self.projection_interval_secs)
             .field("tls", &self.tls)
             .finish()
     }
@@ -199,6 +214,11 @@ impl ServerConfig {
             MAX_BATCH_BYTES_ENV,
             DEFAULT_MAX_BATCH_BYTES,
         )?;
+        let projection_interval_secs = positive_limit(
+            value(PROJECTION_INTERVAL_SECS_ENV),
+            PROJECTION_INTERVAL_SECS_ENV,
+            DEFAULT_PROJECTION_INTERVAL_SECS,
+        )?;
 
         Ok(Self {
             listen,
@@ -206,6 +226,7 @@ impl ServerConfig {
             durability,
             max_in_flight_batches,
             max_batch_bytes,
+            projection_interval_secs,
             tls,
         })
     }
@@ -327,6 +348,10 @@ mod tests {
         assert_eq!(config.durability, DurabilityProfile::SingleNode);
         assert_eq!(config.max_in_flight_batches, DEFAULT_MAX_IN_FLIGHT_BATCHES);
         assert_eq!(config.max_batch_bytes, DEFAULT_MAX_BATCH_BYTES);
+        assert_eq!(
+            config.projection_interval_secs,
+            DEFAULT_PROJECTION_INTERVAL_SECS
+        );
         assert_eq!(config.tls, None);
     }
 
@@ -403,6 +428,34 @@ mod tests {
             error,
             ConfigError::InvalidLimit {
                 variable: MAX_IN_FLIGHT_BATCHES_ENV,
+                value: "0".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn the_projection_interval_is_resolved_from_explicit_deployment_configuration() {
+        let config = ServerConfig::resolve(env(&[
+            (DATABASE_URL_ENV, "postgres://dev@localhost/ackplane"),
+            (PROJECTION_INTERVAL_SECS_ENV, "30"),
+        ]))
+        .unwrap();
+
+        assert_eq!(config.projection_interval_secs, 30);
+    }
+
+    #[test]
+    fn an_invalid_projection_interval_is_refused_rather_than_silently_disabled() {
+        let error = ServerConfig::resolve(env(&[
+            (DATABASE_URL_ENV, "postgres://dev@localhost/ackplane"),
+            (PROJECTION_INTERVAL_SECS_ENV, "0"),
+        ]))
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            ConfigError::InvalidLimit {
+                variable: PROJECTION_INTERVAL_SECS_ENV,
                 value: "0".to_string(),
             }
         );

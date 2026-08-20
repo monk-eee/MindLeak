@@ -4,7 +4,10 @@ import { test } from "node:test";
 
 import {
   claimsUnderAnotherIdShape,
+  commitBeforeClaimNotice,
+  commitsBeforeClaim,
   missingClaimAdvice,
+  parseCallResult,
   publishVerdict,
   reconciliationOf,
 } from "./claim-gate.mjs";
@@ -243,4 +246,102 @@ test("an answered ledger that did not identify the session does not read as unre
   assert.match(verdict.message, /did not identify this session/);
   assert.doesNotMatch(verdict.message, /cargo build/);
   assert.doesNotMatch(verdict.message, /is unreachable/);
+});
+
+// gaps.d/commit-then-claim-puts-evidence-before-its-claim.md: a commit's own
+// timestamp, not the claim's, decides whether check_conformance can ever
+// certify it.
+test("a commit before the earliest held claim is flagged", () => {
+  const flagged = commitsBeforeClaim(
+    [{ sha: "aaa", timestamp: NOW - 10 }],
+    [{ claim_started_at: NOW }],
+  );
+  assert.equal(flagged.length, 1);
+  assert.equal(flagged[0].sha, "aaa");
+});
+
+test("a commit after the claim it will be certified under is not flagged", () => {
+  const flagged = commitsBeforeClaim(
+    [{ sha: "aaa", timestamp: NOW + 10 }],
+    [{ claim_started_at: NOW }],
+  );
+  assert.deepEqual(flagged, []);
+});
+
+// The whole point of comparing against the EARLIEST claim: a second, later
+// claim must never make an already-uncovered commit look flagged, nor may it
+// hide one only an earlier claim could have covered.
+test("a commit covered by any one held claim is not flagged, even if another started later", () => {
+  const flagged = commitsBeforeClaim(
+    [{ sha: "aaa", timestamp: NOW - 5 }],
+    [{ claim_started_at: NOW - 100 }, { claim_started_at: NOW + 100 }],
+  );
+  assert.deepEqual(flagged, []);
+});
+
+test("no held claims produces no findings", () => {
+  assert.deepEqual(
+    commitsBeforeClaim([{ sha: "aaa", timestamp: NOW }], []),
+    [],
+  );
+});
+
+test("the notice names every flagged commit and points at the gap fragment", () => {
+  const notice = commitBeforeClaimNotice([
+    { sha: "aaaaaaaaaaaa", timestamp: NOW - 10 },
+    { sha: "bbbbbbbbbbbb", timestamp: NOW - 5 },
+  ]);
+  assert.match(notice, /2 commit\(s\)/);
+  assert.match(notice, /aaaaaaa/);
+  assert.match(notice, /bbbbbbb/);
+  assert.match(
+    notice,
+    /gaps\.d\/commit-then-claim-puts-evidence-before-its-claim\.md/,
+  );
+  assert.match(notice, /This push still succeeds/);
+});
+
+test("no flagged commits produces no notice", () => {
+  assert.equal(commitBeforeClaimNotice([]), null);
+});
+
+// --- parsing a tools/call result ------------------------------------------
+
+/// A tool migrated to the dual Markdown-plus-structuredContent format (e.g.
+/// lodestar_stats) must read as the structured object, not the Markdown table
+/// string sitting beside it in content[0].text -- reading only content[0].text
+/// here silently returned prose instead of data, and every field off it read
+/// as undefined.
+test("structuredContent is preferred over the Markdown text block", () => {
+  const result = {
+    content: [{ type: "text", text: "| Count |\n|--:|\n| 3 |" }],
+    structuredContent: { open_tasks: 3 },
+  };
+  assert.deepEqual(parseCallResult(result), { open_tasks: 3 });
+});
+
+/// The overwhelmingly common shape for a tool that has not been migrated:
+/// its only content is a JSON array or object string.
+test("a text block that is valid JSON parses to that value when there is no structuredContent", () => {
+  const result = { content: [{ type: "text", text: "[]" }] };
+  assert.deepEqual(parseCallResult(result), []);
+});
+
+/// A tool answering in genuine prose (no structured form at all) must not
+/// throw or vanish -- it is returned as the raw string.
+test("a non-JSON text block falls back to the raw string", () => {
+  const result = { content: [{ type: "text", text: "no claimable task" }] };
+  assert.equal(parseCallResult(result), "no claimable task");
+});
+
+test("a result with neither structuredContent nor a text block is undefined", () => {
+  assert.equal(parseCallResult({}), undefined);
+  assert.equal(parseCallResult({ content: [] }), undefined);
+});
+
+/// `null` is how a tool would spell "nothing structured", not "here is null" --
+/// it must fall through to the text block exactly like an absent field.
+test("a null structuredContent falls through to the text block", () => {
+  const result = { content: [{ text: "[1,2]" }], structuredContent: null };
+  assert.deepEqual(parseCallResult(result), [1, 2]);
 });

@@ -140,6 +140,94 @@ impl LodestarStore {
         Ok(changed == 1)
     }
 
+    /// Copy an Ackplane-granted claim into the local task cache (ADR-0096
+    /// clause 3). Unconditional: Ackplane already ran the CAS, so this writes
+    /// exactly what it decided rather than re-deciding anything locally. Used
+    /// after `delegate`/`renew`/`recover` all grant the same result shape.
+    pub(crate) fn apply_federated_grant(
+        &self,
+        id: &str,
+        agent: &str,
+        grant: &FederatedClaimGrant,
+        kind: TaskEventKind,
+        now: i64,
+    ) -> Result<()> {
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "UPDATE tasks
+                SET status = 'claimed', owner = ?2, branch = ?3,
+                    claim_started_at = ?4, lease_expires_at = ?5, parked_at = NULL,
+                    updated_at = ?6
+              WHERE id = ?1",
+            params![
+                id,
+                grant.owner,
+                grant.branch,
+                grant.claim_started_at,
+                grant.lease_expires_at,
+                now
+            ],
+        )?;
+        transaction.execute(
+            "DELETE FROM task_scopes WHERE task_id = ?1 AND kind = 'path'",
+            params![id],
+        )?;
+        for path in &grant.paths {
+            transaction.execute(
+                "INSERT INTO task_scopes (task_id, kind, value) VALUES (?1, 'path', ?2)",
+                params![id, path],
+            )?;
+        }
+        transaction.execute(
+            "DELETE FROM task_scopes WHERE task_id = ?1 AND kind = 'symbol'",
+            params![id],
+        )?;
+        for symbol in &grant.symbols {
+            transaction.execute(
+                "INSERT INTO task_scopes (task_id, kind, value) VALUES (?1, 'symbol', ?2)",
+                params![id, symbol],
+            )?;
+        }
+        events::record(
+            &transaction,
+            id,
+            kind,
+            Some(agent),
+            now,
+            &format!(
+                r#"{{"source":"federated","claim_lapses":{}}}"#,
+                grant.claim_lapses
+            ),
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Clear the local task cache after Ackplane confirms a release (ADR-0096
+    /// clause 3): unconditional, matching `apply_federated_grant` — Ackplane
+    /// already decided the release, so this projects that decision rather
+    /// than re-guarding ownership itself.
+    pub(crate) fn apply_federated_release(&self, id: &str, agent: &str, now: i64) -> Result<()> {
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "UPDATE tasks
+                SET status = 'open', owner = NULL, claim_started_at = NULL,
+                    lease_expires_at = NULL, updated_at = ?2
+              WHERE id = ?1",
+            params![id, now],
+        )?;
+        events::record(
+            &transaction,
+            id,
+            TaskEventKind::Released,
+            Some(agent),
+            now,
+            r#"{"source":"federated"}"#,
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// Active claims whose declared scope intersects a requested pre-flight
     /// scope. Advisory only: no state is changed and no lock is granted.
     ///
@@ -204,9 +292,60 @@ impl LodestarStore {
         })
     }
 
+    /// The federated counterpart to [`check_claim_overlap`](Self::check_claim_overlap):
+    /// reads active claims from `source` (a federated repository's Ackplane
+    /// claim registry, ADR-0096 clause 5) instead of the local `tasks` table,
+    /// then applies the identical scope-intersection and branch-signal logic
+    /// so a caller sees one report shape regardless of coordination mode.
+    pub fn check_federated_claim_overlap(
+        &self,
+        source: &dyn FederatedClaimSource,
+        requested: &TaskScope,
+        exclude_task_id: Option<&str>,
+        requester: Option<&str>,
+    ) -> Result<ClaimOverlapReport> {
+        let requested = normalize_scope_values(requested);
+        let requester_branch = self.declared_branch(requester)?;
+        let claims = source.active_claims(exclude_task_id)?;
+        let mut overlaps = Vec::new();
+        for claim in claims {
+            let scope = TaskScope {
+                paths: claim.paths,
+                symbols: claim.symbols,
+            };
+            let matching_paths = intersect_paths(&requested.paths, &scope.paths)?;
+            let matching_symbols = requested
+                .symbols
+                .iter()
+                .filter(|symbol| scope.symbols.contains(symbol))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !matching_paths.is_empty() || !matching_symbols.is_empty() {
+                let signal = OverlapSignal::classify(
+                    requester_branch.as_deref(),
+                    claim.owner_branch.as_deref(),
+                );
+                overlaps.push(ClaimOverlap {
+                    task_id: claim.task_id,
+                    owner: claim.owner,
+                    lease_expires_at: claim.lease_expires_at,
+                    scope,
+                    matching_paths,
+                    matching_symbols,
+                    owner_branch: claim.owner_branch,
+                    signal,
+                });
+            }
+        }
+        Ok(ClaimOverlapReport {
+            requester_branch,
+            claims: overlaps,
+        })
+    }
+
     /// The branch an agent declared, treating an unregistered agent and a blank
     /// declaration alike: both are "said nothing", not "said empty".
-    fn declared_branch(&self, agent: Option<&str>) -> Result<Option<String>> {
+    pub(crate) fn declared_branch(&self, agent: Option<&str>) -> Result<Option<String>> {
         let Some(agent) = agent.map(str::trim).filter(|agent| !agent.is_empty()) else {
             return Ok(None);
         };
@@ -387,6 +526,7 @@ mod tests {
     use super::super::tests::working_on;
     use super::*;
     use crate::store::test_support::*;
+    use crate::FederatedClaim;
     use mindleak_session::SessionContext;
     use rusqlite::params;
 
@@ -748,6 +888,90 @@ mod tests {
                 NOW + 2
             )
             .unwrap());
+    }
+
+    struct FakeFederatedClaims(Vec<FederatedClaim>);
+
+    impl FederatedClaimSource for FakeFederatedClaims {
+        fn active_claims(
+            &self,
+            exclude_task_id: Option<&str>,
+        ) -> crate::Result<Vec<FederatedClaim>> {
+            Ok(self
+                .0
+                .iter()
+                .filter(|claim| Some(claim.task_id.as_str()) != exclude_task_id)
+                .cloned()
+                .collect())
+        }
+    }
+
+    /// ADR-0096 clause 5: a federated repository's overlap answer comes from
+    /// Ackplane's claim registry, never the local `tasks` table - even when a
+    /// local task happens to declare the exact same scope.
+    #[test]
+    fn federated_claim_overlap_reads_from_the_injected_source_not_the_local_table() {
+        let store = store();
+        let goal = goal(&store);
+        store
+            .declare_session_context("bob", &branch_context("fleet/a"), NOW)
+            .unwrap();
+        let scope = TaskScope {
+            paths: vec!["src/lib.rs".to_string()],
+            symbols: vec![],
+        };
+        let source = FakeFederatedClaims(vec![FederatedClaim {
+            task_id: "task:remote-1".to_string(),
+            owner: "remote-agent".to_string(),
+            owner_branch: Some("fleet/a".to_string()),
+            lease_expires_at: NOW + 60,
+            paths: scope.paths.clone(),
+            symbols: vec![],
+        }]);
+
+        let report = store
+            .check_federated_claim_overlap(&source, &scope, None, Some("bob"))
+            .unwrap();
+        assert_eq!(report.requester_branch.as_deref(), Some("fleet/a"));
+        assert_eq!(report.claims.len(), 1);
+        assert_eq!(report.claims[0].task_id, "task:remote-1");
+        assert_eq!(report.claims[0].owner, "remote-agent");
+        assert_eq!(report.claims[0].signal, OverlapSignal::SameBranchCollision);
+
+        // A local task claiming the identical scope in the SAME store is
+        // invisible here: the local table is never consulted for this path.
+        let local = store.create_task(&goal.id, "local", "", None, NOW).unwrap();
+        assert!(store
+            .claim_task_with_scope(&local.id, "alice", 60, &scope, NOW)
+            .unwrap());
+        let report_again = store
+            .check_federated_claim_overlap(&source, &scope, None, Some("bob"))
+            .unwrap();
+        assert_eq!(report_again.claims.len(), 1);
+        assert_eq!(report_again.claims[0].task_id, "task:remote-1");
+    }
+
+    #[test]
+    fn federated_claim_overlap_excludes_the_named_task() {
+        let store = store();
+        let scope = TaskScope {
+            paths: vec!["src/lib.rs".to_string()],
+            symbols: vec![],
+        };
+        let source = FakeFederatedClaims(vec![FederatedClaim {
+            task_id: "task:remote-1".to_string(),
+            owner: "remote-agent".to_string(),
+            owner_branch: None,
+            lease_expires_at: NOW + 60,
+            paths: scope.paths.clone(),
+            symbols: vec![],
+        }]);
+
+        let report = store
+            .check_federated_claim_overlap(&source, &scope, Some("task:remote-1"), None)
+            .unwrap();
+
+        assert!(report.claims.is_empty());
     }
 
     #[test]

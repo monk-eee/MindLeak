@@ -304,6 +304,7 @@ fn requires_session(name: &str) -> bool {
             | "working_set"
             | "evidence_for"
             | "check_overlap"
+            | "compile_context"
     )
 }
 

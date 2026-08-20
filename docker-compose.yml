@@ -9,9 +9,12 @@
 name: ackplane
 
 services:
-  # Pinned by tag and digest (clause 4).
+  # Pinned by tag and digest (clause 4). pgvector/pgvector:pg16 is upstream
+  # postgres:16 with the pgvector extension already installed (ADR-0106
+  # decision 3's knowledge domain needs it) -- same major version, same
+  # data format, nothing else about the topology changes.
   postgres:
-    image: postgres:16-bookworm@sha256:64154d0babcb1741988719e703419af0382b19953706149f9872fbd0f438efa8
+    image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
     environment:
       # Development-only credentials (clause 6). Never used outside this
       # Compose stack, and never the production deployment's answer.
@@ -56,12 +59,11 @@ services:
   # stays 127.0.0.1. Reports `single_node` durability (clause 6): one
   # PostgreSQL container is not a fenced primary with synchronous standbys.
   #
-  # The current build has no gRPC service yet (ADR-0083 is a separate,
-  # not-yet-implemented decision), so this container starts, resolves its
-  # configuration, prints its startup banner, and exits 0 rather than serving
-  # requests -- that is today's real capability, not a topology defect.
-  # `restart: "no"` reflects that honestly; once ADR-0083 lands this should
-  # move to a long-running restart policy and a real healthcheck.
+  # ADR-0083's gRPC service has landed and serves real NodeSync traffic
+  # (connection-authenticated since PR #501), so this is a long-running
+  # service now, not the exit-after-banner placeholder it used to be.
+  # Restart and healthcheck follow the same pattern as `postgres` above
+  # (clause 5: service ordering uses healthchecks rather than sleeps).
   ackplane:
     build:
       context: .
@@ -78,7 +80,16 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-    restart: "no"
+    healthcheck:
+      # A bare TCP connect, not a real gRPC health check (the service does not
+      # implement grpc.health.v1.Health yet). Proves the port accepts
+      # connections, which is enough to order dependants after it; a real
+      # protocol-aware check is its own follow-on if this proves insufficient.
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8443"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
 
 volumes:
   # Named volume (clause 7): recreating a container never destroys the ledger

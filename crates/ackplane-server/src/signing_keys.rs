@@ -148,6 +148,34 @@ pub async fn retire(
     Ok(())
 }
 
+/// An authorised administrator or incident workflow's revocation of a node's
+/// signing key (ADR-0085 decision 8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyRevocation {
+    pub signing_key_id: String,
+    pub reason: String,
+}
+
+/// Revoke a key, immediately for new authority. First revocation wins: once
+/// `revoked_at` is set it is never moved, because a later call moving it
+/// later would resurrect authority for the gap between the two timestamps.
+/// Returns `true` iff this call performed the revocation, `false` if the key
+/// was already revoked.
+pub async fn revoke(
+    transaction: &Transaction<'_>,
+    revocation: &KeyRevocation,
+    revoked_at: SystemTime,
+) -> Result<bool, SigningKeyError> {
+    let updated = transaction
+        .execute(
+            "UPDATE signing_keys SET revoked_at = $2, revocation_reason = $3 \
+             WHERE signing_key_id = $1 AND revoked_at IS NULL",
+            &[&revocation.signing_key_id, &revoked_at, &revocation.reason],
+        )
+        .await?;
+    Ok(updated > 0)
+}
+
 /// A key together with the lifecycle events that may have ended its authority.
 ///
 /// Separate from `SigningKeyRecord` because these are the fields a verifier
@@ -389,5 +417,153 @@ mod tests {
         };
 
         assert_eq!(judge(&lifecycle, &wrong), KeyResolution::BindingMismatch);
+    }
+
+    /// Applies just this module's migration, standalone: `revoke`/`register`
+    /// need a real `signing_keys` table but nothing here depends on the
+    /// enrollment ceremony's tables.
+    async fn connect_and_migrate(database_url: &str) -> Client {
+        let (client, connection) = tokio_postgres::connect(database_url, tokio_postgres::NoTls)
+            .await
+            .expect("test database connects");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client
+            .batch_execute(include_str!("../migrations/0004_signing_keys.sql"))
+            .await
+            .expect("signing_keys migration applies");
+        client
+    }
+
+    fn test_record(signing_key_id: &str) -> SigningKeyRecord {
+        SigningKeyRecord {
+            signing_key_id: signing_key_id.to_owned(),
+            tenant_id: "tenant-revoke-test".to_owned(),
+            repository_id: "repository-revoke-test".to_owned(),
+            node_id: "node-revoke-test".to_owned(),
+            public_key: vec![9; 32],
+            // Derived from the caller's already-unique `signing_key_id`
+            // rather than a fixed literal: the unique constraint this row
+            // must satisfy is (tenant_id, repository_id, node_id,
+            // public_key_fingerprint, activated_at), which does not include
+            // signing_key_id, so two tests sharing a fixed fingerprint
+            // collide even though their key ids differ.
+            public_key_fingerprint: format!("ed25519:{signing_key_id}"),
+            activated_at: at(1_000),
+            expires_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn revoking_a_key_ends_its_authority_immediately() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let mut client = connect_and_migrate(&database_url).await;
+        let record = test_record(&format!(
+            "signing-key-revoke-{}",
+            crate::test_support::uuid_ish()
+        ));
+
+        let transaction = client.transaction().await.unwrap();
+        register(&transaction, &record).await.unwrap();
+        transaction.commit().await.unwrap();
+
+        let revoked_at = at(5_000);
+        let transaction = client.transaction().await.unwrap();
+        let performed = revoke(
+            &transaction,
+            &KeyRevocation {
+                signing_key_id: record.signing_key_id.clone(),
+                reason: "suspected compromise".to_owned(),
+            },
+            revoked_at,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+        assert!(performed, "the first revocation must take effect");
+
+        let resolution = resolve(
+            &client,
+            &EnvelopeBinding {
+                signing_key_id: &record.signing_key_id,
+                tenant_id: &record.tenant_id,
+                repository_id: &record.repository_id,
+                producer_id: &record.node_id,
+                accepted_at: at(5_500),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolution, KeyResolution::Revoked);
+    }
+
+    /// A second revocation must not move `revoked_at` later, or the gap
+    /// between the two timestamps would resurrect authority that was already
+    /// meant to have ended.
+    #[tokio::test]
+    async fn a_second_revocation_is_a_no_op_and_never_moves_revoked_at() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let mut client = connect_and_migrate(&database_url).await;
+        let record = test_record(&format!(
+            "signing-key-double-revoke-{}",
+            crate::test_support::uuid_ish()
+        ));
+
+        let transaction = client.transaction().await.unwrap();
+        register(&transaction, &record).await.unwrap();
+        transaction.commit().await.unwrap();
+
+        let first_revocation = at(5_000);
+        let transaction = client.transaction().await.unwrap();
+        revoke(
+            &transaction,
+            &KeyRevocation {
+                signing_key_id: record.signing_key_id.clone(),
+                reason: "first reason".to_owned(),
+            },
+            first_revocation,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        let later = at(9_000);
+        let transaction = client.transaction().await.unwrap();
+        let performed = revoke(
+            &transaction,
+            &KeyRevocation {
+                signing_key_id: record.signing_key_id.clone(),
+                reason: "a later, different reason".to_owned(),
+            },
+            later,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+        assert!(!performed, "a second revocation must be a no-op");
+
+        // Judged as of an instant BETWEEN the two attempted timestamps: if the
+        // second call had moved revoked_at to `later`, this key would wrongly
+        // resolve as still authoritative here.
+        let resolution = resolve(
+            &client,
+            &EnvelopeBinding {
+                signing_key_id: &record.signing_key_id,
+                tenant_id: &record.tenant_id,
+                repository_id: &record.repository_id,
+                producer_id: &record.node_id,
+                accepted_at: at(6_000),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolution, KeyResolution::Revoked);
     }
 }

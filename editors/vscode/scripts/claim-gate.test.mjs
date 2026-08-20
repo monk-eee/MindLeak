@@ -2,6 +2,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  commitBeforeClaimNotice,
+  commitsBeforeClaim,
   declaredContext,
   identityCollisionNotice,
   liveClaims,
@@ -402,6 +404,57 @@ describe("claim-gate", () => {
 
       expect(notice).not.toContain("another agent");
       expect(notice).toContain("no identity to compare");
+    });
+  });
+
+  // gaps.d/commit-then-claim-puts-evidence-before-its-claim.md: a commit's own
+  // timestamp, not the claim's, decides whether check_conformance can ever
+  // certify it.
+  describe("commit before claim", () => {
+    it("flags a commit before the earliest held claim", () => {
+      const flagged = commitsBeforeClaim(
+        [{ sha: "aaa", timestamp: NOW - 10 }],
+        [{ claim_started_at: NOW }]
+      );
+      expect(flagged.map((commit) => commit.sha)).toEqual(["aaa"]);
+    });
+
+    it("does not flag a commit after the claim it will be certified under", () => {
+      const flagged = commitsBeforeClaim(
+        [{ sha: "aaa", timestamp: NOW + 10 }],
+        [{ claim_started_at: NOW }]
+      );
+      expect(flagged).toEqual([]);
+    });
+
+    // Comparing against the EARLIEST claim matters: a later, second claim must
+    // never hide a commit only an earlier claim could have covered.
+    it("does not flag a commit covered by any one held claim, even if another started later", () => {
+      const flagged = commitsBeforeClaim(
+        [{ sha: "aaa", timestamp: NOW - 5 }],
+        [{ claim_started_at: NOW - 100 }, { claim_started_at: NOW + 100 }]
+      );
+      expect(flagged).toEqual([]);
+    });
+
+    it("produces no findings with no held claims", () => {
+      expect(commitsBeforeClaim([{ sha: "aaa", timestamp: NOW }], [])).toEqual([]);
+    });
+
+    it("names every flagged commit and points at the gap fragment", () => {
+      const notice = commitBeforeClaimNotice([
+        { sha: "aaaaaaaaaaaa", timestamp: NOW - 10 },
+        { sha: "bbbbbbbbbbbb", timestamp: NOW - 5 },
+      ]);
+      expect(notice).toContain("2 commit(s)");
+      expect(notice).toContain("aaaaaaa");
+      expect(notice).toContain("bbbbbbb");
+      expect(notice).toContain("gaps.d/commit-then-claim-puts-evidence-before-its-claim.md");
+      expect(notice).toContain("This push still succeeds");
+    });
+
+    it("produces no notice with no flagged commits", () => {
+      expect(commitBeforeClaimNotice([])).toBeNull();
     });
   });
 });

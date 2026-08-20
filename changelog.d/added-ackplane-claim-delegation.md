@@ -1,0 +1,1 @@
+- **Added:** Ackplane can now issue durable delegated claim leases through its versioned gRPC contract, preserving ownership scope, fixed expiry, competing-claim refusal, and expired-lease reclaim semantics (ADR-0096).

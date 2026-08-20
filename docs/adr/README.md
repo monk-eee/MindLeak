@@ -79,10 +79,10 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0069](0069-resolutions-that-predate-attribution-are-accepted-as-historical.md) | Resolutions that predate attribution are accepted as historical | Accepted |
 | [0070](0070-paused-work-must-find-its-owner-or-a-successor.md) | Paused work must find its owner or a successor | Accepted |
 | [0071](0071-task-resolution-records-an-unverified-reviewer-label.md) | Task resolution records an unverified reviewer label | Accepted |
-| [0072](0072-an-advisory-informs-it-does-not-cap-the-verdict.md) | An advisory informs; it does not cap the verdict | Proposed |
+| [0072](0072-an-advisory-informs-it-does-not-cap-the-verdict.md) | An advisory informs; it does not cap the verdict | Accepted |
 | [0073](0073-each-window-roots-its-servers-at-the-worktree-it-edits.md) | Each window roots its servers at the worktree it edits | Accepted |
 | [0074](0074-coverage-is-a-prediction-until-conformance-speaks.md) | Coverage is a prediction until conformance speaks | Accepted |
-| [0075](0075-a-hit-must-stand-out-from-its-own-querys-field.md) | A hit must stand out from its own query's field | Proposed |
+| [0075](0075-a-hit-must-stand-out-from-its-own-querys-field.md) | A hit must stand out from its own query's field | Accepted |
 | [0076](0076-evidence-is-judged-against-the-window-that-authorised-it.md) | Evidence is judged against the window that authorised the work | Accepted |
 | [0077](0077-a-crowded-board-is-not-a-decision.md) | A crowded board is not a decision | Accepted |
 | [0078](0078-an-unbound-file-is-reported-at-publication.md) | An unbound file is reported at publication | Accepted |
@@ -100,8 +100,21 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0090](0090-certification-is-a-status-not-a-service.md) | Certification is a status, not a service | Accepted |
 | [0091](0091-ackplane-builds-and-tests-without-a-database.md) | Ackplane builds and tests without a database | Accepted |
 | [0092](0092-ackplane-is-governed-by-its-own-goal.md) | Ackplane is governed by its own goal | Accepted |
-| [0093](0093-tool-descriptions-are-a-contract-not-a-narrative.md) | Tool descriptions are a contract, not a narrative | Proposed |
+| [0093](0093-tool-descriptions-are-a-contract-not-a-narrative.md) | Tool descriptions are a contract, not a narrative | Accepted |
+| [0094](0094-the-bridge-preserves-standalone-operation.md) | The Bridge preserves standalone operation | Superseded by [ADR-0105](0105-bridge-is-the-server-version-of-the-vsix.md) |
+| [0095](0095-the-bridge-uses-an-authenticated-projection-api.md) | The Bridge uses an authenticated projection API | Accepted |
+| [0096](0096-ackplane-arbitrates-federated-claims-through-leased-delegation.md) | Ackplane arbitrates federated claims through leased delegation | Accepted |
 | [0097](0097-local-coordination-gateway-composes-plane-workflows.md) | A local coordination gateway composes plane workflows | Proposed |
+| [0098](0098-connection-trust-reuses-the-enrolled-key-oidc-waits.md) | Connection trust reuses the enrolled node key; OIDC waits for a real second tenant | Accepted |
+| [0099](0099-a-claim-also-checks-for-a-live-twin-by-title.md) | A claim also checks for a live twin by title, not only by scope | Accepted |
+| [0100](0100-repository-node-owns-one-non-exporting-signer.md) | The repository node owns one non-exporting signer | Accepted |
+| [0101](0101-a-digest-is-compiled-not-hand-authored.md) | A digest is a compiled view of the graph, not a hand-authored document | Accepted |
+| [0102](0102-context-is-compiled-not-assembled-by-hand.md) | Context is compiled into a bounded packet, not assembled by hand | Accepted |
+| [0103](0103-the-mcp-client-is-packaged-once-not-reimplemented.md) | The MCP client is packaged once, not reimplemented per consumer | Accepted |
+| [0104](0104-a-reference-consumer-tests-the-tool-surfaces-stability.md) | A reference consumer tests the tool surface's stability | Accepted |
+| [0105](0105-bridge-is-the-server-version-of-the-vsix.md) | The Bridge is the server version of the VSIX | Accepted |
+| [0106](0106-ackplane-closes-the-agentic-operating-loop.md) | Ackplane closes the agentic operating loop | Accepted |
+| [0107](0107-registered-agents-accept-authenticated-control-directives.md) | Registered agents accept authenticated control directives | Accepted |
 
 ## Writing a new ADR
 
