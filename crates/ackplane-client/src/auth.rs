@@ -259,6 +259,7 @@ mod tests {
             .expect("the seed just stored should load back");
         let direct = SeedSigner::new("key-1", "node-1", &seed);
         assert_eq!(signer.sign(b"message"), direct.sign(b"message"));
+        println!("passed: round-tripped for real through the OS credential facility");
 
         let _ = keyring::Entry::new(service, &account).and_then(|entry| entry.delete_password());
     }
