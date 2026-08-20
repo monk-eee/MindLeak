@@ -234,6 +234,9 @@
     .timeline .producer { color: var(--ml-ink-muted); }
     .timeline .when { color: var(--ml-ink-soft); white-space: nowrap; }
     .timeline-empty { font-size: 0.82rem; color: var(--ml-ink-soft); padding: 10px 2px; }
+    .work-list li { flex-wrap: wrap; }
+    .work-list .branch { color: var(--ml-ink-soft); font-family: "Cascadia Code", Consolas, monospace; font-size: 0.76rem; }
+    .work-list .scope { width: 100%; color: var(--ml-ink-muted); font-size: 0.76rem; overflow-wrap: anywhere; }
     .empty-state { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 64px 24px; text-align: center; background: var(--ml-surface); border: 1px dashed var(--ml-border); border-radius: 16px; }
     .empty-state img { width: 72px; height: 72px; }
     .empty-state p { margin: 0; color: var(--ml-ink-muted); font-size: 0.92rem; max-width: 32em; }
@@ -318,6 +321,12 @@
       return seconds ? new Date(seconds * 1000).toLocaleString() : "Unknown";
     }
 
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      })[character]);
+    }
+
     document.querySelectorAll(".segmented").forEach((group) => {
       const key = group.dataset.filter;
       group.querySelectorAll(".segment").forEach((button) => {
@@ -334,7 +343,8 @@
       const promise = Promise.all([
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}`).then((r) => (r.ok ? r.json() : null)),
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/timeline`).then((r) => (r.ok ? r.json() : null)),
-      ]).then(([detail, timeline]) => ({ detail, timeline }));
+        fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/claims`).then((r) => (r.ok ? r.json() : null)),
+      ]).then(([detail, timeline, claims]) => ({ detail, timeline, claims }));
       detailCache.set(repositoryId, promise);
       return promise;
     }
@@ -352,12 +362,13 @@
 
     function renderDetail(container, repositoryId) {
       container.innerHTML = '<div class="skeleton"></div>';
-      loadRepositoryDetail(repositoryId).then(({ detail, timeline }) => {
+      loadRepositoryDetail(repositoryId).then(({ detail, timeline, claims }) => {
         if (!detail) {
           container.innerHTML = '<p class="timeline-empty">Detail is unavailable for this repository.</p>';
           return;
         }
         const events = timeline?.events ?? [];
+        const activeClaims = claims?.claims ?? [];
         container.innerHTML = `
           <div class="detail-grid">
             <div><span class="stat-label">Ledger position</span><span class="stat-value">${detail.ledger_stream_position}</span></div>
@@ -366,13 +377,31 @@
             <div><span class="stat-label">Active nodes</span><span class="stat-value">${detail.active_node_count}</span></div>
           </div>
           <div>
+            <p class="timeline-title">Active work</p>
+            ${claims === null
+              ? '<p class="timeline-empty">Active work is unavailable.</p>'
+              : activeClaims.length
+                ? `<ul class="timeline work-list">${activeClaims.map((claim) => {
+                    const scope = [...claim.paths, ...claim.symbols];
+                    return `
+                    <li>
+                      <span class="payload">${escapeHtml(claim.task_id)}</span>
+                      <span class="producer">${escapeHtml(claim.owner_id)}</span>
+                      <span class="branch">${escapeHtml(claim.branch || "No branch")}</span>
+                      <span class="when" title="${escapeHtml(absoluteTime(claim.lease_expires_at_seconds))}">expires ${escapeHtml(relativeTime(claim.lease_expires_at_seconds))}</span>
+                      <span class="scope">${scope.length ? scope.map(escapeHtml).join(" · ") : "No declared scope"}</span>
+                    </li>`;
+                  }).join("")}</ul>`
+                : '<p class="timeline-empty">No active delegated work.</p>'}
+          </div>
+          <div>
             <p class="timeline-title">Recent activity</p>
             ${events.length
               ? `<ul class="timeline">${events.map((event) => `
                   <li>
                     <span class="pos">#${event.stream_position}</span>
-                    <span class="payload">${event.payload_type}</span>
-                    <span class="producer">${event.producer_id}</span>
+                    <span class="payload">${escapeHtml(event.payload_type)}</span>
+                    <span class="producer">${escapeHtml(event.producer_id)}</span>
                     <span class="when" title="${absoluteTime(event.occurred_at_seconds)}">${relativeTime(event.occurred_at_seconds)}</span>
                   </li>`).join("")}</ul>`
               : '<p class="timeline-empty">No accepted records yet.</p>'}
@@ -419,7 +448,7 @@
           ? "Not projected"
           : `Position ${repository.projection_stream_position}`;
         row.innerHTML = `
-          <span class="repo-id">${repository.repository_id}</span>
+          <span class="repo-id">${escapeHtml(repository.repository_id)}</span>
           <span class="badge ${repository.freshness}">${freshnessLabel[repository.freshness] ?? repository.freshness}</span>
           <span class="stat-group"><span><span class="stat-label">Nodes</span><span class="stat-value">${repository.active_node_count}</span></span></span>
           <span class="stat-group"><span><span class="stat-label">Projection</span><span class="stat-value">${projectionText}</span></span></span>

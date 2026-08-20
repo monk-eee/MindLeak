@@ -112,7 +112,12 @@ seam, `coordination` task/handoff/conformance ledger, transactional
 `policy_packs` proposal/disposition/provenance ledger, reviewed `design/`
 materialization plus validation, `amendments` and `waivers`, learned
 `knowledge`, and `lifecycle` operations), `llm` (optional OpenAI-compatible model
-client), `embed` (optional semantic index over knowledge — a deliberate copy of
+client), `telemetry` (best-effort local record of each model call this crate
+makes — operation, outcome, duration, and token usage when the endpoint
+reports it — read back through the `model_telemetry` tool; mirrors
+`mindleak-core::telemetry`'s shape but owns a separate table, since a model
+call is not a coordination event), `embed` (optional semantic index over
+knowledge — a deliberate copy of
 `mindleak-core::embed`, because ADR-0004 keeps that crate a dev-dependency only,
 so the Intent Plane cannot reach it at runtime), and
 `lib` (the `Lodestar` facade wiring). `store/design/` is split by
@@ -341,6 +346,25 @@ documented local-dev database shortcut standing in for the administrative
 approval RPC/UI that does not exist yet. `activate` proves possession, opens
 one real `NodeSync` stream, and sends a signed heartbeat event using the
 `signing_key_id` `EnrollmentActivationResult` returns directly.
+
+`KnowledgeService` (`knowledge_store.rs`/`knowledge_service.rs`) is the first
+slice of Ackplane's PostgreSQL-backed knowledge domain (ADR-0106 decision 3;
+distinct from `clients/node/mindleak-client`'s same-named service, which
+wraps the *local* planes' own knowledge tools instead): `RecordKnowledge`,
+`RecallKnowledge`, `RetireKnowledge`. Effective weight is the same decay
+formula as `mindleak-core::decay::effective_weight`
+(`W_eff = W_base * 2^(-Δt_hours / half_life)`), expressed as a Postgres `CASE`
+expression and computed at read time — never stored — matching this
+repository's standing decay invariant on Ackplane's side too. A recall with a
+query embedding ranks by pgvector's own `<=>` cosine-distance operator
+entirely inside Postgres; without one, entries recall by effective weight
+(recency, decay-adjusted) instead, the same graceful degradation ADR-0080
+established for the local planes. Embeddings are fixed at 768 dimensions
+(`nomic-embed-text`, this repository's shared default embedder) for this
+first slice; a second model at a different dimension needs its own column or
+table, not a redesign. Unlike `ClaimDelegationService`, these RPCs are
+unauthenticated in this slice — see
+[`gaps.d/ackplane-knowledge-service-rpcs-are-unauthenticated.md`](../gaps.d/ackplane-knowledge-service-rpcs-are-unauthenticated.md).
 
 ### `editors/vscode` (extension)
 

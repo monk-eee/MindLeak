@@ -3,6 +3,7 @@
 
 use super::questions::append_note_on;
 use super::*;
+use crate::model::TaskEvent;
 
 impl LodestarStore {
     /// Mark a task blocked, optionally on one validated predecessor. Blocking
@@ -129,11 +130,20 @@ impl LodestarStore {
     /// permits an expired claim to be retired. Abandoning a predecessor
     /// transactionally opens its blocked successor (ADR-0020): the reason it
     /// waited no longer exists, so the chain is never stranded by a dead
-    /// predecessor. A task that recorded a branch is not retired silently:
-    /// unless `acknowledge_branch` is set it refuses and names the branch,
-    /// because abandon is irreversible and the ledger cannot see from here
-    /// whether that branch already shipped an open or merged pull request.
+    /// predecessor. A task that ever recorded a branch is not retired silently:
+    /// unless `acknowledge_branch` is set it refuses and names every distinct
+    /// branch the task's event log has ever seen, not only the one currently on
+    /// the row — a claim that rescues a lapsed lease re-reads the branch for its
+    /// own fresh window (see `claim.rs`), which is correct for the window but
+    /// discards the prior owner's branch from the one place a caller would
+    /// otherwise look. That value is not lost: every claim already records the
+    /// resulting task as an event, so the discarded branch survives in
+    /// `task_events` even though `tasks.branch` moved past it. Checking history
+    /// instead of the live column is how abandon can still be answered honestly.
     pub fn abandon_task(&self, id: &str, acknowledge_branch: bool, now: i64) -> Result<bool> {
+        // Read before the transaction opens: this is a plain, uncommitted-work
+        // query over the same connection the guarded write below will lock.
+        let history_branches = recorded_branches(&self.task_events(id)?);
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let task = get_task_on(&transaction, id)?
             .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
@@ -166,22 +176,23 @@ impl LodestarStore {
         // shipped: measured, every abandoned task carrying a branch corresponded
         // to a real pull request, 7 of 8 already merged. The ledger cannot see a
         // pull request from here, so it does not decide for the caller — it
-        // refuses to retire branched work silently and names the branch, so the
-        // irreversible act is taken knowingly rather than in the mistaken belief
-        // the work was a duplicate that had in fact merged.
-        if !acknowledge_branch {
-            if let Some(branch) = task
-                .branch
-                .as_deref()
-                .map(str::trim)
-                .filter(|branch| !branch.is_empty())
-            {
-                return Err(LodestarError::Invalid(format!(
-                    "task {id} recorded branch {branch}; abandoning is permanent and does not \
-                     check whether that branch carries an open or merged pull request. Verify no \
-                     live work points at it, then re-issue with acknowledge_branch=true."
-                )));
-            }
+        // refuses to retire branched work silently and names every branch the
+        // task's history ever recorded (a rescued claim's fresh window can hide
+        // an earlier owner's branch behind its own), so the irreversible act is
+        // taken knowingly rather than in the mistaken belief the work was a
+        // duplicate that had in fact merged.
+        if !acknowledge_branch && !history_branches.is_empty() {
+            let joined = history_branches.join(", ");
+            let (noun, pronoun) = if history_branches.len() == 1 {
+                ("branch", "it")
+            } else {
+                ("branches", "any of them")
+            };
+            return Err(LodestarError::Invalid(format!(
+                "task {id} recorded {noun} {joined}; abandoning is permanent and does not \
+                 check whether {pronoun} carries an open or merged pull request. Verify no \
+                 live work points at {pronoun}, then re-issue with acknowledge_branch=true."
+            )));
         }
         let changed = transaction.execute(
             "UPDATE tasks
@@ -271,6 +282,35 @@ impl LodestarStore {
         transaction.commit()?;
         Ok(changed == 1)
     }
+}
+
+/// Every distinct branch a task's event log has ever recorded, oldest first.
+///
+/// A claim's guarded UPDATE only ever holds one branch at a time on `tasks`,
+/// and a rescuer's fresh window legitimately overwrites it (see
+/// `a_new_owner_opens_a_fresh_window_and_rereads_the_branch` in `claim.rs`).
+/// The discarded value is not lost, though: every claim already records the
+/// resulting task as an event (`events::record`), so each branch the row ever
+/// held survives in the log even after a later transition moves past it. This
+/// walks that log rather than the live column, so a caller deciding whether
+/// abandoning is safe sees every branch that mattered, not only the newest.
+fn recorded_branches(events: &[TaskEvent]) -> Vec<String> {
+    let mut branches = Vec::new();
+    for event in events {
+        let Some(branch) = event
+            .after
+            .branch
+            .as_deref()
+            .map(str::trim)
+            .filter(|branch| !branch.is_empty())
+        else {
+            continue;
+        };
+        if !branches.iter().any(|seen: &String| seen == branch) {
+            branches.push(branch.to_string());
+        }
+    }
+    branches
 }
 
 /// Transactionally return a blocked successor to `open` once its predecessor's
@@ -1086,6 +1126,66 @@ mod tests {
 
         // Acknowledging the branch retires it, exactly as before.
         assert!(store.abandon_task(&task.id, true, NOW + 62).unwrap());
+        assert_eq!(
+            store.get_task(&task.id).unwrap().unwrap().status,
+            TaskStatus::Abandoned
+        );
+    }
+
+    // The gap this closes: a rescuer's claim legitimately re-reads the branch
+    // for its own fresh window
+    // (`a_new_owner_opens_a_fresh_window_and_rereads_the_branch` in
+    // `claim.rs`), which discards the original owner's branch from
+    // `tasks.branch` -- the one place `abandon`'s refusal used to look. That
+    // branch is exactly the one most likely to carry real, already-shipped
+    // work, and it survives in the task's own event log even after a later
+    // claim moves the live column past it.
+    #[test]
+    fn abandon_names_every_branch_a_rescued_claim_left_behind() {
+        let store = store();
+        let goal = goal(&store);
+        let task = store
+            .create_task(&goal.id, "Rescued from a lapsed claim", "done", None, NOW)
+            .unwrap();
+
+        // The original owner's window ships real work on its own branch, then
+        // its lease lapses.
+        working_on(&store, "agent-a", Some("feat/original-owner"));
+        assert!(store.claim_task(&task.id, "agent-a", 60, NOW).unwrap());
+
+        // A different owner rescues it after the lapse, opening a fresh window
+        // on its own branch -- correct, and it overwrites the live column.
+        working_on(&store, "agent-b", Some("feat/rescuer"));
+        assert!(store.claim_task(&task.id, "agent-b", 60, NOW + 61).unwrap());
+        assert_eq!(
+            store.get_task(&task.id).unwrap().unwrap().branch.as_deref(),
+            Some("feat/rescuer"),
+            "the live column correctly shows only the rescuer's branch"
+        );
+
+        // Abandoning without acknowledgement must still name the ORIGINAL
+        // owner's branch, not only the one currently on the row.
+        let refused = store
+            .abandon_task(&task.id, false, NOW + 122)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("feat/original-owner"),
+            "the refusal must name the discarded branch, not only the live one: {refused}"
+        );
+        assert!(
+            refused.contains("feat/rescuer"),
+            "and it must still name the branch that is currently live: {refused}"
+        );
+        assert!(refused.contains("pull request"));
+        // A refused abandon leaves the task exactly as it was.
+        assert_eq!(
+            store.get_task(&task.id).unwrap().unwrap().status,
+            TaskStatus::Claimed
+        );
+
+        // Acknowledging still retires it, exactly as before.
+        assert!(store.abandon_task(&task.id, true, NOW + 123).unwrap());
         assert_eq!(
             store.get_task(&task.id).unwrap().unwrap().status,
             TaskStatus::Abandoned

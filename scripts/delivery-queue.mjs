@@ -424,7 +424,7 @@ function refTreeHash(ref) {
  * produce right now, fetching first so a stale local remote-tracking ref
  * cannot silently compare against an old `main` or an old branch tip.
  */
-function expectedMergeTree(branch) {
+export function expectedMergeTree(branch) {
   try {
     execFileSync("git", ["fetch", "origin", "main", branch, "--quiet"], {
       stdio: ["pipe", "pipe", "pipe"],
@@ -439,7 +439,7 @@ function expectedMergeTree(branch) {
  * The tree `origin/<branch>` actually points at after its update, re-fetching
  * first since `update-branch` moved the branch server-side, not locally.
  */
-function actualMergeTree(branch) {
+export function actualMergeTree(branch) {
   try {
     execFileSync("git", ["fetch", "origin", branch, "--quiet"], {
       stdio: ["pipe", "pipe", "pipe"],
