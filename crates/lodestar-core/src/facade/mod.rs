@@ -10,6 +10,7 @@ mod evidence;
 mod executive;
 mod fleet;
 mod knowledge;
+mod telemetry;
 mod waivers;
 
 pub use design_materialization::PlannedDesignMaterialization;
