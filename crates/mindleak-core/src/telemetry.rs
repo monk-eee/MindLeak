@@ -75,17 +75,26 @@ pub struct NameMetric {
     pub min_ms: i64,
     pub max_ms: i64,
     pub avg_ms: f64,
-    /// Timestamp of this tool's most recent non-error event, if any.
+    /// Timestamp of this tool's most recent successful (`ok`) event, if any.
     pub last_success_at: Option<i64>,
     /// Timestamp of this tool's most recent error event, if any.
     pub last_error_at: Option<i64>,
     /// The `detail` payload of the most recent error, retained as an audit path
     /// even once the event ages out of the bounded `recent` window.
     pub last_error_detail: Option<Value>,
+    /// Timestamp and detail of the most recent deliberately skipped event.
+    /// Retained after it leaves `recent`, because transition-only maintenance
+    /// telemetry must stay actionable without repeating the same event.
+    pub last_degraded_at: Option<i64>,
+    pub last_degraded_detail: Option<Value>,
     /// Derived from append order: the tool's most recent event was an error. A
     /// resolved historical error is `false`, so the pane never presents a fixed
     /// fault as an active one, including when calls share a timestamp.
     pub currently_failing: bool,
+    /// The tool's most recent event was deliberately skipped. Optional model
+    /// maintenance uses this state so deterministic graph health stays green
+    /// while the unavailable enrichment remains visible.
+    pub currently_degraded: bool,
 }
 
 /// One recorded event, as returned by a snapshot.
@@ -110,8 +119,30 @@ pub struct MemoryHabit {
     pub read_before_first_write: Option<bool>,
 }
 
+/// One high-volume read path called out by the usage retrospective.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct UsageMetric {
+    pub name: String,
+    pub calls: i64,
+    pub total_ms: i64,
+}
+
+/// Deterministic interpretation of the telemetry already loaded for a snapshot.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct UsageRetrospective {
+    pub background_read_calls: i64,
+    pub preflight_read_calls: i64,
+    pub architectural_decision_calls: i64,
+    pub writing_sessions: i64,
+    pub writing_sessions_without_memory_read: i64,
+    pub high_volume_reads: Vec<UsageMetric>,
+    pub recommendations: Vec<String>,
+}
+
 const MEMORY_HABIT_LIMIT: usize = 32;
 const MEMORY_HABIT_EVENT_LIMIT: i64 = 10_000;
+const HIGH_VOLUME_READ_THRESHOLD: i64 = 1_000;
+const HIGH_VOLUME_READ_LIMIT: usize = 5;
 
 #[derive(Default)]
 struct MemoryHabitState {
@@ -132,10 +163,15 @@ pub struct Snapshot {
     /// How many tools are failing *right now* (their most recent event errored).
     /// Derived from `by_name`; distinct from the lifetime `total_errors` tally.
     pub currently_failing_tools: i64,
+    /// How many tools are degraded right now (their most recent event skipped).
+    pub currently_degraded_tools: i64,
     pub by_name: Vec<NameMetric>,
     pub recent: Vec<EventRow>,
     /// Most recently active registered sessions, newest first and bounded.
     pub memory_habits: Vec<MemoryHabit>,
+    /// Factual interpretation of lifetime call volume and the bounded
+    /// 10,000-event / 32-session memory-habit sample.
+    pub retrospective: UsageRetrospective,
 }
 
 fn is_memory_read(name: &str) -> bool {
@@ -154,6 +190,95 @@ fn is_attributed_write(name: &str) -> bool {
             | "record_architectural_decision"
             | "boost_entity"
     )
+}
+
+fn is_background_read(name: &str) -> bool {
+    matches!(
+        name,
+        "graph_stats" | "graph_snapshot" | "telemetry_snapshot" | "list_agents"
+    )
+}
+
+fn usage_retrospective(
+    by_name: &[NameMetric],
+    memory_habits: &[MemoryHabit],
+) -> UsageRetrospective {
+    let background_read_calls = by_name
+        .iter()
+        .filter(|metric| is_background_read(&metric.name))
+        .map(|metric| metric.calls)
+        .sum();
+    let preflight_read_calls = by_name
+        .iter()
+        .filter(|metric| is_memory_read(&metric.name))
+        .map(|metric| metric.calls)
+        .sum();
+    let architectural_decision_calls = by_name
+        .iter()
+        .find(|metric| metric.name == "record_architectural_decision")
+        .map_or(0, |metric| metric.calls);
+    let writing_sessions = memory_habits
+        .iter()
+        .filter(|habit| habit.attributed_writes > 0)
+        .count() as i64;
+    let writing_sessions_without_memory_read = memory_habits
+        .iter()
+        .filter(|habit| habit.read_before_first_write == Some(false))
+        .count() as i64;
+    let mut high_volume_reads: Vec<UsageMetric> = by_name
+        .iter()
+        .filter(|metric| {
+            is_background_read(&metric.name) && metric.calls >= HIGH_VOLUME_READ_THRESHOLD
+        })
+        .map(|metric| UsageMetric {
+            name: metric.name.clone(),
+            calls: metric.calls,
+            total_ms: metric.total_ms,
+        })
+        .collect();
+    high_volume_reads.sort_by(|left, right| {
+        right
+            .calls
+            .cmp(&left.calls)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    high_volume_reads.truncate(HIGH_VOLUME_READ_LIMIT);
+
+    let mut recommendations = Vec::new();
+    if writing_sessions_without_memory_read > 0 {
+        recommendations.push(format!(
+            "{writing_sessions_without_memory_read} of {writing_sessions} writing sessions skipped memory before their first write; run check_overlap on the intended paths before editing."
+        ));
+    }
+    if !high_volume_reads.is_empty() {
+        let names = high_volume_reads
+            .iter()
+            .map(|metric| format!("{} ({})", metric.name, metric.calls))
+            .collect::<Vec<_>>()
+            .join(", ");
+        recommendations.push(format!(
+            "High-volume read traffic is dominated by {names}; use visibility-gated, slower refreshes or manual refresh."
+        ));
+    }
+    if let Some(metric) = by_name.iter().find(|metric| metric.currently_degraded) {
+        let detail = metric
+            .last_degraded_detail
+            .as_ref()
+            .and_then(|value| value.get("error"))
+            .and_then(Value::as_str)
+            .unwrap_or("optional work was skipped; inspect telemetry for its configuration");
+        recommendations.push(format!("{} is degraded: {detail}", metric.name));
+    }
+
+    UsageRetrospective {
+        background_read_calls,
+        preflight_read_calls,
+        architectural_decision_calls,
+        writing_sessions,
+        writing_sessions_without_memory_read,
+        high_volume_reads,
+        recommendations,
+    }
 }
 
 fn memory_habits(conn: &Connection) -> Result<Vec<MemoryHabit>> {
@@ -240,25 +365,32 @@ pub fn snapshot(conn: &Connection, recent_limit: usize) -> Result<Snapshot> {
     // by the largest `id` among that tool's error rows so it survives even after
     // the raw event scrolls out of the bounded `recent` window below.
     let mut last_error_detail: HashMap<String, Option<Value>> = HashMap::new();
+    let mut last_degraded_detail: HashMap<String, Option<Value>> = HashMap::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT t.name, t.detail
+            "SELECT t.name, t.outcome, t.detail
              FROM telemetry_events t
              JOIN (
-                 SELECT name, MAX(id) AS latest_id
+                 SELECT name, outcome, MAX(id) AS latest_id
                  FROM telemetry_events
-                 WHERE outcome = 'error'
-                 GROUP BY name
+                 WHERE outcome IN ('error', 'skipped')
+                 GROUP BY name, outcome
              ) latest ON t.id = latest.latest_id",
         )?;
         let rows = stmt.query_map([], |row| {
             let name: String = row.get(0)?;
-            let detail: Option<String> = row.get(1)?;
-            Ok((name, detail))
+            let outcome: String = row.get(1)?;
+            let detail: Option<String> = row.get(2)?;
+            Ok((name, outcome, detail))
         })?;
         for row in rows {
-            let (name, detail) = row?;
-            last_error_detail.insert(name, detail.and_then(|d| serde_json::from_str(&d).ok()));
+            let (name, outcome, detail) = row?;
+            let detail = detail.and_then(|value| serde_json::from_str(&value).ok());
+            if outcome == "error" {
+                last_error_detail.insert(name, detail);
+            } else {
+                last_degraded_detail.insert(name, detail);
+            }
         }
     }
 
@@ -280,8 +412,9 @@ pub fn snapshot(conn: &Connection, recent_limit: usize) -> Result<Snapshot> {
                     COALESCE(SUM(event.duration_ms), 0)                AS total_ms,
                     COALESCE(MIN(event.duration_ms), 0)                AS min_ms,
                     COALESCE(MAX(event.duration_ms), 0)                AS max_ms,
-                    MAX(CASE WHEN event.outcome != 'error' THEN event.ts END) AS last_success_at,
+                    MAX(CASE WHEN event.outcome = 'ok' THEN event.ts END) AS last_success_at,
                     MAX(CASE WHEN event.outcome = 'error' THEN event.ts END) AS last_error_at,
+                    MAX(CASE WHEN event.outcome = 'skipped' THEN event.ts END) AS last_degraded_at,
                     latest_outcomes.outcome                            AS latest_outcome
              FROM telemetry_events event
              JOIN latest_outcomes ON latest_outcomes.name = event.name
@@ -294,7 +427,8 @@ pub fn snapshot(conn: &Connection, recent_limit: usize) -> Result<Snapshot> {
             let name: String = row.get(0)?;
             let last_success_at: Option<i64> = row.get(6)?;
             let last_error_at: Option<i64> = row.get(7)?;
-            let latest_outcome: String = row.get(8)?;
+            let last_degraded_at: Option<i64> = row.get(8)?;
+            let latest_outcome: String = row.get(9)?;
             Ok(NameMetric {
                 name,
                 calls,
@@ -310,7 +444,10 @@ pub fn snapshot(conn: &Connection, recent_limit: usize) -> Result<Snapshot> {
                 last_success_at,
                 last_error_at,
                 last_error_detail: None,
+                last_degraded_at,
+                last_degraded_detail: None,
                 currently_failing: latest_outcome == "error",
+                currently_degraded: latest_outcome == "skipped",
             })
         })?;
         for row in rows {
@@ -320,6 +457,9 @@ pub fn snapshot(conn: &Connection, recent_limit: usize) -> Result<Snapshot> {
     for metric in &mut by_name {
         if let Some(detail) = last_error_detail.remove(&metric.name) {
             metric.last_error_detail = detail;
+        }
+        if let Some(detail) = last_degraded_detail.remove(&metric.name) {
+            metric.last_degraded_detail = detail;
         }
     }
 
@@ -355,13 +495,20 @@ pub fn snapshot(conn: &Connection, recent_limit: usize) -> Result<Snapshot> {
         }
     }
 
+    let memory_habits = memory_habits(conn)?;
+    let retrospective = usage_retrospective(&by_name, &memory_habits);
     Ok(Snapshot {
         total_events,
         total_errors,
         currently_failing_tools: by_name.iter().filter(|m| m.currently_failing).count() as i64,
+        currently_degraded_tools: by_name
+            .iter()
+            .filter(|metric| metric.currently_degraded)
+            .count() as i64,
         by_name,
         recent,
-        memory_habits: memory_habits(conn)?,
+        memory_habits,
+        retrospective,
     })
 }
 
@@ -434,6 +581,86 @@ mod tests {
     }
 
     #[test]
+    fn retrospective_names_high_volume_reads_and_skipped_memory_preflights() {
+        let metrics = vec![
+            NameMetric {
+                name: "graph_stats".into(),
+                calls: 23_771,
+                errors: 0,
+                total_ms: 9_044_695,
+                min_ms: 0,
+                max_ms: 17_813,
+                avg_ms: 380.5,
+                last_success_at: Some(1),
+                last_error_at: None,
+                last_error_detail: None,
+                last_degraded_at: None,
+                last_degraded_detail: None,
+                currently_failing: false,
+                currently_degraded: false,
+            },
+            NameMetric {
+                name: "check_overlap".into(),
+                calls: 265,
+                errors: 0,
+                total_ms: 127_561,
+                min_ms: 19,
+                max_ms: 4_247,
+                avg_ms: 481.4,
+                last_success_at: Some(1),
+                last_error_at: None,
+                last_error_detail: None,
+                last_degraded_at: None,
+                last_degraded_detail: None,
+                currently_failing: false,
+                currently_degraded: false,
+            },
+            NameMetric {
+                name: "record_architectural_decision".into(),
+                calls: 13,
+                errors: 0,
+                total_ms: 4_105,
+                min_ms: 5,
+                max_ms: 1_175,
+                avg_ms: 315.8,
+                last_success_at: Some(1),
+                last_error_at: None,
+                last_error_detail: None,
+                last_degraded_at: None,
+                last_degraded_detail: None,
+                currently_failing: false,
+                currently_degraded: false,
+            },
+        ];
+        let habits = vec![
+            MemoryHabit {
+                agent_id: "session:read".into(),
+                memory_reads: 1,
+                attributed_writes: 2,
+                read_before_first_write: Some(true),
+            },
+            MemoryHabit {
+                agent_id: "session:skipped".into(),
+                memory_reads: 0,
+                attributed_writes: 4,
+                read_before_first_write: Some(false),
+            },
+        ];
+
+        let retrospective = usage_retrospective(&metrics, &habits);
+
+        assert_eq!(retrospective.background_read_calls, 23_771);
+        assert_eq!(retrospective.preflight_read_calls, 265);
+        assert_eq!(retrospective.architectural_decision_calls, 13);
+        assert_eq!(retrospective.writing_sessions, 2);
+        assert_eq!(retrospective.writing_sessions_without_memory_read, 1);
+        assert_eq!(retrospective.high_volume_reads[0].name, "graph_stats");
+        assert_eq!(retrospective.recommendations.len(), 2);
+        assert!(retrospective.recommendations[0].contains("run check_overlap"));
+        assert!(retrospective.recommendations[1].contains("graph_stats (23771)"));
+    }
+
+    #[test]
     fn historical_error_is_not_reported_as_current_fault() {
         // Regression: a tool that errored once and then succeeded is HEALTHY.
         // The lifetime error tally must remain 1 (append-only history), while
@@ -496,6 +723,7 @@ mod tests {
         let snap = snapshot(&c, 10).unwrap();
         let embed = snap.by_name.iter().find(|m| m.name == "embed").unwrap();
         assert!(embed.currently_failing);
+        assert!(!embed.currently_degraded);
         assert_eq!(snap.currently_failing_tools, 1);
         assert_eq!(embed.last_error_at, Some(200));
         assert_eq!(embed.last_success_at, Some(100));
@@ -503,6 +731,59 @@ mod tests {
             embed.last_error_detail.as_ref().unwrap()["error"],
             "endpoint down"
         );
+    }
+
+    #[test]
+    fn skipped_optional_maintenance_is_degraded_not_success_or_failure() {
+        let connection = conn();
+        record(
+            &connection,
+            100,
+            "maintenance",
+            "autonomous_index",
+            "skipped",
+            Some(9),
+            Some(&json!({
+                "category": "misconfigured",
+                "error": "run ollama pull nomic-embed-text"
+            })),
+        )
+        .unwrap();
+        record(
+            &connection,
+            200,
+            "tool_call",
+            "graph_stats",
+            "ok",
+            Some(1),
+            None,
+        )
+        .unwrap();
+
+        let snapshot = snapshot(&connection, 1).unwrap();
+        assert_eq!(snapshot.recent[0].name, "graph_stats");
+        let index = snapshot
+            .by_name
+            .iter()
+            .find(|metric| metric.name == "autonomous_index")
+            .unwrap();
+
+        assert!(!index.currently_failing);
+        assert!(index.currently_degraded);
+        assert_eq!(index.last_success_at, None);
+        assert_eq!(index.last_degraded_at, Some(100));
+        assert_eq!(
+            index.last_degraded_detail.as_ref().unwrap()["error"],
+            "run ollama pull nomic-embed-text"
+        );
+        assert_eq!(snapshot.total_errors, 0);
+        assert_eq!(snapshot.currently_failing_tools, 0);
+        assert_eq!(snapshot.currently_degraded_tools, 1);
+        assert!(snapshot
+            .retrospective
+            .recommendations
+            .iter()
+            .any(|recommendation| recommendation.contains("ollama pull nomic-embed-text")));
     }
 
     #[test]

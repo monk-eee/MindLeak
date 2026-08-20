@@ -180,9 +180,21 @@ telemetry_snapshot(limit = 20)
 Returns a durable audit trail of every tool call — per-tool lifetime counts,
 error counts, latency, and the most recent invocations. Lifetime error counts
 are cumulative history and never shrink; each tool also reports current health
-(`currently_failing`, with the last error's timestamp and detail) so a resolved
-past failure is not mistaken for a live one. This is how you verify an agent did
-what it claimed, independent of its own narration (ADR-0010).
+(`currently_failing` or `currently_degraded`, with the last error's timestamp
+and detail) so a resolved past failure and skipped optional enrichment are not
+mistaken for a live deterministic-path fault. The same response carries graph
+counts and a bounded retrospective: background-read volume, intentional memory
+preflights, architectural-decision writes, writing sessions that skipped memory,
+and concrete next actions. Call counts are lifetime totals; session habits use
+the latest 10,000 attributed events and at most 32 registered sessions. This is
+how you verify an agent did what it claimed,
+independent of its own narration (ADR-0010).
+
+The VS Code Telemetry pane consumes that single response every 30 seconds only
+while visible with Live enabled; manual refresh remains immediate. The Fleet
+pane is also visibility-gated and defaults to 30 seconds. These defaults replace
+the independent 3-second telemetry and 5-second five-call Fleet loops measured
+as the dominant tool traffic in the live repository.
 
 ### Housekeeping
 
@@ -454,7 +466,7 @@ selecting a default.
 | `MINDLEAK_EMBED_URL` | `http://localhost:11434/v1` | embeddings server (for `recall`/`index`) |
 | `MINDLEAK_EMBED_MODEL` | `nomic-embed-text` | embedding model |
 | `MINDLEAK_EMBED_API_KEY` | *(empty)* | bearer token for hosted servers |
-| `MINDLEAK_AUTONOMOUS_INDEX` | `true` | refresh semantic-recall vectors on a wall-clock cadence; set `false` to disable attempts |
+| `MINDLEAK_AUTONOMOUS_INDEX` | `true` | refresh semantic-recall vectors on a wall-clock cadence; unavailable optional models report once and back off to one hour on the default cadence; set `false` to disable attempts |
 | `MINDLEAK_INDEX_INTERVAL_SECS` | `300` | autonomous index cadence, bounded 30-86400 seconds |
 | `MINDLEAK_INDEX_BATCH` | `128` | nodes embedded per autonomous pass, bounded 1-1000 |
 | `MINDLEAK_LOG` | `info` | tracing filter (`off`, `warn`, `debug`, `mindleak_core=debug`, …) — **stderr only** |
@@ -468,9 +480,12 @@ selecting a default.
 
 Autonomous indexing needs an OpenAI-compatible `/v1/embeddings` endpoint only
 for semantic recall; deterministic ingestion, FTS, graph traversal, impact, and
-pruning continue without one. The default endpoint is Ollama. If startup or
-`autonomous_index` telemetry reports it unavailable, install and start Ollama,
-then run `ollama pull nomic-embed-text`. Alternatively, configure
+pruning continue without one. The default endpoint is Ollama. An unavailable
+endpoint is reported once as `skipped`/degraded with the remedy, not as a graph
+failure; identical retries are silent and back off exponentially to one hour on
+the default cadence (never shorter than an explicitly configured interval),
+successful work resets the cadence, and idle passes emit no telemetry. Install
+and start Ollama, then run `ollama pull nomic-embed-text`. Alternatively, configure
 `MINDLEAK_EMBED_URL`, `MINDLEAK_EMBED_MODEL`, and
 `MINDLEAK_EMBED_API_KEY` for another compatible provider. Until that endpoint
 is healthy, `recall` returns a clearly marked deterministic graph/FTS fallback

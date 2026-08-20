@@ -1063,7 +1063,10 @@ export interface TelemetryToolMetric {
   last_success_at?: number | null;
   last_error_at?: number | null;
   last_error_detail?: unknown;
+  last_degraded_at?: number | null;
+  last_degraded_detail?: unknown;
   currently_failing?: boolean;
+  currently_degraded?: boolean;
 }
 
 /** One recorded event from `telemetry_snapshot.recent`. */
@@ -1076,14 +1079,29 @@ export interface TelemetryEvent {
   detail?: unknown;
 }
 
+/** Deterministic call-volume and memory-habit interpretation from the server. */
+export interface UsageRetrospective {
+  background_read_calls: number;
+  preflight_read_calls: number;
+  architectural_decision_calls: number;
+  writing_sessions: number;
+  writing_sessions_without_memory_read: number;
+  recommendations: string[];
+}
+
 /** The `telemetry_snapshot` tool result (subset used by the pane). */
 export interface TelemetrySnapshot {
   total_events: number;
   total_errors: number;
   /** How many tools are failing right now (most recent call errored). */
   currently_failing_tools?: number;
+  /** How many tools are degraded right now (most recent call skipped). */
+  currently_degraded_tools?: number;
   by_name: TelemetryToolMetric[];
   recent: TelemetryEvent[];
+  /** Current graph health bundled by telemetry_snapshot to avoid a second poll. */
+  graph?: GraphCounts;
+  retrospective?: UsageRetrospective;
 }
 
 /** The `graph_stats` tool result. */
@@ -1101,6 +1119,8 @@ export interface TelemetryToolRow {
   avgMs: number;
   /** The tool's most recent call errored — a live fault, not lifetime history. */
   currentlyFailing: boolean;
+  /** The tool's most recent call skipped optional work. */
+  currentlyDegraded: boolean;
 }
 
 /** The derived, real-time effectiveness readout for the telemetry pane. */
@@ -1112,9 +1132,15 @@ export interface TelemetryDashboard {
   totalErrors: number;
   /** Tools failing right now (most recent call errored) — the live health signal. */
   failingTools: number;
+  /** Tools degraded right now without a deterministic-path failure. */
+  degradedTools: number;
   successRatePct: number;
   errorRatePct: number;
   avgLatencyMs: number;
+  backgroundReadCalls: number;
+  preflightReadCalls: number;
+  memoryPreflightMisses: number;
+  recommendations: string[];
   tools: TelemetryToolRow[];
 }
 
@@ -1130,8 +1156,9 @@ function round1(value: number): number {
  */
 export function telemetryDashboard(
   snapshot: TelemetrySnapshot | undefined,
-  counts: GraphCounts | undefined
+  counts?: GraphCounts
 ): TelemetryDashboard {
+  const graph = counts ?? snapshot?.graph;
   const totalEvents = snapshot?.total_events ?? 0;
   const totalErrors = snapshot?.total_errors ?? 0;
   const byName = snapshot?.by_name ?? [];
@@ -1149,18 +1176,27 @@ export function telemetryDashboard(
       errorRatePct: tool.calls === 0 ? 0 : round1((tool.errors / tool.calls) * 100),
       avgMs: round1(tool.avg_ms),
       currentlyFailing: tool.currently_failing === true,
+      currentlyDegraded: tool.currently_degraded === true,
     }));
   const failingTools =
     snapshot?.currently_failing_tools ?? tools.filter((tool) => tool.currentlyFailing).length;
+  const degradedTools =
+    snapshot?.currently_degraded_tools ?? tools.filter((tool) => tool.currentlyDegraded).length;
+  const retrospective = snapshot?.retrospective;
   return {
-    nodes: counts?.nodes ?? 0,
-    activeEdges: counts?.active_edges ?? 0,
+    nodes: graph?.nodes ?? 0,
+    activeEdges: graph?.active_edges ?? 0,
     totalEvents,
     totalErrors,
     failingTools,
+    degradedTools,
     successRatePct: round1(successRatePct),
     errorRatePct: round1(100 - successRatePct),
     avgLatencyMs: round1(avgLatencyMs),
+    backgroundReadCalls: retrospective?.background_read_calls ?? 0,
+    preflightReadCalls: retrospective?.preflight_read_calls ?? 0,
+    memoryPreflightMisses: retrospective?.writing_sessions_without_memory_read ?? 0,
+    recommendations: retrospective?.recommendations ?? [],
     tools,
   };
 }
