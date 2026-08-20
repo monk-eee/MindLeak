@@ -70,9 +70,24 @@ jobs:
       # stdout is otherwise discarded, so the distinction was invisible here.
       # ubuntu-latest only: this is the platform the gap is about; a real
       # pass has already been confirmed by hand on Windows.
+      # Best-effort: failing to install/start a Secret Service provider must
+      # not turn this required check's existing soft "skipped" outcome into a
+      # hard failure, so apt-get is allowed to fail without blocking the job.
+      - name: Install a Secret Service provider (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        continue-on-error: true
+        run: sudo apt-get update && sudo apt-get install -y gnome-keyring dbus-x11
       - name: Report credential-facility test coverage (Linux)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo test -p ackplane-client a_stored_seed_round_trips_through_the_real_credential_facility -- --nocapture
+        run: |
+          if command -v dbus-run-session >/dev/null 2>&1 && command -v gnome-keyring-daemon >/dev/null 2>&1; then
+            dbus-run-session -- bash -c '
+              eval "$(printf "\n" | gnome-keyring-daemon --unlock --components=secrets)"
+              cargo test -p ackplane-client a_stored_seed_round_trips_through_the_real_credential_facility -- --nocapture
+            '
+          else
+            cargo test -p ackplane-client a_stored_seed_round_trips_through_the_real_credential_facility -- --nocapture
+          fi
 
   # ADR-0088 keeps the repository-local planes usable without Ackplane's
   # container and PostgreSQL stack. Dependencies are installed before this

@@ -40,3 +40,20 @@
   real. Option (a) -- a CI job that installs/starts a real Secret Service
   provider so the test stops skipping on Linux at all -- remains open and
   unattempted.
+
+  **Option (a) attempted 2026-08-20, outcome PENDING a real CI run --
+  do not trust this paragraph over the actual log.** `ubuntu-latest` now
+  installs `gnome-keyring` + `dbus-x11` before the credential-facility step
+  (`continue-on-error: true`, so a failed install cannot turn the check red)
+  and, when both `dbus-run-session` and `gnome-keyring-daemon` are present,
+  wraps the test in a private D-Bus session with an empty-password login
+  keyring primed via `gnome-keyring-daemon --unlock`. Falls back to the
+  unwrapped command otherwise, so the existing soft skip remains the worst
+  case. Validated locally only as much as a Windows machine allows: the YAML
+  parses (PyYAML) and the embedded shell parses (`bash -n`) -- neither proves
+  gnome-keyring actually unlocks a usable collection under GitHub's runner.
+  This paragraph must be corrected (not just left standing) once the actual
+  CI log for this step is read: either the test's own "passed: round-tripped
+  for real..." line appears (closes option (a) for real) or it still prints
+  "skipped: ..." (narrow this to name what was tried and why it still
+  didn't work, the same way option (b) narrowed rather than closed).
