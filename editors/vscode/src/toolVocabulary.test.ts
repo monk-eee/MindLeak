@@ -149,6 +149,20 @@ describe("extension MCP vocabulary", () => {
 
     expect(violations).toEqual([]);
   });
+
+  it("keeps telemetry refresh to one bundled MCP call", () => {
+    const source = readFileSync(join(__dirname, "extension.ts"), "utf8");
+    const refresh = source.slice(
+      source.indexOf("async function refreshTelemetry"),
+      source.indexOf("async function completeWithEvidence")
+    );
+
+    expect(refresh.match(/\.callTool\(/g)).toHaveLength(1);
+    expect(refresh).toContain('callTool("telemetry_snapshot"');
+    expect(refresh).not.toContain('callTool("graph_stats"');
+    expect(source).toContain('config.get<number>("telemetryRefreshSecs", 30)');
+    expect(source).toContain('config.get<number>("fleetRefreshSecs", 30)');
+  });
 });
 
 function inspectCall(

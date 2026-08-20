@@ -9,7 +9,7 @@ pub(super) fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "lodestar_stats",
-            "description": "Counts: active goals, open/claimed/done/total tasks, active knowledge. `total_tasks` counts every task ever created, any status. `done_verdicts` breaks `done_tasks` down by aligned/needs_human/drift/violation/unresolved -- `done` means shipped, not that conformance affirmed it.",
+            "description": "Goal/task/knowledge counts, including `total_tasks` (every task ever created, any status -- tells a `board`/`stalled` caller whether its own empty result means nothing has ever been set up, or that everything is genuinely clean) and `done_verdicts` (breaks `done_tasks` down by aligned/needs_human/drift/violation/unresolved -- `done` means shipped, not that conformance affirmed it); zero active goals also returns goal/import bootstrap actions.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
@@ -72,6 +72,15 @@ pub(super) fn dispatch(
                     ", {} unresolved (no conformance record)",
                     v.unresolved
                 ));
+            }
+            if let Some(next) = &stats.next_step {
+                markdown.push_str(&format!("\n\n**Get started** - {}\n", next.summary));
+                for action in &next.actions {
+                    markdown.push_str(&format!(
+                        "\n- `{}` with `action=\"{}\"`: {}",
+                        action.tool, action.action, action.purpose
+                    ));
+                }
             }
             rendered(markdown, &stats)
         })()),
@@ -258,6 +267,26 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("1 aligned"));
+    }
+
+    #[test]
+    fn zero_goal_stats_return_actionable_bootstrap_routes() {
+        let engine = Lodestar::open_in_memory().unwrap();
+
+        let result = call(
+            &engine,
+            &json!({ "name": "lodestar_stats", "arguments": {} }),
+        )
+        .unwrap();
+        let markdown = result["content"][0]["text"].as_str().unwrap();
+
+        assert!(markdown.contains("**Get started**"));
+        assert!(markdown.contains("`constitution_define` with `action=\"goal\"`"));
+        assert!(markdown.contains("`constitution_define` with `action=\"import\"`"));
+        assert_eq!(
+            result["structuredContent"]["next_step"]["reason"],
+            "no_active_goals"
+        );
     }
 
     #[test]

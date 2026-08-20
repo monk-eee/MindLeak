@@ -6,7 +6,30 @@ use rusqlite::params;
 use crate::decay::ACTIVE_THRESHOLD;
 use crate::error::{LodestarError, Result};
 
-use super::{DoneVerdictBreakdown, LodestarStore, ResetOutcome, Stats};
+use super::{
+    DoneVerdictBreakdown, LodestarStore, ResetOutcome, StartupAction, StartupGuidance, Stats,
+};
+
+fn zero_goal_guidance() -> StartupGuidance {
+    StartupGuidance {
+        reason: "no_active_goals".to_string(),
+        summary: "This repository has no active goal, so task_create cannot attach durable intent yet. Create the first objective or import accepted governance, then create and claim work under the returned goal id.".to_string(),
+        actions: vec![
+            StartupAction {
+                tool: "constitution_define".to_string(),
+                action: "goal".to_string(),
+                purpose: "Create the repository's first objective, constraint, or invariant."
+                    .to_string(),
+            },
+            StartupAction {
+                tool: "constitution_define".to_string(),
+                action: "import".to_string(),
+                purpose: "Import caller-supplied accepted ADR records with source provenance."
+                    .to_string(),
+            },
+        ],
+    }
+}
 
 impl LodestarStore {
     pub fn stats(&self, now: i64) -> Result<Stats> {
@@ -48,6 +71,7 @@ impl LodestarStore {
             done_tasks,
             active_knowledge,
             total_tasks,
+            next_step: (active_goals == 0).then(zero_goal_guidance),
             done_verdicts,
         })
     }
@@ -318,6 +342,21 @@ mod tests {
             breakdown.aligned + breakdown.needs_human + breakdown.drift,
             0
         );
+    }
+
+    #[test]
+    fn fresh_repository_stats_name_both_routes_out_of_zero_goals() {
+        let stats = store().stats(NOW).unwrap();
+        let next = stats.next_step.unwrap();
+
+        assert_eq!(next.reason, "no_active_goals");
+        assert!(next
+            .summary
+            .contains("task_create cannot attach durable intent"));
+        assert_eq!(next.actions.len(), 2);
+        assert_eq!(next.actions[0].tool, "constitution_define");
+        assert_eq!(next.actions[0].action, "goal");
+        assert_eq!(next.actions[1].action, "import");
     }
 
     #[test]

@@ -208,7 +208,17 @@ Restart your MCP client and open its tool list. You should see MindLeak's memory
 tools (`get_impact_radius`, `graph_multi_hop_query`, `recall`, the `ingest_*`
 family, …) and — if you registered it — Lodestar's intent tools (`define_goal`,
 `task_query`, `task_claim`, …). A headless client must call `open_session` before
-using identity-bearing tools. If the tools appear, you're live.
+using identity-bearing tools. Today that is one call to each plane with the same
+session token; both replies must resolve the same agent id. ADR-0097 proposes a
+first-party coordinator that makes this one physical call. If the tools appear,
+you're live.
+
+On a fresh repository Lodestar `open_session` returns `get_started` instead of
+leaving `active_goals: 0` unexplained. Create the first objective with
+`constitution_define(action="goal")`, or import caller-supplied accepted ADR
+records with `constitution_define(action="import")`; then create and claim work
+under the returned goal id. Lodestar does not infer or activate policy by parsing
+Markdown.
 
 Call `storage_status` on both planes. Their `repository_id` values must match;
 the database paths should share one `repositories/<id>/` directory. Every linked
@@ -283,10 +293,12 @@ Neither augmentation blocks the deterministic path when its server is
 unreachable. **Semantic recall additionally needs the embedding model pulled**
 (`ollama pull nomic-embed-text`). Until then `index` returns an actionable error,
 while `recall` returns deterministic graph/FTS results plus the exact Ollama or
-alternate-endpoint remedy. The server logs `semantic recall: enabled` or
-`disabled` at startup, and autonomous-index telemetry preserves the failure
-detail. Once reachable, the index refreshes every 300 seconds by default,
-independently of autonomous consolidation; set
+alternate-endpoint remedy. Autonomous indexing records an unavailable optional
+endpoint once as `skipped`/degraded rather than a deterministic-path error,
+silences identical retries, and uses exponential backoff to one hour on the
+default cadence (never shorter than an explicitly configured interval). Idle
+`Ok(0)` passes are silent and recovery is recorded once. Once reachable, the configured
+300-second cadence resumes independently of autonomous consolidation; set
 `MINDLEAK_AUTONOMOUS_INDEX=false` to disable those attempts.
 
 Autonomous consolidation is disabled by default. To opt in, set

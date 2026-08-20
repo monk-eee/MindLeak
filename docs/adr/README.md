@@ -104,6 +104,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0094](0094-the-bridge-preserves-standalone-operation.md) | The Bridge preserves standalone operation | Superseded by [ADR-0105](0105-bridge-is-the-server-version-of-the-vsix.md) |
 | [0095](0095-the-bridge-uses-an-authenticated-projection-api.md) | The Bridge uses an authenticated projection API | Accepted |
 | [0096](0096-ackplane-arbitrates-federated-claims-through-leased-delegation.md) | Ackplane arbitrates federated claims through leased delegation | Accepted |
+| [0097](0097-local-coordination-gateway-composes-plane-workflows.md) | A local coordination gateway composes plane workflows | Proposed |
 | [0098](0098-connection-trust-reuses-the-enrolled-key-oidc-waits.md) | Connection trust reuses the enrolled node key; OIDC waits for a real second tenant | Accepted |
 | [0099](0099-a-claim-also-checks-for-a-live-twin-by-title.md) | A claim also checks for a live twin by title, not only by scope | Accepted |
 | [0100](0100-repository-node-owns-one-non-exporting-signer.md) | The repository node owns one non-exporting signer | Accepted |

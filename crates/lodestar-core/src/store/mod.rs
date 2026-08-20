@@ -79,12 +79,30 @@ pub struct Stats {
     /// clean. `open_tasks + claimed_tasks + done_tasks` is not that number:
     /// it omits blocked, in_review, and abandoned tasks.
     pub total_tasks: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_step: Option<StartupGuidance>,
     /// What actually backed each `done` task's status (gaps.d/done-does-not-
     /// mean-aligned.md): `done` means shipped, never that conformance
     /// affirmed it. A human can resolve a `needs_human`/`drift` receipt to
     /// `done` (an auditable decision), which `done_tasks` alone cannot tell
     /// apart from automated `aligned` affirmation.
     pub done_verdicts: DoneVerdictBreakdown,
+}
+
+/// One concrete route out of a fresh repository's zero-goal state.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct StartupAction {
+    pub tool: String,
+    pub action: String,
+    pub purpose: String,
+}
+
+/// Actionable startup advice returned only while no active goal exists.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct StartupGuidance {
+    pub reason: String,
+    pub summary: String,
+    pub actions: Vec<StartupAction>,
 }
 
 /// Per-verdict counts among `done` tasks, keyed by whichever conformance
