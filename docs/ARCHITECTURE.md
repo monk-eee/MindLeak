@@ -379,7 +379,7 @@ tenant has not enrolled rather than leaking a distinguishable error:
 | Route | Serves |
 |---|---|
 | `GET /` | The Fleet page (static HTML/JS). |
-| `GET /api/v1/fleet` | Every repository enrolled for the tenant, with freshness. |
+| `GET /api/v1/fleet` | One page of enrolled repositories for the tenant, with freshness (ADR-0112): optional `q` (substring on repository id, `%`/`_` escaped), `freshness`, `coordination`, `sort` (`field:asc\|desc`, allow-listed), `page`, and `page_size` (clamped 1-100), returning the true filtered `total` alongside the page. |
 | `GET /api/v1/repositories/:repository_id` | One repository's ledger/projection detail. |
 | `GET /api/v1/repositories/:repository_id/timeline` | Its most recent accepted ledger events. |
 | `GET /api/v1/repositories/:repository_id/claims` | Its live delegated claims (`FleetStore::active_work`). |

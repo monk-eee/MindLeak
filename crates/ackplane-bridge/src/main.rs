@@ -5,19 +5,20 @@ use std::{
 
 use ackplane_bridge::BridgeConfig;
 use ackplane_server::fleet::{
-    ActiveWorkItem, FleetRepository, FleetStore, RepositoryDetail, RepositoryFreshness,
-    SigningKeyStatus, TimelineEvent,
+    escape_like_pattern, ActiveWorkItem, FleetFilter, FleetPage, FleetRepository, FleetSort,
+    FleetSortField, FleetStore, RepositoryDetail, RepositoryFreshness, SigningKeyStatus,
+    SortDirection, TimelineEvent,
 };
 use ackplane_server::knowledge_store::{ActiveKnowledge, KnowledgeStore};
 use ackplane_server::signing_keys::KeyResolution;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{Html, IntoResponse},
     routing::get,
     Json, Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 const FLEET_PAGE: &str = include_str!("../static/index.html");
 
@@ -31,6 +32,62 @@ struct AppState {
 #[derive(Serialize)]
 struct FleetResponse {
     repositories: Vec<FleetSummary>,
+    total: i64,
+    page: i64,
+    page_size: i64,
+}
+
+/// `GET /api/v1/fleet` query parameters (ADR-0112). All optional.
+#[derive(Deserialize)]
+struct FleetQuery {
+    q: Option<String>,
+    freshness: Option<String>,
+    coordination: Option<String>,
+    sort: Option<String>,
+    page: Option<i64>,
+    page_size: Option<i64>,
+}
+
+const DEFAULT_FLEET_PAGE_SIZE: i64 = 20;
+const MAX_FLEET_PAGE_SIZE: i64 = 100;
+const FLEET_FRESHNESS_VALUES: &[&str] = &["never_projected", "lagging", "fresh"];
+const FLEET_COORDINATION_VALUES: &[&str] = &["active", "none"];
+
+/// Parse `field:asc`/`field:desc` against the allow-listed sort fields
+/// (ADR-0112). `None` (no `sort` param) is the existing default order,
+/// alphabetical by repository id; anything unrecognised or malformed is a
+/// `400`, never a silently-ignored value.
+fn parse_fleet_sort(raw: Option<&str>) -> Result<FleetSort, StatusCode> {
+    let Some(raw) = raw else {
+        return Ok(FleetSort::default_order());
+    };
+    let (field_part, direction_part) = raw.split_once(':').ok_or(StatusCode::BAD_REQUEST)?;
+    let field = match field_part {
+        "repository_id" => FleetSortField::RepositoryId,
+        "active_node_count" => FleetSortField::ActiveNodeCount,
+        "last_activated_at" => FleetSortField::LastActivatedAt,
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+    let direction = match direction_part {
+        "asc" => SortDirection::Ascending,
+        "desc" => SortDirection::Descending,
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+    Ok(FleetSort { field, direction })
+}
+
+/// Reject a `freshness`/`coordination` value outside its own allow-list with
+/// a `400` rather than letting it reach `FleetStore::repositories`, where an
+/// unrecognised value would otherwise match no row rather than error.
+fn validate_allow_listed<'a>(
+    value: &'a Option<String>,
+    allowed: &[&str],
+) -> Result<Option<&'a str>, StatusCode> {
+    match value {
+        None => Ok(None),
+        Some(value) if allowed.contains(&value.as_str()) => Ok(Some(value.as_str())),
+        Some(_) => Err(StatusCode::BAD_REQUEST),
+    }
 }
 
 #[derive(Serialize)]
@@ -324,16 +381,45 @@ async fn main() {
     }
 }
 
-async fn fleet(State(state): State<AppState>) -> Result<Json<FleetResponse>, StatusCode> {
+async fn fleet(
+    State(state): State<AppState>,
+    Query(query): Query<FleetQuery>,
+) -> Result<Json<FleetResponse>, StatusCode> {
+    let sort = parse_fleet_sort(query.sort.as_deref())?;
+    let freshness = validate_allow_listed(&query.freshness, FLEET_FRESHNESS_VALUES)?;
+    let coordination = validate_allow_listed(&query.coordination, FLEET_COORDINATION_VALUES)?;
+    let page = query.page.unwrap_or(1);
+    if page < 1 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let page_size = query
+        .page_size
+        .unwrap_or(DEFAULT_FLEET_PAGE_SIZE)
+        .clamp(1, MAX_FLEET_PAGE_SIZE);
+    let escaped_q = query.q.as_deref().map(escape_like_pattern);
+    let filter = FleetFilter {
+        q: escaped_q.as_deref(),
+        freshness,
+        coordination,
+    };
+
     state
         .fleet
-        .repositories(&state.tenant_id)
+        .repositories(&state.tenant_id, filter, sort, page, page_size)
         .await
-        .map(|repositories| {
-            Json(FleetResponse {
-                repositories: repositories.into_iter().map(FleetSummary::from).collect(),
-            })
-        })
+        .map(
+            |FleetPage {
+                 repositories,
+                 total,
+             }| {
+                Json(FleetResponse {
+                    repositories: repositories.into_iter().map(FleetSummary::from).collect(),
+                    total,
+                    page,
+                    page_size,
+                })
+            },
+        )
         .map_err(|error| {
             tracing::error!(%error, "Bridge Fleet query failed");
             StatusCode::INTERNAL_SERVER_ERROR
@@ -481,5 +567,114 @@ async fn repository_knowledge(
             tracing::error!(%error, "Bridge repository knowledge query failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_fleet_sort_defaults_to_repository_id_ascending_when_absent() {
+        assert_eq!(
+            parse_fleet_sort(None).expect("default sort"),
+            FleetSort {
+                field: FleetSortField::RepositoryId,
+                direction: SortDirection::Ascending,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_fleet_sort_accepts_every_allow_listed_field_and_direction() {
+        let cases = [
+            (
+                "repository_id:asc",
+                FleetSortField::RepositoryId,
+                SortDirection::Ascending,
+            ),
+            (
+                "repository_id:desc",
+                FleetSortField::RepositoryId,
+                SortDirection::Descending,
+            ),
+            (
+                "active_node_count:asc",
+                FleetSortField::ActiveNodeCount,
+                SortDirection::Ascending,
+            ),
+            (
+                "active_node_count:desc",
+                FleetSortField::ActiveNodeCount,
+                SortDirection::Descending,
+            ),
+            (
+                "last_activated_at:asc",
+                FleetSortField::LastActivatedAt,
+                SortDirection::Ascending,
+            ),
+            (
+                "last_activated_at:desc",
+                FleetSortField::LastActivatedAt,
+                SortDirection::Descending,
+            ),
+        ];
+        for (raw, field, direction) in cases {
+            assert_eq!(
+                parse_fleet_sort(Some(raw)).unwrap_or_else(|_| panic!("{raw} must parse")),
+                FleetSort { field, direction },
+                "parsing {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_fleet_sort_rejects_an_unrecognised_field() {
+        assert_eq!(
+            parse_fleet_sort(Some("nonexistent_column:asc")),
+            Err(StatusCode::BAD_REQUEST)
+        );
+    }
+
+    #[test]
+    fn parse_fleet_sort_rejects_an_unrecognised_direction() {
+        assert_eq!(
+            parse_fleet_sort(Some("repository_id:sideways")),
+            Err(StatusCode::BAD_REQUEST)
+        );
+    }
+
+    #[test]
+    fn parse_fleet_sort_rejects_a_value_with_no_colon() {
+        assert_eq!(
+            parse_fleet_sort(Some("repository_id")),
+            Err(StatusCode::BAD_REQUEST)
+        );
+    }
+
+    #[test]
+    fn validate_allow_listed_accepts_an_absent_value() {
+        assert_eq!(
+            validate_allow_listed(&None, FLEET_FRESHNESS_VALUES),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn validate_allow_listed_accepts_every_allow_listed_value() {
+        for value in FLEET_FRESHNESS_VALUES {
+            assert_eq!(
+                validate_allow_listed(&Some((*value).to_string()), FLEET_FRESHNESS_VALUES),
+                Ok(Some(*value))
+            );
+        }
+    }
+
+    #[test]
+    fn validate_allow_listed_rejects_a_value_outside_the_list() {
+        assert_eq!(
+            validate_allow_listed(&Some("bogus".to_string()), FLEET_COORDINATION_VALUES),
+            Err(StatusCode::BAD_REQUEST)
+        );
     }
 }
