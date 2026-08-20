@@ -4,6 +4,13 @@
 //! They do not expose local storage schemas or MCP tool payloads.
 
 pub mod v1 {
+    // Every generated service method returns `Result<_, tonic::Status>` --
+    // `tonic::Status` itself is the "large" Err variant clippy is measuring,
+    // not a choice this generated code makes. Boxing it would mean boxing a
+    // type this crate does not define, in code this crate does not write, so
+    // this is a lint to silence for generated tonic output, not a signature
+    // to redesign method by method.
+    #![allow(clippy::result_large_err)]
     tonic::include_proto!("mindleak.ackplane.v1");
 }
 
