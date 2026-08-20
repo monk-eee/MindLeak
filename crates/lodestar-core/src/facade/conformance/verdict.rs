@@ -143,7 +143,12 @@ impl Lodestar {
         task: Option<&Task>,
     ) -> Result<ConformanceResult> {
         let mut findings = Vec::new();
-        if evidence.changed_node_ids.is_empty() || evidence.provenance.is_empty() {
+        // ADR-0110: a ledger act stands in for a MindLeak node mutation, since
+        // both are already-verified proof that something real and attributable
+        // happened. Only the total absence of BOTH is "nothing happened".
+        if (evidence.changed_node_ids.is_empty() && evidence.ledger_act_ids.is_empty())
+            || evidence.provenance.is_empty()
+        {
             findings.push("evidence contains no provenance-bearing mutation".to_string());
             return Ok(ConformanceResult {
                 verdict: Verdict::NeedsHuman,
