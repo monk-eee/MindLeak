@@ -31,9 +31,12 @@
   merge with every check green, because the check that would catch it always
   reports "skipped" rather than "passed" or "failed" in this CI environment.
 
-  Left OPEN: no fix attempted this run. Closing it needs either (a) a CI job
-  that installs/starts a real Secret Service provider (e.g. `gnome-keyring`
-  headless) on the Linux runner so the existing test stops skipping there,
-  or (b) an explicit, visible CI summary line distinguishing "skipped: no
-  facility" from "passed: round-tripped for real," so a permanently-skipping
-  gate is at least legible rather than indistinguishable from a passing one.
+  **Guarded 2026-08-20 for legibility, not for real coverage:** the `rust` CI
+  job now re-runs this one test with `--nocapture` on `ubuntu-latest`, and
+  the test itself now prints "passed: round-tripped for real through the OS
+  credential facility" on success as well as its existing "skipped: ..."
+  line on failure to store -- closing option (b). This makes a
+  permanently-skipping gate visible in the log; it does not make the gate
+  real. Option (a) -- a CI job that installs/starts a real Secret Service
+  provider so the test stops skipping on Linux at all -- remains open and
+  unattempted.

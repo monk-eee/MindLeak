@@ -65,6 +65,14 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Test
         run: cargo test --all
+      # gaps.d/the-credential-facility-signer-is-unverified-outside-windows.md:
+      # this test already prints which branch it took, but a passing test's
+      # stdout is otherwise discarded, so the distinction was invisible here.
+      # ubuntu-latest only: this is the platform the gap is about; a real
+      # pass has already been confirmed by hand on Windows.
+      - name: Report credential-facility test coverage (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test -p ackplane-client a_stored_seed_round_trips_through_the_real_credential_facility -- --nocapture
 
   # ADR-0088 keeps the repository-local planes usable without Ackplane's
   # container and PostgreSQL stack. Dependencies are installed before this

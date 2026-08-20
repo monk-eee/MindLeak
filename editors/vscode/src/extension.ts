@@ -39,8 +39,7 @@ import {
   pendingQuestion,
   planMcpServers,
   repoRelativePath,
-  resolveBinaryPath,
-  resolveServerPath,
+  resolveBinaryPathDetailed,
   serverFilePath,
   shouldPollTelemetry,
   TaskQaEntry,
@@ -92,14 +91,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
   const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
   repositoryWorktrees = new RepositoryWorktrees(workspace);
   const config = vscode.workspace.getConfiguration("mindleak");
-  const serverPath = resolveServerPath(
+  const resolvedServer = resolveBinaryPathDetailed(
     config.get<string>("serverPath", "mindleak-mcp"),
     workspace,
+    "mindleak-mcp",
     {
       exists: fs.existsSync,
       extensionPath: context.extensionPath,
     }
   );
+  const serverPath = resolvedServer.path;
   const databasePathOverride = config.get<string>("databasePath", "");
   // Passed to both servers as their display name only. Since ADR-0054 it is no
   // part of the agent id, so the identity below is derived from the session
@@ -254,12 +255,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     treeDataProvider: doctorBoard,
   });
   context.subscriptions.push(doctorTree);
-  const lodestarPath = resolveBinaryPath(
+  const lodestarResolved = resolveBinaryPathDetailed(
     config.get<string>("lodestarServerPath", "lodestar-mcp"),
     workspace,
     "lodestar-mcp",
     { exists: fs.existsSync, extensionPath: context.extensionPath }
   );
+  const lodestarPath = lodestarResolved.path;
   const lodestarDatabasePathOverride = config.get<string>("lodestarDatabasePath", "");
   lodestar = new McpClient(
     lodestarPath,
@@ -333,7 +335,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     }
     setHealth("memory", "memory connected");
     output.appendLine(
-      `Connected to ${serverPath} (db: ${databasePathOverride.trim() || "shared repository state"})`
+      `Connected to ${serverPath} (source: ${resolvedServer.source}; db: ${databasePathOverride.trim() || "shared repository state"})`
     );
     if (config.get<boolean>("autoIngestOnSave", true)) {
       void reconcileWorkspace();
@@ -352,7 +354,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     }
     setHealth("intent", "intent connected");
     output.appendLine(
-      `Connected to ${lodestarPath} (intent plane: ${lodestarDatabasePathOverride.trim() || "shared repository state"})`
+      `Connected to ${lodestarPath} (source: ${lodestarResolved.source}; intent plane: ${lodestarDatabasePathOverride.trim() || "shared repository state"})`
     );
     void refreshBoard();
     void refreshEvidence();
