@@ -38,6 +38,56 @@ impl Staleness {
     }
 }
 
+/// Whether a session shows any sign of continued presence.
+///
+/// This is a different question from [`Staleness`], which answers "is this
+/// session's declared base correct", and from the per-task lease/claim
+/// staleness ADR-0044/0048 already solve, which answers "is this task's own
+/// claim still live". `Presence` answers neither: it asks whether *the
+/// session itself* still shows a pulse, so a reader deciding whether to trust
+/// or discount a peer's entry can tell a quiet-but-recent session apart from
+/// one that has been silent for a long time.
+///
+/// Mirrors the "live claim or recent declaration counts as alive" rule this
+/// module's own `addressee_has_gone_quiet` already applies per-wait, applied
+/// per-session against a rolling grace window from now instead of a fixed
+/// past instant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "state", content = "quiet_for_secs")]
+pub enum Presence {
+    /// Holds at least one live claim right now.
+    Live,
+    /// No live claim, but declared within the grace window: plausibly still
+    /// reading, planning, or between claims.
+    Quiet(i64),
+    /// No live claim, and nothing declared for at least the grace window.
+    /// Not proof of abandonment — only a human can say that — but long enough
+    /// that treating this session as an ordinary live peer risks over-trusting
+    /// one that is actually gone.
+    Stale(i64),
+}
+
+impl Presence {
+    /// Pure and total: no I/O, matching [`stale_waits`]'s shape so this is
+    /// tested the same way and cannot disagree with what the view displays.
+    pub fn from_session(has_live_claim: bool, declared_at: i64, now: i64, grace: i64) -> Self {
+        if has_live_claim {
+            return Self::Live;
+        }
+        let quiet_for = now - declared_at;
+        if quiet_for >= grace {
+            Self::Stale(quiet_for)
+        } else {
+            Self::Quiet(quiet_for)
+        }
+    }
+}
+
+/// The grace before a quiet session (no live claim) reads as stale rather than
+/// merely quiet. Advisory only — see [`Presence`] — so an eager or lax value
+/// costs a slightly early or late discount, never a gate.
+pub const SESSION_QUIET_GRACE_SECS: i64 = 60 * 60;
+
 /// One live session in the fleet view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FleetSession {
@@ -47,6 +97,9 @@ pub struct FleetSession {
     /// declaration instead of trusting it silently.
     pub declared_at: i64,
     pub staleness: Staleness,
+    /// Whether the session itself still shows a pulse — distinct from
+    /// `staleness`, which is about its declared base, not its presence.
+    pub presence: Presence,
     /// Task ids this session currently holds a live claim on.
     pub claimed_task_ids: Vec<String>,
 }
@@ -295,6 +348,14 @@ mod tests {
             context: mindleak_session::SessionContext::default(),
             declared_at,
             staleness: Staleness::Unknown,
+            // Unrelated to what these wait tests assert on; derived rather than
+            // hardcoded so it stays a genuine `Presence` value.
+            presence: Presence::from_session(
+                !claims.is_empty(),
+                declared_at,
+                declared_at,
+                SESSION_QUIET_GRACE_SECS,
+            ),
             claimed_task_ids: claims.iter().map(|c| c.to_string()).collect(),
         }
     }
@@ -450,5 +511,51 @@ mod tests {
     #[test]
     fn no_waits_is_no_cycles() {
         assert!(wait_cycles(&[]).is_empty());
+    }
+
+    // A live claim is Live regardless of how long ago the context was
+    // declared -- the same "a live claim is a sign of life" rule stale_waits
+    // already applies, just per-session instead of per-wait.
+    #[test]
+    fn a_live_claim_is_presence_live_however_old_the_declaration() {
+        let now = 2_000_000;
+        assert_eq!(
+            Presence::from_session(true, now - 1_000_000, now, SESSION_QUIET_GRACE_SECS),
+            Presence::Live
+        );
+    }
+
+    // No claim, declared recently: quiet, not stale.
+    #[test]
+    fn a_recent_declaration_with_no_claim_is_quiet() {
+        let now = 2_000_000;
+        let declared_at = now - SESSION_QUIET_GRACE_SECS + 1;
+        assert_eq!(
+            Presence::from_session(false, declared_at, now, SESSION_QUIET_GRACE_SECS),
+            Presence::Quiet(SESSION_QUIET_GRACE_SECS - 1)
+        );
+    }
+
+    // No claim, declared exactly at the grace boundary: stale (>=, not >).
+    #[test]
+    fn a_declaration_exactly_at_the_grace_is_stale() {
+        let now = 2_000_000;
+        let declared_at = now - SESSION_QUIET_GRACE_SECS;
+        assert_eq!(
+            Presence::from_session(false, declared_at, now, SESSION_QUIET_GRACE_SECS),
+            Presence::Stale(SESSION_QUIET_GRACE_SECS)
+        );
+    }
+
+    // No claim, declared long ago: stale, and the reported quiet duration
+    // reflects the real gap, not just a boolean.
+    #[test]
+    fn a_long_silence_with_no_claim_is_stale() {
+        let now = 2_000_000;
+        let declared_at = now - SESSION_QUIET_GRACE_SECS - 500;
+        assert_eq!(
+            Presence::from_session(false, declared_at, now, SESSION_QUIET_GRACE_SECS),
+            Presence::Stale(SESSION_QUIET_GRACE_SECS + 500)
+        );
     }
 }
