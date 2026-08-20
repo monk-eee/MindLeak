@@ -4,6 +4,7 @@ use std::{fs, process::ExitCode};
 
 use ackplane_protocol::v1::{
     self, claim_delegation_service_server::ClaimDelegationServiceServer,
+    knowledge_service_server::KnowledgeServiceServer,
     node_enrollment_service_server::NodeEnrollmentServiceServer,
     node_sync_service_server::NodeSyncServiceServer,
 };
@@ -12,6 +13,8 @@ use ackplane_server::{
     claim_store::ClaimStore,
     enrollment_service::NodeEnrollmentService,
     enrollment_store::EnrollmentStore,
+    knowledge_service::KnowledgeGrpcService,
+    knowledge_store::KnowledgeStore,
     ledger::LedgerStore,
     projection::{run_projection_worker, Projector},
     service::NodeSyncService,
@@ -70,6 +73,15 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            let knowledge_store = match KnowledgeStore::connect(config.database_url()).await {
+                Ok(store) => store,
+                Err(error) => {
+                    eprintln!(
+                        "ackplane-server: could not connect to the configured knowledge store: {error}"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            };
             // ADR-0086 clause 9: a projection worker reads the durable ledger
             // through checkpoints on its own cadence, decoupled from request
             // handling; a stalled or errored tick never stops the gRPC server.
@@ -79,7 +91,7 @@ async fn main() -> ExitCode {
             ));
 
             println!(
-                "ackplane-server: serving NodeSyncService.Synchronize, NodeEnrollmentService, and ClaimDelegationService"
+                "ackplane-server: serving NodeSyncService.Synchronize, NodeEnrollmentService, ClaimDelegationService, and KnowledgeService"
             );
             let server = tonic::transport::Server::builder();
             let mut server = match tls {
@@ -106,6 +118,9 @@ async fn main() -> ExitCode {
                 .add_service(ClaimDelegationServiceServer::new(
                     ClaimDelegationService::new(claim_store),
                 ))
+                .add_service(KnowledgeServiceServer::new(KnowledgeGrpcService::new(
+                    knowledge_store,
+                )))
                 .serve(config.listen)
                 .await
             {
