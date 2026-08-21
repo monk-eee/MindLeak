@@ -383,7 +383,8 @@ tenant has not enrolled rather than leaking a distinguishable error:
 | Route | Serves |
 |---|---|
 | `GET /` | The Fleet page (static HTML/JS). |
-| `GET /api/v1/fleet` | Every repository enrolled for the tenant, with freshness. |
+| `GET /api/v1/fleet` | One page of enrolled repositories for the tenant, with freshness (ADR-0112): optional `q` (substring on repository id, `%`/`_` escaped), `freshness`, `coordination`, `sort` (`field:asc\|desc`, allow-listed), `page`, and `page_size` (clamped 1-100), returning the true filtered `total` alongside the page. |
+| `GET /api/v1/agents` | One page of live delegated claims across EVERY repository the tenant has enrolled (`FleetStore::fleet_work`, ADR-0105 decision 5's Agents/Work control room) — the cross-repository "who is working on what, right now" view, distinct from the per-repository `/claims` route below. Optional `repository_id`/`owner_id` (substring, `%`/`_` escaped), `sort` (`field:asc\|desc`, allow-listed: `lease_expires_at`, `repository_id`, `owner_id`), `page`, and `page_size` (clamped 1-100), returning the true filtered `total`. |
 | `GET /api/v1/repositories/:repository_id` | One repository's ledger/projection detail. |
 | `GET /api/v1/repositories/:repository_id/timeline` | Its most recent accepted ledger events. |
 | `GET /api/v1/repositories/:repository_id/claims` | Its live delegated claims (`FleetStore::active_work`). |
