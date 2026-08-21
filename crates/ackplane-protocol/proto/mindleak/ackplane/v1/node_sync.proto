@@ -264,6 +264,9 @@ message RecordEvidenceRequest {
   // Optional for v1 compatibility. New clients sign a caller-selected value
   // so a retry after a lost response returns the original Evidence record.
   string idempotency_key = 10;
+  // The active local Constitution version the node evaluated when it recorded
+  // the reference. It is node-reported and signed, not server-approved policy.
+  string reported_constitution_version = 11;
 }
 
 message EvidenceRecord {
@@ -279,6 +282,7 @@ message EvidenceRecord {
   string recorded_by = 10;
   string recorded_at = 11;
   bool idempotent_replay = 12;
+  string reported_constitution_version = 13;
 }
 
 // Lists task-bound evidence for one repository. A zero limit selects the
@@ -342,6 +346,9 @@ message RecordConformanceRequest {
   // Signed caller-selected identity used to make retrying a lost response
   // safe. Reuse with different logical fields is refused.
   string idempotency_key = 10;
+  // The active local Constitution version the evaluator checked. This remains
+  // a signed node assertion; human review and policy approval are separate.
+  string reported_constitution_version = 11;
 }
 
 message ConformanceRecord {
@@ -359,6 +366,7 @@ message ConformanceRecord {
   string recorded_at = 12;
   string idempotency_key = 13;
   bool idempotent_replay = 14;
+  string reported_constitution_version = 15;
 }
 
 message ListConformanceRequest {

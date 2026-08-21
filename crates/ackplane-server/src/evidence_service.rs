@@ -137,6 +137,9 @@ fn store_error(error: EvidenceStoreError) -> Status {
         EvidenceStoreError::InvalidIdentity => Status::invalid_argument(
             "reported_agent_session_id and recorded_by must be bounded identities",
         ),
+        EvidenceStoreError::InvalidConstitutionVersion => {
+            Status::invalid_argument("reported_constitution_version must be bounded when supplied")
+        }
         EvidenceStoreError::InvalidCursor => {
             Status::invalid_argument("the Evidence page cursor is invalid")
         }
@@ -223,6 +226,7 @@ fn to_proto(record: EvidenceRecord, idempotent_replay: bool) -> Result<v1::Evide
         recorded_by: record.recorded_by,
         recorded_at: rfc3339(record.recorded_at)?,
         idempotent_replay,
+        reported_constitution_version: record.reported_constitution_version.unwrap_or_default(),
     })
 }
 
@@ -242,6 +246,7 @@ impl v1::evidence_service_server::EvidenceService for EvidenceGrpcService {
             observed_at: &request.observed_at,
             reported_agent_session_id: &request.reported_agent_session_id,
             idempotency_key: &request.idempotency_key,
+            reported_constitution_version: &request.reported_constitution_version,
         };
         let Some(authentication) = request.authentication.as_ref() else {
             return Err(Status::unauthenticated(
@@ -268,6 +273,8 @@ impl v1::evidence_service_server::EvidenceService for EvidenceGrpcService {
             reported_agent_session_id: request.reported_agent_session_id,
             recorded_by,
             idempotency_key: request.idempotency_key,
+            reported_constitution_version: (!request.reported_constitution_version.is_empty())
+                .then_some(request.reported_constitution_version),
         };
         if !evidence_request.idempotency_key.is_empty() {
             if let Some(existing) = self
@@ -446,6 +453,7 @@ mod tests {
             signature: Vec::new(),
         };
         let findings_digest = vec![8; 32];
+        let reported_constitution_version = "constitution:v4";
         let operation = EvidenceOperation::RecordConformance {
             task_id,
             evidence_id,
@@ -454,6 +462,7 @@ mod tests {
             findings_digest: &findings_digest,
             reported_checked_at,
             idempotency_key,
+            reported_constitution_version,
         };
         let bytes = evidence_signature::evidence_signing_bytes(
             &identity.tenant_id,
@@ -473,6 +482,7 @@ mod tests {
             reported_checked_at: reported_checked_at.to_owned(),
             authentication: Some(authentication),
             idempotency_key: idempotency_key.to_owned(),
+            reported_constitution_version: reported_constitution_version.to_owned(),
         }
     }
 
@@ -860,6 +870,7 @@ mod tests {
         let observed_at = "2026-01-01T00:00:00Z";
         let content_digest = vec![7; 32];
         let reported_agent_session_id = "session:v1:evidence-test";
+        let reported_constitution_version = "constitution:v4";
         let operation = EvidenceOperation::Record {
             task_id,
             evidence_kind: v1::EvidenceKind::Commit as i32,
@@ -868,6 +879,7 @@ mod tests {
             observed_at,
             reported_agent_session_id,
             idempotency_key,
+            reported_constitution_version,
         };
         let bytes = evidence_signature::evidence_signing_bytes(
             &identity.tenant_id,
@@ -887,6 +899,7 @@ mod tests {
             reported_agent_session_id: reported_agent_session_id.to_owned(),
             authentication: Some(authentication),
             idempotency_key: idempotency_key.to_owned(),
+            reported_constitution_version: reported_constitution_version.to_owned(),
         }
     }
 

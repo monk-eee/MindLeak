@@ -94,6 +94,7 @@ pub(super) struct EvidenceEntryResponse {
     pub(super) content_digest_hex: String,
     pub(super) observed_at_seconds: Option<u64>,
     pub(super) reported_agent_session_id: String,
+    pub(super) reported_constitution_version: Option<String>,
     pub(super) recorded_by: String,
     pub(super) recorded_at_seconds: Option<u64>,
     pub(super) receipt_id: Option<String>,
@@ -109,6 +110,7 @@ impl From<EvidenceView> for EvidenceEntryResponse {
             content_digest_hex: view.content_digest_hex,
             observed_at_seconds: unix_seconds(view.observed_at),
             reported_agent_session_id: view.reported_agent_session_id,
+            reported_constitution_version: view.reported_constitution_version,
             recorded_by: view.recorded_by,
             recorded_at_seconds: unix_seconds(view.recorded_at),
             receipt_id: view.receipt_id,
@@ -134,6 +136,7 @@ pub(super) struct ConformanceEntryResponse {
     pub(super) review_state: &'static str,
     pub(super) reported_checked_at_seconds: Option<u64>,
     pub(super) evaluated_by: String,
+    pub(super) reported_constitution_version: Option<String>,
     pub(super) recorded_at_seconds: Option<u64>,
 }
 
@@ -149,6 +152,7 @@ impl From<ConformanceView> for ConformanceEntryResponse {
             review_state: view.review_state,
             reported_checked_at_seconds: unix_seconds(view.reported_checked_at),
             evaluated_by: view.evaluated_by,
+            reported_constitution_version: view.reported_constitution_version,
             recorded_at_seconds: unix_seconds(view.recorded_at),
         }
     }
@@ -261,6 +265,7 @@ pub(super) fn evidence_store_error(error: EvidenceStoreError) -> StatusCode {
         EvidenceStoreError::InvalidSourceRef
         | EvidenceStoreError::InvalidDigest
         | EvidenceStoreError::InvalidIdentity
+        | EvidenceStoreError::InvalidConstitutionVersion
         | EvidenceStoreError::InvalidIdempotencyKey
         | EvidenceStoreError::IdempotencyConflict
         | EvidenceStoreError::UnknownStoredKind(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -278,6 +283,7 @@ pub(super) fn conformance_store_error(error: ConformanceStoreError) -> StatusCod
         }
         ConformanceStoreError::InvalidFindingsDigest
         | ConformanceStoreError::InvalidEvaluator
+        | ConformanceStoreError::InvalidConstitutionVersion
         | ConformanceStoreError::InvalidIdempotencyKey
         | ConformanceStoreError::MissingEvidence
         | ConformanceStoreError::EvidenceTaskMismatch

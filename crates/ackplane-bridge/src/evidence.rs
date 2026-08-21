@@ -29,6 +29,7 @@ pub struct EvidenceView {
     pub content_digest_hex: String,
     pub observed_at: SystemTime,
     pub reported_agent_session_id: String,
+    pub reported_constitution_version: Option<String>,
     pub recorded_by: String,
     pub recorded_at: SystemTime,
     pub receipt_id: Option<String>,
@@ -52,6 +53,7 @@ impl From<EvidenceRecord> for EvidenceView {
             content_digest_hex: digest_hex(&record.content_digest),
             observed_at: record.observed_at,
             reported_agent_session_id: record.reported_agent_session_id,
+            reported_constitution_version: record.reported_constitution_version,
             recorded_by: record.recorded_by,
             recorded_at: record.recorded_at,
             receipt_id,
@@ -71,6 +73,7 @@ pub struct ConformanceView {
     pub review_state: &'static str,
     pub reported_checked_at: SystemTime,
     pub evaluated_by: String,
+    pub reported_constitution_version: Option<String>,
     pub recorded_at: SystemTime,
 }
 
@@ -86,6 +89,7 @@ impl From<ConformanceRecord> for ConformanceView {
             review_state: review_state_label(record.review_state),
             reported_checked_at: record.reported_checked_at,
             evaluated_by: record.evaluated_by,
+            reported_constitution_version: record.reported_constitution_version,
             recorded_at: record.recorded_at,
         }
     }
@@ -296,6 +300,7 @@ mod tests {
             content_digest_hex: "01".to_string(),
             observed_at: recorded_at,
             reported_agent_session_id: "session:v1:reported".to_string(),
+            reported_constitution_version: Some("constitution:v4".to_string()),
             recorded_by: "node:1".to_string(),
             recorded_at,
             receipt_id: None,
@@ -313,6 +318,7 @@ mod tests {
             review_state,
             reported_checked_at: recorded_at,
             evaluated_by: "node:1".to_string(),
+            reported_constitution_version: Some("constitution:v4".to_string()),
             recorded_at,
         }
     }
@@ -342,6 +348,7 @@ mod tests {
             content_digest: vec![0x0a, 0xff],
             observed_at: timestamp,
             reported_agent_session_id: "session:v1:reported".to_string(),
+            reported_constitution_version: Some("constitution:v4".to_string()),
             recorded_by: "node:1".to_string(),
             recorded_at: timestamp,
             idempotency_key: "evidence:1".to_string(),
@@ -357,6 +364,7 @@ mod tests {
                 content_digest_hex: "0aff".to_string(),
                 observed_at: timestamp,
                 reported_agent_session_id: "session:v1:reported".to_string(),
+                reported_constitution_version: Some("constitution:v4".to_string()),
                 recorded_by: "node:1".to_string(),
                 recorded_at: timestamp,
                 receipt_id: Some("ack-123".to_string()),
@@ -379,6 +387,7 @@ mod tests {
             review_state: ConformanceReviewState::Pending,
             reported_checked_at: timestamp,
             evaluated_by: "node:1".to_string(),
+            reported_constitution_version: Some("constitution:v4".to_string()),
             recorded_at: timestamp,
             idempotency_key: "conformance:1".to_string(),
         });
@@ -395,6 +404,7 @@ mod tests {
                 review_state: "pending",
                 reported_checked_at: timestamp,
                 evaluated_by: "node:1".to_string(),
+                reported_constitution_version: Some("constitution:v4".to_string()),
                 recorded_at: timestamp,
             }
         );

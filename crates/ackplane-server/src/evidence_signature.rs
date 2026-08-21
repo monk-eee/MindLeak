@@ -131,6 +131,7 @@ mod tests {
         observed_at: "2026-01-01T00:00:00Z",
         reported_agent_session_id: "session:v1:agent",
         idempotency_key: "evidence:123",
+        reported_constitution_version: "constitution:v4",
     };
 
     fn fixed_now() -> SystemTime {
@@ -202,6 +203,7 @@ mod tests {
             observed_at: "2026-01-01T00:00:00Z",
             reported_agent_session_id: "session:v1:agent",
             idempotency_key: "evidence:123",
+            reported_constitution_version: "constitution:v4",
         };
 
         assert_eq!(

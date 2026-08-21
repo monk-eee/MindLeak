@@ -4,7 +4,8 @@ use std::time::SystemTime;
 use time::OffsetDateTime;
 
 use super::{
-    is_bounded, EvidenceStore, MAX_IDENTITY_BYTES, MAX_TASK_ID_BYTES, SHA256_DIGEST_BYTES,
+    is_bounded, EvidenceStore, MAX_CONSTITUTION_VERSION_BYTES, MAX_IDENTITY_BYTES,
+    MAX_TASK_ID_BYTES, SHA256_DIGEST_BYTES,
 };
 use tokio_postgres::Row;
 
@@ -92,6 +93,8 @@ pub enum ConformanceStoreError {
     InvalidFindingsDigest,
     #[error("evaluated_by must be between 1 and {MAX_IDENTITY_BYTES} bytes")]
     InvalidEvaluator,
+    #[error("reported_constitution_version must be between 1 and {MAX_CONSTITUTION_VERSION_BYTES} bytes when supplied")]
+    InvalidConstitutionVersion,
     #[error("idempotency_key must be between 1 and {MAX_IDEMPOTENCY_KEY_BYTES} bytes")]
     InvalidIdempotencyKey,
     #[error("the referenced evidence record does not exist in this tenant and repository")]
@@ -124,6 +127,7 @@ pub struct RecordConformanceRequest {
     pub reported_checked_at: SystemTime,
     pub evaluated_by: String,
     pub idempotency_key: String,
+    pub reported_constitution_version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,6 +145,7 @@ pub struct ConformanceRecord {
     pub evaluated_by: String,
     pub recorded_at: SystemTime,
     pub idempotency_key: String,
+    pub reported_constitution_version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,8 +216,8 @@ impl EvidenceStore {
                 "INSERT INTO conformance_records (
                      tenant_id, repository_id, conformance_id, task_id, evidence_id,
                      verdict, finding_count, findings_digest, review_state, reported_checked_at,
-                     evaluated_by, idempotency_key
-                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                     evaluated_by, idempotency_key, reported_constitution_version
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
                  ON CONFLICT (tenant_id, repository_id, idempotency_key)
                      WHERE idempotency_key IS NOT NULL DO NOTHING
                  RETURNING recorded_at",
@@ -229,6 +234,7 @@ impl EvidenceStore {
                     &request.reported_checked_at,
                     &request.evaluated_by,
                     &request.idempotency_key,
+                    &request.reported_constitution_version,
                 ],
             )
             .await?;
@@ -258,6 +264,7 @@ impl EvidenceStore {
                 evaluated_by: request.evaluated_by,
                 recorded_at: row.get("recorded_at"),
                 idempotency_key: request.idempotency_key,
+                reported_constitution_version: request.reported_constitution_version,
             },
             idempotent_replay: false,
         })
@@ -276,7 +283,7 @@ impl EvidenceStore {
             .query_opt(
                 "SELECT conformance_id, tenant_id, repository_id, task_id, evidence_id, verdict, \
                         finding_count, findings_digest, review_state, reported_checked_at, evaluated_by, \
-                        recorded_at, idempotency_key \
+                        recorded_at, idempotency_key, reported_constitution_version \
                  FROM conformance_records \
                  WHERE tenant_id = $1 AND repository_id = $2 AND idempotency_key = $3",
                 &[&tenant_id, &repository_id, &idempotency_key],
@@ -297,7 +304,8 @@ fn outcome_for_existing(
         && existing.finding_count == request.finding_count
         && existing.findings_digest == request.findings_digest
         && existing.reported_checked_at == request.reported_checked_at
-        && existing.evaluated_by == request.evaluated_by;
+        && existing.evaluated_by == request.evaluated_by
+        && existing.reported_constitution_version == request.reported_constitution_version;
     if !matches {
         return Err(ConformanceStoreError::IdempotencyConflict);
     }
@@ -336,6 +344,7 @@ pub(super) fn row_to_conformance(row: &Row) -> Result<ConformanceRecord, Conform
         idempotency_key: row
             .get::<_, Option<String>>("idempotency_key")
             .unwrap_or_default(),
+        reported_constitution_version: row.get("reported_constitution_version"),
     })
 }
 
@@ -363,6 +372,13 @@ fn validate_request(request: &RecordConformanceRequest) -> Result<(), Conformanc
     }
     if !is_bounded(&request.idempotency_key, MAX_IDEMPOTENCY_KEY_BYTES) {
         return Err(ConformanceStoreError::InvalidIdempotencyKey);
+    }
+    if request
+        .reported_constitution_version
+        .as_ref()
+        .is_some_and(|version| !is_bounded(version, MAX_CONSTITUTION_VERSION_BYTES))
+    {
+        return Err(ConformanceStoreError::InvalidConstitutionVersion);
     }
     Ok(())
 }
@@ -410,6 +426,7 @@ mod tests {
             reported_agent_session_id: "session:v1:conformance-test".to_string(),
             recorded_by: "node:conformance-test".to_string(),
             idempotency_key: String::new(),
+            reported_constitution_version: Some("constitution:v4".to_string()),
         }
     }
 
@@ -432,6 +449,7 @@ mod tests {
             reported_checked_at: SystemTime::UNIX_EPOCH,
             evaluated_by: "node:conformance-test".to_string(),
             idempotency_key,
+            reported_constitution_version: Some("constitution:v4".to_string()),
         }
     }
 
@@ -568,6 +586,40 @@ mod tests {
         assert!(matches!(
             validate_request(&invalid),
             Err(ConformanceStoreError::InvalidFindingsDigest)
+        ));
+    }
+
+    #[test]
+    fn idempotency_rejects_a_changed_reported_constitution_version() {
+        let (tenant_id, repository_id) = unique_scope("constitution-version");
+        let mut retry = conformance_request(
+            tenant_id.clone(),
+            repository_id.clone(),
+            "task:123",
+            "evidence:123".to_string(),
+            ConformanceVerdict::Aligned,
+        );
+        retry.reported_constitution_version = Some("constitution:v5".to_string());
+        let existing = ConformanceRecord {
+            conformance_id: "conformance-1".to_string(),
+            tenant_id,
+            repository_id,
+            task_id: "task:123".to_string(),
+            evidence_id: "evidence:123".to_string(),
+            verdict: ConformanceVerdict::Aligned,
+            finding_count: 2,
+            findings_digest: vec![8; SHA256_DIGEST_BYTES],
+            review_state: ConformanceReviewState::NotRequired,
+            reported_checked_at: SystemTime::UNIX_EPOCH,
+            evaluated_by: "node:conformance-test".to_string(),
+            recorded_at: SystemTime::UNIX_EPOCH,
+            idempotency_key: retry.idempotency_key.clone(),
+            reported_constitution_version: Some("constitution:v4".to_string()),
+        };
+
+        assert!(matches!(
+            outcome_for_existing(existing, &retry),
+            Err(ConformanceStoreError::IdempotencyConflict)
         ));
     }
 }

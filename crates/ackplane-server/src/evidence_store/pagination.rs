@@ -43,7 +43,7 @@ impl EvidenceStore {
                     .query(
                         "SELECT evidence_id, tenant_id, repository_id, task_id, evidence_kind, \
                                 source_ref, content_digest, observed_at, reported_agent_session_id, recorded_by, \
-                                recorded_at, idempotency_key \
+                                recorded_at, idempotency_key, reported_constitution_version \
                          FROM evidence_records \
                          WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 \
                            AND (recorded_at < $4 OR (recorded_at = $4 AND evidence_id > $5)) \
@@ -65,7 +65,7 @@ impl EvidenceStore {
                     .query(
                         "SELECT evidence_id, tenant_id, repository_id, task_id, evidence_kind, \
                                 source_ref, content_digest, observed_at, reported_agent_session_id, recorded_by, \
-                                recorded_at, idempotency_key \
+                                recorded_at, idempotency_key, reported_constitution_version \
                          FROM evidence_records \
                          WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 \
                          ORDER BY recorded_at DESC, evidence_id ASC \

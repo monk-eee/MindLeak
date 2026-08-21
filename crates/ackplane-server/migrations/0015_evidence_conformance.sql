@@ -16,6 +16,12 @@ END $$;
 ALTER TABLE evidence_records
     ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
 
+-- A node-reported version labels the local Constitution it evaluated. The
+-- signature proves the node asserted it; this column never upgrades that
+-- assertion into a server-approved policy decision.
+ALTER TABLE evidence_records
+    ADD COLUMN IF NOT EXISTS reported_constitution_version TEXT;
+
 CREATE UNIQUE INDEX IF NOT EXISTS evidence_records_idempotency
     ON evidence_records (tenant_id, repository_id, idempotency_key)
     WHERE idempotency_key IS NOT NULL;
@@ -47,6 +53,7 @@ CREATE TABLE IF NOT EXISTS conformance_records (
     evaluated_by    TEXT        NOT NULL,
     recorded_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     idempotency_key TEXT,
+    reported_constitution_version TEXT,
     PRIMARY KEY (tenant_id, repository_id, conformance_id),
     FOREIGN KEY (tenant_id, repository_id, evidence_id)
         REFERENCES evidence_records (tenant_id, repository_id, evidence_id),
@@ -78,6 +85,9 @@ END $$;
 
 ALTER TABLE conformance_records
     ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+
+ALTER TABLE conformance_records
+    ADD COLUMN IF NOT EXISTS reported_constitution_version TEXT;
 
 CREATE UNIQUE INDEX IF NOT EXISTS conformance_records_idempotency
     ON conformance_records (tenant_id, repository_id, idempotency_key)

@@ -26,6 +26,9 @@ pub(super) fn conformance_store_error(error: ConformanceStoreError) -> Status {
         ConformanceStoreError::InvalidEvaluator => {
             Status::invalid_argument("evaluated_by must be a bounded identity")
         }
+        ConformanceStoreError::InvalidConstitutionVersion => {
+            Status::invalid_argument("reported_constitution_version must be bounded when supplied")
+        }
         ConformanceStoreError::InvalidIdempotencyKey => {
             Status::invalid_argument("idempotency_key must be a bounded non-empty identifier")
         }
@@ -98,6 +101,7 @@ fn to_proto_conformance(
         recorded_at: rfc3339(record.recorded_at)?,
         idempotency_key: record.idempotency_key,
         idempotent_replay,
+        reported_constitution_version: record.reported_constitution_version.unwrap_or_default(),
     })
 }
 
@@ -116,6 +120,7 @@ impl EvidenceGrpcService {
             findings_digest: &request.findings_digest,
             reported_checked_at: &request.reported_checked_at,
             idempotency_key: &request.idempotency_key,
+            reported_constitution_version: &request.reported_constitution_version,
         };
         let Some(authentication) = request.authentication.as_ref() else {
             return Err(Status::unauthenticated(
@@ -143,6 +148,8 @@ impl EvidenceGrpcService {
             reported_checked_at,
             evaluated_by,
             idempotency_key: request.idempotency_key,
+            reported_constitution_version: (!request.reported_constitution_version.is_empty())
+                .then_some(request.reported_constitution_version),
         };
         if let Some(existing) = self
             .store
@@ -162,7 +169,9 @@ impl EvidenceGrpcService {
                 && existing.finding_count == conformance_request.finding_count
                 && existing.findings_digest == conformance_request.findings_digest
                 && existing.reported_checked_at == conformance_request.reported_checked_at
-                && existing.evaluated_by == conformance_request.evaluated_by;
+                && existing.evaluated_by == conformance_request.evaluated_by
+                && existing.reported_constitution_version
+                    == conformance_request.reported_constitution_version;
             if !matches {
                 return Err(Status::already_exists(
                     "idempotency_key was already used for a different conformance result",

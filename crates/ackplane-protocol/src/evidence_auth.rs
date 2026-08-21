@@ -21,6 +21,7 @@ pub enum EvidenceOperation<'a> {
         observed_at: &'a str,
         reported_agent_session_id: &'a str,
         idempotency_key: &'a str,
+        reported_constitution_version: &'a str,
     },
     List {
         task_id: &'a str,
@@ -36,6 +37,7 @@ pub enum EvidenceOperation<'a> {
         findings_digest: &'a [u8],
         reported_checked_at: &'a str,
         idempotency_key: &'a str,
+        reported_constitution_version: &'a str,
     },
     ListConformance {
         task_id: &'a str,
@@ -66,6 +68,7 @@ impl EvidenceOperation<'_> {
                 observed_at,
                 reported_agent_session_id,
                 idempotency_key,
+                reported_constitution_version,
             } => {
                 push_field(bytes, task_id.as_bytes());
                 push_field(bytes, &evidence_kind.to_be_bytes());
@@ -74,6 +77,7 @@ impl EvidenceOperation<'_> {
                 push_field(bytes, observed_at.as_bytes());
                 push_field(bytes, reported_agent_session_id.as_bytes());
                 push_field(bytes, idempotency_key.as_bytes());
+                push_field(bytes, reported_constitution_version.as_bytes());
             }
             Self::List {
                 task_id,
@@ -94,6 +98,7 @@ impl EvidenceOperation<'_> {
                 findings_digest,
                 reported_checked_at,
                 idempotency_key,
+                reported_constitution_version,
             } => {
                 push_field(bytes, task_id.as_bytes());
                 push_field(bytes, evidence_id.as_bytes());
@@ -102,6 +107,7 @@ impl EvidenceOperation<'_> {
                 push_field(bytes, findings_digest);
                 push_field(bytes, reported_checked_at.as_bytes());
                 push_field(bytes, idempotency_key.as_bytes());
+                push_field(bytes, reported_constitution_version.as_bytes());
             }
             Self::ListConformance {
                 task_id,
@@ -167,6 +173,7 @@ mod tests {
         observed_at: "2026-01-01T00:00:00Z",
         reported_agent_session_id: "session:v1:agent",
         idempotency_key: "evidence:123",
+        reported_constitution_version: "constitution:v4",
     };
 
     const CONFORMANCE: EvidenceOperation<'static> = EvidenceOperation::RecordConformance {
@@ -177,6 +184,7 @@ mod tests {
         findings_digest: b"01234567890123456789012345678901",
         reported_checked_at: "2026-01-01T00:00:00Z",
         idempotency_key: "conformance:123",
+        reported_constitution_version: "constitution:v4",
     };
 
     #[test]
@@ -217,6 +225,7 @@ mod tests {
             findings_digest: b"01234567890123456789012345678901",
             reported_checked_at: "2026-01-01T00:00:00Z",
             idempotency_key: "conformance:123",
+            reported_constitution_version: "constitution:v4",
         };
         let changed_findings = EvidenceOperation::RecordConformance {
             task_id: "task:123",
@@ -226,6 +235,7 @@ mod tests {
             findings_digest: b"11234567890123456789012345678901",
             reported_checked_at: "2026-01-01T00:00:00Z",
             idempotency_key: "conformance:123",
+            reported_constitution_version: "constitution:v4",
         };
 
         assert_ne!(
@@ -296,6 +306,7 @@ mod tests {
             findings_digest: b"01234567890123456789012345678901",
             reported_checked_at: "2026-01-01T00:00:00Z",
             idempotency_key: "conformance:other",
+            reported_constitution_version: "constitution:v4",
         };
         let different_evidence_idempotency_key = EvidenceOperation::Record {
             task_id: "task:123",
@@ -305,6 +316,7 @@ mod tests {
             observed_at: "2026-01-01T00:00:00Z",
             reported_agent_session_id: "session:v1:agent",
             idempotency_key: "evidence:other",
+            reported_constitution_version: "constitution:v4",
         };
 
         assert_ne!(
@@ -339,6 +351,25 @@ mod tests {
                 &authentication(1)
             )
         );
+        let different_constitution_version = EvidenceOperation::RecordConformance {
+            task_id: "task:123",
+            evidence_id: "evidence:123",
+            verdict: 1,
+            finding_count: 2,
+            findings_digest: b"01234567890123456789012345678901",
+            reported_checked_at: "2026-01-01T00:00:00Z",
+            idempotency_key: "conformance:123",
+            reported_constitution_version: "constitution:v5",
+        };
+        assert_ne!(
+            evidence_signing_bytes("tenant-a", "repo-a", &CONFORMANCE, &authentication(1)),
+            evidence_signing_bytes(
+                "tenant-a",
+                "repo-a",
+                &different_constitution_version,
+                &authentication(1)
+            )
+        );
     }
 
     #[test]
@@ -352,6 +383,7 @@ mod tests {
             observed_at: "2026-01-01T00:00:00Z",
             reported_agent_session_id: "session:v1:agent",
             idempotency_key: "evidence:123",
+            reported_constitution_version: "constitution:v4",
         };
         let changed_task = EvidenceOperation::Record {
             task_id: "task:456",
@@ -361,6 +393,7 @@ mod tests {
             observed_at: "2026-01-01T00:00:00Z",
             reported_agent_session_id: "session:v1:agent",
             idempotency_key: "evidence:123",
+            reported_constitution_version: "constitution:v4",
         };
 
         assert_ne!(

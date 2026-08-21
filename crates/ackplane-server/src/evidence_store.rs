@@ -25,6 +25,7 @@ const MAX_TASK_ID_BYTES: usize = 256;
 const MAX_SOURCE_REF_BYTES: usize = 512;
 const MAX_IDENTITY_BYTES: usize = 256;
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
+const MAX_CONSTITUTION_VERSION_BYTES: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvidenceKind {
@@ -74,6 +75,8 @@ pub enum EvidenceStoreError {
     InvalidDigest,
     #[error("reported_agent_session_id and recorded_by must be between 1 and {MAX_IDENTITY_BYTES} bytes")]
     InvalidIdentity,
+    #[error("reported_constitution_version must be between 1 and {MAX_CONSTITUTION_VERSION_BYTES} bytes when supplied")]
+    InvalidConstitutionVersion,
     #[error("page cursor must carry a bounded evidence identifier")]
     InvalidCursor,
     #[error(
@@ -98,6 +101,7 @@ pub struct RecordEvidenceRequest {
     pub reported_agent_session_id: String,
     pub recorded_by: String,
     pub idempotency_key: String,
+    pub reported_constitution_version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +118,7 @@ pub struct EvidenceRecord {
     pub recorded_by: String,
     pub recorded_at: SystemTime,
     pub idempotency_key: String,
+    pub reported_constitution_version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -201,8 +206,8 @@ impl EvidenceStore {
                 "INSERT INTO evidence_records (
                      tenant_id, repository_id, evidence_id, task_id, evidence_kind,
                      source_ref, content_digest, observed_at, reported_agent_session_id, recorded_by,
-                     idempotency_key
-                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                     idempotency_key, reported_constitution_version
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
                  ON CONFLICT (tenant_id, repository_id, idempotency_key)
                      WHERE idempotency_key IS NOT NULL DO NOTHING
                  RETURNING recorded_at",
@@ -219,6 +224,7 @@ impl EvidenceStore {
                     &request.recorded_by,
                     &(!request.idempotency_key.is_empty())
                         .then_some(request.idempotency_key.as_str()),
+                    &request.reported_constitution_version,
                 ],
             )
             .await?;
@@ -247,6 +253,7 @@ impl EvidenceStore {
                 recorded_by: request.recorded_by,
                 recorded_at: row.get("recorded_at"),
                 idempotency_key: request.idempotency_key,
+                reported_constitution_version: request.reported_constitution_version,
             },
             idempotent_replay: false,
         })
@@ -265,7 +272,7 @@ impl EvidenceStore {
             .query_opt(
                 "SELECT evidence_id, tenant_id, repository_id, task_id, evidence_kind, \
                         source_ref, content_digest, observed_at, reported_agent_session_id, recorded_by, \
-                        recorded_at, idempotency_key \
+                        recorded_at, idempotency_key, reported_constitution_version \
                  FROM evidence_records \
                  WHERE tenant_id = $1 AND repository_id = $2 AND idempotency_key = $3",
                 &[&tenant_id, &repository_id, &idempotency_key],
@@ -290,7 +297,7 @@ impl EvidenceStore {
             .query(
                 "SELECT evidence_id, tenant_id, repository_id, task_id, evidence_kind, \
                     source_ref, content_digest, observed_at, reported_agent_session_id, recorded_by, \
-                    recorded_at, idempotency_key \
+                    recorded_at, idempotency_key, reported_constitution_version \
                  FROM evidence_records \
                  WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 \
                  ORDER BY recorded_at DESC, evidence_id ASC \
@@ -312,7 +319,8 @@ pub(crate) fn evidence_outcome_for_existing(
         && existing.content_digest == request.content_digest
         && existing.observed_at == request.observed_at
         && existing.reported_agent_session_id == request.reported_agent_session_id
-        && existing.recorded_by == request.recorded_by;
+        && existing.recorded_by == request.recorded_by
+        && existing.reported_constitution_version == request.reported_constitution_version;
     if !matches {
         return Err(EvidenceStoreError::IdempotencyConflict);
     }
@@ -343,6 +351,7 @@ pub(super) fn row_to_evidence(
         idempotency_key: row
             .get::<_, Option<String>>("idempotency_key")
             .unwrap_or_default(),
+        reported_constitution_version: row.get("reported_constitution_version"),
     })
 }
 
@@ -365,6 +374,13 @@ fn validate_request(request: &RecordEvidenceRequest) -> Result<(), EvidenceStore
         && !is_bounded(&request.idempotency_key, MAX_IDEMPOTENCY_KEY_BYTES)
     {
         return Err(EvidenceStoreError::InvalidIdempotencyKey);
+    }
+    if request
+        .reported_constitution_version
+        .as_ref()
+        .is_some_and(|version| !is_bounded(version, MAX_CONSTITUTION_VERSION_BYTES))
+    {
+        return Err(EvidenceStoreError::InvalidConstitutionVersion);
     }
     Ok(())
 }
@@ -429,6 +445,7 @@ mod tests {
             reported_agent_session_id: "session:v1:evidence-test".to_string(),
             recorded_by: "node:evidence-test".to_string(),
             idempotency_key: String::new(),
+            reported_constitution_version: Some("constitution:v4".to_string()),
         }
     }
 
@@ -518,6 +535,34 @@ mod tests {
         assert!(matches!(
             validate_request(&invalid),
             Err(EvidenceStoreError::InvalidSourceRef)
+        ));
+    }
+
+    #[test]
+    fn idempotency_rejects_a_changed_reported_constitution_version() {
+        let (tenant_id, repository_id) = unique_scope("constitution-version");
+        let mut retry = request(tenant_id.clone(), repository_id.clone(), "task:123");
+        retry.idempotency_key = "evidence:constitution-version".to_string();
+        retry.reported_constitution_version = Some("constitution:v5".to_string());
+        let existing = EvidenceRecord {
+            evidence_id: "evidence-1".to_string(),
+            tenant_id,
+            repository_id,
+            task_id: "task:123".to_string(),
+            kind: EvidenceKind::Commit,
+            source_ref: "commit:0123456789abcdef".to_string(),
+            content_digest: vec![7; SHA256_DIGEST_BYTES],
+            observed_at: SystemTime::UNIX_EPOCH,
+            reported_agent_session_id: "session:v1:evidence-test".to_string(),
+            recorded_by: "node:evidence-test".to_string(),
+            recorded_at: SystemTime::UNIX_EPOCH,
+            idempotency_key: retry.idempotency_key.clone(),
+            reported_constitution_version: Some("constitution:v4".to_string()),
+        };
+
+        assert!(matches!(
+            evidence_outcome_for_existing(existing, &retry),
+            Err(EvidenceStoreError::IdempotencyConflict)
         ));
     }
 }
