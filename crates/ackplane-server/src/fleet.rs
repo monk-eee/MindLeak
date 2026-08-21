@@ -594,6 +594,47 @@ impl FleetStore {
         ))
     }
 
+    /// Every stranded (lease-expired) delegated claim for one tenant-scoped
+    /// repository, most-recently-expired last -- the complement of
+    /// `active_work`'s exclusion, and the list `recover` (ADR-0111) needs
+    /// but nothing previously exposed. An operator could recover a claim
+    /// only by already knowing its task id; this is how they find one.
+    pub async fn stranded_claims(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        now: SystemTime,
+        limit: i64,
+    ) -> Result<Option<Vec<ActiveWorkItem>>, tokio_postgres::Error> {
+        if self.repository(tenant_id, repository_id).await?.is_none() {
+            return Ok(None);
+        }
+        let rows = self
+            .client
+            .query(
+                "SELECT task_id, owner_id, branch, lease_expires_at, paths, symbols \
+                 FROM delegated_claims \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND lease_expires_at <= $3 \
+                 ORDER BY lease_expires_at ASC, task_id ASC \
+                 LIMIT $4",
+                &[&tenant_id, &repository_id, &now, &limit],
+            )
+            .await?;
+
+        Ok(Some(
+            rows.into_iter()
+                .map(|row| ActiveWorkItem {
+                    task_id: row.get(0),
+                    owner_id: row.get(1),
+                    branch: row.get(2),
+                    lease_expires_at: row.get(3),
+                    paths: row.get(4),
+                    symbols: row.get(5),
+                })
+                .collect(),
+        ))
+    }
+
     /// One page of every live delegated claim across ALL of a tenant's
     /// repositories (ADR-0105 decision 5), filtered, sorted, and paged
     /// server-side -- the cross-repository "who is working on what, right
@@ -980,6 +1021,78 @@ mod tests {
         );
         assert!(fleet
             .active_work(
+                &format!("{tenant_id}-other"),
+                &repository_id,
+                now + Duration::from_secs(31),
+                50,
+            )
+            .await
+            .expect("query wrong tenant")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn stranded_claims_is_tenant_scoped_and_excludes_active_claims() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let (tenant_id, repository_id) =
+            enroll_and_activate(&database_url, &unique_id.to_string()).await;
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let mut claims = ClaimStore::connect(&database_url)
+            .await
+            .expect("connect claim store");
+
+        for (task_id, owner_id, lease_secs) in [
+            ("task:expired", "agent:expired", 30),
+            ("task:active", "agent:active", 120),
+        ] {
+            claims
+                .delegate(
+                    &ClaimLeaseRequest {
+                        tenant_id: tenant_id.clone(),
+                        repository_id: repository_id.clone(),
+                        task_id: task_id.to_string(),
+                        owner_id: owner_id.to_string(),
+                        branch: format!("work/{task_id}"),
+                        lease: Duration::from_secs(lease_secs),
+                        paths: vec![format!("src/{task_id}.rs")],
+                        symbols: vec![format!("symbol:{task_id}")],
+                    },
+                    now,
+                )
+                .await
+                .expect("delegate claim");
+        }
+
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+        let stranded = fleet
+            .stranded_claims(
+                &tenant_id,
+                &repository_id,
+                now + Duration::from_secs(31),
+                50,
+            )
+            .await
+            .expect("query stranded claims");
+
+        assert_eq!(
+            stranded.expect("repository is enrolled"),
+            vec![ActiveWorkItem {
+                task_id: "task:expired".to_string(),
+                owner_id: "agent:expired".to_string(),
+                branch: "work/task:expired".to_string(),
+                lease_expires_at: now + Duration::from_secs(30),
+                paths: vec!["src/task:expired.rs".to_string()],
+                symbols: vec!["symbol:task:expired".to_string()],
+            }]
+        );
+        assert!(fleet
+            .stranded_claims(
                 &format!("{tenant_id}-other"),
                 &repository_id,
                 now + Duration::from_secs(31),

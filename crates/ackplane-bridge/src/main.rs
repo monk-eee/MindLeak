@@ -355,6 +355,11 @@ impl From<ActiveWorkItem> for ActiveWorkSummary {
     }
 }
 
+#[derive(Serialize)]
+struct StrandedClaimsResponse {
+    claims: Vec<ActiveWorkSummary>,
+}
+
 #[derive(Deserialize)]
 struct RecoverClaimRequest {
     owner_id: String,
@@ -607,6 +612,10 @@ async fn main() {
             get(repository_claims),
         )
         .route(
+            "/api/v1/repositories/:repository_id/stranded-claims",
+            get(repository_stranded_claims),
+        )
+        .route(
             "/api/v1/repositories/:repository_id/signing-keys",
             get(repository_signing_keys),
         )
@@ -843,6 +852,34 @@ async fn repository_claims(
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(error) => {
             tracing::error!(%error, "Bridge repository active-work query failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+// The complement of `repository_claims`: what `repository_recover_claim`
+// needs an operator to already know (ADR-0111 left no way to discover a
+// stranded task id other than already holding it).
+async fn repository_stranded_claims(
+    State(state): State<AppState>,
+    Path(repository_id): Path<String>,
+) -> Result<Json<StrandedClaimsResponse>, StatusCode> {
+    match state
+        .fleet
+        .stranded_claims(
+            &state.tenant_id,
+            &repository_id,
+            SystemTime::now(),
+            ACTIVE_WORK_LIMIT,
+        )
+        .await
+    {
+        Ok(Some(claims)) => Ok(Json(StrandedClaimsResponse {
+            claims: claims.into_iter().map(ActiveWorkSummary::from).collect(),
+        })),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository stranded-claims query failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
