@@ -237,6 +237,15 @@
     .timeline .when { color: var(--ml-ink-soft); white-space: nowrap; }
     .timeline .badge { font-size: 0.7rem; padding: 3px 9px; }
     .timeline-empty { font-size: 0.82rem; color: var(--ml-ink-soft); padding: 10px 2px; }
+    .fleet-search { padding: 7px 12px; border: 1px solid var(--ml-border); border-radius: 8px; background: transparent; color: var(--ml-ink); font: inherit; min-width: 220px; }
+    .fleet-columns { display: flex; align-items: center; gap: 4px; padding: 4px 14px; }
+    .fleet-column { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border: none; background: transparent; color: var(--ml-ink-soft); font: inherit; font-weight: 600; font-size: 0.78rem; cursor: pointer; }
+    .fleet-column:hover { color: var(--ml-ink); }
+    .fleet-column-label { padding: 4px 8px; color: var(--ml-ink-soft); font-weight: 600; font-size: 0.78rem; }
+    .sort-arrow { font-size: 0.7rem; }
+    .fleet-pager { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 10px 14px; font-size: 0.82rem; color: var(--ml-ink-soft); }
+    .fleet-pager button { padding: 5px 12px; border: 1px solid var(--ml-border); border-radius: 6px; background: transparent; color: var(--ml-ink); font: inherit; cursor: pointer; }
+    .fleet-pager button:disabled { opacity: 0.4; cursor: not-allowed; }
     .recover-btn { margin-left: auto; padding: 2px 8px; font-size: 0.72rem; border: 1px solid var(--ml-border); border-radius: 6px; background: transparent; color: var(--ml-ink-soft); cursor: pointer; }
     .recover-form { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--ml-border); border-radius: 10px; }
     .recover-hint { font-size: 0.78rem; color: var(--ml-ink-soft); margin: 0 0 8px; }
@@ -285,6 +294,7 @@
       <p id="status" aria-live="polite">Loading fleet…</p>
     </div>
     <div class="toolbar">
+      <input type="search" id="fleet-search" class="fleet-search" placeholder="Search repository id…" aria-label="Search repositories" />
       <div class="segmented" role="group" aria-label="Filter by freshness" data-filter="freshness">
         <span class="segmented-label">Freshness</span>
         <button type="button" class="segment" data-value="" aria-pressed="true">All</button>
@@ -299,16 +309,56 @@
         <button type="button" class="segment" data-value="none" aria-pressed="false">Idle</button>
       </div>
     </div>
+    <div class="fleet-columns" role="row">
+      <button type="button" class="fleet-column" data-sort="repository_id">Repository <span class="sort-arrow"></span></button>
+      <span class="fleet-column-label">Freshness</span>
+      <button type="button" class="fleet-column" data-sort="active_node_count">Nodes <span class="sort-arrow"></span></button>
+      <button type="button" class="fleet-column" data-sort="last_activated_at">Last activated <span class="sort-arrow"></span></button>
+    </div>
     <div id="fleet" class="fleet-grid" aria-labelledby="fleet-heading"></div>
+    <div class="fleet-pager">
+      <span id="fleet-pager-range"></span>
+      <button type="button" id="fleet-prev">Previous</button>
+      <button type="button" id="fleet-next">Next</button>
+    </div>
+    <p class="kicker">Agents</p>
+    <div class="summary">
+      <h2 id="agents-heading">Active work across the fleet</h2>
+      <p id="agents-status" aria-live="polite">Loading agents…</p>
+    </div>
+    <div class="toolbar">
+      <input type="search" id="agents-search-repo" class="fleet-search" placeholder="Search repository id…" aria-label="Search agents by repository id" />
+      <input type="search" id="agents-search-owner" class="fleet-search" placeholder="Search agent id…" aria-label="Search agents by agent id" />
+    </div>
+    <div class="fleet-columns" role="row">
+      <button type="button" class="fleet-column" data-agent-sort="repository_id">Repository <span class="sort-arrow"></span></button>
+      <button type="button" class="fleet-column" data-agent-sort="owner_id">Agent <span class="sort-arrow"></span></button>
+      <span class="fleet-column-label">Task</span>
+      <button type="button" class="fleet-column" data-agent-sort="lease_expires_at">Lease <span class="sort-arrow"></span></button>
+    </div>
+    <div id="agents" class="fleet-grid" aria-labelledby="agents-heading"></div>
+    <div class="fleet-pager">
+      <span id="agents-pager-range"></span>
+      <button type="button" id="agents-prev">Previous</button>
+      <button type="button" id="agents-next">Next</button>
+    </div>
   </main>
   <script>
     const status = document.getElementById("status");
     const fleet = document.getElementById("fleet");
-    const filters = { freshness: "", coordination: "" };
+    const searchInput = document.getElementById("fleet-search");
+    const pagerRange = document.getElementById("fleet-pager-range");
+    const prevButton = document.getElementById("fleet-prev");
+    const nextButton = document.getElementById("fleet-next");
+    const filters = { q: "", freshness: "", coordination: "" };
+    const sortState = { field: "repository_id", direction: "asc" };
+    const pageState = { page: 1, pageSize: 20 };
     const freshnessLabel = { fresh: "Fresh", lagging: "Lagging", never_projected: "Never projected" };
     let repositories = null;
+    let totalRepositories = 0;
     let openDetailId = null;
     const detailCache = new Map();
+    let searchDebounce = null;
 
     function relativeTime(seconds) {
       if (!seconds) return "Unknown";
@@ -343,9 +393,51 @@
         button.addEventListener("click", () => {
           filters[key] = button.dataset.value;
           group.querySelectorAll(".segment").forEach((b) => b.setAttribute("aria-pressed", String(b === button)));
-          renderRows();
+          pageState.page = 1;
+          loadFleet();
         });
       });
+    });
+
+    searchInput.addEventListener("input", () => {
+      clearTimeout(searchDebounce);
+      searchDebounce = setTimeout(() => {
+        filters.q = searchInput.value.trim();
+        pageState.page = 1;
+        loadFleet();
+      }, 300);
+    });
+
+    function updateSortIndicators() {
+      document.querySelectorAll(".fleet-column[data-sort]").forEach((button) => {
+        const arrow = button.querySelector(".sort-arrow");
+        arrow.textContent = button.dataset.sort === sortState.field
+          ? (sortState.direction === "asc" ? "\u25b2" : "\u25bc")
+          : "";
+      });
+    }
+
+    document.querySelectorAll(".fleet-column[data-sort]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const field = button.dataset.sort;
+        sortState.direction = sortState.field === field && sortState.direction === "asc" ? "desc" : "asc";
+        sortState.field = field;
+        pageState.page = 1;
+        updateSortIndicators();
+        loadFleet();
+      });
+    });
+    updateSortIndicators();
+
+    prevButton.addEventListener("click", () => {
+      if (pageState.page <= 1) return;
+      pageState.page -= 1;
+      loadFleet();
+    });
+    nextButton.addEventListener("click", () => {
+      if (pageState.page * pageState.pageSize >= totalRepositories) return;
+      pageState.page += 1;
+      loadFleet();
     });
 
     async function loadRepositoryDetail(repositoryId) {
@@ -530,31 +622,31 @@
     }
 
     function renderRows() {
-      const visible = (repositories ?? []).filter((repository) => {
-        if (filters.freshness && repository.freshness !== filters.freshness) return false;
-        if (filters.coordination === "active" && repository.active_node_count <= 0) return false;
-        if (filters.coordination === "none" && repository.active_node_count > 0) return false;
-        return true;
-      });
-
       fleet.replaceChildren();
 
       if (repositories === null) {
         fleet.append(emptyState("Fetching the current fleet from Ackplane.", "Loading…"));
+        pagerRange.textContent = "";
+        prevButton.disabled = true;
+        nextButton.disabled = true;
         return;
       }
-      if (!repositories.length) {
-        fleet.append(emptyState("Repository nodes will appear here the moment they enrol and publish accepted records.", "Nothing enrolled yet"));
+      const filtered = Boolean(filters.q || filters.freshness || filters.coordination);
+      if (!totalRepositories) {
+        fleet.append(emptyState(
+          filtered
+            ? "Try widening the search or filters above."
+            : "Repository nodes will appear here the moment they enrol and publish accepted records.",
+          filtered ? "No matches" : "Nothing enrolled yet",
+        ));
         status.textContent = "0 repositories visible";
-        return;
-      }
-      if (!visible.length) {
-        fleet.append(emptyState("Try widening the freshness or coordination filter above.", "No matches"));
-        status.textContent = `0 of ${repositories.length} repositories visible`;
+        pagerRange.textContent = "";
+        prevButton.disabled = true;
+        nextButton.disabled = true;
         return;
       }
 
-      for (const repository of visible) {
+      for (const repository of repositories) {
         const card = document.createElement("article");
         card.className = "repo-card";
         card.dataset.open = String(openDetailId === repository.repository_id);
@@ -594,27 +686,181 @@
         }
       }
 
-      status.textContent = visible.length === repositories.length
-        ? `${repositories.length === 1 ? "1 repository" : `${repositories.length} repositories`} visible`
-        : `${visible.length} of ${repositories.length} repositories visible`;
+      const firstIndex = (pageState.page - 1) * pageState.pageSize + 1;
+      const lastIndex = firstIndex + repositories.length - 1;
+      status.textContent = `${totalRepositories} repositor${totalRepositories === 1 ? "y" : "ies"} visible`;
+      pagerRange.textContent = `${firstIndex}-${lastIndex} of ${totalRepositories}`;
+      prevButton.disabled = pageState.page <= 1;
+      nextButton.disabled = lastIndex >= totalRepositories;
     }
 
     async function loadFleet() {
+      status.textContent = "Loading fleet…";
       try {
-        const response = await fetch("/api/v1/fleet");
+        const params = new URLSearchParams();
+        if (filters.q) params.set("q", filters.q);
+        if (filters.freshness) params.set("freshness", filters.freshness);
+        if (filters.coordination) params.set("coordination", filters.coordination);
+        params.set("sort", `${sortState.field}:${sortState.direction}`);
+        params.set("page", String(pageState.page));
+        params.set("page_size", String(pageState.pageSize));
+        const response = await fetch(`/api/v1/fleet?${params.toString()}`);
         if (!response.ok) throw new Error("Fleet request failed");
         const data = await response.json();
         repositories = data.repositories;
+        totalRepositories = data.total;
         renderRows();
       } catch (error) {
         repositories = [];
+        totalRepositories = 0;
         fleet.replaceChildren();
         fleet.append(emptyState("The Ackplane read service may be disconnected. This page will keep trying on reload.", "Fleet unavailable"));
         status.textContent = "Fleet unavailable";
+        pagerRange.textContent = "";
+        prevButton.disabled = true;
+        nextButton.disabled = true;
       }
     }
     renderRows();
     loadFleet();
+
+    const agentsStatus = document.getElementById("agents-status");
+    const agents = document.getElementById("agents");
+    const agentsSearchRepo = document.getElementById("agents-search-repo");
+    const agentsSearchOwner = document.getElementById("agents-search-owner");
+    const agentsPagerRange = document.getElementById("agents-pager-range");
+    const agentsPrevButton = document.getElementById("agents-prev");
+    const agentsNextButton = document.getElementById("agents-next");
+    const agentsFilters = { repository_id: "", owner_id: "" };
+    const agentsSortState = { field: "lease_expires_at", direction: "asc" };
+    const agentsPageState = { page: 1, pageSize: 20 };
+    let agentItems = null;
+    let totalAgents = 0;
+    let agentsSearchDebounce = null;
+
+    function debounceAgentsSearch(key, input) {
+      input.addEventListener("input", () => {
+        clearTimeout(agentsSearchDebounce);
+        agentsSearchDebounce = setTimeout(() => {
+          agentsFilters[key] = input.value.trim();
+          agentsPageState.page = 1;
+          loadAgents();
+        }, 300);
+      });
+    }
+    debounceAgentsSearch("repository_id", agentsSearchRepo);
+    debounceAgentsSearch("owner_id", agentsSearchOwner);
+
+    function updateAgentSortIndicators() {
+      document.querySelectorAll(".fleet-column[data-agent-sort]").forEach((button) => {
+        const arrow = button.querySelector(".sort-arrow");
+        arrow.textContent = button.dataset.agentSort === agentsSortState.field
+          ? (agentsSortState.direction === "asc" ? "\u25b2" : "\u25bc")
+          : "";
+      });
+    }
+
+    document.querySelectorAll(".fleet-column[data-agent-sort]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const field = button.dataset.agentSort;
+        agentsSortState.direction = agentsSortState.field === field && agentsSortState.direction === "asc" ? "desc" : "asc";
+        agentsSortState.field = field;
+        agentsPageState.page = 1;
+        updateAgentSortIndicators();
+        loadAgents();
+      });
+    });
+    updateAgentSortIndicators();
+
+    agentsPrevButton.addEventListener("click", () => {
+      if (agentsPageState.page <= 1) return;
+      agentsPageState.page -= 1;
+      loadAgents();
+    });
+    agentsNextButton.addEventListener("click", () => {
+      if (agentsPageState.page * agentsPageState.pageSize >= totalAgents) return;
+      agentsPageState.page += 1;
+      loadAgents();
+    });
+
+    function renderAgentRows() {
+      agents.replaceChildren();
+
+      if (agentItems === null) {
+        agents.append(emptyState("Fetching active work from Ackplane.", "Loading…"));
+        agentsPagerRange.textContent = "";
+        agentsPrevButton.disabled = true;
+        agentsNextButton.disabled = true;
+        return;
+      }
+      const filtered = Boolean(agentsFilters.repository_id || agentsFilters.owner_id);
+      if (!totalAgents) {
+        agents.append(emptyState(
+          filtered
+            ? "Try widening the search above."
+            : "Active work will appear here the moment an agent claims a task in any enrolled repository.",
+          filtered ? "No matches" : "No active work",
+        ));
+        agentsStatus.textContent = "0 active claims visible";
+        agentsPagerRange.textContent = "";
+        agentsPrevButton.disabled = true;
+        agentsNextButton.disabled = true;
+        return;
+      }
+
+      const list = document.createElement("ul");
+      list.className = "timeline work-list";
+      for (const item of agentItems) {
+        const scope = [...item.paths, ...item.symbols];
+        const entry = document.createElement("li");
+        entry.innerHTML = `
+          <span class="payload">${escapeHtml(item.repository_id)}</span>
+          <span class="producer">${escapeHtml(item.owner_id)}</span>
+          <span class="pos">${escapeHtml(item.task_id)}</span>
+          <span class="branch">${escapeHtml(item.branch || "No branch")}</span>
+          <span class="when" title="${escapeHtml(absoluteTime(item.lease_expires_at_seconds))}">expires ${escapeHtml(relativeTime(item.lease_expires_at_seconds))}</span>
+          <span class="scope">${scope.length ? scope.map(escapeHtml).join(" · ") : "No declared scope"}</span>
+        `;
+        list.append(entry);
+      }
+      agents.append(list);
+
+      const firstIndex = (agentsPageState.page - 1) * agentsPageState.pageSize + 1;
+      const lastIndex = firstIndex + agentItems.length - 1;
+      agentsStatus.textContent = `${totalAgents} active claim${totalAgents === 1 ? "" : "s"} visible`;
+      agentsPagerRange.textContent = `${firstIndex}-${lastIndex} of ${totalAgents}`;
+      agentsPrevButton.disabled = agentsPageState.page <= 1;
+      agentsNextButton.disabled = lastIndex >= totalAgents;
+    }
+
+    async function loadAgents() {
+      agentsStatus.textContent = "Loading agents…";
+      try {
+        const params = new URLSearchParams();
+        if (agentsFilters.repository_id) params.set("repository_id", agentsFilters.repository_id);
+        if (agentsFilters.owner_id) params.set("owner_id", agentsFilters.owner_id);
+        params.set("sort", `${agentsSortState.field}:${agentsSortState.direction}`);
+        params.set("page", String(agentsPageState.page));
+        params.set("page_size", String(agentsPageState.pageSize));
+        const response = await fetch(`/api/v1/agents?${params.toString()}`);
+        if (!response.ok) throw new Error("Agents request failed");
+        const data = await response.json();
+        agentItems = data.items;
+        totalAgents = data.total;
+        renderAgentRows();
+      } catch (error) {
+        agentItems = [];
+        totalAgents = 0;
+        agents.replaceChildren();
+        agents.append(emptyState("The Ackplane read service may be disconnected. This page will keep trying on reload.", "Agents unavailable"));
+        agentsStatus.textContent = "Agents unavailable";
+        agentsPagerRange.textContent = "";
+        agentsPrevButton.disabled = true;
+        agentsNextButton.disabled = true;
+      }
+    }
+    renderAgentRows();
+    loadAgents();
   </script>
 </body>
 </html>
