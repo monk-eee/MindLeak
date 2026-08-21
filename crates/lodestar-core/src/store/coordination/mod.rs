@@ -217,6 +217,86 @@ impl LodestarStore {
         transaction.commit()?;
         Ok(covered)
     }
+
+    /// Reconnect this task's own live claim from a superseded clause onto its
+    /// active same-slug successor, at the current owner's own request
+    /// (ADR-0109).
+    ///
+    /// Narrower than, and never a substitute for, `reconnect_superseded_clauses`
+    /// (`crate::db::repairs`), which never touches a live claim (ADR-0068
+    /// decision 5 is unchanged by this). The distinction ADR-0068 protects is
+    /// who initiates the move and whether the holder knows about it: a request
+    /// only the current owner can make, about their own live claim, cannot be a
+    /// move made *behind* them. Eligibility matches the migration's own rule
+    /// exactly, no new matching and no slug-rename inference, and the move is
+    /// one attributed, append-only event; no `conformance` row is ever touched
+    /// (ADR-0025's recorded verdicts stay exactly as recorded).
+    pub fn reconnect_claim_clause(&self, id: &str, agent: &str, now: i64) -> Result<String> {
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let task = get_task_on(&transaction, id)?
+            .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
+        let live = task.status == TaskStatus::Claimed
+            && task.owner.as_deref() == Some(agent)
+            && task.lease_expires_at.is_some_and(|expires| expires > now);
+        if !live {
+            return Err(LodestarError::Invalid(format!(
+                "{id} is not currently claimed by {agent} with an unexpired lease; \
+                 only the agent holding a live claim may ask to reconnect it"
+            )));
+        }
+        let outgoing_slug: Option<String> = transaction
+            .query_row(
+                "SELECT slug FROM goals WHERE id = ?1 AND status = 'superseded'",
+                params![task.goal_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(slug) = outgoing_slug else {
+            return Err(LodestarError::Invalid(format!(
+                "{id}'s current clause {} is not superseded; there is nothing to reconnect",
+                task.goal_id
+            )));
+        };
+        let successors: Vec<String> = {
+            let mut stmt = transaction
+                .prepare("SELECT id FROM goals WHERE status = 'active' AND slug = ?1")?;
+            let rows = stmt.query_map(params![slug], |row| row.get::<_, String>(0))?;
+            collect(rows)?
+        };
+        let new_goal_id = match successors.as_slice() {
+            [] => {
+                return Err(LodestarError::Invalid(format!(
+                    "{}'s clause has no active successor under slug {slug}; \
+                     nothing to reconnect onto",
+                    task.goal_id
+                )));
+            }
+            [only] => only.clone(),
+            _ => {
+                return Err(LodestarError::Invalid(format!(
+                    "slug {slug} names {} active clauses; reconnection refuses to \
+                     guess which one succeeds {}",
+                    successors.len(),
+                    task.goal_id
+                )));
+            }
+        };
+        transaction.execute(
+            "UPDATE tasks SET goal_id = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, new_goal_id, now],
+        )?;
+        events::record(
+            &transaction,
+            id,
+            TaskEventKind::ClauseReconnected,
+            Some(agent),
+            now,
+            &serde_json::json!({ "from_goal_id": task.goal_id, "to_goal_id": new_goal_id })
+                .to_string(),
+        )?;
+        transaction.commit()?;
+        Ok(new_goal_id)
+    }
 }
 
 pub(super) fn create_task_on(
@@ -597,5 +677,214 @@ mod tests {
             .live_task_titled(&goal.id, "Retired breakdown")
             .unwrap()
             .is_none());
+    }
+
+    // ADR-0109: the current owner of a live claim may explicitly ask to move
+    // their own task from a superseded clause onto its active same-slug
+    // successor -- the one door ADR-0068 leaves open beside its absolute "a
+    // live claim does not move" rule.
+    mod reconnect_claim_clause {
+        use super::*;
+
+        /// Supersede `goal` and give it a lone active same-slug successor,
+        /// exactly the shape `reconnect_superseded_clauses` (and a real
+        /// amendment) produce. Built directly over SQL: no facade method
+        /// creates two goals sharing a slug outside a real amendment, and the
+        /// task must be created (and claimed) while its goal is still active,
+        /// matching how this actually happens -- an amendment supersedes a
+        /// clause a task is already claimed under, not the other way round.
+        fn supersede_with_successor(store: &LodestarStore, outgoing: &str) -> String {
+            store
+                .conn
+                .execute(
+                    "UPDATE goals SET status = 'superseded', slug = 'reconnect-slug' WHERE id = ?1",
+                    params![outgoing],
+                )
+                .unwrap();
+            let successor_id = "goal:reconnect-slug@constitution:v2".to_string();
+            store
+                .conn
+                .execute(
+                    "INSERT INTO goals (id, slug, kind, title, statement, status, version, created_at)
+                     VALUES (?1, 'reconnect-slug', 'objective', 'Test', 'x', 'active', 2, ?2)",
+                    params![successor_id, NOW],
+                )
+                .unwrap();
+            successor_id
+        }
+
+        #[test]
+        fn moves_a_live_claim_from_its_superseded_clause_to_the_lone_active_successor() {
+            let store = store();
+            let goal = goal(&store);
+            let task = store.create_task(&goal.id, "t", "a", None, NOW).unwrap();
+            assert!(store.claim_task(&task.id, "agent-a", 600, NOW).unwrap());
+            let successor = supersede_with_successor(&store, &goal.id);
+
+            let moved_to = store
+                .reconnect_claim_clause(&task.id, "agent-a", NOW + 1)
+                .unwrap();
+
+            assert_eq!(moved_to, successor);
+            assert_eq!(
+                store.get_task(&task.id).unwrap().unwrap().goal_id,
+                successor
+            );
+        }
+
+        #[test]
+        fn records_one_attributed_append_only_event_naming_both_clauses() {
+            let store = store();
+            let goal = goal(&store);
+            let task = store.create_task(&goal.id, "t", "a", None, NOW).unwrap();
+            assert!(store.claim_task(&task.id, "agent-a", 600, NOW).unwrap());
+            let successor = supersede_with_successor(&store, &goal.id);
+
+            store
+                .reconnect_claim_clause(&task.id, "agent-a", NOW + 1)
+                .unwrap();
+
+            let events = store.task_events(&task.id).unwrap();
+            let reconnect = events
+                .iter()
+                .find(|event| event.kind == TaskEventKind::ClauseReconnected)
+                .expect("a recorded reconnection event");
+            assert_eq!(reconnect.actor.as_deref(), Some("agent-a"));
+            let detail: serde_json::Value = serde_json::from_str(&reconnect.detail).unwrap();
+            assert_eq!(detail["from_goal_id"], goal.id);
+            assert_eq!(detail["to_goal_id"], successor);
+        }
+
+        #[test]
+        fn never_touches_a_conformance_record_already_written_under_the_old_clause() {
+            // ADR-0109 decision 4: reconnection changes only which clause
+            // governs evidence from the moment of reconnection forward. A
+            // verdict already recorded under the outgoing clause (e.g. from a
+            // check_conformance probe while the claim sat stranded) must read
+            // back exactly as recorded and is never re-labelled.
+            let store = store();
+            let goal = goal(&store);
+            let task = store.create_task(&goal.id, "t", "a", None, NOW).unwrap();
+            assert!(store.claim_task(&task.id, "agent-a", 600, NOW).unwrap());
+            store
+                .record_conformance(
+                    Some(task.id.as_str()),
+                    ConformanceAudit {
+                        evidence_schema_version: 1,
+                        evidence: "{}",
+                        verdict: Verdict::Drift,
+                        findings: "stranded",
+                    },
+                    NOW,
+                )
+                .unwrap();
+            supersede_with_successor(&store, &goal.id);
+
+            store
+                .reconnect_claim_clause(&task.id, "agent-a", NOW + 1)
+                .unwrap();
+
+            let history = store.conformance_history(&task.id).unwrap();
+            assert_eq!(history.len(), 1);
+            assert_eq!(history[0].verdict, Verdict::Drift);
+            assert_eq!(history[0].findings, "stranded");
+        }
+
+        #[test]
+        fn refuses_a_task_not_currently_claimed_by_the_caller() {
+            let store = store();
+            let goal = goal(&store);
+            let task = store.create_task(&goal.id, "t", "a", None, NOW).unwrap();
+            assert!(store.claim_task(&task.id, "agent-a", 600, NOW).unwrap());
+            supersede_with_successor(&store, &goal.id);
+
+            let err = store
+                .reconnect_claim_clause(&task.id, "agent-b", NOW + 1)
+                .unwrap_err();
+            assert!(err
+                .to_string()
+                .contains("only the agent holding a live claim"));
+        }
+
+        #[test]
+        fn refuses_a_lapsed_lease() {
+            let store = store();
+            let goal = goal(&store);
+            let task = store.create_task(&goal.id, "t", "a", None, NOW).unwrap();
+            assert!(store.claim_task(&task.id, "agent-a", 60, NOW).unwrap());
+            supersede_with_successor(&store, &goal.id);
+
+            let err = store
+                .reconnect_claim_clause(&task.id, "agent-a", NOW + HOUR)
+                .unwrap_err();
+            assert!(err
+                .to_string()
+                .contains("only the agent holding a live claim"));
+        }
+
+        #[test]
+        fn refuses_a_task_whose_clause_is_not_superseded() {
+            let store = store();
+            let goal = goal(&store);
+            let task = store.create_task(&goal.id, "t", "a", None, NOW).unwrap();
+            assert!(store.claim_task(&task.id, "agent-a", 600, NOW).unwrap());
+
+            let err = store
+                .reconnect_claim_clause(&task.id, "agent-a", NOW + 1)
+                .unwrap_err();
+            assert!(err.to_string().contains("is not superseded"));
+        }
+
+        #[test]
+        fn refuses_when_no_active_successor_shares_the_slug() {
+            let store = store();
+            let goal = goal(&store);
+            let task = store.create_task(&goal.id, "t", "a", None, NOW).unwrap();
+            assert!(store.claim_task(&task.id, "agent-a", 600, NOW).unwrap());
+            store
+                .conn
+                .execute(
+                    "UPDATE goals SET status = 'superseded' WHERE id = ?1",
+                    params![goal.id],
+                )
+                .unwrap();
+
+            let err = store
+                .reconnect_claim_clause(&task.id, "agent-a", NOW + 1)
+                .unwrap_err();
+            assert!(err.to_string().contains("no active successor"));
+        }
+
+        #[test]
+        fn refuses_to_guess_between_several_active_successors() {
+            let store = store();
+            let goal = goal(&store);
+            let task = store.create_task(&goal.id, "t", "a", None, NOW).unwrap();
+            assert!(store.claim_task(&task.id, "agent-a", 600, NOW).unwrap());
+            supersede_with_successor(&store, &goal.id);
+            store
+                .conn
+                .execute(
+                    "INSERT INTO goals (id, slug, kind, title, statement, status, version, created_at)
+                     VALUES ('goal:reconnect-slug@constitution:v3', 'reconnect-slug', 'objective', 'Test', 'x', 'active', 3, ?1)",
+                    params![NOW],
+                )
+                .unwrap();
+
+            let err = store
+                .reconnect_claim_clause(&task.id, "agent-a", NOW + 1)
+                .unwrap_err();
+            let message = err.to_string();
+            assert!(message.contains("2 active clauses"));
+        }
+
+        #[test]
+        fn refuses_an_unknown_task() {
+            let store = store();
+            let err = store
+                .reconnect_claim_clause("task:does-not-exist", "agent-a", NOW)
+                .unwrap_err();
+            assert!(matches!(err, LodestarError::NotFound(_)));
+        }
     }
 }

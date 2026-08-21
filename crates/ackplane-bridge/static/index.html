@@ -246,6 +246,13 @@
     .fleet-pager { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 10px 14px; font-size: 0.82rem; color: var(--ml-ink-soft); }
     .fleet-pager button { padding: 5px 12px; border: 1px solid var(--ml-border); border-radius: 6px; background: transparent; color: var(--ml-ink); font: inherit; cursor: pointer; }
     .fleet-pager button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .recover-btn { margin-left: auto; padding: 2px 8px; font-size: 0.72rem; border: 1px solid var(--ml-border); border-radius: 6px; background: transparent; color: var(--ml-ink-soft); cursor: pointer; }
+    .recover-form { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--ml-border); border-radius: 10px; }
+    .recover-hint { font-size: 0.78rem; color: var(--ml-ink-soft); margin: 0 0 8px; }
+    .recover-fields { display: flex; flex-wrap: wrap; gap: 6px; }
+    .recover-fields input { flex: 1 1 120px; min-width: 100px; padding: 6px 8px; border: 1px solid var(--ml-border); border-radius: 6px; background: transparent; color: var(--ml-ink); font: inherit; }
+    .recover-fields button { padding: 6px 12px; border: 1px solid var(--ml-border); border-radius: 6px; background: var(--ml-ink); color: var(--ml-surface); cursor: pointer; font: inherit; }
+    .recover-result { font-size: 0.78rem; color: var(--ml-ink-soft); margin: 6px 0 0; min-height: 1em; }
     .work-list li { flex-wrap: wrap; }
     .work-list .branch { color: var(--ml-ink-soft); font-family: "Cascadia Code", Consolas, monospace; font-size: 0.76rem; }
     .work-list .scope { width: 100%; color: var(--ml-ink-muted); font-size: 0.76rem; overflow-wrap: anywhere; }
@@ -489,9 +496,22 @@
                       <span class="branch">${escapeHtml(claim.branch || "No branch")}</span>
                       <span class="when" title="${escapeHtml(absoluteTime(claim.lease_expires_at_seconds))}">expires ${escapeHtml(relativeTime(claim.lease_expires_at_seconds))}</span>
                       <span class="scope">${scope.length ? scope.map(escapeHtml).join(" · ") : "No declared scope"}</span>
+                      <button type="button" class="recover-btn" data-task-id="${escapeHtml(claim.task_id)}" data-branch="${escapeHtml(claim.branch || "")}">Recover…</button>
                     </li>`;
                   }).join("")}</ul>`
                 : '<p class="timeline-empty">No active delegated work.</p>'}
+            <form class="recover-form">
+              <p class="recover-hint">A claim whose lease has already expired no longer appears above. Recover one here by task id (for example, from Lodestar's own board) so it returns to the open state for a fresh claim.</p>
+              <div class="recover-fields">
+                <input name="task_id" placeholder="task:abcdef012345" required />
+                <input name="owner_id" placeholder="new owner id" required />
+                <input name="branch" placeholder="branch" required />
+                <input name="lease_seconds" type="number" min="1" value="300" placeholder="lease seconds" required />
+                <input name="reason" placeholder="reason (required, audited)" required />
+                <button type="submit">Recover</button>
+              </div>
+              <p class="recover-result" aria-live="polite"></p>
+            </form>
           </div>
           <div>
             <p class="timeline-title">Signing keys</p>
@@ -535,6 +555,51 @@
                 : '<p class="timeline-empty">No knowledge recorded yet.</p>'}
           </div>
         `;
+        container.querySelectorAll(".recover-btn").forEach((button) => {
+          button.addEventListener("click", () => {
+            const form = container.querySelector(".recover-form");
+            if (!form) return;
+            form.elements.task_id.value = button.dataset.taskId;
+            form.elements.branch.value = button.dataset.branch;
+            form.elements.owner_id.focus();
+          });
+        });
+        const recoverForm = container.querySelector(".recover-form");
+        if (recoverForm) {
+          const resultLine = recoverForm.querySelector(".recover-result");
+          recoverForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            const data = new FormData(recoverForm);
+            const taskId = data.get("task_id");
+            const body = {
+              owner_id: data.get("owner_id"),
+              branch: data.get("branch"),
+              reason: data.get("reason"),
+              lease_seconds: Number(data.get("lease_seconds")),
+            };
+            resultLine.textContent = "Recovering…";
+            try {
+              const response = await fetch(
+                `/api/v1/repositories/${encodeURIComponent(repositoryId)}/tasks/${encodeURIComponent(taskId)}/recover`,
+                { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+              );
+              if (response.ok) {
+                detailCache.delete(repositoryId);
+                renderDetail(container, repositoryId);
+                return;
+              }
+              resultLine.textContent = response.status === 409
+                ? "Not recoverable: the lease is still live, or the owner changed since you looked."
+                : response.status === 400
+                  ? "A reason and a positive lease duration are required."
+                  : response.status === 404
+                    ? "No such claim for that task id in this repository."
+                    : "Recovery failed.";
+            } catch (error) {
+              resultLine.textContent = "Recovery request failed.";
+            }
+          });
+        }
       });
     }
 

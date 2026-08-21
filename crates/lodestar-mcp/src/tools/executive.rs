@@ -232,7 +232,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "task_claim",
-            "description": "Ownership and the lease, chosen by `step`. `claim`: atomic claim + lease with optional advisory `paths`/MindLeak `symbols`; `won=true` only if this agent won, and a loss names why. Omitting `paths`/`symbols` on re-claim preserves that part of the existing scope; an explicit array (including `[]`) replaces or clears it. A won claim resolves active clauses against those paths (`scope_advice`; `review` names an uncovered goal to add via `also_serves`), reports `title_twin` naming another live task under this same goal sharing this exact title if one exists (ADR-0099), and returns the evidence window completion later validates against. `also_serves` can extend a held claim until conformance has judged it — refused after. `renew`: extends a still-live lease owned by this agent; after expiry only a fresh `claim` opens a new window. `release`: hands the claim back to open, owner-guarded. `recover`: takes an expired claim under a compatible legacy identity, or transfers a paused task before its seven-day grace with a named human reviewer (`expected_owner` and `reason` required; `human` is attributed, not authenticated, and must differ from both owners).",
+            "description": "Ownership and the lease, chosen by `step`. `claim`: atomic claim + lease with optional advisory `paths`/MindLeak `symbols`; `won=true` only if this agent won, and a loss names why. Omitting `paths`/`symbols` on re-claim preserves that part of the existing scope; an explicit array (including `[]`) replaces or clears it. A won claim resolves active clauses against those paths (`scope_advice`; `review` names an uncovered goal to add via `also_serves`), reports `title_twin` naming another live task under this same goal sharing this exact title if one exists (ADR-0099), and returns the evidence window completion later validates against. `also_serves` can extend a held claim until conformance has judged it — refused after. `renew`: extends a still-live lease owned by this agent; after expiry only a fresh `claim` opens a new window. `reconnect_clause` (renew only, ADR-0109): after a successful renewal, ask to move this task's own goal_id from a superseded clause onto its active same-slug successor — refused (with a distinct reason) unless exactly one such successor exists. `release`: hands the claim back to open, owner-guarded. `recover`: takes an expired claim under a compatible legacy identity, or transfers a paused task before its seven-day grace with a named human reviewer (`expected_owner` and `reason` required; `human` is attributed, not authenticated, and must differ from both owners).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -243,6 +243,7 @@ pub(super) fn definitions() -> Vec<Value> {
                     "paths": { "type": "array", "items": { "type": "string" }, "description": "claim: workspace-relative path globs this work expects to touch. Omit to preserve existing paths on re-claim; pass [] to clear them." },
                     "symbols": { "type": "array", "items": { "type": "string" }, "description": "claim: opaque MindLeak symbol ids this work expects to touch. Omit to preserve existing symbols on re-claim; pass [] to clear them." },
                     "also_serves": { "type": "array", "items": { "type": "string" }, "default": [], "description": "claim: further goal ids this work serves, for what advise reported over the files you are actually touching. Unions with what was declared at creation, so naming only what you just learned never drops what you knew. Refused once conformance has judged this task." },
+                    "reconnect_clause": { "type": "boolean", "default": false, "description": "renew: also ask to reconnect this task's own live claim onto its clause's active same-slug successor (ADR-0109). Only the current owner's own live claim is eligible." },
                     "expected_owner": { "type": "string", "description": "recover: the exact current owner. A recovery that does not name who it is taking from is not a recovery." },
                     "reason": { "type": "string", "description": "recover: why ownership moved." },
                     "human": { "type": "string", "description": "recover: distinct human reviewer authorizing a paused-task transfer before the parking grace. An attributable declaration, not authentication." }
@@ -432,14 +433,25 @@ pub(super) fn dispatch(
             match one_of(args, "step", &CLAIM_STEPS)? {
                 "claim" => claim(engine, task_id, args),
                 "renew" => {
+                    let agent = opt_str(args, "agent").unwrap_or_default();
                     let renewed = engine
-                        .renew_lease(
-                            task_id,
-                            opt_str(args, "agent").unwrap_or_default().as_str(),
-                            i64_arg(args, "lease_secs", 300),
-                        )
+                        .renew_lease(task_id, agent.as_str(), i64_arg(args, "lease_secs", 300))
                         .map_err(|e| e.to_string())?;
                     let mut response = json!({ "renewed": renewed });
+                    // Reconnection asks about the SAME live claim renew just
+                    // confirmed, so a lapsed lease refuses it the same way
+                    // reconnect_claim_clause's own check would (ADR-0109
+                    // decision 1) -- attempting it only after a successful
+                    // renewal keeps that one, consistent refusal path.
+                    if renewed && bool_arg(args, "reconnect_clause", false) {
+                        let new_goal_id = engine
+                            .reconnect_claim_clause(task_id, agent.as_str())
+                            .map_err(|e| e.to_string())?;
+                        if let Some(obj) = response.as_object_mut() {
+                            obj.insert("reconnected".to_string(), json!(true));
+                            obj.insert("goal_id".to_string(), json!(new_goal_id));
+                        }
+                    }
                     attach_owner_attention(engine, args, &mut response)?;
                     ok(&response)
                 }
@@ -1311,6 +1323,121 @@ mod tests {
         }
     }
 
+    // ADR-0109: `task_claim(step="renew", reconnect_clause=true)` asks to move
+    // the caller's own live claim from a superseded clause onto its active
+    // same-slug successor. `supersede_goal` (a real, public act, not a raw SQL
+    // fixture) gives the new goal the SAME slug as the one it replaces, which
+    // is exactly the shape this needs.
+    #[test]
+    fn renew_can_also_reconnect_a_live_claim_onto_its_superseded_clauses_successor() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Work", "done").unwrap();
+        call(
+            &engine,
+            &json!({
+                "name": "task_claim",
+                "arguments": { "task_id": task.id, "step": "claim", "agent": "agent-a", "lease_secs": 600 }
+            }),
+        )
+        .unwrap();
+        let successor = engine
+            .supersede_goal(&goal.id, "ship it, harder", "tightened the rule")
+            .unwrap();
+
+        let renewed = call(
+            &engine,
+            &json!({
+                "name": "task_claim",
+                "arguments": {
+                    "task_id": task.id,
+                    "step": "renew",
+                    "agent": "agent-a",
+                    "lease_secs": 600,
+                    "reconnect_clause": true
+                }
+            }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(renewed["content"][0]["text"].as_str().unwrap()).unwrap();
+
+        assert_eq!(body["renewed"], true);
+        assert_eq!(body["reconnected"], true);
+        assert_eq!(body["goal_id"], successor.id);
+        assert_eq!(
+            engine.store().get_task(&task.id).unwrap().unwrap().goal_id,
+            successor.id
+        );
+    }
+
+    /// A renewal that never asked to reconnect must not do it as a side
+    /// effect, and a renewal that failed outright must not attempt it either
+    /// -- reconnection is judged against the SAME live claim renew just
+    /// confirmed, so it must never run on a claim renew itself refused.
+    #[test]
+    fn renew_never_reconnects_without_being_asked_or_after_a_failed_renewal() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Work", "done").unwrap();
+        call(
+            &engine,
+            &json!({
+                "name": "task_claim",
+                "arguments": { "task_id": task.id, "step": "claim", "agent": "agent-a", "lease_secs": 600 }
+            }),
+        )
+        .unwrap();
+        engine
+            .supersede_goal(&goal.id, "ship it, harder", "tightened the rule")
+            .unwrap();
+
+        let plain_renew = call(
+            &engine,
+            &json!({
+                "name": "task_claim",
+                "arguments": {
+                    "task_id": task.id, "step": "renew", "agent": "agent-a", "lease_secs": 600
+                }
+            }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(plain_renew["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["renewed"], true);
+        assert!(body.get("reconnected").is_none());
+        assert_eq!(
+            engine.store().get_task(&task.id).unwrap().unwrap().goal_id,
+            goal.id,
+            "an unrequested reconnection must not happen as a side effect"
+        );
+
+        // A different agent's renewal is refused outright, so reconnection
+        // (which needs that same live claim) must never even be attempted.
+        let refused = call(
+            &engine,
+            &json!({
+                "name": "task_claim",
+                "arguments": {
+                    "task_id": task.id,
+                    "step": "renew",
+                    "agent": "agent-b",
+                    "lease_secs": 600,
+                    "reconnect_clause": true
+                }
+            }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(refused["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["renewed"], false);
+        assert!(body.get("reconnected").is_none());
+    }
+
     /// A deprecated name must keep its argument checking. Without it the
     /// collapse would switch validation off for exactly the callers most likely
     /// to get an argument wrong, for the whole deprecation window — and the
@@ -1445,6 +1572,7 @@ mod tests {
                     execution_ids: vec![execution_id.clone()],
                     successful_execution_ids: vec![execution_id.clone()],
                     commit_ids: Vec::new(),
+                    ledger_act_ids: Vec::new(),
                     summary: "historical fixture".into(),
                     provenance: vec![
                         EvidenceProvenance {
@@ -2214,6 +2342,7 @@ mod tests {
             execution_ids: Vec::new(),
             successful_execution_ids: Vec::new(),
             commit_ids: Vec::new(),
+            ledger_act_ids: Vec::new(),
             summary: "no mutation evidence".into(),
             provenance: Vec::new(),
         };

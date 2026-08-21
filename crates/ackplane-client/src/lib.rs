@@ -13,6 +13,14 @@
 //! an enrolment question — see
 //! `gaps.d/ackplane-client-cannot-detect-unenrolled-repositories.md`.
 
+// Every fallible call here returns `Result<_, ClientError>`, and
+// `ClientError::Rejected` wraps `tonic::Status` -- a type this crate does not
+// define, not a choice any one method here makes. Boxing it would mean
+// boxing a type the client only ever passes through from `tonic`, so this is
+// a lint to silence crate-wide (mirrors the same allow on ackplane-protocol
+// and ackplane-server, which return the identical status type).
+#![allow(clippy::result_large_err)]
+
 use std::time::Duration;
 
 use ackplane_protocol::v1::claim_delegation_service_client::ClaimDelegationServiceClient;

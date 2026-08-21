@@ -43,6 +43,19 @@ message ClaimAuthentication {
   bytes signature = 5;
 }
 
+// The enrolled node's proof for a KnowledgeService request (ADR-0108). A
+// distinct message, domain, and nonce space from ClaimAuthentication: a
+// knowledge statement has no equivalent of a claim's branch/lease/paths, so
+// binding claim fields here would sign nothing meaningful, and sharing one
+// nonce table would couple two unrelated domains' replay protection.
+message KnowledgeAuthentication {
+  string signing_key_id = 1;
+  string node_id = 2;
+  string signed_at = 3;
+  bytes nonce = 4;
+  bytes signature = 5;
+}
+
 message ClaimLeaseRequest {
   string tenant_id = 1;
   string repository_id = 2;
@@ -134,6 +147,7 @@ message RecordKnowledgeRequest {
   double half_life_hours = 5;
   string embedding_model = 6;
   repeated float embedding = 7;
+  KnowledgeAuthentication authentication = 8;
 }
 
 message KnowledgeRecord {
@@ -155,6 +169,7 @@ message RecallKnowledgeRequest {
   string embedding_model = 3;
   repeated float query_embedding = 4;
   uint32 limit = 5;
+  KnowledgeAuthentication authentication = 6;
 }
 
 message ActiveKnowledgeEntry {
@@ -180,6 +195,7 @@ message RetireKnowledgeRequest {
   string knowledge_id = 3;
   string reason = 4;
   string retired_by = 5;
+  KnowledgeAuthentication authentication = 6;
 }
 
 message RetireKnowledgeResult {
