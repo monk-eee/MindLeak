@@ -1,7 +1,7 @@
 # MindLeak developer commands. On Windows, run the underlying commands directly
 # (see DEVELOPERS.md) if `make` is unavailable.
 
-.PHONY: setup worktree-setup install-servers adr-index changelog design-audit merge-audit queue queue-watch sweep board-health stranded-report status reingest tool-surface build test script-test ratchet coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
+.PHONY: setup worktree-setup install-servers adr-index changelog design-audit merge-audit queue queue-watch sweep board-health control-coverage stranded-report status reingest tool-surface build test script-test ratchet coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
 
 setup: ## Install pre-commit hooks and extension deps
 	pip install pre-commit
@@ -61,6 +61,9 @@ queue: ## Show the delivery queue and update the branch whose turn it is (ADR-00
 
 board-health: ## Separate work a human must decide from work nobody can (ADR-0058)
 	node scripts/board-health.mjs
+
+control-coverage: ## Report normative clauses with no active control, or one weaker than declared (ADR-0034)
+	node scripts/control-coverage.mjs
 
 stranded-report: ## Name the likely shipping commit for each lapsed claim (ADR-0048)
 	node scripts/stranded-report.mjs

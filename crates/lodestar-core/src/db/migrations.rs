@@ -126,6 +126,11 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
     run_once(connection, "reconnect_superseded_clauses", || {
         super::repairs::reconnect_superseded_clauses(connection)
     })?;
+    run_once(
+        connection,
+        "clear_backfilled_constitution_version_from_objectives",
+        || super::repairs::clear_backfilled_constitution_version_from_objectives(connection),
+    )?;
     // Seed the task log with the present (ADR-0064). Recorded by name rather
     // than guarded by pattern, per ADR-0063 decision 3: "has this already
     // happened?" must be a fact, not an inference from the data the migration
@@ -457,13 +462,18 @@ fn migrate_constitution_versions(connection: &Connection) -> Result<()> {
                      'migration', ?1, 'migration', ?1)",
             [created_at],
         )?;
+        // Freeze only the goals that already existed at this one-time
+        // transition. Run unconditionally, this would re-fire on every
+        // subsequent open and mislabel any goal created afterwards (a plain
+        // `define_goal` objective always inserts a NULL constitution_version)
+        // as belonging to a version the constitution may have long since
+        // superseded.
+        connection.execute(
+            "UPDATE goals SET constitution_version = 'constitution:v1'
+             WHERE constitution_version IS NULL",
+            [],
+        )?;
     }
-    connection.execute(
-        "UPDATE goals SET constitution_version = 'constitution:v1'
-         WHERE constitution_version IS NULL
-           AND EXISTS (SELECT 1 FROM constitution_versions WHERE id = 'constitution:v1')",
-        [],
-    )?;
     Ok(())
 }
 

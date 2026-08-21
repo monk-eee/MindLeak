@@ -53,7 +53,7 @@ mod tests {
 
     use super::*;
     use crate::design::{DesignActionKind, DesignMaterializationMode, DesignMaterializationPlan};
-    use crate::model::{ClauseOrigin, TaskStatus, Verdict};
+    use crate::model::{ClauseOrigin, GoalKind, TaskStatus, Verdict};
     use crate::store::{ConformanceAudit, LodestarStore};
 
     /// Bug: indexes lived in `schema.sql` and therefore ran *before* migrations.
@@ -799,6 +799,59 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    // Bug: the one-time freeze's backfill (`UPDATE goals SET
+    // constitution_version = 'constitution:v1' WHERE constitution_version IS
+    // NULL`) ran unconditionally on every open rather than only the one that
+    // creates v1. `define_goal` always inserts a NULL constitution_version, so
+    // a plain Objective created at ANY later point -- long after the
+    // constitution moved on to v2, v3, v4 -- got silently mislabeled as
+    // belonging to the long-superseded v1 the next time the database was
+    // merely reopened (every server restart). Measured live: three real
+    // objective goals in this repository's own database carried exactly this
+    // wrong tag. Impact: a goal's recorded constitution_version stopped being
+    // trustworthy provenance. Fix: only the transition that creates v1 may
+    // backfill, guarded the same way the version-creation INSERT already is.
+    #[test]
+    fn a_goal_defined_after_the_first_version_exists_keeps_its_null_version_across_a_reopen() {
+        let path = temporary_database("post-versioning-goal");
+        create_legacy_database(&path, false);
+        {
+            // First open freezes the pre-existing goal into v1.
+            let store = LodestarStore::new(open(path.to_str().unwrap()).unwrap());
+            assert!(store.active_constitution_version().unwrap().is_some());
+        }
+
+        // A plain objective created well after v1 exists -- exactly what
+        // `define_goal` produces for ordinary work, with no constitution
+        // version assigned at creation time.
+        let created_id = {
+            let store = LodestarStore::new(open(path.to_str().unwrap()).unwrap());
+            let created = store
+                .define_goal(
+                    GoalKind::Objective,
+                    "Ship it",
+                    "deliver",
+                    None,
+                    crate::now_unix(),
+                )
+                .unwrap();
+            assert!(created.constitution_version.is_none());
+            created.id
+        };
+
+        // A subsequent open re-runs every migration, including this one. The
+        // objective must not be swept into the version that already existed
+        // before it was ever created.
+        let store = LodestarStore::new(open(path.to_str().unwrap()).unwrap());
+        let reopened = store.get_goal(&created_id).unwrap().unwrap();
+        assert!(
+            reopened.constitution_version.is_none(),
+            "a goal created after v1 already existed must not be backfilled to it"
+        );
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+
     // ADR-0063: a migration may tidy the past, never the present.
     //
     // `reconnect_superseded_clauses` repairs clauses stranded by an amendment
@@ -906,6 +959,78 @@ mod tests {
             .unwrap();
         assert_eq!(bound, "goal:test@constitution:v2");
         drop(connection);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    // Regression for the unconditional-backfill bug above: this repair undoes
+    // the wrong tag it already left behind, narrowly, without sweeping up any
+    // goal that legitimately carries `constitution:v1`.
+    #[test]
+    fn migration_clears_the_mislabeled_version_from_named_objectives_only() {
+        let path = temporary_database("mislabeled-objectives");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection.execute_batch(SCHEMA).unwrap();
+            for id in [
+                "goal:adr-0102-dynamic-context-compiler-compile-contex",
+                "goal:adr-0101-digest-compilation-compile-digest",
+                "goal:adr-0099-claim-also-checks-for-a-live-twin-by-ti-v2",
+            ] {
+                connection
+                    .execute(
+                        "INSERT INTO goals
+                             (id, slug, kind, title, statement, status, version, created_at,
+                              constitution_version)
+                         VALUES (?1, ?1, 'objective', 'Test', 'x', 'active', 1, 1,
+                                 'constitution:v1')",
+                        [id],
+                    )
+                    .unwrap();
+            }
+            // A goal that legitimately belongs to v1 must survive untouched.
+            connection
+                .execute(
+                    "INSERT INTO goals
+                         (id, slug, kind, title, statement, status, version, created_at,
+                          constitution_version)
+                     VALUES ('goal:genuine-v1-clause', 'genuine', 'constraint', 'Test', 'x',
+                             'active', 1, 1, 'constitution:v1')",
+                    [],
+                )
+                .unwrap();
+        }
+
+        let store = LodestarStore::new(open(path.to_str().unwrap()).unwrap());
+        for id in [
+            "goal:adr-0102-dynamic-context-compiler-compile-contex",
+            "goal:adr-0101-digest-compilation-compile-digest",
+            "goal:adr-0099-claim-also-checks-for-a-live-twin-by-ti-v2",
+        ] {
+            assert!(
+                store
+                    .get_goal(id)
+                    .unwrap()
+                    .unwrap()
+                    .constitution_version
+                    .is_none(),
+                "{id} must have its wrongly-backfilled version cleared"
+            );
+        }
+        assert_eq!(
+            store
+                .get_goal("goal:genuine-v1-clause")
+                .unwrap()
+                .unwrap()
+                .constitution_version
+                .as_deref(),
+            Some("constitution:v1"),
+            "a clause that genuinely belongs to v1 is not this repair's business"
+        );
+        drop(store);
+
+        // Idempotent: reopening again is a no-op, not an error.
+        let store = LodestarStore::new(open(path.to_str().unwrap()).unwrap());
+        drop(store);
         std::fs::remove_file(path).unwrap();
     }
 
