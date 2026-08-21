@@ -1329,13 +1329,21 @@ mod tests {
             "resolved_context",
         ];
 
-        const SOURCES: [(&str, &str); 7] = [
+        const SOURCES: [(&str, &str); 12] = [
             ("amendments", include_str!("amendments.rs")),
             ("constitution", include_str!("constitution.rs")),
             ("constitution_packs", include_str!("constitution_packs.rs")),
             ("controls", include_str!("controls.rs")),
             ("waivers", include_str!("waivers.rs")),
-            ("executive", include_str!("executive.rs")),
+            // Split across submodules (module-length ratchet); every handler
+            // body the ratchet moved still needs to be read, wherever it
+            // landed.
+            ("executive", include_str!("executive/mod.rs")),
+            ("executive", include_str!("executive/constants.rs")),
+            ("executive", include_str!("executive/definitions.rs")),
+            ("executive", include_str!("executive/claim.rs")),
+            ("executive", include_str!("executive/tasks.rs")),
+            ("executive", include_str!("executive/render.rs")),
             ("design", include_str!("design.rs")),
         ];
 
@@ -1343,6 +1351,15 @@ mod tests {
         let mut inspected = 0usize;
 
         for (module, source) in SOURCES {
+            // A handler that used to be private (`fn foo`) may now cross a
+            // submodule boundary as `pub(super) fn foo` or `pub(in
+            // crate::tools) fn foo` -- normalize back to the bare form so the
+            // scan below, which only looks for `\nfn `, still finds it.
+            let source = source
+                .replace("pub(in crate::tools) fn ", "fn ")
+                .replace("pub(super) fn ", "fn ")
+                .replace("pub(crate) fn ", "fn ")
+                .replace("pub fn ", "fn ");
             for (offset, _) in source.match_indices("\nfn ") {
                 let after = &source[offset + 4..];
                 let Some(paren) = after.find('(') else {
@@ -1962,7 +1979,10 @@ mod tests {
             ("controls", include_str!("controls.rs")),
             ("design", include_str!("design.rs")),
             ("evidence", include_str!("evidence.rs")),
-            ("executive", include_str!("executive.rs")),
+            // `dispatch`'s `match name {` block, the only thing this scan
+            // looks for, stays in the top-level module file; the other
+            // executive submodules hold handler bodies, not the dispatch arm.
+            ("executive", include_str!("executive/mod.rs")),
             ("fleet", include_str!("fleet.rs")),
             ("knowledge", include_str!("knowledge.rs")),
             ("lifecycle", include_str!("lifecycle.rs")),
