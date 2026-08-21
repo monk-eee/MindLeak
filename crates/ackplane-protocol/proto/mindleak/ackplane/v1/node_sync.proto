@@ -30,6 +30,14 @@ service KnowledgeService {
   rpc RetireKnowledge(RetireKnowledgeRequest) returns (RetireKnowledgeResult);
 }
 
+// ADR-0106 decision 3: Evidence is a PostgreSQL-backed Industrial domain.
+// The first contract preserves bounded references, digests, and provenance;
+// it never transmits terminal output, source text, or credentials as evidence.
+service EvidenceService {
+  rpc RecordEvidence(RecordEvidenceRequest) returns (EvidenceRecord);
+  rpc ListEvidence(ListEvidenceRequest) returns (ListEvidenceResult);
+}
+
 // ADR-0106 decision 3: Constitution is a read-only projection of a
 // repository's own authoritative local Lodestar constitution -- published
 // here by that repository's tooling so Bridge can surface an enrolled
@@ -60,6 +68,17 @@ message ClaimAuthentication {
 // binding claim fields here would sign nothing meaningful, and sharing one
 // nonce table would couple two unrelated domains' replay protection.
 message KnowledgeAuthentication {
+  string signing_key_id = 1;
+  string node_id = 2;
+  string signed_at = 3;
+  bytes nonce = 4;
+  bytes signature = 5;
+}
+
+// The enrolled node's proof for an EvidenceService request. This has a
+// distinct domain and nonce space from claims, knowledge, and constitutions:
+// an evidence record binds task, kind, reference, digest, time, and session.
+message EvidenceAuthentication {
   string signing_key_id = 1;
   string node_id = 2;
   string signed_at = 3;
@@ -211,6 +230,62 @@ message RetireKnowledgeRequest {
 
 message RetireKnowledgeResult {
   bool retired = 1;
+}
+
+// A closed evidence vocabulary keeps the first Evidence Board contract
+// inspectable without treating arbitrary user text as a type system.
+enum EvidenceKind {
+  EVIDENCE_KIND_UNSPECIFIED = 0;
+  EVIDENCE_KIND_COMMIT = 1;
+  EVIDENCE_KIND_EXECUTION = 2;
+  EVIDENCE_KIND_RECEIPT = 3;
+  EVIDENCE_KIND_CONFORMANCE = 4;
+  EVIDENCE_KIND_REVIEW = 5;
+}
+
+// Records a bounded, provenance-bearing evidence reference for one task.
+// `content_digest` is a SHA-256 digest of the referenced evidence, not the
+// evidence body. `source_ref` is a bounded reference such as `commit:<sha>`
+// or `receipt:<id>`, interpreted by the closed `kind` vocabulary.
+message RecordEvidenceRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string task_id = 3;
+  EvidenceKind kind = 4;
+  string source_ref = 5;
+  bytes content_digest = 6;
+  string observed_at = 7;
+  string agent_session_id = 8;
+  EvidenceAuthentication authentication = 9;
+}
+
+message EvidenceRecord {
+  string evidence_id = 1;
+  string tenant_id = 2;
+  string repository_id = 3;
+  string task_id = 4;
+  EvidenceKind kind = 5;
+  string source_ref = 6;
+  bytes content_digest = 7;
+  string observed_at = 8;
+  string agent_session_id = 9;
+  string recorded_by = 10;
+  string recorded_at = 11;
+}
+
+// Lists task-bound evidence for one repository. A zero limit selects the
+// service default; the result reports the effective bounded limit.
+message ListEvidenceRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string task_id = 3;
+  uint32 limit = 4;
+  EvidenceAuthentication authentication = 5;
+}
+
+message ListEvidenceResult {
+  repeated EvidenceRecord entries = 1;
+  uint32 effective_limit = 2;
 }
 
 // The enrolled node's proof for a ConstitutionService request. A distinct

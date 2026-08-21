@@ -46,6 +46,8 @@ pub(crate) mod key {
     pub(crate) const CONSTITUTION: i64 = 9;
     /// `migrations/0010_constitution_authentication_nonces.sql`
     pub(crate) const CONSTITUTION_AUTHENTICATION_NONCES: i64 = 10;
+    /// `migrations/0014_evidence.sql`
+    pub(crate) const EVIDENCE: i64 = 14;
 }
 
 /// Apply `migration_sql` inside a transaction holding the advisory lock
