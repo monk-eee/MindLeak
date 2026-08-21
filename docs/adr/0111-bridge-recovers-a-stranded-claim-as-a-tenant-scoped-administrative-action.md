@@ -1,8 +1,8 @@
 # ADR-0111: Bridge recovers a stranded claim as a tenant-scoped administrative action
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-20
-- Deciders: Pending human acceptance
+- Deciders: MindLeak maintainers
 - Depends on: [ADR-0096](0096-ackplane-arbitrates-federated-claims-through-leased-delegation.md)
   (Ackplane arbitrates federated claims through leased delegation),
   [ADR-0098](0098-connection-trust-reuses-the-enrolled-key-oidc-waits.md)
@@ -180,6 +180,13 @@ silently out of scope.**
 - Implementation (the route, the `AppState` field, the owner-lookup helper,
   the guard-test extension, the UI control, and its tests) is separate,
   larger work gated on this ADR's acceptance — not included in this change.
+- Implemented in the same change that accepted this ADR: `FleetStore` gained
+  `claim_owner`, a single-claim lookup with no lease-expiry filter — needed
+  because `active_work` deliberately excludes expired leases (`lease_expires_at
+  > now`), which are exactly the claims `recover` exists to act on. The Fleet
+  UI's existing active-work list therefore still cannot show a stranded claim
+  by itself; an operator recovers one by task id (e.g., from Lodestar's own
+  board), which the added standalone recovery form supports directly.
 
 ## Rejected alternatives
 

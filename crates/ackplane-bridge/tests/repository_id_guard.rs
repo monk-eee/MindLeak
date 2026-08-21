@@ -8,6 +8,7 @@
 const MAIN_RS: &str = include_str!("../src/main.rs");
 const FLEET_RS: &str = include_str!("../../ackplane-server/src/fleet.rs");
 const KNOWLEDGE_STORE_RS: &str = include_str!("../../ackplane-server/src/knowledge_store.rs");
+const CLAIM_STORE_RS: &str = include_str!("../../ackplane-server/src/claim_store.rs");
 
 /// `FleetStore::connect` is the connection constructor, not a query or
 /// mutation - it has no tenant to scope to yet.
@@ -18,11 +19,59 @@ const FLEET_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &["connect"];
 /// it takes a `RecordKnowledgeRequest` whose own `tenant_id: String` field
 /// still carries the scope - the guard's plain-text check only recognises a
 /// direct `tenant_id: &str` parameter, not one nested inside a request struct.
-const KNOWLEDGE_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &["connect", "record"];
+/// `resolve_signing_key` is exempt the same way `record` is: its tenant scope
+/// lives in `EnvelopeBinding::tenant_id`, judged by `signing_keys::resolve`,
+/// not a bare parameter on this method. `consume_knowledge_nonce` needs no
+/// tenant_id at all - it is keyed by `(signing_key_id, nonce)`, and
+/// `signing_key_id` is already globally unique (`signing_keys` enforces
+/// `ON CONFLICT (signing_key_id)`), so no two tenants can ever share one to
+/// collide across.
+const KNOWLEDGE_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &[
+    "connect",
+    "record",
+    "resolve_signing_key",
+    "consume_knowledge_nonce",
+];
 
 /// `fleet_page` serves a static asset and never touches the store - it has
 /// nothing to scope.
 const ROUTE_HANDLERS_WITHOUT_A_STORE_QUERY: &[&str] = &["fleet_page"];
+
+/// `connect` is the constructor, same exemption as the other two stores.
+/// `delegate` and `recover` take a request struct (`ClaimLeaseRequest`,
+/// `ClaimRecoverRequest`) whose own `tenant_id: String` field carries the
+/// scope - the same struct-embedded exemption reasoning as `KnowledgeStore::
+/// record` above. `resolve_signing_key` takes an `EnvelopeBinding` rather
+/// than a bare tenant id, for the same reason. `consume_claim_nonce` has no
+/// tenant scope at all by design: nonce uniqueness is global on
+/// (signing_key_id, nonce), not tenant-scoped (matching
+/// `activation_challenges.nonce`'s existing global-uniqueness precedent).
+const CLAIM_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &[
+    "connect",
+    "delegate",
+    "recover",
+    "resolve_signing_key",
+    "consume_claim_nonce",
+];
+
+#[test]
+fn every_claim_store_query_requires_an_explicit_tenant_id() {
+    let methods = extract_impl_methods(CLAIM_STORE_RS, "ClaimStore");
+    assert!(
+        !methods.is_empty(),
+        "expected to find at least one ClaimStore method - the parser may be broken"
+    );
+    for (name, signature) in methods {
+        if CLAIM_STORE_METHODS_WITHOUT_A_TENANT.contains(&name.as_str()) {
+            continue;
+        }
+        assert!(
+            signature.contains("tenant_id: &str"),
+            "ClaimStore::{name} does not take an explicit tenant_id: &str parameter \
+             (ADR-0098 decision 5 requires every query/mutation to carry a tenant scope): {signature}"
+        );
+    }
+}
 
 #[test]
 fn every_fleet_store_query_requires_an_explicit_tenant_id() {

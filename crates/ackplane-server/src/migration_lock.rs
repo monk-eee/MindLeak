@@ -40,6 +40,8 @@ pub(crate) mod key {
     pub(crate) const CLAIM_AUTHENTICATION_NONCES: i64 = 6;
     /// `migrations/0007_knowledge.sql`
     pub(crate) const KNOWLEDGE: i64 = 7;
+    /// `migrations/0008_knowledge_authentication_nonces.sql`
+    pub(crate) const KNOWLEDGE_AUTHENTICATION_NONCES: i64 = 8;
 }
 
 /// Apply `migration_sql` inside a transaction holding the advisory lock
