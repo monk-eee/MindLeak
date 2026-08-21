@@ -17,3 +17,4 @@ pub mod v1 {
 pub mod claim_auth;
 pub mod knowledge_auth;
 mod signing_bytes;
+pub mod telemetry_auth;
