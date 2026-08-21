@@ -1,8 +1,10 @@
 # ADR-0097: A local coordination gateway composes plane workflows
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-17
-- Deciders: Pending human acceptance
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-21 by the repository owner, authorized directly in
+  session — attributed human adoption after review.
 - Amends: [ADR-0066](0066-retrieval-rides-on-the-question-already-asked.md)
   (a second response cue did not create the read-before-write habit)
 - Related: [ADR-0044](0044-declared-context-is-durable.md) (Git context is

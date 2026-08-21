@@ -1,8 +1,10 @@
 # ADR-0110: A Lodestar ledger act is independently verifiable evidence
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-20
-- Deciders: Pending human acceptance
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-21 by the repository owner, authorized directly in
+  session — attributed human adoption after review.
 - Depends on: [ADR-0009](0009-evidence-backed-conformance.md) (evidence-backed
   conformance), [ADR-0058](0058-work-that-shipped-must-leave-the-board.md)
   (work that shipped must leave the board)
