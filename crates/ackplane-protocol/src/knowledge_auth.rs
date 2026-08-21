@@ -37,6 +37,10 @@ pub enum KnowledgeOperation<'a> {
     History {
         limit: u32,
     },
+    Reconfirm {
+        knowledge_id: &'a str,
+        evidence_ref: &'a str,
+    },
     Retire {
         knowledge_id: &'a str,
         reason: &'a str,
@@ -52,6 +56,7 @@ impl KnowledgeOperation<'_> {
             Self::Record { .. } => "record",
             Self::Recall { .. } => "recall",
             Self::History { .. } => "history",
+            Self::Reconfirm { .. } => "reconfirm",
             Self::Retire { .. } => "retire",
         }
     }
@@ -79,6 +84,13 @@ impl KnowledgeOperation<'_> {
             }
             Self::History { limit } => {
                 push_field(bytes, &limit.to_be_bytes());
+            }
+            Self::Reconfirm {
+                knowledge_id,
+                evidence_ref,
+            } => {
+                push_field(bytes, knowledge_id.as_bytes());
+                push_field(bytes, evidence_ref.as_bytes());
             }
             Self::Retire {
                 knowledge_id,
@@ -254,6 +266,40 @@ mod tests {
 
         assert_ne!(history_ten, history_twenty);
         assert_ne!(history_ten, recall_ten);
+    }
+
+    #[test]
+    fn reconfirmation_binds_its_knowledge_and_corroborating_evidence() {
+        let original = knowledge_signing_bytes(
+            "tenant-a",
+            "repo-a",
+            &KnowledgeOperation::Reconfirm {
+                knowledge_id: "knowledge-1",
+                evidence_ref: "evidence:verified",
+            },
+            &authentication(1),
+        );
+        let different_evidence = knowledge_signing_bytes(
+            "tenant-a",
+            "repo-a",
+            &KnowledgeOperation::Reconfirm {
+                knowledge_id: "knowledge-1",
+                evidence_ref: "evidence:other",
+            },
+            &authentication(1),
+        );
+        let different_knowledge = knowledge_signing_bytes(
+            "tenant-a",
+            "repo-a",
+            &KnowledgeOperation::Reconfirm {
+                knowledge_id: "knowledge-2",
+                evidence_ref: "evidence:verified",
+            },
+            &authentication(1),
+        );
+
+        assert_ne!(original, different_evidence);
+        assert_ne!(original, different_knowledge);
     }
 
     #[test]

@@ -17,8 +17,8 @@ use tonic::{Request, Response, Status};
 
 use crate::knowledge_signature::{self, KnowledgeAuthRefusal};
 use crate::knowledge_store::{
-    ActiveKnowledge, KnowledgeHistoryEntry as StoreKnowledgeHistoryEntry, KnowledgeStore,
-    KnowledgeStoreError, RecordKnowledgeRequest,
+    ActiveKnowledge, KnowledgeHistoryEntry as StoreKnowledgeHistoryEntry, KnowledgeReconfirmation,
+    KnowledgeStore, KnowledgeStoreError, RecordKnowledgeRequest,
 };
 
 const DEFAULT_KNOWLEDGE_HISTORY_LIMIT: u32 = 20;
@@ -111,6 +111,9 @@ fn store_error(error: KnowledgeStoreError) -> Status {
             Status::invalid_argument("half_life_hours must be greater than zero")
         }
         KnowledgeStoreError::EmptyContent => Status::invalid_argument("content must not be empty"),
+        KnowledgeStoreError::EmptyReconfirmationEvidence => {
+            Status::invalid_argument("reconfirmation evidence_ref must not be empty")
+        }
         KnowledgeStoreError::Database(error) => Status::internal(error.to_string()),
     }
 }
@@ -123,6 +126,15 @@ fn to_proto_entry(entry: ActiveKnowledge) -> Result<v1::ActiveKnowledgeEntry, St
         effective_weight: entry.effective_weight,
         confirmed_at: rfc3339(entry.confirmed_at)?,
         recorded_by: entry.recorded_by.unwrap_or_default(),
+        last_reconfirmed_at: entry
+            .last_reconfirmed_at
+            .map(rfc3339)
+            .transpose()?
+            .unwrap_or_default(),
+        last_reconfirmed_by: entry.last_reconfirmed_by.unwrap_or_default(),
+        last_reconfirmation_evidence_ref: entry
+            .last_reconfirmation_evidence_ref
+            .unwrap_or_default(),
     })
 }
 
@@ -142,6 +154,36 @@ fn to_proto_history_entry(
             .unwrap_or_default(),
         retired_reason: entry.retired_reason.unwrap_or_default(),
         retired_by: entry.retired_by.unwrap_or_default(),
+        last_reconfirmed_at: entry
+            .last_reconfirmed_at
+            .map(rfc3339)
+            .transpose()?
+            .unwrap_or_default(),
+        last_reconfirmed_by: entry.last_reconfirmed_by.unwrap_or_default(),
+        last_reconfirmation_evidence_ref: entry
+            .last_reconfirmation_evidence_ref
+            .unwrap_or_default(),
+    })
+}
+
+fn to_proto_reconfirmation(
+    reconfirmation: Option<KnowledgeReconfirmation>,
+) -> Result<v1::ReconfirmKnowledgeResult, String> {
+    let Some(reconfirmation) = reconfirmation else {
+        return Ok(v1::ReconfirmKnowledgeResult {
+            reconfirmed: false,
+            reconfirmation_id: String::new(),
+            evidence_ref: String::new(),
+            reconfirmed_by: String::new(),
+            reconfirmed_at: String::new(),
+        });
+    };
+    Ok(v1::ReconfirmKnowledgeResult {
+        reconfirmed: true,
+        reconfirmation_id: reconfirmation.reconfirmation_id,
+        evidence_ref: reconfirmation.evidence_ref,
+        reconfirmed_by: reconfirmation.reconfirmed_by,
+        reconfirmed_at: rfc3339(reconfirmation.reconfirmed_at)?,
     })
 }
 
@@ -292,6 +334,42 @@ impl v1::knowledge_service_server::KnowledgeService for KnowledgeGrpcService {
                 .map_err(Status::internal)?,
             effective_limit,
         }))
+    }
+
+    async fn reconfirm_knowledge(
+        &self,
+        request: Request<v1::ReconfirmKnowledgeRequest>,
+    ) -> Result<Response<v1::ReconfirmKnowledgeResult>, Status> {
+        let request = request.into_inner();
+        let operation = KnowledgeOperation::Reconfirm {
+            knowledge_id: &request.knowledge_id,
+            evidence_ref: &request.evidence_ref,
+        };
+        let reconfirmed_by = self
+            .authenticate(
+                &request.tenant_id,
+                &request.repository_id,
+                &operation,
+                request.authentication.as_ref(),
+            )
+            .await?;
+        let reconfirmation = self
+            .store
+            .lock()
+            .await
+            .reconfirm(
+                &request.tenant_id,
+                &request.repository_id,
+                &request.knowledge_id,
+                &request.evidence_ref,
+                &reconfirmed_by,
+                SystemTime::now(),
+            )
+            .await
+            .map_err(store_error)?;
+        Ok(Response::new(
+            to_proto_reconfirmation(reconfirmation).map_err(Status::internal)?,
+        ))
     }
 
     async fn retire_knowledge(
@@ -517,6 +595,42 @@ mod tests {
             tenant_id: identity.tenant_id.clone(),
             repository_id: identity.repository_id.clone(),
             limit,
+            authentication: Some(authentication),
+        }
+    }
+
+    fn authenticated_reconfirm_request(
+        identity: &TestIdentity,
+        knowledge_id: &str,
+        evidence_ref: &str,
+        nonce_byte: u8,
+    ) -> v1::ReconfirmKnowledgeRequest {
+        let key = signing_key();
+        let mut authentication = v1::KnowledgeAuthentication {
+            signing_key_id: identity.signing_key_id.clone(),
+            node_id: identity.node_id.clone(),
+            signed_at: time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+            nonce: vec![nonce_byte; 16],
+            signature: Vec::new(),
+        };
+        let operation = KnowledgeOperation::Reconfirm {
+            knowledge_id,
+            evidence_ref,
+        };
+        let bytes = knowledge_signature::knowledge_signing_bytes(
+            &identity.tenant_id,
+            &identity.repository_id,
+            &operation,
+            &authentication,
+        );
+        authentication.signature = key.sign(&bytes).to_bytes().to_vec();
+        v1::ReconfirmKnowledgeRequest {
+            tenant_id: identity.tenant_id.clone(),
+            repository_id: identity.repository_id.clone(),
+            knowledge_id: knowledge_id.to_owned(),
+            evidence_ref: evidence_ref.to_owned(),
             authentication: Some(authentication),
         }
     }
@@ -785,5 +899,216 @@ mod tests {
         .is_ok());
         assert_eq!(entry.retired_reason, "superseded by verified evidence");
         assert_eq!(entry.retired_by, identity.node_id);
+    }
+
+    #[tokio::test]
+    async fn reconfirmation_records_authenticated_evidence_and_surfaces_it_in_history() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let identity = TestIdentity::fresh("reconfirm");
+        register_test_key(&database_url, &identity).await;
+        let service = KnowledgeGrpcService::new(
+            KnowledgeStore::connect(&database_url)
+                .await
+                .expect("the gated test database should accept a knowledge-store connection"),
+        );
+        let recorded = service
+            .record_knowledge(Request::new(authenticated_record_request(
+                &identity,
+                "a revalidation-tested lesson",
+                100,
+            )))
+            .await
+            .expect("a valid request should record knowledge")
+            .into_inner();
+
+        let reconfirmed = service
+            .reconfirm_knowledge(Request::new(authenticated_reconfirm_request(
+                &identity,
+                &recorded.knowledge_id,
+                "evidence:corroborated",
+                101,
+            )))
+            .await
+            .expect("a valid request should reconfirm knowledge")
+            .into_inner();
+        assert!(reconfirmed.reconfirmed);
+        assert!(!reconfirmed.reconfirmation_id.is_empty());
+        assert_eq!(reconfirmed.evidence_ref, "evidence:corroborated");
+        assert_eq!(reconfirmed.reconfirmed_by, identity.node_id);
+        assert!(time::OffsetDateTime::parse(
+            &reconfirmed.reconfirmed_at,
+            &time::format_description::well_known::Rfc3339
+        )
+        .is_ok());
+
+        let history = service
+            .get_knowledge_history(Request::new(authenticated_history_request(
+                &identity, 10, 102,
+            )))
+            .await
+            .expect("history should expose revalidation state")
+            .into_inner();
+        assert_eq!(history.entries.len(), 1);
+        let entry = &history.entries[0];
+        assert_eq!(entry.knowledge_id, recorded.knowledge_id);
+        assert_eq!(entry.last_reconfirmed_by, identity.node_id);
+        assert_eq!(
+            entry.last_reconfirmation_evidence_ref,
+            "evidence:corroborated"
+        );
+        assert!(time::OffsetDateTime::parse(
+            &entry.last_reconfirmed_at,
+            &time::format_description::well_known::Rfc3339
+        )
+        .is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_tampered_reconfirmation_evidence_reference_is_refused() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let identity = TestIdentity::fresh("reconfirm-tampering");
+        register_test_key(&database_url, &identity).await;
+        let service = KnowledgeGrpcService::new(
+            KnowledgeStore::connect(&database_url)
+                .await
+                .expect("the gated test database should accept a knowledge-store connection"),
+        );
+        let recorded = service
+            .record_knowledge(Request::new(authenticated_record_request(
+                &identity,
+                "a tamper-resistant revalidation lesson",
+                103,
+            )))
+            .await
+            .expect("a valid request should record knowledge")
+            .into_inner();
+        let mut wire = authenticated_reconfirm_request(
+            &identity,
+            &recorded.knowledge_id,
+            "evidence:verified",
+            104,
+        );
+        wire.evidence_ref = "evidence:tampered".to_owned();
+
+        let refused = service
+            .reconfirm_knowledge(Request::new(wire))
+            .await
+            .expect_err("tampering with signed reconfirmation evidence must be refused");
+        assert_eq!(refused.code(), tonic::Code::Unauthenticated);
+
+        let history = service
+            .get_knowledge_history(Request::new(authenticated_history_request(
+                &identity, 10, 105,
+            )))
+            .await
+            .expect("history should prove the forged reconfirmation did not persist")
+            .into_inner();
+        assert_eq!(history.entries.len(), 1);
+        assert_eq!(history.entries[0].last_reconfirmed_at, "");
+        assert_eq!(history.entries[0].last_reconfirmed_by, "");
+        assert_eq!(history.entries[0].last_reconfirmation_evidence_ref, "");
+    }
+
+    #[tokio::test]
+    async fn reconfirmation_rejects_an_empty_corroborating_evidence_reference() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let identity = TestIdentity::fresh("reconfirm-empty-evidence");
+        register_test_key(&database_url, &identity).await;
+        let service = KnowledgeGrpcService::new(
+            KnowledgeStore::connect(&database_url)
+                .await
+                .expect("the gated test database should accept a knowledge-store connection"),
+        );
+        let recorded = service
+            .record_knowledge(Request::new(authenticated_record_request(
+                &identity,
+                "a reconfirmation validation lesson",
+                106,
+            )))
+            .await
+            .expect("a valid request should record knowledge")
+            .into_inner();
+
+        let refused = service
+            .reconfirm_knowledge(Request::new(authenticated_reconfirm_request(
+                &identity,
+                &recorded.knowledge_id,
+                "",
+                107,
+            )))
+            .await
+            .expect_err("reconfirmation without evidence must be refused");
+        assert_eq!(refused.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn a_retired_lesson_cannot_acquire_a_reconfirmation_event() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let identity = TestIdentity::fresh("reconfirm-retired");
+        register_test_key(&database_url, &identity).await;
+        let service = KnowledgeGrpcService::new(
+            KnowledgeStore::connect(&database_url)
+                .await
+                .expect("the gated test database should accept a knowledge-store connection"),
+        );
+        let recorded = service
+            .record_knowledge(Request::new(authenticated_record_request(
+                &identity,
+                "a retired reconfirmation lesson",
+                108,
+            )))
+            .await
+            .expect("a valid request should record knowledge")
+            .into_inner();
+        service
+            .retire_knowledge(Request::new(authenticated_retire_request(
+                &identity,
+                &recorded.knowledge_id,
+                "withdrawn by evidence",
+                "untrusted-label",
+                109,
+            )))
+            .await
+            .expect("a valid request should retire knowledge");
+
+        let result = service
+            .reconfirm_knowledge(Request::new(authenticated_reconfirm_request(
+                &identity,
+                &recorded.knowledge_id,
+                "evidence:too-late",
+                110,
+            )))
+            .await
+            .expect("retired knowledge should return an honest no-op")
+            .into_inner();
+        assert!(!result.reconfirmed);
+        assert_eq!(result.reconfirmation_id, "");
+
+        let history = service
+            .get_knowledge_history(Request::new(authenticated_history_request(
+                &identity, 10, 111,
+            )))
+            .await
+            .expect("history should show no event was created for the retired lesson")
+            .into_inner();
+        assert_eq!(history.entries.len(), 1);
+        let entry = &history.entries[0];
+        assert_eq!(entry.knowledge_id, recorded.knowledge_id);
+        assert_ne!(entry.retired_at, "");
+        assert_eq!(entry.last_reconfirmed_at, "");
+        assert_eq!(entry.last_reconfirmed_by, "");
+        assert_eq!(entry.last_reconfirmation_evidence_ref, "");
     }
 }

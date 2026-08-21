@@ -28,6 +28,7 @@ service KnowledgeService {
   rpc RecordKnowledge(RecordKnowledgeRequest) returns (KnowledgeRecord);
   rpc RecallKnowledge(RecallKnowledgeRequest) returns (RecallKnowledgeResult);
   rpc GetKnowledgeHistory(KnowledgeHistoryRequest) returns (KnowledgeHistoryResult);
+  rpc ReconfirmKnowledge(ReconfirmKnowledgeRequest) returns (ReconfirmKnowledgeResult);
   rpc RetireKnowledge(RetireKnowledgeRequest) returns (RetireKnowledgeResult);
 }
 
@@ -194,6 +195,9 @@ message ActiveKnowledgeEntry {
   double effective_weight = 4;
   string confirmed_at = 5;
   string recorded_by = 6;
+  string last_reconfirmed_at = 7;
+  string last_reconfirmed_by = 8;
+  string last_reconfirmation_evidence_ref = 9;
 }
 
 message RecallKnowledgeResult {
@@ -223,11 +227,30 @@ message KnowledgeHistoryEntry {
   string retired_reason = 6;
   string retired_by = 7;
   string recorded_by = 8;
+  string last_reconfirmed_at = 9;
+  string last_reconfirmed_by = 10;
+  string last_reconfirmation_evidence_ref = 11;
 }
 
 message KnowledgeHistoryResult {
   repeated KnowledgeHistoryEntry entries = 1;
   uint32 effective_limit = 2;
+}
+
+message ReconfirmKnowledgeRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string knowledge_id = 3;
+  string evidence_ref = 4;
+  KnowledgeAuthentication authentication = 5;
+}
+
+message ReconfirmKnowledgeResult {
+  bool reconfirmed = 1;
+  string reconfirmation_id = 2;
+  string evidence_ref = 3;
+  string reconfirmed_by = 4;
+  string reconfirmed_at = 5;
 }
 
 message RetireKnowledgeRequest {

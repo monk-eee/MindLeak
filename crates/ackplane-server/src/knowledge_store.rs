@@ -19,6 +19,8 @@ const MIGRATION: &str = include_str!("../migrations/0007_knowledge.sql");
 const NONCE_MIGRATION: &str =
     include_str!("../migrations/0008_knowledge_authentication_nonces.sql");
 const RECORDED_BY_MIGRATION: &str = include_str!("../migrations/0011_knowledge_recorded_by.sql");
+const RECONFIRMATION_MIGRATION: &str =
+    include_str!("../migrations/0012_knowledge_reconfirmations.sql");
 
 #[derive(Debug, thiserror::Error)]
 pub enum KnowledgeStoreError {
@@ -28,6 +30,8 @@ pub enum KnowledgeStoreError {
     InvalidHalfLife,
     #[error("content must not be empty")]
     EmptyContent,
+    #[error("reconfirmation evidence must not be empty")]
+    EmptyReconfirmationEvidence,
 }
 
 /// One learned-knowledge statement as `record`/`retire` return it.
@@ -67,6 +71,9 @@ pub struct ActiveKnowledge {
     pub content: String,
     pub source_ref: Option<String>,
     pub recorded_by: Option<String>,
+    pub last_reconfirmed_at: Option<SystemTime>,
+    pub last_reconfirmed_by: Option<String>,
+    pub last_reconfirmation_evidence_ref: Option<String>,
     pub effective_weight: f64,
     pub confirmed_at: SystemTime,
 }
@@ -79,10 +86,24 @@ pub struct KnowledgeHistoryEntry {
     pub content: String,
     pub source_ref: Option<String>,
     pub recorded_by: Option<String>,
+    pub last_reconfirmed_at: Option<SystemTime>,
+    pub last_reconfirmed_by: Option<String>,
+    pub last_reconfirmation_evidence_ref: Option<String>,
     pub confirmed_at: SystemTime,
     pub retired_at: Option<SystemTime>,
     pub retired_reason: Option<String>,
     pub retired_by: Option<String>,
+}
+
+/// One durable corroboration that refreshed a knowledge statement's decay
+/// clock. The latest entry is exposed on recall/history; this record keeps the
+/// full audit chain instead of overwriting the prior corroboration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KnowledgeReconfirmation {
+    pub reconfirmation_id: String,
+    pub evidence_ref: String,
+    pub reconfirmed_by: String,
+    pub reconfirmed_at: SystemTime,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -108,6 +129,18 @@ const EFFECTIVE_WEIGHT_SQL: &str = "CASE WHEN half_life_hours <= 0 THEN 1.0 \
      WHEN now() <= confirmed_at THEN 1.0 \
      ELSE power(2.0, -(extract(epoch from (now() - confirmed_at)) / 3600.0) / half_life_hours) \
      END";
+
+const LATEST_RECONFIRMATION_JOIN: &str = "LEFT JOIN LATERAL ( \
+        SELECT reconfirmed_at AS last_reconfirmed_at, \
+                     reconfirmed_by AS last_reconfirmed_by, \
+                     evidence_ref AS last_reconfirmation_evidence_ref \
+            FROM knowledge_reconfirmations \
+         WHERE tenant_id = k.tenant_id \
+             AND repository_id = k.repository_id \
+             AND knowledge_id = k.knowledge_id \
+         ORDER BY reconfirmed_at DESC, reconfirmation_id DESC \
+         LIMIT 1 \
+ ) latest_reconfirmation ON TRUE";
 
 pub struct KnowledgeStore {
     client: Client,
@@ -137,6 +170,12 @@ impl KnowledgeStore {
             &mut client,
             crate::migration_lock::key::KNOWLEDGE_RECORDED_BY,
             RECORDED_BY_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::KNOWLEDGE_RECONFIRMATIONS,
+            RECONFIRMATION_MIGRATION,
         )
         .await?;
         Ok(Self { client })
@@ -250,11 +289,15 @@ impl KnowledgeStore {
                     .query(
                         &format!(
                             "SELECT k.knowledge_id, k.content, k.source_ref, k.recorded_by, k.confirmed_at, \
+                                latest_reconfirmation.last_reconfirmed_at, \
+                                latest_reconfirmation.last_reconfirmed_by, \
+                                latest_reconfirmation.last_reconfirmation_evidence_ref, \
                                     {EFFECTIVE_WEIGHT_SQL} AS effective_weight \
                              FROM knowledge k \
                              JOIN knowledge_embeddings e \
                                ON e.tenant_id = k.tenant_id AND e.repository_id = k.repository_id \
                                   AND e.knowledge_id = k.knowledge_id AND e.model = $3 \
+                             {LATEST_RECONFIRMATION_JOIN} \
                              WHERE k.tenant_id = $1 AND k.repository_id = $2 AND k.retired_at IS NULL \
                              ORDER BY e.embedding <=> $4 \
                              LIMIT $5"
@@ -267,10 +310,14 @@ impl KnowledgeStore {
                 self.client
                     .query(
                         &format!(
-                            "SELECT knowledge_id, content, source_ref, recorded_by, confirmed_at, \
+                            "SELECT k.knowledge_id, k.content, k.source_ref, k.recorded_by, k.confirmed_at, \
+                                latest_reconfirmation.last_reconfirmed_at, \
+                                latest_reconfirmation.last_reconfirmed_by, \
+                                latest_reconfirmation.last_reconfirmation_evidence_ref, \
                                     {EFFECTIVE_WEIGHT_SQL} AS effective_weight \
-                             FROM knowledge \
-                             WHERE tenant_id = $1 AND repository_id = $2 AND retired_at IS NULL \
+                             FROM knowledge k \
+                             {LATEST_RECONFIRMATION_JOIN} \
+                             WHERE k.tenant_id = $1 AND k.repository_id = $2 AND k.retired_at IS NULL \
                              ORDER BY effective_weight DESC \
                              LIMIT $3"
                         ),
@@ -286,6 +333,9 @@ impl KnowledgeStore {
                 content: row.get("content"),
                 source_ref: row.get("source_ref"),
                 recorded_by: row.get("recorded_by"),
+                last_reconfirmed_at: row.get("last_reconfirmed_at"),
+                last_reconfirmed_by: row.get("last_reconfirmed_by"),
+                last_reconfirmation_evidence_ref: row.get("last_reconfirmation_evidence_ref"),
                 effective_weight: row.get("effective_weight"),
                 confirmed_at: row.get("confirmed_at"),
             })
@@ -307,11 +357,18 @@ impl KnowledgeStore {
         let rows = self
             .client
             .query(
-                "SELECT knowledge_id, content, source_ref, recorded_by, confirmed_at, retired_at, retired_reason, retired_by \
-                 FROM knowledge \
-                 WHERE tenant_id = $1 AND repository_id = $2 \
-                 ORDER BY COALESCE(retired_at, confirmed_at) DESC, knowledge_id ASC \
-                 LIMIT $3",
+                &format!(
+                    "SELECT k.knowledge_id, k.content, k.source_ref, k.recorded_by, k.confirmed_at, \
+                            k.retired_at, k.retired_reason, k.retired_by, \
+                            latest_reconfirmation.last_reconfirmed_at, \
+                            latest_reconfirmation.last_reconfirmed_by, \
+                            latest_reconfirmation.last_reconfirmation_evidence_ref \
+                     FROM knowledge k \
+                     {LATEST_RECONFIRMATION_JOIN} \
+                     WHERE k.tenant_id = $1 AND k.repository_id = $2 \
+                     ORDER BY COALESCE(k.retired_at, k.confirmed_at) DESC, k.knowledge_id ASC \
+                     LIMIT $3"
+                ),
                 &[&tenant_id, &repository_id, &limit],
             )
             .await?;
@@ -322,12 +379,66 @@ impl KnowledgeStore {
                 content: row.get("content"),
                 source_ref: row.get("source_ref"),
                 recorded_by: row.get("recorded_by"),
+                last_reconfirmed_at: row.get("last_reconfirmed_at"),
+                last_reconfirmed_by: row.get("last_reconfirmed_by"),
+                last_reconfirmation_evidence_ref: row.get("last_reconfirmation_evidence_ref"),
                 confirmed_at: row.get("confirmed_at"),
                 retired_at: row.get("retired_at"),
                 retired_reason: row.get("retired_reason"),
                 retired_by: row.get("retired_by"),
             })
             .collect())
+    }
+
+    /// Reconfirms an active statement with fresh corroborating evidence. The
+    /// `WITH` statement updates its clock and inserts the audit event as one
+    /// atomic operation, so a retired or missing statement cannot acquire a
+    /// reconfirmation record through an interleaving write.
+    pub async fn reconfirm(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        knowledge_id: &str,
+        evidence_ref: &str,
+        reconfirmed_by: &str,
+        now: SystemTime,
+    ) -> Result<Option<KnowledgeReconfirmation>, KnowledgeStoreError> {
+        let evidence_ref = evidence_ref.trim();
+        if evidence_ref.is_empty() {
+            return Err(KnowledgeStoreError::EmptyReconfirmationEvidence);
+        }
+        let reconfirmation_id = unique_reconfirmation_id();
+        let row = self
+            .client
+            .query_opt(
+                "WITH refreshed AS ( \
+                    UPDATE knowledge \
+                       SET confirmed_at = $6 \
+                     WHERE tenant_id = $1 AND repository_id = $2 AND knowledge_id = $3 \
+                       AND retired_at IS NULL \
+                 RETURNING knowledge_id \
+                 ) \
+                 INSERT INTO knowledge_reconfirmations \
+                     (tenant_id, repository_id, knowledge_id, reconfirmation_id, evidence_ref, reconfirmed_by, reconfirmed_at) \
+                 SELECT $1, $2, knowledge_id, $4, $5, $7, $6 FROM refreshed \
+                 RETURNING reconfirmation_id, evidence_ref, reconfirmed_by, reconfirmed_at",
+                &[
+                    &tenant_id,
+                    &repository_id,
+                    &knowledge_id,
+                    &reconfirmation_id,
+                    &evidence_ref,
+                    &now,
+                    &reconfirmed_by,
+                ],
+            )
+            .await?;
+        Ok(row.map(|row| KnowledgeReconfirmation {
+            reconfirmation_id: row.get("reconfirmation_id"),
+            evidence_ref: row.get("evidence_ref"),
+            reconfirmed_by: row.get("reconfirmed_by"),
+            reconfirmed_at: row.get("reconfirmed_at"),
+        }))
     }
 
     pub async fn retire(
@@ -353,10 +464,18 @@ impl KnowledgeStore {
 /// A random, prefixed id -- no meaning is derived from its bytes, unlike
 /// `(tenant_id, repository_id)` which stay the real scoping key everywhere.
 fn unique_knowledge_id() -> String {
+    unique_id("knowledge")
+}
+
+fn unique_reconfirmation_id() -> String {
+    unique_id("knowledge-reconfirmation")
+}
+
+fn unique_id(prefix: &str) -> String {
     let mut bytes = [0u8; 16];
     getrandom::getrandom(&mut bytes).expect("the OS random source should be available");
     let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("knowledge-{hex}")
+    format!("{prefix}-{hex}")
 }
 
 #[cfg(test)]
@@ -695,6 +814,56 @@ mod tests {
         );
         assert_eq!(retired_entry.retired_by.as_deref(), Some("node:reviewer"));
         assert_eq!(retired_entry.recorded_by.as_deref(), Some("node:retired"));
+    }
+
+    #[tokio::test]
+    async fn reconfirmation_resets_an_active_statements_clock_with_audited_evidence() {
+        let Some(store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, repository_id) = unique_scope("reconfirm");
+        let recorded = store
+            .record(RecordKnowledgeRequest {
+                tenant_id: tenant_id.clone(),
+                repository_id: repository_id.clone(),
+                content: "reconfirmation resets decay".to_string(),
+                source_ref: Some("evidence:initial".to_string()),
+                recorded_by: Some("node:recorder".to_string()),
+                half_life_hours: 24.0,
+                embedding: None,
+            })
+            .await
+            .unwrap();
+        let reconfirmed_at = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_234_567);
+
+        let reconfirmation = store
+            .reconfirm(
+                &tenant_id,
+                &repository_id,
+                &recorded.knowledge_id,
+                "evidence:corroborated",
+                "node:reviewer",
+                reconfirmed_at,
+            )
+            .await
+            .unwrap()
+            .expect("an active statement should be reconfirmed");
+        assert_eq!(reconfirmation.evidence_ref, "evidence:corroborated");
+        assert_eq!(reconfirmation.reconfirmed_by, "node:reviewer");
+        assert_eq!(reconfirmation.reconfirmed_at, reconfirmed_at);
+
+        let history = store.history(&tenant_id, &repository_id, 10).await.unwrap();
+        assert_eq!(history.len(), 1);
+        let entry = &history[0];
+        assert_eq!(entry.knowledge_id, recorded.knowledge_id);
+        assert_eq!(entry.confirmed_at, reconfirmed_at);
+        assert_eq!(entry.last_reconfirmed_at, Some(reconfirmed_at));
+        assert_eq!(
+            entry.last_reconfirmation_evidence_ref.as_deref(),
+            Some("evidence:corroborated")
+        );
+        assert_eq!(entry.last_reconfirmed_by.as_deref(), Some("node:reviewer"));
     }
 
     #[tokio::test]
