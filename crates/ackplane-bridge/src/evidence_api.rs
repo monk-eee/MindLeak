@@ -27,6 +27,7 @@ use crate::evidence::{page_limit, BridgeEvidenceStore, ConformanceView, Evidence
 
 mod board;
 mod export;
+mod page;
 
 const DEFAULT_EVIDENCE_STALE_AFTER: Duration = Duration::from_secs(15 * 60);
 
@@ -58,6 +59,7 @@ impl EvidenceApiState {
 /// Builds the read-only Evidence Board sub-router.
 pub fn evidence_routes(state: EvidenceApiState) -> Router {
     Router::new()
+        .route("/evidence", get(page::evidence_page))
         .route(
             "/api/v1/repositories/:repository_id/tasks/:task_id/evidence",
             get(task_evidence),

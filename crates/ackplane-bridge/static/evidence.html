@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MindLeak Bridge Evidence Board</title>
+  <script>
+    (() => {
+      const theme = new URLSearchParams(window.location.search).get("scoutTheme") ||
+        (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #faf6f3;
+      --surface: #ffffff;
+      --surface-soft: #f6f1ee;
+      --border: #e9dfd9;
+      --ink: #1f2542;
+      --muted: #62677f;
+      --soft: #9094aa;
+      --rose: #e8578f;
+      --rose-soft: #fbe6ee;
+      --teal: #169c99;
+      --teal-soft: #e2f5f3;
+      --amber: #d4881e;
+      --amber-soft: #fbefda;
+      --danger: #c03d58;
+      --danger-soft: #f9e3e8;
+      --shadow: 0 12px 28px rgba(31, 37, 66, 0.08);
+      --focus: 0 0 0 3px rgba(232, 87, 143, 0.28);
+    }
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #151827;
+      --surface: #1d2135;
+      --surface-soft: #252a42;
+      --border: #353b59;
+      --ink: #f1f2fd;
+      --muted: #afb3cd;
+      --soft: #8187a8;
+      --rose: #ff8bb5;
+      --rose-soft: rgba(255, 139, 181, 0.15);
+      --teal: #56d4ce;
+      --teal-soft: rgba(86, 212, 206, 0.14);
+      --amber: #f2ba65;
+      --amber-soft: rgba(242, 186, 101, 0.14);
+      --danger: #ff8eaa;
+      --danger-soft: rgba(255, 142, 170, 0.15);
+      --shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
+      --focus: 0 0 0 3px rgba(255, 139, 181, 0.36);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font-family: "Segoe UI Variable", Aptos, system-ui, sans-serif; }
+    button, input, select { font: inherit; }
+    button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: none; box-shadow: var(--focus); }
+    header { position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 94%, transparent); backdrop-filter: blur(14px); border-bottom: 1px solid var(--border); }
+    header::after { content: ""; display: block; height: 3px; background: linear-gradient(90deg, var(--rose), var(--teal)); }
+    .shell { width: min(1240px, calc(100% - 36px)); margin: 0 auto; }
+    .masthead { min-height: 74px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+    .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+    .mark { width: 34px; height: 34px; border: 1px solid var(--border); border-radius: 8px; display: grid; place-items: center; background: var(--surface); color: var(--rose); font-family: Georgia, serif; font-weight: 800; font-size: 1.3rem; }
+    .brand h1 { margin: 0; font-size: 1.05rem; letter-spacing: 0; }
+    .brand p { margin: 2px 0 0; font-size: 0.76rem; color: var(--soft); }
+    .nav { display: flex; flex-wrap: wrap; justify-content: end; gap: 5px; }
+    .nav a { text-decoration: none; color: var(--muted); font-size: 0.78rem; font-weight: 650; padding: 7px 9px; border-radius: 6px; }
+    .nav a:hover, .nav a[aria-current="page"] { color: var(--ink); background: var(--surface-soft); }
+    .nav a[aria-disabled="true"] { cursor: default; opacity: .5; pointer-events: none; }
+    main { padding: 28px 0 56px; }
+    .heading { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 18px; flex-wrap: wrap; }
+    .eyebrow { margin: 0 0 5px; font-size: 0.69rem; color: var(--soft); font-weight: 750; letter-spacing: .09em; text-transform: uppercase; }
+    .heading h2 { margin: 0; font-size: 1.55rem; letter-spacing: 0; }
+    .heading p { margin: 5px 0 0; color: var(--muted); font-size: .86rem; max-width: 50ch; }
+    .toolbar { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) 106px auto auto; gap: 10px; align-items: end; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 13px; box-shadow: var(--shadow); }
+    label { display: grid; gap: 5px; color: var(--soft); font-size: .7rem; font-weight: 700; letter-spacing: .045em; text-transform: uppercase; }
+    input, select { width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--ink); background: var(--surface); font-size: .85rem; text-transform: none; letter-spacing: 0; }
+    .command { height: 37px; padding: 0 13px; border: 1px solid transparent; border-radius: 6px; background: var(--ink); color: var(--surface); font-weight: 700; cursor: pointer; font-size: .82rem; }
+    .command:hover { filter: brightness(1.08); }
+    .command.secondary { background: var(--surface-soft); color: var(--ink); border-color: var(--border); }
+    .message { min-height: 21px; margin: 12px 2px 0; color: var(--muted); font-size: .82rem; }
+    .message.error { color: var(--danger); }
+    .status-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin: 18px 0; }
+    .metric { min-height: 78px; padding: 13px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+    .metric span { display: block; color: var(--soft); font-size: .68rem; text-transform: uppercase; letter-spacing: .055em; font-weight: 700; }
+    .metric strong { display: block; margin-top: 8px; font-size: .95rem; text-transform: capitalize; }
+    .state-missing strong { color: var(--soft); }
+    .state-partial strong, .state-pending strong, .state-stale strong { color: var(--amber); }
+    .state-blocked strong { color: var(--danger); }
+    .state-ready strong, .state-complete strong, .state-fresh strong { color: var(--teal); }
+    .board { display: grid; grid-template-columns: minmax(0, 1.16fr) minmax(0, .84fr); gap: 16px; }
+    section { min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); }
+    .section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 14px 15px; border-bottom: 1px solid var(--border); }
+    .section-head h3 { margin: 0; font-size: .9rem; }
+    .count { color: var(--soft); font-size: .75rem; font-weight: 650; }
+    .rows { list-style: none; margin: 0; padding: 0; }
+    .row { border-bottom: 1px solid var(--border); }
+    .row:last-child { border-bottom: 0; }
+    details { padding: 0; }
+    summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 12px 14px; }
+    summary::-webkit-details-marker { display: none; }
+    .indicator { width: 8px; height: 8px; border-radius: 50%; background: var(--soft); }
+    .indicator.commit, .indicator.execution, .indicator.receipt { background: var(--teal); }
+    .indicator.violation { background: var(--danger); }
+    .indicator.drift, .indicator.needs_human { background: var(--amber); }
+    .row-title { min-width: 0; font-size: .82rem; font-weight: 700; overflow-wrap: anywhere; }
+    .row-meta { color: var(--soft); font-family: "Cascadia Code", Consolas, monospace; font-size: .7rem; white-space: nowrap; }
+    .detail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; padding: 0 14px 14px 32px; color: var(--muted); font-size: .76rem; }
+    .detail b { display: block; color: var(--soft); font-size: .64rem; letter-spacing: .04em; text-transform: uppercase; margin-bottom: 3px; }
+    .detail code { overflow-wrap: anywhere; color: var(--ink); font-family: "Cascadia Code", Consolas, monospace; font-size: .72rem; }
+    .empty { padding: 34px 18px; color: var(--soft); font-size: .83rem; text-align: center; }
+    .api-links { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 16px; }
+    .api-links a { padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--muted); font-size: .75rem; font-weight: 650; text-decoration: none; }
+    .api-links a:hover { color: var(--ink); border-color: var(--soft); }
+    .hidden { display: none !important; }
+    @media (max-width: 850px) { .toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); } .toolbar .command { width: 100%; } .board { grid-template-columns: 1fr; } }
+    @media (max-width: 600px) { .shell { width: min(100% - 24px, 1240px); } .masthead { align-items: start; padding: 14px 0; } .nav { justify-content: start; } .status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .detail { grid-template-columns: 1fr; padding-left: 14px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="shell masthead">
+      <div class="brand">
+        <div class="mark" aria-hidden="true">M</div>
+        <div><h1>MindLeak Bridge</h1><p>Industrial evidence board</p></div>
+      </div>
+      <nav class="nav" aria-label="Industrial surfaces">
+        <a href="/">Fleet</a><a href="/evidence" aria-current="page">Evidence</a>
+        <a id="work-link" href="#filters" aria-disabled="true">Work</a><a id="design-link" href="#filters" aria-disabled="true">Design</a>
+        <a id="constitution-link" href="#filters" aria-disabled="true">Constitution</a><a id="knowledge-link" href="#filters" aria-disabled="true">Knowledge</a>
+      </nav>
+    </div>
+  </header>
+  <main class="shell">
+    <div class="heading">
+      <div><p class="eyebrow">Review surface</p><h2>Evidence Board</h2><p id="scope-label">Select a repository and task.</p></div>
+    </div>
+    <form id="filters" class="toolbar">
+      <label>Repository<input id="repository" name="repository" required autocomplete="off" spellcheck="false"></label>
+      <label>Task<input id="task" name="task" required autocomplete="off" spellcheck="false"></label>
+      <label>Page size<select id="limit" name="limit"><option>10</option><option selected>20</option><option>50</option><option>100</option></select></label>
+      <button class="command" type="submit">Load</button>
+      <button id="export" class="command secondary" type="button" disabled>Export</button>
+    </form>
+    <p id="message" class="message" role="status" aria-live="polite"></p>
+    <div id="status-grid" class="status-grid hidden" aria-label="Evidence status">
+      <div id="evidence-state" class="metric"><span>Evidence</span><strong>-</strong></div>
+      <div id="conformance-state" class="metric"><span>Conformance</span><strong>-</strong></div>
+      <div id="review-state" class="metric"><span>Review</span><strong>-</strong></div>
+      <div id="freshness-state" class="metric"><span>Freshness</span><strong>-</strong></div>
+    </div>
+    <div id="board" class="board hidden">
+      <section aria-labelledby="evidence-heading"><div class="section-head"><h3 id="evidence-heading">Evidence</h3><span id="evidence-count" class="count"></span></div><ul id="evidence-list" class="rows"></ul></section>
+      <section aria-labelledby="conformance-heading"><div class="section-head"><h3 id="conformance-heading">Conformance</h3><span id="conformance-count" class="count"></span></div><ul id="conformance-list" class="rows"></ul></section>
+    </div>
+    <div id="api-links" class="api-links hidden" aria-label="Related Industrial records">
+      <a id="work-api" href="/">Work</a><a id="constitution-api" href="/">Constitution</a><a id="knowledge-api" href="/">Knowledge</a>
+    </div>
+  </main>
+  <script>
+    const els = {
+      form: document.getElementById("filters"), repository: document.getElementById("repository"), task: document.getElementById("task"), limit: document.getElementById("limit"),
+      export: document.getElementById("export"), message: document.getElementById("message"), scope: document.getElementById("scope-label"),
+      status: document.getElementById("status-grid"), board: document.getElementById("board"), links: document.getElementById("api-links"),
+      evidence: document.getElementById("evidence-list"), conformance: document.getElementById("conformance-list"), evidenceCount: document.getElementById("evidence-count"), conformanceCount: document.getElementById("conformance-count")
+    };
+    let loaded = null;
+    const params = new URLSearchParams(location.search);
+    els.repository.value = params.get("repository") || "";
+    els.task.value = params.get("task") || "";
+    const escape = (value) => String(value ?? "").replace(/[&<>"]/g, character => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[character]));
+    const when = (seconds) => Number.isFinite(seconds) ? new Date(seconds * 1000).toLocaleString() : "unknown";
+    const setMessage = (text, error = false) => { els.message.textContent = text; els.message.classList.toggle("error", error); };
+    const state = (id, value) => { const node = document.getElementById(id); node.className = `metric state-${value}`; node.querySelector("strong").textContent = value.replaceAll("_", " "); };
+    const endpoint = (suffix) => `/api/v1/repositories/${encodeURIComponent(els.repository.value.trim())}/tasks/${encodeURIComponent(els.task.value.trim())}/${suffix}`;
+    const related = () => {
+      const repo = encodeURIComponent(els.repository.value.trim());
+      document.getElementById("work-api").href = `/api/v1/repositories/${repo}/claims`;
+      document.getElementById("constitution-api").href = `/api/v1/repositories/${repo}/constitution`;
+      document.getElementById("knowledge-api").href = `/api/v1/repositories/${repo}/knowledge`;
+      for (const [id, href] of [
+        ["work-link", `/api/v1/repositories/${repo}/claims`],
+        ["constitution-link", `/api/v1/repositories/${repo}/constitution`],
+        ["knowledge-link", `/api/v1/repositories/${repo}/knowledge`],
+      ]) {
+        const link = document.getElementById(id);
+        link.href = href;
+        link.removeAttribute("aria-disabled");
+      }
+    };
+    const evidenceRow = entry => `<li class="row"><details><summary><span class="indicator ${escape(entry.kind)}"></span><span class="row-title">${escape(entry.source_ref)}</span><span class="row-meta">${escape(entry.kind)}</span></summary><div class="detail"><div><b>Digest</b><code>${escape(entry.content_digest_hex)}</code></div><div><b>Recorded</b>${escape(when(entry.recorded_at_seconds))}</div><div><b>Producer</b>${escape(entry.recorded_by)}</div><div><b>Constitution</b>${escape(entry.reported_constitution_version || "not reported")}</div>${entry.receipt_id ? `<div><b>Receipt</b><code>${escape(entry.receipt_id)}</code></div>` : ""}</div></details></li>`;
+    const conformanceRow = entry => `<li class="row"><details><summary><span class="indicator ${escape(entry.verdict)}"></span><span class="row-title">${escape(entry.verdict.replaceAll("_", " "))}</span><span class="row-meta">${escape(entry.review_state)}</span></summary><div class="detail"><div><b>Finding digest</b><code>${escape(entry.findings_digest_hex)}</code></div><div><b>Finding count</b>${escape(entry.finding_count)}</div><div><b>Evaluator</b>${escape(entry.evaluated_by)}</div><div><b>Constitution</b>${escape(entry.reported_constitution_version || "not reported")}</div><div><b>Checked</b>${escape(when(entry.reported_checked_at_seconds))}</div></div></details></li>`;
+    const list = (node, entries, render, empty) => { node.innerHTML = entries.length ? entries.map(render).join("") : `<li class="empty">${escape(empty)}</li>`; };
+    const draw = result => {
+      loaded = result;
+      els.status.classList.remove("hidden"); els.board.classList.remove("hidden"); els.links.classList.remove("hidden"); els.export.disabled = false;
+      state("evidence-state", result.status.evidence); state("conformance-state", result.status.conformance); state("review-state", result.status.review); state("freshness-state", result.status.freshness);
+      els.scope.textContent = `${els.repository.value.trim()} / ${els.task.value.trim()}`;
+      list(els.evidence, result.evidence.entries, evidenceRow, "No evidence records on this page.");
+      list(els.conformance, result.conformance.entries, conformanceRow, "No conformance records on this page.");
+      els.evidenceCount.textContent = `${result.evidence.entries.length} record${result.evidence.entries.length === 1 ? "" : "s"}${result.evidence.next_cursor ? " +" : ""}`;
+      els.conformanceCount.textContent = `${result.conformance.entries.length} record${result.conformance.entries.length === 1 ? "" : "s"}${result.conformance.next_cursor ? " +" : ""}`;
+      related();
+    };
+    async function load() {
+      if (!els.form.reportValidity()) return;
+      const query = new URLSearchParams({limit: els.limit.value});
+      setMessage("Loading evidence..."); els.export.disabled = true;
+      try {
+        const response = await fetch(`${endpoint("evidence-board")}?${query}`);
+        if (!response.ok) throw new Error(response.status === 404 ? "Repository or task is outside the current scope." : `Evidence Board request failed (${response.status}).`);
+        draw(await response.json()); setMessage("Loaded.");
+        history.replaceState(null, "", `/evidence?repository=${encodeURIComponent(els.repository.value.trim())}&task=${encodeURIComponent(els.task.value.trim())}`);
+      } catch (error) { setMessage(error.message, true); }
+    }
+    els.form.addEventListener("submit", event => { event.preventDefault(); load(); });
+    els.export.addEventListener("click", async () => {
+      if (!loaded) return;
+      setMessage("Preparing audit package...");
+      try {
+        const response = await fetch(`${endpoint("evidence-board/export")}?limit=${encodeURIComponent(els.limit.value)}`);
+        if (!response.ok) throw new Error(`Audit export failed (${response.status}).`);
+        const blob = new Blob([JSON.stringify(await response.json(), null, 2)], {type: "application/json"});
+        const anchor = Object.assign(document.createElement("a"), {href: URL.createObjectURL(blob), download: `${els.task.value.trim().replace(/[^a-z0-9._-]/gi, "-")}-evidence.json`});
+        anchor.click(); URL.revokeObjectURL(anchor.href); setMessage("Audit package downloaded.");
+      } catch (error) { setMessage(error.message, true); }
+    });
+    if (els.repository.value && els.task.value) load();
+  </script>
+</body>
+</html>
