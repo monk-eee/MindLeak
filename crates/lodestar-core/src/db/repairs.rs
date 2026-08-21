@@ -84,3 +84,36 @@ pub(super) fn reconnect_superseded_clauses(connection: &Connection) -> Result<()
     )?;
     Ok(())
 }
+
+/// Undo the wrong tag left by the one-time freeze's backfill firing on every
+/// open instead of only the one that creates `constitution:v1`.
+///
+/// `define_goal` always inserts a NULL `constitution_version` (a plain
+/// objective is not part of the versioned clause set an amendment carries
+/// forward). `migrate_constitution_versions`' backfill nonetheless matched
+/// any NULL row unconditionally, so an objective created long after the
+/// constitution moved past v1 was silently mislabeled the next time the
+/// database was merely reopened. Measured live in this repository: three
+/// objectives (compile_context, compile_digest, and a superseded-in-error
+/// duplicate of the title_twin work) carried `constitution:v1` while the
+/// active version was already `constitution:v4`.
+///
+/// Named by exact id rather than a general "objective with a stale tag"
+/// rule: a broader predicate risks reaching a goal an amendment genuinely
+/// carried forward, which this repair must never touch.
+pub(super) fn clear_backfilled_constitution_version_from_objectives(
+    connection: &Connection,
+) -> Result<()> {
+    connection.execute(
+        "UPDATE goals SET constitution_version = NULL
+          WHERE id IN (
+              'goal:adr-0102-dynamic-context-compiler-compile-contex',
+              'goal:adr-0101-digest-compilation-compile-digest',
+              'goal:adr-0099-claim-also-checks-for-a-live-twin-by-ti-v2'
+          )
+            AND kind = 'objective'
+            AND constitution_version = 'constitution:v1'",
+        [],
+    )?;
+    Ok(())
+}
