@@ -120,6 +120,11 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0110](0110-a-ledger-act-is-independently-verifiable-evidence.md) | A Lodestar ledger act is independently verifiable evidence | Accepted |
 | [0111](0111-bridge-recovers-a-stranded-claim-as-a-tenant-scoped-administrative-action.md) | Bridge recovers a stranded claim as a tenant-scoped administrative action | Accepted |
 | [0112](0112-bridge-list-reads-are-paginated-sortable-and-filterable.md) | Bridge list reads are paginated, sortable, and filterable server-side | Accepted |
+| [0113](0113-the-industrial-knowledge-plane-is-evidence-backed-and-human-governed.md) | The Industrial knowledge plane is evidence-backed and human-governed | Accepted |
+| [0114](0114-context-packets-are-bounded-attributed-and-reproducible.md) | Context packets are bounded, attributed, and reproducible | Accepted |
+| [0115](0115-human-delegation-bounds-industrial-agent-autonomy.md) | Human delegation bounds Industrial agent autonomy | Accepted |
+| [0116](0116-enrolled-supervisors-are-the-distributed-agent-runtime.md) | Enrolled supervisors are the distributed agent runtime | Accepted |
+| [0117](0117-the-bridge-live-feed-is-a-replayable-operations-stream.md) | The Bridge live feed is a replayable operations stream | Accepted |
 
 ## Writing a new ADR
 
