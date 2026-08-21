@@ -120,7 +120,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0110](0110-a-ledger-act-is-independently-verifiable-evidence.md) | A Lodestar ledger act is independently verifiable evidence | Accepted |
 | [0111](0111-bridge-recovers-a-stranded-claim-as-a-tenant-scoped-administrative-action.md) | Bridge recovers a stranded claim as a tenant-scoped administrative action | Accepted |
 | [0112](0112-bridge-list-reads-are-paginated-sortable-and-filterable.md) | Bridge list reads are paginated, sortable, and filterable server-side | Accepted |
-| [0118](0118-the-coverage-gate-provisions-postgres-for-ackplane.md) | The Coverage gate provisions Postgres for Ackplane's tests | Proposed |
+| [0118](0118-the-coverage-gate-provisions-postgres-for-ackplane.md) | The Coverage gate provisions Postgres for Ackplane's tests | Accepted |
 
 ## Writing a new ADR
 
