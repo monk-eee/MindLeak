@@ -456,3 +456,34 @@ try {
     `canonical-push: binding audit failed but remains non-fatal: ${diagnostic}`,
   );
 }
+
+// A lesson left in a flat agent-memory file only ever reaches the agent that
+// wrote it. `ingest-agent-memory.mjs` migrates it into the durable, shared
+// knowledge store instead, but nothing ran it automatically -- a lesson
+// stayed inert until someone remembered to invoke the script by hand.
+//
+// There is no portable default path to migrate: agent memory lives wherever
+// the calling agent's own tooling keeps it (often outside this repository
+// entirely, e.g. an editor's per-machine profile storage), never at a fixed
+// location every contributor shares. So this step is opt-in, not assumed --
+// an agent that wants its memory file migrated on every publish sets
+// AGENT_MEMORY_FILE once, and this runs from then on. Unset, this is a no-op,
+// exactly like every other environment-driven override in this script.
+if (process.env.AGENT_MEMORY_FILE) {
+  try {
+    execFileSync(
+      process.execPath,
+      [
+        "scripts/ingest-agent-memory.mjs",
+        process.env.AGENT_MEMORY_FILE,
+        "--prune",
+      ],
+      { cwd: repoRoot, stdio: "inherit", env: process.env },
+    );
+  } catch (error) {
+    const diagnostic = error.stderr?.toString().trim() || error.message;
+    console.warn(
+      `canonical-push: agent-memory ingestion failed but remains non-fatal: ${diagnostic}`,
+    );
+  }
+}
