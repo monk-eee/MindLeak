@@ -222,6 +222,24 @@ jobs:
   coverage:
     name: Coverage (Rust + VS Code)
     runs-on: ubuntu-latest
+    # ADR-0118: a real Postgres service, pinned to the same image and
+    # credentials as docker-compose.yml, so ackplane-server's
+    # ACKPLANE_TEST_DATABASE_URL-gated tests execute here instead of
+    # hollow-skipping and undercounting the coverage measurement.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+        env:
+          POSTGRES_USER: ackplane
+          POSTGRES_PASSWORD: ackplane-development-only-not-for-production
+          POSTGRES_DB: ackplane
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ackplane -d ackplane"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v5
       - name: Install Rust toolchain
@@ -241,6 +259,8 @@ jobs:
       - name: Install extension dependencies
         run: npm --prefix editors/vscode ci
       - name: Run tests with coverage
+        env:
+          ACKPLANE_TEST_DATABASE_URL: postgres://ackplane:ackplane-development-only-not-for-production@localhost:5432/ackplane
         run: make coverage
       - name: Upload coverage reports
         if: always()
