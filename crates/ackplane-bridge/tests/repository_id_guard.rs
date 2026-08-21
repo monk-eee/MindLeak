@@ -18,7 +18,19 @@ const FLEET_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &["connect"];
 /// it takes a `RecordKnowledgeRequest` whose own `tenant_id: String` field
 /// still carries the scope - the guard's plain-text check only recognises a
 /// direct `tenant_id: &str` parameter, not one nested inside a request struct.
-const KNOWLEDGE_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &["connect", "record"];
+/// `resolve_signing_key` is exempt the same way `record` is: its tenant scope
+/// lives in `EnvelopeBinding::tenant_id`, judged by `signing_keys::resolve`,
+/// not a bare parameter on this method. `consume_knowledge_nonce` needs no
+/// tenant_id at all - it is keyed by `(signing_key_id, nonce)`, and
+/// `signing_key_id` is already globally unique (`signing_keys` enforces
+/// `ON CONFLICT (signing_key_id)`), so no two tenants can ever share one to
+/// collide across.
+const KNOWLEDGE_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &[
+    "connect",
+    "record",
+    "resolve_signing_key",
+    "consume_knowledge_nonce",
+];
 
 /// `fleet_page` serves a static asset and never touches the store - it has
 /// nothing to scope.
