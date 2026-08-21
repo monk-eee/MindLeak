@@ -170,6 +170,7 @@ message KnowledgeRecord {
   string source_ref = 5;
   double half_life_hours = 6;
   string confirmed_at = 7;
+  string recorded_by = 8;
 }
 
 // `query_embedding` empty means "no semantic ranking available or
@@ -192,6 +193,7 @@ message ActiveKnowledgeEntry {
   // (mindleak-core::decay::effective_weight's own formula), never stored.
   double effective_weight = 4;
   string confirmed_at = 5;
+  string recorded_by = 6;
 }
 
 message RecallKnowledgeResult {
@@ -220,6 +222,7 @@ message KnowledgeHistoryEntry {
   string retired_at = 5;
   string retired_reason = 6;
   string retired_by = 7;
+  string recorded_by = 8;
 }
 
 message KnowledgeHistoryResult {

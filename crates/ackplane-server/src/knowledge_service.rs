@@ -122,6 +122,7 @@ fn to_proto_entry(entry: ActiveKnowledge) -> Result<v1::ActiveKnowledgeEntry, St
         source_ref: entry.source_ref.unwrap_or_default(),
         effective_weight: entry.effective_weight,
         confirmed_at: rfc3339(entry.confirmed_at)?,
+        recorded_by: entry.recorded_by.unwrap_or_default(),
     })
 }
 
@@ -132,6 +133,7 @@ fn to_proto_history_entry(
         knowledge_id: entry.knowledge_id,
         content: entry.content,
         source_ref: entry.source_ref.unwrap_or_default(),
+        recorded_by: entry.recorded_by.unwrap_or_default(),
         confirmed_at: rfc3339(entry.confirmed_at)?,
         retired_at: entry
             .retired_at
@@ -171,13 +173,14 @@ impl v1::knowledge_service_server::KnowledgeService for KnowledgeGrpcService {
             embedding_model: (!request.embedding_model.is_empty())
                 .then_some(request.embedding_model.as_str()),
         };
-        self.authenticate(
-            &request.tenant_id,
-            &request.repository_id,
-            &operation,
-            request.authentication.as_ref(),
-        )
-        .await?;
+        let recorded_by = self
+            .authenticate(
+                &request.tenant_id,
+                &request.repository_id,
+                &operation,
+                request.authentication.as_ref(),
+            )
+            .await?;
         let embedding = if request.embedding.is_empty() {
             None
         } else {
@@ -192,6 +195,7 @@ impl v1::knowledge_service_server::KnowledgeService for KnowledgeGrpcService {
                 repository_id: request.repository_id,
                 content: request.content,
                 source_ref: (!request.source_ref.is_empty()).then_some(request.source_ref),
+                recorded_by: Some(recorded_by),
                 half_life_hours: request.half_life_hours,
                 embedding,
             })
@@ -205,6 +209,7 @@ impl v1::knowledge_service_server::KnowledgeService for KnowledgeGrpcService {
             source_ref: recorded.source_ref.unwrap_or_default(),
             half_life_hours: recorded.half_life_hours,
             confirmed_at: rfc3339(recorded.confirmed_at).map_err(Status::internal)?,
+            recorded_by: recorded.recorded_by.unwrap_or_default(),
         }))
     }
 
@@ -538,7 +543,9 @@ mod tests {
             .record_knowledge(Request::new(wire.clone()))
             .await
             .expect("the first, fresh request must be authenticated and recorded");
-        assert_eq!(recorded.into_inner().content, "a replay-tested lesson");
+        let recorded = recorded.into_inner();
+        assert_eq!(recorded.content, "a replay-tested lesson");
+        assert_eq!(recorded.recorded_by, identity.node_id);
 
         let replayed = service
             .record_knowledge(Request::new(wire))
@@ -765,6 +772,7 @@ mod tests {
         assert_eq!(entry.knowledge_id, recorded.knowledge_id);
         assert_eq!(entry.content, "a lifecycle-visible lesson");
         assert_eq!(entry.source_ref, "");
+        assert_eq!(entry.recorded_by, identity.node_id);
         assert!(time::OffsetDateTime::parse(
             &entry.confirmed_at,
             &time::format_description::well_known::Rfc3339

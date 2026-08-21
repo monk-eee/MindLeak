@@ -18,6 +18,7 @@ use tokio_postgres::{Client, NoTls};
 const MIGRATION: &str = include_str!("../migrations/0007_knowledge.sql");
 const NONCE_MIGRATION: &str =
     include_str!("../migrations/0008_knowledge_authentication_nonces.sql");
+const RECORDED_BY_MIGRATION: &str = include_str!("../migrations/0011_knowledge_recorded_by.sql");
 
 #[derive(Debug, thiserror::Error)]
 pub enum KnowledgeStoreError {
@@ -37,6 +38,7 @@ pub struct Knowledge {
     pub repository_id: String,
     pub content: String,
     pub source_ref: Option<String>,
+    pub recorded_by: Option<String>,
     pub half_life_hours: f64,
     pub confirmed_at: SystemTime,
 }
@@ -47,6 +49,9 @@ pub struct RecordKnowledgeRequest {
     pub repository_id: String,
     pub content: String,
     pub source_ref: Option<String>,
+    /// The authenticated enrolled node when the caller has one. `None`
+    /// retains the truthful lack of provenance for a legacy/imported row.
+    pub recorded_by: Option<String>,
     pub half_life_hours: f64,
     /// `(model, embedding)`, when the caller has an embedder configured.
     /// Knowledge recorded without one still recalls, by recency (ADR-0080's
@@ -61,6 +66,7 @@ pub struct ActiveKnowledge {
     pub knowledge_id: String,
     pub content: String,
     pub source_ref: Option<String>,
+    pub recorded_by: Option<String>,
     pub effective_weight: f64,
     pub confirmed_at: SystemTime,
 }
@@ -72,6 +78,7 @@ pub struct KnowledgeHistoryEntry {
     pub knowledge_id: String,
     pub content: String,
     pub source_ref: Option<String>,
+    pub recorded_by: Option<String>,
     pub confirmed_at: SystemTime,
     pub retired_at: Option<SystemTime>,
     pub retired_reason: Option<String>,
@@ -126,6 +133,12 @@ impl KnowledgeStore {
             NONCE_MIGRATION,
         )
         .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::KNOWLEDGE_RECORDED_BY,
+            RECORDED_BY_MIGRATION,
+        )
+        .await?;
         Ok(Self { client })
     }
 
@@ -177,14 +190,15 @@ impl KnowledgeStore {
         self.client
             .execute(
                 "INSERT INTO knowledge \
-                 (tenant_id, repository_id, knowledge_id, content, source_ref, half_life_hours, confirmed_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                 (tenant_id, repository_id, knowledge_id, content, source_ref, recorded_by, half_life_hours, confirmed_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
                 &[
                     &request.tenant_id,
                     &request.repository_id,
                     &knowledge_id,
                     &request.content,
                     &request.source_ref,
+                    &request.recorded_by,
                     &request.half_life_hours,
                     &confirmed_at,
                 ],
@@ -212,6 +226,7 @@ impl KnowledgeStore {
             repository_id: request.repository_id,
             content: request.content,
             source_ref: request.source_ref,
+            recorded_by: request.recorded_by,
             half_life_hours: request.half_life_hours,
             confirmed_at,
         })
@@ -234,7 +249,7 @@ impl KnowledgeStore {
                 self.client
                     .query(
                         &format!(
-                            "SELECT k.knowledge_id, k.content, k.source_ref, k.confirmed_at, \
+                            "SELECT k.knowledge_id, k.content, k.source_ref, k.recorded_by, k.confirmed_at, \
                                     {EFFECTIVE_WEIGHT_SQL} AS effective_weight \
                              FROM knowledge k \
                              JOIN knowledge_embeddings e \
@@ -252,7 +267,7 @@ impl KnowledgeStore {
                 self.client
                     .query(
                         &format!(
-                            "SELECT knowledge_id, content, source_ref, confirmed_at, \
+                            "SELECT knowledge_id, content, source_ref, recorded_by, confirmed_at, \
                                     {EFFECTIVE_WEIGHT_SQL} AS effective_weight \
                              FROM knowledge \
                              WHERE tenant_id = $1 AND repository_id = $2 AND retired_at IS NULL \
@@ -270,6 +285,7 @@ impl KnowledgeStore {
                 knowledge_id: row.get("knowledge_id"),
                 content: row.get("content"),
                 source_ref: row.get("source_ref"),
+                recorded_by: row.get("recorded_by"),
                 effective_weight: row.get("effective_weight"),
                 confirmed_at: row.get("confirmed_at"),
             })
@@ -291,7 +307,7 @@ impl KnowledgeStore {
         let rows = self
             .client
             .query(
-                "SELECT knowledge_id, content, source_ref, confirmed_at, retired_at, retired_reason, retired_by \
+                "SELECT knowledge_id, content, source_ref, recorded_by, confirmed_at, retired_at, retired_reason, retired_by \
                  FROM knowledge \
                  WHERE tenant_id = $1 AND repository_id = $2 \
                  ORDER BY COALESCE(retired_at, confirmed_at) DESC, knowledge_id ASC \
@@ -305,6 +321,7 @@ impl KnowledgeStore {
                 knowledge_id: row.get("knowledge_id"),
                 content: row.get("content"),
                 source_ref: row.get("source_ref"),
+                recorded_by: row.get("recorded_by"),
                 confirmed_at: row.get("confirmed_at"),
                 retired_at: row.get("retired_at"),
                 retired_reason: row.get("retired_reason"),
@@ -374,6 +391,7 @@ mod tests {
                 repository_id: repository_id.clone(),
                 content: "the migration lock key must be unique per file".to_string(),
                 source_ref: Some("pr:538".to_string()),
+                recorded_by: Some("node:recency".to_string()),
                 half_life_hours: 720.0,
                 embedding: None,
             })
@@ -391,6 +409,11 @@ mod tests {
         assert_eq!(
             recalled.entries[0].content,
             "the migration lock key must be unique per file"
+        );
+        assert_eq!(recorded.recorded_by.as_deref(), Some("node:recency"));
+        assert_eq!(
+            recalled.entries[0].recorded_by.as_deref(),
+            Some("node:recency")
         );
         assert!(recalled.entries[0].effective_weight > 0.99);
         assert!(recalled.entries[0].effective_weight <= 1.0);
@@ -469,6 +492,7 @@ mod tests {
                 repository_id: repository_id.clone(),
                 content: "fast-decaying".to_string(),
                 source_ref: None,
+                recorded_by: None,
                 half_life_hours: 0.0001,
                 embedding: None,
             })
@@ -480,6 +504,7 @@ mod tests {
                 repository_id: repository_id.clone(),
                 content: "slow-decaying".to_string(),
                 source_ref: None,
+                recorded_by: None,
                 half_life_hours: 720.0,
                 embedding: None,
             })
@@ -528,6 +553,7 @@ mod tests {
                 repository_id,
                 content: "should not record".to_string(),
                 source_ref: None,
+                recorded_by: None,
                 half_life_hours: 0.0,
                 embedding: None,
             })
@@ -549,6 +575,7 @@ mod tests {
                 repository_id: repository_id.clone(),
                 content: "superseded guidance".to_string(),
                 source_ref: None,
+                recorded_by: None,
                 half_life_hours: 24.0,
                 embedding: None,
             })
@@ -601,6 +628,7 @@ mod tests {
                 repository_id: repository_id.clone(),
                 content: "still active".to_string(),
                 source_ref: Some("test:active".to_string()),
+                recorded_by: Some("node:active".to_string()),
                 half_life_hours: 24.0,
                 embedding: None,
             })
@@ -612,6 +640,7 @@ mod tests {
                 repository_id: repository_id.clone(),
                 content: "superseded".to_string(),
                 source_ref: Some("test:retired".to_string()),
+                recorded_by: Some("node:retired".to_string()),
                 half_life_hours: 24.0,
                 embedding: None,
             })
@@ -624,6 +653,7 @@ mod tests {
                 repository_id: other_repository_id,
                 content: "must not cross tenant boundaries".to_string(),
                 source_ref: None,
+                recorded_by: Some("node:other".to_string()),
                 half_life_hours: 24.0,
                 embedding: None,
             })
@@ -651,6 +681,7 @@ mod tests {
         assert_eq!(active_entry.retired_at, None);
         assert_eq!(active_entry.retired_reason, None);
         assert_eq!(active_entry.retired_by, None);
+        assert_eq!(active_entry.recorded_by.as_deref(), Some("node:active"));
 
         let retired_entry = history
             .iter()
@@ -663,6 +694,7 @@ mod tests {
             Some("superseded by newer evidence")
         );
         assert_eq!(retired_entry.retired_by.as_deref(), Some("node:reviewer"));
+        assert_eq!(retired_entry.recorded_by.as_deref(), Some("node:retired"));
     }
 
     #[tokio::test]
@@ -679,6 +711,7 @@ mod tests {
                 repository_id: repository_id.clone(),
                 content: "closest match".to_string(),
                 source_ref: None,
+                recorded_by: None,
                 half_life_hours: 720.0,
                 embedding: Some((model.to_string(), vec![1.0; 768])),
             })
@@ -690,6 +723,7 @@ mod tests {
                 repository_id: repository_id.clone(),
                 content: "farthest match".to_string(),
                 source_ref: None,
+                recorded_by: None,
                 half_life_hours: 720.0,
                 embedding: Some((model.to_string(), {
                     let mut v = vec![1.0; 768];
@@ -728,6 +762,7 @@ mod tests {
                 repository_id: repository_id.clone(),
                 content: "embedded under a different model".to_string(),
                 source_ref: None,
+                recorded_by: None,
                 half_life_hours: 720.0,
                 embedding: Some(("other-model".to_string(), vec![0.5; 768])),
             })
