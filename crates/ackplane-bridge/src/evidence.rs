@@ -4,7 +4,7 @@
 //! than opening a raw SQL route or copying evidence bodies into browser state.
 
 use std::error::Error;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use ackplane_server::evidence_store::{
     ConformanceCursor, ConformancePage, ConformanceRecord, ConformanceReviewState,
@@ -88,6 +88,93 @@ impl From<ConformanceRecord> for ConformanceView {
             evaluated_by: record.evaluated_by,
             recorded_at: record.recorded_at,
         }
+    }
+}
+
+/// Whether the current first page fully represents a board dimension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceDataState {
+    Missing,
+    Partial,
+    Complete,
+}
+
+/// The highest-priority review state represented by the current conformance page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceReviewState {
+    Missing,
+    Ready,
+    Pending,
+    Blocked,
+}
+
+/// Freshness is derived from server-recorded time and a caller-supplied budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceFreshness {
+    Missing,
+    Fresh,
+    Stale,
+}
+
+/// A compact, browser-safe state summary for the first Evidence Board page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceBoardStatus {
+    pub evidence: EvidenceDataState,
+    pub conformance: EvidenceDataState,
+    pub review: EvidenceReviewState,
+    pub freshness: EvidenceFreshness,
+    pub latest_recorded_at: Option<SystemTime>,
+}
+
+/// Derives presentation state without interpreting a node-reported timestamp
+/// as authority. `evidence_has_next_page` and `conformance_has_next_page`
+/// must come from server-side keyset pages for the task's first page.
+pub fn evidence_board_status(
+    evidence: &[EvidenceView],
+    evidence_has_next_page: bool,
+    conformance: &[ConformanceView],
+    conformance_has_next_page: bool,
+    now: SystemTime,
+    stale_after: Duration,
+) -> EvidenceBoardStatus {
+    let latest_recorded_at = evidence
+        .iter()
+        .map(|entry| entry.recorded_at)
+        .chain(conformance.iter().map(|entry| entry.recorded_at))
+        .max();
+    let freshness = match latest_recorded_at {
+        None => EvidenceFreshness::Missing,
+        Some(timestamp)
+            if now
+                .duration_since(timestamp)
+                .map_or(true, |elapsed| elapsed <= stale_after) =>
+        {
+            EvidenceFreshness::Fresh
+        }
+        Some(_) => EvidenceFreshness::Stale,
+    };
+    let review = if conformance.is_empty() {
+        EvidenceReviewState::Missing
+    } else if conformance
+        .iter()
+        .any(|entry| entry.review_state == "blocked")
+    {
+        EvidenceReviewState::Blocked
+    } else if conformance
+        .iter()
+        .any(|entry| entry.review_state == "pending")
+    {
+        EvidenceReviewState::Pending
+    } else {
+        EvidenceReviewState::Ready
+    };
+
+    EvidenceBoardStatus {
+        evidence: data_state(evidence.len(), evidence_has_next_page),
+        conformance: data_state(conformance.len(), conformance_has_next_page),
+        review,
+        freshness,
+        latest_recorded_at,
     }
 }
 
@@ -186,9 +273,49 @@ fn review_state_label(state: ConformanceReviewState) -> &'static str {
     }
 }
 
+fn data_state(entries: usize, has_next_page: bool) -> EvidenceDataState {
+    if has_next_page {
+        EvidenceDataState::Partial
+    } else if entries == 0 {
+        EvidenceDataState::Missing
+    } else {
+        EvidenceDataState::Complete
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn evidence_view(recorded_at: SystemTime) -> EvidenceView {
+        EvidenceView {
+            evidence_id: "evidence-1".to_string(),
+            task_id: "task:1".to_string(),
+            kind: "commit",
+            source_ref: "commit:abc123".to_string(),
+            content_digest_hex: "01".to_string(),
+            observed_at: recorded_at,
+            reported_agent_session_id: "session:v1:reported".to_string(),
+            recorded_by: "node:1".to_string(),
+            recorded_at,
+            receipt_id: None,
+        }
+    }
+
+    fn conformance_view(recorded_at: SystemTime, review_state: &'static str) -> ConformanceView {
+        ConformanceView {
+            conformance_id: "conformance-1".to_string(),
+            task_id: "task:1".to_string(),
+            evidence_id: "evidence-1".to_string(),
+            verdict: "needs_human",
+            finding_count: 1,
+            findings_digest_hex: "02".to_string(),
+            review_state,
+            reported_checked_at: recorded_at,
+            evaluated_by: "node:1".to_string(),
+            recorded_at,
+        }
+    }
 
     #[test]
     fn page_limit_uses_the_default_and_bounds_requested_values() {
@@ -269,6 +396,46 @@ mod tests {
                 reported_checked_at: timestamp,
                 evaluated_by: "node:1".to_string(),
                 recorded_at: timestamp,
+            }
+        );
+    }
+
+    #[test]
+    fn board_status_marks_an_empty_first_page_as_missing_data() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+
+        assert_eq!(
+            evidence_board_status(&[], false, &[], false, now, Duration::from_secs(60)),
+            EvidenceBoardStatus {
+                evidence: EvidenceDataState::Missing,
+                conformance: EvidenceDataState::Missing,
+                review: EvidenceReviewState::Missing,
+                freshness: EvidenceFreshness::Missing,
+                latest_recorded_at: None,
+            }
+        );
+    }
+
+    #[test]
+    fn board_status_prioritizes_blocked_review_and_exposes_partial_stale_history() {
+        let recorded_at = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        let now = recorded_at + Duration::from_secs(61);
+
+        assert_eq!(
+            evidence_board_status(
+                &[evidence_view(recorded_at)],
+                true,
+                &[conformance_view(recorded_at, "blocked")],
+                false,
+                now,
+                Duration::from_secs(60),
+            ),
+            EvidenceBoardStatus {
+                evidence: EvidenceDataState::Partial,
+                conformance: EvidenceDataState::Complete,
+                review: EvidenceReviewState::Blocked,
+                freshness: EvidenceFreshness::Stale,
+                latest_recorded_at: Some(recorded_at),
             }
         );
     }

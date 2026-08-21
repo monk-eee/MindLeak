@@ -25,6 +25,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::evidence::{page_limit, BridgeEvidenceStore, ConformanceView, EvidenceView};
 
+mod board;
+
+const DEFAULT_EVIDENCE_STALE_AFTER: Duration = Duration::from_secs(15 * 60);
+
 /// Dependencies injected by the Bridge entry point when it merges Evidence
 /// Board routes into its application.
 #[derive(Clone)]
@@ -32,6 +36,22 @@ pub struct EvidenceApiState {
     pub evidence: Arc<BridgeEvidenceStore>,
     pub fleet: Arc<FleetStore>,
     pub tenant_id: Arc<str>,
+    pub stale_after: Duration,
+}
+
+impl EvidenceApiState {
+    pub fn new(
+        evidence: Arc<BridgeEvidenceStore>,
+        fleet: Arc<FleetStore>,
+        tenant_id: Arc<str>,
+    ) -> Self {
+        Self {
+            evidence,
+            fleet,
+            tenant_id,
+            stale_after: DEFAULT_EVIDENCE_STALE_AFTER,
+        }
+    }
 }
 
 /// Builds the read-only Evidence Board sub-router.
@@ -45,6 +65,10 @@ pub fn evidence_routes(state: EvidenceApiState) -> Router {
             "/api/v1/repositories/:repository_id/tasks/:task_id/conformance",
             get(task_conformance),
         )
+        .route(
+            "/api/v1/repositories/:repository_id/tasks/:task_id/evidence-board",
+            get(board::evidence_board),
+        )
         .with_state(state)
 }
 
@@ -55,24 +79,24 @@ struct EvidencePageQuery {
 }
 
 #[derive(Serialize)]
-struct EvidencePageResponse {
-    entries: Vec<EvidenceEntryResponse>,
-    effective_limit: i64,
-    next_cursor: Option<String>,
+pub(super) struct EvidencePageResponse {
+    pub(super) entries: Vec<EvidenceEntryResponse>,
+    pub(super) effective_limit: i64,
+    pub(super) next_cursor: Option<String>,
 }
 
 #[derive(Serialize)]
-struct EvidenceEntryResponse {
-    evidence_id: String,
-    task_id: String,
-    kind: &'static str,
-    source_ref: String,
-    content_digest_hex: String,
-    observed_at_seconds: Option<u64>,
-    reported_agent_session_id: String,
-    recorded_by: String,
-    recorded_at_seconds: Option<u64>,
-    receipt_id: Option<String>,
+pub(super) struct EvidenceEntryResponse {
+    pub(super) evidence_id: String,
+    pub(super) task_id: String,
+    pub(super) kind: &'static str,
+    pub(super) source_ref: String,
+    pub(super) content_digest_hex: String,
+    pub(super) observed_at_seconds: Option<u64>,
+    pub(super) reported_agent_session_id: String,
+    pub(super) recorded_by: String,
+    pub(super) recorded_at_seconds: Option<u64>,
+    pub(super) receipt_id: Option<String>,
 }
 
 impl From<EvidenceView> for EvidenceEntryResponse {
@@ -93,24 +117,24 @@ impl From<EvidenceView> for EvidenceEntryResponse {
 }
 
 #[derive(Serialize)]
-struct ConformancePageResponse {
-    entries: Vec<ConformanceEntryResponse>,
-    effective_limit: i64,
-    next_cursor: Option<String>,
+pub(super) struct ConformancePageResponse {
+    pub(super) entries: Vec<ConformanceEntryResponse>,
+    pub(super) effective_limit: i64,
+    pub(super) next_cursor: Option<String>,
 }
 
 #[derive(Serialize)]
-struct ConformanceEntryResponse {
-    conformance_id: String,
-    task_id: String,
-    evidence_id: String,
-    verdict: &'static str,
-    finding_count: u32,
-    findings_digest_hex: String,
-    review_state: &'static str,
-    reported_checked_at_seconds: Option<u64>,
-    evaluated_by: String,
-    recorded_at_seconds: Option<u64>,
+pub(super) struct ConformanceEntryResponse {
+    pub(super) conformance_id: String,
+    pub(super) task_id: String,
+    pub(super) evidence_id: String,
+    pub(super) verdict: &'static str,
+    pub(super) finding_count: u32,
+    pub(super) findings_digest_hex: String,
+    pub(super) review_state: &'static str,
+    pub(super) reported_checked_at_seconds: Option<u64>,
+    pub(super) evaluated_by: String,
+    pub(super) recorded_at_seconds: Option<u64>,
 }
 
 impl From<ConformanceView> for ConformanceEntryResponse {
@@ -207,7 +231,7 @@ async fn task_conformance(
     }))
 }
 
-async fn ensure_repository_visible(
+pub(super) async fn ensure_repository_visible(
     state: &EvidenceApiState,
     repository_id: &str,
 ) -> Result<(), StatusCode> {
@@ -225,7 +249,7 @@ async fn ensure_repository_visible(
     }
 }
 
-fn evidence_store_error(error: EvidenceStoreError) -> StatusCode {
+pub(super) fn evidence_store_error(error: EvidenceStoreError) -> StatusCode {
     match error {
         EvidenceStoreError::InvalidTaskId | EvidenceStoreError::InvalidCursor => {
             StatusCode::BAD_REQUEST
@@ -243,7 +267,7 @@ fn evidence_store_error(error: EvidenceStoreError) -> StatusCode {
     }
 }
 
-fn conformance_store_error(error: ConformanceStoreError) -> StatusCode {
+pub(super) fn conformance_store_error(error: ConformanceStoreError) -> StatusCode {
     match error {
         ConformanceStoreError::InvalidTaskId | ConformanceStoreError::InvalidEvidenceId => {
             StatusCode::BAD_REQUEST
@@ -266,14 +290,17 @@ fn conformance_store_error(error: ConformanceStoreError) -> StatusCode {
     }
 }
 
-fn unix_seconds(timestamp: SystemTime) -> Option<u64> {
+pub(super) fn unix_seconds(timestamp: SystemTime) -> Option<u64> {
     timestamp
         .duration_since(UNIX_EPOCH)
         .ok()
         .map(|duration| duration.as_secs())
 }
 
-fn encode_cursor(recorded_at: SystemTime, record_id: String) -> Result<String, StatusCode> {
+pub(super) fn encode_cursor(
+    recorded_at: SystemTime,
+    record_id: String,
+) -> Result<String, StatusCode> {
     let elapsed = recorded_at
         .duration_since(UNIX_EPOCH)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -285,7 +312,7 @@ fn encode_cursor(recorded_at: SystemTime, record_id: String) -> Result<String, S
     ))
 }
 
-fn parse_cursor(raw: Option<&str>) -> Result<Option<(SystemTime, String)>, StatusCode> {
+pub(super) fn parse_cursor(raw: Option<&str>) -> Result<Option<(SystemTime, String)>, StatusCode> {
     let Some(raw) = raw.filter(|raw| !raw.is_empty()) else {
         return Ok(None);
     };
