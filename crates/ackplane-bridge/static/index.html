@@ -356,7 +356,8 @@
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/claims`).then((r) => (r.ok ? r.json() : null)),
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/signing-keys`).then((r) => (r.ok ? r.json() : null)),
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/knowledge`).then((r) => (r.ok ? r.json() : null)),
-      ]).then(([detail, timeline, claims, signingKeys, knowledge]) => ({ detail, timeline, claims, signingKeys, knowledge }));
+        fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/constitution`).then((r) => (r.ok ? r.json() : null)),
+      ]).then(([detail, timeline, claims, signingKeys, knowledge, constitution]) => ({ detail, timeline, claims, signingKeys, knowledge, constitution }));
       detailCache.set(repositoryId, promise);
       return promise;
     }
@@ -374,7 +375,7 @@
 
     function renderDetail(container, repositoryId) {
       container.innerHTML = '<div class="skeleton"></div>';
-      loadRepositoryDetail(repositoryId).then(({ detail, timeline, claims, signingKeys, knowledge }) => {
+      loadRepositoryDetail(repositoryId).then(({ detail, timeline, claims, signingKeys, knowledge, constitution }) => {
         if (!detail) {
           container.innerHTML = '<p class="timeline-empty">Detail is unavailable for this repository.</p>';
           return;
@@ -383,6 +384,7 @@
         const activeClaims = claims?.claims ?? [];
         const keys = signingKeys?.keys ?? [];
         const knowledgeEntries = knowledge?.entries ?? [];
+        const constitutionClauses = constitution?.clauses ?? [];
         container.innerHTML = `
           <div class="detail-grid">
             <div><span class="stat-label">Ledger position</span><span class="stat-value">${detail.ledger_stream_position}</span></div>
@@ -461,6 +463,22 @@
                       <span class="when" title="${escapeHtml(absoluteTime(entry.confirmed_at_seconds))}">${escapeHtml(relativeTime(entry.confirmed_at_seconds))}</span>
                     </li>`).join("")}</ul>`
                 : '<p class="timeline-empty">No knowledge recorded yet.</p>'}
+          </div>
+          <div>
+            <p class="timeline-title">Constitution${constitution?.found ? ` (version ${escapeHtml(String(constitution.version))})` : ""}</p>
+            ${constitution === null
+              ? '<p class="timeline-empty">Constitution is unavailable.</p>'
+              : !constitution.found
+                ? '<p class="timeline-empty">No constitution has been published for this repository.</p>'
+                : constitutionClauses.length
+                  ? `<ul class="timeline work-list">${constitutionClauses.map((clause) => `
+                      <li>
+                        <span class="payload">${escapeHtml(clause.title)}</span>
+                        <span class="producer">${escapeHtml(clause.kind)}</span>
+                        <span class="branch">${escapeHtml(clause.status)}</span>
+                        <span class="scope">${clause.consequence ? escapeHtml(clause.consequence) : "No consequence declared"}</span>
+                      </li>`).join("")}</ul>`
+                  : '<p class="timeline-empty">The active constitution has no clauses yet.</p>'}
           </div>
         `;
         container.querySelectorAll(".recover-btn").forEach((button) => {

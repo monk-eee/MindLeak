@@ -7,6 +7,7 @@ use ackplane_bridge::BridgeConfig;
 use ackplane_server::claim_store::{
     ClaimLeaseOutcome, ClaimRecoverRequest, ClaimStore, ClaimStoreError,
 };
+use ackplane_server::constitution_store::{ActiveConstitution, ClauseSnapshot, ConstitutionStore};
 use ackplane_server::fleet::{
     ActiveWorkItem, FleetRepository, FleetStore, RepositoryDetail, RepositoryFreshness,
     SigningKeyStatus, TimelineEvent,
@@ -29,6 +30,7 @@ const FLEET_PAGE: &str = include_str!("../static/index.html");
 struct AppState {
     fleet: Arc<FleetStore>,
     knowledge: Arc<KnowledgeStore>,
+    constitution: Arc<ConstitutionStore>,
     claims: Arc<Mutex<ClaimStore>>,
     tenant_id: Arc<str>,
 }
@@ -258,6 +260,75 @@ impl From<ActiveKnowledge> for KnowledgeEntrySummary {
     }
 }
 
+#[derive(Serialize)]
+struct ConstitutionResponse {
+    found: bool,
+    version_id: Option<String>,
+    version: Option<i64>,
+    status: Option<String>,
+    published_at_seconds: Option<u64>,
+    clauses: Vec<ConstitutionClauseSummary>,
+}
+
+#[derive(Serialize)]
+struct ConstitutionClauseSummary {
+    id: String,
+    slug: String,
+    kind: String,
+    title: String,
+    statement: String,
+    status: String,
+    consequence: Option<String>,
+    scope: Option<String>,
+    rationale: Option<String>,
+}
+
+impl From<ClauseSnapshot> for ConstitutionClauseSummary {
+    fn from(clause: ClauseSnapshot) -> Self {
+        Self {
+            id: clause.id,
+            slug: clause.slug,
+            kind: clause.kind,
+            title: clause.title,
+            statement: clause.statement,
+            status: clause.status,
+            consequence: clause.consequence,
+            scope: clause.scope,
+            rationale: clause.rationale,
+        }
+    }
+}
+
+impl From<ActiveConstitution> for ConstitutionResponse {
+    fn from(active: ActiveConstitution) -> Self {
+        Self {
+            found: true,
+            version_id: Some(active.version_id),
+            version: Some(active.version),
+            status: Some(active.status),
+            published_at_seconds: unix_seconds(active.published_at),
+            clauses: active
+                .clauses
+                .into_iter()
+                .map(ConstitutionClauseSummary::from)
+                .collect(),
+        }
+    }
+}
+
+impl ConstitutionResponse {
+    fn not_found() -> Self {
+        Self {
+            found: false,
+            version_id: None,
+            version: None,
+            status: None,
+            published_at_seconds: None,
+            clauses: Vec::new(),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let salt_path = match std::env::var("ACKPLANE_BRIDGE_SALT_PATH") {
@@ -299,6 +370,15 @@ async fn main() {
             return;
         }
     };
+    let constitution_store = match ConstitutionStore::connect(config.database_url()).await {
+        Ok(constitution) => Arc::new(constitution),
+        Err(error) => {
+            eprintln!(
+                "ackplane-bridge: could not connect to Ackplane constitution domain: {error}"
+            );
+            return;
+        }
+    };
     let claim_store = match ClaimStore::connect(config.database_url()).await {
         Ok(claims) => Arc::new(Mutex::new(claims)),
         Err(error) => {
@@ -309,6 +389,7 @@ async fn main() {
     let state = AppState {
         fleet: fleet_store,
         knowledge: knowledge_store,
+        constitution: constitution_store,
         claims: claim_store,
         tenant_id: Arc::from(config.development_tenant_token),
     };
@@ -334,6 +415,10 @@ async fn main() {
         .route(
             "/api/v1/repositories/:repository_id/knowledge",
             get(repository_knowledge),
+        )
+        .route(
+            "/api/v1/repositories/:repository_id/constitution",
+            get(repository_constitution),
         )
         .route(
             "/api/v1/repositories/:repository_id/tasks/:task_id/recover",
@@ -514,6 +599,40 @@ async fn repository_knowledge(
         })),
         Err(error) => {
             tracing::error!(%error, "Bridge repository knowledge query failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn repository_constitution(
+    State(state): State<AppState>,
+    Path(repository_id): Path<String>,
+) -> Result<Json<ConstitutionResponse>, StatusCode> {
+    // Same enrolment-first check as `repository_knowledge`: a repository
+    // outside the caller's tenant must read exactly like one that was never
+    // enrolled, not leak a 200 for a repository this tenant cannot see.
+    match state
+        .fleet
+        .repository(&state.tenant_id, &repository_id)
+        .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository constitution lookup failed");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    match state
+        .constitution
+        .get_active(&state.tenant_id, &repository_id)
+        .await
+    {
+        Ok(Some(active)) => Ok(Json(ConstitutionResponse::from(active))),
+        Ok(None) => Ok(Json(ConstitutionResponse::not_found())),
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository constitution query failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
