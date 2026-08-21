@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { reserveWorktreePath } from "./test-support/reserve-worktree-path.mjs";
+
 const scopedCommit = join(
   dirname(fileURLToPath(import.meta.url)),
   "../../../scripts/scoped-commit.mjs"
@@ -91,9 +93,11 @@ describe("scoped-commit", () => {
   };
 
   const attachWorktree = (repo) => {
-    const linked = mkdtempSync(join(tmpdir(), "mindleak-stash-race-linked-"));
-    temporaryDirectories.push(linked);
-    rmSync(linked, { recursive: true, force: true });
+    // Reserve a not-yet-created path rather than mkdtemp-then-delete it, which
+    // raced `git worktree add` recreating it at the same name
+    // (gaps.d/a-scoped-commit-fixture-can-fall-outside-its-repository.md).
+    const { parent, path: linked } = reserveWorktreePath("mindleak-stash-race-linked-");
+    temporaryDirectories.push(parent);
     git(repo, ["worktree", "add", linked, "-b", "fleet/other"]);
     return linked;
   };
