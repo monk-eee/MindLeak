@@ -327,6 +327,24 @@ Credential Manager, macOS Keychain, or Linux Secret Service, via the
 an explicit environment variable remains available as a documented,
 non-hardened override for tests and constrained deployments.
 
+### `ackplane-supervisor` (library)
+
+The local durable directive inbox for one enrolled supervisor and worker session
+(ADR-0116). It owns a caller-provided SQLite database rather than either
+repository-local plane database. The inbox binds itself to one tenant,
+repository, node, supervisor, and agent session; verifies that an incoming
+directive targets that identity and names an advertised capability; rejects
+expired or out-of-sequence delivery; and persists accepted, capability-refused,
+and expired receipts before returning them. Replaying the same directive id and
+payload digest returns the original stored receipt, while a changed digest under
+the same id is refused without overwriting evidence.
+
+It does not open a network listener, spawn a worker, execute a directive, or
+offer a shell/process abstraction. A future NodeSync transport adapter feeds it
+received directives and a future worker adapter reports application/checkpoint
+effects; this crate establishes the local durable inbox boundary those adapters
+must preserve.
+
 
 ### `ackplane-server` (binary)
 
