@@ -314,6 +314,27 @@
       <button type="button" id="fleet-prev">Previous</button>
       <button type="button" id="fleet-next">Next</button>
     </div>
+    <p class="kicker">Agents</p>
+    <div class="summary">
+      <h2 id="agents-heading">Active work across the fleet</h2>
+      <p id="agents-status" aria-live="polite">Loading agents…</p>
+    </div>
+    <div class="toolbar">
+      <input type="search" id="agents-search-repo" class="fleet-search" placeholder="Search repository id…" aria-label="Search agents by repository id" />
+      <input type="search" id="agents-search-owner" class="fleet-search" placeholder="Search agent id…" aria-label="Search agents by agent id" />
+    </div>
+    <div class="fleet-columns" role="row">
+      <button type="button" class="fleet-column" data-agent-sort="repository_id">Repository <span class="sort-arrow"></span></button>
+      <button type="button" class="fleet-column" data-agent-sort="owner_id">Agent <span class="sort-arrow"></span></button>
+      <span class="fleet-column-label">Task</span>
+      <button type="button" class="fleet-column" data-agent-sort="lease_expires_at">Lease <span class="sort-arrow"></span></button>
+    </div>
+    <div id="agents" class="fleet-grid" aria-labelledby="agents-heading"></div>
+    <div class="fleet-pager">
+      <span id="agents-pager-range"></span>
+      <button type="button" id="agents-prev">Previous</button>
+      <button type="button" id="agents-next">Next</button>
+    </div>
   </main>
   <script>
     const status = document.getElementById("status");
@@ -619,6 +640,144 @@
     }
     renderRows();
     loadFleet();
+
+    const agentsStatus = document.getElementById("agents-status");
+    const agents = document.getElementById("agents");
+    const agentsSearchRepo = document.getElementById("agents-search-repo");
+    const agentsSearchOwner = document.getElementById("agents-search-owner");
+    const agentsPagerRange = document.getElementById("agents-pager-range");
+    const agentsPrevButton = document.getElementById("agents-prev");
+    const agentsNextButton = document.getElementById("agents-next");
+    const agentsFilters = { repository_id: "", owner_id: "" };
+    const agentsSortState = { field: "lease_expires_at", direction: "asc" };
+    const agentsPageState = { page: 1, pageSize: 20 };
+    let agentItems = null;
+    let totalAgents = 0;
+    let agentsSearchDebounce = null;
+
+    function debounceAgentsSearch(key, input) {
+      input.addEventListener("input", () => {
+        clearTimeout(agentsSearchDebounce);
+        agentsSearchDebounce = setTimeout(() => {
+          agentsFilters[key] = input.value.trim();
+          agentsPageState.page = 1;
+          loadAgents();
+        }, 300);
+      });
+    }
+    debounceAgentsSearch("repository_id", agentsSearchRepo);
+    debounceAgentsSearch("owner_id", agentsSearchOwner);
+
+    function updateAgentSortIndicators() {
+      document.querySelectorAll(".fleet-column[data-agent-sort]").forEach((button) => {
+        const arrow = button.querySelector(".sort-arrow");
+        arrow.textContent = button.dataset.agentSort === agentsSortState.field
+          ? (agentsSortState.direction === "asc" ? "\u25b2" : "\u25bc")
+          : "";
+      });
+    }
+
+    document.querySelectorAll(".fleet-column[data-agent-sort]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const field = button.dataset.agentSort;
+        agentsSortState.direction = agentsSortState.field === field && agentsSortState.direction === "asc" ? "desc" : "asc";
+        agentsSortState.field = field;
+        agentsPageState.page = 1;
+        updateAgentSortIndicators();
+        loadAgents();
+      });
+    });
+    updateAgentSortIndicators();
+
+    agentsPrevButton.addEventListener("click", () => {
+      if (agentsPageState.page <= 1) return;
+      agentsPageState.page -= 1;
+      loadAgents();
+    });
+    agentsNextButton.addEventListener("click", () => {
+      if (agentsPageState.page * agentsPageState.pageSize >= totalAgents) return;
+      agentsPageState.page += 1;
+      loadAgents();
+    });
+
+    function renderAgentRows() {
+      agents.replaceChildren();
+
+      if (agentItems === null) {
+        agents.append(emptyState("Fetching active work from Ackplane.", "Loading…"));
+        agentsPagerRange.textContent = "";
+        agentsPrevButton.disabled = true;
+        agentsNextButton.disabled = true;
+        return;
+      }
+      const filtered = Boolean(agentsFilters.repository_id || agentsFilters.owner_id);
+      if (!totalAgents) {
+        agents.append(emptyState(
+          filtered
+            ? "Try widening the search above."
+            : "Active work will appear here the moment an agent claims a task in any enrolled repository.",
+          filtered ? "No matches" : "No active work",
+        ));
+        agentsStatus.textContent = "0 active claims visible";
+        agentsPagerRange.textContent = "";
+        agentsPrevButton.disabled = true;
+        agentsNextButton.disabled = true;
+        return;
+      }
+
+      const list = document.createElement("ul");
+      list.className = "timeline work-list";
+      for (const item of agentItems) {
+        const scope = [...item.paths, ...item.symbols];
+        const entry = document.createElement("li");
+        entry.innerHTML = `
+          <span class="payload">${escapeHtml(item.repository_id)}</span>
+          <span class="producer">${escapeHtml(item.owner_id)}</span>
+          <span class="pos">${escapeHtml(item.task_id)}</span>
+          <span class="branch">${escapeHtml(item.branch || "No branch")}</span>
+          <span class="when" title="${escapeHtml(absoluteTime(item.lease_expires_at_seconds))}">expires ${escapeHtml(relativeTime(item.lease_expires_at_seconds))}</span>
+          <span class="scope">${scope.length ? scope.map(escapeHtml).join(" · ") : "No declared scope"}</span>
+        `;
+        list.append(entry);
+      }
+      agents.append(list);
+
+      const firstIndex = (agentsPageState.page - 1) * agentsPageState.pageSize + 1;
+      const lastIndex = firstIndex + agentItems.length - 1;
+      agentsStatus.textContent = `${totalAgents} active claim${totalAgents === 1 ? "" : "s"} visible`;
+      agentsPagerRange.textContent = `${firstIndex}-${lastIndex} of ${totalAgents}`;
+      agentsPrevButton.disabled = agentsPageState.page <= 1;
+      agentsNextButton.disabled = lastIndex >= totalAgents;
+    }
+
+    async function loadAgents() {
+      agentsStatus.textContent = "Loading agents…";
+      try {
+        const params = new URLSearchParams();
+        if (agentsFilters.repository_id) params.set("repository_id", agentsFilters.repository_id);
+        if (agentsFilters.owner_id) params.set("owner_id", agentsFilters.owner_id);
+        params.set("sort", `${agentsSortState.field}:${agentsSortState.direction}`);
+        params.set("page", String(agentsPageState.page));
+        params.set("page_size", String(agentsPageState.pageSize));
+        const response = await fetch(`/api/v1/agents?${params.toString()}`);
+        if (!response.ok) throw new Error("Agents request failed");
+        const data = await response.json();
+        agentItems = data.items;
+        totalAgents = data.total;
+        renderAgentRows();
+      } catch (error) {
+        agentItems = [];
+        totalAgents = 0;
+        agents.replaceChildren();
+        agents.append(emptyState("The Ackplane read service may be disconnected. This page will keep trying on reload.", "Agents unavailable"));
+        agentsStatus.textContent = "Agents unavailable";
+        agentsPagerRange.textContent = "";
+        agentsPrevButton.disabled = true;
+        agentsNextButton.disabled = true;
+      }
+    }
+    renderAgentRows();
+    loadAgents();
   </script>
 </body>
 </html>

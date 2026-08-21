@@ -108,6 +108,23 @@ pub struct ActiveWorkItem {
     pub symbols: Vec<String>,
 }
 
+/// One live delegated claim anywhere in a tenant's fleet (ADR-0105 decision
+/// 5's Agents/Work control room). Unlike `ActiveWorkItem`, which is already
+/// scoped to a repository the caller named, this carries its own
+/// `repository_id` because the query spans every repository the tenant has
+/// enrolled -- the "who is working on what, right now, across the whole
+/// fleet" view an operator needs without visiting each repository in turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetWorkItem {
+    pub repository_id: String,
+    pub task_id: String,
+    pub owner_id: String,
+    pub branch: String,
+    pub lease_expires_at: SystemTime,
+    pub paths: Vec<String>,
+    pub symbols: Vec<String>,
+}
+
 /// One enrolled node's signing key, judged as of now rather than as of some
 /// past envelope's acceptance -- the Bridge repository detail resource that
 /// answers "is this repository's coordination about to lose its signer"
@@ -207,6 +224,72 @@ impl FleetSort {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FleetPage {
     pub repositories: Vec<FleetRepository>,
+    pub total: i64,
+}
+
+/// Server-side filters for [`FleetStore::fleet_work`] (ADR-0105 decision 5).
+/// Same opaque-value contract as [`FleetFilter`]: values are validated
+/// against their own allow-list by the Bridge handler, not here.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FleetWorkFilter<'a> {
+    /// Case-insensitive substring match on `repository_id`. Literal `%`/`_`
+    /// must already be escaped by the caller (see `escape_like_pattern`).
+    pub repository_id: Option<&'a str>,
+    /// Case-insensitive substring match on `owner_id` (the claiming agent).
+    /// Same escaping requirement as `repository_id`.
+    pub owner_id: Option<&'a str>,
+}
+
+/// The column [`FleetStore::fleet_work`] orders by (ADR-0105 decision 5).
+/// A small, closed enum for the same reason as [`FleetSortField`]: each
+/// variant maps to exactly one compiled-in `ORDER BY` fragment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FleetWorkSortField {
+    LeaseExpiresAt,
+    RepositoryId,
+    OwnerId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FleetWorkSort {
+    pub field: FleetWorkSortField,
+    pub direction: SortDirection,
+}
+
+impl FleetWorkSort {
+    /// The default sort when a caller asks for none: soonest-expiring lease
+    /// first, so an operator's first look lands on the work most likely to
+    /// need attention.
+    pub fn default_order() -> Self {
+        Self {
+            field: FleetWorkSortField::LeaseExpiresAt,
+            direction: SortDirection::Ascending,
+        }
+    }
+
+    /// The literal `ORDER BY` fragment for this sort, always including
+    /// `task_id` as a tiebreaker so paging stays stable across pages when
+    /// the primary sort column has duplicate values.
+    fn order_by_clause(self) -> &'static str {
+        use FleetWorkSortField::{LeaseExpiresAt, OwnerId, RepositoryId};
+        use SortDirection::{Ascending, Descending};
+        match (self.field, self.direction) {
+            (LeaseExpiresAt, Ascending) => "ORDER BY lease_expires_at ASC, task_id ASC",
+            (LeaseExpiresAt, Descending) => "ORDER BY lease_expires_at DESC, task_id ASC",
+            (RepositoryId, Ascending) => "ORDER BY repository_id ASC, task_id ASC",
+            (RepositoryId, Descending) => "ORDER BY repository_id DESC, task_id ASC",
+            (OwnerId, Ascending) => "ORDER BY owner_id ASC, task_id ASC",
+            (OwnerId, Descending) => "ORDER BY owner_id DESC, task_id ASC",
+        }
+    }
+}
+
+/// One page of the fleet-wide Agents/Work view (ADR-0105 decision 5).
+/// `total` is the count matching `repository_id`/`owner_id` across every
+/// page, not just this one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetWorkPage {
+    pub items: Vec<FleetWorkItem>,
     pub total: i64,
 }
 
@@ -508,6 +591,65 @@ impl FleetStore {
                 })
                 .collect(),
         ))
+    }
+
+    /// One page of every live delegated claim across ALL of a tenant's
+    /// repositories (ADR-0105 decision 5), filtered, sorted, and paged
+    /// server-side -- the cross-repository "who is working on what, right
+    /// now" view a Bridge operator needs without visiting each repository's
+    /// own claims list individually. Same expired-claim exclusion rule as
+    /// `active_work`: an expired claim remains in the ledger for audit but
+    /// is not current work.
+    pub async fn fleet_work(
+        &self,
+        tenant_id: &str,
+        filter: FleetWorkFilter<'_>,
+        sort: FleetWorkSort,
+        page: i64,
+        page_size: i64,
+        now: SystemTime,
+    ) -> Result<FleetWorkPage, tokio_postgres::Error> {
+        let offset = (page - 1) * page_size;
+        let query = format!(
+            "SELECT repository_id, task_id, owner_id, branch, lease_expires_at, paths, symbols, \
+                    COUNT(*) OVER()::BIGINT \
+             FROM delegated_claims \
+             WHERE tenant_id = $1 AND lease_expires_at > $2 \
+               AND ($3::text IS NULL OR repository_id ILIKE '%' || $3 || '%' ESCAPE '\\') \
+               AND ($4::text IS NULL OR owner_id ILIKE '%' || $4 || '%' ESCAPE '\\') \
+             {order_by} \
+             LIMIT $5 OFFSET $6",
+            order_by = sort.order_by_clause(),
+        );
+        let rows = self
+            .client
+            .query(
+                &query,
+                &[
+                    &tenant_id,
+                    &now,
+                    &filter.repository_id,
+                    &filter.owner_id,
+                    &page_size,
+                    &offset,
+                ],
+            )
+            .await?;
+
+        let total = rows.first().map(|row| row.get::<_, i64>(7)).unwrap_or(0);
+        let items = rows
+            .into_iter()
+            .map(|row| FleetWorkItem {
+                repository_id: row.get(0),
+                task_id: row.get(1),
+                owner_id: row.get(2),
+                branch: row.get(3),
+                lease_expires_at: row.get(4),
+                paths: row.get(5),
+                symbols: row.get(6),
+            })
+            .collect();
+        Ok(FleetWorkPage { items, total })
     }
 
     /// Every signing key this repository has ever enrolled, judged as of now.
@@ -916,6 +1058,274 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fleet_work_aggregates_active_claims_across_every_repository_in_the_tenant() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let tenant_id = format!("fleet-work-tenant-{unique_id}");
+        let repository_ids = [
+            format!("fleet-work-repo-{unique_id}-a"),
+            format!("fleet-work-repo-{unique_id}-b"),
+        ];
+        for (index, repository_id) in repository_ids.iter().enumerate() {
+            enroll_and_activate_in(
+                &database_url,
+                &tenant_id,
+                repository_id,
+                &format!("{unique_id}-work-{index}"),
+            )
+            .await;
+        }
+
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let mut claims = ClaimStore::connect(&database_url)
+            .await
+            .expect("connect claim store");
+        for (repository_id, task_id, owner_id, lease_secs) in [
+            (&repository_ids[0], "task:expired", "agent:expired", 30),
+            (&repository_ids[0], "task:repo-a", "agent:a", 120),
+            (&repository_ids[1], "task:repo-b", "agent:b", 180),
+        ] {
+            claims
+                .delegate(
+                    &ClaimLeaseRequest {
+                        tenant_id: tenant_id.clone(),
+                        repository_id: repository_id.clone(),
+                        task_id: task_id.to_string(),
+                        owner_id: owner_id.to_string(),
+                        branch: format!("work/{task_id}"),
+                        lease: Duration::from_secs(lease_secs),
+                        paths: vec![format!("src/{task_id}.rs")],
+                        symbols: vec![format!("symbol:{task_id}")],
+                    },
+                    now,
+                )
+                .await
+                .expect("delegate claim");
+        }
+
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+        let page = fleet
+            .fleet_work(
+                &tenant_id,
+                FleetWorkFilter::default(),
+                FleetWorkSort::default_order(),
+                1,
+                50,
+                now + Duration::from_secs(31),
+            )
+            .await
+            .expect("query fleet work");
+
+        assert_eq!(page.total, 2);
+        assert_eq!(
+            page.items,
+            vec![
+                FleetWorkItem {
+                    repository_id: repository_ids[0].clone(),
+                    task_id: "task:repo-a".to_string(),
+                    owner_id: "agent:a".to_string(),
+                    branch: "work/task:repo-a".to_string(),
+                    lease_expires_at: now + Duration::from_secs(120),
+                    paths: vec!["src/task:repo-a.rs".to_string()],
+                    symbols: vec!["symbol:task:repo-a".to_string()],
+                },
+                FleetWorkItem {
+                    repository_id: repository_ids[1].clone(),
+                    task_id: "task:repo-b".to_string(),
+                    owner_id: "agent:b".to_string(),
+                    branch: "work/task:repo-b".to_string(),
+                    lease_expires_at: now + Duration::from_secs(180),
+                    paths: vec!["src/task:repo-b.rs".to_string()],
+                    symbols: vec!["symbol:task:repo-b".to_string()],
+                },
+            ]
+        );
+
+        // A different tenant must see none of this tenant's active work.
+        let other_tenant = fleet
+            .fleet_work(
+                &format!("{tenant_id}-other"),
+                FleetWorkFilter::default(),
+                FleetWorkSort::default_order(),
+                1,
+                50,
+                now + Duration::from_secs(31),
+            )
+            .await
+            .expect("query other tenant");
+        assert_eq!(other_tenant.total, 0);
+        assert!(other_tenant.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fleet_work_filters_by_repository_id_and_owner_id_substring() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let tenant_id = format!("fleet-work-filter-tenant-{unique_id}");
+        let repository_ids = [
+            format!("fleet-work-filter-repo-{unique_id}-a"),
+            format!("fleet-work-filter-repo-{unique_id}-b"),
+        ];
+        for (index, repository_id) in repository_ids.iter().enumerate() {
+            enroll_and_activate_in(
+                &database_url,
+                &tenant_id,
+                repository_id,
+                &format!("{unique_id}-filter-{index}"),
+            )
+            .await;
+        }
+
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let mut claims = ClaimStore::connect(&database_url)
+            .await
+            .expect("connect claim store");
+        for (repository_id, task_id, owner_id) in [
+            (&repository_ids[0], "task:alpha", "agent:carter"),
+            (&repository_ids[1], "task:beta", "agent:delta"),
+        ] {
+            claims
+                .delegate(
+                    &ClaimLeaseRequest {
+                        tenant_id: tenant_id.clone(),
+                        repository_id: repository_id.clone(),
+                        task_id: task_id.to_string(),
+                        owner_id: owner_id.to_string(),
+                        branch: format!("work/{task_id}"),
+                        lease: Duration::from_secs(120),
+                        paths: vec![],
+                        symbols: vec![],
+                    },
+                    now,
+                )
+                .await
+                .expect("delegate claim");
+        }
+
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+
+        let by_repository = fleet
+            .fleet_work(
+                &tenant_id,
+                FleetWorkFilter {
+                    repository_id: Some(&escape_like_pattern(&format!("{unique_id}-a"))),
+                    owner_id: None,
+                },
+                FleetWorkSort::default_order(),
+                1,
+                50,
+                now,
+            )
+            .await
+            .expect("query filtered by repository_id");
+        assert_eq!(by_repository.total, 1);
+        assert_eq!(by_repository.items[0].task_id, "task:alpha");
+
+        let by_owner = fleet
+            .fleet_work(
+                &tenant_id,
+                FleetWorkFilter {
+                    repository_id: None,
+                    owner_id: Some("delta"),
+                },
+                FleetWorkSort::default_order(),
+                1,
+                50,
+                now,
+            )
+            .await
+            .expect("query filtered by owner_id");
+        assert_eq!(by_owner.total, 1);
+        assert_eq!(by_owner.items[0].task_id, "task:beta");
+    }
+
+    #[tokio::test]
+    async fn fleet_work_sort_direction_reverses_the_default_order() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let tenant_id = format!("fleet-work-sort-tenant-{unique_id}");
+        let repository_id = format!("fleet-work-sort-repo-{unique_id}");
+        enroll_and_activate_in(
+            &database_url,
+            &tenant_id,
+            &repository_id,
+            &unique_id.to_string(),
+        )
+        .await;
+
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let mut claims = ClaimStore::connect(&database_url)
+            .await
+            .expect("connect claim store");
+        for (task_id, lease_secs) in [("task:soonest", 60), ("task:latest", 300)] {
+            claims
+                .delegate(
+                    &ClaimLeaseRequest {
+                        tenant_id: tenant_id.clone(),
+                        repository_id: repository_id.clone(),
+                        task_id: task_id.to_string(),
+                        owner_id: "agent:sort".to_string(),
+                        branch: format!("work/{task_id}"),
+                        lease: Duration::from_secs(lease_secs),
+                        paths: vec![],
+                        symbols: vec![],
+                    },
+                    now,
+                )
+                .await
+                .expect("delegate claim");
+        }
+
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+
+        let ascending = fleet
+            .fleet_work(
+                &tenant_id,
+                FleetWorkFilter::default(),
+                FleetWorkSort::default_order(),
+                1,
+                50,
+                now,
+            )
+            .await
+            .expect("query ascending");
+        assert_eq!(ascending.items[0].task_id, "task:soonest");
+        assert_eq!(ascending.items[1].task_id, "task:latest");
+
+        let descending = fleet
+            .fleet_work(
+                &tenant_id,
+                FleetWorkFilter::default(),
+                FleetWorkSort {
+                    field: FleetWorkSortField::LeaseExpiresAt,
+                    direction: SortDirection::Descending,
+                },
+                1,
+                50,
+                now,
+            )
+            .await
+            .expect("query descending");
+        assert_eq!(descending.items[0].task_id, "task:latest");
+        assert_eq!(descending.items[1].task_id, "task:soonest");
+    }
+
+    #[tokio::test]
     async fn signing_keys_reports_none_for_a_repository_that_is_not_enrolled() {
         let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
@@ -1213,6 +1623,39 @@ mod tests {
                 assert!(
                     clause.contains("request.repository_id"),
                     "{field:?}/{direction:?} clause must break ties by repository_id: {clause}"
+                );
+                assert!(
+                    clause.starts_with("ORDER BY"),
+                    "not a valid ORDER BY: {clause}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fleet_work_sort_default_order_is_lease_expires_at_ascending() {
+        assert_eq!(
+            FleetWorkSort::default_order(),
+            FleetWorkSort {
+                field: FleetWorkSortField::LeaseExpiresAt,
+                direction: SortDirection::Ascending,
+            }
+        );
+    }
+
+    #[test]
+    fn fleet_work_sort_order_by_clause_always_carries_a_task_id_tiebreaker() {
+        let sorts = [
+            FleetWorkSortField::LeaseExpiresAt,
+            FleetWorkSortField::RepositoryId,
+            FleetWorkSortField::OwnerId,
+        ];
+        for field in sorts {
+            for direction in [SortDirection::Ascending, SortDirection::Descending] {
+                let clause = FleetWorkSort { field, direction }.order_by_clause();
+                assert!(
+                    clause.contains("task_id"),
+                    "{field:?}/{direction:?} clause must break ties by task_id: {clause}"
                 );
                 assert!(
                     clause.starts_with("ORDER BY"),

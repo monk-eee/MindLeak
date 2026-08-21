@@ -6,8 +6,9 @@ use std::{
 use ackplane_bridge::BridgeConfig;
 use ackplane_server::fleet::{
     escape_like_pattern, ActiveWorkItem, FleetFilter, FleetPage, FleetRepository, FleetSort,
-    FleetSortField, FleetStore, RepositoryDetail, RepositoryFreshness, SigningKeyStatus,
-    SortDirection, TimelineEvent,
+    FleetSortField, FleetStore, FleetWorkFilter, FleetWorkItem, FleetWorkPage, FleetWorkSort,
+    FleetWorkSortField, RepositoryDetail, RepositoryFreshness, SigningKeyStatus, SortDirection,
+    TimelineEvent,
 };
 use ackplane_server::knowledge_store::{ActiveKnowledge, KnowledgeStore};
 use ackplane_server::signing_keys::KeyResolution;
@@ -87,6 +88,75 @@ fn validate_allow_listed<'a>(
         None => Ok(None),
         Some(value) if allowed.contains(&value.as_str()) => Ok(Some(value.as_str())),
         Some(_) => Err(StatusCode::BAD_REQUEST),
+    }
+}
+
+/// `GET /api/v1/agents` query parameters (ADR-0105 decision 5). All optional.
+#[derive(Deserialize)]
+struct AgentsQuery {
+    repository_id: Option<String>,
+    owner_id: Option<String>,
+    sort: Option<String>,
+    page: Option<i64>,
+    page_size: Option<i64>,
+}
+
+const DEFAULT_AGENTS_PAGE_SIZE: i64 = 20;
+const MAX_AGENTS_PAGE_SIZE: i64 = 100;
+
+/// Parse `field:asc`/`field:desc` against the allow-listed Agents sort
+/// fields (ADR-0105 decision 5). `None` (no `sort` param) is the default
+/// order, soonest-expiring lease first; anything unrecognised or malformed
+/// is a `400`, never a silently-ignored value.
+fn parse_agents_sort(raw: Option<&str>) -> Result<FleetWorkSort, StatusCode> {
+    let Some(raw) = raw else {
+        return Ok(FleetWorkSort::default_order());
+    };
+    let (field_part, direction_part) = raw.split_once(':').ok_or(StatusCode::BAD_REQUEST)?;
+    let field = match field_part {
+        "lease_expires_at" => FleetWorkSortField::LeaseExpiresAt,
+        "repository_id" => FleetWorkSortField::RepositoryId,
+        "owner_id" => FleetWorkSortField::OwnerId,
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+    let direction = match direction_part {
+        "asc" => SortDirection::Ascending,
+        "desc" => SortDirection::Descending,
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+    Ok(FleetWorkSort { field, direction })
+}
+
+#[derive(Serialize)]
+struct AgentsResponse {
+    items: Vec<AgentWorkSummary>,
+    total: i64,
+    page: i64,
+    page_size: i64,
+}
+
+#[derive(Serialize)]
+struct AgentWorkSummary {
+    repository_id: String,
+    task_id: String,
+    owner_id: String,
+    branch: String,
+    lease_expires_at_seconds: Option<u64>,
+    paths: Vec<String>,
+    symbols: Vec<String>,
+}
+
+impl From<FleetWorkItem> for AgentWorkSummary {
+    fn from(item: FleetWorkItem) -> Self {
+        Self {
+            repository_id: item.repository_id,
+            task_id: item.task_id,
+            owner_id: item.owner_id,
+            branch: item.branch,
+            lease_expires_at_seconds: unix_seconds(item.lease_expires_at),
+            paths: item.paths,
+            symbols: item.symbols,
+        }
     }
 }
 
@@ -341,6 +411,7 @@ async fn main() {
     let application = Router::new()
         .route("/", get(fleet_page))
         .route("/api/v1/fleet", get(fleet))
+        .route("/api/v1/agents", get(agents))
         .route(
             "/api/v1/repositories/:repository_id",
             get(repository_detail),
@@ -428,6 +499,51 @@ async fn fleet(
 
 async fn fleet_page() -> impl IntoResponse {
     Html(FLEET_PAGE)
+}
+
+async fn agents(
+    State(state): State<AppState>,
+    Query(query): Query<AgentsQuery>,
+) -> Result<Json<AgentsResponse>, StatusCode> {
+    let sort = parse_agents_sort(query.sort.as_deref())?;
+    let page = query.page.unwrap_or(1);
+    if page < 1 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let page_size = query
+        .page_size
+        .unwrap_or(DEFAULT_AGENTS_PAGE_SIZE)
+        .clamp(1, MAX_AGENTS_PAGE_SIZE);
+    let escaped_repository_id = query.repository_id.as_deref().map(escape_like_pattern);
+    let escaped_owner_id = query.owner_id.as_deref().map(escape_like_pattern);
+    let filter = FleetWorkFilter {
+        repository_id: escaped_repository_id.as_deref(),
+        owner_id: escaped_owner_id.as_deref(),
+    };
+
+    state
+        .fleet
+        .fleet_work(
+            &state.tenant_id,
+            filter,
+            sort,
+            page,
+            page_size,
+            SystemTime::now(),
+        )
+        .await
+        .map(|FleetWorkPage { items, total }| {
+            Json(AgentsResponse {
+                items: items.into_iter().map(AgentWorkSummary::from).collect(),
+                total,
+                page,
+                page_size,
+            })
+        })
+        .map_err(|error| {
+            tracing::error!(%error, "Bridge Agents query failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
 }
 
 async fn repository_detail(
@@ -674,6 +790,84 @@ mod tests {
     fn validate_allow_listed_rejects_a_value_outside_the_list() {
         assert_eq!(
             validate_allow_listed(&Some("bogus".to_string()), FLEET_COORDINATION_VALUES),
+            Err(StatusCode::BAD_REQUEST)
+        );
+    }
+
+    #[test]
+    fn parse_agents_sort_defaults_to_lease_expires_at_ascending_when_absent() {
+        assert_eq!(
+            parse_agents_sort(None).expect("default sort"),
+            FleetWorkSort {
+                field: FleetWorkSortField::LeaseExpiresAt,
+                direction: SortDirection::Ascending,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_agents_sort_accepts_every_allow_listed_field_and_direction() {
+        let cases = [
+            (
+                "lease_expires_at:asc",
+                FleetWorkSortField::LeaseExpiresAt,
+                SortDirection::Ascending,
+            ),
+            (
+                "lease_expires_at:desc",
+                FleetWorkSortField::LeaseExpiresAt,
+                SortDirection::Descending,
+            ),
+            (
+                "repository_id:asc",
+                FleetWorkSortField::RepositoryId,
+                SortDirection::Ascending,
+            ),
+            (
+                "repository_id:desc",
+                FleetWorkSortField::RepositoryId,
+                SortDirection::Descending,
+            ),
+            (
+                "owner_id:asc",
+                FleetWorkSortField::OwnerId,
+                SortDirection::Ascending,
+            ),
+            (
+                "owner_id:desc",
+                FleetWorkSortField::OwnerId,
+                SortDirection::Descending,
+            ),
+        ];
+        for (raw, field, direction) in cases {
+            assert_eq!(
+                parse_agents_sort(Some(raw)).unwrap_or_else(|_| panic!("{raw} must parse")),
+                FleetWorkSort { field, direction },
+                "parsing {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_agents_sort_rejects_an_unrecognised_field() {
+        assert_eq!(
+            parse_agents_sort(Some("nonexistent_column:asc")),
+            Err(StatusCode::BAD_REQUEST)
+        );
+    }
+
+    #[test]
+    fn parse_agents_sort_rejects_an_unrecognised_direction() {
+        assert_eq!(
+            parse_agents_sort(Some("repository_id:sideways")),
+            Err(StatusCode::BAD_REQUEST)
+        );
+    }
+
+    #[test]
+    fn parse_agents_sort_rejects_a_value_with_no_colon() {
+        assert_eq!(
+            parse_agents_sort(Some("repository_id")),
             Err(StatusCode::BAD_REQUEST)
         );
     }
