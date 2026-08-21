@@ -23,6 +23,7 @@ pub const KNOWLEDGE_DOMAIN: &[u8] = b"mindleak.ackplane.v1.knowledge\0";
 pub enum KnowledgeOperation<'a> {
     Record {
         content: &'a str,
+        source_ref: Option<&'a str>,
         half_life_hours: f64,
         embedding_model: Option<&'a str>,
     },
@@ -60,10 +61,12 @@ impl KnowledgeOperation<'_> {
         match self {
             Self::Record {
                 content,
+                source_ref,
                 half_life_hours,
                 embedding_model,
             } => {
                 push_field(bytes, content.as_bytes());
+                push_field(bytes, source_ref.unwrap_or("").as_bytes());
                 push_field(bytes, &half_life_hours.to_be_bytes());
                 push_field(bytes, embedding_model.unwrap_or("").as_bytes());
             }
@@ -131,6 +134,7 @@ mod tests {
 
     const RECORD: KnowledgeOperation<'static> = KnowledgeOperation::Record {
         content: "a lesson",
+        source_ref: Some("pr:538"),
         half_life_hours: 720.0,
         embedding_model: Some("model-a"),
     };
@@ -169,10 +173,25 @@ mod tests {
         let a = knowledge_signing_bytes("tenant-a", "repo-a", &RECORD, &authentication(1));
         let changed = KnowledgeOperation::Record {
             content: "a different lesson",
+            source_ref: Some("pr:538"),
             half_life_hours: 720.0,
             embedding_model: Some("model-a"),
         };
         let b = knowledge_signing_bytes("tenant-a", "repo-a", &changed, &authentication(1));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_changed_source_reference_changes_record_bytes() {
+        let a = knowledge_signing_bytes("tenant-a", "repo-a", &RECORD, &authentication(1));
+        let changed = KnowledgeOperation::Record {
+            content: "a lesson",
+            source_ref: Some("pr:539"),
+            half_life_hours: 720.0,
+            embedding_model: Some("model-a"),
+        };
+        let b = knowledge_signing_bytes("tenant-a", "repo-a", &changed, &authentication(1));
+
         assert_ne!(a, b);
     }
 

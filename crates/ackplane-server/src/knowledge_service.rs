@@ -166,6 +166,7 @@ impl v1::knowledge_service_server::KnowledgeService for KnowledgeGrpcService {
         let request = request.into_inner();
         let operation = KnowledgeOperation::Record {
             content: &request.content,
+            source_ref: (!request.source_ref.is_empty()).then_some(request.source_ref.as_str()),
             half_life_hours: request.half_life_hours,
             embedding_model: (!request.embedding_model.is_empty())
                 .then_some(request.embedding_model.as_str()),
@@ -401,6 +402,15 @@ mod tests {
         content: &str,
         nonce_byte: u8,
     ) -> v1::RecordKnowledgeRequest {
+        authenticated_record_request_with_source_ref(identity, content, "", nonce_byte)
+    }
+
+    fn authenticated_record_request_with_source_ref(
+        identity: &TestIdentity,
+        content: &str,
+        source_ref: &str,
+        nonce_byte: u8,
+    ) -> v1::RecordKnowledgeRequest {
         let key = signing_key();
         let half_life_hours = 720.0;
         let mut authentication = v1::KnowledgeAuthentication {
@@ -414,6 +424,7 @@ mod tests {
         };
         let operation = KnowledgeOperation::Record {
             content,
+            source_ref: (!source_ref.is_empty()).then_some(source_ref),
             half_life_hours,
             embedding_model: None,
         };
@@ -428,7 +439,7 @@ mod tests {
             tenant_id: identity.tenant_id.clone(),
             repository_id: identity.repository_id.clone(),
             content: content.to_owned(),
-            source_ref: String::new(),
+            source_ref: source_ref.to_owned(),
             half_life_hours,
             embedding_model: String::new(),
             embedding: Vec::new(),
@@ -566,6 +577,7 @@ mod tests {
         authentication.signed_at = "2020-01-01T00:00:00Z".to_owned();
         let operation = KnowledgeOperation::Record {
             content: &wire.content,
+            source_ref: (!wire.source_ref.is_empty()).then_some(wire.source_ref.as_str()),
             half_life_hours: wire.half_life_hours,
             embedding_model: None,
         };
@@ -612,6 +624,46 @@ mod tests {
             .await
             .expect_err("a request with no authentication must be refused");
         assert_eq!(refused.code(), tonic::Code::Unauthenticated);
+    }
+
+    /// Regression: `source_ref` was not signed, so an in-flight mutation
+    /// could falsely attribute a statement to unrelated evidence. Binding it
+    /// into `KnowledgeOperation::Record` refuses the tampered request before
+    /// the store records any knowledge.
+    #[tokio::test]
+    async fn a_tampered_source_reference_is_refused_before_the_store_runs() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let identity = TestIdentity::fresh("source-ref-tampering");
+        register_test_key(&database_url, &identity).await;
+        let service = KnowledgeGrpcService::new(
+            KnowledgeStore::connect(&database_url)
+                .await
+                .expect("the gated test database should accept a knowledge-store connection"),
+        );
+        let mut wire = authenticated_record_request_with_source_ref(
+            &identity,
+            "a source-bound lesson",
+            "evidence:verified",
+            99,
+        );
+        wire.source_ref = "evidence:tampered".to_owned();
+
+        let refused = service
+            .record_knowledge(Request::new(wire))
+            .await
+            .expect_err("tampering with a signed source reference must be refused");
+        assert_eq!(refused.code(), tonic::Code::Unauthenticated);
+
+        let history = KnowledgeStore::connect(&database_url)
+            .await
+            .expect("a verifier connection should open")
+            .history(&identity.tenant_id, &identity.repository_id, 10)
+            .await
+            .expect("history should prove no statement was recorded");
+        assert!(history.is_empty());
     }
 
     #[tokio::test]
