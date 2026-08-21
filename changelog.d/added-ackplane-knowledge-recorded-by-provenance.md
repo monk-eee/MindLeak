@@ -1,0 +1,1 @@
+- **Added:** New authenticated Ackplane knowledge records now retain the enrolled node that recorded them, and expose that writer provenance through record, recall, and lifecycle-history responses without inventing actors for legacy rows.
