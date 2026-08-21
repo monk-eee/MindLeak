@@ -232,6 +232,7 @@ fn evidence(
         execution_ids: vec!["execution:proof".into()],
         successful_execution_ids: vec!["execution:proof".into()],
         commit_ids: Vec::new(),
+        ledger_act_ids: Vec::new(),
         summary: format!("changed {changed_node_id}"),
         provenance: vec![
             EvidenceProvenance {
@@ -548,6 +549,7 @@ fn missing_evidence_stays_in_review() {
         execution_ids: Vec::new(),
         successful_execution_ids: Vec::new(),
         commit_ids: Vec::new(),
+        ledger_act_ids: Vec::new(),
         summary: "no activity".into(),
         provenance: Vec::new(),
     };
@@ -878,6 +880,7 @@ fn learned_knowledge_loop_promotes_then_advises_conformance_without_violation() 
         execution_ids: vec!["execution:proof".into()],
         successful_execution_ids: vec!["execution:proof".into()],
         commit_ids: Vec::new(),
+        ledger_act_ids: Vec::new(),
         summary: "touch lexer".into(),
         provenance: vec![
             EvidenceProvenance {

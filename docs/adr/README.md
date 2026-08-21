@@ -118,7 +118,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0108](0108-knowledge-rpcs-authenticate-with-operation-signing.md) | Knowledge RPCs authenticate with an operation-signing scheme mirroring claims | Accepted |
 | [0109](0109-a-live-claim-may-consent-to-follow-its-amended-clause.md) | A live claim may consent to follow its amended clause | Accepted |
 | [0110](0110-a-ledger-act-is-independently-verifiable-evidence.md) | A Lodestar ledger act is independently verifiable evidence | Accepted |
-| [0111](0111-bridge-recovers-a-stranded-claim-as-a-tenant-scoped-administrative-action.md) | Bridge recovers a stranded claim as a tenant-scoped administrative action | Proposed |
+| [0111](0111-bridge-recovers-a-stranded-claim-as-a-tenant-scoped-administrative-action.md) | Bridge recovers a stranded claim as a tenant-scoped administrative action | Accepted |
 
 ## Writing a new ADR
 
