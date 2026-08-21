@@ -20,6 +20,20 @@ pub(super) fn definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "ledger_act_evidence",
+            "description": "Build an evidence bundle from one Lodestar-internal ledger act (ADR-0110) -- a design registration/decision, a granted waiver, or a constitution amendment -- instead of refusing a ledger-only completion for having no MindLeak node mutation. The plane verifies deterministically, with no MindLeak call, that the named act exists, that ITS OWN recorded actor matches your resolved agent, and that its timestamp falls inside your live claim's window. It does NOT complete the task: conformance still judges the result and somebody still has to submit it. `kind` must be one of design_registered, design_decided, waiver_granted, constitution_amended -- goal supersession has no recorded actor yet and is not eligible.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string" },
+                    "kind": { "type": "string", "enum": ["design_registered", "design_decided", "waiver_granted", "constitution_amended"], "description": "Which closed ledger-act kind act_id names." },
+                    "act_id": { "type": "string", "description": "The design item id, waiver id, or amendment id the act was recorded under." },
+                    "session_id": { "type": "string", "description": "Session id previously registered with open_session.", "pattern": "^[0-9a-f]{32}$" }
+                },
+                "required": ["task_id", "kind", "act_id", "session_id"]
+            }
+        }),
+        json!({
             "name": "export_evidence",
             "description": "Render a task's durable conformance evidence chain as committed-friendly, portable proof-of-work (ADR-0031): each check's stable id, verdict, acting agent, claim window, and evidence summary. Pass `path` to write the artifact (e.g. .lodestar/evidence/<task>.md) so the proof leaves the local ledger for review, CI, and audit. Deterministic and model-free.",
             "inputSchema": {
@@ -58,6 +72,24 @@ pub(super) fn dispatch(
                     // The agent bind_session resolved from the token, not the
                     // token itself: the facade compares this against the task's
                     // owner, which is a `session:v1:` id.
+                    req_str(args, "agent")?,
+                )
+                .map_err(|e| e.to_string())?;
+            text(serde_json::to_string_pretty(&evidence).map_err(|e| e.to_string())?)
+        })()),
+        "ledger_act_evidence" => Some((|| {
+            let tag = req_str(args, "kind")?;
+            let kind = lodestar_core::LedgerActKind::parse(tag).ok_or_else(|| {
+                format!(
+                    "unknown ledger-act kind {tag}; expected one of design_registered, \
+                     design_decided, waiver_granted, constitution_amended"
+                )
+            })?;
+            let evidence = engine
+                .ledger_act_evidence(
+                    req_str(args, "task_id")?,
+                    kind,
+                    req_str(args, "act_id")?,
                     req_str(args, "agent")?,
                 )
                 .map_err(|e| e.to_string())?;

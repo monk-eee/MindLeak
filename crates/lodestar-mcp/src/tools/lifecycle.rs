@@ -231,6 +231,7 @@ mod tests {
             execution_ids: vec!["execution:proof".into()],
             successful_execution_ids: vec!["execution:proof".into()],
             commit_ids: Vec::new(),
+            ledger_act_ids: Vec::new(),
             summary: "wired fts".into(),
             provenance: vec![
                 lodestar_core::EvidenceProvenance {

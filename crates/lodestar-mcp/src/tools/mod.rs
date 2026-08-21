@@ -744,6 +744,7 @@ fn requires_session(name: &str) -> bool {
             | "propose_amendment"
             | "amend_constitution"
             | "merge_evidence"
+            | "ledger_act_evidence"
     )
 }
 
@@ -1583,6 +1584,7 @@ mod tests {
             execution_ids: Vec::new(),
             successful_execution_ids: Vec::new(),
             commit_ids: Vec::new(),
+            ledger_act_ids: Vec::new(),
             summary: "no mutation evidence".into(),
             provenance: Vec::new(),
         };

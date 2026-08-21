@@ -114,8 +114,69 @@ pub struct ConformanceEvidence {
     pub execution_ids: Vec<String>,
     pub successful_execution_ids: Vec<String>,
     pub commit_ids: Vec<String>,
+    /// A closed set of Lodestar-internal ledger acts standing in for a
+    /// MindLeak node mutation (ADR-0110): entries are `ledger_act:<kind>:<id>`
+    /// ids built only by [`crate::Lodestar::ledger_act_evidence`], never
+    /// caller-supplied directly. `#[serde(default)]` lets evidence recorded
+    /// before this field existed keep deserializing as an empty list.
+    #[serde(default)]
+    pub ledger_act_ids: Vec<String>,
     pub summary: String,
     pub provenance: Vec<EvidenceProvenance>,
+}
+
+/// The closed, enumerated set of Lodestar-internal acts eligible as
+/// conformance evidence in their own right (ADR-0110), because each already
+/// carries a durably recorded actor and timestamp that
+/// [`crate::Lodestar::ledger_act_evidence`] verifies against the current
+/// claim -- without any MindLeak call. Adding a new variant is a decision for
+/// a future ADR amendment, the same discipline ADR-0009 applies to what may
+/// populate `changed_node_ids`; this is deliberately not an escape hatch for
+/// "any Lodestar write".
+///
+/// `GoalSuperseded` is not a variant here: `supersede_goal` records no actor
+/// for the act itself (only a free-form `reason`), so there is nothing to
+/// verify against the claiming agent yet. Wiring it in needs that prerequisite
+/// fixed first, not a fabricated attribution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LedgerActKind {
+    /// A design item was registered (`design_items.proposed_by`/`created_at`).
+    DesignRegistered,
+    /// A design item was accepted or rejected
+    /// (`design_items.decided_by`/`updated_at`).
+    DesignDecided,
+    /// A waiver was granted (`waivers.approved_by`/`created_at`).
+    WaiverGranted,
+    /// A constitution amendment was recorded
+    /// (`constitution_amendments.amended_by`/`created_at`).
+    ConstitutionAmended,
+}
+
+impl LedgerActKind {
+    /// The stable snake_case tag used in a `ledger_act:<kind>:<id>` node id.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LedgerActKind::DesignRegistered => "design_registered",
+            LedgerActKind::DesignDecided => "design_decided",
+            LedgerActKind::WaiverGranted => "waiver_granted",
+            LedgerActKind::ConstitutionAmended => "constitution_amended",
+        }
+    }
+
+    /// Parse the tag `as_str` produces, for the MCP tool's caller-supplied
+    /// `kind` argument. Unlike a `changed_node_id`, this string selects which
+    /// store lookup runs, so an unrecognised value must refuse rather than
+    /// guess.
+    pub fn parse(tag: &str) -> Option<Self> {
+        match tag {
+            "design_registered" => Some(LedgerActKind::DesignRegistered),
+            "design_decided" => Some(LedgerActKind::DesignDecided),
+            "waiver_granted" => Some(LedgerActKind::WaiverGranted),
+            "constitution_amended" => Some(LedgerActKind::ConstitutionAmended),
+            _ => None,
+        }
+    }
 }
 
 impl Verdict {
