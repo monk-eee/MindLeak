@@ -370,6 +370,19 @@ the signed bytes, and its own `knowledge_authentication_nonces` table —
 mirrored, not shared with claims', so the two domains' replay protection and
 signed-byte encodings can never collide or drift into each other.
 
+`ConstitutionService` (`constitution_store.rs`/`constitution_service.rs`) is a
+read-only projection of a repository's own authoritative local Lodestar
+constitution (ADR-0106 decision 3): `PublishConstitutionSnapshot` (called by
+that repository's own tooling) and `GetActiveConstitution`. Ackplane never
+adopts, tailors, rejects, promotes, or waives a clause — those actions stay
+local to Lodestar; a publish replaces the tenant/repository's snapshot
+wholesale (delete-then-reinsert its clauses inside one transaction), never an
+incremental diff, because a constitution version is immutable at the source.
+Mirrors `KnowledgeService`'s authentication pattern exactly: its own domain
+separator (`constitution_auth::CONSTITUTION_DOMAIN`), its own
+`ConstitutionOperation` enum, and its own
+`constitution_authentication_nonces` table.
+
 ### `ackplane-bridge` (binary)
 
 A separate axum HTTP server for the Bridge (assurance operations, ADR-0090):
@@ -390,6 +403,7 @@ tenant has not enrolled rather than leaking a distinguishable error:
 | `GET /api/v1/repositories/:repository_id/claims` | Its live delegated claims (`FleetStore::active_work`). |
 | `GET /api/v1/repositories/:repository_id/signing-keys` | Every enrolled signing key, judged as of now (`FleetStore::signing_keys`), reusing `signing_keys::judge` — the same rule an accepted envelope's own verification applies — rather than a second judgment invented for the health view. |
 | `GET /api/v1/repositories/:repository_id/knowledge` | Its recorded knowledge, recency-ordered (`KnowledgeStore::recall`, ADR-0106) — the same query the knowledge domain already exposes over gRPC, not a second one invented for the Bridge view. |
+| `GET /api/v1/repositories/:repository_id/constitution` | Its published constitution snapshot, if any (`ConstitutionStore::get_active`) — read-only; no adopt/tailor/reject/promote/waiver action is exposed here. |
 | `POST /api/v1/repositories/:repository_id/tasks/:task_id/recover` | Bridge's first claim **mutation** (ADR-0111): recovers a stranded claim by calling `ClaimStore::recover` directly, tenant-scoped and reason-required. `delegate`, `release`, and `renew` remain node-signed-only and are not exposed here. The handler resolves `expected_owner` itself via the new `FleetStore::claim_owner` (unlike `active_work`, this does not filter out an already-expired lease), rather than trusting a caller-supplied value. |
 
 ### `editors/vscode` (extension)

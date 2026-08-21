@@ -30,6 +30,17 @@ service KnowledgeService {
   rpc RetireKnowledge(RetireKnowledgeRequest) returns (RetireKnowledgeResult);
 }
 
+// ADR-0106 decision 3: Constitution is a read-only projection of a
+// repository's own authoritative local Lodestar constitution -- published
+// here by that repository's tooling so Bridge can surface an enrolled
+// repository's active governance without either plane inspecting the
+// other's storage directly. No adopt/tailor/reject/promote/waiver action
+// lives here: this domain mirrors the local constitution, it never edits it.
+service ConstitutionService {
+  rpc PublishConstitutionSnapshot(PublishConstitutionSnapshotRequest) returns (PublishConstitutionSnapshotResult);
+  rpc GetActiveConstitution(GetActiveConstitutionRequest) returns (GetActiveConstitutionResult);
+}
+
 // The enrolled node's proof that it, not just its bearer credentials, is
 // asking for this claim (ADR-0096 clause 4's authentication gap). Reuses the
 // same Ed25519 signing key and domain-separated verification
@@ -200,6 +211,64 @@ message RetireKnowledgeRequest {
 
 message RetireKnowledgeResult {
   bool retired = 1;
+}
+
+// The enrolled node's proof for a ConstitutionService request. A distinct
+// message, domain, and nonce space from KnowledgeAuthentication: a
+// constitution snapshot has no equivalent of a knowledge statement's fields,
+// so binding those here would sign nothing meaningful, and sharing a nonce
+// table would couple two unrelated domains' replay protection.
+message ConstitutionAuthentication {
+  string signing_key_id = 1;
+  string node_id = 2;
+  string signed_at = 3;
+  bytes nonce = 4;
+  bytes signature = 5;
+}
+
+// One clause, mirroring lodestar-core::model::constitution::Goal's
+// externally-relevant fields -- a read-only projection carries what a viewer
+// needs to understand a clause, not the full internal record (parent_id,
+// superseded_by, waiver bookkeeping, import provenance stay local).
+message ConstitutionClause {
+  string id = 1;
+  string slug = 2;
+  string kind = 3;
+  string title = 4;
+  string statement = 5;
+  string status = 6;
+  string consequence = 7;
+  string scope = 8;
+  string rationale = 9;
+}
+
+message PublishConstitutionSnapshotRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string version_id = 3;
+  uint32 version = 4;
+  string status = 5;
+  repeated ConstitutionClause clauses = 6;
+  ConstitutionAuthentication authentication = 7;
+}
+
+message PublishConstitutionSnapshotResult {
+  bool published = 1;
+}
+
+message GetActiveConstitutionRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  ConstitutionAuthentication authentication = 3;
+}
+
+message GetActiveConstitutionResult {
+  bool found = 1;
+  string version_id = 2;
+  uint32 version = 3;
+  string status = 4;
+  repeated ConstitutionClause clauses = 5;
+  string published_at = 6;
 }
 
 enum ClaimLeaseOutcome {
