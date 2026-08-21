@@ -19,3 +19,4 @@ pub mod constitution_auth;
 pub mod context_packet;
 pub mod knowledge_auth;
 mod signing_bytes;
+pub mod supervisor;
