@@ -117,3 +117,98 @@ pub(super) fn clear_backfilled_constitution_version_from_objectives(
     )?;
     Ok(())
 }
+
+/// Collapse `session:v1:{name}:{fingerprint}` identities to `session:v1:{fingerprint}` (ADR-0054).
+///
+/// The old id embedded a label read from the *hosting process* environment
+/// (`LODESTAR_AGENT`), while the fingerprint came from the session token. One
+/// agent whose server started twice with different environments therefore held
+/// two identities. Every comparison in the system is whole-string equality —
+/// `tasks.owner`, `task_qa.audience`, overlap, wait cycles — so the fleet saw
+/// two agents where there was one, and a question addressed to one half was
+/// invisible to the other.
+///
+/// The rewrite heals that automatically: both halves share the fingerprint, so
+/// both collapse onto the same id and the split agent becomes one agent with
+/// all of its claims. `substr(value, -32)` takes the fingerprint, which is
+/// always exactly 32 hex characters; the `GLOB` matches only ids that still
+/// carry a label, so this is idempotent and a second open rewrites nothing.
+///
+/// Moved here from `migrations.rs` (see that module's own header): this is a
+/// row-level repair of identities a past defect already split, not a schema
+/// shape change, so it belongs beside the other repairs rather than in the
+/// migration that runs it.
+pub(super) fn collapse_session_identities(connection: &Connection) -> Result<()> {
+    // `session_context` is keyed on the identity, so two halves of one agent
+    // collapse onto the same primary key. Keep the most recent declaration and
+    // drop the rest before rewriting, or the UPDATE fails on the constraint.
+    if super::migrations::column_exists(connection, "session_context", "agent_id")? {
+        connection.execute(
+            "DELETE FROM session_context
+             WHERE rowid NOT IN (
+                 SELECT rowid FROM (
+                     SELECT rowid,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY substr(agent_id, -32)
+                                ORDER BY declared_at DESC, rowid DESC
+                            ) AS rank
+                     FROM session_context
+                     WHERE agent_id LIKE 'session:v1:%'
+                 )
+                 WHERE rank = 1
+             )
+             AND agent_id LIKE 'session:v1:%'",
+            [],
+        )?;
+    }
+    for (table, column) in [
+        ("constitution_versions", "created_by"),
+        ("constitution_versions", "activated_by"),
+        ("waivers", "approved_by"),
+        ("waivers", "revoked_by"),
+        ("constitution_amendments", "amended_by"),
+        ("design_items", "proposed_by"),
+        ("design_items", "decided_by"),
+        ("design_items", "retired_by"),
+        ("design_materializations", "actor"),
+        ("task_claim_transfers", "from_owner"),
+        ("task_claim_transfers", "to_owner"),
+        ("task_claim_transfers", "recovered_by"),
+        ("task_qa", "author"),
+        ("task_qa", "audience"),
+        ("session_context", "agent_id"),
+    ] {
+        if !super::migrations::column_exists(connection, table, column)? {
+            continue;
+        }
+        connection.execute(
+            &format!(
+                "UPDATE {table}
+                 SET {column} = 'session:v1:' || substr({column}, -32)
+                 WHERE {column} GLOB 'session:v1:*:*'"
+            ),
+            [],
+        )?;
+    }
+    // `tasks.owner` is deliberately not in that list. Every other column above
+    // is a historical record, and rewriting one changes only how the past reads.
+    // `owner` is *live state*: it is what `check_conformance`, `ask_question`,
+    // `renew_lease` and `complete_task` compare the caller against, so editing
+    // it mid-claim does not adjust a record, it transfers ownership. An agent
+    // whose id no longer matches cannot prove its work, cannot park the task to
+    // explain, and reads as a different owner on re-claim — which opens a fresh
+    // evidence window and orphans everything it had already committed.
+    //
+    // A claim that is over is safe to tidy; a claim that is live is not ours to
+    // touch. Ownership only changes by claim, release, or an audited transfer.
+    if super::migrations::column_exists(connection, "tasks", "owner")? {
+        connection.execute(
+            "UPDATE tasks
+             SET owner = 'session:v1:' || substr(owner, -32)
+             WHERE owner GLOB 'session:v1:*:*'
+               AND NOT (status = 'claimed' AND COALESCE(lease_expires_at, 0) >= ?1)",
+            [crate::now_unix()],
+        )?;
+    }
+    Ok(())
+}
