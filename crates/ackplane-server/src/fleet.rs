@@ -108,6 +108,23 @@ pub struct ActiveWorkItem {
     pub symbols: Vec<String>,
 }
 
+/// One live delegated claim anywhere in a tenant's fleet (ADR-0105 decision
+/// 5's Agents/Work control room). Unlike `ActiveWorkItem`, which is already
+/// scoped to a repository the caller named, this carries its own
+/// `repository_id` because the query spans every repository the tenant has
+/// enrolled -- the "who is working on what, right now, across the whole
+/// fleet" view an operator needs without visiting each repository in turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetWorkItem {
+    pub repository_id: String,
+    pub task_id: String,
+    pub owner_id: String,
+    pub branch: String,
+    pub lease_expires_at: SystemTime,
+    pub paths: Vec<String>,
+    pub symbols: Vec<String>,
+}
+
 /// One enrolled node's signing key, judged as of now rather than as of some
 /// past envelope's acceptance -- the Bridge repository detail resource that
 /// answers "is this repository's coordination about to lose its signer"
@@ -124,6 +141,167 @@ pub struct SigningKeyStatus {
 /// Read-only access to Fleet summaries derived from Ackplane's accepted state.
 pub struct FleetStore {
     client: Client,
+}
+
+/// Server-side filters for [`FleetStore::repositories`] (ADR-0112). Each
+/// field is validated against its own allow-list by the Bridge handler, not
+/// here -- this type only carries already-validated, opaque values through
+/// to bound query parameters; an unrecognised `freshness`/`coordination`
+/// value would otherwise match no row rather than erroring, which is why
+/// the handler rejects it before it ever reaches this struct.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FleetFilter<'a> {
+    /// Case-insensitive substring match on `repository_id`. Literal `%`/`_`
+    /// must already be escaped by the caller (see `escape_like_pattern`)
+    /// before it reaches here, so a repository named `my_repo` is not
+    /// treated as a one-character wildcard match.
+    pub q: Option<&'a str>,
+    /// One of `"never_projected"`, `"lagging"`, `"fresh"`, or `None` for no
+    /// freshness filter.
+    pub freshness: Option<&'a str>,
+    /// One of `"active"`, `"none"`, or `None` for no coordination filter.
+    pub coordination: Option<&'a str>,
+}
+
+/// The column [`FleetStore::repositories`] orders by (ADR-0112). Deliberately
+/// a small, closed enum rather than an arbitrary string: each variant maps to
+/// exactly one compiled-in `ORDER BY` fragment, so a sort request can never
+/// become part of the query's own text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FleetSortField {
+    RepositoryId,
+    ActiveNodeCount,
+    LastActivatedAt,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortDirection {
+    Ascending,
+    Descending,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FleetSort {
+    pub field: FleetSortField,
+    pub direction: SortDirection,
+}
+
+impl FleetSort {
+    /// The default sort when a caller asks for none: alphabetical by
+    /// repository id, matching every existing Fleet response before this ADR.
+    pub fn default_order() -> Self {
+        Self {
+            field: FleetSortField::RepositoryId,
+            direction: SortDirection::Ascending,
+        }
+    }
+
+    /// The literal `ORDER BY` fragment for this sort, always including
+    /// `repository_id` as a tiebreaker so paging stays stable across pages
+    /// when the primary sort column has duplicate values (e.g. two
+    /// repositories with the same `active_node_count`).
+    fn order_by_clause(self) -> &'static str {
+        use FleetSortField::{ActiveNodeCount, LastActivatedAt, RepositoryId};
+        use SortDirection::{Ascending, Descending};
+        match (self.field, self.direction) {
+            (RepositoryId, Ascending) => "ORDER BY request.repository_id ASC",
+            (RepositoryId, Descending) => "ORDER BY request.repository_id DESC",
+            (ActiveNodeCount, Ascending) => "ORDER BY count(*) ASC, request.repository_id ASC",
+            (ActiveNodeCount, Descending) => "ORDER BY count(*) DESC, request.repository_id ASC",
+            (LastActivatedAt, Ascending) => {
+                "ORDER BY max(receipt.activated_at) ASC, request.repository_id ASC"
+            }
+            (LastActivatedAt, Descending) => {
+                "ORDER BY max(receipt.activated_at) DESC, request.repository_id ASC"
+            }
+        }
+    }
+}
+
+/// One page of the Fleet list (ADR-0112). `total` is the count matching
+/// `q`/`freshness`/`coordination` across every page, not just this one, so a
+/// caller can compute how many pages exist without a second round trip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetPage {
+    pub repositories: Vec<FleetRepository>,
+    pub total: i64,
+}
+
+/// Server-side filters for [`FleetStore::fleet_work`] (ADR-0105 decision 5).
+/// Same opaque-value contract as [`FleetFilter`]: values are validated
+/// against their own allow-list by the Bridge handler, not here.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FleetWorkFilter<'a> {
+    /// Case-insensitive substring match on `repository_id`. Literal `%`/`_`
+    /// must already be escaped by the caller (see `escape_like_pattern`).
+    pub repository_id: Option<&'a str>,
+    /// Case-insensitive substring match on `owner_id` (the claiming agent).
+    /// Same escaping requirement as `repository_id`.
+    pub owner_id: Option<&'a str>,
+}
+
+/// The column [`FleetStore::fleet_work`] orders by (ADR-0105 decision 5).
+/// A small, closed enum for the same reason as [`FleetSortField`]: each
+/// variant maps to exactly one compiled-in `ORDER BY` fragment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FleetWorkSortField {
+    LeaseExpiresAt,
+    RepositoryId,
+    OwnerId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FleetWorkSort {
+    pub field: FleetWorkSortField,
+    pub direction: SortDirection,
+}
+
+impl FleetWorkSort {
+    /// The default sort when a caller asks for none: soonest-expiring lease
+    /// first, so an operator's first look lands on the work most likely to
+    /// need attention.
+    pub fn default_order() -> Self {
+        Self {
+            field: FleetWorkSortField::LeaseExpiresAt,
+            direction: SortDirection::Ascending,
+        }
+    }
+
+    /// The literal `ORDER BY` fragment for this sort, always including
+    /// `task_id` as a tiebreaker so paging stays stable across pages when
+    /// the primary sort column has duplicate values.
+    fn order_by_clause(self) -> &'static str {
+        use FleetWorkSortField::{LeaseExpiresAt, OwnerId, RepositoryId};
+        use SortDirection::{Ascending, Descending};
+        match (self.field, self.direction) {
+            (LeaseExpiresAt, Ascending) => "ORDER BY lease_expires_at ASC, task_id ASC",
+            (LeaseExpiresAt, Descending) => "ORDER BY lease_expires_at DESC, task_id ASC",
+            (RepositoryId, Ascending) => "ORDER BY repository_id ASC, task_id ASC",
+            (RepositoryId, Descending) => "ORDER BY repository_id DESC, task_id ASC",
+            (OwnerId, Ascending) => "ORDER BY owner_id ASC, task_id ASC",
+            (OwnerId, Descending) => "ORDER BY owner_id DESC, task_id ASC",
+        }
+    }
+}
+
+/// One page of the fleet-wide Agents/Work view (ADR-0105 decision 5).
+/// `total` is the count matching `repository_id`/`owner_id` across every
+/// page, not just this one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetWorkPage {
+    pub items: Vec<FleetWorkItem>,
+    pub total: i64,
+}
+
+/// Escape `%`, `_`, and `\\` in `input` for safe use inside a `LIKE`/`ILIKE`
+/// pattern with `ESCAPE '\\'`, so a caller's literal wildcard-looking
+/// characters (most commonly `_` in a repository name) match themselves
+/// rather than acting as pattern metacharacters.
+pub fn escape_like_pattern(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 impl FleetStore {
@@ -168,40 +346,69 @@ impl FleetStore {
         Ok(Self { client })
     }
 
-    /// Return repositories with an active enrollment receipt in one tenant.
+    /// Return one page of repositories with an active enrollment receipt in
+    /// one tenant, filtered, sorted, and paged server-side (ADR-0112).
     ///
     /// A missing projection state remains visible as `None`; it means the
     /// repository is enrolled but has not produced a graph projection yet.
     pub async fn repositories(
         &self,
         tenant_id: &str,
-    ) -> Result<Vec<FleetRepository>, tokio_postgres::Error> {
+        filter: FleetFilter<'_>,
+        sort: FleetSort,
+        page: i64,
+        page_size: i64,
+    ) -> Result<FleetPage, tokio_postgres::Error> {
+        let offset = (page - 1) * page_size;
+        let query = format!(
+            "SELECT request.repository_id, count(*)::BIGINT, max(receipt.activated_at), \
+                    COALESCE(head.position, 0), state.stream_position, state.projected_at, \
+                    COUNT(*) OVER()::BIGINT \
+             FROM enrollment_requests AS request \
+             INNER JOIN enrollment_receipts AS receipt \
+                ON receipt.tenant_id = request.tenant_id \
+               AND receipt.repository_id = request.repository_id \
+               AND receipt.request_id = request.request_id \
+             LEFT JOIN projection_state AS state \
+                ON state.tenant_id = request.tenant_id \
+               AND state.repository_id = request.repository_id \
+             LEFT JOIN stream_heads AS head \
+                ON head.tenant_id = request.tenant_id \
+               AND head.repository_id = request.repository_id \
+             WHERE request.tenant_id = $1 \
+               AND ($2::text IS NULL OR request.repository_id ILIKE '%' || $2 || '%' ESCAPE '\\') \
+             GROUP BY request.repository_id, head.position, \
+                      state.stream_position, state.projected_at \
+             HAVING ($3::text IS NULL \
+                     OR ($3 = 'never_projected' AND state.stream_position IS NULL) \
+                     OR ($3 = 'lagging' AND state.stream_position IS NOT NULL \
+                         AND state.stream_position < COALESCE(head.position, 0)) \
+                     OR ($3 = 'fresh' AND state.stream_position IS NOT NULL \
+                         AND state.stream_position >= COALESCE(head.position, 0))) \
+                 AND ($4::text IS NULL \
+                      OR ($4 = 'active' AND count(*) > 0) \
+                      OR ($4 = 'none' AND count(*) = 0)) \
+             {order_by} \
+             LIMIT $5 OFFSET $6",
+            order_by = sort.order_by_clause(),
+        );
         let rows = self
             .client
             .query(
-                "SELECT request.repository_id, count(*)::BIGINT, max(receipt.activated_at), \
-                        COALESCE(head.position, 0), \
-                        state.stream_position, state.projected_at \
-                 FROM enrollment_requests AS request \
-                 INNER JOIN enrollment_receipts AS receipt \
-                    ON receipt.tenant_id = request.tenant_id \
-                   AND receipt.repository_id = request.repository_id \
-                   AND receipt.request_id = request.request_id \
-                 LEFT JOIN projection_state AS state \
-                    ON state.tenant_id = request.tenant_id \
-                   AND state.repository_id = request.repository_id \
-                 LEFT JOIN stream_heads AS head \
-                    ON head.tenant_id = request.tenant_id \
-                   AND head.repository_id = request.repository_id \
-                 WHERE request.tenant_id = $1 \
-                 GROUP BY request.repository_id, head.position, \
-                          state.stream_position, state.projected_at \
-                 ORDER BY request.repository_id ASC",
-                &[&tenant_id],
+                &query,
+                &[
+                    &tenant_id,
+                    &filter.q,
+                    &filter.freshness,
+                    &filter.coordination,
+                    &page_size,
+                    &offset,
+                ],
             )
             .await?;
 
-        Ok(rows
+        let total = rows.first().map(|row| row.get::<_, i64>(6)).unwrap_or(0);
+        let repositories = rows
             .into_iter()
             .map(|row| {
                 let ledger_stream_position: i64 = row.get(3);
@@ -219,7 +426,12 @@ impl FleetStore {
                     projection_updated_at: row.get(5),
                 }
             })
-            .collect())
+            .collect();
+
+        Ok(FleetPage {
+            repositories,
+            total,
+        })
     }
 
     /// One repository's coordination, ledger, and projection state, scoped to
@@ -381,6 +593,65 @@ impl FleetStore {
         ))
     }
 
+    /// One page of every live delegated claim across ALL of a tenant's
+    /// repositories (ADR-0105 decision 5), filtered, sorted, and paged
+    /// server-side -- the cross-repository "who is working on what, right
+    /// now" view a Bridge operator needs without visiting each repository's
+    /// own claims list individually. Same expired-claim exclusion rule as
+    /// `active_work`: an expired claim remains in the ledger for audit but
+    /// is not current work.
+    pub async fn fleet_work(
+        &self,
+        tenant_id: &str,
+        filter: FleetWorkFilter<'_>,
+        sort: FleetWorkSort,
+        page: i64,
+        page_size: i64,
+        now: SystemTime,
+    ) -> Result<FleetWorkPage, tokio_postgres::Error> {
+        let offset = (page - 1) * page_size;
+        let query = format!(
+            "SELECT repository_id, task_id, owner_id, branch, lease_expires_at, paths, symbols, \
+                    COUNT(*) OVER()::BIGINT \
+             FROM delegated_claims \
+             WHERE tenant_id = $1 AND lease_expires_at > $2 \
+               AND ($3::text IS NULL OR repository_id ILIKE '%' || $3 || '%' ESCAPE '\\') \
+               AND ($4::text IS NULL OR owner_id ILIKE '%' || $4 || '%' ESCAPE '\\') \
+             {order_by} \
+             LIMIT $5 OFFSET $6",
+            order_by = sort.order_by_clause(),
+        );
+        let rows = self
+            .client
+            .query(
+                &query,
+                &[
+                    &tenant_id,
+                    &now,
+                    &filter.repository_id,
+                    &filter.owner_id,
+                    &page_size,
+                    &offset,
+                ],
+            )
+            .await?;
+
+        let total = rows.first().map(|row| row.get::<_, i64>(7)).unwrap_or(0);
+        let items = rows
+            .into_iter()
+            .map(|row| FleetWorkItem {
+                repository_id: row.get(0),
+                task_id: row.get(1),
+                owner_id: row.get(2),
+                branch: row.get(3),
+                lease_expires_at: row.get(4),
+                paths: row.get(5),
+                symbols: row.get(6),
+            })
+            .collect();
+        Ok(FleetWorkPage { items, total })
+    }
+
     /// One delegated claim's current owner and scope, regardless of whether
     /// its lease has expired (unlike `active_work`, which excludes expired
     /// rows because it answers a different question - "what is current
@@ -476,19 +747,24 @@ mod tests {
         test_support::uuid_ish,
     };
 
-    /// Enrolls and activates one node for a fresh tenant/repository pair, so
-    /// each test starts from an active Fleet entry without repeating the
-    /// enrolment ceremony inline.
-    async fn enroll_and_activate(database_url: &str, unique_id: &str) -> (String, String) {
+    /// Enrolls and activates one node for `tenant_id`/`repository_id`,
+    /// shared by `enroll_and_activate` below and any test needing several
+    /// repositories under the SAME tenant (pagination, sort, filter).
+    /// `nonce_seed` must be unique per call: the activation-challenge nonce
+    /// carries a GLOBAL uniqueness constraint, not one scoped per tenant.
+    async fn enroll_and_activate_in(
+        database_url: &str,
+        tenant_id: &str,
+        repository_id: &str,
+        nonce_seed: &str,
+    ) {
         let signing_key = SigningKey::from_bytes(&[11; 32]);
-        let tenant_id = format!("fleet-tenant-{unique_id}");
-        let repository_id = format!("fleet-repository-{unique_id}");
         let public_key = signing_key.verifying_key().to_bytes();
         let submission = EnrollmentSubmission {
-            request_id: format!("fleet-request-{unique_id}"),
-            tenant_id: tenant_id.clone(),
-            repository_id: repository_id.clone(),
-            proposed_node_id: format!("fleet-node-{unique_id}"),
+            request_id: format!("fleet-request-{nonce_seed}"),
+            tenant_id: tenant_id.to_string(),
+            repository_id: repository_id.to_string(),
+            proposed_node_id: format!("fleet-node-{nonce_seed}"),
             display_name: "Fleet test node".to_string(),
             public_key: public_key.to_vec(),
             public_key_fingerprint: public_key_fingerprint(&public_key),
@@ -498,8 +774,8 @@ mod tests {
         };
         let request = ActivationChallengeRequest {
             request_id: submission.request_id.clone(),
-            tenant_id: tenant_id.clone(),
-            repository_id: repository_id.clone(),
+            tenant_id: tenant_id.to_string(),
+            repository_id: repository_id.to_string(),
             proposed_node_id: submission.proposed_node_id.clone(),
             public_key_fingerprint: submission.public_key_fingerprint.clone(),
         };
@@ -514,8 +790,8 @@ mod tests {
         enrollment
             .approve(&EnrollmentApproval {
                 request_id: submission.request_id.clone(),
-                tenant_id: tenant_id.clone(),
-                repository_id: repository_id.clone(),
+                tenant_id: tenant_id.to_string(),
+                repository_id: repository_id.to_string(),
                 public_key_fingerprint: submission.public_key_fingerprint.clone(),
                 approved_capabilities: submission.requested_capabilities.clone(),
                 approved_by: "fleet-test-administrator".to_string(),
@@ -525,8 +801,8 @@ mod tests {
         // `activation_challenges.nonce` carries a GLOBAL unique constraint
         // (not scoped per tenant/repo), so a hardcoded literal collides the
         // moment this helper is called from more than one test in the same
-        // process. Derive it from `unique_id` instead.
-        let nonce: [u8; 32] = Sha256::digest(unique_id.as_bytes()).into();
+        // process. Derive it from `nonce_seed` instead.
+        let nonce: [u8; 32] = Sha256::digest(nonce_seed.as_bytes()).into();
         let challenge = enrollment
             .issue_challenge(&request, &nonce, now)
             .await
@@ -546,13 +822,21 @@ mod tests {
                     nonce: challenge.nonce,
                     signature: signature.to_bytes().to_vec(),
                 },
-                &format!("fleet-receipt-{unique_id}"),
-                &format!("fleet-signing-key-{unique_id}"),
+                &format!("fleet-receipt-{nonce_seed}"),
+                &format!("fleet-signing-key-{nonce_seed}"),
                 now,
             )
             .await
             .expect("activate enrollment");
+    }
 
+    /// Enrolls and activates one node for a fresh tenant/repository pair, so
+    /// each test starts from an active Fleet entry without repeating the
+    /// enrolment ceremony inline.
+    async fn enroll_and_activate(database_url: &str, unique_id: &str) -> (String, String) {
+        let tenant_id = format!("fleet-tenant-{unique_id}");
+        let repository_id = format!("fleet-repository-{unique_id}");
+        enroll_and_activate_in(database_url, &tenant_id, &repository_id, unique_id).await;
         (tenant_id, repository_id)
     }
 
@@ -569,13 +853,20 @@ mod tests {
         let fleet = FleetStore::connect(&database_url)
             .await
             .expect("connect fleet store");
-        let repositories = fleet
-            .repositories(&tenant_id)
+        let page = fleet
+            .repositories(
+                &tenant_id,
+                FleetFilter::default(),
+                FleetSort::default_order(),
+                1,
+                20,
+            )
             .await
             .expect("query fleet repositories");
 
-        assert_eq!(repositories.len(), 1);
-        let repository = &repositories[0];
+        assert_eq!(page.repositories.len(), 1);
+        assert_eq!(page.total, 1);
+        let repository = &page.repositories[0];
         assert_eq!(repository.repository_id, repository_id);
         assert_eq!(repository.active_node_count, 1);
         assert_eq!(repository.projection_stream_position, None);
@@ -797,6 +1088,274 @@ mod tests {
             .await
             .expect("query wrong tenant")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn fleet_work_aggregates_active_claims_across_every_repository_in_the_tenant() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let tenant_id = format!("fleet-work-tenant-{unique_id}");
+        let repository_ids = [
+            format!("fleet-work-repo-{unique_id}-a"),
+            format!("fleet-work-repo-{unique_id}-b"),
+        ];
+        for (index, repository_id) in repository_ids.iter().enumerate() {
+            enroll_and_activate_in(
+                &database_url,
+                &tenant_id,
+                repository_id,
+                &format!("{unique_id}-work-{index}"),
+            )
+            .await;
+        }
+
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let mut claims = ClaimStore::connect(&database_url)
+            .await
+            .expect("connect claim store");
+        for (repository_id, task_id, owner_id, lease_secs) in [
+            (&repository_ids[0], "task:expired", "agent:expired", 30),
+            (&repository_ids[0], "task:repo-a", "agent:a", 120),
+            (&repository_ids[1], "task:repo-b", "agent:b", 180),
+        ] {
+            claims
+                .delegate(
+                    &ClaimLeaseRequest {
+                        tenant_id: tenant_id.clone(),
+                        repository_id: repository_id.clone(),
+                        task_id: task_id.to_string(),
+                        owner_id: owner_id.to_string(),
+                        branch: format!("work/{task_id}"),
+                        lease: Duration::from_secs(lease_secs),
+                        paths: vec![format!("src/{task_id}.rs")],
+                        symbols: vec![format!("symbol:{task_id}")],
+                    },
+                    now,
+                )
+                .await
+                .expect("delegate claim");
+        }
+
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+        let page = fleet
+            .fleet_work(
+                &tenant_id,
+                FleetWorkFilter::default(),
+                FleetWorkSort::default_order(),
+                1,
+                50,
+                now + Duration::from_secs(31),
+            )
+            .await
+            .expect("query fleet work");
+
+        assert_eq!(page.total, 2);
+        assert_eq!(
+            page.items,
+            vec![
+                FleetWorkItem {
+                    repository_id: repository_ids[0].clone(),
+                    task_id: "task:repo-a".to_string(),
+                    owner_id: "agent:a".to_string(),
+                    branch: "work/task:repo-a".to_string(),
+                    lease_expires_at: now + Duration::from_secs(120),
+                    paths: vec!["src/task:repo-a.rs".to_string()],
+                    symbols: vec!["symbol:task:repo-a".to_string()],
+                },
+                FleetWorkItem {
+                    repository_id: repository_ids[1].clone(),
+                    task_id: "task:repo-b".to_string(),
+                    owner_id: "agent:b".to_string(),
+                    branch: "work/task:repo-b".to_string(),
+                    lease_expires_at: now + Duration::from_secs(180),
+                    paths: vec!["src/task:repo-b.rs".to_string()],
+                    symbols: vec!["symbol:task:repo-b".to_string()],
+                },
+            ]
+        );
+
+        // A different tenant must see none of this tenant's active work.
+        let other_tenant = fleet
+            .fleet_work(
+                &format!("{tenant_id}-other"),
+                FleetWorkFilter::default(),
+                FleetWorkSort::default_order(),
+                1,
+                50,
+                now + Duration::from_secs(31),
+            )
+            .await
+            .expect("query other tenant");
+        assert_eq!(other_tenant.total, 0);
+        assert!(other_tenant.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fleet_work_filters_by_repository_id_and_owner_id_substring() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let tenant_id = format!("fleet-work-filter-tenant-{unique_id}");
+        let repository_ids = [
+            format!("fleet-work-filter-repo-{unique_id}-a"),
+            format!("fleet-work-filter-repo-{unique_id}-b"),
+        ];
+        for (index, repository_id) in repository_ids.iter().enumerate() {
+            enroll_and_activate_in(
+                &database_url,
+                &tenant_id,
+                repository_id,
+                &format!("{unique_id}-filter-{index}"),
+            )
+            .await;
+        }
+
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let mut claims = ClaimStore::connect(&database_url)
+            .await
+            .expect("connect claim store");
+        for (repository_id, task_id, owner_id) in [
+            (&repository_ids[0], "task:alpha", "agent:carter"),
+            (&repository_ids[1], "task:beta", "agent:delta"),
+        ] {
+            claims
+                .delegate(
+                    &ClaimLeaseRequest {
+                        tenant_id: tenant_id.clone(),
+                        repository_id: repository_id.clone(),
+                        task_id: task_id.to_string(),
+                        owner_id: owner_id.to_string(),
+                        branch: format!("work/{task_id}"),
+                        lease: Duration::from_secs(120),
+                        paths: vec![],
+                        symbols: vec![],
+                    },
+                    now,
+                )
+                .await
+                .expect("delegate claim");
+        }
+
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+
+        let by_repository = fleet
+            .fleet_work(
+                &tenant_id,
+                FleetWorkFilter {
+                    repository_id: Some(&escape_like_pattern(&format!("{unique_id}-a"))),
+                    owner_id: None,
+                },
+                FleetWorkSort::default_order(),
+                1,
+                50,
+                now,
+            )
+            .await
+            .expect("query filtered by repository_id");
+        assert_eq!(by_repository.total, 1);
+        assert_eq!(by_repository.items[0].task_id, "task:alpha");
+
+        let by_owner = fleet
+            .fleet_work(
+                &tenant_id,
+                FleetWorkFilter {
+                    repository_id: None,
+                    owner_id: Some("delta"),
+                },
+                FleetWorkSort::default_order(),
+                1,
+                50,
+                now,
+            )
+            .await
+            .expect("query filtered by owner_id");
+        assert_eq!(by_owner.total, 1);
+        assert_eq!(by_owner.items[0].task_id, "task:beta");
+    }
+
+    #[tokio::test]
+    async fn fleet_work_sort_direction_reverses_the_default_order() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let tenant_id = format!("fleet-work-sort-tenant-{unique_id}");
+        let repository_id = format!("fleet-work-sort-repo-{unique_id}");
+        enroll_and_activate_in(
+            &database_url,
+            &tenant_id,
+            &repository_id,
+            &unique_id.to_string(),
+        )
+        .await;
+
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let mut claims = ClaimStore::connect(&database_url)
+            .await
+            .expect("connect claim store");
+        for (task_id, lease_secs) in [("task:soonest", 60), ("task:latest", 300)] {
+            claims
+                .delegate(
+                    &ClaimLeaseRequest {
+                        tenant_id: tenant_id.clone(),
+                        repository_id: repository_id.clone(),
+                        task_id: task_id.to_string(),
+                        owner_id: "agent:sort".to_string(),
+                        branch: format!("work/{task_id}"),
+                        lease: Duration::from_secs(lease_secs),
+                        paths: vec![],
+                        symbols: vec![],
+                    },
+                    now,
+                )
+                .await
+                .expect("delegate claim");
+        }
+
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+
+        let ascending = fleet
+            .fleet_work(
+                &tenant_id,
+                FleetWorkFilter::default(),
+                FleetWorkSort::default_order(),
+                1,
+                50,
+                now,
+            )
+            .await
+            .expect("query ascending");
+        assert_eq!(ascending.items[0].task_id, "task:soonest");
+        assert_eq!(ascending.items[1].task_id, "task:latest");
+
+        let descending = fleet
+            .fleet_work(
+                &tenant_id,
+                FleetWorkFilter::default(),
+                FleetWorkSort {
+                    field: FleetWorkSortField::LeaseExpiresAt,
+                    direction: SortDirection::Descending,
+                },
+                1,
+                50,
+                now,
+            )
+            .await
+            .expect("query descending");
+        assert_eq!(descending.items[0].task_id, "task:latest");
+        assert_eq!(descending.items[1].task_id, "task:soonest");
     }
 
     #[tokio::test]
@@ -1060,5 +1619,299 @@ mod tests {
         assert_eq!(timeline.len(), 1);
         assert_eq!(timeline[0].signing_key_id, None);
         assert_eq!(timeline[0].key_status, None);
+    }
+
+    /// Escaping is a pure function: no live database needed, and the exact
+    /// property that keeps a repository named `my_repo` from being matched
+    /// by a bare, unescaped `_` wildcard.
+    #[test]
+    fn escape_like_pattern_escapes_percent_underscore_and_backslash() {
+        assert_eq!(escape_like_pattern("my_repo"), "my\\_repo");
+        assert_eq!(escape_like_pattern("100%done"), "100\\%done");
+        assert_eq!(escape_like_pattern(r"a\b"), r"a\\b");
+        assert_eq!(escape_like_pattern("plain"), "plain");
+    }
+
+    #[test]
+    fn fleet_sort_default_order_is_repository_id_ascending() {
+        assert_eq!(
+            FleetSort::default_order(),
+            FleetSort {
+                field: FleetSortField::RepositoryId,
+                direction: SortDirection::Ascending,
+            }
+        );
+    }
+
+    #[test]
+    fn fleet_sort_order_by_clause_always_carries_a_repository_id_tiebreaker() {
+        let sorts = [
+            FleetSortField::RepositoryId,
+            FleetSortField::ActiveNodeCount,
+            FleetSortField::LastActivatedAt,
+        ];
+        for field in sorts {
+            for direction in [SortDirection::Ascending, SortDirection::Descending] {
+                let clause = FleetSort { field, direction }.order_by_clause();
+                assert!(
+                    clause.contains("request.repository_id"),
+                    "{field:?}/{direction:?} clause must break ties by repository_id: {clause}"
+                );
+                assert!(
+                    clause.starts_with("ORDER BY"),
+                    "not a valid ORDER BY: {clause}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fleet_work_sort_default_order_is_lease_expires_at_ascending() {
+        assert_eq!(
+            FleetWorkSort::default_order(),
+            FleetWorkSort {
+                field: FleetWorkSortField::LeaseExpiresAt,
+                direction: SortDirection::Ascending,
+            }
+        );
+    }
+
+    #[test]
+    fn fleet_work_sort_order_by_clause_always_carries_a_task_id_tiebreaker() {
+        let sorts = [
+            FleetWorkSortField::LeaseExpiresAt,
+            FleetWorkSortField::RepositoryId,
+            FleetWorkSortField::OwnerId,
+        ];
+        for field in sorts {
+            for direction in [SortDirection::Ascending, SortDirection::Descending] {
+                let clause = FleetWorkSort { field, direction }.order_by_clause();
+                assert!(
+                    clause.contains("task_id"),
+                    "{field:?}/{direction:?} clause must break ties by task_id: {clause}"
+                );
+                assert!(
+                    clause.starts_with("ORDER BY"),
+                    "not a valid ORDER BY: {clause}"
+                );
+            }
+        }
+    }
+
+    /// Real pagination against a real Postgres: three repositories enrolled
+    /// under one shared tenant, a page smaller than the total, and the
+    /// filtered total staying correct across both pages.
+    #[tokio::test]
+    async fn repositories_paginates_and_reports_the_true_total_across_pages() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let tenant_id = format!("fleet-page-tenant-{unique_id}");
+        let repository_ids = [
+            format!("fleet-page-repo-{unique_id}-a"),
+            format!("fleet-page-repo-{unique_id}-b"),
+            format!("fleet-page-repo-{unique_id}-c"),
+        ];
+        for (index, repository_id) in repository_ids.iter().enumerate() {
+            enroll_and_activate_in(
+                &database_url,
+                &tenant_id,
+                repository_id,
+                &format!("{unique_id}-{index}"),
+            )
+            .await;
+        }
+
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+
+        let first_page = fleet
+            .repositories(
+                &tenant_id,
+                FleetFilter::default(),
+                FleetSort::default_order(),
+                1,
+                2,
+            )
+            .await
+            .expect("query first page");
+        assert_eq!(first_page.repositories.len(), 2);
+        assert_eq!(
+            first_page.total, 3,
+            "total counts every match, not just this page"
+        );
+        assert_eq!(first_page.repositories[0].repository_id, repository_ids[0]);
+        assert_eq!(first_page.repositories[1].repository_id, repository_ids[1]);
+
+        let second_page = fleet
+            .repositories(
+                &tenant_id,
+                FleetFilter::default(),
+                FleetSort::default_order(),
+                2,
+                2,
+            )
+            .await
+            .expect("query second page");
+        assert_eq!(second_page.repositories.len(), 1);
+        assert_eq!(second_page.total, 3);
+        assert_eq!(second_page.repositories[0].repository_id, repository_ids[2]);
+
+        // The coordination filter is a real predicate, not client-side: every
+        // enrolled-and-activated repository has one active node, so "active"
+        // matches all three and "none" matches zero.
+        let active_only = fleet
+            .repositories(
+                &tenant_id,
+                FleetFilter {
+                    coordination: Some("active"),
+                    ..Default::default()
+                },
+                FleetSort::default_order(),
+                1,
+                10,
+            )
+            .await
+            .expect("query active-only");
+        assert_eq!(active_only.total, 3);
+
+        let none_only = fleet
+            .repositories(
+                &tenant_id,
+                FleetFilter {
+                    coordination: Some("none"),
+                    ..Default::default()
+                },
+                FleetSort::default_order(),
+                1,
+                10,
+            )
+            .await
+            .expect("query none-only");
+        assert_eq!(none_only.total, 0);
+        assert!(none_only.repositories.is_empty());
+    }
+
+    /// `q` is a real substring filter with real escaping: a repository whose
+    /// id contains a literal `_` is found by its exact text, and is NOT
+    /// falsely matched by substituting a different character for that `_` --
+    /// which unescaped `ILIKE` would treat as "match any one character".
+    #[tokio::test]
+    async fn repositories_q_filter_escapes_literal_underscores() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let tenant_id = format!("fleet-q-tenant-{unique_id}");
+        let repository_id = format!("fleet-q-repo-{unique_id}_under_score");
+        enroll_and_activate_in(
+            &database_url,
+            &tenant_id,
+            &repository_id,
+            &unique_id.to_string(),
+        )
+        .await;
+
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+
+        let exact_substring = format!("{unique_id}_under_score");
+        let matched = fleet
+            .repositories(
+                &tenant_id,
+                FleetFilter {
+                    q: Some(&escape_like_pattern(&exact_substring)),
+                    ..Default::default()
+                },
+                FleetSort::default_order(),
+                1,
+                10,
+            )
+            .await
+            .expect("query with exact substring");
+        assert_eq!(matched.total, 1);
+        assert_eq!(matched.repositories[0].repository_id, repository_id);
+
+        // Same string with the underscore swapped for a different character:
+        // must NOT match, proving `_` was treated literally, not as a wildcard.
+        let wrong_char_substring = format!("{unique_id}Xunder_score");
+        let unmatched = fleet
+            .repositories(
+                &tenant_id,
+                FleetFilter {
+                    q: Some(&escape_like_pattern(&wrong_char_substring)),
+                    ..Default::default()
+                },
+                FleetSort::default_order(),
+                1,
+                10,
+            )
+            .await
+            .expect("query with a mismatched substring");
+        assert_eq!(unmatched.total, 0);
+        assert!(unmatched.repositories.is_empty());
+    }
+
+    /// Sorting is a real `ORDER BY`, not a client-side illusion: descending
+    /// by repository id reverses the default ascending order.
+    #[tokio::test]
+    async fn repositories_sort_direction_reverses_the_default_order() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let tenant_id = format!("fleet-sort-tenant-{unique_id}");
+        let repository_ids = [
+            format!("fleet-sort-repo-{unique_id}-a"),
+            format!("fleet-sort-repo-{unique_id}-z"),
+        ];
+        for (index, repository_id) in repository_ids.iter().enumerate() {
+            enroll_and_activate_in(
+                &database_url,
+                &tenant_id,
+                repository_id,
+                &format!("{unique_id}-sort-{index}"),
+            )
+            .await;
+        }
+
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+
+        let ascending = fleet
+            .repositories(
+                &tenant_id,
+                FleetFilter::default(),
+                FleetSort::default_order(),
+                1,
+                10,
+            )
+            .await
+            .expect("query ascending");
+        assert_eq!(ascending.repositories[0].repository_id, repository_ids[0]);
+        assert_eq!(ascending.repositories[1].repository_id, repository_ids[1]);
+
+        let descending = fleet
+            .repositories(
+                &tenant_id,
+                FleetFilter::default(),
+                FleetSort {
+                    field: FleetSortField::RepositoryId,
+                    direction: SortDirection::Descending,
+                },
+                1,
+                10,
+            )
+            .await
+            .expect("query descending");
+        assert_eq!(descending.repositories[0].repository_id, repository_ids[1]);
+        assert_eq!(descending.repositories[1].repository_id, repository_ids[0]);
     }
 }
