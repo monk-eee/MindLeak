@@ -22,6 +22,10 @@ const RECORDED_BY_MIGRATION: &str = include_str!("../migrations/0011_knowledge_r
 const RECONFIRMATION_MIGRATION: &str =
     include_str!("../migrations/0012_knowledge_reconfirmations.sql");
 
+mod reconfirmation;
+
+pub use reconfirmation::KnowledgeReconfirmation;
+
 #[derive(Debug, thiserror::Error)]
 pub enum KnowledgeStoreError {
     #[error("knowledge database error: {0}")]
@@ -93,17 +97,6 @@ pub struct KnowledgeHistoryEntry {
     pub retired_at: Option<SystemTime>,
     pub retired_reason: Option<String>,
     pub retired_by: Option<String>,
-}
-
-/// One durable corroboration that refreshed a knowledge statement's decay
-/// clock. The latest entry is exposed on recall/history; this record keeps the
-/// full audit chain instead of overwriting the prior corroboration.
-#[derive(Debug, Clone, PartialEq)]
-pub struct KnowledgeReconfirmation {
-    pub reconfirmation_id: String,
-    pub evidence_ref: String,
-    pub reconfirmed_by: String,
-    pub reconfirmed_at: SystemTime,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -390,57 +383,6 @@ impl KnowledgeStore {
             .collect())
     }
 
-    /// Reconfirms an active statement with fresh corroborating evidence. The
-    /// `WITH` statement updates its clock and inserts the audit event as one
-    /// atomic operation, so a retired or missing statement cannot acquire a
-    /// reconfirmation record through an interleaving write.
-    pub async fn reconfirm(
-        &self,
-        tenant_id: &str,
-        repository_id: &str,
-        knowledge_id: &str,
-        evidence_ref: &str,
-        reconfirmed_by: &str,
-        now: SystemTime,
-    ) -> Result<Option<KnowledgeReconfirmation>, KnowledgeStoreError> {
-        let evidence_ref = evidence_ref.trim();
-        if evidence_ref.is_empty() {
-            return Err(KnowledgeStoreError::EmptyReconfirmationEvidence);
-        }
-        let reconfirmation_id = unique_reconfirmation_id();
-        let row = self
-            .client
-            .query_opt(
-                "WITH refreshed AS ( \
-                    UPDATE knowledge \
-                       SET confirmed_at = $6 \
-                     WHERE tenant_id = $1 AND repository_id = $2 AND knowledge_id = $3 \
-                       AND retired_at IS NULL \
-                 RETURNING knowledge_id \
-                 ) \
-                 INSERT INTO knowledge_reconfirmations \
-                     (tenant_id, repository_id, knowledge_id, reconfirmation_id, evidence_ref, reconfirmed_by, reconfirmed_at) \
-                 SELECT $1, $2, knowledge_id, $4, $5, $7, $6 FROM refreshed \
-                 RETURNING reconfirmation_id, evidence_ref, reconfirmed_by, reconfirmed_at",
-                &[
-                    &tenant_id,
-                    &repository_id,
-                    &knowledge_id,
-                    &reconfirmation_id,
-                    &evidence_ref,
-                    &now,
-                    &reconfirmed_by,
-                ],
-            )
-            .await?;
-        Ok(row.map(|row| KnowledgeReconfirmation {
-            reconfirmation_id: row.get("reconfirmation_id"),
-            evidence_ref: row.get("evidence_ref"),
-            reconfirmed_by: row.get("reconfirmed_by"),
-            reconfirmed_at: row.get("reconfirmed_at"),
-        }))
-    }
-
     pub async fn retire(
         &self,
         tenant_id: &str,
@@ -464,18 +406,10 @@ impl KnowledgeStore {
 /// A random, prefixed id -- no meaning is derived from its bytes, unlike
 /// `(tenant_id, repository_id)` which stay the real scoping key everywhere.
 fn unique_knowledge_id() -> String {
-    unique_id("knowledge")
-}
-
-fn unique_reconfirmation_id() -> String {
-    unique_id("knowledge-reconfirmation")
-}
-
-fn unique_id(prefix: &str) -> String {
     let mut bytes = [0u8; 16];
     getrandom::getrandom(&mut bytes).expect("the OS random source should be available");
     let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("{prefix}-{hex}")
+    format!("knowledge-{hex}")
 }
 
 #[cfg(test)]
