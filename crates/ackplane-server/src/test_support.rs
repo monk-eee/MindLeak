@@ -1,6 +1,16 @@
 //! Shared test-only helpers for this crate's database-gated tests.
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::time::SystemTime;
+
+use ed25519_dalek::{Signer, SigningKey};
+use sha2::{Digest, Sha256};
+
+use crate::enrollment::{activation_challenge_bytes, public_key_fingerprint};
+use crate::enrollment_store::{
+    ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
+    EnrollmentSubmission,
+};
 
 /// A cheap, dependency-free way to keep each test run's tenant id unique
 /// without adding a `uuid` crate for two words of randomness. Packs a
@@ -51,4 +61,98 @@ pub(crate) fn unique_id(prefix: &str) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{prefix}-{}-{counter}", uuid_ish())
+}
+
+/// Enrolls and activates one node for `tenant_id`/`repository_id`, shared by
+/// every store's tests needing an active Fleet entry (originally
+/// `fleet.rs`'s own private helper; extracted here once `readiness.rs`
+/// needed the identical ceremony rather than a second copy). `nonce_seed`
+/// must be unique per call: the activation-challenge nonce carries a GLOBAL
+/// uniqueness constraint, not one scoped per tenant.
+pub(crate) async fn enroll_and_activate_in(
+    database_url: &str,
+    tenant_id: &str,
+    repository_id: &str,
+    nonce_seed: &str,
+) {
+    let signing_key = SigningKey::from_bytes(&[11; 32]);
+    let public_key = signing_key.verifying_key().to_bytes();
+    let submission = EnrollmentSubmission {
+        request_id: format!("fleet-request-{nonce_seed}"),
+        tenant_id: tenant_id.to_string(),
+        repository_id: repository_id.to_string(),
+        proposed_node_id: format!("fleet-node-{nonce_seed}"),
+        display_name: "Fleet test node".to_string(),
+        public_key: public_key.to_vec(),
+        public_key_fingerprint: public_key_fingerprint(&public_key),
+        requested_capabilities: vec!["synchronize".to_string()],
+        created_at: "2026-01-01T00:00:00Z".to_string(),
+        expires_at: "2030-01-01T00:00:00Z".to_string(),
+    };
+    let request = ActivationChallengeRequest {
+        request_id: submission.request_id.clone(),
+        tenant_id: tenant_id.to_string(),
+        repository_id: repository_id.to_string(),
+        proposed_node_id: submission.proposed_node_id.clone(),
+        public_key_fingerprint: submission.public_key_fingerprint.clone(),
+    };
+    let now = SystemTime::now();
+    let mut enrollment = EnrollmentStore::connect(database_url)
+        .await
+        .expect("connect enrollment store");
+    enrollment
+        .submit(&submission)
+        .await
+        .expect("submit enrollment");
+    enrollment
+        .approve(&EnrollmentApproval {
+            request_id: submission.request_id.clone(),
+            tenant_id: tenant_id.to_string(),
+            repository_id: repository_id.to_string(),
+            public_key_fingerprint: submission.public_key_fingerprint.clone(),
+            approved_capabilities: submission.requested_capabilities.clone(),
+            approved_by: "fleet-test-administrator".to_string(),
+        })
+        .await
+        .expect("approve enrollment");
+    // `activation_challenges.nonce` carries a GLOBAL unique constraint (not
+    // scoped per tenant/repo), so a hardcoded literal collides the moment
+    // this helper is called from more than one test in the same process.
+    // Derive it from `nonce_seed` instead.
+    let nonce: [u8; 32] = Sha256::digest(nonce_seed.as_bytes()).into();
+    let challenge = enrollment
+        .issue_challenge(&request, &nonce, now)
+        .await
+        .expect("issue activation challenge");
+    let signature = signing_key.sign(&activation_challenge_bytes(
+        &challenge.nonce,
+        &request.request_id,
+        &request.tenant_id,
+        &request.repository_id,
+        &request.proposed_node_id,
+        &request.public_key_fingerprint,
+    ));
+    enrollment
+        .activate(
+            &EnrollmentActivation {
+                request,
+                nonce: challenge.nonce,
+                signature: signature.to_bytes().to_vec(),
+            },
+            &format!("fleet-receipt-{nonce_seed}"),
+            &format!("fleet-signing-key-{nonce_seed}"),
+            now,
+        )
+        .await
+        .expect("activate enrollment");
+}
+
+/// Enrolls and activates one node for a fresh tenant/repository pair, so
+/// each test starts from an active Fleet entry without repeating the
+/// enrolment ceremony inline.
+pub(crate) async fn enroll_and_activate(database_url: &str, unique_id: &str) -> (String, String) {
+    let tenant_id = format!("fleet-tenant-{unique_id}");
+    let repository_id = format!("fleet-repository-{unique_id}");
+    enroll_and_activate_in(database_url, &tenant_id, &repository_id, unique_id).await;
+    (tenant_id, repository_id)
 }
