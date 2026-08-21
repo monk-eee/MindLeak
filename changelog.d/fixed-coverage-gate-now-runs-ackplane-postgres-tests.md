@@ -1,0 +1,1 @@
+- Fixed the "Coverage (Rust + VS Code)" CI job undercounting coverage: it now provisions a real PostgreSQL service (ADR-0118), so `ackplane-server`'s database-gated tests execute and are measured honestly instead of hollow-skipping.
