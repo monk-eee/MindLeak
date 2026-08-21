@@ -14,6 +14,9 @@ use ackplane_server::fleet::{
     TimelineEvent,
 };
 use ackplane_server::knowledge_store::{ActiveKnowledge, KnowledgeStore};
+use ackplane_server::readiness::{
+    ReadinessPage, ReadinessStatus, ReadinessStore, RepositoryReadiness,
+};
 use ackplane_server::signing_keys::KeyResolution;
 use axum::{
     extract::{Path, Query, State},
@@ -32,6 +35,7 @@ struct AppState {
     fleet: Arc<FleetStore>,
     knowledge: Arc<KnowledgeStore>,
     claims: Arc<Mutex<ClaimStore>>,
+    readiness: Arc<ReadinessStore>,
     tenant_id: Arc<str>,
 }
 
@@ -161,6 +165,63 @@ impl From<FleetWorkItem> for AgentWorkSummary {
             lease_expires_at_seconds: unix_seconds(item.lease_expires_at),
             paths: item.paths,
             symbols: item.symbols,
+        }
+    }
+}
+
+/// `GET /api/v1/readiness` query parameters (ADR-0105 decision 6). All
+/// optional; a first slice needs no filter or sort, unlike Fleet/Agents.
+#[derive(Deserialize)]
+struct ReadinessQuery {
+    page: Option<i64>,
+    page_size: Option<i64>,
+}
+
+const DEFAULT_READINESS_PAGE_SIZE: i64 = 20;
+const MAX_READINESS_PAGE_SIZE: i64 = 100;
+
+#[derive(Serialize)]
+struct ReadinessResponse {
+    items: Vec<RepositoryReadinessSummary>,
+    total: i64,
+    page: i64,
+    page_size: i64,
+}
+
+#[derive(Serialize)]
+struct RepositoryReadinessSummary {
+    repository_id: String,
+    active_node_count: i64,
+    freshness: &'static str,
+    active_claim_count: i64,
+    soonest_lease_expires_at_seconds: Option<u64>,
+    signing_keys_resolved: i64,
+    signing_keys_needing_attention: i64,
+    status: &'static str,
+}
+
+/// The status word the Readiness UI badges on; distinct from
+/// `freshness_label` since it names the OVERALL judgment, not just the
+/// projection state one of its inputs.
+fn readiness_status_label(status: ReadinessStatus) -> &'static str {
+    match status {
+        ReadinessStatus::Ready => "ready",
+        ReadinessStatus::AttentionNeeded => "attention_needed",
+        ReadinessStatus::NotReady => "not_ready",
+    }
+}
+
+impl From<RepositoryReadiness> for RepositoryReadinessSummary {
+    fn from(item: RepositoryReadiness) -> Self {
+        Self {
+            repository_id: item.repository_id,
+            active_node_count: item.active_node_count,
+            freshness: freshness_label(item.freshness),
+            active_claim_count: item.active_claim_count,
+            soonest_lease_expires_at_seconds: item.soonest_lease_expires_at.and_then(unix_seconds),
+            signing_keys_resolved: item.signing_keys_resolved,
+            signing_keys_needing_attention: item.signing_keys_needing_attention,
+            status: readiness_status_label(item.status),
         }
     }
 }
@@ -433,16 +494,25 @@ async fn main() {
             return;
         }
     };
+    let readiness_store = match ReadinessStore::connect(config.database_url()).await {
+        Ok(readiness) => Arc::new(readiness),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane readiness rollup: {error}");
+            return;
+        }
+    };
     let state = AppState {
         fleet: fleet_store,
         knowledge: knowledge_store,
         claims: claim_store,
+        readiness: readiness_store,
         tenant_id: Arc::from(config.development_tenant_token),
     };
     let application = Router::new()
         .route("/", get(fleet_page))
         .route("/api/v1/fleet", get(fleet))
         .route("/api/v1/agents", get(agents))
+        .route("/api/v1/readiness", get(readiness))
         .route(
             "/api/v1/repositories/:repository_id",
             get(repository_detail),
@@ -577,6 +647,40 @@ async fn agents(
         })
         .map_err(|error| {
             tracing::error!(%error, "Bridge Agents query failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+async fn readiness(
+    State(state): State<AppState>,
+    Query(query): Query<ReadinessQuery>,
+) -> Result<Json<ReadinessResponse>, StatusCode> {
+    let page = query.page.unwrap_or(1);
+    if page < 1 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let page_size = query
+        .page_size
+        .unwrap_or(DEFAULT_READINESS_PAGE_SIZE)
+        .clamp(1, MAX_READINESS_PAGE_SIZE);
+
+    state
+        .readiness
+        .readiness(&state.tenant_id, page, page_size, SystemTime::now())
+        .await
+        .map(|ReadinessPage { items, total }| {
+            Json(ReadinessResponse {
+                items: items
+                    .into_iter()
+                    .map(RepositoryReadinessSummary::from)
+                    .collect(),
+                total,
+                page,
+                page_size,
+            })
+        })
+        .map_err(|error| {
+            tracing::error!(%error, "Bridge Readiness query failed");
             StatusCode::INTERNAL_SERVER_ERROR
         })
 }

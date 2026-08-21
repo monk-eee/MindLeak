@@ -215,6 +215,12 @@
     .badge.never_projected::before { background: var(--ml-ink-soft); }
     .badge.revoked { color: var(--ml-pink-ink); background: var(--ml-pink-soft); }
     .badge.revoked::before { background: var(--ml-pink); }
+    .badge.ready { color: var(--ml-teal); background: var(--ml-teal-soft); }
+    .badge.ready::before { background: var(--ml-teal); }
+    .badge.attention_needed { color: var(--ml-amber); background: var(--ml-amber-soft); }
+    .badge.attention_needed::before { background: var(--ml-amber); }
+    .badge.not_ready { color: var(--ml-pink-ink); background: var(--ml-pink-soft); }
+    .badge.not_ready::before { background: var(--ml-pink); }
     .chevron { width: 18px; height: 18px; color: var(--ml-ink-soft); transition: transform 0.18s ease; justify-self: end; }
     .repo-card[data-open="true"] .chevron { transform: rotate(90deg); color: var(--ml-pink); }
     .detail-panel {
@@ -341,6 +347,24 @@
       <span id="agents-pager-range"></span>
       <button type="button" id="agents-prev">Previous</button>
       <button type="button" id="agents-next">Next</button>
+    </div>
+    <p class="kicker">Readiness</p>
+    <div class="summary">
+      <h2 id="readiness-heading">Repository health</h2>
+      <p id="readiness-status" aria-live="polite">Loading readiness…</p>
+    </div>
+    <div class="fleet-columns" role="row">
+      <span class="fleet-column-label">Repository</span>
+      <span class="fleet-column-label">Status</span>
+      <span class="fleet-column-label">Nodes</span>
+      <span class="fleet-column-label">Active work</span>
+      <span class="fleet-column-label">Signing keys</span>
+    </div>
+    <div id="readiness" class="fleet-grid" aria-labelledby="readiness-heading"></div>
+    <div class="fleet-pager">
+      <span id="readiness-pager-range"></span>
+      <button type="button" id="readiness-prev">Previous</button>
+      <button type="button" id="readiness-next">Next</button>
     </div>
   </main>
   <script>
@@ -843,6 +867,104 @@
     }
     renderAgentRows();
     loadAgents();
+
+    const readinessStatus = document.getElementById("readiness-status");
+    const readiness = document.getElementById("readiness");
+    const readinessPagerRange = document.getElementById("readiness-pager-range");
+    const readinessPrevButton = document.getElementById("readiness-prev");
+    const readinessNextButton = document.getElementById("readiness-next");
+    const readinessPageState = { page: 1, pageSize: 20 };
+    const readinessStatusLabel = { ready: "Ready", attention_needed: "Attention needed", not_ready: "Not ready" };
+    let readinessItems = null;
+    let totalReadiness = 0;
+
+    readinessPrevButton.addEventListener("click", () => {
+      if (readinessPageState.page <= 1) return;
+      readinessPageState.page -= 1;
+      loadReadiness();
+    });
+    readinessNextButton.addEventListener("click", () => {
+      if (readinessPageState.page * readinessPageState.pageSize >= totalReadiness) return;
+      readinessPageState.page += 1;
+      loadReadiness();
+    });
+
+    function renderReadinessRows() {
+      readiness.replaceChildren();
+
+      if (readinessItems === null) {
+        readiness.append(emptyState("Fetching readiness from Ackplane.", "Loading…"));
+        readinessPagerRange.textContent = "";
+        readinessPrevButton.disabled = true;
+        readinessNextButton.disabled = true;
+        return;
+      }
+      if (!totalReadiness) {
+        readiness.append(emptyState(
+          "Repository health appears here the moment a repository enrols.",
+          "Nothing enrolled yet",
+        ));
+        readinessStatus.textContent = "0 repositories visible";
+        readinessPagerRange.textContent = "";
+        readinessPrevButton.disabled = true;
+        readinessNextButton.disabled = true;
+        return;
+      }
+
+      for (const item of readinessItems) {
+        const row = document.createElement("article");
+        row.className = "repo-card";
+        const keysText = item.signing_keys_needing_attention
+          ? `${item.signing_keys_resolved} resolved, ${item.signing_keys_needing_attention} need attention`
+          : `${item.signing_keys_resolved} resolved`;
+        const workText = item.active_claim_count
+          ? `${item.active_claim_count} active, next expires ${relativeTime(item.soonest_lease_expires_at_seconds)}`
+          : "No active work";
+        row.innerHTML = `
+          <div class="repo-row" style="cursor: default;">
+            <span class="repo-id">${escapeHtml(item.repository_id)}</span>
+            <span class="badge ${item.status}">${readinessStatusLabel[item.status] ?? item.status}</span>
+            <span class="stat-group"><span><span class="stat-label">Nodes</span><span class="stat-value">${item.active_node_count}</span></span></span>
+            <span class="stat-group"><span><span class="stat-label">Active work</span><span class="stat-value">${escapeHtml(workText)}</span></span></span>
+            <span class="stat-group"><span><span class="stat-label">Signing keys</span><span class="stat-value">${escapeHtml(keysText)}</span></span></span>
+          </div>
+        `;
+        readiness.append(row);
+      }
+
+      const firstIndex = (readinessPageState.page - 1) * readinessPageState.pageSize + 1;
+      const lastIndex = firstIndex + readinessItems.length - 1;
+      readinessStatus.textContent = `${totalReadiness} repositor${totalReadiness === 1 ? "y" : "ies"} visible`;
+      readinessPagerRange.textContent = `${firstIndex}-${lastIndex} of ${totalReadiness}`;
+      readinessPrevButton.disabled = readinessPageState.page <= 1;
+      readinessNextButton.disabled = lastIndex >= totalReadiness;
+    }
+
+    async function loadReadiness() {
+      readinessStatus.textContent = "Loading readiness…";
+      try {
+        const params = new URLSearchParams();
+        params.set("page", String(readinessPageState.page));
+        params.set("page_size", String(readinessPageState.pageSize));
+        const response = await fetch(`/api/v1/readiness?${params.toString()}`);
+        if (!response.ok) throw new Error("Readiness request failed");
+        const data = await response.json();
+        readinessItems = data.items;
+        totalReadiness = data.total;
+        renderReadinessRows();
+      } catch (error) {
+        readinessItems = [];
+        totalReadiness = 0;
+        readiness.replaceChildren();
+        readiness.append(emptyState("The Ackplane read service may be disconnected. This page will keep trying on reload.", "Readiness unavailable"));
+        readinessStatus.textContent = "Readiness unavailable";
+        readinessPagerRange.textContent = "";
+        readinessPrevButton.disabled = true;
+        readinessNextButton.disabled = true;
+      }
+    }
+    renderReadinessRows();
+    loadReadiness();
   </script>
 </body>
 </html>
