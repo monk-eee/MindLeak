@@ -27,6 +27,7 @@ service ClaimDelegationService {
 service KnowledgeService {
   rpc RecordKnowledge(RecordKnowledgeRequest) returns (KnowledgeRecord);
   rpc RecallKnowledge(RecallKnowledgeRequest) returns (RecallKnowledgeResult);
+  rpc GetKnowledgeHistory(KnowledgeHistoryRequest) returns (KnowledgeHistoryResult);
   rpc RetireKnowledge(RetireKnowledgeRequest) returns (RetireKnowledgeResult);
 }
 
@@ -200,11 +201,39 @@ message RecallKnowledgeResult {
   bool ranked_by_similarity = 2;
 }
 
+// Returns active and retired statements so an operator can inspect why a
+// previously active recommendation disappeared. A zero limit selects the
+// service default; the response reports the bounded effective limit.
+message KnowledgeHistoryRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  uint32 limit = 3;
+  KnowledgeAuthentication authentication = 4;
+}
+
+message KnowledgeHistoryEntry {
+  string knowledge_id = 1;
+  string content = 2;
+  string source_ref = 3;
+  string confirmed_at = 4;
+  // Empty for active statements.
+  string retired_at = 5;
+  string retired_reason = 6;
+  string retired_by = 7;
+}
+
+message KnowledgeHistoryResult {
+  repeated KnowledgeHistoryEntry entries = 1;
+  uint32 effective_limit = 2;
+}
+
 message RetireKnowledgeRequest {
   string tenant_id = 1;
   string repository_id = 2;
   string knowledge_id = 3;
   string reason = 4;
+  // Retained for wire compatibility. The service records the authenticated
+  // node id as retirement provenance and never trusts this caller label.
   string retired_by = 5;
   KnowledgeAuthentication authentication = 6;
 }

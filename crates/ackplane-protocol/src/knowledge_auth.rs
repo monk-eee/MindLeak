@@ -33,6 +33,9 @@ pub enum KnowledgeOperation<'a> {
         query_embedding_present: bool,
         limit: u32,
     },
+    History {
+        limit: u32,
+    },
     Retire {
         knowledge_id: &'a str,
         reason: &'a str,
@@ -47,6 +50,7 @@ impl KnowledgeOperation<'_> {
         match self {
             Self::Record { .. } => "record",
             Self::Recall { .. } => "recall",
+            Self::History { .. } => "history",
             Self::Retire { .. } => "retire",
         }
     }
@@ -68,6 +72,9 @@ impl KnowledgeOperation<'_> {
                 limit,
             } => {
                 push_field(bytes, &[*query_embedding_present as u8]);
+                push_field(bytes, &limit.to_be_bytes());
+            }
+            Self::History { limit } => {
                 push_field(bytes, &limit.to_be_bytes());
             }
             Self::Retire {
@@ -200,6 +207,34 @@ mod tests {
         );
         assert_ne!(with_embedding, without_embedding);
         assert_ne!(with_embedding, different_limit);
+    }
+
+    #[test]
+    fn history_binds_its_limit_and_never_shares_a_recall_signature() {
+        let history_ten = knowledge_signing_bytes(
+            "tenant-a",
+            "repo-a",
+            &KnowledgeOperation::History { limit: 10 },
+            &authentication(1),
+        );
+        let history_twenty = knowledge_signing_bytes(
+            "tenant-a",
+            "repo-a",
+            &KnowledgeOperation::History { limit: 20 },
+            &authentication(1),
+        );
+        let recall_ten = knowledge_signing_bytes(
+            "tenant-a",
+            "repo-a",
+            &KnowledgeOperation::Recall {
+                query_embedding_present: false,
+                limit: 10,
+            },
+            &authentication(1),
+        );
+
+        assert_ne!(history_ten, history_twenty);
+        assert_ne!(history_ten, recall_ten);
     }
 
     #[test]
