@@ -42,7 +42,7 @@ impl KnowledgeGrpcService {
         repository_id: &str,
         operation: &KnowledgeOperation<'_>,
         authentication: Option<&v1::KnowledgeAuthentication>,
-    ) -> Result<(), Status> {
+    ) -> Result<String, Status> {
         let Some(authentication) = authentication else {
             return Err(Status::unauthenticated(
                 KnowledgeAuthRefusal::Unsigned.diagnostic(),
@@ -97,7 +97,7 @@ impl KnowledgeGrpcService {
                 KnowledgeAuthRefusal::Replayed.diagnostic(),
             ));
         }
-        Ok(())
+        Ok(authentication.node_id.clone())
     }
 }
 
@@ -230,13 +230,14 @@ impl v1::knowledge_service_server::KnowledgeService for KnowledgeGrpcService {
             knowledge_id: &request.knowledge_id,
             reason: &request.reason,
         };
-        self.authenticate(
-            &request.tenant_id,
-            &request.repository_id,
-            &operation,
-            request.authentication.as_ref(),
-        )
-        .await?;
+        let retired_by = self
+            .authenticate(
+                &request.tenant_id,
+                &request.repository_id,
+                &operation,
+                request.authentication.as_ref(),
+            )
+            .await?;
         let retired = self
             .store
             .lock()
@@ -246,7 +247,7 @@ impl v1::knowledge_service_server::KnowledgeService for KnowledgeGrpcService {
                 &request.repository_id,
                 &request.knowledge_id,
                 &request.reason,
-                &request.retired_by,
+                &retired_by,
             )
             .await
             .map_err(store_error)?;
@@ -368,6 +369,44 @@ mod tests {
         }
     }
 
+    fn authenticated_retire_request(
+        identity: &TestIdentity,
+        knowledge_id: &str,
+        reason: &str,
+        retired_by: &str,
+        nonce_byte: u8,
+    ) -> v1::RetireKnowledgeRequest {
+        let key = signing_key();
+        let mut authentication = v1::KnowledgeAuthentication {
+            signing_key_id: identity.signing_key_id.clone(),
+            node_id: identity.node_id.clone(),
+            signed_at: time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+            nonce: vec![nonce_byte; 16],
+            signature: Vec::new(),
+        };
+        let operation = KnowledgeOperation::Retire {
+            knowledge_id,
+            reason,
+        };
+        let bytes = knowledge_signature::knowledge_signing_bytes(
+            &identity.tenant_id,
+            &identity.repository_id,
+            &operation,
+            &authentication,
+        );
+        authentication.signature = key.sign(&bytes).to_bytes().to_vec();
+        v1::RetireKnowledgeRequest {
+            tenant_id: identity.tenant_id.clone(),
+            repository_id: identity.repository_id.clone(),
+            knowledge_id: knowledge_id.to_owned(),
+            reason: reason.to_owned(),
+            retired_by: retired_by.to_owned(),
+            authentication: Some(authentication),
+        }
+    }
+
     /// Proves `authenticate` actually wires nonce consumption into the RPC
     /// path: the identical wire request granted the first time is refused
     /// the second time on the same (signing_key_id, nonce) pair. Without
@@ -475,5 +514,57 @@ mod tests {
             .await
             .expect_err("a request with no authentication must be refused");
         assert_eq!(refused.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn retirement_attributes_the_authenticated_node_not_the_request_label() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let identity = TestIdentity::fresh("retirement-attribution");
+        register_test_key(&database_url, &identity).await;
+        let service = KnowledgeGrpcService::new(
+            KnowledgeStore::connect(&database_url)
+                .await
+                .expect("the gated test database should accept a knowledge-store connection"),
+        );
+        let recorded = service
+            .record_knowledge(Request::new(authenticated_record_request(
+                &identity,
+                "an attribution-tested lesson",
+                94,
+            )))
+            .await
+            .expect("a valid request should record knowledge")
+            .into_inner();
+
+        service
+            .retire_knowledge(Request::new(authenticated_retire_request(
+                &identity,
+                &recorded.knowledge_id,
+                "superseded by evidence",
+                "claimed-by-someone-else",
+                95,
+            )))
+            .await
+            .expect("a valid request should retire knowledge");
+
+        let history = KnowledgeStore::connect(&database_url)
+            .await
+            .expect("a verifier connection should open")
+            .history(&identity.tenant_id, &identity.repository_id, 10)
+            .await
+            .expect("history should include the retired statement");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].knowledge_id, recorded.knowledge_id);
+        assert_eq!(
+            history[0].retired_by.as_deref(),
+            Some(identity.node_id.as_str())
+        );
+        assert_ne!(
+            history[0].retired_by.as_deref(),
+            Some("claimed-by-someone-else")
+        );
     }
 }

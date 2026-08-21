@@ -65,6 +65,19 @@ pub struct ActiveKnowledge {
     pub confirmed_at: SystemTime,
 }
 
+/// One knowledge statement's lifecycle, including an attributed retirement
+/// when the statement is no longer active.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KnowledgeHistoryEntry {
+    pub knowledge_id: String,
+    pub content: String,
+    pub source_ref: Option<String>,
+    pub confirmed_at: SystemTime,
+    pub retired_at: Option<SystemTime>,
+    pub retired_reason: Option<String>,
+    pub retired_by: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecallResult {
     pub entries: Vec<ActiveKnowledge>,
@@ -265,6 +278,39 @@ impl KnowledgeStore {
             entries,
             ranked_by_similarity,
         })
+    }
+
+    /// Returns active and retired statements for one repository, preserving
+    /// the retirement provenance needed to explain why guidance disappeared.
+    pub async fn history(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        limit: i64,
+    ) -> Result<Vec<KnowledgeHistoryEntry>, KnowledgeStoreError> {
+        let rows = self
+            .client
+            .query(
+                "SELECT knowledge_id, content, source_ref, confirmed_at, retired_at, retired_reason, retired_by \
+                 FROM knowledge \
+                 WHERE tenant_id = $1 AND repository_id = $2 \
+                 ORDER BY COALESCE(retired_at, confirmed_at) DESC, knowledge_id ASC \
+                 LIMIT $3",
+                &[&tenant_id, &repository_id, &limit],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| KnowledgeHistoryEntry {
+                knowledge_id: row.get("knowledge_id"),
+                content: row.get("content"),
+                source_ref: row.get("source_ref"),
+                confirmed_at: row.get("confirmed_at"),
+                retired_at: row.get("retired_at"),
+                retired_reason: row.get("retired_reason"),
+                retired_by: row.get("retired_by"),
+            })
+            .collect())
     }
 
     pub async fn retire(
@@ -540,6 +586,83 @@ mod tests {
             .await
             .unwrap();
         assert!(!retired_again);
+    }
+
+    #[tokio::test]
+    async fn history_keeps_retirement_provenance_within_its_tenant_and_repository() {
+        let Some(store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, repository_id) = unique_scope("history");
+        let active = store
+            .record(RecordKnowledgeRequest {
+                tenant_id: tenant_id.clone(),
+                repository_id: repository_id.clone(),
+                content: "still active".to_string(),
+                source_ref: Some("test:active".to_string()),
+                half_life_hours: 24.0,
+                embedding: None,
+            })
+            .await
+            .unwrap();
+        let retired = store
+            .record(RecordKnowledgeRequest {
+                tenant_id: tenant_id.clone(),
+                repository_id: repository_id.clone(),
+                content: "superseded".to_string(),
+                source_ref: Some("test:retired".to_string()),
+                half_life_hours: 24.0,
+                embedding: None,
+            })
+            .await
+            .unwrap();
+        let (other_tenant_id, other_repository_id) = unique_scope("history-other");
+        store
+            .record(RecordKnowledgeRequest {
+                tenant_id: other_tenant_id,
+                repository_id: other_repository_id,
+                content: "must not cross tenant boundaries".to_string(),
+                source_ref: None,
+                half_life_hours: 24.0,
+                embedding: None,
+            })
+            .await
+            .unwrap();
+        store
+            .retire(
+                &tenant_id,
+                &repository_id,
+                &retired.knowledge_id,
+                "superseded by newer evidence",
+                "node:reviewer",
+            )
+            .await
+            .unwrap();
+
+        let history = store.history(&tenant_id, &repository_id, 10).await.unwrap();
+        assert_eq!(history.len(), 2);
+
+        let active_entry = history
+            .iter()
+            .find(|entry| entry.knowledge_id == active.knowledge_id)
+            .unwrap();
+        assert_eq!(active_entry.content, "still active");
+        assert_eq!(active_entry.retired_at, None);
+        assert_eq!(active_entry.retired_reason, None);
+        assert_eq!(active_entry.retired_by, None);
+
+        let retired_entry = history
+            .iter()
+            .find(|entry| entry.knowledge_id == retired.knowledge_id)
+            .unwrap();
+        assert_eq!(retired_entry.content, "superseded");
+        assert!(retired_entry.retired_at.is_some());
+        assert_eq!(
+            retired_entry.retired_reason.as_deref(),
+            Some("superseded by newer evidence")
+        );
+        assert_eq!(retired_entry.retired_by.as_deref(), Some("node:reviewer"));
     }
 
     #[tokio::test]
