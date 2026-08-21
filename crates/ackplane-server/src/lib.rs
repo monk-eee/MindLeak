@@ -15,6 +15,14 @@
 //!
 //! [`ackplane-core`]: https://docs.rs/ackplane-core
 
+// Every gRPC handler in this crate returns `Result<_, tonic::Status>` --
+// `tonic::Status` is the "large" Err variant clippy is measuring, not a
+// choice any handler here makes. Boxing it would mean boxing a type this
+// crate does not define, at every one of its many call sites, so this is a
+// lint to silence crate-wide rather than a signature to redesign handler by
+// handler (mirrors the same allow on generated code in ackplane-protocol).
+#![allow(clippy::result_large_err)]
+
 use std::{fmt, net::SocketAddr};
 
 pub mod claim_service;
@@ -26,6 +34,7 @@ pub mod enrollment_store;
 pub mod envelope_signature;
 pub mod fleet;
 pub mod knowledge_service;
+pub mod knowledge_signature;
 pub mod knowledge_store;
 pub mod ledger;
 mod migration_lock;

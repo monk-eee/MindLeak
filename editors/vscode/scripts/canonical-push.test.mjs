@@ -62,6 +62,15 @@ const sandbox = () => {
 // rather than on the publisher under test. Copying costs about 500ms.
 let templateRoot;
 
+// Derived, not guessed. Each test spawns the real publisher, which spawns git
+// many times; the slowest measures 12.75s on an idle machine after the shared
+// fixture landed. CI ran roughly four times slower when this suite timed out,
+// which puts the worst case near 50s, so 30s was never enough margin and the
+// failure landed on whichever test was unlucky rather than on a slow one. The
+// same contention hits beforeAll's own git-subprocess setup below, so it gets
+// this same explicit margin instead of Vitest's 10s hook default.
+const TIMEOUT_MS = 60_000;
+
 beforeAll(() => {
   templateRoot = mkdtempSync(join(tmpdir(), "mindleak-canonical-push-template-"));
   const remote = join(templateRoot, "remote.git");
@@ -77,7 +86,7 @@ beforeAll(() => {
   // template's remote, letting one test observe another's pushes.
   git(repo, ["remote", "add", "origin", "../remote.git"]);
   git(repo, ["push", "-u", "origin", "main"]);
-});
+}, TIMEOUT_MS);
 
 afterAll(() => {
   if (templateRoot) rmSync(templateRoot, { recursive: true, force: true });
@@ -89,13 +98,6 @@ const runPublisher = (repo, args = [], env = process.env) =>
     encoding: "utf8",
     env: isolatedGitEnvironment(env),
   });
-
-// Derived, not guessed. Each test spawns the real publisher, which spawns git
-// many times; the slowest measures 12.75s on an idle machine after the shared
-// fixture landed. CI ran roughly four times slower when this suite timed out,
-// which puts the worst case near 50s, so 30s was never enough margin and the
-// failure landed on whichever test was unlucky rather than on a slow one.
-const TIMEOUT_MS = 60_000;
 
 const SESSION = "0123456789abcdef0123456789abcdef";
 const AGENT = "session:v1:0123456789abcdef0123456789abcdef";

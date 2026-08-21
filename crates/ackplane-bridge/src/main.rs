@@ -1,9 +1,12 @@
 use std::{
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use ackplane_bridge::BridgeConfig;
+use ackplane_server::claim_store::{
+    ClaimLeaseOutcome, ClaimRecoverRequest, ClaimStore, ClaimStoreError,
+};
 use ackplane_server::fleet::{
     ActiveWorkItem, FleetRepository, FleetStore, RepositoryDetail, RepositoryFreshness,
     SigningKeyStatus, TimelineEvent,
@@ -14,10 +17,11 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::{Html, IntoResponse},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 
 const FLEET_PAGE: &str = include_str!("../static/index.html");
 
@@ -25,6 +29,7 @@ const FLEET_PAGE: &str = include_str!("../static/index.html");
 struct AppState {
     fleet: Arc<FleetStore>,
     knowledge: Arc<KnowledgeStore>,
+    claims: Arc<Mutex<ClaimStore>>,
     tenant_id: Arc<str>,
 }
 
@@ -160,6 +165,24 @@ impl From<ActiveWorkItem> for ActiveWorkSummary {
     }
 }
 
+#[derive(Deserialize)]
+struct RecoverClaimRequest {
+    owner_id: String,
+    reason: String,
+    branch: String,
+    lease_seconds: u64,
+}
+
+#[derive(Serialize)]
+struct RecoverClaimResponse {
+    task_id: String,
+    owner_id: String,
+    branch: String,
+    claim_started_at_seconds: Option<u64>,
+    lease_expires_at_seconds: Option<u64>,
+    claim_lapses: u64,
+}
+
 #[derive(Serialize)]
 struct SigningKeysResponse {
     keys: Vec<SigningKeyStatusSummary>,
@@ -276,9 +299,17 @@ async fn main() {
             return;
         }
     };
+    let claim_store = match ClaimStore::connect(config.database_url()).await {
+        Ok(claims) => Arc::new(Mutex::new(claims)),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane claim delegation: {error}");
+            return;
+        }
+    };
     let state = AppState {
         fleet: fleet_store,
         knowledge: knowledge_store,
+        claims: claim_store,
         tenant_id: Arc::from(config.development_tenant_token),
     };
     let application = Router::new()
@@ -303,6 +334,10 @@ async fn main() {
         .route(
             "/api/v1/repositories/:repository_id/knowledge",
             get(repository_knowledge),
+        )
+        .route(
+            "/api/v1/repositories/:repository_id/tasks/:task_id/recover",
+            post(repository_recover_claim),
         )
         .with_state(state);
     let listener = match tokio::net::TcpListener::bind(config.listen).await {
@@ -479,6 +514,82 @@ async fn repository_knowledge(
         })),
         Err(error) => {
             tracing::error!(%error, "Bridge repository knowledge query failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn repository_recover_claim(
+    State(state): State<AppState>,
+    Path((repository_id, task_id)): Path<(String, String)>,
+    Json(request): Json<RecoverClaimRequest>,
+) -> Result<Json<RecoverClaimResponse>, StatusCode> {
+    // Same enrolment-first check every other Bridge route already follows:
+    // a repository outside the caller's tenant reads exactly like one that
+    // was never enrolled.
+    match state
+        .fleet
+        .repository(&state.tenant_id, &repository_id)
+        .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository lookup before claim recovery failed");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    // The caller names who should hold the claim next, not who holds it now -
+    // the handler derives that itself, the same way a human today reads
+    // `owner` off Lodestar's own overlap view before deciding to recover.
+    let current = match state
+        .fleet
+        .claim_owner(&state.tenant_id, &repository_id, &task_id)
+        .await
+    {
+        Ok(Some(claim)) => claim,
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(error) => {
+            tracing::error!(%error, "Bridge claim-owner lookup before recovery failed");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    let recover_request = ClaimRecoverRequest {
+        tenant_id: state.tenant_id.to_string(),
+        repository_id,
+        task_id,
+        expected_owner: current.owner_id,
+        owner_id: request.owner_id,
+        reason: request.reason,
+        branch: request.branch,
+        lease: Duration::from_secs(request.lease_seconds),
+        paths: current.paths,
+        symbols: current.symbols,
+    };
+
+    let mut claims = state.claims.lock().await;
+    match claims.recover(&recover_request, SystemTime::now()).await {
+        Ok(result) if result.outcome == ClaimLeaseOutcome::Granted => {
+            Ok(Json(RecoverClaimResponse {
+                task_id: recover_request.task_id,
+                owner_id: result.owner_id,
+                branch: result.branch,
+                claim_started_at_seconds: unix_seconds(result.claim_started_at),
+                lease_expires_at_seconds: unix_seconds(result.lease_expires_at),
+                claim_lapses: result.claim_lapses,
+            }))
+        }
+        // Rejected means the owner changed concurrently or the lease is
+        // still live - ClaimStore::recover's own unconditional expiry check
+        // (ADR-0111), not a judgment Bridge makes itself.
+        Ok(_rejected) => Err(StatusCode::CONFLICT),
+        Err(ClaimStoreError::MissingReason | ClaimStoreError::InvalidLease) => {
+            Err(StatusCode::BAD_REQUEST)
+        }
+        Err(error) => {
+            tracing::error!(%error, "Bridge claim recovery failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }

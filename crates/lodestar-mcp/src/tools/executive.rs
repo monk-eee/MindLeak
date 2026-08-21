@@ -1572,6 +1572,7 @@ mod tests {
                     execution_ids: vec![execution_id.clone()],
                     successful_execution_ids: vec![execution_id.clone()],
                     commit_ids: Vec::new(),
+                    ledger_act_ids: Vec::new(),
                     summary: "historical fixture".into(),
                     provenance: vec![
                         EvidenceProvenance {
@@ -2341,6 +2342,7 @@ mod tests {
             execution_ids: Vec::new(),
             successful_execution_ids: Vec::new(),
             commit_ids: Vec::new(),
+            ledger_act_ids: Vec::new(),
             summary: "no mutation evidence".into(),
             provenance: Vec::new(),
         };

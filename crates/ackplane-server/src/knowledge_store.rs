@@ -16,6 +16,8 @@ use std::time::SystemTime;
 use tokio_postgres::{Client, NoTls};
 
 const MIGRATION: &str = include_str!("../migrations/0007_knowledge.sql");
+const NONCE_MIGRATION: &str =
+    include_str!("../migrations/0008_knowledge_authentication_nonces.sql");
 
 #[derive(Debug, thiserror::Error)]
 pub enum KnowledgeStoreError {
@@ -75,8 +77,15 @@ pub struct RecallResult {
 /// The same decay expression as `mindleak-core::decay::effective_weight`,
 /// computed by Postgres at read time. A half-life of zero or less means
 /// "never decays" (the base weight, 1.0 in this first slice -- no
-/// reinforcement/boost tracking yet).
+/// reinforcement/boost tracking yet). Elapsed time at or below zero -- a
+/// `confirmed_at` at or after Postgres's own `now()`, which real clock and
+/// scheduling skew can produce even for a value genuinely written slightly
+/// in the past -- also clamps to the base weight, mirroring
+/// `mindleak-core::decay::effective_weight`'s own `if dt_hours <= 0.0 {
+/// return base; }` guard exactly. Without this branch, a negative elapsed
+/// time makes `power(2.0, positive exponent)` compute above 1.0.
 const EFFECTIVE_WEIGHT_SQL: &str = "CASE WHEN half_life_hours <= 0 THEN 1.0 \
+     WHEN now() <= confirmed_at THEN 1.0 \
      ELSE power(2.0, -(extract(epoch from (now() - confirmed_at)) / 3600.0) / half_life_hours) \
      END";
 
@@ -98,7 +107,46 @@ impl KnowledgeStore {
             MIGRATION,
         )
         .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::KNOWLEDGE_AUTHENTICATION_NONCES,
+            NONCE_MIGRATION,
+        )
+        .await?;
         Ok(Self { client })
+    }
+
+    /// Resolve the signing key a knowledge request's authentication claims,
+    /// judged as of now. Mirrors `ClaimStore::resolve_signing_key`: the
+    /// decision itself lives in `signing_keys` and is pure, this only owns
+    /// the connection.
+    pub async fn resolve_signing_key(
+        &self,
+        binding: &crate::signing_keys::EnvelopeBinding<'_>,
+    ) -> Result<crate::signing_keys::KeyResolution, crate::signing_keys::SigningKeyError> {
+        crate::signing_keys::resolve(&self.client, binding).await
+    }
+
+    /// Consume a (signing_key_id, nonce) pair exactly once (anti-replay for
+    /// `KnowledgeGrpcService` authentication, ADR-0108 decision 3). Returns
+    /// true the first time a pair is seen, false on every later attempt with
+    /// the identical pair -- the insert's own uniqueness is the enforcement,
+    /// so this needs no read-then-write race.
+    pub async fn consume_knowledge_nonce(
+        &self,
+        signing_key_id: &str,
+        nonce: &[u8],
+        now: SystemTime,
+    ) -> Result<bool, KnowledgeStoreError> {
+        let inserted = self
+            .client
+            .execute(
+                "INSERT INTO knowledge_authentication_nonces (signing_key_id, nonce, consumed_at) \
+                 VALUES ($1, $2, $3) ON CONFLICT (signing_key_id, nonce) DO NOTHING",
+                &[&signing_key_id, &nonce, &now],
+            )
+            .await?;
+        Ok(inserted == 1)
     }
 
     pub async fn record(
@@ -300,6 +348,62 @@ mod tests {
         );
         assert!(recalled.entries[0].effective_weight > 0.99);
         assert!(recalled.entries[0].effective_weight <= 1.0);
+    }
+
+    /// A `confirmed_at` at or after Postgres's own `now()` -- exactly what
+    /// real clock/scheduling skew occasionally produces for a value written
+    /// only moments earlier (this repository's own documented
+    /// contention-flake class) -- must clamp to the base weight, not exceed
+    /// it. Reproduced deterministically with a future `confirmed_at`
+    /// inserted directly, rather than waiting for real timing jitter to
+    /// (rarely) hit the same condition. Sabotage-verified: reverting
+    /// `EFFECTIVE_WEIGHT_SQL`'s `now() <= confirmed_at` branch makes this
+    /// fail (`power(2.0, positive exponent)` computes above `1.0`).
+    #[tokio::test]
+    async fn recall_clamps_effective_weight_when_confirmed_at_is_at_or_after_now() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let store = KnowledgeStore::connect(&database_url)
+            .await
+            .expect("connect knowledge store");
+        let (tenant_id, repository_id) = unique_scope("future-confirmed");
+        let knowledge_id = unique_knowledge_id();
+
+        let (client, connection) = tokio_postgres::connect(&database_url, tokio_postgres::NoTls)
+            .await
+            .expect("raw connection for the sabotage insert");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client
+            .execute(
+                "INSERT INTO knowledge \
+                 (tenant_id, repository_id, knowledge_id, content, source_ref, half_life_hours, confirmed_at) \
+                 VALUES ($1, $2, $3, $4, NULL, $5, now() + interval '1 hour')",
+                &[
+                    &tenant_id,
+                    &repository_id,
+                    &knowledge_id,
+                    &"a statement confirmed after the database's own clock",
+                    &720.0_f64,
+                ],
+            )
+            .await
+            .expect("insert a future-confirmed statement");
+
+        let recalled = store
+            .recall(&tenant_id, &repository_id, None, 10)
+            .await
+            .expect("query recall");
+
+        assert_eq!(recalled.entries.len(), 1);
+        assert_eq!(recalled.entries[0].knowledge_id, knowledge_id);
+        assert_eq!(
+            recalled.entries[0].effective_weight, 1.0,
+            "a future confirmed_at must clamp to the base weight, not exceed it"
+        );
     }
 
     #[tokio::test]

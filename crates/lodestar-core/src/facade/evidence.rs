@@ -94,6 +94,122 @@ impl Lodestar {
             execution_ids: Vec::new(),
             successful_execution_ids: Vec::new(),
             commit_ids: vec![intent],
+            ledger_act_ids: Vec::new(),
+            provenance,
+        })
+    }
+
+    /// Build an evidence bundle from one Lodestar-internal ledger act (ADR-0110)
+    /// instead of refusing the completion outright because the act touched no
+    /// MindLeak node.
+    ///
+    /// Unlike `merge_evidence`, this never leaves the process: each of the four
+    /// eligible [`crate::LedgerActKind`] variants is already durably recorded,
+    /// with its own actor and timestamp, in Lodestar's own store. The lookup
+    /// itself is the verification — there is nothing for MindLeak to attest
+    /// that Lodestar does not already know first-hand.
+    ///
+    /// Conformance still judges the result exactly as it does for a merge
+    /// (ADR-0058 decision 3, extended by ADR-0110 decision 4): this only
+    /// supplies evidence that something real and attributable happened: it
+    /// does not grant alignment by itself, and does not complete the task.
+    pub fn ledger_act_evidence(
+        &self,
+        task_id: &str,
+        kind: crate::LedgerActKind,
+        act_id: &str,
+        agent: &str,
+    ) -> Result<crate::ConformanceEvidence> {
+        let agent = self.resolve_agent(agent)?;
+        let task = self
+            .store
+            .get_task(task_id)?
+            .ok_or_else(|| crate::LodestarError::NotFound(task_id.to_string()))?;
+        if task.owner.as_deref() != Some(agent) {
+            return Err(crate::LodestarError::Invalid(format!(
+                "{task_id} is not held by {agent}; a ledger act proves who performed it, \
+                 not who may claim credit for it"
+            )));
+        }
+
+        let (recorded_actor, occurred_at) = match kind {
+            crate::LedgerActKind::DesignRegistered => {
+                let item = self
+                    .store
+                    .get_design_item(act_id)?
+                    .ok_or_else(|| crate::LodestarError::NotFound(act_id.to_string()))?;
+                let actor = item.proposed_by.ok_or_else(|| {
+                    crate::LodestarError::Invalid(format!(
+                        "{act_id} has no recorded proposer to verify against"
+                    ))
+                })?;
+                (actor, item.created_at)
+            }
+            crate::LedgerActKind::DesignDecided => {
+                let item = self
+                    .store
+                    .get_design_item(act_id)?
+                    .ok_or_else(|| crate::LodestarError::NotFound(act_id.to_string()))?;
+                let actor = item.decided_by.ok_or_else(|| {
+                    crate::LodestarError::Invalid(format!(
+                        "{act_id} has not been decided yet, so it has no recorded decider"
+                    ))
+                })?;
+                (actor, item.updated_at)
+            }
+            crate::LedgerActKind::WaiverGranted => {
+                let waiver = self
+                    .store
+                    .waiver(act_id)?
+                    .ok_or_else(|| crate::LodestarError::NotFound(act_id.to_string()))?;
+                (waiver.approved_by, waiver.created_at)
+            }
+            crate::LedgerActKind::ConstitutionAmended => {
+                let amendment = self
+                    .store
+                    .amendment(act_id)?
+                    .ok_or_else(|| crate::LodestarError::NotFound(act_id.to_string()))?;
+                (amendment.amended_by, amendment.created_at)
+            }
+        };
+
+        if recorded_actor != agent {
+            return Err(crate::LodestarError::Invalid(format!(
+                "{act_id}'s recorded actor {recorded_actor} does not match {agent}; \
+                 a ledger act is evidence only for the agent who actually performed it"
+            )));
+        }
+        let claim_started_at = task.claim_started_at.unwrap_or(occurred_at);
+        if occurred_at < claim_started_at {
+            return Err(crate::LodestarError::Invalid(format!(
+                "{act_id} was recorded at {occurred_at}, before the claim opened at \
+                 {claim_started_at}; it cannot be evidence for work this claim did not yet authorise"
+            )));
+        }
+
+        let node_id = format!("ledger_act:{}:{act_id}", kind.as_str());
+        let provenance = vec![crate::EvidenceProvenance {
+            source_id: format!("agent:{agent}"),
+            target_id: node_id.clone(),
+            relation: "observed".to_string(),
+        }];
+
+        Ok(crate::ConformanceEvidence {
+            schema_version: 1,
+            task_id: Some(task_id.to_string()),
+            agent_id: agent.to_string(),
+            started_at: claim_started_at,
+            ended_at: crate::now_unix(),
+            summary: format!(
+                "agent={agent}; verified ledger act {} ({act_id})",
+                kind.as_str()
+            ),
+            changed_node_ids: Vec::new(),
+            failed_node_ids: Vec::new(),
+            execution_ids: Vec::new(),
+            successful_execution_ids: Vec::new(),
+            commit_ids: Vec::new(),
+            ledger_act_ids: vec![node_id],
             provenance,
         })
     }
@@ -186,14 +302,24 @@ fn verdict_label(verdict: &Verdict) -> String {
 }
 
 /// How many nodes an evidence bundle covered, read from the stored blob.
+///
+/// Counts `ledger_act_ids` alongside `changed_node_ids` (ADR-0110): a verified
+/// ledger act is exactly as real a covered thing as a changed MindLeak node,
+/// so an aligned receipt built entirely from one must still be able to
+/// `affirm` -- otherwise a genuinely evidence-backed completion would read as
+/// having affirmed nothing, the same hollow shape this count exists to catch.
 fn covered_node_count(record: &ConformanceRecord) -> usize {
-    serde_json::from_str::<Value>(&record.evidence)
-        .ok()
-        .as_ref()
-        .and_then(|bundle| bundle.get("changed_node_ids"))
-        .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0)
+    let Ok(bundle) = serde_json::from_str::<Value>(&record.evidence) else {
+        return 0;
+    };
+    let array_len = |field: &str| {
+        bundle
+            .get(field)
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0)
+    };
+    array_len("changed_node_ids") + array_len("ledger_act_ids")
 }
 
 /// Summarise one record for a reader looking at a completion.
@@ -368,5 +494,186 @@ mod tests {
         assert!(parsed["governed_nodes"].as_array().unwrap().is_empty());
         assert!(parsed["receipts"].as_array().unwrap().is_empty());
         assert_eq!(parsed["schema"], 1);
+    }
+
+    // ADR-0110: a Lodestar ledger act is independently verifiable evidence.
+    mod ledger_act_evidence {
+        use super::*;
+        use crate::design::design_id_from_path;
+        use crate::LedgerActKind;
+
+        /// A claimed task under a fresh objective goal, owned by `agent`.
+        fn claimed_task(engine: &crate::Lodestar, agent: &str) -> String {
+            let goal = engine
+                .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+                .unwrap();
+            let task = engine
+                .create_task(&goal.id, "Ledger act task", "done")
+                .unwrap();
+            assert!(engine.claim_task(&task.id, agent, 600).unwrap());
+            task.id
+        }
+
+        /// Regression for the `covered_node_count`/`affirms` fix alongside this
+        /// feature: a receipt built entirely from a verified ledger act (no
+        /// MindLeak node touched at all) must still be able to affirm, or a
+        /// genuinely aligned, evidence-backed completion reads as hollow.
+        #[test]
+        fn a_ledger_act_only_receipt_affirms_even_though_it_touches_no_changed_node() {
+            let engine = engine();
+            let task_id = claimed_task(&engine, "agent-a");
+            assert!(engine
+                .store
+                .record_conformance_and_transition(
+                    &task_id,
+                    "agent-a",
+                    ConformanceAudit {
+                        evidence_schema_version: 1,
+                        evidence: r#"{"ledger_act_ids":["ledger_act:design_registered:design:0001"]}"#,
+                        verdict: Verdict::Aligned,
+                        findings: "",
+                    },
+                    TaskStatus::Done,
+                    crate::now_unix(),
+                )
+                .unwrap());
+            let receipt = engine.task_receipt(&task_id).unwrap().expect("a receipt");
+            assert_eq!(receipt.covered_nodes, 1);
+            assert!(
+                receipt.affirms,
+                "an aligned verdict built from a real ledger act affirms, even with no changed MindLeak node"
+            );
+        }
+
+        #[test]
+        fn succeeds_for_a_design_registration_the_claiming_agent_made() {
+            let engine = engine();
+            let item = engine
+                .register_design("docs/adr/0001-test.md", "Test", "summary", Some("agent-a"))
+                .unwrap();
+            let task_id = claimed_task(&engine, "agent-a");
+
+            let evidence = engine
+                .ledger_act_evidence(
+                    &task_id,
+                    LedgerActKind::DesignRegistered,
+                    &item.id,
+                    "agent-a",
+                )
+                .unwrap();
+            assert_eq!(
+                evidence.ledger_act_ids,
+                vec![format!("ledger_act:design_registered:{}", item.id)]
+            );
+            assert!(evidence.changed_node_ids.is_empty());
+            assert_eq!(evidence.provenance.len(), 1);
+            assert_eq!(evidence.task_id.as_deref(), Some(task_id.as_str()));
+        }
+
+        #[test]
+        fn succeeds_for_a_design_decision_the_claiming_agent_made() {
+            let engine = engine();
+            let item = engine
+                .register_design("docs/adr/0002-test.md", "Test", "summary", Some("agent-b"))
+                .unwrap();
+            let item = engine.accept_design(&item.id, "agent-a").unwrap();
+            let task_id = claimed_task(&engine, "agent-a");
+
+            let evidence = engine
+                .ledger_act_evidence(&task_id, LedgerActKind::DesignDecided, &item.id, "agent-a")
+                .unwrap();
+            assert_eq!(
+                evidence.ledger_act_ids,
+                vec![format!("ledger_act:design_decided:{}", item.id)]
+            );
+        }
+
+        #[test]
+        fn refuses_a_design_not_yet_decided() {
+            let engine = engine();
+            let item = engine
+                .register_design("docs/adr/0003-test.md", "Test", "summary", Some("agent-a"))
+                .unwrap();
+            let task_id = claimed_task(&engine, "agent-a");
+
+            let err = engine
+                .ledger_act_evidence(&task_id, LedgerActKind::DesignDecided, &item.id, "agent-a")
+                .unwrap_err();
+            assert!(err.to_string().contains("has not been decided yet"));
+        }
+
+        #[test]
+        fn refuses_when_the_recorded_actor_does_not_match_the_calling_agent() {
+            let engine = engine();
+            let item = engine
+                .register_design("docs/adr/0004-test.md", "Test", "summary", Some("agent-b"))
+                .unwrap();
+            let task_id = claimed_task(&engine, "agent-a");
+
+            let err = engine
+                .ledger_act_evidence(
+                    &task_id,
+                    LedgerActKind::DesignRegistered,
+                    &item.id,
+                    "agent-a",
+                )
+                .unwrap_err();
+            assert!(err.to_string().contains("does not match"));
+        }
+
+        #[test]
+        fn refuses_an_unknown_act_id() {
+            let engine = engine();
+            let task_id = claimed_task(&engine, "agent-a");
+
+            let err = engine
+                .ledger_act_evidence(
+                    &task_id,
+                    LedgerActKind::DesignRegistered,
+                    "design:does-not-exist",
+                    "agent-a",
+                )
+                .unwrap_err();
+            assert!(matches!(err, crate::LodestarError::NotFound(_)));
+        }
+
+        #[test]
+        fn refuses_when_the_task_is_not_held_by_the_caller() {
+            let engine = engine();
+            let task_id = claimed_task(&engine, "agent-a");
+
+            let err = engine
+                .ledger_act_evidence(
+                    &task_id,
+                    LedgerActKind::DesignRegistered,
+                    "design:whatever",
+                    "agent-b",
+                )
+                .unwrap_err();
+            assert!(err.to_string().contains("is not held by"));
+        }
+
+        /// The act must have happened inside the claim window: one recorded
+        /// before the claim opened cannot be evidence for work the claim did
+        /// not yet authorise.
+        #[test]
+        fn refuses_an_act_recorded_before_the_claim_opened() {
+            let engine = engine();
+            let path = "docs/adr/0005-test.md";
+            let id = design_id_from_path(path);
+            // Register directly through the store with a manufactured past
+            // timestamp: the facade always stamps `now_unix()`, which would
+            // make "before the claim" a flaky race against real wall-clock time.
+            engine
+                .store
+                .register_design_item(&id, path, "Test", "summary", Some("agent-a"), 1)
+                .unwrap();
+            let task_id = claimed_task(&engine, "agent-a");
+
+            let err = engine
+                .ledger_act_evidence(&task_id, LedgerActKind::DesignRegistered, &id, "agent-a")
+                .unwrap_err();
+            assert!(err.to_string().contains("before the claim opened"));
+        }
     }
 }

@@ -1859,6 +1859,7 @@ mod tests {
             execution_ids: Vec::new(),
             successful_execution_ids: Vec::new(),
             commit_ids: Vec::new(),
+            ledger_act_ids: Vec::new(),
             summary: "no mutation evidence".into(),
             provenance: Vec::new(),
         };
