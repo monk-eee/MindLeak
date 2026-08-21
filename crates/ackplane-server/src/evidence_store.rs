@@ -8,11 +8,23 @@ use std::time::SystemTime;
 
 use tokio_postgres::{Client, NoTls};
 
+mod conformance;
+mod pagination;
+
+pub(crate) use conformance::normalize_postgres_timestamp;
+pub use conformance::{
+    ConformanceCursor, ConformancePage, ConformanceRecord, ConformanceReviewState,
+    ConformanceStoreError, ConformanceVerdict, RecordConformanceOutcome, RecordConformanceRequest,
+};
+pub use pagination::{EvidenceCursor, EvidencePage};
+
 const MIGRATION: &str = include_str!("../migrations/0014_evidence.sql");
+const CONFORMANCE_MIGRATION: &str = include_str!("../migrations/0015_evidence_conformance.sql");
 const SHA256_DIGEST_BYTES: usize = 32;
 const MAX_TASK_ID_BYTES: usize = 256;
 const MAX_SOURCE_REF_BYTES: usize = 512;
 const MAX_IDENTITY_BYTES: usize = 256;
+const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvidenceKind {
@@ -60,8 +72,16 @@ pub enum EvidenceStoreError {
     InvalidSourceRef,
     #[error("content_digest must be exactly {SHA256_DIGEST_BYTES} bytes")]
     InvalidDigest,
-    #[error("agent_session_id and recorded_by must be between 1 and {MAX_IDENTITY_BYTES} bytes")]
+    #[error("reported_agent_session_id and recorded_by must be between 1 and {MAX_IDENTITY_BYTES} bytes")]
     InvalidIdentity,
+    #[error("page cursor must carry a bounded evidence identifier")]
+    InvalidCursor,
+    #[error(
+        "idempotency_key must be between 1 and {MAX_IDEMPOTENCY_KEY_BYTES} bytes when supplied"
+    )]
+    InvalidIdempotencyKey,
+    #[error("idempotency_key was already used for a different evidence record")]
+    IdempotencyConflict,
     #[error("stored evidence kind {0} is outside the EvidenceKind contract")]
     UnknownStoredKind(i16),
 }
@@ -75,8 +95,9 @@ pub struct RecordEvidenceRequest {
     pub source_ref: String,
     pub content_digest: Vec<u8>,
     pub observed_at: SystemTime,
-    pub agent_session_id: String,
+    pub reported_agent_session_id: String,
     pub recorded_by: String,
+    pub idempotency_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,9 +110,16 @@ pub struct EvidenceRecord {
     pub source_ref: String,
     pub content_digest: Vec<u8>,
     pub observed_at: SystemTime,
-    pub agent_session_id: String,
+    pub reported_agent_session_id: String,
     pub recorded_by: String,
     pub recorded_at: SystemTime,
+    pub idempotency_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordEvidenceOutcome {
+    pub record: EvidenceRecord,
+    pub idempotent_replay: bool,
 }
 
 pub struct EvidenceStore {
@@ -110,6 +138,12 @@ impl EvidenceStore {
             &mut client,
             crate::migration_lock::key::EVIDENCE,
             MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::EVIDENCE_CONFORMANCE,
+            CONFORMANCE_MIGRATION,
         )
         .await?;
         Ok(Self { client })
@@ -142,16 +176,35 @@ impl EvidenceStore {
     pub async fn record(
         &self,
         request: RecordEvidenceRequest,
-    ) -> Result<EvidenceRecord, EvidenceStoreError> {
+    ) -> Result<RecordEvidenceOutcome, EvidenceStoreError> {
+        let request = RecordEvidenceRequest {
+            observed_at: normalize_postgres_timestamp(request.observed_at),
+            ..request
+        };
+        if !request.idempotency_key.is_empty() {
+            if let Some(existing) = self
+                .find_evidence_by_idempotency(
+                    &request.tenant_id,
+                    &request.repository_id,
+                    &request.idempotency_key,
+                )
+                .await?
+            {
+                return evidence_outcome_for_existing(existing, &request);
+            }
+        }
         validate_request(&request)?;
         let evidence_id = unique_evidence_id();
         let row = self
             .client
-            .query_one(
+            .query_opt(
                 "INSERT INTO evidence_records (
                      tenant_id, repository_id, evidence_id, task_id, evidence_kind,
-                     source_ref, content_digest, observed_at, agent_session_id, recorded_by
-                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                     source_ref, content_digest, observed_at, reported_agent_session_id, recorded_by,
+                     idempotency_key
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                 ON CONFLICT (tenant_id, repository_id, idempotency_key)
+                     WHERE idempotency_key IS NOT NULL DO NOTHING
                  RETURNING recorded_at",
                 &[
                     &request.tenant_id,
@@ -162,24 +215,64 @@ impl EvidenceStore {
                     &request.source_ref,
                     &request.content_digest,
                     &request.observed_at,
-                    &request.agent_session_id,
+                    &request.reported_agent_session_id,
                     &request.recorded_by,
+                    &(!request.idempotency_key.is_empty())
+                        .then_some(request.idempotency_key.as_str()),
                 ],
             )
             .await?;
-        Ok(EvidenceRecord {
-            evidence_id,
-            tenant_id: request.tenant_id,
-            repository_id: request.repository_id,
-            task_id: request.task_id,
-            kind: request.kind,
-            source_ref: request.source_ref,
-            content_digest: request.content_digest,
-            observed_at: request.observed_at,
-            agent_session_id: request.agent_session_id,
-            recorded_by: request.recorded_by,
-            recorded_at: row.get("recorded_at"),
+        let Some(row) = row else {
+            let existing = self
+                .find_evidence_by_idempotency(
+                    &request.tenant_id,
+                    &request.repository_id,
+                    &request.idempotency_key,
+                )
+                .await?
+                .ok_or(EvidenceStoreError::IdempotencyConflict)?;
+            return evidence_outcome_for_existing(existing, &request);
+        };
+        Ok(RecordEvidenceOutcome {
+            record: EvidenceRecord {
+                evidence_id,
+                tenant_id: request.tenant_id,
+                repository_id: request.repository_id,
+                task_id: request.task_id,
+                kind: request.kind,
+                source_ref: request.source_ref,
+                content_digest: request.content_digest,
+                observed_at: request.observed_at,
+                reported_agent_session_id: request.reported_agent_session_id,
+                recorded_by: request.recorded_by,
+                recorded_at: row.get("recorded_at"),
+                idempotency_key: request.idempotency_key,
+            },
+            idempotent_replay: false,
         })
+    }
+
+    pub async fn find_evidence_by_idempotency(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<EvidenceRecord>, EvidenceStoreError> {
+        if !is_bounded(idempotency_key, MAX_IDEMPOTENCY_KEY_BYTES) {
+            return Err(EvidenceStoreError::InvalidIdempotencyKey);
+        }
+        self.client
+            .query_opt(
+                "SELECT evidence_id, tenant_id, repository_id, task_id, evidence_kind, \
+                        source_ref, content_digest, observed_at, reported_agent_session_id, recorded_by, \
+                        recorded_at, idempotency_key \
+                 FROM evidence_records \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND idempotency_key = $3",
+                &[&tenant_id, &repository_id, &idempotency_key],
+            )
+            .await?
+            .map(|row| row_to_evidence(&row))
+            .transpose()
     }
 
     pub async fn list(
@@ -196,35 +289,61 @@ impl EvidenceStore {
             .client
             .query(
                 "SELECT evidence_id, tenant_id, repository_id, task_id, evidence_kind, \
-                        source_ref, content_digest, observed_at, agent_session_id, recorded_by, recorded_at \
+                    source_ref, content_digest, observed_at, reported_agent_session_id, recorded_by, \
+                    recorded_at, idempotency_key \
                  FROM evidence_records \
                  WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 \
-                 ORDER BY observed_at DESC, evidence_id ASC \
+                 ORDER BY recorded_at DESC, evidence_id ASC \
                  LIMIT $4",
                 &[&tenant_id, &repository_id, &task_id, &limit],
             )
             .await?;
-        rows.into_iter()
-            .map(|row| {
-                let stored_kind: i16 = row.get("evidence_kind");
-                let kind = EvidenceKind::from_i16(stored_kind)
-                    .ok_or(EvidenceStoreError::UnknownStoredKind(stored_kind))?;
-                Ok(EvidenceRecord {
-                    evidence_id: row.get("evidence_id"),
-                    tenant_id: row.get("tenant_id"),
-                    repository_id: row.get("repository_id"),
-                    task_id: row.get("task_id"),
-                    kind,
-                    source_ref: row.get("source_ref"),
-                    content_digest: row.get("content_digest"),
-                    observed_at: row.get("observed_at"),
-                    agent_session_id: row.get("agent_session_id"),
-                    recorded_by: row.get("recorded_by"),
-                    recorded_at: row.get("recorded_at"),
-                })
-            })
-            .collect()
+        rows.iter().map(row_to_evidence).collect()
     }
+}
+
+pub(crate) fn evidence_outcome_for_existing(
+    existing: EvidenceRecord,
+    request: &RecordEvidenceRequest,
+) -> Result<RecordEvidenceOutcome, EvidenceStoreError> {
+    let matches = existing.task_id == request.task_id
+        && existing.kind == request.kind
+        && existing.source_ref == request.source_ref
+        && existing.content_digest == request.content_digest
+        && existing.observed_at == request.observed_at
+        && existing.reported_agent_session_id == request.reported_agent_session_id
+        && existing.recorded_by == request.recorded_by;
+    if !matches {
+        return Err(EvidenceStoreError::IdempotencyConflict);
+    }
+    Ok(RecordEvidenceOutcome {
+        record: existing,
+        idempotent_replay: true,
+    })
+}
+
+pub(super) fn row_to_evidence(
+    row: &tokio_postgres::Row,
+) -> Result<EvidenceRecord, EvidenceStoreError> {
+    let stored_kind: i16 = row.get("evidence_kind");
+    let kind = EvidenceKind::from_i16(stored_kind)
+        .ok_or(EvidenceStoreError::UnknownStoredKind(stored_kind))?;
+    Ok(EvidenceRecord {
+        evidence_id: row.get("evidence_id"),
+        tenant_id: row.get("tenant_id"),
+        repository_id: row.get("repository_id"),
+        task_id: row.get("task_id"),
+        kind,
+        source_ref: row.get("source_ref"),
+        content_digest: row.get("content_digest"),
+        observed_at: row.get("observed_at"),
+        reported_agent_session_id: row.get("reported_agent_session_id"),
+        recorded_by: row.get("recorded_by"),
+        recorded_at: row.get("recorded_at"),
+        idempotency_key: row
+            .get::<_, Option<String>>("idempotency_key")
+            .unwrap_or_default(),
+    })
 }
 
 fn validate_request(request: &RecordEvidenceRequest) -> Result<(), EvidenceStoreError> {
@@ -237,10 +356,15 @@ fn validate_request(request: &RecordEvidenceRequest) -> Result<(), EvidenceStore
     if request.content_digest.len() != SHA256_DIGEST_BYTES {
         return Err(EvidenceStoreError::InvalidDigest);
     }
-    if !is_bounded(&request.agent_session_id, MAX_IDENTITY_BYTES)
+    if !is_bounded(&request.reported_agent_session_id, MAX_IDENTITY_BYTES)
         || !is_bounded(&request.recorded_by, MAX_IDENTITY_BYTES)
     {
         return Err(EvidenceStoreError::InvalidIdentity);
+    }
+    if !request.idempotency_key.is_empty()
+        && !is_bounded(&request.idempotency_key, MAX_IDEMPOTENCY_KEY_BYTES)
+    {
+        return Err(EvidenceStoreError::InvalidIdempotencyKey);
     }
     Ok(())
 }
@@ -302,8 +426,9 @@ mod tests {
             source_ref: "commit:0123456789abcdef".to_string(),
             content_digest: vec![7; SHA256_DIGEST_BYTES],
             observed_at: SystemTime::UNIX_EPOCH,
-            agent_session_id: "session:v1:evidence-test".to_string(),
+            reported_agent_session_id: "session:v1:evidence-test".to_string(),
             recorded_by: "node:evidence-test".to_string(),
+            idempotency_key: String::new(),
         }
     }
 
@@ -333,7 +458,43 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(records, vec![recorded]);
+        assert_eq!(records, vec![recorded.record]);
+    }
+
+    #[tokio::test]
+    async fn keyset_pagination_reaches_later_evidence_without_repeating_the_first_page() {
+        let Some(store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, repository_id) = unique_scope("pagination");
+        for _ in 0..3 {
+            store
+                .record(request(
+                    tenant_id.clone(),
+                    repository_id.clone(),
+                    "task:123",
+                ))
+                .await
+                .unwrap();
+        }
+
+        let first = store
+            .list_page(&tenant_id, &repository_id, "task:123", None, 1)
+            .await
+            .unwrap();
+        let cursor = first
+            .next_cursor
+            .clone()
+            .expect("a full first page must return a cursor");
+        let second = store
+            .list_page(&tenant_id, &repository_id, "task:123", Some(&cursor), 1)
+            .await
+            .unwrap();
+
+        assert_eq!(first.entries.len(), 1);
+        assert_eq!(second.entries.len(), 1);
+        assert_ne!(first.entries[0].evidence_id, second.entries[0].evidence_id);
     }
 
     #[test]

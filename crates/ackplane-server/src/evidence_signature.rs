@@ -129,7 +129,8 @@ mod tests {
         source_ref: "commit:0123456789abcdef",
         content_digest: b"01234567890123456789012345678901",
         observed_at: "2026-01-01T00:00:00Z",
-        agent_session_id: "session:v1:agent",
+        reported_agent_session_id: "session:v1:agent",
+        idempotency_key: "evidence:123",
     };
 
     fn fixed_now() -> SystemTime {
@@ -199,7 +200,8 @@ mod tests {
             source_ref: "commit:0123456789abcdef",
             content_digest: b"01234567890123456789012345678901",
             observed_at: "2026-01-01T00:00:00Z",
-            agent_session_id: "session:v1:agent",
+            reported_agent_session_id: "session:v1:agent",
+            idempotency_key: "evidence:123",
         };
 
         assert_eq!(

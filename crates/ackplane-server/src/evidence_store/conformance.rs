@@ -1,0 +1,573 @@
+//! Conformance outcomes linked to bounded Evidence records.
+
+use std::time::SystemTime;
+use time::OffsetDateTime;
+
+use super::{
+    is_bounded, EvidenceStore, MAX_IDENTITY_BYTES, MAX_TASK_ID_BYTES, SHA256_DIGEST_BYTES,
+};
+use tokio_postgres::Row;
+
+mod pagination;
+
+const MAX_EVIDENCE_ID_BYTES: usize = 256;
+const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConformanceVerdict {
+    Aligned,
+    Drift,
+    Violation,
+    NeedsHuman,
+}
+
+impl ConformanceVerdict {
+    pub fn from_i32(value: i32) -> Option<Self> {
+        match value {
+            1 => Some(Self::Aligned),
+            2 => Some(Self::Drift),
+            3 => Some(Self::Violation),
+            4 => Some(Self::NeedsHuman),
+            _ => None,
+        }
+    }
+
+    fn as_i16(self) -> i16 {
+        match self {
+            Self::Aligned => 1,
+            Self::Drift => 2,
+            Self::Violation => 3,
+            Self::NeedsHuman => 4,
+        }
+    }
+
+    fn from_i16(value: i16) -> Option<Self> {
+        Self::from_i32(i32::from(value))
+    }
+
+    fn review_state(self) -> ConformanceReviewState {
+        match self {
+            Self::Aligned => ConformanceReviewState::NotRequired,
+            Self::Drift | Self::NeedsHuman => ConformanceReviewState::Pending,
+            Self::Violation => ConformanceReviewState::Blocked,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConformanceReviewState {
+    NotRequired,
+    Pending,
+    Blocked,
+}
+
+impl ConformanceReviewState {
+    fn as_i16(self) -> i16 {
+        match self {
+            Self::NotRequired => 1,
+            Self::Pending => 2,
+            Self::Blocked => 3,
+        }
+    }
+
+    fn from_i16(value: i16) -> Option<Self> {
+        match value {
+            1 => Some(Self::NotRequired),
+            2 => Some(Self::Pending),
+            3 => Some(Self::Blocked),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConformanceStoreError {
+    #[error("conformance database error: {0}")]
+    Database(#[from] tokio_postgres::Error),
+    #[error("task_id must be between 1 and {MAX_TASK_ID_BYTES} bytes")]
+    InvalidTaskId,
+    #[error("evidence_id must be between 1 and {MAX_EVIDENCE_ID_BYTES} bytes")]
+    InvalidEvidenceId,
+    #[error("findings_digest must be exactly {SHA256_DIGEST_BYTES} bytes")]
+    InvalidFindingsDigest,
+    #[error("evaluated_by must be between 1 and {MAX_IDENTITY_BYTES} bytes")]
+    InvalidEvaluator,
+    #[error("idempotency_key must be between 1 and {MAX_IDEMPOTENCY_KEY_BYTES} bytes")]
+    InvalidIdempotencyKey,
+    #[error("the referenced evidence record does not exist in this tenant and repository")]
+    MissingEvidence,
+    #[error("the referenced evidence record belongs to a different task")]
+    EvidenceTaskMismatch,
+    #[error("the authenticated evaluator did not produce the referenced evidence")]
+    EvidenceProducerMismatch,
+    #[error("idempotency_key was already used for a different conformance result")]
+    IdempotencyConflict,
+    #[error("stored conformance verdict {0} is outside the contract")]
+    UnknownStoredVerdict(i16),
+    #[error("stored conformance review state {0} is outside the contract")]
+    UnknownStoredReviewState(i16),
+    #[error("stored review state does not match the conformance verdict")]
+    InconsistentReviewState,
+    #[error("stored conformance finding count {0} exceeds the wire contract")]
+    InvalidStoredFindingCount(i64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordConformanceRequest {
+    pub tenant_id: String,
+    pub repository_id: String,
+    pub task_id: String,
+    pub evidence_id: String,
+    pub verdict: ConformanceVerdict,
+    pub finding_count: u32,
+    pub findings_digest: Vec<u8>,
+    pub reported_checked_at: SystemTime,
+    pub evaluated_by: String,
+    pub idempotency_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConformanceRecord {
+    pub conformance_id: String,
+    pub tenant_id: String,
+    pub repository_id: String,
+    pub task_id: String,
+    pub evidence_id: String,
+    pub verdict: ConformanceVerdict,
+    pub finding_count: u32,
+    pub findings_digest: Vec<u8>,
+    pub review_state: ConformanceReviewState,
+    pub reported_checked_at: SystemTime,
+    pub evaluated_by: String,
+    pub recorded_at: SystemTime,
+    pub idempotency_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordConformanceOutcome {
+    pub record: ConformanceRecord,
+    pub idempotent_replay: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConformanceCursor {
+    pub recorded_at: SystemTime,
+    pub conformance_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConformancePage {
+    pub entries: Vec<ConformanceRecord>,
+    pub next_cursor: Option<ConformanceCursor>,
+}
+
+impl EvidenceStore {
+    pub async fn record_conformance(
+        &self,
+        request: RecordConformanceRequest,
+    ) -> Result<RecordConformanceOutcome, ConformanceStoreError> {
+        let request = RecordConformanceRequest {
+            reported_checked_at: normalize_postgres_timestamp(request.reported_checked_at),
+            ..request
+        };
+        if let Some(existing) = self
+            .find_conformance_by_idempotency(
+                &request.tenant_id,
+                &request.repository_id,
+                &request.idempotency_key,
+            )
+            .await?
+        {
+            return outcome_for_existing(existing, &request);
+        }
+        validate_request(&request)?;
+        let evidence_task = self
+            .client
+            .query_opt(
+                "SELECT task_id, recorded_by FROM evidence_records \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND evidence_id = $3",
+                &[
+                    &request.tenant_id,
+                    &request.repository_id,
+                    &request.evidence_id,
+                ],
+            )
+            .await?
+            .ok_or(ConformanceStoreError::MissingEvidence)?;
+        let evidence_task_id: String = evidence_task.get("task_id");
+        if evidence_task_id != request.task_id {
+            return Err(ConformanceStoreError::EvidenceTaskMismatch);
+        }
+        let evidence_producer: String = evidence_task.get("recorded_by");
+        if evidence_producer != request.evaluated_by {
+            return Err(ConformanceStoreError::EvidenceProducerMismatch);
+        }
+
+        let conformance_id = unique_conformance_id();
+        let review_state = request.verdict.review_state();
+        let row = self
+            .client
+            .query_opt(
+                "INSERT INTO conformance_records (
+                     tenant_id, repository_id, conformance_id, task_id, evidence_id,
+                     verdict, finding_count, findings_digest, review_state, reported_checked_at,
+                     evaluated_by, idempotency_key
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                 ON CONFLICT (tenant_id, repository_id, idempotency_key)
+                     WHERE idempotency_key IS NOT NULL DO NOTHING
+                 RETURNING recorded_at",
+                &[
+                    &request.tenant_id,
+                    &request.repository_id,
+                    &conformance_id,
+                    &request.task_id,
+                    &request.evidence_id,
+                    &request.verdict.as_i16(),
+                    &i64::from(request.finding_count),
+                    &request.findings_digest,
+                    &review_state.as_i16(),
+                    &request.reported_checked_at,
+                    &request.evaluated_by,
+                    &request.idempotency_key,
+                ],
+            )
+            .await?;
+        let Some(row) = row else {
+            let existing = self
+                .find_conformance_by_idempotency(
+                    &request.tenant_id,
+                    &request.repository_id,
+                    &request.idempotency_key,
+                )
+                .await?
+                .ok_or(ConformanceStoreError::IdempotencyConflict)?;
+            return outcome_for_existing(existing, &request);
+        };
+        Ok(RecordConformanceOutcome {
+            record: ConformanceRecord {
+                conformance_id,
+                tenant_id: request.tenant_id,
+                repository_id: request.repository_id,
+                task_id: request.task_id,
+                evidence_id: request.evidence_id,
+                verdict: request.verdict,
+                finding_count: request.finding_count,
+                findings_digest: request.findings_digest,
+                review_state,
+                reported_checked_at: request.reported_checked_at,
+                evaluated_by: request.evaluated_by,
+                recorded_at: row.get("recorded_at"),
+                idempotency_key: request.idempotency_key,
+            },
+            idempotent_replay: false,
+        })
+    }
+
+    pub async fn find_conformance_by_idempotency(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<ConformanceRecord>, ConformanceStoreError> {
+        if !is_bounded(idempotency_key, MAX_IDEMPOTENCY_KEY_BYTES) {
+            return Err(ConformanceStoreError::InvalidIdempotencyKey);
+        }
+        self.client
+            .query_opt(
+                "SELECT conformance_id, tenant_id, repository_id, task_id, evidence_id, verdict, \
+                        finding_count, findings_digest, review_state, reported_checked_at, evaluated_by, \
+                        recorded_at, idempotency_key \
+                 FROM conformance_records \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND idempotency_key = $3",
+                &[&tenant_id, &repository_id, &idempotency_key],
+            )
+            .await?
+            .map(|row| row_to_conformance(&row))
+            .transpose()
+    }
+}
+
+fn outcome_for_existing(
+    existing: ConformanceRecord,
+    request: &RecordConformanceRequest,
+) -> Result<RecordConformanceOutcome, ConformanceStoreError> {
+    let matches = existing.task_id == request.task_id
+        && existing.evidence_id == request.evidence_id
+        && existing.verdict == request.verdict
+        && existing.finding_count == request.finding_count
+        && existing.findings_digest == request.findings_digest
+        && existing.reported_checked_at == request.reported_checked_at
+        && existing.evaluated_by == request.evaluated_by;
+    if !matches {
+        return Err(ConformanceStoreError::IdempotencyConflict);
+    }
+    Ok(RecordConformanceOutcome {
+        record: existing,
+        idempotent_replay: true,
+    })
+}
+
+pub(super) fn row_to_conformance(row: &Row) -> Result<ConformanceRecord, ConformanceStoreError> {
+    let stored_verdict: i16 = row.get("verdict");
+    let verdict = ConformanceVerdict::from_i16(stored_verdict)
+        .ok_or(ConformanceStoreError::UnknownStoredVerdict(stored_verdict))?;
+    let stored_review_state: i16 = row.get("review_state");
+    let review_state = ConformanceReviewState::from_i16(stored_review_state).ok_or(
+        ConformanceStoreError::UnknownStoredReviewState(stored_review_state),
+    )?;
+    if review_state != verdict.review_state() {
+        return Err(ConformanceStoreError::InconsistentReviewState);
+    }
+    let finding_count: i64 = row.get("finding_count");
+    Ok(ConformanceRecord {
+        conformance_id: row.get("conformance_id"),
+        tenant_id: row.get("tenant_id"),
+        repository_id: row.get("repository_id"),
+        task_id: row.get("task_id"),
+        evidence_id: row.get("evidence_id"),
+        verdict,
+        finding_count: u32::try_from(finding_count)
+            .map_err(|_| ConformanceStoreError::InvalidStoredFindingCount(finding_count))?,
+        findings_digest: row.get("findings_digest"),
+        review_state,
+        reported_checked_at: row.get("reported_checked_at"),
+        evaluated_by: row.get("evaluated_by"),
+        recorded_at: row.get("recorded_at"),
+        idempotency_key: row
+            .get::<_, Option<String>>("idempotency_key")
+            .unwrap_or_default(),
+    })
+}
+
+/// PostgreSQL stores `TIMESTAMPTZ` at microsecond precision. Normalize the
+/// caller-reported time before both persistence and idempotency comparison so
+/// a valid RFC3339 retry carrying nanoseconds returns its original result.
+pub(crate) fn normalize_postgres_timestamp(timestamp: SystemTime) -> SystemTime {
+    let timestamp = OffsetDateTime::from(timestamp);
+    let remainder = timestamp.nanosecond() % 1_000;
+    (timestamp - time::Duration::nanoseconds(i64::from(remainder))).into()
+}
+
+fn validate_request(request: &RecordConformanceRequest) -> Result<(), ConformanceStoreError> {
+    if !is_bounded(&request.task_id, MAX_TASK_ID_BYTES) {
+        return Err(ConformanceStoreError::InvalidTaskId);
+    }
+    if !is_bounded(&request.evidence_id, MAX_EVIDENCE_ID_BYTES) {
+        return Err(ConformanceStoreError::InvalidEvidenceId);
+    }
+    if request.findings_digest.len() != SHA256_DIGEST_BYTES {
+        return Err(ConformanceStoreError::InvalidFindingsDigest);
+    }
+    if !is_bounded(&request.evaluated_by, MAX_IDENTITY_BYTES) {
+        return Err(ConformanceStoreError::InvalidEvaluator);
+    }
+    if !is_bounded(&request.idempotency_key, MAX_IDEMPOTENCY_KEY_BYTES) {
+        return Err(ConformanceStoreError::InvalidIdempotencyKey);
+    }
+    Ok(())
+}
+
+fn unique_conformance_id() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes).expect("the OS random source should be available");
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("conformance-{hex}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::evidence_store::{EvidenceKind, RecordEvidenceRequest, SHA256_DIGEST_BYTES};
+
+    fn unique_scope(label: &str) -> (String, String) {
+        let mut bytes = [0u8; 8];
+        getrandom::getrandom(&mut bytes).expect("the OS random source should be available");
+        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        (
+            format!("tenant-conformance-{label}-{hex}"),
+            format!("repository-conformance-{label}-{hex}"),
+        )
+    }
+
+    async fn store() -> Option<EvidenceStore> {
+        let database_url = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()?;
+        Some(EvidenceStore::connect(&database_url).await.unwrap())
+    }
+
+    fn evidence_request(
+        tenant_id: String,
+        repository_id: String,
+        task_id: &str,
+    ) -> RecordEvidenceRequest {
+        RecordEvidenceRequest {
+            tenant_id,
+            repository_id,
+            task_id: task_id.to_string(),
+            kind: EvidenceKind::Commit,
+            source_ref: "commit:0123456789abcdef".to_string(),
+            content_digest: vec![7; SHA256_DIGEST_BYTES],
+            observed_at: SystemTime::UNIX_EPOCH,
+            reported_agent_session_id: "session:v1:conformance-test".to_string(),
+            recorded_by: "node:conformance-test".to_string(),
+            idempotency_key: String::new(),
+        }
+    }
+
+    fn conformance_request(
+        tenant_id: String,
+        repository_id: String,
+        task_id: &str,
+        evidence_id: String,
+        verdict: ConformanceVerdict,
+    ) -> RecordConformanceRequest {
+        let idempotency_key = format!("conformance:{task_id}:{evidence_id}");
+        RecordConformanceRequest {
+            tenant_id,
+            repository_id,
+            task_id: task_id.to_string(),
+            evidence_id,
+            verdict,
+            finding_count: 2,
+            findings_digest: vec![8; SHA256_DIGEST_BYTES],
+            reported_checked_at: SystemTime::UNIX_EPOCH,
+            evaluated_by: "node:conformance-test".to_string(),
+            idempotency_key,
+        }
+    }
+
+    #[tokio::test]
+    async fn records_conformance_for_matching_evidence_and_derives_pending_review() {
+        let Some(store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, repository_id) = unique_scope("pending");
+        let evidence = store
+            .record(evidence_request(
+                tenant_id.clone(),
+                repository_id.clone(),
+                "task:123",
+            ))
+            .await
+            .unwrap();
+        let recorded = store
+            .record_conformance(conformance_request(
+                tenant_id.clone(),
+                repository_id.clone(),
+                "task:123",
+                evidence.record.evidence_id,
+                ConformanceVerdict::NeedsHuman,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            recorded.record.review_state,
+            ConformanceReviewState::Pending
+        );
+        assert_eq!(
+            store
+                .list_conformance(&tenant_id, &repository_id, "task:123", 10)
+                .await
+                .unwrap(),
+            vec![recorded.record]
+        );
+    }
+
+    #[tokio::test]
+    async fn keyset_pagination_reaches_later_conformance_without_repeating_the_first_page() {
+        let Some(store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, repository_id) = unique_scope("pagination");
+        for _ in 0..3 {
+            let evidence = store
+                .record(evidence_request(
+                    tenant_id.clone(),
+                    repository_id.clone(),
+                    "task:123",
+                ))
+                .await
+                .unwrap();
+            store
+                .record_conformance(conformance_request(
+                    tenant_id.clone(),
+                    repository_id.clone(),
+                    "task:123",
+                    evidence.record.evidence_id,
+                    ConformanceVerdict::Aligned,
+                ))
+                .await
+                .unwrap();
+        }
+
+        let first = store
+            .list_conformance_page(&tenant_id, &repository_id, "task:123", None, 1)
+            .await
+            .unwrap();
+        let cursor = first
+            .next_cursor
+            .clone()
+            .expect("a full first page must return a cursor");
+        let second = store
+            .list_conformance_page(&tenant_id, &repository_id, "task:123", Some(&cursor), 1)
+            .await
+            .unwrap();
+
+        assert_eq!(first.entries.len(), 1);
+        assert_eq!(second.entries.len(), 1);
+        assert_ne!(
+            first.entries[0].conformance_id,
+            second.entries[0].conformance_id
+        );
+    }
+
+    #[tokio::test]
+    async fn refuses_conformance_when_evidence_belongs_to_a_different_task() {
+        let Some(store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, repository_id) = unique_scope("mismatch");
+        let evidence = store
+            .record(evidence_request(
+                tenant_id.clone(),
+                repository_id.clone(),
+                "task:evidence-owner",
+            ))
+            .await
+            .unwrap();
+
+        let error = store
+            .record_conformance(conformance_request(
+                tenant_id,
+                repository_id,
+                "task:other",
+                evidence.record.evidence_id,
+                ConformanceVerdict::Drift,
+            ))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ConformanceStoreError::EvidenceTaskMismatch));
+    }
+
+    #[test]
+    fn rejects_a_conformance_result_without_a_sha256_findings_digest() {
+        let (tenant_id, repository_id) = unique_scope("digest");
+        let mut invalid = conformance_request(
+            tenant_id,
+            repository_id,
+            "task:123",
+            "evidence:123".to_string(),
+            ConformanceVerdict::Aligned,
+        );
+        invalid.findings_digest = vec![0; SHA256_DIGEST_BYTES - 1];
+
+        assert!(matches!(
+            validate_request(&invalid),
+            Err(ConformanceStoreError::InvalidFindingsDigest)
+        ));
+    }
+}

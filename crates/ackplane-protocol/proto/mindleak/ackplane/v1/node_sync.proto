@@ -36,6 +36,8 @@ service KnowledgeService {
 service EvidenceService {
   rpc RecordEvidence(RecordEvidenceRequest) returns (EvidenceRecord);
   rpc ListEvidence(ListEvidenceRequest) returns (ListEvidenceResult);
+  rpc RecordConformance(RecordConformanceRequest) returns (ConformanceRecord);
+  rpc ListConformance(ListConformanceRequest) returns (ListConformanceResult);
 }
 
 // ADR-0106 decision 3: Constitution is a read-only projection of a
@@ -255,8 +257,13 @@ message RecordEvidenceRequest {
   string source_ref = 5;
   bytes content_digest = 6;
   string observed_at = 7;
-  string agent_session_id = 8;
+  // A node-reported session label. The signature proves only that this node
+  // asserted the value; it does not prove the session exists or is owned here.
+  string reported_agent_session_id = 8;
   EvidenceAuthentication authentication = 9;
+  // Optional for v1 compatibility. New clients sign a caller-selected value
+  // so a retry after a lost response returns the original Evidence record.
+  string idempotency_key = 10;
 }
 
 message EvidenceRecord {
@@ -268,9 +275,10 @@ message EvidenceRecord {
   string source_ref = 6;
   bytes content_digest = 7;
   string observed_at = 8;
-  string agent_session_id = 9;
+  string reported_agent_session_id = 9;
   string recorded_by = 10;
   string recorded_at = 11;
+  bool idempotent_replay = 12;
 }
 
 // Lists task-bound evidence for one repository. A zero limit selects the
@@ -281,11 +289,93 @@ message ListEvidenceRequest {
   string task_id = 3;
   uint32 limit = 4;
   EvidenceAuthentication authentication = 5;
+  // Both page fields are empty for the first page, or both identify the last
+  // returned row for stable keyset pagination ordered by server-recorded time.
+  string page_before_recorded_at = 6;
+  string page_before_evidence_id = 7;
 }
 
 message ListEvidenceResult {
   repeated EvidenceRecord entries = 1;
   uint32 effective_limit = 2;
+  string next_recorded_at = 3;
+  string next_evidence_id = 4;
+}
+
+// Mirrors Lodestar's durable verdict vocabulary. A verdict is not a generic
+// success flag: drift and needs-human remain visible review states, while a
+// violation remains blocked rather than being softened to pending review.
+enum ConformanceVerdict {
+  CONFORMANCE_VERDICT_UNSPECIFIED = 0;
+  CONFORMANCE_VERDICT_ALIGNED = 1;
+  CONFORMANCE_VERDICT_DRIFT = 2;
+  CONFORMANCE_VERDICT_VIOLATION = 3;
+  CONFORMANCE_VERDICT_NEEDS_HUMAN = 4;
+}
+
+// Derived from the initial verdict. Future reviewed human decisions are a
+// separate typed action; recording a conformance result does not pretend an
+// enrolled node can approve its own drift or needs-human outcome.
+enum ConformanceReviewState {
+  CONFORMANCE_REVIEW_STATE_UNSPECIFIED = 0;
+  CONFORMANCE_REVIEW_STATE_NOT_REQUIRED = 1;
+  CONFORMANCE_REVIEW_STATE_PENDING = 2;
+  CONFORMANCE_REVIEW_STATE_BLOCKED = 3;
+}
+
+// Records one node-reported conformance outcome for an existing Evidence
+// record. The server verifies that the reporting node created that evidence;
+// human acceptance and override remain separate reviewed actions. Findings
+// stay at their source; this carries only a count and SHA-256 digest.
+message RecordConformanceRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string task_id = 3;
+  string evidence_id = 4;
+  ConformanceVerdict verdict = 5;
+  uint32 finding_count = 6;
+  bytes findings_digest = 7;
+  // Node-reported check time. The server orders history by recorded_at, so
+  // this value cannot promote a future-dated result over a later record.
+  string reported_checked_at = 8;
+  EvidenceAuthentication authentication = 9;
+  // Signed caller-selected identity used to make retrying a lost response
+  // safe. Reuse with different logical fields is refused.
+  string idempotency_key = 10;
+}
+
+message ConformanceRecord {
+  string conformance_id = 1;
+  string tenant_id = 2;
+  string repository_id = 3;
+  string task_id = 4;
+  string evidence_id = 5;
+  ConformanceVerdict verdict = 6;
+  uint32 finding_count = 7;
+  bytes findings_digest = 8;
+  ConformanceReviewState review_state = 9;
+  string reported_checked_at = 10;
+  string evaluated_by = 11;
+  string recorded_at = 12;
+  string idempotency_key = 13;
+  bool idempotent_replay = 14;
+}
+
+message ListConformanceRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string task_id = 3;
+  uint32 limit = 4;
+  EvidenceAuthentication authentication = 5;
+  string page_before_recorded_at = 6;
+  string page_before_conformance_id = 7;
+}
+
+message ListConformanceResult {
+  repeated ConformanceRecord entries = 1;
+  uint32 effective_limit = 2;
+  string next_recorded_at = 3;
+  string next_conformance_id = 4;
 }
 
 // The enrolled node's proof for a ConstitutionService request. A distinct

@@ -19,11 +19,29 @@ pub enum EvidenceOperation<'a> {
         source_ref: &'a str,
         content_digest: &'a [u8],
         observed_at: &'a str,
-        agent_session_id: &'a str,
+        reported_agent_session_id: &'a str,
+        idempotency_key: &'a str,
     },
     List {
         task_id: &'a str,
         limit: u32,
+        page_before_recorded_at: Option<&'a str>,
+        page_before_evidence_id: Option<&'a str>,
+    },
+    RecordConformance {
+        task_id: &'a str,
+        evidence_id: &'a str,
+        verdict: i32,
+        finding_count: u32,
+        findings_digest: &'a [u8],
+        reported_checked_at: &'a str,
+        idempotency_key: &'a str,
+    },
+    ListConformance {
+        task_id: &'a str,
+        limit: u32,
+        page_before_recorded_at: Option<&'a str>,
+        page_before_conformance_id: Option<&'a str>,
     },
 }
 
@@ -32,6 +50,8 @@ impl EvidenceOperation<'_> {
         match self {
             Self::Record { .. } => "record",
             Self::List { .. } => "list",
+            Self::RecordConformance { .. } => "record_conformance",
+            Self::ListConformance { .. } => "list_conformance",
         }
     }
 
@@ -44,18 +64,55 @@ impl EvidenceOperation<'_> {
                 source_ref,
                 content_digest,
                 observed_at,
-                agent_session_id,
+                reported_agent_session_id,
+                idempotency_key,
             } => {
                 push_field(bytes, task_id.as_bytes());
                 push_field(bytes, &evidence_kind.to_be_bytes());
                 push_field(bytes, source_ref.as_bytes());
                 push_field(bytes, content_digest);
                 push_field(bytes, observed_at.as_bytes());
-                push_field(bytes, agent_session_id.as_bytes());
+                push_field(bytes, reported_agent_session_id.as_bytes());
+                push_field(bytes, idempotency_key.as_bytes());
             }
-            Self::List { task_id, limit } => {
+            Self::List {
+                task_id,
+                limit,
+                page_before_recorded_at,
+                page_before_evidence_id,
+            } => {
                 push_field(bytes, task_id.as_bytes());
                 push_field(bytes, &limit.to_be_bytes());
+                push_field(bytes, page_before_recorded_at.unwrap_or("").as_bytes());
+                push_field(bytes, page_before_evidence_id.unwrap_or("").as_bytes());
+            }
+            Self::RecordConformance {
+                task_id,
+                evidence_id,
+                verdict,
+                finding_count,
+                findings_digest,
+                reported_checked_at,
+                idempotency_key,
+            } => {
+                push_field(bytes, task_id.as_bytes());
+                push_field(bytes, evidence_id.as_bytes());
+                push_field(bytes, &verdict.to_be_bytes());
+                push_field(bytes, &finding_count.to_be_bytes());
+                push_field(bytes, findings_digest);
+                push_field(bytes, reported_checked_at.as_bytes());
+                push_field(bytes, idempotency_key.as_bytes());
+            }
+            Self::ListConformance {
+                task_id,
+                limit,
+                page_before_recorded_at,
+                page_before_conformance_id,
+            } => {
+                push_field(bytes, task_id.as_bytes());
+                push_field(bytes, &limit.to_be_bytes());
+                push_field(bytes, page_before_recorded_at.unwrap_or("").as_bytes());
+                push_field(bytes, page_before_conformance_id.unwrap_or("").as_bytes());
             }
         }
     }
@@ -108,7 +165,18 @@ mod tests {
         source_ref: "commit:0123456789abcdef",
         content_digest: b"01234567890123456789012345678901",
         observed_at: "2026-01-01T00:00:00Z",
-        agent_session_id: "session:v1:agent",
+        reported_agent_session_id: "session:v1:agent",
+        idempotency_key: "evidence:123",
+    };
+
+    const CONFORMANCE: EvidenceOperation<'static> = EvidenceOperation::RecordConformance {
+        task_id: "task:123",
+        evidence_id: "evidence:123",
+        verdict: 1,
+        finding_count: 2,
+        findings_digest: b"01234567890123456789012345678901",
+        reported_checked_at: "2026-01-01T00:00:00Z",
+        idempotency_key: "conformance:123",
     };
 
     #[test]
@@ -128,11 +196,149 @@ mod tests {
             &EvidenceOperation::List {
                 task_id: "task:123",
                 limit: 20,
+                page_before_recorded_at: None,
+                page_before_evidence_id: None,
             },
             &authentication(1),
         );
 
         assert_ne!(record, list);
+    }
+
+    #[test]
+    fn conformance_record_binds_its_outcome_and_never_shares_record_bytes() {
+        let original =
+            evidence_signing_bytes("tenant-a", "repo-a", &CONFORMANCE, &authentication(1));
+        let changed_verdict = EvidenceOperation::RecordConformance {
+            task_id: "task:123",
+            evidence_id: "evidence:123",
+            verdict: 3,
+            finding_count: 2,
+            findings_digest: b"01234567890123456789012345678901",
+            reported_checked_at: "2026-01-01T00:00:00Z",
+            idempotency_key: "conformance:123",
+        };
+        let changed_findings = EvidenceOperation::RecordConformance {
+            task_id: "task:123",
+            evidence_id: "evidence:123",
+            verdict: 1,
+            finding_count: 3,
+            findings_digest: b"11234567890123456789012345678901",
+            reported_checked_at: "2026-01-01T00:00:00Z",
+            idempotency_key: "conformance:123",
+        };
+
+        assert_ne!(
+            original,
+            evidence_signing_bytes("tenant-a", "repo-a", &changed_verdict, &authentication(1))
+        );
+        assert_ne!(
+            original,
+            evidence_signing_bytes("tenant-a", "repo-a", &changed_findings, &authentication(1))
+        );
+        assert_ne!(
+            original,
+            evidence_signing_bytes("tenant-a", "repo-a", &RECORD, &authentication(1))
+        );
+    }
+
+    #[test]
+    fn conformance_list_never_shares_a_record_or_evidence_list_signature() {
+        let conformance_list = evidence_signing_bytes(
+            "tenant-a",
+            "repo-a",
+            &EvidenceOperation::ListConformance {
+                task_id: "task:123",
+                limit: 20,
+                page_before_recorded_at: None,
+                page_before_conformance_id: None,
+            },
+            &authentication(1),
+        );
+        let evidence_list = evidence_signing_bytes(
+            "tenant-a",
+            "repo-a",
+            &EvidenceOperation::List {
+                task_id: "task:123",
+                limit: 20,
+                page_before_recorded_at: None,
+                page_before_evidence_id: None,
+            },
+            &authentication(1),
+        );
+
+        assert_ne!(conformance_list, evidence_list);
+        assert_ne!(
+            conformance_list,
+            evidence_signing_bytes("tenant-a", "repo-a", &CONFORMANCE, &authentication(1))
+        );
+    }
+
+    #[test]
+    fn list_cursor_and_idempotency_keys_change_signed_bytes() {
+        let first_evidence_page = EvidenceOperation::List {
+            task_id: "task:123",
+            limit: 20,
+            page_before_recorded_at: None,
+            page_before_evidence_id: None,
+        };
+        let next_evidence_page = EvidenceOperation::List {
+            task_id: "task:123",
+            limit: 20,
+            page_before_recorded_at: Some("2026-01-01T00:00:00Z"),
+            page_before_evidence_id: Some("evidence:123"),
+        };
+        let different_idempotency_key = EvidenceOperation::RecordConformance {
+            task_id: "task:123",
+            evidence_id: "evidence:123",
+            verdict: 1,
+            finding_count: 2,
+            findings_digest: b"01234567890123456789012345678901",
+            reported_checked_at: "2026-01-01T00:00:00Z",
+            idempotency_key: "conformance:other",
+        };
+        let different_evidence_idempotency_key = EvidenceOperation::Record {
+            task_id: "task:123",
+            evidence_kind: 1,
+            source_ref: "commit:0123456789abcdef",
+            content_digest: b"01234567890123456789012345678901",
+            observed_at: "2026-01-01T00:00:00Z",
+            reported_agent_session_id: "session:v1:agent",
+            idempotency_key: "evidence:other",
+        };
+
+        assert_ne!(
+            evidence_signing_bytes(
+                "tenant-a",
+                "repo-a",
+                &first_evidence_page,
+                &authentication(1)
+            ),
+            evidence_signing_bytes(
+                "tenant-a",
+                "repo-a",
+                &next_evidence_page,
+                &authentication(1)
+            )
+        );
+        assert_ne!(
+            evidence_signing_bytes("tenant-a", "repo-a", &CONFORMANCE, &authentication(1)),
+            evidence_signing_bytes(
+                "tenant-a",
+                "repo-a",
+                &different_idempotency_key,
+                &authentication(1)
+            )
+        );
+        assert_ne!(
+            evidence_signing_bytes("tenant-a", "repo-a", &RECORD, &authentication(1)),
+            evidence_signing_bytes(
+                "tenant-a",
+                "repo-a",
+                &different_evidence_idempotency_key,
+                &authentication(1)
+            )
+        );
     }
 
     #[test]
@@ -144,7 +350,8 @@ mod tests {
             source_ref: "commit:0123456789abcdef",
             content_digest: b"11234567890123456789012345678901",
             observed_at: "2026-01-01T00:00:00Z",
-            agent_session_id: "session:v1:agent",
+            reported_agent_session_id: "session:v1:agent",
+            idempotency_key: "evidence:123",
         };
         let changed_task = EvidenceOperation::Record {
             task_id: "task:456",
@@ -152,7 +359,8 @@ mod tests {
             source_ref: "commit:0123456789abcdef",
             content_digest: b"01234567890123456789012345678901",
             observed_at: "2026-01-01T00:00:00Z",
-            agent_session_id: "session:v1:agent",
+            reported_agent_session_id: "session:v1:agent",
+            idempotency_key: "evidence:123",
         };
 
         assert_ne!(
