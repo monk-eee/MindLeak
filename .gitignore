@@ -24,6 +24,10 @@ editors/vscode/*.vsix
 editors/vscode/media/vendor
 editors/vscode/coverage/
 
+# Local-only Copilot customization, not part of the shared repo convention
+/.github/instructions/
+/.github/prompts/
+
 # Editor / OS
 .DS_Store
 Thumbs.db
