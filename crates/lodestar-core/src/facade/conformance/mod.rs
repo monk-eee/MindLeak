@@ -349,6 +349,7 @@ fn test_evidence(
         execution_ids: vec!["execution:proof".into()],
         successful_execution_ids: vec!["execution:proof".into()],
         commit_ids: Vec::new(),
+        ledger_act_ids: Vec::new(),
         summary: format!("changed {changed_node_id}"),
         provenance: vec![
             crate::EvidenceProvenance {
@@ -468,6 +469,53 @@ mod tests {
 
         assert!(completion.completed);
         assert_eq!(completion.conformance.findings, checked.findings);
+    }
+
+    // ADR-0110: the first gate used to refuse ANY evidence with empty
+    // `changed_node_ids`, which made a Lodestar-internal ledger act -- a
+    // verified design registration, decision, waiver, or amendment -- read as
+    // "nothing happened" even though it never had a MindLeak node to touch.
+    #[test]
+    fn a_ledger_act_alone_reaches_a_real_verdict_instead_of_the_no_mutation_refusal() {
+        let e = engine();
+        let goal = e
+            .define_goal(
+                GoalKind::Objective,
+                "Ledger-only work",
+                "some work only ever touches Lodestar's own ledger",
+                None,
+            )
+            .unwrap();
+        let task = e
+            .create_task(&goal.id, "register a design", "the ledger act is evidence")
+            .unwrap();
+        e.claim_task(&task.id, "agent-a", 300).unwrap();
+        let item = e
+            .register_design(
+                "docs/adr/9999-gate-test.md",
+                "Gate test",
+                "s",
+                Some("agent-a"),
+            )
+            .unwrap();
+
+        let evidence = e
+            .ledger_act_evidence(
+                &task.id,
+                crate::LedgerActKind::DesignRegistered,
+                &item.id,
+                "agent-a",
+            )
+            .unwrap();
+        assert!(evidence.changed_node_ids.is_empty());
+        assert!(!evidence.ledger_act_ids.is_empty());
+
+        let checked = e.check_conformance(&evidence, Some(&task.id)).unwrap();
+        assert_eq!(checked.verdict, Verdict::Aligned);
+        assert!(!checked
+            .findings
+            .iter()
+            .any(|f| f.contains("no provenance-bearing mutation")));
     }
 
     #[test]
@@ -829,6 +877,7 @@ mod tests {
             execution_ids: Vec::new(),
             successful_execution_ids: Vec::new(),
             commit_ids: Vec::new(),
+            ledger_act_ids: Vec::new(),
             summary: "no mutation evidence".into(),
             provenance: Vec::new(),
         };
@@ -1878,6 +1927,7 @@ mod tests {
             execution_ids: Vec::new(),
             successful_execution_ids: Vec::new(),
             commit_ids: Vec::new(),
+            ledger_act_ids: Vec::new(),
             summary: "no activity".into(),
             provenance: Vec::new(),
         };

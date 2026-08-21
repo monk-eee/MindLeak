@@ -381,6 +381,39 @@ impl FleetStore {
         ))
     }
 
+    /// One delegated claim's current owner and scope, regardless of whether
+    /// its lease has expired (unlike `active_work`, which excludes expired
+    /// rows because it answers a different question - "what is current
+    /// work"). This answers what a recovery decision needs: the exact owner
+    /// of a claim that may already be stranded, so `ackplane-bridge` can pass
+    /// it as `ClaimRecoverRequest::expected_owner` without asking the caller
+    /// to supply (and possibly mis-type) it.
+    pub async fn claim_owner(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        task_id: &str,
+    ) -> Result<Option<ActiveWorkItem>, tokio_postgres::Error> {
+        let row = self
+            .client
+            .query_opt(
+                "SELECT task_id, owner_id, branch, lease_expires_at, paths, symbols \
+                 FROM delegated_claims \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3",
+                &[&tenant_id, &repository_id, &task_id],
+            )
+            .await?;
+
+        Ok(row.map(|row| ActiveWorkItem {
+            task_id: row.get(0),
+            owner_id: row.get(1),
+            branch: row.get(2),
+            lease_expires_at: row.get(3),
+            paths: row.get(4),
+            symbols: row.get(5),
+        }))
+    }
+
     /// Every signing key this repository has ever enrolled, judged as of now.
     ///
     /// Reuses `signing_keys::judge` -- the same rule an accepted envelope is

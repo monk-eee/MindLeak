@@ -155,6 +155,7 @@ fn aligned_evidence(task: &Task, agent: &str) -> ConformanceEvidence {
         execution_ids: vec![execution_id.clone()],
         successful_execution_ids: vec![execution_id.clone()],
         commit_ids: vec![],
+        ledger_act_ids: vec![],
         summary: "completed the governed same-file subtask".to_string(),
         provenance: vec![
             EvidenceProvenance {

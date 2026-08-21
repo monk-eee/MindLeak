@@ -113,6 +113,16 @@ impl Lodestar {
         self.store.goal_coverage(task_id)
     }
 
+    /// Reconnect the caller's own live claim from a superseded clause onto its
+    /// active same-slug successor, at their own request (ADR-0109). Refused for
+    /// any task the caller does not currently hold with an unexpired lease, or
+    /// whose current clause has no unique active successor to move onto.
+    pub fn reconnect_claim_clause(&self, task_id: &str, agent: &str) -> Result<String> {
+        let agent = self.resolve_agent(agent)?;
+        self.store
+            .reconnect_claim_clause(task_id, agent, now_unix())
+    }
+
     /// Break a goal into tasks. Uses the local model when reachable, else a
     /// deterministic single-task fallback so the plane works with no LLM.
     ///
@@ -1849,6 +1859,7 @@ mod tests {
             execution_ids: Vec::new(),
             successful_execution_ids: Vec::new(),
             commit_ids: Vec::new(),
+            ledger_act_ids: Vec::new(),
             summary: "no mutation evidence".into(),
             provenance: Vec::new(),
         };

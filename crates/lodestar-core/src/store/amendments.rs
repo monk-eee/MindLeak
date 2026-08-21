@@ -284,6 +284,55 @@ impl LodestarStore {
         })
     }
 
+    /// One amendment by id, for [`crate::Lodestar::ledger_act_evidence`]
+    /// (ADR-0110) — existing callers only needed the full `amendments()`
+    /// history, never a single lookup.
+    pub fn amendment(&self, id: &str) -> Result<Option<ConstitutionAmendment>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT id, from_version, to_version, rationale, amended_by, approved_by, created_at, diff
+                   FROM constitution_amendments WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, String>(7)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((
+            id,
+            from_version,
+            to_version,
+            rationale,
+            amended_by,
+            approved_by,
+            created_at,
+            raw,
+        )) = row
+        else {
+            return Ok(None);
+        };
+        Ok(Some(ConstitutionAmendment {
+            id,
+            from_version,
+            to_version,
+            rationale,
+            amended_by,
+            approved_by,
+            created_at,
+            diff: serde_json::from_str::<Vec<ClauseDiff>>(&raw)?,
+        }))
+    }
+
     /// The amendment history, newest first — how policy got to where it is.
     pub fn amendments(&self) -> Result<Vec<ConstitutionAmendment>> {
         let mut stmt = self.conn.prepare(
@@ -429,6 +478,37 @@ mod tests {
         assert!(store.clauses_for_version(&before).unwrap().is_empty());
         assert_eq!(store.clauses_for_version(&draft).unwrap().len(), 1);
         assert_eq!(store.amendments().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn amendment_looks_up_one_record_by_id_the_same_as_the_full_history() {
+        // New for ADR-0110's ledger_act_evidence: every existing caller only
+        // ever needed the full amendments() history; a ledger act verifies one
+        // specific amendment by id without scanning the whole audit log.
+        let store = store();
+        let (before, draft) = governed(&store);
+        store.copy_clauses_to_version(&before, &draft).unwrap();
+        harden(&store, &draft);
+
+        let recorded = store
+            .amend_constitution(
+                &draft,
+                "monk-eee",
+                "reviewer",
+                "Harden the secrets rule.",
+                NOW + 10,
+            )
+            .unwrap();
+
+        let looked_up = store
+            .amendment(&recorded.id)
+            .unwrap()
+            .expect("the amendment exists");
+        assert_eq!(looked_up, recorded);
+        assert!(store
+            .amendment("amendment:does-not-exist")
+            .unwrap()
+            .is_none());
     }
 
     // Regression: an amendment stranded everything that named the clause.

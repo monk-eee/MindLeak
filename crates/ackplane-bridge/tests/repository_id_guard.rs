@@ -8,6 +8,7 @@
 const MAIN_RS: &str = include_str!("../src/main.rs");
 const FLEET_RS: &str = include_str!("../../ackplane-server/src/fleet.rs");
 const KNOWLEDGE_STORE_RS: &str = include_str!("../../ackplane-server/src/knowledge_store.rs");
+const CLAIM_STORE_RS: &str = include_str!("../../ackplane-server/src/claim_store.rs");
 
 /// `FleetStore::connect` is the connection constructor, not a query or
 /// mutation - it has no tenant to scope to yet.
@@ -35,6 +36,42 @@ const KNOWLEDGE_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &[
 /// `fleet_page` serves a static asset and never touches the store - it has
 /// nothing to scope.
 const ROUTE_HANDLERS_WITHOUT_A_STORE_QUERY: &[&str] = &["fleet_page"];
+
+/// `connect` is the constructor, same exemption as the other two stores.
+/// `delegate` and `recover` take a request struct (`ClaimLeaseRequest`,
+/// `ClaimRecoverRequest`) whose own `tenant_id: String` field carries the
+/// scope - the same struct-embedded exemption reasoning as `KnowledgeStore::
+/// record` above. `resolve_signing_key` takes an `EnvelopeBinding` rather
+/// than a bare tenant id, for the same reason. `consume_claim_nonce` has no
+/// tenant scope at all by design: nonce uniqueness is global on
+/// (signing_key_id, nonce), not tenant-scoped (matching
+/// `activation_challenges.nonce`'s existing global-uniqueness precedent).
+const CLAIM_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &[
+    "connect",
+    "delegate",
+    "recover",
+    "resolve_signing_key",
+    "consume_claim_nonce",
+];
+
+#[test]
+fn every_claim_store_query_requires_an_explicit_tenant_id() {
+    let methods = extract_impl_methods(CLAIM_STORE_RS, "ClaimStore");
+    assert!(
+        !methods.is_empty(),
+        "expected to find at least one ClaimStore method - the parser may be broken"
+    );
+    for (name, signature) in methods {
+        if CLAIM_STORE_METHODS_WITHOUT_A_TENANT.contains(&name.as_str()) {
+            continue;
+        }
+        assert!(
+            signature.contains("tenant_id: &str"),
+            "ClaimStore::{name} does not take an explicit tenant_id: &str parameter \
+             (ADR-0098 decision 5 requires every query/mutation to carry a tenant scope): {signature}"
+        );
+    }
+}
 
 #[test]
 fn every_fleet_store_query_requires_an_explicit_tenant_id() {
