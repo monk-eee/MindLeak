@@ -1,0 +1,1 @@
+- **Added:** Ackplane's knowledge domain can expose active and retired statements with attributed retirement provenance, while `RetireKnowledge` records the authenticated enrolled node instead of a caller-supplied actor label.
