@@ -1,8 +1,10 @@
 # ADR-0118: The Coverage gate provisions Postgres for Ackplane's tests
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-21
 - Deciders: MindLeak maintainers
+- Accepted: 2026-08-22 by the repository owner, authorized directly in
+  session — attributed human adoption after review.
 - Depends on: [ADR-0091](0091-ackplane-builds-and-tests-without-a-database.md)
   (database-gated tests are opt-in via `ACKPLANE_TEST_DATABASE_URL`),
   [ADR-0088](0088-the-ackplane-runs-in-containers-the-planes-do-not.md)
