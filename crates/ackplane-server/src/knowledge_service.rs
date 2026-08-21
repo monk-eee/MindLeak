@@ -1,19 +1,21 @@
 //! gRPC transport for Ackplane's knowledge domain (ADR-0106 decision 3).
 //!
-//! Unauthenticated in this first slice, unlike `ClaimDelegationService`:
-//! `ClaimOperation`'s signing scheme is scoped to claim identity (task_id,
-//! owner_id) that has no equivalent here, so reusing it would be a domain
-//! mismatch, not reuse. Binding knowledge writes to the enrolled node's
-//! signing key is real, separate follow-on work -- tracked in
-//! gaps.d/ackplane-knowledge-service-rpcs-are-unauthenticated.md, not
-//! silently deferred.
+//! Authenticated the same way `ClaimDelegationService` is (ADR-0108): every
+//! mutating RPC verifies a `KnowledgeAuthentication` against the enrolled
+//! node's resolved signing key before it reaches the store, mirrored into
+//! its own domain (`knowledge_auth`/`knowledge_signature`, its own nonce
+//! table) rather than reusing `ClaimOperation`'s claim-shaped fields, which
+//! have no equivalent for a knowledge statement.
 
 use std::sync::Arc;
+use std::time::SystemTime;
 
+use ackplane_protocol::knowledge_auth::KnowledgeOperation;
 use ackplane_protocol::v1;
 use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
 
+use crate::knowledge_signature::{self, KnowledgeAuthRefusal};
 use crate::knowledge_store::{
     ActiveKnowledge, KnowledgeStore, KnowledgeStoreError, RecordKnowledgeRequest,
 };
@@ -27,6 +29,75 @@ impl KnowledgeGrpcService {
         Self {
             store: Arc::new(Mutex::new(store)),
         }
+    }
+
+    /// Verify a knowledge request's authentication before it reaches the
+    /// store (ADR-0108, mirroring `ClaimDelegationService::authenticate`). An
+    /// absent, unresolvable, mismatched-binding, not-yet-active, expired,
+    /// retired, or revoked key is refused here -- the store methods never
+    /// see an unauthenticated caller.
+    async fn authenticate(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        operation: &KnowledgeOperation<'_>,
+        authentication: Option<&v1::KnowledgeAuthentication>,
+    ) -> Result<(), Status> {
+        let Some(authentication) = authentication else {
+            return Err(Status::unauthenticated(
+                KnowledgeAuthRefusal::Unsigned.diagnostic(),
+            ));
+        };
+        let binding = crate::signing_keys::EnvelopeBinding {
+            signing_key_id: &authentication.signing_key_id,
+            tenant_id,
+            repository_id,
+            producer_id: &authentication.node_id,
+            accepted_at: SystemTime::now(),
+        };
+        let resolution = self
+            .store
+            .lock()
+            .await
+            .resolve_signing_key(&binding)
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?;
+
+        knowledge_signature::verify(
+            tenant_id,
+            repository_id,
+            operation,
+            Some(authentication),
+            &resolution,
+            SystemTime::now(),
+        )
+        .map_err(|refusal| {
+            if refusal.is_authenticated_but_not_authorized() {
+                Status::permission_denied(refusal.diagnostic())
+            } else {
+                Status::unauthenticated(refusal.diagnostic())
+            }
+        })?;
+
+        // Only after a genuine signature is confirmed: a forged request must
+        // never be able to burn a legitimate nonce out from under its owner.
+        let fresh = self
+            .store
+            .lock()
+            .await
+            .consume_knowledge_nonce(
+                &authentication.signing_key_id,
+                &authentication.nonce,
+                SystemTime::now(),
+            )
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?;
+        if !fresh {
+            return Err(Status::unauthenticated(
+                KnowledgeAuthRefusal::Replayed.diagnostic(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -63,6 +134,19 @@ impl v1::knowledge_service_server::KnowledgeService for KnowledgeGrpcService {
         request: Request<v1::RecordKnowledgeRequest>,
     ) -> Result<Response<v1::KnowledgeRecord>, Status> {
         let request = request.into_inner();
+        let operation = KnowledgeOperation::Record {
+            content: &request.content,
+            half_life_hours: request.half_life_hours,
+            embedding_model: (!request.embedding_model.is_empty())
+                .then_some(request.embedding_model.as_str()),
+        };
+        self.authenticate(
+            &request.tenant_id,
+            &request.repository_id,
+            &operation,
+            request.authentication.as_ref(),
+        )
+        .await?;
         let embedding = if request.embedding.is_empty() {
             None
         } else {
@@ -98,15 +182,26 @@ impl v1::knowledge_service_server::KnowledgeService for KnowledgeGrpcService {
         request: Request<v1::RecallKnowledgeRequest>,
     ) -> Result<Response<v1::RecallKnowledgeResult>, Status> {
         let request = request.into_inner();
-        let embedding = if request.query_embedding.is_empty() {
-            None
-        } else {
-            Some((request.embedding_model.as_str(), request.query_embedding))
-        };
         let limit = if request.limit == 0 {
             20
         } else {
             request.limit as i64
+        };
+        let operation = KnowledgeOperation::Recall {
+            query_embedding_present: !request.query_embedding.is_empty(),
+            limit: request.limit,
+        };
+        self.authenticate(
+            &request.tenant_id,
+            &request.repository_id,
+            &operation,
+            request.authentication.as_ref(),
+        )
+        .await?;
+        let embedding = if request.query_embedding.is_empty() {
+            None
+        } else {
+            Some((request.embedding_model.as_str(), request.query_embedding))
         };
         let recalled = self
             .store
@@ -131,6 +226,17 @@ impl v1::knowledge_service_server::KnowledgeService for KnowledgeGrpcService {
         request: Request<v1::RetireKnowledgeRequest>,
     ) -> Result<Response<v1::RetireKnowledgeResult>, Status> {
         let request = request.into_inner();
+        let operation = KnowledgeOperation::Retire {
+            knowledge_id: &request.knowledge_id,
+            reason: &request.reason,
+        };
+        self.authenticate(
+            &request.tenant_id,
+            &request.repository_id,
+            &operation,
+            request.authentication.as_ref(),
+        )
+        .await?;
         let retired = self
             .store
             .lock()
@@ -145,5 +251,229 @@ impl v1::knowledge_service_server::KnowledgeService for KnowledgeGrpcService {
             .await
             .map_err(store_error)?;
         Ok(Response::new(v1::RetireKnowledgeResult { retired }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ed25519_dalek::{Signer, SigningKey};
+
+    use ackplane_protocol::v1::knowledge_service_server::KnowledgeService;
+
+    use super::*;
+    use crate::signing_keys::{self, SigningKeyRecord};
+
+    /// Deterministic key material across every test -- matching
+    /// `claim_service.rs`'s own fixture: a fixed key is fine because each
+    /// test registers it under its own freshly generated identity.
+    fn signing_key() -> SigningKey {
+        SigningKey::from_bytes(&[34; 32])
+    }
+
+    /// One test's fully-isolated tenant/repository/node/key identity, so
+    /// tests in the same binary never share a row and never depend on
+    /// registration order.
+    struct TestIdentity {
+        signing_key_id: String,
+        node_id: String,
+        tenant_id: String,
+        repository_id: String,
+    }
+
+    impl TestIdentity {
+        fn fresh(label: &str) -> Self {
+            let suffix = crate::test_support::uuid_ish();
+            Self {
+                signing_key_id: format!("knowledge-service-{label}-key-{suffix}"),
+                node_id: format!("knowledge-service-{label}-node-{suffix}"),
+                tenant_id: format!("knowledge-service-{label}-tenant-{suffix}"),
+                repository_id: format!("knowledge-service-{label}-repository-{suffix}"),
+            }
+        }
+    }
+
+    async fn register_test_key(database_url: &str, identity: &TestIdentity) {
+        let (mut client, connection) = tokio_postgres::connect(database_url, tokio_postgres::NoTls)
+            .await
+            .expect("the gated test database should accept a signing-key connection");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let transaction = client
+            .transaction()
+            .await
+            .expect("a transaction should open for key registration");
+        let key = signing_key();
+        signing_keys::register(
+            &transaction,
+            &SigningKeyRecord {
+                signing_key_id: identity.signing_key_id.clone(),
+                tenant_id: identity.tenant_id.clone(),
+                repository_id: identity.repository_id.clone(),
+                node_id: identity.node_id.clone(),
+                public_key: key.verifying_key().to_bytes().to_vec(),
+                public_key_fingerprint: identity.signing_key_id.clone(),
+                activated_at: SystemTime::UNIX_EPOCH,
+                expires_at: None,
+            },
+        )
+        .await
+        .expect("registering the test key should succeed");
+        transaction
+            .commit()
+            .await
+            .expect("the registration transaction should commit");
+    }
+
+    /// A validly-signed `RecordKnowledgeRequest`, `signed_at` pinned to "now"
+    /// and `nonce` distinguished by the caller so two requests in the same
+    /// test can be deliberately identical or distinct.
+    fn authenticated_record_request(
+        identity: &TestIdentity,
+        content: &str,
+        nonce_byte: u8,
+    ) -> v1::RecordKnowledgeRequest {
+        let key = signing_key();
+        let half_life_hours = 720.0;
+        let mut authentication = v1::KnowledgeAuthentication {
+            signing_key_id: identity.signing_key_id.clone(),
+            node_id: identity.node_id.clone(),
+            signed_at: time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+            nonce: vec![nonce_byte; 16],
+            signature: Vec::new(),
+        };
+        let operation = KnowledgeOperation::Record {
+            content,
+            half_life_hours,
+            embedding_model: None,
+        };
+        let bytes = knowledge_signature::knowledge_signing_bytes(
+            &identity.tenant_id,
+            &identity.repository_id,
+            &operation,
+            &authentication,
+        );
+        authentication.signature = key.sign(&bytes).to_bytes().to_vec();
+        v1::RecordKnowledgeRequest {
+            tenant_id: identity.tenant_id.clone(),
+            repository_id: identity.repository_id.clone(),
+            content: content.to_owned(),
+            source_ref: String::new(),
+            half_life_hours,
+            embedding_model: String::new(),
+            embedding: Vec::new(),
+            authentication: Some(authentication),
+        }
+    }
+
+    /// Proves `authenticate` actually wires nonce consumption into the RPC
+    /// path: the identical wire request granted the first time is refused
+    /// the second time on the same (signing_key_id, nonce) pair. Without
+    /// this, a captured `record_knowledge` request stays replayable forever.
+    #[tokio::test]
+    async fn an_identical_request_is_granted_once_then_refused_as_replayed() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let identity = TestIdentity::fresh("replay");
+        register_test_key(&database_url, &identity).await;
+        let store = KnowledgeStore::connect(&database_url)
+            .await
+            .expect("the gated test database should accept a knowledge-store connection");
+        let service = KnowledgeGrpcService::new(store);
+        let wire = authenticated_record_request(&identity, "a replay-tested lesson", 91);
+
+        let recorded = service
+            .record_knowledge(Request::new(wire.clone()))
+            .await
+            .expect("the first, fresh request must be authenticated and recorded");
+        assert_eq!(recorded.into_inner().content, "a replay-tested lesson");
+
+        let replayed = service
+            .record_knowledge(Request::new(wire))
+            .await
+            .expect_err("the identical (signing_key_id, nonce) pair must be refused");
+        assert_eq!(replayed.code(), tonic::Code::Unauthenticated);
+        assert!(
+            replayed.message().contains("already been used"),
+            "unexpected diagnostic: {}",
+            replayed.message()
+        );
+    }
+
+    /// A `signed_at` far outside the accepted clock-skew window is refused
+    /// before the request ever reaches the store -- freshness protects a
+    /// captured signature from staying usable indefinitely, independent of
+    /// whether its nonce has been seen before.
+    #[tokio::test]
+    async fn a_stale_signed_at_is_refused_before_the_store_runs() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let identity = TestIdentity::fresh("stale");
+        register_test_key(&database_url, &identity).await;
+        let store = KnowledgeStore::connect(&database_url)
+            .await
+            .expect("the gated test database should accept a knowledge-store connection");
+        let service = KnowledgeGrpcService::new(store);
+        let mut wire = authenticated_record_request(&identity, "a stale-tested lesson", 92);
+        // Re-sign over a `signed_at` far outside the skew window -- the
+        // signature must cover the stale timestamp, or this would only prove
+        // the diagnostic string exists, not that verification used it.
+        let key = signing_key();
+        let mut authentication = wire.authentication.take().unwrap();
+        authentication.signed_at = "2020-01-01T00:00:00Z".to_owned();
+        let operation = KnowledgeOperation::Record {
+            content: &wire.content,
+            half_life_hours: wire.half_life_hours,
+            embedding_model: None,
+        };
+        let bytes = knowledge_signature::knowledge_signing_bytes(
+            &wire.tenant_id,
+            &wire.repository_id,
+            &operation,
+            &authentication,
+        );
+        authentication.signature = key.sign(&bytes).to_bytes().to_vec();
+        wire.authentication = Some(authentication);
+
+        let refused = service
+            .record_knowledge(Request::new(wire))
+            .await
+            .expect_err("a signed_at far outside the skew window must be refused");
+        assert_eq!(refused.code(), tonic::Code::Unauthenticated);
+        assert!(
+            refused.message().contains("clock-skew"),
+            "unexpected diagnostic: {}",
+            refused.message()
+        );
+    }
+
+    /// An unsigned request (no `KnowledgeAuthentication` at all) is refused
+    /// before it ever reaches the store -- the previously-unauthenticated
+    /// shape this ADR closes must not still work by omission.
+    #[tokio::test]
+    async fn a_request_with_no_authentication_is_refused() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let identity = TestIdentity::fresh("unsigned");
+        let store = KnowledgeStore::connect(&database_url)
+            .await
+            .expect("the gated test database should accept a knowledge-store connection");
+        let service = KnowledgeGrpcService::new(store);
+        let mut wire = authenticated_record_request(&identity, "an unsigned lesson", 93);
+        wire.authentication = None;
+
+        let refused = service
+            .record_knowledge(Request::new(wire))
+            .await
+            .expect_err("a request with no authentication must be refused");
+        assert_eq!(refused.code(), tonic::Code::Unauthenticated);
     }
 }
