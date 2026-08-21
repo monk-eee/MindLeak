@@ -84,6 +84,12 @@ pub enum TaskEventKind {
     ConformanceRecorded,
     /// A human accepted work out of `in_review`, overruling the verdict.
     Resolved,
+    /// The claim holder consented to move their own live claim from a
+    /// superseded clause onto its active same-slug successor (ADR-0109).
+    /// Distinct from the amendment's own automatic carry-forward
+    /// (`reconnect_superseded_clauses`, which never touches a live claim):
+    /// this is the one door the holder alone may open for themselves.
+    ClauseReconnected,
 }
 
 impl TaskEventKind {
@@ -105,6 +111,7 @@ impl TaskEventKind {
             TaskEventKind::CoverageDeclared => "coverage_declared",
             TaskEventKind::ConformanceRecorded => "conformance_recorded",
             TaskEventKind::Resolved => "resolved",
+            TaskEventKind::ClauseReconnected => "clause_reconnected",
         }
     }
 
@@ -126,6 +133,7 @@ impl TaskEventKind {
             "coverage_declared" => Some(TaskEventKind::CoverageDeclared),
             "conformance_recorded" => Some(TaskEventKind::ConformanceRecorded),
             "resolved" => Some(TaskEventKind::Resolved),
+            "clause_reconnected" => Some(TaskEventKind::ClauseReconnected),
             _ => None,
         }
     }
