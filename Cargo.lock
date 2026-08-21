@@ -50,6 +50,9 @@ version = "0.1.7-alpha"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
+ "serde",
+ "serde_json",
+ "thiserror",
  "tonic",
  "tonic-build",
 ]
