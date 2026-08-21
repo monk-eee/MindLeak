@@ -244,6 +244,34 @@ responsibility. See [`USAGE.md`](USAGE.md) for the workflows those verbs
 compose into — the tool tables in [`TOOLS.md`](TOOLS.md) describe each verb,
 not the order to call them in.
 
+### `mindleak-coordinator` (binary)
+
+A third, thin MCP stdio server (ADR-0097): the one agent-facing entry point
+that composes `mindleak-mcp` and `lodestar-mcp` rather than adding a third
+source of graph or intent truth. `main.rs` spawns both as real child
+processes (`MINDLEAK_MCP_BIN`/`LODESTAR_MCP_BIN`, or a sibling binary next to
+it — the same env-var convention `scripts/canonical-push.mjs` already uses)
+and performs their `initialize` handshake before serving anything itself.
+`child.rs`'s `ChildClient<R, W>` is a minimal newline-delimited JSON-RPC
+client generic over its transport, so it is unit-tested against injected
+in-memory streams (mirroring how `clients/node/mindleak-client`'s
+`McpConnection` is tested) rather than a real subprocess; one end-to-end test
+does spawn the real binaries, but against a throwaway `git init`-ed directory
+under the OS temp dir so it resolves an isolated `repository_id` instead of
+writing into whatever repository the test happens to run inside. `tools.rs`
+composes decision 2 (`coordinator_open_session`: opens both planes with the
+same declared context and verifies they resolve the same `agent_id` and
+`repository_id`, naming whichever plane failed rather than presenting a
+partial open as complete) and decision 3 (`coordinator_preflight`: runs
+MindLeak's `check_overlap`, Lodestar's `task_query(view="overlap")`, and
+Lodestar's `advise` and merges them with per-plane provenance — the read a
+write should already have made). `server.rs` is the coordinator's own stdio
+front, mirroring `mindleak-mcp`/`lodestar-mcp`'s transport exactly. This is
+the first slice of ADR-0097; decisions 4-8 (client-side Git observation,
+goal-less scope reservations, governance-bootstrap helpers, memory-source
+reconciliation, and the usage retrospective) remain future work under the
+same task.
+
 ### `ackplane-core` (library)
 
 The repository side of the Ackplane federation boundary (ADR-0082). What a
