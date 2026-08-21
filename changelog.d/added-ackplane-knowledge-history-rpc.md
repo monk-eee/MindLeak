@@ -1,0 +1,1 @@
+- **Added:** `KnowledgeService.GetKnowledgeHistory` returns authenticated, tenant-scoped active and retired knowledge lifecycle records, including the bounded effective limit and attributed retirement provenance.
