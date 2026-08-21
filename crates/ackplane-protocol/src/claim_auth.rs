@@ -5,6 +5,7 @@
 //! sides can never drift into incompatible serializations of the same
 //! signed fields.
 
+use crate::signing_bytes::{push_field, push_list};
 use crate::v1;
 
 /// Domain separation for claim-request signatures.
@@ -90,22 +91,6 @@ impl ClaimOperation<'_> {
                 push_field(bytes, reason.as_bytes());
             }
         }
-    }
-}
-
-fn push_field(bytes: &mut Vec<u8>, field: &[u8]) {
-    bytes.extend_from_slice(&(field.len() as u32).to_be_bytes());
-    bytes.extend_from_slice(field);
-}
-
-/// A count prefix followed by each element length-delimited, so
-/// `paths=["a","b"], symbols=["c"]` can never encode the same bytes as
-/// `paths=["a"], symbols=["b","c"]` -- a bare concatenation without the count
-/// would let an attacker shift an element across the list boundary.
-fn push_list(bytes: &mut Vec<u8>, items: &[String]) {
-    bytes.extend_from_slice(&(items.len() as u32).to_be_bytes());
-    for item in items {
-        push_field(bytes, item.as_bytes());
     }
 }
 

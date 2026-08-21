@@ -1,8 +1,10 @@
 # ADR-0108: Knowledge RPCs authenticate with an operation-signing scheme mirroring claims
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-20
-- Deciders: Pending human acceptance
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-20 by the repository owner, authorized directly in
+  session - attributed human adoption after review.
 - Depends on: [ADR-0096](0096-ackplane-arbitrates-federated-claims-through-leased-delegation.md)
   (Ackplane arbitrates federated claims through leased delegation),
   [ADR-0100](0100-repository-node-owns-one-non-exporting-signer.md) (the
