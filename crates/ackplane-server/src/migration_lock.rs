@@ -50,6 +50,8 @@ pub(crate) mod key {
     pub(crate) const KNOWLEDGE_RECORDED_BY: i64 = 11;
     /// `migrations/0012_knowledge_reconfirmations.sql`
     pub(crate) const KNOWLEDGE_RECONFIRMATIONS: i64 = 12;
+    /// `migrations/0013_knowledge_reach.sql`
+    pub(crate) const KNOWLEDGE_REACH: i64 = 13;
 }
 
 /// Apply `migration_sql` inside a transaction holding the advisory lock

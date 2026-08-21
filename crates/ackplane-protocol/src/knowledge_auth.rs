@@ -24,6 +24,8 @@ pub enum KnowledgeOperation<'a> {
     Record {
         content: &'a str,
         source_ref: Option<&'a str>,
+        reach_node_ids: &'a [String],
+        reach_goal_id: Option<&'a str>,
         half_life_hours: f64,
         embedding_model: Option<&'a str>,
     },
@@ -67,11 +69,19 @@ impl KnowledgeOperation<'_> {
             Self::Record {
                 content,
                 source_ref,
+                reach_node_ids,
+                reach_goal_id,
                 half_life_hours,
                 embedding_model,
             } => {
                 push_field(bytes, content.as_bytes());
                 push_field(bytes, source_ref.unwrap_or("").as_bytes());
+                let reach_count = u64::try_from(reach_node_ids.len()).unwrap_or(u64::MAX);
+                push_field(bytes, &reach_count.to_be_bytes());
+                for reach_node_id in *reach_node_ids {
+                    push_field(bytes, reach_node_id.as_bytes());
+                }
+                push_field(bytes, reach_goal_id.unwrap_or("").as_bytes());
                 push_field(bytes, &half_life_hours.to_be_bytes());
                 push_field(bytes, embedding_model.unwrap_or("").as_bytes());
             }
@@ -147,6 +157,8 @@ mod tests {
     const RECORD: KnowledgeOperation<'static> = KnowledgeOperation::Record {
         content: "a lesson",
         source_ref: Some("pr:538"),
+        reach_node_ids: &[],
+        reach_goal_id: None,
         half_life_hours: 720.0,
         embedding_model: Some("model-a"),
     };
@@ -186,6 +198,8 @@ mod tests {
         let changed = KnowledgeOperation::Record {
             content: "a different lesson",
             source_ref: Some("pr:538"),
+            reach_node_ids: &[],
+            reach_goal_id: None,
             half_life_hours: 720.0,
             embedding_model: Some("model-a"),
         };
@@ -199,12 +213,52 @@ mod tests {
         let changed = KnowledgeOperation::Record {
             content: "a lesson",
             source_ref: Some("pr:539"),
+            reach_node_ids: &[],
+            reach_goal_id: None,
             half_life_hours: 720.0,
             embedding_model: Some("model-a"),
         };
         let b = knowledge_signing_bytes("tenant-a", "repo-a", &changed, &authentication(1));
 
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn changed_reach_metadata_changes_record_bytes() {
+        let reach_node_ids = vec!["artifact:crates/ackplane-server/src/fleet.rs".to_string()];
+        let original = KnowledgeOperation::Record {
+            content: "a lesson",
+            source_ref: Some("pr:538"),
+            reach_node_ids: &reach_node_ids,
+            reach_goal_id: Some("goal:ackplane-federation-service"),
+            half_life_hours: 720.0,
+            embedding_model: Some("model-a"),
+        };
+        let changed_goal = KnowledgeOperation::Record {
+            content: "a lesson",
+            source_ref: Some("pr:538"),
+            reach_node_ids: &reach_node_ids,
+            reach_goal_id: Some("goal:other"),
+            half_life_hours: 720.0,
+            embedding_model: Some("model-a"),
+        };
+        let changed_nodes = KnowledgeOperation::Record {
+            content: "a lesson",
+            source_ref: Some("pr:538"),
+            reach_node_ids: &[],
+            reach_goal_id: Some("goal:ackplane-federation-service"),
+            half_life_hours: 720.0,
+            embedding_model: Some("model-a"),
+        };
+
+        let original = knowledge_signing_bytes("tenant-a", "repo-a", &original, &authentication(1));
+        let changed_goal =
+            knowledge_signing_bytes("tenant-a", "repo-a", &changed_goal, &authentication(1));
+        let changed_nodes =
+            knowledge_signing_bytes("tenant-a", "repo-a", &changed_nodes, &authentication(1));
+
+        assert_ne!(original, changed_goal);
+        assert_ne!(original, changed_nodes);
     }
 
     #[test]

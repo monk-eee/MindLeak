@@ -161,6 +161,8 @@ message RecordKnowledgeRequest {
   string embedding_model = 6;
   repeated float embedding = 7;
   KnowledgeAuthentication authentication = 8;
+  repeated string reach_node_ids = 9;
+  string reach_goal_id = 10;
 }
 
 message KnowledgeRecord {
@@ -172,6 +174,8 @@ message KnowledgeRecord {
   double half_life_hours = 6;
   string confirmed_at = 7;
   string recorded_by = 8;
+  repeated string reach_node_ids = 9;
+  string reach_goal_id = 10;
 }
 
 // `query_embedding` empty means "no semantic ranking available or
@@ -198,6 +202,8 @@ message ActiveKnowledgeEntry {
   string last_reconfirmed_at = 7;
   string last_reconfirmed_by = 8;
   string last_reconfirmation_evidence_ref = 9;
+  repeated string reach_node_ids = 10;
+  string reach_goal_id = 11;
 }
 
 message RecallKnowledgeResult {
@@ -230,6 +236,8 @@ message KnowledgeHistoryEntry {
   string last_reconfirmed_at = 9;
   string last_reconfirmed_by = 10;
   string last_reconfirmation_evidence_ref = 11;
+  repeated string reach_node_ids = 12;
+  string reach_goal_id = 13;
 }
 
 message KnowledgeHistoryResult {

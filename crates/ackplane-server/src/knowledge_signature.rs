@@ -421,6 +421,8 @@ mod tests {
         let record_op = KnowledgeOperation::Record {
             content: "a lesson",
             source_ref: Some("pr:538"),
+            reach_node_ids: &[],
+            reach_goal_id: None,
             half_life_hours: 720.0,
             embedding_model: None,
         };

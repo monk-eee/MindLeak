@@ -114,6 +114,11 @@ fn store_error(error: KnowledgeStoreError) -> Status {
         KnowledgeStoreError::EmptyReconfirmationEvidence => {
             Status::invalid_argument("reconfirmation evidence_ref must not be empty")
         }
+        KnowledgeStoreError::InvalidReachNode(error)
+        | KnowledgeStoreError::DuplicateReachNode(error) => Status::invalid_argument(error),
+        KnowledgeStoreError::InvalidReachGoal => {
+            Status::invalid_argument("reach_goal_id must be a non-empty goal: identifier")
+        }
         KnowledgeStoreError::Database(error) => Status::internal(error.to_string()),
     }
 }
@@ -126,6 +131,8 @@ fn to_proto_entry(entry: ActiveKnowledge) -> Result<v1::ActiveKnowledgeEntry, St
         effective_weight: entry.effective_weight,
         confirmed_at: rfc3339(entry.confirmed_at)?,
         recorded_by: entry.recorded_by.unwrap_or_default(),
+        reach_node_ids: entry.reach_node_ids,
+        reach_goal_id: entry.reach_goal_id.unwrap_or_default(),
         last_reconfirmed_at: entry
             .last_reconfirmed_at
             .map(rfc3339)
@@ -163,6 +170,8 @@ fn to_proto_history_entry(
         last_reconfirmation_evidence_ref: entry
             .last_reconfirmation_evidence_ref
             .unwrap_or_default(),
+        reach_node_ids: entry.reach_node_ids,
+        reach_goal_id: entry.reach_goal_id.unwrap_or_default(),
     })
 }
 
@@ -211,6 +220,9 @@ impl v1::knowledge_service_server::KnowledgeService for KnowledgeGrpcService {
         let operation = KnowledgeOperation::Record {
             content: &request.content,
             source_ref: (!request.source_ref.is_empty()).then_some(request.source_ref.as_str()),
+            reach_node_ids: &request.reach_node_ids,
+            reach_goal_id: (!request.reach_goal_id.is_empty())
+                .then_some(request.reach_goal_id.as_str()),
             half_life_hours: request.half_life_hours,
             embedding_model: (!request.embedding_model.is_empty())
                 .then_some(request.embedding_model.as_str()),
@@ -238,6 +250,8 @@ impl v1::knowledge_service_server::KnowledgeService for KnowledgeGrpcService {
                 content: request.content,
                 source_ref: (!request.source_ref.is_empty()).then_some(request.source_ref),
                 recorded_by: Some(recorded_by),
+                reach_node_ids: request.reach_node_ids,
+                reach_goal_id: (!request.reach_goal_id.is_empty()).then_some(request.reach_goal_id),
                 half_life_hours: request.half_life_hours,
                 embedding,
             })
@@ -252,6 +266,8 @@ impl v1::knowledge_service_server::KnowledgeService for KnowledgeGrpcService {
             half_life_hours: recorded.half_life_hours,
             confirmed_at: rfc3339(recorded.confirmed_at).map_err(Status::internal)?,
             recorded_by: recorded.recorded_by.unwrap_or_default(),
+            reach_node_ids: recorded.reach_node_ids,
+            reach_goal_id: recorded.reach_goal_id.unwrap_or_default(),
         }))
     }
 
@@ -494,6 +510,17 @@ mod tests {
         source_ref: &str,
         nonce_byte: u8,
     ) -> v1::RecordKnowledgeRequest {
+        authenticated_record_request_with_reach(identity, content, source_ref, &[], "", nonce_byte)
+    }
+
+    fn authenticated_record_request_with_reach(
+        identity: &TestIdentity,
+        content: &str,
+        source_ref: &str,
+        reach_node_ids: &[String],
+        reach_goal_id: &str,
+        nonce_byte: u8,
+    ) -> v1::RecordKnowledgeRequest {
         let key = signing_key();
         let half_life_hours = 720.0;
         let mut authentication = v1::KnowledgeAuthentication {
@@ -508,6 +535,8 @@ mod tests {
         let operation = KnowledgeOperation::Record {
             content,
             source_ref: (!source_ref.is_empty()).then_some(source_ref),
+            reach_node_ids,
+            reach_goal_id: (!reach_goal_id.is_empty()).then_some(reach_goal_id),
             half_life_hours,
             embedding_model: None,
         };
@@ -527,6 +556,8 @@ mod tests {
             embedding_model: String::new(),
             embedding: Vec::new(),
             authentication: Some(authentication),
+            reach_node_ids: reach_node_ids.to_vec(),
+            reach_goal_id: reach_goal_id.to_owned(),
         }
     }
 
@@ -699,6 +730,8 @@ mod tests {
         let operation = KnowledgeOperation::Record {
             content: &wire.content,
             source_ref: (!wire.source_ref.is_empty()).then_some(wire.source_ref.as_str()),
+            reach_node_ids: &wire.reach_node_ids,
+            reach_goal_id: (!wire.reach_goal_id.is_empty()).then_some(wire.reach_goal_id.as_str()),
             half_life_hours: wire.half_life_hours,
             embedding_model: None,
         };
@@ -785,6 +818,132 @@ mod tests {
             .await
             .expect("history should prove no statement was recorded");
         assert!(history.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reach_metadata_is_signed_persisted_and_visible_in_history() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let identity = TestIdentity::fresh("reach");
+        register_test_key(&database_url, &identity).await;
+        let service = KnowledgeGrpcService::new(
+            KnowledgeStore::connect(&database_url)
+                .await
+                .expect("the gated test database should accept a knowledge-store connection"),
+        );
+        let reach_node_ids = vec![
+            "artifact:crates/ackplane-server/src/knowledge_store.rs".to_string(),
+            "symbol:crates/ackplane-server/src/knowledge_store.rs:KnowledgeStore".to_string(),
+        ];
+        let recorded = service
+            .record_knowledge(Request::new(authenticated_record_request_with_reach(
+                &identity,
+                "a reach-visible lesson",
+                "evidence:reach",
+                &reach_node_ids,
+                "goal:ackplane-federation-service",
+                112,
+            )))
+            .await
+            .expect("a valid request should record reachable knowledge")
+            .into_inner();
+        assert_eq!(recorded.reach_node_ids, reach_node_ids);
+        assert_eq!(recorded.reach_goal_id, "goal:ackplane-federation-service");
+
+        let history = service
+            .get_knowledge_history(Request::new(authenticated_history_request(
+                &identity, 10, 113,
+            )))
+            .await
+            .expect("history should expose knowledge reach")
+            .into_inner();
+        assert_eq!(history.entries.len(), 1);
+        assert_eq!(history.entries[0].reach_node_ids, reach_node_ids);
+        assert_eq!(
+            history.entries[0].reach_goal_id,
+            "goal:ackplane-federation-service"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tampered_reach_goal_is_refused_before_the_store_runs() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let identity = TestIdentity::fresh("reach-tampering");
+        register_test_key(&database_url, &identity).await;
+        let service = KnowledgeGrpcService::new(
+            KnowledgeStore::connect(&database_url)
+                .await
+                .expect("the gated test database should accept a knowledge-store connection"),
+        );
+        let mut wire = authenticated_record_request_with_reach(
+            &identity,
+            "a tamper-resistant reach lesson",
+            "evidence:reach",
+            &["artifact:crates/ackplane-server/src/knowledge_store.rs".to_string()],
+            "goal:ackplane-federation-service",
+            114,
+        );
+        wire.reach_goal_id = "goal:tampered".to_owned();
+
+        let refused = service
+            .record_knowledge(Request::new(wire))
+            .await
+            .expect_err("tampering with signed reach metadata must be refused");
+        assert_eq!(refused.code(), tonic::Code::Unauthenticated);
+
+        let history = service
+            .get_knowledge_history(Request::new(authenticated_history_request(
+                &identity, 10, 115,
+            )))
+            .await
+            .expect("history should prove the forged reach did not persist")
+            .into_inner();
+        assert!(history.entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_signed_invalid_reach_node_is_rejected_without_recording_knowledge() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let identity = TestIdentity::fresh("invalid-reach");
+        register_test_key(&database_url, &identity).await;
+        let service = KnowledgeGrpcService::new(
+            KnowledgeStore::connect(&database_url)
+                .await
+                .expect("the gated test database should accept a knowledge-store connection"),
+        );
+        let invalid_node = "artifact:../outside-the-repository".to_string();
+        let wire = authenticated_record_request_with_reach(
+            &identity,
+            "a signed but invalid reach lesson",
+            "evidence:reach",
+            std::slice::from_ref(&invalid_node),
+            "",
+            116,
+        );
+
+        let refused = service
+            .record_knowledge(Request::new(wire))
+            .await
+            .expect_err("a signed invalid reach node must be rejected");
+        assert_eq!(refused.code(), tonic::Code::InvalidArgument);
+        assert!(refused.message().contains(&invalid_node));
+
+        let history = service
+            .get_knowledge_history(Request::new(authenticated_history_request(
+                &identity, 10, 117,
+            )))
+            .await
+            .expect("history should prove invalid reach did not persist")
+            .into_inner();
+        assert!(history.entries.is_empty());
     }
 
     #[tokio::test]

@@ -21,10 +21,14 @@ const NONCE_MIGRATION: &str =
 const RECORDED_BY_MIGRATION: &str = include_str!("../migrations/0011_knowledge_recorded_by.sql");
 const RECONFIRMATION_MIGRATION: &str =
     include_str!("../migrations/0012_knowledge_reconfirmations.sql");
+const REACH_MIGRATION: &str = include_str!("../migrations/0013_knowledge_reach.sql");
 
+mod reach;
 mod reconfirmation;
 
 pub use reconfirmation::KnowledgeReconfirmation;
+
+use reach::validate_reach;
 
 #[derive(Debug, thiserror::Error)]
 pub enum KnowledgeStoreError {
@@ -36,6 +40,12 @@ pub enum KnowledgeStoreError {
     EmptyContent,
     #[error("reconfirmation evidence must not be empty")]
     EmptyReconfirmationEvidence,
+    #[error("reach node must be a repository-relative artifact: or symbol: id: {0}")]
+    InvalidReachNode(String),
+    #[error("reach node ids must be unique: {0}")]
+    DuplicateReachNode(String),
+    #[error("reach goal must be a non-empty goal: identifier")]
+    InvalidReachGoal,
 }
 
 /// One learned-knowledge statement as `record`/`retire` return it.
@@ -47,6 +57,8 @@ pub struct Knowledge {
     pub content: String,
     pub source_ref: Option<String>,
     pub recorded_by: Option<String>,
+    pub reach_node_ids: Vec<String>,
+    pub reach_goal_id: Option<String>,
     pub half_life_hours: f64,
     pub confirmed_at: SystemTime,
 }
@@ -60,6 +72,8 @@ pub struct RecordKnowledgeRequest {
     /// The authenticated enrolled node when the caller has one. `None`
     /// retains the truthful lack of provenance for a legacy/imported row.
     pub recorded_by: Option<String>,
+    pub reach_node_ids: Vec<String>,
+    pub reach_goal_id: Option<String>,
     pub half_life_hours: f64,
     /// `(model, embedding)`, when the caller has an embedder configured.
     /// Knowledge recorded without one still recalls, by recency (ADR-0080's
@@ -75,6 +89,8 @@ pub struct ActiveKnowledge {
     pub content: String,
     pub source_ref: Option<String>,
     pub recorded_by: Option<String>,
+    pub reach_node_ids: Vec<String>,
+    pub reach_goal_id: Option<String>,
     pub last_reconfirmed_at: Option<SystemTime>,
     pub last_reconfirmed_by: Option<String>,
     pub last_reconfirmation_evidence_ref: Option<String>,
@@ -90,6 +106,8 @@ pub struct KnowledgeHistoryEntry {
     pub content: String,
     pub source_ref: Option<String>,
     pub recorded_by: Option<String>,
+    pub reach_node_ids: Vec<String>,
+    pub reach_goal_id: Option<String>,
     pub last_reconfirmed_at: Option<SystemTime>,
     pub last_reconfirmed_by: Option<String>,
     pub last_reconfirmation_evidence_ref: Option<String>,
@@ -171,6 +189,12 @@ impl KnowledgeStore {
             RECONFIRMATION_MIGRATION,
         )
         .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::KNOWLEDGE_REACH,
+            REACH_MIGRATION,
+        )
+        .await?;
         Ok(Self { client })
     }
 
@@ -217,13 +241,14 @@ impl KnowledgeStore {
         if request.half_life_hours <= 0.0 {
             return Err(KnowledgeStoreError::InvalidHalfLife);
         }
+        validate_reach(&request.reach_node_ids, request.reach_goal_id.as_deref())?;
         let knowledge_id = unique_knowledge_id();
         let confirmed_at = SystemTime::now();
         self.client
             .execute(
                 "INSERT INTO knowledge \
-                 (tenant_id, repository_id, knowledge_id, content, source_ref, recorded_by, half_life_hours, confirmed_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                 (tenant_id, repository_id, knowledge_id, content, source_ref, recorded_by, reach_node_ids, reach_goal_id, half_life_hours, confirmed_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
                 &[
                     &request.tenant_id,
                     &request.repository_id,
@@ -231,6 +256,8 @@ impl KnowledgeStore {
                     &request.content,
                     &request.source_ref,
                     &request.recorded_by,
+                    &request.reach_node_ids,
+                    &request.reach_goal_id,
                     &request.half_life_hours,
                     &confirmed_at,
                 ],
@@ -259,6 +286,8 @@ impl KnowledgeStore {
             content: request.content,
             source_ref: request.source_ref,
             recorded_by: request.recorded_by,
+            reach_node_ids: request.reach_node_ids,
+            reach_goal_id: request.reach_goal_id,
             half_life_hours: request.half_life_hours,
             confirmed_at,
         })
@@ -281,7 +310,7 @@ impl KnowledgeStore {
                 self.client
                     .query(
                         &format!(
-                            "SELECT k.knowledge_id, k.content, k.source_ref, k.recorded_by, k.confirmed_at, \
+                            "SELECT k.knowledge_id, k.content, k.source_ref, k.recorded_by, k.reach_node_ids, k.reach_goal_id, k.confirmed_at, \
                                 latest_reconfirmation.last_reconfirmed_at, \
                                 latest_reconfirmation.last_reconfirmed_by, \
                                 latest_reconfirmation.last_reconfirmation_evidence_ref, \
@@ -303,7 +332,7 @@ impl KnowledgeStore {
                 self.client
                     .query(
                         &format!(
-                            "SELECT k.knowledge_id, k.content, k.source_ref, k.recorded_by, k.confirmed_at, \
+                            "SELECT k.knowledge_id, k.content, k.source_ref, k.recorded_by, k.reach_node_ids, k.reach_goal_id, k.confirmed_at, \
                                 latest_reconfirmation.last_reconfirmed_at, \
                                 latest_reconfirmation.last_reconfirmed_by, \
                                 latest_reconfirmation.last_reconfirmation_evidence_ref, \
@@ -326,6 +355,8 @@ impl KnowledgeStore {
                 content: row.get("content"),
                 source_ref: row.get("source_ref"),
                 recorded_by: row.get("recorded_by"),
+                reach_node_ids: row.get("reach_node_ids"),
+                reach_goal_id: row.get("reach_goal_id"),
                 last_reconfirmed_at: row.get("last_reconfirmed_at"),
                 last_reconfirmed_by: row.get("last_reconfirmed_by"),
                 last_reconfirmation_evidence_ref: row.get("last_reconfirmation_evidence_ref"),
@@ -351,7 +382,7 @@ impl KnowledgeStore {
             .client
             .query(
                 &format!(
-                    "SELECT k.knowledge_id, k.content, k.source_ref, k.recorded_by, k.confirmed_at, \
+                    "SELECT k.knowledge_id, k.content, k.source_ref, k.recorded_by, k.reach_node_ids, k.reach_goal_id, k.confirmed_at, \
                             k.retired_at, k.retired_reason, k.retired_by, \
                             latest_reconfirmation.last_reconfirmed_at, \
                             latest_reconfirmation.last_reconfirmed_by, \
@@ -372,6 +403,8 @@ impl KnowledgeStore {
                 content: row.get("content"),
                 source_ref: row.get("source_ref"),
                 recorded_by: row.get("recorded_by"),
+                reach_node_ids: row.get("reach_node_ids"),
+                reach_goal_id: row.get("reach_goal_id"),
                 last_reconfirmed_at: row.get("last_reconfirmed_at"),
                 last_reconfirmed_by: row.get("last_reconfirmed_by"),
                 last_reconfirmation_evidence_ref: row.get("last_reconfirmation_evidence_ref"),
@@ -438,6 +471,11 @@ mod tests {
             return;
         };
         let (tenant_id, repository_id) = unique_scope("recency");
+        let expected_reach_node_ids = vec![
+            "artifact:crates/ackplane-server/src/knowledge_store.rs".to_string(),
+            "symbol:crates/ackplane-server/src/knowledge_store.rs:KnowledgeStore".to_string(),
+        ];
+        let expected_reach_goal_id = "goal:ackplane-federation-service";
         let recorded = store
             .record(RecordKnowledgeRequest {
                 tenant_id: tenant_id.clone(),
@@ -445,6 +483,8 @@ mod tests {
                 content: "the migration lock key must be unique per file".to_string(),
                 source_ref: Some("pr:538".to_string()),
                 recorded_by: Some("node:recency".to_string()),
+                reach_node_ids: expected_reach_node_ids.clone(),
+                reach_goal_id: Some(expected_reach_goal_id.to_string()),
                 half_life_hours: 720.0,
                 embedding: None,
             })
@@ -467,6 +507,16 @@ mod tests {
         assert_eq!(
             recalled.entries[0].recorded_by.as_deref(),
             Some("node:recency")
+        );
+        assert_eq!(recorded.reach_node_ids, expected_reach_node_ids);
+        assert_eq!(
+            recorded.reach_goal_id.as_deref(),
+            Some(expected_reach_goal_id)
+        );
+        assert_eq!(recalled.entries[0].reach_node_ids, expected_reach_node_ids);
+        assert_eq!(
+            recalled.entries[0].reach_goal_id.as_deref(),
+            Some(expected_reach_goal_id)
         );
         assert!(recalled.entries[0].effective_weight > 0.99);
         assert!(recalled.entries[0].effective_weight <= 1.0);
@@ -546,6 +596,8 @@ mod tests {
                 content: "fast-decaying".to_string(),
                 source_ref: None,
                 recorded_by: None,
+                reach_node_ids: Vec::new(),
+                reach_goal_id: None,
                 half_life_hours: 0.0001,
                 embedding: None,
             })
@@ -558,6 +610,8 @@ mod tests {
                 content: "slow-decaying".to_string(),
                 source_ref: None,
                 recorded_by: None,
+                reach_node_ids: Vec::new(),
+                reach_goal_id: None,
                 half_life_hours: 720.0,
                 embedding: None,
             })
@@ -607,6 +661,8 @@ mod tests {
                 content: "should not record".to_string(),
                 source_ref: None,
                 recorded_by: None,
+                reach_node_ids: Vec::new(),
+                reach_goal_id: None,
                 half_life_hours: 0.0,
                 embedding: None,
             })
@@ -629,6 +685,8 @@ mod tests {
                 content: "superseded guidance".to_string(),
                 source_ref: None,
                 recorded_by: None,
+                reach_node_ids: Vec::new(),
+                reach_goal_id: None,
                 half_life_hours: 24.0,
                 embedding: None,
             })
@@ -682,6 +740,8 @@ mod tests {
                 content: "still active".to_string(),
                 source_ref: Some("test:active".to_string()),
                 recorded_by: Some("node:active".to_string()),
+                reach_node_ids: Vec::new(),
+                reach_goal_id: None,
                 half_life_hours: 24.0,
                 embedding: None,
             })
@@ -694,6 +754,8 @@ mod tests {
                 content: "superseded".to_string(),
                 source_ref: Some("test:retired".to_string()),
                 recorded_by: Some("node:retired".to_string()),
+                reach_node_ids: Vec::new(),
+                reach_goal_id: None,
                 half_life_hours: 24.0,
                 embedding: None,
             })
@@ -707,6 +769,8 @@ mod tests {
                 content: "must not cross tenant boundaries".to_string(),
                 source_ref: None,
                 recorded_by: Some("node:other".to_string()),
+                reach_node_ids: Vec::new(),
+                reach_goal_id: None,
                 half_life_hours: 24.0,
                 embedding: None,
             })
@@ -764,6 +828,8 @@ mod tests {
                 content: "reconfirmation resets decay".to_string(),
                 source_ref: Some("evidence:initial".to_string()),
                 recorded_by: Some("node:recorder".to_string()),
+                reach_node_ids: Vec::new(),
+                reach_goal_id: None,
                 half_life_hours: 24.0,
                 embedding: None,
             })
@@ -815,6 +881,8 @@ mod tests {
                 content: "closest match".to_string(),
                 source_ref: None,
                 recorded_by: None,
+                reach_node_ids: Vec::new(),
+                reach_goal_id: None,
                 half_life_hours: 720.0,
                 embedding: Some((model.to_string(), vec![1.0; 768])),
             })
@@ -827,6 +895,8 @@ mod tests {
                 content: "farthest match".to_string(),
                 source_ref: None,
                 recorded_by: None,
+                reach_node_ids: Vec::new(),
+                reach_goal_id: None,
                 half_life_hours: 720.0,
                 embedding: Some((model.to_string(), {
                     let mut v = vec![1.0; 768];
@@ -866,6 +936,8 @@ mod tests {
                 content: "embedded under a different model".to_string(),
                 source_ref: None,
                 recorded_by: None,
+                reach_node_ids: Vec::new(),
+                reach_goal_id: None,
                 half_life_hours: 720.0,
                 embedding: Some(("other-model".to_string(), vec![0.5; 768])),
             })
