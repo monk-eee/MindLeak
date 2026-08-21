@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use crate::evidence::{page_limit, BridgeEvidenceStore, ConformanceView, EvidenceView};
 
 mod board;
+mod export;
 
 const DEFAULT_EVIDENCE_STALE_AFTER: Duration = Duration::from_secs(15 * 60);
 
@@ -68,6 +69,10 @@ pub fn evidence_routes(state: EvidenceApiState) -> Router {
         .route(
             "/api/v1/repositories/:repository_id/tasks/:task_id/evidence-board",
             get(board::evidence_board),
+        )
+        .route(
+            "/api/v1/repositories/:repository_id/tasks/:task_id/evidence-board/export",
+            get(export::evidence_export),
         )
         .with_state(state)
 }
