@@ -292,40 +292,15 @@ fn extract_function_body_from_any(sources: &[&str], name: &str) -> Option<String
         .find_map(|source| extract_function_body(source, name))
 }
 
-/// `extract_impl_methods`, but collects every `impl <type_name> { ... }`
-/// block found across all of `sources` rather than assuming there is only
-/// one -- a struct's methods no longer have to live in a single file.
+/// `extract_impl_methods`, merged across every source that carries an
+/// `impl <type_name> { ... }` block for the same type -- a store's methods no
+/// longer have to live in one file once it is split below the module-length
+/// ratchet.
 fn extract_impl_methods_from_any(sources: &[&str], type_name: &str) -> Vec<(String, String)> {
-    let impl_marker = format!("impl {type_name} {{");
-    let mut methods = Vec::new();
-    for source in sources {
-        let mut search_from = 0;
-        while let Some(offset) = source[search_from..].find(&impl_marker) {
-            let impl_start = search_from + offset;
-            let impl_open = impl_start + impl_marker.len() - 1;
-            let impl_close = balanced_braces(source, impl_open)
-                .unwrap_or_else(|| panic!("`impl {type_name}` block is never closed"));
-            let impl_body = &source[impl_open..impl_close];
-
-            let marker = "pub async fn ";
-            let mut cursor = 0;
-            while let Some(start) = impl_body[cursor..].find(marker) {
-                let after_marker = cursor + start + marker.len();
-                let name_end = impl_body[after_marker..]
-                    .find('(')
-                    .expect("a fn name is followed by (");
-                let name = impl_body[after_marker..after_marker + name_end].to_string();
-                let params_start = after_marker + name_end;
-                let params_end = balanced_parens(impl_body, params_start).unwrap_or_else(|| {
-                    panic!("{type_name}::{name}'s parameter list is never closed")
-                });
-                methods.push((name, impl_body[params_start..params_end].to_string()));
-                cursor = params_end;
-            }
-            search_from = impl_close;
-        }
-    }
-    methods
+    sources
+        .iter()
+        .flat_map(|source| extract_impl_methods(source, type_name))
+        .collect()
 }
 
 /// The index just past the `)` that matches the `(` at `open`.
@@ -389,6 +364,45 @@ mod parser_tests {
         assert!(!methods[0].1.contains("tenant_id"));
         assert_eq!(methods[1].0, "scoped");
         assert!(methods[1].1.contains("tenant_id: &str"));
+    }
+
+    /// A store's `impl` block can be split across multiple source files
+    /// (each `include_str!`-ed separately below the module-length ratchet),
+    /// so a single `source` string can legitimately carry more than one
+    /// `impl <type_name> { ... }` block -- e.g. when a caller concatenates
+    /// several files' text before scanning it in one pass. This must find
+    /// methods in every block, not just the first.
+    #[test]
+    fn extract_impl_methods_finds_methods_across_several_impl_blocks_of_the_same_type() {
+        let sample = "\
+            impl Store {\n\
+            \x20   pub async fn connect(url: &str) -> Result<Self, Error> { todo!() }\n\
+            }\n\
+            impl OtherType {\n\
+            \x20   pub async fn unrelated(&self) {}\n\
+            }\n\
+            impl Store {\n\
+            \x20   pub async fn scoped(&self, tenant_id: &str) -> Result<(), Error> { todo!() }\n\
+            }";
+
+        let methods = extract_impl_methods(sample, "Store");
+
+        assert_eq!(methods.len(), 2);
+        assert_eq!(methods[0].0, "connect");
+        assert_eq!(methods[1].0, "scoped");
+        assert!(methods[1].1.contains("tenant_id: &str"));
+    }
+
+    #[test]
+    fn extract_impl_methods_from_any_merges_methods_across_separate_sources() {
+        let mod_rs = "impl Store {\n    pub async fn connect(url: &str) {}\n}";
+        let lease_rs = "impl Store {\n    pub async fn scoped(&self, tenant_id: &str) {}\n}";
+
+        let methods = extract_impl_methods_from_any(&[mod_rs, lease_rs], "Store");
+
+        assert_eq!(methods.len(), 2);
+        assert_eq!(methods[0].0, "connect");
+        assert_eq!(methods[1].0, "scoped");
     }
 
     #[test]
