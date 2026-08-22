@@ -473,8 +473,9 @@
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/stranded-claims`).then((r) => (r.ok ? r.json() : null)),
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/signing-keys`).then((r) => (r.ok ? r.json() : null)),
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/knowledge`).then((r) => (r.ok ? r.json() : null)),
+        fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/graph`).then((r) => (r.ok ? r.json() : null)),
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/constitution`).then((r) => (r.ok ? r.json() : null)),
-      ]).then(([detail, timeline, claims, strandedClaims, signingKeys, knowledge, constitution]) => ({ detail, timeline, claims, strandedClaims, signingKeys, knowledge, constitution }));
+      ]).then(([detail, timeline, claims, strandedClaims, signingKeys, knowledge, graph, constitution]) => ({ detail, timeline, claims, strandedClaims, signingKeys, knowledge, graph, constitution }));
       detailCache.set(repositoryId, promise);
       return promise;
     }
@@ -492,7 +493,7 @@
 
     function renderDetail(container, repositoryId) {
       container.innerHTML = '<div class="skeleton"></div>';
-      loadRepositoryDetail(repositoryId).then(({ detail, timeline, claims, strandedClaims, signingKeys, knowledge, constitution }) => {
+      loadRepositoryDetail(repositoryId).then(({ detail, timeline, claims, strandedClaims, signingKeys, knowledge, graph, constitution }) => {
         if (!detail) {
           container.innerHTML = '<p class="timeline-empty">Detail is unavailable for this repository.</p>';
           return;
@@ -586,6 +587,30 @@
                     <span class="when" title="${absoluteTime(event.occurred_at_seconds)}">${relativeTime(event.occurred_at_seconds)}</span>
                   </li>`).join("")}</ul>`
               : '<p class="timeline-empty">No accepted records yet.</p>'}
+          </div>
+          <div>
+            <p class="timeline-title">Context graph</p>
+            ${graph === null
+              ? '<p class="timeline-empty">The Context Graph is unavailable.</p>'
+              : graph.nodes.length
+                ? `
+                  <p class="recover-hint">${graph.nodes.length} node${graph.nodes.length === 1 ? "" : "s"}, ${graph.edges.length} edge${graph.edges.length === 1 ? "" : "s"}${graph.projected_at_seconds ? ` &middot; projection ${escapeHtml(relativeTime(graph.projected_at_seconds))}` : ""}</p>
+                  <ul class="timeline work-list">${graph.nodes.map((node) => `
+                    <li>
+                      <span class="payload">${escapeHtml(node.label)}</span>
+                      <span class="producer">${escapeHtml(node.node_type)}</span>
+                      <span class="branch">depth ${node.depth}</span>
+                    </li>`).join("")}</ul>
+                  ${graph.edges.length
+                    ? `<ul class="timeline">${graph.edges.map((edge) => `
+                        <li>
+                          <span class="payload">${escapeHtml(edge.source_id)} &rarr; ${escapeHtml(edge.target_id)}</span>
+                          <span class="producer">${escapeHtml(edge.relation)}</span>
+                          <span class="when">weight ${edge.effective_weight.toFixed(2)}</span>
+                        </li>`).join("")}</ul>`
+                    : ""}
+                `
+                : '<p class="timeline-empty">Nothing projected for this repository yet.</p>'}
           </div>
           <div>
             <p class="timeline-title">Knowledge</p>
