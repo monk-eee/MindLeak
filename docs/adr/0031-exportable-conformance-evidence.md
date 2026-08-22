@@ -53,7 +53,7 @@ surface it where humans and CI actually look. Three parts, one design.
 ### 1. `export_evidence` — the portable proof (core)
 
 A new facade method + MCP tool, mirroring the existing `export_constitution`
-([`facade/constitution.rs`](../../crates/lodestar-core/src/facade/constitution.rs)):
+([`facade/constitution/export.rs`](../../crates/lodestar-core/src/facade/constitution/export.rs)):
 
 - `export_evidence(scope, path?) -> String` renders the conformance record chain
   for a scope — a single `task_id`, a `goal_id` (all its tasks), or the whole

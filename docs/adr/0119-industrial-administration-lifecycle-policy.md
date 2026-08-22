@@ -1,0 +1,68 @@
+# ADR-0119: Industrial administration is receipted, scoped, and never a reset
+
+- Status: Proposed
+- Date: 2026-08-22
+- Deciders: Pending human acceptance
+- Depends on: [ADR-0086](0086-postgresql-is-the-ackplane-ledger-and-arbiter.md) (Ackplane's durable authority and deferred lifecycle decisions), [ADR-0105](0105-bridge-is-the-server-version-of-the-vsix.md) (Bridge parity and typed server-owned actions), [ADR-0115](0115-human-delegation-bounds-industrial-agent-autonomy.md) (human authorization for sensitive export, retention, and irreversible effects)
+- Related: [ADR-0013](0013-local-data-lifecycle.md) (Local SQLite backup, export, and reset), [ADR-0088](0088-the-ackplane-runs-in-containers-the-planes-do-not.md) (container state lifecycle), [ADR-0107](0107-registered-agents-accept-authenticated-control-directives.md) (typed local actions), [ADR-0111](0111-bridge-recovers-a-stranded-claim-as-a-tenant-scoped-administrative-action.md) (narrow administrative actions under the current Bridge profile)
+
+## Context
+
+ADR-0013 gives the Local product a deliberately small lifecycle model: a verified SQLite online backup, a human-readable graph export, and separately confirmed in-place resets. That model depends on one developer's local files and two intentionally separate plane databases. It cannot be copied into Ackplane merely by renaming a PostgreSQL backup or mapping `RESET MINDLEAK` to a browser button. Ackplane is a tenant-scoped, append-only trust domain whose records, receipts, keys, projections, and retention obligations are shared across a fleet.
+
+ADR-0086 already names the hard part: encrypted backups and tested point-in-time recovery are required for the ledger, while retention, tenant export, deletion, and disaster migration require separate decisions before production. ADR-0088 similarly says Compose state has explicit backup, restore, and reset operations, but deliberately does not define their server meaning. ADR-0105 puts Backup, export, and reset in the Industrial parity inventory, but parity means a reviewed server meaning, not a mechanical copy of the Local UI.
+
+The obvious shortcuts are unsafe. A browser must not receive database credentials or issue raw SQL. A generic reset could drop another tenant's records, erase evidence needed to explain an administrative action, or turn an ordinary support action into a fleet-wide outage. Treating a downloadable export as a restorable backup hides integrity and compatibility requirements. Treating a successful HTTP response as completion hides the actual backup, export, or deletion outcome.
+
+Industrial administration also crosses the risk boundary in ADR-0115. Sensitive data export, retention, and irreversible external effects are refused by default until a verified human principal or explicitly higher-trust delegation authorizes them. The loopback development profile that lets a developer inspect a tenant-scoped Bridge view is not a production identity model for privileged lifecycle work.
+
+## Decision
+
+**Industrial administration is a family of typed, tenant-scoped, receipted lifecycle operations. There is no generic Industrial reset, no browser-to-database shortcut, and no privileged fallback for an unauthenticated or ambiguously authorized caller.**
+
+1. **Administration has distinct operation classes with distinct meanings.** The server never overloads one `reset`, `backup`, or `export` verb to mean several things:
+   - **Status and inspection** are read-only reports of deployment health, durability profile, migration/projection state, backup coverage, recovery-drill evidence, and the caller's visible capability set. They carry freshness and source provenance and never infer that a missing record is healthy.
+   - **Snapshot** requests create a verified recoverable backup artifact for an explicitly selected tenant or platform scope. A snapshot is not a browser download and does not expose database credentials.
+   - **Export** requests create a bounded, schema-versioned, redacted representation for a named audit, portability, or legal purpose. An export is not a backup and is never accepted as a restore input by implication.
+   - **Recovery inspection** evaluates one identified backup or point-in-time target and produces a compatibility, integrity, scope, and impact report. It is read-only against production authority.
+   - **Lifecycle purge** is a separately named destructive operation constrained by an adopted retention or legal policy. It is not an alias for dropping a database, clearing a schema, truncating a ledger, or recreating a container.
+
+2. **Privileged classes require an authorization basis stronger than the current loopback developer profile.** Status and receipt lookup may use the existing tenant-scoped development profile. Snapshot creation, unredacted or sensitive export, recovery execution, and lifecycle purge require a verified principal with an adopted policy or delegation that names the operation, tenant and repository reach, data classification, retention basis, and effective lifetime. Until that basis exists, the Bridge refuses the operation and explains the missing authorization; it does not downgrade to a local token, a service-wide default, or an agent assertion.
+
+3. **Every administrative mutation is an immutable request-and-receipt workflow.** A request names an operation-specific idempotency key, tenant and resource scope, requested data categories, actor/principal, authorization and policy or delegation version, creation and expiry times, and a bounded purpose/rationale. Ackplane authorizes the tenant scope before it looks up an artifact, receipt, projection, or provider resource; a cross-tenant request is refused without disclosing whether its target exists. Ackplane records requested, refused, accepted, running, succeeded, failed, cancelled, and expired states durably. A retry with the same idempotency identity returns the original durable outcome; a changed request cannot overwrite it. A web response only acknowledges the request state and receipt reference, never claims that an asynchronous operation finished without its final receipt.
+
+4. **Snapshot success is verified, encrypted, and recoverable by reference.** A snapshot receipt records the selected scope, consistency point or ledger position, provider artifact identifier, encryption/key reference, manifest digest, size/count bounds, expiry or retention rule, and verification result. A platform-wide snapshot is visibly platform-scoped and cannot be requested under a tenant-only grant; a tenant-scoped snapshot cannot include another tenant's data. Backup key material, provider credentials, raw database connection strings, and unbounded data payloads never enter Bridge responses, logs, or receipts. A deployment cannot advertise a durability level that requires recoverability unless its most recent required verification and recovery-drill evidence satisfy the adopted policy.
+
+5. **Exports are purpose-limited, bounded, and redacted by default.** An export contract fixes the schema version, selected resource scope, fields or data categories, redaction policy, maximum byte/record limits, destination handling, expiry, and digest. The receipt records what policy authorized it, what was omitted or redacted, and where the authorized recipient can retrieve it without making the artifact public. Raw PostgreSQL dumps, plaintext backup artifacts, arbitrary terminal logs, credentials, and a generic "download all tenant data" route are outside the Bridge API.
+
+6. **Recovery separates inspection, rehearsal, and execution.** Inspection and a restore drill run against an isolated target and create durable reports; neither mutates the authoritative production database. A production recovery execution requires a previously identified artifact or point-in-time target, compatibility and integrity evidence, an explicit scoped impact plan, verified high-trust authorization, and a final receipt that names the old and new authority state. No endpoint silently restores over a live primary, changes tenant scope, or turns a backup artifact into a new source of truth without this recorded decision.
+
+7. **Lifecycle purge is refusal-first and leaves an allowed audit trail.** A purge request must identify the exact tenant, resource/data categories, retention or legal basis, impact preview, recovery implications, confirmation expiry, and authorization. An agent or model cannot approve its own purge; a human approval or the tenant's explicitly higher-trust policy is required, with separation of duties where that policy requires it. The implementation must preserve only the redacted, bounded audit metadata that the applicable retention policy permits: request and receipt identities, scope, authorizing basis, time, result, and integrity references. It must not preserve a supposedly erased payload merely to make the audit convenient. The first implementation is prohibited from issuing unrestricted `DROP DATABASE`, `TRUNCATE`, or schema reset commands from a Bridge route.
+
+8. **Local-state actions remain typed node work.** A repository-local backup, source export, editor action, or other device-bound operation is not performed by Ackplane or a browser. It needs an ADR-0107-style typed directive with advertised capability, bounded scope and expiry, local authorization, idempotency, and a durable request/result receipt. The administration surface never tunnels shell commands, raw MCP calls, source patches, filesystem paths, or database credentials to an enrolled node.
+
+9. **The Bridge presents authority, scope, and progress rather than an optimistic control panel.** It shows which administration classes are available to the current principal, selected tenant/repository scope, policy/delegation basis, preview, irreversible-effect warning, request state, final receipt, freshness, and recovery limitations. A missing capability, stale projection, absent principal, or refused policy remains visible. Confirmation controls are specific to one immutable request identity and expire; changing scope or data category requires a new preview and confirmation.
+
+10. **No lifecycle operation silently becomes a different operation on failure.** A snapshot failure does not fall back to an export, an export failure does not expose raw data, a recovery failure does not retry against production with looser checks, and an unauthorized purge does not degrade into a Local reset. Operators receive the typed refusal or failure receipt and can follow the documented escalation path.
+
+## Consequences
+
+- The Industrial administration track has an explicit policy boundary before it creates tables, routes, background workers, or destructive controls. The later implementation can start with status and receipt views, then add privileged operations only with a verified principal and an adopted authorization policy.
+- Local and Industrial parity becomes semantic rather than cosmetic. The Bridge may present Backup, export, reset-like lifecycle controls without claiming that a central ledger and a developer's SQLite database have the same recovery or deletion behavior.
+- Ackplane needs typed administration request, receipt, authorization, snapshot-manifest, export-manifest, recovery-report, and lifecycle-audit records. The exact provider integrations and physical backup mechanisms remain implementation work, but they cannot evade the receipt, tenancy, and policy contract here.
+- A production deployment needs a documented recovery-drill cadence, encryption/key custody, artifact retention, and incident-runbook story before it can claim its durability profile is operationally credible.
+- The current loopback-only Bridge profile remains intentionally limited. It can make administrative capability gaps visible, but it cannot grow a privileged export or destructive-operation API before a verified principal model and policy basis exist.
+
+## Rejected alternatives
+
+**Copy ADR-0013's `RESET MINDLEAK` or `RESET LODESTAR` into an Industrial endpoint.** Rejected because Local reset affects one developer's regenerable or local intent stores, while an Ackplane lifecycle action reaches a tenant-scoped append-only authority and may affect other operators, agents, legal retention, and recovery obligations.
+
+**Expose a generic database reset, SQL console, or container recreation button.** Rejected because it makes the browser an unbounded database administrator, cannot express tenant/data-category scope or audit intent, and turns accidental input into an irreversible fleet-wide effect.
+
+**Treat an export as a backup and accept it for restore.** Rejected because a bounded/redacted audit export intentionally omits data and storage state. Recovery requires an independently verified snapshot or point-in-time target, not a presentation format.
+
+**Let a loopback development token authorize sensitive export or purge forever.** Rejected because network location and a development tenant scope do not establish the accountable principal, policy, purpose, or separation of duties ADR-0115 requires for high-risk actions.
+
+**Delegate administrative work through a remote shell, raw MCP, or browser-supplied command string.** Rejected because it bypasses Ackplane's authorization, bounded scope, idempotency, receipt, and local-capability model, recreating the arbitrary-execution surface ADR-0107 explicitly forbids.
+
+**Delete all audit evidence with a purged payload.** Rejected because an administrative deletion must remain explainable. The retained audit record is deliberately bounded and redacted to the applicable retention policy, not a covert second copy of deleted data.
