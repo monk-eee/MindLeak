@@ -11,6 +11,7 @@ use thiserror::Error;
 
 pub mod evidence;
 pub mod evidence_api;
+pub mod supervisor_api;
 
 const DATABASE_URL_ENV: &str = "ACKPLANE_DATABASE_URL";
 const LISTEN_ENV: &str = "ACKPLANE_BRIDGE_LISTEN";
