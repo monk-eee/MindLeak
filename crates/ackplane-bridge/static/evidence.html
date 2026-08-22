@@ -268,9 +268,12 @@
         const query = listQuery();
         const response = await fetch(`${endpoint("evidence-board/export")}?${query}`);
         if (!response.ok) throw new Error(`Audit export failed (${response.status}).`);
-        const blob = new Blob([JSON.stringify(await response.json(), null, 2)], {type: "application/json"});
+        const auditPackage = await response.json();
+        const partial = !auditPackage.evidence_complete || !auditPackage.conformance_complete;
+        const blob = new Blob([JSON.stringify(auditPackage, null, 2)], {type: "application/json"});
         const anchor = Object.assign(document.createElement("a"), {href: URL.createObjectURL(blob), download: `${els.task.value.trim().replace(/[^a-z0-9._-]/gi, "-")}-evidence.json`});
-        anchor.click(); URL.revokeObjectURL(anchor.href); setMessage("Audit package downloaded.");
+        anchor.click(); URL.revokeObjectURL(anchor.href);
+        setMessage(partial ? "Partial audit package downloaded; continuation cursors are included." : "Audit package downloaded.");
       } catch (error) { setMessage(error.message, true); }
     });
     if (els.repository.value && els.task.value) load();
