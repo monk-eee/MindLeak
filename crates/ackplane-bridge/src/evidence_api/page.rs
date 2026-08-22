@@ -22,6 +22,8 @@ mod tests {
             "id=\"task\"",
             "id=\"agent\"",
             "agent_id",
+            "id=\"freshness-time\"",
+            "latest_recorded_at_seconds",
             "evidence-board",
             "evidence-board/export",
             "reported_constitution_version",

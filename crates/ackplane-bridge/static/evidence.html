@@ -86,6 +86,7 @@
     .metric { min-height: 78px; padding: 13px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
     .metric span { display: block; color: var(--soft); font-size: .68rem; text-transform: uppercase; letter-spacing: .055em; font-weight: 700; }
     .metric strong { display: block; margin-top: 8px; font-size: .95rem; text-transform: capitalize; }
+    .metric small { display: block; min-height: 1em; margin-top: 4px; color: var(--soft); font-size: .68rem; }
     .state-missing strong { color: var(--soft); }
     .state-partial strong, .state-pending strong, .state-stale strong { color: var(--amber); }
     .state-blocked strong { color: var(--danger); }
@@ -152,7 +153,7 @@
       <div id="evidence-state" class="metric"><span>Evidence</span><strong>-</strong></div>
       <div id="conformance-state" class="metric"><span>Conformance</span><strong>-</strong></div>
       <div id="review-state" class="metric"><span>Review</span><strong>-</strong></div>
-      <div id="freshness-state" class="metric"><span>Freshness</span><strong>-</strong></div>
+      <div id="freshness-state" class="metric"><span>Freshness</span><strong>-</strong><small id="freshness-time"></small></div>
     </div>
     <div id="board" class="board hidden">
       <section aria-labelledby="evidence-heading"><div class="section-head"><h3 id="evidence-heading">Evidence</h3><span id="evidence-count" class="count"></span></div><ul id="evidence-list" class="rows"></ul></section>
@@ -202,6 +203,7 @@
       loaded = result;
       els.status.classList.remove("hidden"); els.board.classList.remove("hidden"); els.links.classList.remove("hidden"); els.export.disabled = false;
       state("evidence-state", result.status.evidence); state("conformance-state", result.status.conformance); state("review-state", result.status.review); state("freshness-state", result.status.freshness);
+      document.getElementById("freshness-time").textContent = Number.isFinite(result.status.latest_recorded_at_seconds) ? `Recorded ${when(result.status.latest_recorded_at_seconds)}` : "";
       els.scope.textContent = `${els.repository.value.trim()} / ${els.task.value.trim()}`;
       list(els.evidence, result.evidence.entries, evidenceRow, "No evidence records on this page.");
       list(els.conformance, result.conformance.entries, conformanceRow, "No conformance records on this page.");
