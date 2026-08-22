@@ -14,6 +14,7 @@ use ackplane_server::fleet::{
     TimelineEvent,
 };
 use ackplane_server::knowledge_store::{ActiveKnowledge, KnowledgeStore};
+use ackplane_server::projection::{BoundedNeighborhood, ProjectedNode, Projector};
 use ackplane_server::signing_keys::KeyResolution;
 use axum::{
     extract::{Path, Query, State},
@@ -32,6 +33,7 @@ struct AppState {
     fleet: Arc<FleetStore>,
     knowledge: Arc<KnowledgeStore>,
     claims: Arc<Mutex<ClaimStore>>,
+    projector: Arc<Projector>,
     tenant_id: Arc<str>,
 }
 
@@ -385,6 +387,82 @@ impl From<ActiveKnowledge> for KnowledgeEntrySummary {
     }
 }
 
+/// `GET /api/v1/repositories/:repository_id/graph` query parameters
+/// (ADR-0087's existing `bounded_neighborhood`, wired up for the first
+/// time). All optional: an absent `seeds` falls back to
+/// `Projector::sample_nodes`, the most recently touched nodes.
+#[derive(Deserialize)]
+struct GraphQuery {
+    seeds: Option<String>,
+    depth: Option<i32>,
+    max_nodes: Option<i32>,
+    max_fanout: Option<i32>,
+}
+
+const DEFAULT_GRAPH_DEPTH: i32 = 2;
+const MAX_GRAPH_DEPTH: i32 = 4;
+const DEFAULT_GRAPH_MAX_NODES: i32 = 75;
+const MAX_GRAPH_MAX_NODES: i32 = 300;
+const DEFAULT_GRAPH_MAX_FANOUT: i32 = 12;
+const MAX_GRAPH_MAX_FANOUT: i32 = 30;
+/// How many nodes `Projector::sample_nodes` seeds the view with when the
+/// caller has not chosen a seed yet.
+const DEFAULT_SEED_SAMPLE: i64 = 8;
+
+#[derive(Serialize)]
+struct GraphResponse {
+    nodes: Vec<GraphNodeSummary>,
+    edges: Vec<GraphEdgeSummary>,
+    projection_stream_position: Option<i64>,
+    projected_at_seconds: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct GraphNodeSummary {
+    node_id: String,
+    node_type: String,
+    label: String,
+    depth: i32,
+}
+
+impl From<ProjectedNode> for GraphNodeSummary {
+    fn from(node: ProjectedNode) -> Self {
+        Self {
+            node_id: node.node_id,
+            node_type: node.node_type,
+            label: node.label,
+            depth: node.depth,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct GraphEdgeSummary {
+    source_id: String,
+    target_id: String,
+    relation: String,
+    effective_weight: f64,
+}
+
+/// `W_eff = W_base * 2^(-Δt_hours / half_life)`, mirroring
+/// `mindleak_core::decay::effective_weight` and the SQL this same formula
+/// already runs as inside `bounded_neighborhood`'s own frontier ordering --
+/// computed here only for display, never stored. Clamps `elapsed <= 0` to
+/// `base_weight` directly, the same guard the Rust reference implementation
+/// and `knowledge_store`'s `EFFECTIVE_WEIGHT_SQL` both apply.
+fn effective_weight(
+    base_weight: f64,
+    half_life_hours: f64,
+    updated_at: SystemTime,
+    now: SystemTime,
+) -> f64 {
+    let elapsed_hours = match now.duration_since(updated_at) {
+        Ok(elapsed) if !elapsed.is_zero() => elapsed.as_secs_f64() / 3600.0,
+        _ => return base_weight,
+    };
+    base_weight * 2.0_f64.powf(-elapsed_hours / half_life_hours)
+}
+
 #[tokio::main]
 async fn main() {
     let salt_path = match std::env::var("ACKPLANE_BRIDGE_SALT_PATH") {
@@ -433,10 +511,18 @@ async fn main() {
             return;
         }
     };
+    let projector = match Projector::connect(config.database_url()).await {
+        Ok(projector) => Arc::new(projector),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane's graph projection: {error}");
+            return;
+        }
+    };
     let state = AppState {
         fleet: fleet_store,
         knowledge: knowledge_store,
         claims: claim_store,
+        projector,
         tenant_id: Arc::from(config.development_tenant_token),
     };
     let application = Router::new()
@@ -462,6 +548,10 @@ async fn main() {
         .route(
             "/api/v1/repositories/:repository_id/knowledge",
             get(repository_knowledge),
+        )
+        .route(
+            "/api/v1/repositories/:repository_id/graph",
+            get(repository_graph),
         )
         .route(
             "/api/v1/repositories/:repository_id/tasks/:task_id/recover",
@@ -716,6 +806,118 @@ async fn repository_knowledge(
         })),
         Err(error) => {
             tracing::error!(%error, "Bridge repository knowledge query failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn repository_graph(
+    State(state): State<AppState>,
+    Path(repository_id): Path<String>,
+    Query(query): Query<GraphQuery>,
+) -> Result<Json<GraphResponse>, StatusCode> {
+    // Same enrolment-first check as `repository_knowledge`: a repository
+    // outside the caller's tenant reads exactly like one that was never
+    // enrolled.
+    match state
+        .fleet
+        .repository(&state.tenant_id, &repository_id)
+        .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository lookup before graph query failed");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    let depth = query
+        .depth
+        .unwrap_or(DEFAULT_GRAPH_DEPTH)
+        .clamp(1, MAX_GRAPH_DEPTH);
+    let max_nodes = query
+        .max_nodes
+        .unwrap_or(DEFAULT_GRAPH_MAX_NODES)
+        .clamp(1, MAX_GRAPH_MAX_NODES);
+    let max_fanout = query
+        .max_fanout
+        .unwrap_or(DEFAULT_GRAPH_MAX_FANOUT)
+        .clamp(1, MAX_GRAPH_MAX_FANOUT);
+
+    let seeds: Vec<String> = match query.seeds.as_deref() {
+        Some(raw) if !raw.trim().is_empty() => raw
+            .split(',')
+            .map(str::trim)
+            .filter(|seed| !seed.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => {
+            match state
+                .projector
+                .sample_nodes(&state.tenant_id, &repository_id, DEFAULT_SEED_SAMPLE)
+                .await
+            {
+                Ok(nodes) => nodes.into_iter().map(|node| node.node_id).collect(),
+                Err(error) => {
+                    tracing::error!(%error, "Bridge default graph seed sampling failed");
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+            }
+        }
+    };
+
+    // No seed and nothing to sample (never projected, or a genuinely empty
+    // graph): an empty response is the honest answer, not an error.
+    if seeds.is_empty() {
+        return Ok(Json(GraphResponse {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            projection_stream_position: None,
+            projected_at_seconds: None,
+        }));
+    }
+
+    match state
+        .projector
+        .bounded_neighborhood(
+            &state.tenant_id,
+            &repository_id,
+            &seeds,
+            depth,
+            max_nodes,
+            max_fanout,
+        )
+        .await
+    {
+        Ok(BoundedNeighborhood {
+            nodes,
+            edges,
+            freshness,
+        }) => {
+            let now = SystemTime::now();
+            Ok(Json(GraphResponse {
+                nodes: nodes.into_iter().map(GraphNodeSummary::from).collect(),
+                edges: edges
+                    .into_iter()
+                    .map(|edge| GraphEdgeSummary {
+                        effective_weight: effective_weight(
+                            edge.base_weight,
+                            edge.half_life_hours,
+                            edge.updated_at,
+                            now,
+                        ),
+                        source_id: edge.source_id,
+                        target_id: edge.target_id,
+                        relation: edge.relation,
+                    })
+                    .collect(),
+                projection_stream_position: freshness.as_ref().map(|f| f.stream_position),
+                projected_at_seconds: freshness.and_then(|f| unix_seconds(f.projected_at)),
+            }))
+        }
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository graph query failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -981,5 +1183,25 @@ mod tests {
             parse_agents_sort(Some("repository_id")),
             Err(StatusCode::BAD_REQUEST)
         );
+    }
+
+    #[test]
+    fn effective_weight_is_unchanged_at_zero_elapsed_time() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        assert_eq!(effective_weight(1.0, 168.0, now, now), 1.0);
+    }
+
+    #[test]
+    fn effective_weight_halves_after_one_half_life() {
+        let updated_at = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let now = updated_at + Duration::from_secs(168 * 3600);
+        assert!((effective_weight(1.0, 168.0, updated_at, now) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn effective_weight_clamps_a_stale_updated_at_in_the_future_to_the_base_weight() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let updated_at = now + Duration::from_secs(60);
+        assert_eq!(effective_weight(1.0, 168.0, updated_at, now), 1.0);
     }
 }
