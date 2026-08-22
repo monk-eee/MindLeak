@@ -32,7 +32,18 @@ const CLAIM_STORE_LEASE_RS: &str = include_str!("../../ackplane-server/src/claim
 /// concerns) and `lease.rs` (the delegate/release/renew/recover lease
 /// mutations), each with its own `impl ClaimStore { ... }` block.
 const CLAIM_STORE_SOURCES: &[&str] = &[CLAIM_STORE_MOD_RS, CLAIM_STORE_LEASE_RS];
-const PROJECTION_RS: &str = include_str!("../../ackplane-server/src/projection.rs");
+const PROJECTION_MOD_RS: &str = include_str!("../../ackplane-server/src/projection/mod.rs");
+const PROJECTION_REBUILD_RS: &str = include_str!("../../ackplane-server/src/projection/rebuild.rs");
+const PROJECTION_NEIGHBORHOOD_RS: &str =
+    include_str!("../../ackplane-server/src/projection/neighborhood.rs");
+/// `Projector`'s methods are split (below the module-length ratchet) across
+/// `mod.rs`/`rebuild.rs`/`neighborhood.rs`, each with its own `impl Projector
+/// { ... }` block - this guard must scan all three, not just one.
+const PROJECTION_SOURCES: &[&str] = &[
+    PROJECTION_MOD_RS,
+    PROJECTION_REBUILD_RS,
+    PROJECTION_NEIGHBORHOOD_RS,
+];
 const READINESS_RS: &str = include_str!("../../ackplane-server/src/readiness.rs");
 
 /// `FleetStore::connect` is the connection constructor, not a query or
@@ -129,7 +140,7 @@ fn every_claim_store_query_requires_an_explicit_tenant_id() {
 
 #[test]
 fn every_projector_query_requires_an_explicit_tenant_id() {
-    let methods = extract_impl_methods(PROJECTION_RS, "Projector");
+    let methods = extract_impl_methods_from_any(PROJECTION_SOURCES, "Projector");
     assert!(
         !methods.is_empty(),
         "expected to find at least one Projector method - the parser may be broken"
