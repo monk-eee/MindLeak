@@ -126,6 +126,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0116](0116-enrolled-supervisors-are-the-distributed-agent-runtime.md) | Enrolled supervisors are the distributed agent runtime | Accepted |
 | [0117](0117-the-bridge-live-feed-is-a-replayable-operations-stream.md) | The Bridge live feed is a replayable operations stream | Accepted |
 | [0118](0118-the-coverage-gate-provisions-postgres-for-ackplane.md) | The Coverage gate provisions Postgres for Ackplane's tests | Accepted |
+| [0119](0119-industrial-administration-lifecycle-policy.md) | Industrial administration is receipted, scoped, and never a reset | Proposed |
 
 ## Writing a new ADR
 
