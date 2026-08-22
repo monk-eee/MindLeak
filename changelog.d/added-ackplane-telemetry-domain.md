@@ -1,0 +1,1 @@
+- Added Ackplane's PostgreSQL-backed telemetry domain (ADR-0105 decision 6): typed tool/transport/directive/storage/projection observations, per-name current health derived from the most recent success/error (not a lifetime count), bounded time-bucketed series, and a tenant-scoped `GET /api/v1/repositories/:repository_id/telemetry` Bridge route.
