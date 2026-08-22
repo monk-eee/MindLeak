@@ -17,7 +17,13 @@ const REPOSITORY_KNOWLEDGE_RS: &str = include_str!("../src/handlers/repository/k
 const REPOSITORY_GRAPH_RS: &str = include_str!("../src/handlers/repository/graph.rs");
 const REPOSITORY_CONSTITUTION_RS: &str = include_str!("../src/handlers/repository/constitution.rs");
 const REPOSITORY_TELEMETRY_RS: &str = include_str!("../src/handlers/repository/telemetry.rs");
-const FLEET_RS: &str = include_str!("../../ackplane-server/src/fleet.rs");
+const FLEET_MOD_RS: &str = include_str!("../../ackplane-server/src/fleet/mod.rs");
+const FLEET_REPOSITORIES_RS: &str = include_str!("../../ackplane-server/src/fleet/repositories.rs");
+const FLEET_WORK_RS: &str = include_str!("../../ackplane-server/src/fleet/work.rs");
+/// `FleetStore`'s methods are split (below the module-length ratchet) across
+/// `mod.rs`/`repositories.rs`/`work.rs`, each with its own `impl FleetStore
+/// { ... }` block - this guard must scan all three, not just one.
+const FLEET_SOURCES: &[&str] = &[FLEET_MOD_RS, FLEET_REPOSITORIES_RS, FLEET_WORK_RS];
 const KNOWLEDGE_STORE_RS: &str = include_str!("../../ackplane-server/src/knowledge_store.rs");
 const CLAIM_STORE_RS: &str = include_str!("../../ackplane-server/src/claim_store.rs");
 const PROJECTION_RS: &str = include_str!("../../ackplane-server/src/projection.rs");
@@ -155,7 +161,7 @@ fn every_readiness_store_query_requires_an_explicit_tenant_id() {
 
 #[test]
 fn every_fleet_store_query_requires_an_explicit_tenant_id() {
-    let methods = extract_impl_methods(FLEET_RS, "FleetStore");
+    let methods = extract_impl_methods_from_any(FLEET_SOURCES, "FleetStore");
     assert!(
         !methods.is_empty(),
         "expected to find at least one FleetStore method - the parser may be broken"
@@ -273,6 +279,19 @@ fn extract_function_body_from_any(sources: &[&str], name: &str) -> Option<String
     sources
         .iter()
         .find_map(|source| extract_function_body(source, name))
+}
+
+/// `extract_impl_methods`, merged across every source that carries an
+/// `impl <type_name> { ... }` block for the same type -- a store's methods no
+/// longer have to live in one file once it is split below the module-length
+/// ratchet.
+fn extract_impl_methods_from_any(sources: &[&str], type_name: &str) -> Vec<(String, String)> {
+    let impl_marker = format!("impl {type_name} {{");
+    sources
+        .iter()
+        .filter(|source| source.contains(&impl_marker))
+        .flat_map(|source| extract_impl_methods(source, type_name))
+        .collect()
 }
 
 /// The index just past the `)` that matches the `(` at `open`.
