@@ -1,0 +1,1 @@
+- **Added:** Authenticated Ackplane knowledge records can now declare validated artifact/symbol and goal reach; the signed reach is retained and returned by record, recall, and lifecycle-history responses.
