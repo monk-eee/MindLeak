@@ -453,6 +453,7 @@ mod tests {
             signature: Vec::new(),
         };
         let findings_digest = vec![8; 32];
+        let finding_codes = Vec::new();
         let reported_constitution_version = "constitution:v4";
         let operation = EvidenceOperation::RecordConformance {
             task_id,
@@ -460,6 +461,7 @@ mod tests {
             verdict: verdict as i32,
             finding_count: 2,
             findings_digest: &findings_digest,
+            finding_codes: &finding_codes,
             reported_checked_at,
             idempotency_key,
             reported_constitution_version,
@@ -479,6 +481,7 @@ mod tests {
             verdict: verdict as i32,
             finding_count: 2,
             findings_digest,
+            finding_codes,
             reported_checked_at: reported_checked_at.to_owned(),
             authentication: Some(authentication),
             idempotency_key: idempotency_key.to_owned(),

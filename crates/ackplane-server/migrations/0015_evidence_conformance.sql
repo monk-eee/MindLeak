@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS conformance_records (
     verdict         SMALLINT    NOT NULL CHECK (verdict BETWEEN 1 AND 4),
     finding_count   BIGINT      NOT NULL CHECK (finding_count >= 0),
     findings_digest BYTEA       NOT NULL CHECK (octet_length(findings_digest) = 32),
+    finding_codes   SMALLINT[]  NOT NULL DEFAULT '{}',
     review_state    SMALLINT    NOT NULL CHECK (review_state BETWEEN 1 AND 3),
     reported_checked_at TIMESTAMPTZ NOT NULL,
     evaluated_by    TEXT        NOT NULL,
@@ -88,6 +89,9 @@ ALTER TABLE conformance_records
 
 ALTER TABLE conformance_records
     ADD COLUMN IF NOT EXISTS reported_constitution_version TEXT;
+
+ALTER TABLE conformance_records
+    ADD COLUMN IF NOT EXISTS finding_codes SMALLINT[] NOT NULL DEFAULT '{}';
 
 CREATE UNIQUE INDEX IF NOT EXISTS conformance_records_idempotency
     ON conformance_records (tenant_id, repository_id, idempotency_key)

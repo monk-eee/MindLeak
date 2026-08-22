@@ -21,7 +21,7 @@ impl EvidenceStore {
             .client
             .query(
                 "SELECT conformance_id, tenant_id, repository_id, task_id, evidence_id, verdict, \
-                       finding_count, findings_digest, review_state, reported_checked_at, evaluated_by, \
+                      finding_count, findings_digest, finding_codes, review_state, reported_checked_at, evaluated_by, \
                        recorded_at, idempotency_key, reported_constitution_version \
                  FROM conformance_records \
                  WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 \
@@ -55,7 +55,7 @@ impl EvidenceStore {
                 self.client
                     .query(
                         "SELECT conformance_id, tenant_id, repository_id, task_id, evidence_id, verdict, \
-                                finding_count, findings_digest, review_state, reported_checked_at, evaluated_by, \
+                            finding_count, findings_digest, finding_codes, review_state, reported_checked_at, evaluated_by, \
                                 recorded_at, idempotency_key, reported_constitution_version \
                          FROM conformance_records \
                          WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 \
@@ -77,7 +77,7 @@ impl EvidenceStore {
                 self.client
                     .query(
                         "SELECT conformance_id, tenant_id, repository_id, task_id, evidence_id, verdict, \
-                                finding_count, findings_digest, review_state, reported_checked_at, evaluated_by, \
+                            finding_count, findings_digest, finding_codes, review_state, reported_checked_at, evaluated_by, \
                                 recorded_at, idempotency_key, reported_constitution_version \
                          FROM conformance_records \
                          WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 \

@@ -140,6 +140,7 @@ pub(super) struct ConformanceEntryResponse {
     pub(super) verdict: &'static str,
     pub(super) finding_count: u32,
     pub(super) findings_digest_hex: String,
+    pub(super) finding_codes: Vec<String>,
     pub(super) review_state: &'static str,
     pub(super) reported_checked_at_seconds: Option<u64>,
     pub(super) evaluated_by: String,
@@ -156,6 +157,7 @@ impl From<ConformanceView> for ConformanceEntryResponse {
             verdict: view.verdict,
             finding_count: view.finding_count,
             findings_digest_hex: view.findings_digest_hex,
+            finding_codes: view.finding_codes,
             review_state: view.review_state,
             reported_checked_at_seconds: unix_seconds(view.reported_checked_at),
             evaluated_by: view.evaluated_by,
@@ -289,6 +291,9 @@ pub(super) fn conformance_store_error(error: ConformanceStoreError) -> StatusCod
             StatusCode::INTERNAL_SERVER_ERROR
         }
         ConformanceStoreError::InvalidFindingsDigest
+        | ConformanceStoreError::TooManyFindingCodes
+        | ConformanceStoreError::DuplicateFindingCode
+        | ConformanceStoreError::FindingCodeCountExceedsFindingCount
         | ConformanceStoreError::InvalidEvaluator
         | ConformanceStoreError::InvalidConstitutionVersion
         | ConformanceStoreError::InvalidIdempotencyKey
@@ -300,6 +305,7 @@ pub(super) fn conformance_store_error(error: ConformanceStoreError) -> StatusCod
         | ConformanceStoreError::UnknownStoredReviewState(_)
         | ConformanceStoreError::InconsistentReviewState
         | ConformanceStoreError::InvalidStoredFindingCount(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        ConformanceStoreError::UnknownStoredFindingCode(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 

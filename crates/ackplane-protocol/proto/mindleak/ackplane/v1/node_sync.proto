@@ -327,6 +327,21 @@ enum ConformanceReviewState {
   CONFORMANCE_REVIEW_STATE_BLOCKED = 3;
 }
 
+// A closed, body-free summary of why a conformance outcome needs attention.
+// The full private finding set remains represented by finding_count and
+// findings_digest; these codes let Bridge explain a result without carrying
+// arbitrary terminal output, source excerpts, or unbounded free-form text.
+enum ConformanceFindingCode {
+  CONFORMANCE_FINDING_CODE_UNSPECIFIED = 0;
+  CONFORMANCE_FINDING_CODE_EVIDENCE_MISSING = 1;
+  CONFORMANCE_FINDING_CODE_EVIDENCE_STALE = 2;
+  CONFORMANCE_FINDING_CODE_SCOPE_UNCOVERED = 3;
+  CONFORMANCE_FINDING_CODE_POLICY_DRIFT = 4;
+  CONFORMANCE_FINDING_CODE_POLICY_VIOLATION = 5;
+  CONFORMANCE_FINDING_CODE_RECEIPT_MISSING = 6;
+  CONFORMANCE_FINDING_CODE_HUMAN_REVIEW_REQUIRED = 7;
+}
+
 // Records one node-reported conformance outcome for an existing Evidence
 // record. The server verifies that the reporting node created that evidence;
 // human acceptance and override remain separate reviewed actions. Findings
@@ -349,6 +364,9 @@ message RecordConformanceRequest {
   // The active local Constitution version the evaluator checked. This remains
   // a signed node assertion; human review and policy approval are separate.
   string reported_constitution_version = 11;
+  // Bounded closed-code summaries. They are signed with the result and never
+  // carry the private free-form finding bodies represented by findings_digest.
+  repeated ConformanceFindingCode finding_codes = 12;
 }
 
 message ConformanceRecord {
@@ -367,6 +385,7 @@ message ConformanceRecord {
   string idempotency_key = 13;
   bool idempotent_replay = 14;
   string reported_constitution_version = 15;
+  repeated ConformanceFindingCode finding_codes = 16;
 }
 
 message ListConformanceRequest {

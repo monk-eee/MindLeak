@@ -23,6 +23,7 @@ mod tests {
             "evidence-board",
             "evidence-board/export",
             "reported_constitution_version",
+            "entry.finding_codes",
             "id=\"work-link\" href=\"#filters\" aria-disabled=\"true\"",
         ] {
             assert!(

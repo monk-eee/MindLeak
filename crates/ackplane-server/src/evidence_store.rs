@@ -13,8 +13,9 @@ mod pagination;
 
 pub(crate) use conformance::normalize_postgres_timestamp;
 pub use conformance::{
-    ConformanceCursor, ConformancePage, ConformanceRecord, ConformanceReviewState,
-    ConformanceStoreError, ConformanceVerdict, RecordConformanceOutcome, RecordConformanceRequest,
+    ConformanceCursor, ConformanceFindingCode, ConformancePage, ConformanceRecord,
+    ConformanceReviewState, ConformanceStoreError, ConformanceVerdict, RecordConformanceOutcome,
+    RecordConformanceRequest,
 };
 pub use pagination::{EvidenceCursor, EvidencePage};
 
