@@ -237,6 +237,21 @@ mod tests {
     /// avoid it.
     static CREDENTIAL_FACILITY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    fn credential_facility_is_required(value: Option<&str>) -> bool {
+        matches!(value, Some("1" | "true" | "TRUE"))
+    }
+
+    fn credential_facility_unavailable(
+        facility_is_required: bool,
+        error: &CredentialFacilityError,
+    ) -> Result<(), &CredentialFacilityError> {
+        if facility_is_required {
+            Err(error)
+        } else {
+            Ok(())
+        }
+    }
+
     /// The real OS credential facility, round-tripped. Skips rather than
     /// fails when the facility itself is unreachable in this environment
     /// (e.g. a headless Linux CI runner with no Secret Service daemon) --
@@ -249,10 +264,26 @@ mod tests {
         let service = "mindleak-ackplane-client-test";
         let account = unique_account();
         let seed = [42u8; 32];
+        let facility_is_required = credential_facility_is_required(
+            std::env::var("MINDLEAK_REQUIRE_CREDENTIAL_FACILITY")
+                .ok()
+                .as_deref(),
+        );
 
         if let Err(error) = CredentialFacilitySigner::store(service, &account, &seed) {
-            println!("skipped: OS credential facility unavailable in this environment: {error}");
-            return;
+            match credential_facility_unavailable(facility_is_required, &error) {
+                Ok(()) => {
+                    println!(
+                        "skipped: OS credential facility unavailable in this environment: {error}"
+                    );
+                    return;
+                }
+                Err(error) => {
+                    panic!(
+                        "MINDLEAK_REQUIRE_CREDENTIAL_FACILITY=1 requires a real OS credential facility: {error}"
+                    );
+                }
+            }
         }
 
         let signer = CredentialFacilitySigner::load("key-1", "node-1", service, &account)
@@ -262,6 +293,24 @@ mod tests {
         println!("passed: round-tripped for real through the OS credential facility");
 
         let _ = keyring::Entry::new(service, &account).and_then(|entry| entry.delete_password());
+    }
+
+    #[test]
+    fn credential_facility_strict_mode_is_explicitly_opt_in_and_refuses_unavailability() {
+        assert!(credential_facility_is_required(Some("1")));
+        assert!(credential_facility_is_required(Some("true")));
+        assert!(credential_facility_is_required(Some("TRUE")));
+        assert!(!credential_facility_is_required(None));
+        assert!(!credential_facility_is_required(Some("0")));
+        assert!(!credential_facility_is_required(Some("yes")));
+
+        assert!(
+            credential_facility_unavailable(false, &CredentialFacilityError::MalformedSeed).is_ok()
+        );
+        assert!(matches!(
+            credential_facility_unavailable(true, &CredentialFacilityError::MalformedSeed),
+            Err(CredentialFacilityError::MalformedSeed)
+        ));
     }
 
     #[test]
