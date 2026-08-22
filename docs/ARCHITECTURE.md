@@ -411,7 +411,23 @@ separator (`constitution_auth::CONSTITUTION_DOMAIN`), its own
 `ConstitutionOperation` enum, and its own
 `constitution_authentication_nonces` table.
 
-### `ackplane-bridge` (binary)
+`TelemetryService` (`telemetry_store.rs`/`telemetry_service.rs`) is Ackplane's
+typed operational-telemetry domain (ADR-0105 decision 6): `RecordTelemetry`
+(tool/transport/directive/storage/projection observations, each with a bounded
+count of small typed measurements) and `ReadTelemetry` (per-name current health
+plus bounded time-bucketed series). Health is derived at read time from the
+most recent success/error, never a lifetime count — `currently_failing`
+compares `last_error_at` against `last_success_at`, so a resolved past error
+stops reading as an active fault the moment a later call succeeds, mirroring
+mindleak-core's own local `NameMetric`/`currently_failing` logic (ADR-0010)
+expressed as a Postgres aggregate instead of a SQLite query. Bucketed series
+use `date_bin` and a `ROW_NUMBER() OVER (PARTITION BY kind, name ...)` window
+to keep only the most recent `max_points` buckets per series, so an unbounded
+read never becomes an unbounded response. Same authentication pattern as
+`KnowledgeService`/`ConstitutionService`: its own domain separator
+(`telemetry_auth::TELEMETRY_DOMAIN`), its own `TelemetryOperation` enum, and
+its own `telemetry_authentication_nonces` table.
+
 
 A separate axum HTTP server for the Bridge (assurance operations, ADR-0090):
 read-only Fleet views over Ackplane's accepted Postgres state for one
@@ -434,6 +450,7 @@ tenant has not enrolled rather than leaking a distinguishable error:
 | `GET /api/v1/repositories/:repository_id/signing-keys` | Every enrolled signing key, judged as of now (`FleetStore::signing_keys`), reusing `signing_keys::judge` — the same rule an accepted envelope's own verification applies — rather than a second judgment invented for the health view. |
 | `GET /api/v1/repositories/:repository_id/knowledge` | Its recorded knowledge, recency-ordered (`KnowledgeStore::recall`, ADR-0106) — the same query the knowledge domain already exposes over gRPC, not a second one invented for the Bridge view. |
 | `GET /api/v1/repositories/:repository_id/constitution` | Its published constitution snapshot, if any (`ConstitutionStore::get_active`) — read-only; no adopt/tailor/reject/promote/waiver action is exposed here. |
+| `GET /api/v1/repositories/:repository_id/telemetry` | Its per-name current health (`TelemetryStore::read`, ADR-0105 decision 6) — lifetime `calls`/`errors` alongside `currently_failing`, derived from the most recent success/error rather than the lifetime count, so a resolved past error stops reading as an active fault once a later call succeeds. Bucketed time-series points are computed by the same query but not rendered by this route yet; the sparkline dashboard is a separate, later slice. |
 | `POST /api/v1/repositories/:repository_id/tasks/:task_id/recover` | Bridge's first claim **mutation** (ADR-0111): recovers a stranded claim by calling `ClaimStore::recover` directly, tenant-scoped and reason-required. `delegate`, `release`, and `renew` remain node-signed-only and are not exposed here. The handler resolves `expected_owner` itself via the new `FleetStore::claim_owner` (unlike `active_work`, this does not filter out an already-expired lease), rather than trusting a caller-supplied value. |
 
 ### `editors/vscode` (extension)

@@ -1,0 +1,613 @@
+//! Ackplane's PostgreSQL-backed telemetry domain (ADR-0105 decision 6): typed
+//! tool/transport/directive/storage/projection observations, current health
+//! derived from the most recent success/error (distinct from lifetime error
+//! counts -- mirrors mindleak-core's own local NameMetric/currently_failing
+//! logic, ADR-0010, expressed as Postgres aggregates instead of a SQLite
+//! query), and bounded time-bucketed series for sparklines.
+
+use std::time::SystemTime;
+
+use tokio_postgres::{Client, NoTls};
+
+const MIGRATION: &str = include_str!("../migrations/0016_telemetry.sql");
+const NONCE_MIGRATION: &str =
+    include_str!("../migrations/0017_telemetry_authentication_nonces.sql");
+
+/// A measurement name may be at most this many bytes. Bounded so a
+/// misbehaving or malicious node cannot smuggle an unbounded blob through a
+/// "small typed measurement" field.
+const MAX_MEASUREMENT_NAME_BYTES: usize = 200;
+/// An event may carry at most this many measurements.
+const MAX_MEASUREMENTS: usize = 20;
+/// A telemetry name (the tool/transport/directive/storage/projection being
+/// observed) may be at most this many bytes.
+const MAX_NAME_BYTES: usize = 200;
+
+#[derive(Debug, thiserror::Error)]
+pub enum TelemetryStoreError {
+    #[error("telemetry database error: {0}")]
+    Database(#[from] tokio_postgres::Error),
+    #[error("name must be between 1 and {MAX_NAME_BYTES} bytes")]
+    InvalidName,
+    #[error("an event may carry at most {MAX_MEASUREMENTS} measurements")]
+    TooManyMeasurements,
+    #[error("measurement name must be between 1 and {MAX_MEASUREMENT_NAME_BYTES} bytes")]
+    InvalidMeasurementName,
+    #[error("measurement value must be finite")]
+    NonFiniteMeasurement,
+    #[error("occurred_at is not a valid timestamp")]
+    InvalidOccurredAt,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordTelemetryRequest {
+    pub tenant_id: String,
+    pub repository_id: String,
+    pub node_id: String,
+    pub agent_session_id: Option<String>,
+    pub kind: i16,
+    pub name: String,
+    pub outcome: i16,
+    pub duration_ms: i64,
+    pub occurred_at: SystemTime,
+    pub measurements: Vec<(String, f64)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TelemetryRecord {
+    pub telemetry_id: String,
+    pub tenant_id: String,
+    pub repository_id: String,
+    pub node_id: String,
+    pub agent_session_id: Option<String>,
+    pub kind: i16,
+    pub name: String,
+    pub outcome: i16,
+    pub duration_ms: i64,
+    pub occurred_at: SystemTime,
+    pub recorded_at: SystemTime,
+}
+
+/// Zero means "every kind"; an empty name means "every name" -- the same
+/// convention the wire contract documents (`node_sync.proto`'s own comment
+/// on `TelemetryReadRequest`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadTelemetryRequest {
+    pub tenant_id: String,
+    pub repository_id: String,
+    pub kind: i16,
+    pub name: Option<String>,
+    pub bucket_seconds: i64,
+    pub max_points: i64,
+}
+
+/// One (kind, name)'s current health -- derived from the most recent
+/// success/error, not a lifetime count, so a resolved past error stops
+/// reading as an active fault the moment a later call succeeds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TelemetryMetric {
+    pub kind: i16,
+    pub name: String,
+    pub calls: i64,
+    pub errors: i64,
+    pub currently_failing: bool,
+    pub last_success_at: Option<SystemTime>,
+    pub last_error_at: Option<SystemTime>,
+    pub average_duration_ms: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TelemetryPoint {
+    pub bucket_start_at: SystemTime,
+    pub calls: i64,
+    pub errors: i64,
+    pub average_duration_ms: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TelemetrySeries {
+    pub kind: i16,
+    pub name: String,
+    pub points: Vec<TelemetryPoint>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TelemetrySnapshot {
+    pub metrics: Vec<TelemetryMetric>,
+    pub series: Vec<TelemetrySeries>,
+    pub observed_at: SystemTime,
+}
+
+pub struct TelemetryStore {
+    client: Client,
+}
+
+impl TelemetryStore {
+    pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
+        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
+        tokio::spawn(async move {
+            if let Err(error) = connection.await {
+                tracing::error!(%error, "ackplane telemetry store connection closed with an error");
+            }
+        });
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::TELEMETRY,
+            MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::TELEMETRY_AUTHENTICATION_NONCES,
+            NONCE_MIGRATION,
+        )
+        .await?;
+        Ok(Self { client })
+    }
+
+    /// Resolve the signing key a telemetry request's authentication claims.
+    /// Mirrors `KnowledgeStore::resolve_signing_key`: the decision lives in
+    /// `signing_keys` (generic across every authenticated domain), this only
+    /// owns the connection.
+    pub async fn resolve_signing_key(
+        &self,
+        binding: &crate::signing_keys::EnvelopeBinding<'_>,
+    ) -> Result<crate::signing_keys::KeyResolution, crate::signing_keys::SigningKeyError> {
+        crate::signing_keys::resolve(&self.client, binding).await
+    }
+
+    /// Consume a (signing_key_id, nonce) pair exactly once (anti-replay for
+    /// `TelemetryGrpcService` authentication). Returns true the first time a
+    /// pair is seen, false on every later attempt with the identical pair.
+    pub async fn consume_telemetry_nonce(
+        &self,
+        signing_key_id: &str,
+        nonce: &[u8],
+        now: SystemTime,
+    ) -> Result<bool, TelemetryStoreError> {
+        let inserted = self
+            .client
+            .execute(
+                "INSERT INTO telemetry_authentication_nonces (signing_key_id, nonce, consumed_at) \
+                 VALUES ($1, $2, $3) ON CONFLICT (signing_key_id, nonce) DO NOTHING",
+                &[&signing_key_id, &nonce, &now],
+            )
+            .await?;
+        Ok(inserted == 1)
+    }
+
+    pub async fn record(
+        &self,
+        request: RecordTelemetryRequest,
+    ) -> Result<TelemetryRecord, TelemetryStoreError> {
+        if request.name.is_empty() || request.name.len() > MAX_NAME_BYTES {
+            return Err(TelemetryStoreError::InvalidName);
+        }
+        if request.measurements.len() > MAX_MEASUREMENTS {
+            return Err(TelemetryStoreError::TooManyMeasurements);
+        }
+        for (name, value) in &request.measurements {
+            if name.is_empty() || name.len() > MAX_MEASUREMENT_NAME_BYTES {
+                return Err(TelemetryStoreError::InvalidMeasurementName);
+            }
+            if !value.is_finite() {
+                return Err(TelemetryStoreError::NonFiniteMeasurement);
+            }
+        }
+        let telemetry_id = unique_telemetry_id();
+        let measurements_json = serde_json::to_string(
+            &request
+                .measurements
+                .iter()
+                .map(|(name, value)| serde_json::json!({ "name": name, "value": value }))
+                .collect::<Vec<_>>(),
+        )
+        .expect("a Vec of bounded, finite measurements always serializes");
+        let row = self
+            .client
+            .query_one(
+                "INSERT INTO telemetry_events (
+                     tenant_id, repository_id, telemetry_id, node_id, agent_session_id,
+                     kind, name, outcome, duration_ms, occurred_at, measurements
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                 RETURNING recorded_at",
+                &[
+                    &request.tenant_id,
+                    &request.repository_id,
+                    &telemetry_id,
+                    &request.node_id,
+                    &request.agent_session_id,
+                    &request.kind,
+                    &request.name,
+                    &request.outcome,
+                    &request.duration_ms,
+                    &request.occurred_at,
+                    &measurements_json,
+                ],
+            )
+            .await?;
+        Ok(TelemetryRecord {
+            telemetry_id,
+            tenant_id: request.tenant_id,
+            repository_id: request.repository_id,
+            node_id: request.node_id,
+            agent_session_id: request.agent_session_id,
+            kind: request.kind,
+            name: request.name,
+            outcome: request.outcome,
+            duration_ms: request.duration_ms,
+            occurred_at: request.occurred_at,
+            recorded_at: row.get("recorded_at"),
+        })
+    }
+
+    pub async fn read(
+        &self,
+        request: ReadTelemetryRequest,
+    ) -> Result<TelemetrySnapshot, TelemetryStoreError> {
+        let name_filter = request.name.clone().unwrap_or_default();
+        let metric_rows = self
+            .client
+            .query(
+                "SELECT kind, name, \
+                        COUNT(*) AS calls, \
+                        COUNT(*) FILTER (WHERE outcome <> 1) AS errors, \
+                        MAX(occurred_at) FILTER (WHERE outcome = 1) AS last_success_at, \
+                        MAX(occurred_at) FILTER (WHERE outcome <> 1) AS last_error_at, \
+                        COALESCE(AVG(duration_ms)::double precision, 0) AS average_duration_ms \
+                 FROM telemetry_events \
+                 WHERE tenant_id = $1 AND repository_id = $2 \
+                   AND ($3::smallint = 0 OR kind = $3::smallint) \
+                   AND ($4 = '' OR name = $4) \
+                 GROUP BY kind, name \
+                 ORDER BY kind, name",
+                &[
+                    &request.tenant_id,
+                    &request.repository_id,
+                    &request.kind,
+                    &name_filter,
+                ],
+            )
+            .await?;
+        let metrics = metric_rows
+            .into_iter()
+            .map(|row| {
+                let last_success_at: Option<SystemTime> = row.get("last_success_at");
+                let last_error_at: Option<SystemTime> = row.get("last_error_at");
+                let currently_failing = match (last_error_at, last_success_at) {
+                    (Some(error_at), Some(success_at)) => error_at > success_at,
+                    (Some(_), None) => true,
+                    (None, _) => false,
+                };
+                TelemetryMetric {
+                    kind: row.get("kind"),
+                    name: row.get("name"),
+                    calls: row.get("calls"),
+                    errors: row.get("errors"),
+                    currently_failing,
+                    last_success_at,
+                    last_error_at,
+                    average_duration_ms: row.get("average_duration_ms"),
+                }
+            })
+            .collect();
+
+        let bucket_seconds = request.bucket_seconds.max(1);
+        let series_rows = self
+            .client
+            .query(
+                "WITH bucketed AS ( \
+                     SELECT kind, name, \
+                            date_bin(make_interval(secs => $5), occurred_at, TIMESTAMPTZ 'epoch') \
+                                AS bucket_start, \
+                            COUNT(*) AS calls, \
+                            COUNT(*) FILTER (WHERE outcome <> 1) AS errors, \
+                            COALESCE(AVG(duration_ms)::double precision, 0) AS average_duration_ms \
+                     FROM telemetry_events \
+                     WHERE tenant_id = $1 AND repository_id = $2 \
+                       AND ($3::smallint = 0 OR kind = $3::smallint) \
+                       AND ($4 = '' OR name = $4) \
+                     GROUP BY kind, name, bucket_start \
+                 ), ranked AS ( \
+                     SELECT *, ROW_NUMBER() OVER ( \
+                         PARTITION BY kind, name ORDER BY bucket_start DESC \
+                     ) AS recency_rank \
+                     FROM bucketed \
+                 ) \
+                 SELECT kind, name, bucket_start, calls, errors, average_duration_ms \
+                 FROM ranked \
+                 WHERE recency_rank <= $6 \
+                 ORDER BY kind, name, bucket_start ASC",
+                &[
+                    &request.tenant_id,
+                    &request.repository_id,
+                    &request.kind,
+                    &name_filter,
+                    &(bucket_seconds as f64),
+                    &request.max_points,
+                ],
+            )
+            .await?;
+        let mut series: Vec<TelemetrySeries> = Vec::new();
+        for row in series_rows {
+            let kind: i16 = row.get("kind");
+            let name: String = row.get("name");
+            let point = TelemetryPoint {
+                bucket_start_at: row.get("bucket_start"),
+                calls: row.get("calls"),
+                errors: row.get("errors"),
+                average_duration_ms: row.get("average_duration_ms"),
+            };
+            match series
+                .iter_mut()
+                .find(|entry| entry.kind == kind && entry.name == name)
+            {
+                Some(entry) => entry.points.push(point),
+                None => series.push(TelemetrySeries {
+                    kind,
+                    name,
+                    points: vec![point],
+                }),
+            }
+        }
+
+        Ok(TelemetrySnapshot {
+            metrics,
+            series,
+            observed_at: SystemTime::now(),
+        })
+    }
+}
+
+fn unique_telemetry_id() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes).expect("the OS random source should be available");
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("telemetry-{hex}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_scope(label: &str) -> (String, String) {
+        let mut bytes = [0u8; 8];
+        getrandom::getrandom(&mut bytes).expect("the OS random source should be available");
+        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        (
+            format!("tenant-{label}-{hex}"),
+            format!("repo-{label}-{hex}"),
+        )
+    }
+
+    async fn connect() -> Option<TelemetryStore> {
+        let database_url = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()?;
+        Some(
+            TelemetryStore::connect(&database_url)
+                .await
+                .expect("connect to the test database"),
+        )
+    }
+
+    fn request(
+        tenant_id: &str,
+        repository_id: &str,
+        name: &str,
+        outcome: i16,
+    ) -> RecordTelemetryRequest {
+        RecordTelemetryRequest {
+            tenant_id: tenant_id.to_string(),
+            repository_id: repository_id.to_string(),
+            node_id: "node-1".to_string(),
+            agent_session_id: None,
+            kind: 1,
+            name: name.to_string(),
+            outcome,
+            duration_ms: 42,
+            occurred_at: SystemTime::now(),
+            measurements: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn recorded_telemetry_is_read_back_as_a_current_health_metric() {
+        let Some(store) = connect().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, repository_id) = unique_scope("health");
+        store
+            .record(request(&tenant_id, &repository_id, "run_tests", 1))
+            .await
+            .expect("record a successful call");
+
+        let snapshot = store
+            .read(ReadTelemetryRequest {
+                tenant_id: tenant_id.clone(),
+                repository_id: repository_id.clone(),
+                kind: 0,
+                name: None,
+                bucket_seconds: 3600,
+                max_points: 10,
+            })
+            .await
+            .expect("read the snapshot");
+
+        assert_eq!(snapshot.metrics.len(), 1);
+        let metric = &snapshot.metrics[0];
+        assert_eq!(metric.calls, 1);
+        assert_eq!(metric.errors, 0);
+        assert!(!metric.currently_failing);
+        assert!(metric.last_success_at.is_some());
+        assert!(metric.last_error_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_later_success_clears_currently_failing_despite_lifetime_errors() {
+        let Some(store) = connect().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, repository_id) = unique_scope("recovers");
+        let mut first_error = request(&tenant_id, &repository_id, "flaky_tool", 2);
+        first_error.occurred_at = SystemTime::now() - std::time::Duration::from_secs(60);
+        store.record(first_error).await.expect("record the error");
+        store
+            .record(request(&tenant_id, &repository_id, "flaky_tool", 1))
+            .await
+            .expect("record the later success");
+
+        let snapshot = store
+            .read(ReadTelemetryRequest {
+                tenant_id,
+                repository_id,
+                kind: 0,
+                name: None,
+                bucket_seconds: 3600,
+                max_points: 10,
+            })
+            .await
+            .expect("read the snapshot");
+
+        let metric = &snapshot.metrics[0];
+        assert_eq!(metric.calls, 2);
+        assert_eq!(metric.errors, 1);
+        assert!(
+            !metric.currently_failing,
+            "a resolved past error must not read as an active fault"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unresolved_error_reads_as_currently_failing() {
+        let Some(store) = connect().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, repository_id) = unique_scope("failing");
+        store
+            .record(request(&tenant_id, &repository_id, "broken_tool", 2))
+            .await
+            .expect("record the error");
+
+        let snapshot = store
+            .read(ReadTelemetryRequest {
+                tenant_id,
+                repository_id,
+                kind: 0,
+                name: None,
+                bucket_seconds: 3600,
+                max_points: 10,
+            })
+            .await
+            .expect("read the snapshot");
+
+        assert!(snapshot.metrics[0].currently_failing);
+    }
+
+    #[tokio::test]
+    async fn read_is_tenant_scoped() {
+        let Some(store) = connect().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let (tenant_a, repo_a) = unique_scope("tenant-a");
+        let (tenant_b, repo_b) = unique_scope("tenant-b");
+        store
+            .record(request(&tenant_a, &repo_a, "shared_name", 1))
+            .await
+            .expect("record for tenant a");
+        store
+            .record(request(&tenant_b, &repo_b, "shared_name", 1))
+            .await
+            .expect("record for tenant b");
+
+        let snapshot = store
+            .read(ReadTelemetryRequest {
+                tenant_id: tenant_a,
+                repository_id: repo_a,
+                kind: 0,
+                name: None,
+                bucket_seconds: 3600,
+                max_points: 10,
+            })
+            .await
+            .expect("read the snapshot");
+
+        assert_eq!(snapshot.metrics.len(), 1);
+        assert_eq!(snapshot.metrics[0].calls, 1);
+    }
+
+    #[tokio::test]
+    async fn name_must_not_be_empty() {
+        let Some(store) = connect().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, repository_id) = unique_scope("empty-name");
+        let mut req = request(&tenant_id, &repository_id, "x", 1);
+        req.name = String::new();
+        let result = store.record(req).await;
+        assert!(matches!(result, Err(TelemetryStoreError::InvalidName)));
+    }
+
+    #[tokio::test]
+    async fn measurements_are_bounded_by_count() {
+        let Some(store) = connect().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, repository_id) = unique_scope("too-many");
+        let mut req = request(&tenant_id, &repository_id, "x", 1);
+        req.measurements = (0..MAX_MEASUREMENTS + 1)
+            .map(|i| (format!("m{i}"), 1.0))
+            .collect();
+        let result = store.record(req).await;
+        assert!(matches!(
+            result,
+            Err(TelemetryStoreError::TooManyMeasurements)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_non_finite_measurement_is_refused() {
+        let Some(store) = connect().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, repository_id) = unique_scope("non-finite");
+        let mut req = request(&tenant_id, &repository_id, "x", 1);
+        req.measurements = vec![("nan_measurement".to_string(), f64::NAN)];
+        let result = store.record(req).await;
+        assert!(matches!(
+            result,
+            Err(TelemetryStoreError::NonFiniteMeasurement)
+        ));
+    }
+
+    #[tokio::test]
+    async fn nonce_is_consumed_exactly_once() {
+        let Some(store) = connect().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let mut bytes = [0u8; 8];
+        getrandom::getrandom(&mut bytes).expect("the OS random source should be available");
+        let key_id = format!(
+            "key-{}",
+            bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        );
+        let nonce = vec![7u8; 16];
+        let now = SystemTime::now();
+        let first = store
+            .consume_telemetry_nonce(&key_id, &nonce, now)
+            .await
+            .expect("consume the nonce");
+        let second = store
+            .consume_telemetry_nonce(&key_id, &nonce, now)
+            .await
+            .expect("consume the nonce again");
+        assert!(first, "the first use of a fresh nonce must be accepted");
+        assert!(!second, "a repeated nonce must be refused");
+    }
+}
