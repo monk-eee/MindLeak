@@ -54,13 +54,14 @@ impl LiveFeedStore {
             .await?;
         let next_position: i64 = head.get("stream_position");
         let next_position = next_position + 1;
-        transaction
-            .execute(
+        let row = transaction
+            .query_one(
                 "INSERT INTO live_feed_events ( \
                      tenant_id, stream_position, cursor, repository_id, event_kind, resource_type, \
                      resource_id, change_kind, resource_version, source_ledger_position, projection_position, \
                      projection_freshness, snapshot_reload, source_digest, published_by, emitted_at \
-                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)",
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) \
+                 RETURNING emitted_at",
                 &[
                     &publication.tenant_id,
                     &next_position,
@@ -81,6 +82,7 @@ impl LiveFeedStore {
                 ],
             )
             .await?;
+        let emitted_at: SystemTime = row.get("emitted_at");
         transaction
             .execute(
                 "UPDATE live_feed_heads SET stream_position = $2 WHERE tenant_id = $1",
