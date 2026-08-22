@@ -7,8 +7,9 @@ use tonic::{Request, Response, Status};
 
 use crate::evidence_signature::EvidenceAuthRefusal;
 use crate::evidence_store::{
-    normalize_postgres_timestamp, ConformanceCursor, ConformanceFindingCode, ConformanceRecord,
-    ConformanceReviewState, ConformanceStoreError, ConformanceVerdict, RecordConformanceRequest,
+    normalize_postgres_timestamp, ConformanceCursor, ConformanceFindingCode,
+    ConformanceHistoryFilter, ConformanceRecord, ConformanceReviewState, ConformanceStoreError,
+    ConformanceVerdict, RecordConformanceRequest,
 };
 
 use super::{effective_limit, parse_cursor, parse_rfc3339, rfc3339, EvidenceGrpcService};
@@ -283,7 +284,7 @@ impl EvidenceGrpcService {
                 &request.tenant_id,
                 &request.repository_id,
                 &request.task_id,
-                None,
+                ConformanceHistoryFilter::default(),
                 cursor.as_ref(),
                 i64::from(limit),
             )

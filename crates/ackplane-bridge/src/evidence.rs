@@ -8,9 +8,9 @@ use std::error::Error;
 use std::time::{Duration, SystemTime};
 
 use ackplane_server::evidence_store::{
-    ConformanceCursor, ConformancePage, ConformanceRecord, ConformanceReviewState,
-    ConformanceStoreError, ConformanceVerdict, EvidenceCursor, EvidenceKind, EvidencePage,
-    EvidenceRecord, EvidenceStore, EvidenceStoreError,
+    ConformanceCursor, ConformanceHistoryFilter, ConformancePage, ConformanceRecord,
+    ConformanceReviewState, ConformanceStoreError, ConformanceVerdict, EvidenceCursor,
+    EvidenceKind, EvidencePage, EvidenceRecord, EvidenceStore, EvidenceStoreError,
 };
 
 pub const DEFAULT_PAGE_SIZE: u32 = 20;
@@ -232,7 +232,7 @@ impl BridgeEvidenceStore {
         tenant_id: &str,
         repository_id: &str,
         task_id: &str,
-        agent_id: Option<&str>,
+        filter: ConformanceHistoryFilter<'_>,
         cursor: Option<&ConformanceCursor>,
         requested_limit: Option<u32>,
     ) -> Result<ConformancePage, ConformanceStoreError> {
@@ -241,7 +241,7 @@ impl BridgeEvidenceStore {
                 tenant_id,
                 repository_id,
                 task_id,
-                agent_id,
+                filter,
                 cursor,
                 page_limit(requested_limit),
             )
@@ -305,11 +305,7 @@ fn verdict_label(verdict: ConformanceVerdict) -> &'static str {
 }
 
 fn review_state_label(state: ConformanceReviewState) -> &'static str {
-    match state {
-        ConformanceReviewState::NotRequired => "not_required",
-        ConformanceReviewState::Pending => "pending",
-        ConformanceReviewState::Blocked => "blocked",
-    }
+    state.label()
 }
 
 fn data_state(entries: usize, has_next_page: bool) -> EvidenceDataState {

@@ -14,14 +14,15 @@ mod pagination;
 
 pub(crate) use conformance::normalize_postgres_timestamp;
 pub use conformance::{
-    ConformanceCursor, ConformanceFindingCode, ConformancePage, ConformanceRecord,
-    ConformanceReviewState, ConformanceStoreError, ConformanceVerdict, RecordConformanceOutcome,
-    RecordConformanceRequest,
+    ConformanceCursor, ConformanceFindingCode, ConformanceHistoryFilter, ConformancePage,
+    ConformanceRecord, ConformanceReviewState, ConformanceStoreError, ConformanceVerdict,
+    RecordConformanceOutcome, RecordConformanceRequest,
 };
 pub use pagination::{EvidenceCursor, EvidencePage};
 
 const MIGRATION: &str = include_str!("../migrations/0014_evidence.sql");
 const CONFORMANCE_MIGRATION: &str = include_str!("../migrations/0015_evidence_conformance.sql");
+const REVIEW_FILTER_MIGRATION: &str = include_str!("../migrations/0016_evidence_review_filter.sql");
 const SHA256_DIGEST_BYTES: usize = 32;
 const MAX_TASK_ID_BYTES: usize = 256;
 const MAX_SOURCE_REF_BYTES: usize = 512;
@@ -153,6 +154,12 @@ impl EvidenceStore {
             &mut client,
             crate::migration_lock::key::EVIDENCE_CONFORMANCE,
             CONFORMANCE_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::EVIDENCE_REVIEW_FILTER,
+            REVIEW_FILTER_MIGRATION,
         )
         .await?;
         Ok(Self { client })

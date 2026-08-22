@@ -74,7 +74,7 @@
     .eyebrow { margin: 0 0 5px; font-size: 0.69rem; color: var(--soft); font-weight: 750; letter-spacing: .09em; text-transform: uppercase; }
     .heading h2 { margin: 0; font-size: 1.55rem; letter-spacing: 0; }
     .heading p { margin: 5px 0 0; color: var(--muted); font-size: .86rem; max-width: 50ch; }
-    .toolbar { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) minmax(150px, 1fr) 106px auto auto; gap: 10px; align-items: end; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 13px; box-shadow: var(--shadow); }
+    .toolbar { display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr)) 106px auto auto; gap: 10px; align-items: end; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 13px; box-shadow: var(--shadow); }
     label { display: grid; gap: 5px; color: var(--soft); font-size: .7rem; font-weight: 700; letter-spacing: .045em; text-transform: uppercase; }
     input, select { width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--ink); background: var(--surface); font-size: .85rem; text-transform: none; letter-spacing: 0; }
     .command { height: 37px; padding: 0 13px; border: 1px solid transparent; border-radius: 6px; background: var(--ink); color: var(--surface); font-weight: 700; cursor: pointer; font-size: .82rem; }
@@ -148,6 +148,7 @@
       <label>Repository<input id="repository" name="repository" required autocomplete="off" spellcheck="false"></label>
       <label>Task<input id="task" name="task" required autocomplete="off" spellcheck="false"></label>
       <label>Agent<input id="agent" name="agent" autocomplete="off" spellcheck="false" placeholder="Optional node ID"></label>
+      <label>Review state<select id="review-filter" name="review-state"><option value="">All states</option><option value="pending">Pending</option><option value="blocked">Blocked</option><option value="not_required">Not required</option></select></label>
       <label>Page size<select id="limit" name="limit"><option>10</option><option selected>20</option><option>50</option><option>100</option></select></label>
       <button class="command" type="submit">Load</button>
       <button id="export" class="command secondary" type="button" disabled>Export</button>
@@ -169,7 +170,7 @@
   </main>
   <script>
     const els = {
-      form: document.getElementById("filters"), repository: document.getElementById("repository"), task: document.getElementById("task"), agent: document.getElementById("agent"), limit: document.getElementById("limit"),
+      form: document.getElementById("filters"), repository: document.getElementById("repository"), task: document.getElementById("task"), agent: document.getElementById("agent"), review: document.getElementById("review-filter"), limit: document.getElementById("limit"),
       export: document.getElementById("export"), message: document.getElementById("message"), scope: document.getElementById("scope-label"),
       status: document.getElementById("status-grid"), board: document.getElementById("board"), links: document.getElementById("api-links"),
       evidence: document.getElementById("evidence-list"), conformance: document.getElementById("conformance-list"), evidenceCount: document.getElementById("evidence-count"), conformanceCount: document.getElementById("conformance-count"),
@@ -180,16 +181,18 @@
     els.repository.value = params.get("repository") || "";
     els.task.value = params.get("task") || "";
     els.agent.value = params.get("agent_id") || "";
+    els.review.value = params.get("review_state") || "";
     const escape = (value) => String(value ?? "").replace(/[&<>"]/g, character => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[character]));
     const when = (seconds) => Number.isFinite(seconds) ? new Date(seconds * 1000).toLocaleString() : "unknown";
     const setMessage = (text, error = false) => { els.message.textContent = text; els.message.classList.toggle("error", error); };
     const state = (id, value) => { const node = document.getElementById(id); node.className = `metric state-${value}`; node.querySelector("strong").textContent = value.replaceAll("_", " "); };
     const endpoint = (suffix) => `/api/v1/repositories/${encodeURIComponent(els.repository.value.trim())}/tasks/${encodeURIComponent(els.task.value.trim())}/${suffix}`;
     const detailHref = (kind, recordId) => endpoint(`${kind}/${encodeURIComponent(recordId)}`);
-    const listQuery = (cursor) => {
+    const listQuery = (cursor, includeReviewState = false) => {
       const query = new URLSearchParams({limit: els.limit.value});
       const agentId = els.agent.value.trim();
       if (agentId) query.set("agent_id", agentId);
+      if (includeReviewState && els.review.value) query.set("review_state", els.review.value);
       if (cursor) query.set("cursor", cursor);
       return query;
     };
@@ -225,13 +228,14 @@
       els.status.classList.remove("hidden"); els.board.classList.remove("hidden"); els.links.classList.remove("hidden"); els.export.disabled = false;
       state("evidence-state", result.status.evidence); state("conformance-state", result.status.conformance); state("review-state", result.status.review); state("freshness-state", result.status.freshness);
       document.getElementById("freshness-time").textContent = Number.isFinite(result.status.latest_recorded_at_seconds) ? `Recorded ${when(result.status.latest_recorded_at_seconds)}` : "";
-      els.scope.textContent = `${els.repository.value.trim()} / ${els.task.value.trim()}`;
+      const reviewScope = result.review_state_filter ? ` · review: ${result.review_state_filter.replaceAll("_", " ")}` : "";
+      els.scope.textContent = `${els.repository.value.trim()} / ${els.task.value.trim()}${reviewScope}`;
       drawRecords();
       related();
     };
     async function load() {
       if (!els.form.reportValidity()) return;
-      const query = listQuery();
+      const query = listQuery(null, true);
       const agentId = els.agent.value.trim();
       setMessage("Loading evidence..."); els.export.disabled = true;
       try {
@@ -240,6 +244,7 @@
         draw(await response.json()); setMessage("Loaded.");
         const pageQuery = new URLSearchParams({repository: els.repository.value.trim(), task: els.task.value.trim()});
         if (agentId) pageQuery.set("agent_id", agentId);
+        if (els.review.value) pageQuery.set("review_state", els.review.value);
         history.replaceState(null, "", `/evidence?${pageQuery}`);
       } catch (error) { setMessage(error.message, true); }
     }
@@ -250,7 +255,7 @@
       button.disabled = true;
       setMessage(`Loading older ${kind}...`);
       try {
-        const response = await fetch(`${endpoint(kind)}?${listQuery(loaded[kind].next_cursor)}`);
+        const response = await fetch(`${endpoint(kind)}?${listQuery(loaded[kind].next_cursor, kind === "conformance")}`);
         if (!response.ok) throw new Error(`Older ${kind} request failed (${response.status}).`);
         const page = await response.json();
         loaded[kind] = {...page, entries: [...loaded[kind].entries, ...page.entries]};
@@ -265,7 +270,7 @@
       if (!loaded) return;
       setMessage("Preparing audit package...");
       try {
-        const query = listQuery();
+        const query = listQuery(null, true);
         const response = await fetch(`${endpoint("evidence-board/export")}?${query}`);
         if (!response.ok) throw new Error(`Audit export failed (${response.status}).`);
         const auditPackage = await response.json();

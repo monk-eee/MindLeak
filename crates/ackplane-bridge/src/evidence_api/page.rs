@@ -22,6 +22,9 @@ mod tests {
             "id=\"task\"",
             "id=\"agent\"",
             "agent_id",
+            "id=\"review-filter\"",
+            "review_state",
+            "review_state_filter",
             "id=\"freshness-time\"",
             "latest_recorded_at_seconds",
             "id=\"evidence-older\"",
@@ -44,5 +47,10 @@ mod tests {
                 "Evidence Board page must retain its {required} workflow binding"
             );
         }
+        assert_eq!(
+            body.matches("id=\"review-filter\"").count(),
+            1,
+            "the review-state selector must not collide with a status-card identifier"
+        );
     }
 }

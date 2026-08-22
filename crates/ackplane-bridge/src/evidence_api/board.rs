@@ -2,7 +2,9 @@
 
 use std::time::SystemTime;
 
-use ackplane_server::evidence_store::{ConformanceCursor, EvidenceCursor};
+use ackplane_server::evidence_store::{
+    ConformanceCursor, ConformanceHistoryFilter, EvidenceCursor,
+};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -17,14 +19,15 @@ use crate::evidence::{
 
 use super::{
     conformance_store_error, encode_cursor, ensure_repository_visible, evidence_store_error,
-    parse_cursor, unix_seconds, ConformanceEntryResponse, ConformancePageResponse,
-    EvidenceApiState, EvidenceEntryResponse, EvidencePageResponse,
+    parse_cursor, parse_review_state, unix_seconds, ConformanceEntryResponse,
+    ConformancePageResponse, EvidenceApiState, EvidenceEntryResponse, EvidencePageResponse,
 };
 
 #[derive(Deserialize)]
 pub(super) struct EvidenceBoardQuery {
     limit: Option<u32>,
     agent_id: Option<String>,
+    review_state: Option<String>,
     evidence_cursor: Option<String>,
     conformance_cursor: Option<String>,
 }
@@ -33,6 +36,7 @@ pub(super) struct EvidenceBoardQuery {
 pub(super) struct EvidenceBoardResponse {
     evidence: EvidencePageResponse,
     conformance: ConformancePageResponse,
+    review_state_filter: Option<&'static str>,
     status: EvidenceBoardStatusResponse,
 }
 
@@ -51,6 +55,7 @@ pub(super) async fn evidence_board(
     Query(query): Query<EvidenceBoardQuery>,
 ) -> Result<Json<EvidenceBoardResponse>, StatusCode> {
     ensure_repository_visible(&state, &repository_id).await?;
+    let review_state = parse_review_state(query.review_state.as_deref())?;
     let evidence_cursor =
         parse_cursor(query.evidence_cursor.as_deref())?.map(|(recorded_at, evidence_id)| {
             EvidenceCursor {
@@ -84,7 +89,10 @@ pub(super) async fn evidence_board(
             state.tenant_id.as_ref(),
             &repository_id,
             &task_id,
-            query.agent_id.as_deref(),
+            ConformanceHistoryFilter {
+                agent_id: query.agent_id.as_deref(),
+                review_state,
+            },
             conformance_cursor.as_ref(),
             query.limit,
         )
@@ -134,6 +142,7 @@ pub(super) async fn evidence_board(
                 .map(|cursor| encode_cursor(cursor.recorded_at, cursor.conformance_id))
                 .transpose()?,
         },
+        review_state_filter: review_state.map(|state| state.label()),
         status: EvidenceBoardStatusResponse {
             evidence: data_state_label(status.evidence),
             conformance: data_state_label(status.conformance),

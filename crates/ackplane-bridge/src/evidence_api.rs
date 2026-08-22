@@ -11,7 +11,8 @@ use std::{
 
 use ackplane_server::{
     evidence_store::{
-        ConformanceCursor, ConformanceStoreError, EvidenceCursor, EvidenceStoreError,
+        ConformanceCursor, ConformanceHistoryFilter, ConformanceReviewState, ConformanceStoreError,
+        EvidenceCursor, EvidenceStoreError,
     },
     fleet::FleetStore,
 };
@@ -93,6 +94,7 @@ struct EvidencePageQuery {
     limit: Option<u32>,
     cursor: Option<String>,
     agent_id: Option<String>,
+    review_state: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -220,6 +222,7 @@ async fn task_conformance(
     Query(query): Query<EvidencePageQuery>,
 ) -> Result<Json<ConformancePageResponse>, StatusCode> {
     ensure_repository_visible(&state, &repository_id).await?;
+    let review_state = parse_review_state(query.review_state.as_deref())?;
     let cursor = parse_cursor(query.cursor.as_deref())?.map(|(recorded_at, conformance_id)| {
         ConformanceCursor {
             recorded_at,
@@ -233,7 +236,10 @@ async fn task_conformance(
             state.tenant_id.as_ref(),
             &repository_id,
             &task_id,
-            query.agent_id.as_deref(),
+            ConformanceHistoryFilter {
+                agent_id: query.agent_id.as_deref(),
+                review_state,
+            },
             cursor.as_ref(),
             query.limit,
         )
@@ -365,6 +371,13 @@ pub(super) fn parse_cursor(raw: Option<&str>) -> Result<Option<(SystemTime, Stri
         .and_then(|timestamp| timestamp.checked_add(Duration::from_nanos(u64::from(nanos))))
         .ok_or(StatusCode::BAD_REQUEST)?;
     Ok(Some((timestamp, record_id.to_string())))
+}
+
+pub(super) fn parse_review_state(
+    raw: Option<&str>,
+) -> Result<Option<ConformanceReviewState>, StatusCode> {
+    raw.map(|value| ConformanceReviewState::from_label(value).ok_or(StatusCode::BAD_REQUEST))
+        .transpose()
 }
 
 #[cfg(test)]

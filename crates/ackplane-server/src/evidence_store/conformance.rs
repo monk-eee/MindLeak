@@ -68,6 +68,23 @@ pub enum ConformanceReviewState {
 }
 
 impl ConformanceReviewState {
+    pub fn from_label(value: &str) -> Option<Self> {
+        match value {
+            "not_required" => Some(Self::NotRequired),
+            "pending" => Some(Self::Pending),
+            "blocked" => Some(Self::Blocked),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NotRequired => "not_required",
+            Self::Pending => "pending",
+            Self::Blocked => "blocked",
+        }
+    }
+
     fn as_i16(self) -> i16 {
         match self {
             Self::NotRequired => 1,
@@ -179,6 +196,13 @@ pub struct ConformanceCursor {
 pub struct ConformancePage {
     pub entries: Vec<ConformanceRecord>,
     pub next_cursor: Option<ConformanceCursor>,
+}
+
+/// Optional predicates for one conformance history view.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ConformanceHistoryFilter<'a> {
+    pub agent_id: Option<&'a str>,
+    pub review_state: Option<ConformanceReviewState>,
 }
 
 impl EvidenceStore {
@@ -555,7 +579,14 @@ mod tests {
         }
 
         let first = store
-            .list_conformance_page(&tenant_id, &repository_id, "task:123", None, None, 1)
+            .list_conformance_page(
+                &tenant_id,
+                &repository_id,
+                "task:123",
+                ConformanceHistoryFilter::default(),
+                None,
+                1,
+            )
             .await
             .unwrap();
         let cursor = first
@@ -567,7 +598,7 @@ mod tests {
                 &tenant_id,
                 &repository_id,
                 "task:123",
-                None,
+                ConformanceHistoryFilter::default(),
                 Some(&cursor),
                 1,
             )

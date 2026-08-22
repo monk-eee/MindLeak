@@ -6,7 +6,9 @@
 
 use std::time::SystemTime;
 
-use ackplane_server::evidence_store::{ConformanceCursor, EvidenceCursor};
+use ackplane_server::evidence_store::{
+    ConformanceCursor, ConformanceHistoryFilter, EvidenceCursor,
+};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -19,7 +21,7 @@ use crate::evidence::{page_limit, ConformanceView, EvidenceView};
 
 use super::{
     conformance_store_error, encode_cursor, ensure_repository_visible, evidence_store_error,
-    parse_cursor, unix_seconds, EvidenceApiState,
+    parse_cursor, parse_review_state, unix_seconds, EvidenceApiState,
 };
 
 const EXPORT_SCHEMA_VERSION: u32 = 1;
@@ -28,6 +30,7 @@ const EXPORT_SCHEMA_VERSION: u32 = 1;
 pub(super) struct EvidenceExportQuery {
     limit: Option<u32>,
     agent_id: Option<String>,
+    review_state: Option<String>,
     evidence_cursor: Option<String>,
     conformance_cursor: Option<String>,
 }
@@ -40,6 +43,7 @@ pub(super) struct EvidenceExportResponse {
     repository_id: String,
     task_id: String,
     agent_id: Option<String>,
+    review_state_filter: Option<&'static str>,
     effective_limit: i64,
     redaction: &'static str,
     evidence_complete: bool,
@@ -128,6 +132,7 @@ pub(super) async fn evidence_export(
     // The same tenant visibility guard as every Evidence route is the export
     // authorization boundary in the loopback developer profile.
     ensure_repository_visible(&state, &repository_id).await?;
+    let review_state = parse_review_state(query.review_state.as_deref())?;
     let evidence_cursor =
         parse_cursor(query.evidence_cursor.as_deref())?.map(|(recorded_at, evidence_id)| {
             EvidenceCursor {
@@ -161,7 +166,10 @@ pub(super) async fn evidence_export(
             state.tenant_id.as_ref(),
             &repository_id,
             &task_id,
-            query.agent_id.as_deref(),
+            ConformanceHistoryFilter {
+                agent_id: query.agent_id.as_deref(),
+                review_state,
+            },
             conformance_cursor.as_ref(),
             query.limit,
         )
@@ -183,6 +191,7 @@ pub(super) async fn evidence_export(
         repository_id,
         task_id,
         agent_id: query.agent_id,
+        review_state_filter: review_state.map(|state| state.label()),
         effective_limit,
         redaction: "evidence bodies, finding bodies, credentials, raw session labels, and idempotency keys are omitted",
         evidence_complete: next_evidence_cursor.is_none(),
