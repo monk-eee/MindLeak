@@ -67,6 +67,10 @@ pub(crate) mod key {
     pub(crate) const EVIDENCE_REVIEW_FILTER: i64 = 18;
     /// `migrations/0020_context_packets.sql`
     pub(crate) const CONTEXT_PACKETS: i64 = 20;
+    /// `migrations/0022_human_delegation.sql`
+    pub(crate) const HUMAN_DELEGATION: i64 = 22;
+    /// `migrations/0023_human_delegation_event_payloads.sql`
+    pub(crate) const HUMAN_DELEGATION_EVENT_PAYLOADS: i64 = 23;
     /// `migrations/0024_supervisor_session_projection.sql`
     pub(crate) const SUPERVISOR_SESSION_PROJECTION: i64 = 24;
 }
