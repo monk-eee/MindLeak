@@ -23,7 +23,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
-        IntoResponse,
+        Html, IntoResponse,
     },
     routing::get,
     Router,
@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 const REPLAY_BATCH_LIMIT: i64 = 100;
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
+const LIVE_FEED_PAGE: &str = include_str!("../static/live_feed.html");
 
 /// Dependencies injected by the Bridge entry point when it merges Live Feed
 /// routes into the application.
@@ -59,6 +60,7 @@ impl LiveFeedApiState {
 /// later merges this router once its page ownership is available.
 pub fn live_feed_routes(state: LiveFeedApiState) -> Router {
     Router::new()
+        .route("/live", get(live_feed_page))
         .route("/api/v1/live", get(live_feed))
         .with_state(state)
 }
@@ -106,6 +108,10 @@ impl From<LiveFeedEvent> for LiveFeedEventResponse {
 struct ResyncRequiredResponse {
     reason: &'static str,
     snapshot_reload: bool,
+}
+
+async fn live_feed_page() -> Html<&'static str> {
+    Html(LIVE_FEED_PAGE)
 }
 
 async fn live_feed(
@@ -327,5 +333,33 @@ mod tests {
                 "emitted_at_seconds": 0,
             })
         );
+    }
+
+    #[tokio::test]
+    async fn live_feed_page_serves_the_embedded_asset() {
+        assert_eq!(live_feed_page().await.0, LIVE_FEED_PAGE);
+    }
+
+    #[test]
+    fn page_loads_a_snapshot_before_sse_and_resyncs_without_raw_metadata() {
+        let load_snapshot = &LIVE_FEED_PAGE[LIVE_FEED_PAGE
+            .find("async function loadSnapshot()")
+            .expect("the page must define snapshot loading")..];
+        let snapshot = load_snapshot
+            .find("fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}`)")
+            .expect("the page must fetch the tenant-scoped snapshot");
+        let stream = load_snapshot
+            .find("connectStream(repositoryId)")
+            .expect("the page must open the replayable SSE stream after the snapshot");
+
+        assert!(
+            snapshot < stream,
+            "the snapshot must establish a truthful view before streaming starts"
+        );
+        assert!(LIVE_FEED_PAGE.contains("resync_required"));
+        assert!(LIVE_FEED_PAGE.contains("snapshot reload"));
+        assert!(!LIVE_FEED_PAGE.contains("source_digest"));
+        assert!(!LIVE_FEED_PAGE.contains("published_by"));
+        assert!(!LIVE_FEED_PAGE.contains("tenant_id"));
     }
 }
