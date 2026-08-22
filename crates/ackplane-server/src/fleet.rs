@@ -52,8 +52,9 @@ pub enum RepositoryFreshness {
 /// Classify a projection's currency against the ledger head (ADR-0095
 /// decision 6), shared by every read that reports freshness so the Fleet
 /// list and a single repository's detail can never disagree about what
-/// "lagging" means.
-fn classify_freshness(
+/// "lagging" means. `pub(crate)` so the Readiness rollup classifies the
+/// exact same way rather than inventing a second judgment.
+pub(crate) fn classify_freshness(
     ledger_stream_position: i64,
     projection_stream_position: Option<i64>,
 ) -> RepositoryFreshness {
@@ -593,6 +594,47 @@ impl FleetStore {
         ))
     }
 
+    /// Every stranded (lease-expired) delegated claim for one tenant-scoped
+    /// repository, most-recently-expired last -- the complement of
+    /// `active_work`'s exclusion, and the list `recover` (ADR-0111) needs
+    /// but nothing previously exposed. An operator could recover a claim
+    /// only by already knowing its task id; this is how they find one.
+    pub async fn stranded_claims(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        now: SystemTime,
+        limit: i64,
+    ) -> Result<Option<Vec<ActiveWorkItem>>, tokio_postgres::Error> {
+        if self.repository(tenant_id, repository_id).await?.is_none() {
+            return Ok(None);
+        }
+        let rows = self
+            .client
+            .query(
+                "SELECT task_id, owner_id, branch, lease_expires_at, paths, symbols \
+                 FROM delegated_claims \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND lease_expires_at <= $3 \
+                 ORDER BY lease_expires_at ASC, task_id ASC \
+                 LIMIT $4",
+                &[&tenant_id, &repository_id, &now, &limit],
+            )
+            .await?;
+
+        Ok(Some(
+            rows.into_iter()
+                .map(|row| ActiveWorkItem {
+                    task_id: row.get(0),
+                    owner_id: row.get(1),
+                    branch: row.get(2),
+                    lease_expires_at: row.get(3),
+                    paths: row.get(4),
+                    symbols: row.get(5),
+                })
+                .collect(),
+        ))
+    }
+
     /// One page of every live delegated claim across ALL of a tenant's
     /// repositories (ADR-0105 decision 5), filtered, sorted, and paged
     /// server-side -- the cross-repository "who is working on what, right
@@ -731,114 +773,13 @@ impl FleetStore {
 mod tests {
     use std::time::{Duration, SystemTime};
 
-    use ed25519_dalek::{Signer, SigningKey};
-    use sha2::{Digest, Sha256};
-
     use super::*;
     use crate::{
         claim_store::{ClaimLeaseRequest, ClaimStore},
-        enrollment::{activation_challenge_bytes, public_key_fingerprint},
-        enrollment_store::{
-            ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
-            EnrollmentSubmission,
-        },
         ledger::{DedupKey, EventEnvelope, LedgerStore, ProvenanceClass},
         projection::{Projector, StructuralFact},
-        test_support::uuid_ish,
+        test_support::{enroll_and_activate, enroll_and_activate_in, uuid_ish},
     };
-
-    /// Enrolls and activates one node for `tenant_id`/`repository_id`,
-    /// shared by `enroll_and_activate` below and any test needing several
-    /// repositories under the SAME tenant (pagination, sort, filter).
-    /// `nonce_seed` must be unique per call: the activation-challenge nonce
-    /// carries a GLOBAL uniqueness constraint, not one scoped per tenant.
-    async fn enroll_and_activate_in(
-        database_url: &str,
-        tenant_id: &str,
-        repository_id: &str,
-        nonce_seed: &str,
-    ) {
-        let signing_key = SigningKey::from_bytes(&[11; 32]);
-        let public_key = signing_key.verifying_key().to_bytes();
-        let submission = EnrollmentSubmission {
-            request_id: format!("fleet-request-{nonce_seed}"),
-            tenant_id: tenant_id.to_string(),
-            repository_id: repository_id.to_string(),
-            proposed_node_id: format!("fleet-node-{nonce_seed}"),
-            display_name: "Fleet test node".to_string(),
-            public_key: public_key.to_vec(),
-            public_key_fingerprint: public_key_fingerprint(&public_key),
-            requested_capabilities: vec!["synchronize".to_string()],
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-            expires_at: "2030-01-01T00:00:00Z".to_string(),
-        };
-        let request = ActivationChallengeRequest {
-            request_id: submission.request_id.clone(),
-            tenant_id: tenant_id.to_string(),
-            repository_id: repository_id.to_string(),
-            proposed_node_id: submission.proposed_node_id.clone(),
-            public_key_fingerprint: submission.public_key_fingerprint.clone(),
-        };
-        let now = SystemTime::now();
-        let mut enrollment = EnrollmentStore::connect(database_url)
-            .await
-            .expect("connect enrollment store");
-        enrollment
-            .submit(&submission)
-            .await
-            .expect("submit enrollment");
-        enrollment
-            .approve(&EnrollmentApproval {
-                request_id: submission.request_id.clone(),
-                tenant_id: tenant_id.to_string(),
-                repository_id: repository_id.to_string(),
-                public_key_fingerprint: submission.public_key_fingerprint.clone(),
-                approved_capabilities: submission.requested_capabilities.clone(),
-                approved_by: "fleet-test-administrator".to_string(),
-            })
-            .await
-            .expect("approve enrollment");
-        // `activation_challenges.nonce` carries a GLOBAL unique constraint
-        // (not scoped per tenant/repo), so a hardcoded literal collides the
-        // moment this helper is called from more than one test in the same
-        // process. Derive it from `nonce_seed` instead.
-        let nonce: [u8; 32] = Sha256::digest(nonce_seed.as_bytes()).into();
-        let challenge = enrollment
-            .issue_challenge(&request, &nonce, now)
-            .await
-            .expect("issue activation challenge");
-        let signature = signing_key.sign(&activation_challenge_bytes(
-            &challenge.nonce,
-            &request.request_id,
-            &request.tenant_id,
-            &request.repository_id,
-            &request.proposed_node_id,
-            &request.public_key_fingerprint,
-        ));
-        enrollment
-            .activate(
-                &EnrollmentActivation {
-                    request,
-                    nonce: challenge.nonce,
-                    signature: signature.to_bytes().to_vec(),
-                },
-                &format!("fleet-receipt-{nonce_seed}"),
-                &format!("fleet-signing-key-{nonce_seed}"),
-                now,
-            )
-            .await
-            .expect("activate enrollment");
-    }
-
-    /// Enrolls and activates one node for a fresh tenant/repository pair, so
-    /// each test starts from an active Fleet entry without repeating the
-    /// enrolment ceremony inline.
-    async fn enroll_and_activate(database_url: &str, unique_id: &str) -> (String, String) {
-        let tenant_id = format!("fleet-tenant-{unique_id}");
-        let repository_id = format!("fleet-repository-{unique_id}");
-        enroll_and_activate_in(database_url, &tenant_id, &repository_id, unique_id).await;
-        (tenant_id, repository_id)
-    }
 
     #[tokio::test]
     async fn an_enrolled_repository_without_a_projection_remains_visible_in_fleet() {
@@ -1080,6 +1021,78 @@ mod tests {
         );
         assert!(fleet
             .active_work(
+                &format!("{tenant_id}-other"),
+                &repository_id,
+                now + Duration::from_secs(31),
+                50,
+            )
+            .await
+            .expect("query wrong tenant")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn stranded_claims_is_tenant_scoped_and_excludes_active_claims() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let (tenant_id, repository_id) =
+            enroll_and_activate(&database_url, &unique_id.to_string()).await;
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let mut claims = ClaimStore::connect(&database_url)
+            .await
+            .expect("connect claim store");
+
+        for (task_id, owner_id, lease_secs) in [
+            ("task:expired", "agent:expired", 30),
+            ("task:active", "agent:active", 120),
+        ] {
+            claims
+                .delegate(
+                    &ClaimLeaseRequest {
+                        tenant_id: tenant_id.clone(),
+                        repository_id: repository_id.clone(),
+                        task_id: task_id.to_string(),
+                        owner_id: owner_id.to_string(),
+                        branch: format!("work/{task_id}"),
+                        lease: Duration::from_secs(lease_secs),
+                        paths: vec![format!("src/{task_id}.rs")],
+                        symbols: vec![format!("symbol:{task_id}")],
+                    },
+                    now,
+                )
+                .await
+                .expect("delegate claim");
+        }
+
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+        let stranded = fleet
+            .stranded_claims(
+                &tenant_id,
+                &repository_id,
+                now + Duration::from_secs(31),
+                50,
+            )
+            .await
+            .expect("query stranded claims");
+
+        assert_eq!(
+            stranded.expect("repository is enrolled"),
+            vec![ActiveWorkItem {
+                task_id: "task:expired".to_string(),
+                owner_id: "agent:expired".to_string(),
+                branch: "work/task:expired".to_string(),
+                lease_expires_at: now + Duration::from_secs(30),
+                paths: vec!["src/task:expired.rs".to_string()],
+                symbols: vec!["symbol:task:expired".to_string()],
+            }]
+        );
+        assert!(fleet
+            .stranded_claims(
                 &format!("{tenant_id}-other"),
                 &repository_id,
                 now + Duration::from_secs(31),

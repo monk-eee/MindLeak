@@ -420,6 +420,9 @@ mod tests {
         let signing_key = SigningKey::from_bytes(&[9; 32]);
         let record_op = KnowledgeOperation::Record {
             content: "a lesson",
+            source_ref: Some("pr:538"),
+            reach_node_ids: &[],
+            reach_goal_id: None,
             half_life_hours: 720.0,
             embedding_model: None,
         };

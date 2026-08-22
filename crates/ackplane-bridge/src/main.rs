@@ -7,6 +7,7 @@ use ackplane_bridge::BridgeConfig;
 use ackplane_server::claim_store::{
     ClaimLeaseOutcome, ClaimRecoverRequest, ClaimStore, ClaimStoreError,
 };
+use ackplane_server::constitution_store::{ActiveConstitution, ClauseSnapshot, ConstitutionStore};
 use ackplane_server::fleet::{
     escape_like_pattern, ActiveWorkItem, FleetFilter, FleetPage, FleetRepository, FleetSort,
     FleetSortField, FleetStore, FleetWorkFilter, FleetWorkItem, FleetWorkPage, FleetWorkSort,
@@ -15,7 +16,11 @@ use ackplane_server::fleet::{
 };
 use ackplane_server::knowledge_store::{ActiveKnowledge, KnowledgeStore};
 use ackplane_server::projection::{BoundedNeighborhood, ProjectedNode, Projector};
+use ackplane_server::readiness::{
+    ReadinessPage, ReadinessStatus, ReadinessStore, RepositoryReadiness,
+};
 use ackplane_server::signing_keys::KeyResolution;
+use ackplane_server::telemetry_store::{ReadTelemetryRequest, TelemetryMetric, TelemetryStore};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -32,8 +37,11 @@ const FLEET_PAGE: &str = include_str!("../static/index.html");
 struct AppState {
     fleet: Arc<FleetStore>,
     knowledge: Arc<KnowledgeStore>,
+    constitution: Arc<ConstitutionStore>,
     claims: Arc<Mutex<ClaimStore>>,
     projector: Arc<Projector>,
+    readiness: Arc<ReadinessStore>,
+    telemetry: Arc<TelemetryStore>,
     tenant_id: Arc<str>,
 }
 
@@ -167,6 +175,63 @@ impl From<FleetWorkItem> for AgentWorkSummary {
     }
 }
 
+/// `GET /api/v1/readiness` query parameters (ADR-0105 decision 6). All
+/// optional; a first slice needs no filter or sort, unlike Fleet/Agents.
+#[derive(Deserialize)]
+struct ReadinessQuery {
+    page: Option<i64>,
+    page_size: Option<i64>,
+}
+
+const DEFAULT_READINESS_PAGE_SIZE: i64 = 20;
+const MAX_READINESS_PAGE_SIZE: i64 = 100;
+
+#[derive(Serialize)]
+struct ReadinessResponse {
+    items: Vec<RepositoryReadinessSummary>,
+    total: i64,
+    page: i64,
+    page_size: i64,
+}
+
+#[derive(Serialize)]
+struct RepositoryReadinessSummary {
+    repository_id: String,
+    active_node_count: i64,
+    freshness: &'static str,
+    active_claim_count: i64,
+    soonest_lease_expires_at_seconds: Option<u64>,
+    signing_keys_resolved: i64,
+    signing_keys_needing_attention: i64,
+    status: &'static str,
+}
+
+/// The status word the Readiness UI badges on; distinct from
+/// `freshness_label` since it names the OVERALL judgment, not just the
+/// projection state one of its inputs.
+fn readiness_status_label(status: ReadinessStatus) -> &'static str {
+    match status {
+        ReadinessStatus::Ready => "ready",
+        ReadinessStatus::AttentionNeeded => "attention_needed",
+        ReadinessStatus::NotReady => "not_ready",
+    }
+}
+
+impl From<RepositoryReadiness> for RepositoryReadinessSummary {
+    fn from(item: RepositoryReadiness) -> Self {
+        Self {
+            repository_id: item.repository_id,
+            active_node_count: item.active_node_count,
+            freshness: freshness_label(item.freshness),
+            active_claim_count: item.active_claim_count,
+            soonest_lease_expires_at_seconds: item.soonest_lease_expires_at.and_then(unix_seconds),
+            signing_keys_resolved: item.signing_keys_resolved,
+            signing_keys_needing_attention: item.signing_keys_needing_attention,
+            status: readiness_status_label(item.status),
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct FleetSummary {
     repository_id: String,
@@ -292,6 +357,11 @@ impl From<ActiveWorkItem> for ActiveWorkSummary {
             symbols: item.symbols,
         }
     }
+}
+
+#[derive(Serialize)]
+struct StrandedClaimsResponse {
+    claims: Vec<ActiveWorkSummary>,
 }
 
 #[derive(Deserialize)]
@@ -463,6 +533,112 @@ fn effective_weight(
     base_weight * 2.0_f64.powf(-elapsed_hours / half_life_hours)
 }
 
+#[derive(Serialize)]
+struct ConstitutionResponse {
+    found: bool,
+    version_id: Option<String>,
+    version: Option<i64>,
+    status: Option<String>,
+    published_at_seconds: Option<u64>,
+    clauses: Vec<ConstitutionClauseSummary>,
+}
+
+#[derive(Serialize)]
+struct ConstitutionClauseSummary {
+    id: String,
+    slug: String,
+    kind: String,
+    title: String,
+    statement: String,
+    status: String,
+    consequence: Option<String>,
+    scope: Option<String>,
+    rationale: Option<String>,
+}
+
+impl From<ClauseSnapshot> for ConstitutionClauseSummary {
+    fn from(clause: ClauseSnapshot) -> Self {
+        Self {
+            id: clause.id,
+            slug: clause.slug,
+            kind: clause.kind,
+            title: clause.title,
+            statement: clause.statement,
+            status: clause.status,
+            consequence: clause.consequence,
+            scope: clause.scope,
+            rationale: clause.rationale,
+        }
+    }
+}
+
+impl From<ActiveConstitution> for ConstitutionResponse {
+    fn from(active: ActiveConstitution) -> Self {
+        Self {
+            found: true,
+            version_id: Some(active.version_id),
+            version: Some(active.version),
+            status: Some(active.status),
+            published_at_seconds: unix_seconds(active.published_at),
+            clauses: active
+                .clauses
+                .into_iter()
+                .map(ConstitutionClauseSummary::from)
+                .collect(),
+        }
+    }
+}
+
+impl ConstitutionResponse {
+    fn not_found() -> Self {
+        Self {
+            found: false,
+            version_id: None,
+            version: None,
+            status: None,
+            published_at_seconds: None,
+            clauses: Vec::new(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct TelemetryResponse {
+    metrics: Vec<TelemetryMetricSummary>,
+}
+
+/// Current health per (kind, name) -- derived from the most recent
+/// success/error, distinct from the lifetime `calls`/`errors` counts also
+/// reported, so a resolved past error stops reading as an active fault the
+/// moment a later call succeeds (mirrors mindleak-core's own local
+/// NameMetric/currently_failing logic, ADR-0010).
+#[derive(Serialize)]
+struct TelemetryMetricSummary {
+    kind: i16,
+    name: String,
+    calls: i64,
+    errors: i64,
+    currently_failing: bool,
+    last_success_at_seconds: Option<u64>,
+    last_error_at_seconds: Option<u64>,
+    average_duration_ms: f64,
+}
+
+impl From<TelemetryMetric> for TelemetryMetricSummary {
+    fn from(metric: TelemetryMetric) -> Self {
+        Self {
+            kind: metric.kind,
+            name: metric.name,
+            calls: metric.calls,
+            errors: metric.errors,
+            currently_failing: metric.currently_failing,
+            last_success_at_seconds: metric.last_success_at.and_then(unix_seconds),
+            last_error_at_seconds: metric.last_error_at.and_then(unix_seconds),
+            average_duration_ms: metric.average_duration_ms,
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let salt_path = match std::env::var("ACKPLANE_BRIDGE_SALT_PATH") {
@@ -504,6 +680,15 @@ async fn main() {
             return;
         }
     };
+    let constitution_store = match ConstitutionStore::connect(config.database_url()).await {
+        Ok(constitution) => Arc::new(constitution),
+        Err(error) => {
+            eprintln!(
+                "ackplane-bridge: could not connect to Ackplane constitution domain: {error}"
+            );
+            return;
+        }
+    };
     let claim_store = match ClaimStore::connect(config.database_url()).await {
         Ok(claims) => Arc::new(Mutex::new(claims)),
         Err(error) => {
@@ -518,17 +703,35 @@ async fn main() {
             return;
         }
     };
+    let readiness_store = match ReadinessStore::connect(config.database_url()).await {
+        Ok(readiness) => Arc::new(readiness),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane readiness rollup: {error}");
+            return;
+        }
+    };
+    let telemetry_store = match TelemetryStore::connect(config.database_url()).await {
+        Ok(telemetry) => Arc::new(telemetry),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane telemetry domain: {error}");
+            return;
+        }
+    };
     let state = AppState {
         fleet: fleet_store,
         knowledge: knowledge_store,
+        constitution: constitution_store,
         claims: claim_store,
         projector,
+        readiness: readiness_store,
+        telemetry: telemetry_store,
         tenant_id: Arc::from(config.development_tenant_token),
     };
     let application = Router::new()
         .route("/", get(fleet_page))
         .route("/api/v1/fleet", get(fleet))
         .route("/api/v1/agents", get(agents))
+        .route("/api/v1/readiness", get(readiness))
         .route(
             "/api/v1/repositories/:repository_id",
             get(repository_detail),
@@ -542,6 +745,10 @@ async fn main() {
             get(repository_claims),
         )
         .route(
+            "/api/v1/repositories/:repository_id/stranded-claims",
+            get(repository_stranded_claims),
+        )
+        .route(
             "/api/v1/repositories/:repository_id/signing-keys",
             get(repository_signing_keys),
         )
@@ -552,6 +759,14 @@ async fn main() {
         .route(
             "/api/v1/repositories/:repository_id/graph",
             get(repository_graph),
+        )
+        .route(
+            "/api/v1/repositories/:repository_id/constitution",
+            get(repository_constitution),
+        )
+        .route(
+            "/api/v1/repositories/:repository_id/telemetry",
+            get(repository_telemetry),
         )
         .route(
             "/api/v1/repositories/:repository_id/tasks/:task_id/recover",
@@ -671,6 +886,40 @@ async fn agents(
         })
 }
 
+async fn readiness(
+    State(state): State<AppState>,
+    Query(query): Query<ReadinessQuery>,
+) -> Result<Json<ReadinessResponse>, StatusCode> {
+    let page = query.page.unwrap_or(1);
+    if page < 1 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let page_size = query
+        .page_size
+        .unwrap_or(DEFAULT_READINESS_PAGE_SIZE)
+        .clamp(1, MAX_READINESS_PAGE_SIZE);
+
+    state
+        .readiness
+        .readiness(&state.tenant_id, page, page_size, SystemTime::now())
+        .await
+        .map(|ReadinessPage { items, total }| {
+            Json(ReadinessResponse {
+                items: items
+                    .into_iter()
+                    .map(RepositoryReadinessSummary::from)
+                    .collect(),
+                total,
+                page,
+                page_size,
+            })
+        })
+        .map_err(|error| {
+            tracing::error!(%error, "Bridge Readiness query failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
 async fn repository_detail(
     State(state): State<AppState>,
     Path(repository_id): Path<String>,
@@ -744,6 +993,34 @@ async fn repository_claims(
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(error) => {
             tracing::error!(%error, "Bridge repository active-work query failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+// The complement of `repository_claims`: what `repository_recover_claim`
+// needs an operator to already know (ADR-0111 left no way to discover a
+// stranded task id other than already holding it).
+async fn repository_stranded_claims(
+    State(state): State<AppState>,
+    Path(repository_id): Path<String>,
+) -> Result<Json<StrandedClaimsResponse>, StatusCode> {
+    match state
+        .fleet
+        .stranded_claims(
+            &state.tenant_id,
+            &repository_id,
+            SystemTime::now(),
+            ACTIVE_WORK_LIMIT,
+        )
+        .await
+    {
+        Ok(Some(claims)) => Ok(Json(StrandedClaimsResponse {
+            claims: claims.into_iter().map(ActiveWorkSummary::from).collect(),
+        })),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository stranded-claims query failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -918,6 +1195,89 @@ async fn repository_graph(
         }
         Err(error) => {
             tracing::error!(%error, "Bridge repository graph query failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn repository_constitution(
+    State(state): State<AppState>,
+    Path(repository_id): Path<String>,
+) -> Result<Json<ConstitutionResponse>, StatusCode> {
+    // Same enrolment-first check as `repository_knowledge`: a repository
+    // outside the caller's tenant must read exactly like one that was never
+    // enrolled, not leak a 200 for a repository this tenant cannot see.
+    match state
+        .fleet
+        .repository(&state.tenant_id, &repository_id)
+        .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository constitution lookup failed");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    match state
+        .constitution
+        .get_active(&state.tenant_id, &repository_id)
+        .await
+    {
+        Ok(Some(active)) => Ok(Json(ConstitutionResponse::from(active))),
+        Ok(None) => Ok(Json(ConstitutionResponse::not_found())),
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository constitution query failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn repository_telemetry(
+    State(state): State<AppState>,
+    Path(repository_id): Path<String>,
+) -> Result<Json<TelemetryResponse>, StatusCode> {
+    // Same enrolment-first check every other Bridge route already follows: a
+    // repository outside the caller's tenant reads exactly like one that was
+    // never enrolled.
+    match state
+        .fleet
+        .repository(&state.tenant_id, &repository_id)
+        .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository telemetry lookup failed");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    // Zero/None select every kind/name (the same convention TelemetryService
+    // documents on the wire); series points are not rendered by this route
+    // yet -- the sparkline dashboard is task:60ba293846ec's own scope.
+    match state
+        .telemetry
+        .read(ReadTelemetryRequest {
+            tenant_id: state.tenant_id.to_string(),
+            repository_id,
+            kind: 0,
+            name: None,
+            bucket_seconds: 3600,
+            max_points: 1,
+        })
+        .await
+    {
+        Ok(snapshot) => Ok(Json(TelemetryResponse {
+            metrics: snapshot
+                .metrics
+                .into_iter()
+                .map(TelemetryMetricSummary::from)
+                .collect(),
+        })),
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository telemetry query failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }

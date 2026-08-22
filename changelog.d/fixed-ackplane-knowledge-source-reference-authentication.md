@@ -1,0 +1,1 @@
+- **Fixed:** `KnowledgeService.RecordKnowledge` now signs `source_ref`, refusing a request whose evidence provenance is altered after authentication and preventing it from being stored under a false source.

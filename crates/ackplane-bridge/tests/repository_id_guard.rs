@@ -10,6 +10,7 @@ const FLEET_RS: &str = include_str!("../../ackplane-server/src/fleet.rs");
 const KNOWLEDGE_STORE_RS: &str = include_str!("../../ackplane-server/src/knowledge_store.rs");
 const CLAIM_STORE_RS: &str = include_str!("../../ackplane-server/src/claim_store.rs");
 const PROJECTION_RS: &str = include_str!("../../ackplane-server/src/projection.rs");
+const READINESS_RS: &str = include_str!("../../ackplane-server/src/readiness.rs");
 
 /// `FleetStore::connect` is the connection constructor, not a query or
 /// mutation - it has no tenant to scope to yet.
@@ -61,6 +62,9 @@ const CLAIM_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &[
     "consume_claim_nonce",
 ];
 
+/// `connect` is the constructor, same exemption as every other store.
+const READINESS_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &["connect"];
+
 #[test]
 fn every_claim_store_query_requires_an_explicit_tenant_id() {
     let methods = extract_impl_methods(CLAIM_STORE_RS, "ClaimStore");
@@ -94,6 +98,25 @@ fn every_projector_query_requires_an_explicit_tenant_id() {
         assert!(
             signature.contains("tenant_id: &str"),
             "Projector::{name} does not take an explicit tenant_id: &str parameter \
+             (ADR-0098 decision 5 requires every query/mutation to carry a tenant scope): {signature}"
+        );
+    }
+}
+
+#[test]
+fn every_readiness_store_query_requires_an_explicit_tenant_id() {
+    let methods = extract_impl_methods(READINESS_RS, "ReadinessStore");
+    assert!(
+        !methods.is_empty(),
+        "expected to find at least one ReadinessStore method - the parser may be broken"
+    );
+    for (name, signature) in methods {
+        if READINESS_STORE_METHODS_WITHOUT_A_TENANT.contains(&name.as_str()) {
+            continue;
+        }
+        assert!(
+            signature.contains("tenant_id: &str"),
+            "ReadinessStore::{name} does not take an explicit tenant_id: &str parameter \
              (ADR-0098 decision 5 requires every query/mutation to carry a tenant scope): {signature}"
         );
     }

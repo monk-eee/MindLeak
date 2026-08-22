@@ -42,6 +42,20 @@ pub(crate) mod key {
     pub(crate) const KNOWLEDGE: i64 = 7;
     /// `migrations/0008_knowledge_authentication_nonces.sql`
     pub(crate) const KNOWLEDGE_AUTHENTICATION_NONCES: i64 = 8;
+    /// `migrations/0009_constitution.sql`
+    pub(crate) const CONSTITUTION: i64 = 9;
+    /// `migrations/0010_constitution_authentication_nonces.sql`
+    pub(crate) const CONSTITUTION_AUTHENTICATION_NONCES: i64 = 10;
+    /// `migrations/0011_knowledge_recorded_by.sql`
+    pub(crate) const KNOWLEDGE_RECORDED_BY: i64 = 11;
+    /// `migrations/0012_knowledge_reconfirmations.sql`
+    pub(crate) const KNOWLEDGE_RECONFIRMATIONS: i64 = 12;
+    /// `migrations/0013_knowledge_reach.sql`
+    pub(crate) const KNOWLEDGE_REACH: i64 = 13;
+    /// `migrations/0016_telemetry.sql`
+    pub(crate) const TELEMETRY: i64 = 16;
+    /// `migrations/0017_telemetry_authentication_nonces.sql`
+    pub(crate) const TELEMETRY_AUTHENTICATION_NONCES: i64 = 17;
 }
 
 /// Apply `migration_sql` inside a transaction holding the advisory lock
