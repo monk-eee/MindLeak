@@ -228,3 +228,28 @@ async fn main() {
 async fn fleet_page() -> impl IntoResponse {
     Html(FLEET_PAGE)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn fleet_page_refreshes_fleet_agents_and_readiness_only_while_visible() {
+        let response = fleet_page().await.into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("reading the fleet page body");
+        let body = String::from_utf8(body.to_vec()).expect("fleet page body is valid UTF-8");
+
+        for required in [
+            "function startVisibleRefresh(load, intervalMs)",
+            "document.visibilityState === \"visible\"",
+            "document.addEventListener(\"visibilitychange\"",
+            "startVisibleRefresh(loadFleet, REFRESH_INTERVAL_MS)",
+            "startVisibleRefresh(loadAgents, REFRESH_INTERVAL_MS)",
+            "startVisibleRefresh(loadReadiness, REFRESH_INTERVAL_MS)",
+        ] {
+            assert!(body.contains(required), "index.html is missing {required}");
+        }
+    }
+}
