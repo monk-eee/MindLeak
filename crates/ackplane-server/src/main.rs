@@ -4,6 +4,7 @@ use std::{fs, process::ExitCode};
 
 use ackplane_protocol::v1::{
     self, claim_delegation_service_server::ClaimDelegationServiceServer,
+    constitution_service_server::ConstitutionServiceServer,
     knowledge_service_server::KnowledgeServiceServer,
     node_enrollment_service_server::NodeEnrollmentServiceServer,
     node_sync_service_server::NodeSyncServiceServer,
@@ -11,6 +12,8 @@ use ackplane_protocol::v1::{
 use ackplane_server::{
     claim_service::ClaimDelegationService,
     claim_store::ClaimStore,
+    constitution_service::ConstitutionGrpcService,
+    constitution_store::ConstitutionStore,
     enrollment_service::NodeEnrollmentService,
     enrollment_store::EnrollmentStore,
     knowledge_service::KnowledgeGrpcService,
@@ -82,6 +85,15 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            let constitution_store = match ConstitutionStore::connect(config.database_url()).await {
+                Ok(store) => store,
+                Err(error) => {
+                    eprintln!(
+                        "ackplane-server: could not connect to the configured constitution store: {error}"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            };
             // ADR-0086 clause 9: a projection worker reads the durable ledger
             // through checkpoints on its own cadence, decoupled from request
             // handling; a stalled or errored tick never stops the gRPC server.
@@ -91,7 +103,7 @@ async fn main() -> ExitCode {
             ));
 
             println!(
-                "ackplane-server: serving NodeSyncService.Synchronize, NodeEnrollmentService, ClaimDelegationService, and KnowledgeService"
+                "ackplane-server: serving NodeSyncService.Synchronize, NodeEnrollmentService, ClaimDelegationService, KnowledgeService, and ConstitutionService"
             );
             let server = tonic::transport::Server::builder();
             let mut server = match tls {
@@ -121,6 +133,9 @@ async fn main() -> ExitCode {
                 .add_service(KnowledgeServiceServer::new(KnowledgeGrpcService::new(
                     knowledge_store,
                 )))
+                .add_service(ConstitutionServiceServer::new(
+                    ConstitutionGrpcService::new(constitution_store),
+                ))
                 .serve(config.listen)
                 .await
             {

@@ -94,6 +94,10 @@ relevance, constitution for authority, and evidence for completion.**
 - **`lodestar-mcp`** — constitution and design governance, task and fleet
   coordination, learned knowledge, controls and waivers, conformance history,
   and portable proof export.
+- **`mindleak-coordinator`** — a thin, optional stdio server composing both
+  planes into one agent-facing entry point: one `open_session` for both, and
+  one preflight combining MindLeak's and Lodestar's overlap/advice reads
+  (ADR-0097, first slice).
 - **VS Code extension** — both packaged native servers, passive editor/shell/Git
   sensors, readiness guidance, and graph, work, design, and telemetry views.
 - **Headless setup** — generated MCP configuration for clients such as GitHub

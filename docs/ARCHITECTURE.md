@@ -244,6 +244,34 @@ responsibility. See [`USAGE.md`](USAGE.md) for the workflows those verbs
 compose into — the tool tables in [`TOOLS.md`](TOOLS.md) describe each verb,
 not the order to call them in.
 
+### `mindleak-coordinator` (binary)
+
+A third, thin MCP stdio server (ADR-0097): the one agent-facing entry point
+that composes `mindleak-mcp` and `lodestar-mcp` rather than adding a third
+source of graph or intent truth. `main.rs` spawns both as real child
+processes (`MINDLEAK_MCP_BIN`/`LODESTAR_MCP_BIN`, or a sibling binary next to
+it — the same env-var convention `scripts/canonical-push.mjs` already uses)
+and performs their `initialize` handshake before serving anything itself.
+`child.rs`'s `ChildClient<R, W>` is a minimal newline-delimited JSON-RPC
+client generic over its transport, so it is unit-tested against injected
+in-memory streams (mirroring how `clients/node/mindleak-client`'s
+`McpConnection` is tested) rather than a real subprocess; one end-to-end test
+does spawn the real binaries, but against a throwaway `git init`-ed directory
+under the OS temp dir so it resolves an isolated `repository_id` instead of
+writing into whatever repository the test happens to run inside. `tools.rs`
+composes decision 2 (`coordinator_open_session`: opens both planes with the
+same declared context and verifies they resolve the same `agent_id` and
+`repository_id`, naming whichever plane failed rather than presenting a
+partial open as complete) and decision 3 (`coordinator_preflight`: runs
+MindLeak's `check_overlap`, Lodestar's `task_query(view="overlap")`, and
+Lodestar's `advise` and merges them with per-plane provenance — the read a
+write should already have made). `server.rs` is the coordinator's own stdio
+front, mirroring `mindleak-mcp`/`lodestar-mcp`'s transport exactly. This is
+the first slice of ADR-0097; decisions 4-8 (client-side Git observation,
+goal-less scope reservations, governance-bootstrap helpers, memory-source
+reconciliation, and the usage retrospective) remain future work under the
+same task.
+
 ### `ackplane-core` (library)
 
 The repository side of the Ackplane federation boundary (ADR-0082). What a
@@ -370,6 +398,19 @@ the signed bytes, and its own `knowledge_authentication_nonces` table —
 mirrored, not shared with claims', so the two domains' replay protection and
 signed-byte encodings can never collide or drift into each other.
 
+`ConstitutionService` (`constitution_store.rs`/`constitution_service.rs`) is a
+read-only projection of a repository's own authoritative local Lodestar
+constitution (ADR-0106 decision 3): `PublishConstitutionSnapshot` (called by
+that repository's own tooling) and `GetActiveConstitution`. Ackplane never
+adopts, tailors, rejects, promotes, or waives a clause — those actions stay
+local to Lodestar; a publish replaces the tenant/repository's snapshot
+wholesale (delete-then-reinsert its clauses inside one transaction), never an
+incremental diff, because a constitution version is immutable at the source.
+Mirrors `KnowledgeService`'s authentication pattern exactly: its own domain
+separator (`constitution_auth::CONSTITUTION_DOMAIN`), its own
+`ConstitutionOperation` enum, and its own
+`constitution_authentication_nonces` table.
+
 ### `ackplane-bridge` (binary)
 
 A separate axum HTTP server for the Bridge (assurance operations, ADR-0090):
@@ -385,11 +426,14 @@ tenant has not enrolled rather than leaking a distinguishable error:
 | `GET /` | The Fleet page (static HTML/JS). |
 | `GET /api/v1/fleet` | One page of enrolled repositories for the tenant, with freshness (ADR-0112): optional `q` (substring on repository id, `%`/`_` escaped), `freshness`, `coordination`, `sort` (`field:asc\|desc`, allow-listed), `page`, and `page_size` (clamped 1-100), returning the true filtered `total` alongside the page. |
 | `GET /api/v1/agents` | One page of live delegated claims across EVERY repository the tenant has enrolled (`FleetStore::fleet_work`, ADR-0105 decision 5's Agents/Work control room) — the cross-repository "who is working on what, right now" view, distinct from the per-repository `/claims` route below. Optional `repository_id`/`owner_id` (substring, `%`/`_` escaped), `sort` (`field:asc\|desc`, allow-listed: `lease_expires_at`, `repository_id`, `owner_id`), `page`, and `page_size` (clamped 1-100), returning the true filtered `total`. |
+| `GET /api/v1/readiness` | One page of per-repository health (`ReadinessStore::readiness`, ADR-0105 decision 6's Workspace/Readiness row) — active node count, freshness, active claim count and soonest lease expiry, and signing-key health, composed entirely from Fleet/Claims/Signing-key state already exposed elsewhere rather than a new domain. Derives a `ready`/`attention_needed`/`not_ready` status per repository: `not_ready` when never projected; `attention_needed` when lagging or any signing key is expired/revoked/unknown/binding-mismatched; `ready` otherwise. `page` and `page_size` (clamped 1-100) only — no filter or sort in this first slice. |
 | `GET /api/v1/repositories/:repository_id` | One repository's ledger/projection detail. |
 | `GET /api/v1/repositories/:repository_id/timeline` | Its most recent accepted ledger events. |
 | `GET /api/v1/repositories/:repository_id/claims` | Its live delegated claims (`FleetStore::active_work`). |
+| `GET /api/v1/repositories/:repository_id/stranded-claims` | Its lease-expired delegated claims (`FleetStore::stranded_claims`) -- the complement of `/claims`, and what `recover` below needs an operator to discover rather than already know. |
 | `GET /api/v1/repositories/:repository_id/signing-keys` | Every enrolled signing key, judged as of now (`FleetStore::signing_keys`), reusing `signing_keys::judge` — the same rule an accepted envelope's own verification applies — rather than a second judgment invented for the health view. |
 | `GET /api/v1/repositories/:repository_id/knowledge` | Its recorded knowledge, recency-ordered (`KnowledgeStore::recall`, ADR-0106) — the same query the knowledge domain already exposes over gRPC, not a second one invented for the Bridge view. |
+| `GET /api/v1/repositories/:repository_id/constitution` | Its published constitution snapshot, if any (`ConstitutionStore::get_active`) — read-only; no adopt/tailor/reject/promote/waiver action is exposed here. |
 | `POST /api/v1/repositories/:repository_id/tasks/:task_id/recover` | Bridge's first claim **mutation** (ADR-0111): recovers a stranded claim by calling `ClaimStore::recover` directly, tenant-scoped and reason-required. `delegate`, `release`, and `renew` remain node-signed-only and are not exposed here. The handler resolves `expected_owner` itself via the new `FleetStore::claim_owner` (unlike `active_work`, this does not filter out an already-expired lease), rather than trusting a caller-supplied value. |
 
 ### `editors/vscode` (extension)

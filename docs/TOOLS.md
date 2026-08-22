@@ -189,3 +189,24 @@ before pending promotions; a header reports how many await decision, the tree
 initially caps its tail at 20 rows, and explicit expand/show-deferred controls
 reveal the rest without moving or deciding anything in the ledger. Materialized
 rows expose persisted provenance/history and an attributed repair action.
+
+---
+
+## Coordinator tools (`mindleak-coordinator`)
+
+A third, thin stdio MCP server (ADR-0097) over both planes: it spawns a real
+`mindleak-mcp` and a real `lodestar-mcp` as children (`MINDLEAK_MCP_BIN` /
+`LODESTAR_MCP_BIN`, or a sibling binary next to it, matching the env-var
+convention `scripts/canonical-push.mjs` already uses), forwards a client's
+declared context to both, and never opens either plane's database directly.
+It carries no coordination state of its own — every tool call proxies through.
+
+| Tool                       | Purpose                                                                                                                                                                                                                                                                                    |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `coordinator_open_session`  | Opens `open_session` on both planes with the same declared context in one call, then reports whether they resolved the same `agent_id` and `repository_id`. A partial open names the failed plane rather than presenting one plane's state as if it were both (ADR-0097 decision 2). |
+| `coordinator_preflight`     | Given paths/symbols, composes MindLeak's `check_overlap`, Lodestar's `task_query(view="overlap")`, and Lodestar's `advise` into one result with per-plane provenance — the read a write should already have made (ADR-0097 decision 3).                                                |
+
+This is the first slice of ADR-0097: decisions 2 and 3. Git-observation
+submission, goal-less scope reservations, governance-bootstrap helpers, memory
+reconciliation, and the usage retrospective (decisions 4-8) remain future work
+under the same task.

@@ -27,6 +27,8 @@ service ClaimDelegationService {
 service KnowledgeService {
   rpc RecordKnowledge(RecordKnowledgeRequest) returns (KnowledgeRecord);
   rpc RecallKnowledge(RecallKnowledgeRequest) returns (RecallKnowledgeResult);
+  rpc GetKnowledgeHistory(KnowledgeHistoryRequest) returns (KnowledgeHistoryResult);
+  rpc ReconfirmKnowledge(ReconfirmKnowledgeRequest) returns (ReconfirmKnowledgeResult);
   rpc RetireKnowledge(RetireKnowledgeRequest) returns (RetireKnowledgeResult);
 }
 
@@ -35,6 +37,17 @@ service KnowledgeService {
 service TelemetryService {
   rpc RecordTelemetry(RecordTelemetryRequest) returns (TelemetryRecord);
   rpc ReadTelemetry(TelemetryReadRequest) returns (TelemetrySnapshot);
+}
+
+// ADR-0106 decision 3: Constitution is a read-only projection of a
+// repository's own authoritative local Lodestar constitution -- published
+// here by that repository's tooling so Bridge can surface an enrolled
+// repository's active governance without either plane inspecting the
+// other's storage directly. No adopt/tailor/reject/promote/waiver action
+// lives here: this domain mirrors the local constitution, it never edits it.
+service ConstitutionService {
+  rpc PublishConstitutionSnapshot(PublishConstitutionSnapshotRequest) returns (PublishConstitutionSnapshotResult);
+  rpc GetActiveConstitution(GetActiveConstitutionRequest) returns (GetActiveConstitutionResult);
 }
 
 // The enrolled node's proof that it, not just its bearer credentials, is
@@ -262,6 +275,8 @@ message RecordKnowledgeRequest {
   string embedding_model = 6;
   repeated float embedding = 7;
   KnowledgeAuthentication authentication = 8;
+  repeated string reach_node_ids = 9;
+  string reach_goal_id = 10;
 }
 
 message KnowledgeRecord {
@@ -272,6 +287,9 @@ message KnowledgeRecord {
   string source_ref = 5;
   double half_life_hours = 6;
   string confirmed_at = 7;
+  string recorded_by = 8;
+  repeated string reach_node_ids = 9;
+  string reach_goal_id = 10;
 }
 
 // `query_embedding` empty means "no semantic ranking available or
@@ -294,6 +312,12 @@ message ActiveKnowledgeEntry {
   // (mindleak-core::decay::effective_weight's own formula), never stored.
   double effective_weight = 4;
   string confirmed_at = 5;
+  string recorded_by = 6;
+  string last_reconfirmed_at = 7;
+  string last_reconfirmed_by = 8;
+  string last_reconfirmation_evidence_ref = 9;
+  repeated string reach_node_ids = 10;
+  string reach_goal_id = 11;
 }
 
 message RecallKnowledgeResult {
@@ -303,17 +327,125 @@ message RecallKnowledgeResult {
   bool ranked_by_similarity = 2;
 }
 
+// Returns active and retired statements so an operator can inspect why a
+// previously active recommendation disappeared. A zero limit selects the
+// service default; the response reports the bounded effective limit.
+message KnowledgeHistoryRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  uint32 limit = 3;
+  KnowledgeAuthentication authentication = 4;
+}
+
+message KnowledgeHistoryEntry {
+  string knowledge_id = 1;
+  string content = 2;
+  string source_ref = 3;
+  string confirmed_at = 4;
+  // Empty for active statements.
+  string retired_at = 5;
+  string retired_reason = 6;
+  string retired_by = 7;
+  string recorded_by = 8;
+  string last_reconfirmed_at = 9;
+  string last_reconfirmed_by = 10;
+  string last_reconfirmation_evidence_ref = 11;
+  repeated string reach_node_ids = 12;
+  string reach_goal_id = 13;
+}
+
+message KnowledgeHistoryResult {
+  repeated KnowledgeHistoryEntry entries = 1;
+  uint32 effective_limit = 2;
+}
+
+message ReconfirmKnowledgeRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string knowledge_id = 3;
+  string evidence_ref = 4;
+  KnowledgeAuthentication authentication = 5;
+}
+
+message ReconfirmKnowledgeResult {
+  bool reconfirmed = 1;
+  string reconfirmation_id = 2;
+  string evidence_ref = 3;
+  string reconfirmed_by = 4;
+  string reconfirmed_at = 5;
+}
+
 message RetireKnowledgeRequest {
   string tenant_id = 1;
   string repository_id = 2;
   string knowledge_id = 3;
   string reason = 4;
+  // Retained for wire compatibility. The service records the authenticated
+  // node id as retirement provenance and never trusts this caller label.
   string retired_by = 5;
   KnowledgeAuthentication authentication = 6;
 }
 
 message RetireKnowledgeResult {
   bool retired = 1;
+}
+
+// The enrolled node's proof for a ConstitutionService request. A distinct
+// message, domain, and nonce space from KnowledgeAuthentication: a
+// constitution snapshot has no equivalent of a knowledge statement's fields,
+// so binding those here would sign nothing meaningful, and sharing a nonce
+// table would couple two unrelated domains' replay protection.
+message ConstitutionAuthentication {
+  string signing_key_id = 1;
+  string node_id = 2;
+  string signed_at = 3;
+  bytes nonce = 4;
+  bytes signature = 5;
+}
+
+// One clause, mirroring lodestar-core::model::constitution::Goal's
+// externally-relevant fields -- a read-only projection carries what a viewer
+// needs to understand a clause, not the full internal record (parent_id,
+// superseded_by, waiver bookkeeping, import provenance stay local).
+message ConstitutionClause {
+  string id = 1;
+  string slug = 2;
+  string kind = 3;
+  string title = 4;
+  string statement = 5;
+  string status = 6;
+  string consequence = 7;
+  string scope = 8;
+  string rationale = 9;
+}
+
+message PublishConstitutionSnapshotRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string version_id = 3;
+  uint32 version = 4;
+  string status = 5;
+  repeated ConstitutionClause clauses = 6;
+  ConstitutionAuthentication authentication = 7;
+}
+
+message PublishConstitutionSnapshotResult {
+  bool published = 1;
+}
+
+message GetActiveConstitutionRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  ConstitutionAuthentication authentication = 3;
+}
+
+message GetActiveConstitutionResult {
+  bool found = 1;
+  string version_id = 2;
+  uint32 version = 3;
+  string status = 4;
+  repeated ConstitutionClause clauses = 5;
+  string published_at = 6;
 }
 
 enum ClaimLeaseOutcome {

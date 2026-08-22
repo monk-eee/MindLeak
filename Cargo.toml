@@ -13,6 +13,7 @@ members = [
     "crates/ackplane-client",
     "crates/ackplane-server",
     "crates/ackplane-bridge",
+    "crates/mindleak-coordinator",
 ]
 
 [workspace.package]
