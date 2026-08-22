@@ -53,8 +53,8 @@ pub(crate) mod key {
     pub(crate) const EVIDENCE: i64 = 14;
     /// `migrations/0015_evidence_conformance.sql`
     pub(crate) const EVIDENCE_CONFORMANCE: i64 = 15;
-    /// `migrations/0016_evidence_review_filter.sql`
-    pub(crate) const EVIDENCE_REVIEW_FILTER: i64 = 16;
+    /// `migrations/0018_evidence_review_filter.sql`
+    pub(crate) const EVIDENCE_REVIEW_FILTER: i64 = 18;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

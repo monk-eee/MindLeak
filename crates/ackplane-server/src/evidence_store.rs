@@ -22,7 +22,7 @@ pub use pagination::{EvidenceCursor, EvidencePage};
 
 const MIGRATION: &str = include_str!("../migrations/0014_evidence.sql");
 const CONFORMANCE_MIGRATION: &str = include_str!("../migrations/0015_evidence_conformance.sql");
-const REVIEW_FILTER_MIGRATION: &str = include_str!("../migrations/0016_evidence_review_filter.sql");
+const REVIEW_FILTER_MIGRATION: &str = include_str!("../migrations/0018_evidence_review_filter.sql");
 const SHA256_DIGEST_BYTES: usize = 32;
 const MAX_TASK_ID_BYTES: usize = 256;
 const MAX_SOURCE_REF_BYTES: usize = 512;
