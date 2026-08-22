@@ -86,7 +86,8 @@ pub struct ProjectedNode {
 
 /// A projected edge returned by [`Projector::bounded_neighborhood`]. Effective
 /// weight is intentionally absent: it is a function of `now`, so a caller
-/// recomputes it rather than treating a returned number as durable.
+/// recomputes it from `base_weight`/`half_life_hours`/`updated_at` rather
+/// than treating a returned number as durable.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectedEdge {
     pub source_id: String,
@@ -94,6 +95,7 @@ pub struct ProjectedEdge {
     pub relation: String,
     pub base_weight: f64,
     pub half_life_hours: f64,
+    pub updated_at: SystemTime,
 }
 
 /// A repository's projection freshness (ADR-0087 clause 10): `None` means the
@@ -506,7 +508,7 @@ impl Projector {
         let edge_rows = self
             .client
             .query(
-                "SELECT source_id, target_id, relation, base_weight, half_life_hours \
+                "SELECT source_id, target_id, relation, base_weight, half_life_hours, updated_at \
                  FROM projected_edges \
                  WHERE tenant_id = $1 AND repository_id = $2 \
                    AND source_id = ANY($3) AND target_id = ANY($3)",
@@ -521,6 +523,7 @@ impl Projector {
                 relation: row.get(2),
                 base_weight: row.get(3),
                 half_life_hours: row.get(4),
+                updated_at: row.get(5),
             })
             .collect();
 
@@ -529,6 +532,39 @@ impl Projector {
             edges,
             freshness,
         })
+    }
+
+    /// A default seed set for a repository's Context Graph view when the
+    /// caller has not chosen one yet: the most recently touched nodes, most
+    /// recent first, bounded by `limit`. Read-only and independent of
+    /// `bounded_neighborhood` -- it never traverses edges, only samples
+    /// `projected_nodes` directly, so it stays cheap even on a repository
+    /// with no useful edge structure yet.
+    pub async fn sample_nodes(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        limit: i64,
+    ) -> Result<Vec<ProjectedNode>, tokio_postgres::Error> {
+        let rows = self
+            .client
+            .query(
+                "SELECT node_id, node_type, label FROM projected_nodes \
+                 WHERE tenant_id = $1 AND repository_id = $2 \
+                 ORDER BY updated_at DESC, node_id ASC \
+                 LIMIT $3",
+                &[&tenant_id, &repository_id, &limit],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| ProjectedNode {
+                node_id: row.get(0),
+                node_type: row.get(1),
+                label: row.get(2),
+                depth: 0,
+            })
+            .collect())
     }
 }
 
@@ -853,6 +889,138 @@ mod tests {
         assert_eq!(neighborhood.edges.len(), 1);
         assert_eq!(neighborhood.edges[0].source_id, "artifact:a");
         assert_eq!(neighborhood.edges[0].target_id, "artifact:b");
+        // The Bridge Context Graph view recomputes effective weight itself
+        // (it is a function of `now`), so a real, non-default timestamp
+        // must round-trip through Postgres rather than reading as the Rust
+        // zero value.
+        assert!(
+            neighborhood.edges[0]
+                .updated_at
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("updated_at is after the epoch")
+                .as_secs()
+                > 0
+        );
+    }
+
+    #[tokio::test]
+    async fn sample_nodes_bounds_the_result_to_the_requested_limit() {
+        let url = require_test_database!();
+        let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
+        let mut projector = Projector::connect(&url).await.expect("connect projector");
+        let tenant = format!("t-{}", uuid_ish());
+        let repo = "repo-sample".to_string();
+
+        for (index, node_id) in ["artifact:a", "artifact:b", "artifact:c"]
+            .iter()
+            .enumerate()
+        {
+            ledger
+                .append(&structural_fact_envelope(
+                    DedupKey {
+                        tenant_id: tenant.clone(),
+                        repository_id: repo.clone(),
+                        producer_id: "producer-a".to_string(),
+                        producer_sequence: index as i64 + 1,
+                    },
+                    format!("digest-{index}").as_bytes(),
+                    &StructuralFact {
+                        node_id: (*node_id).to_string(),
+                        node_type: "artifact".to_string(),
+                        label: (*node_id).to_string(),
+                        edges: vec![],
+                    },
+                ))
+                .await
+                .expect("append fact");
+        }
+        projector.rebuild(&tenant, &repo).await.expect("rebuild");
+
+        let sample = projector
+            .sample_nodes(&tenant, &repo, 2)
+            .await
+            .expect("sample nodes");
+        assert_eq!(sample.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn sample_nodes_orders_deterministically_when_updated_at_ties() {
+        let url = require_test_database!();
+        let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
+        let mut projector = Projector::connect(&url).await.expect("connect projector");
+        let tenant = format!("t-{}", uuid_ish());
+        let repo = "repo-sample-order".to_string();
+
+        // One `rebuild` call sets every admitted node's `updated_at` to the
+        // SAME transaction timestamp, so with no ordering signal left, the
+        // node id tiebreaker is what a caller actually observes.
+        for (index, node_id) in ["artifact:z", "artifact:a", "artifact:m"]
+            .iter()
+            .enumerate()
+        {
+            ledger
+                .append(&structural_fact_envelope(
+                    DedupKey {
+                        tenant_id: tenant.clone(),
+                        repository_id: repo.clone(),
+                        producer_id: "producer-a".to_string(),
+                        producer_sequence: index as i64 + 1,
+                    },
+                    format!("digest-{index}").as_bytes(),
+                    &StructuralFact {
+                        node_id: (*node_id).to_string(),
+                        node_type: "artifact".to_string(),
+                        label: (*node_id).to_string(),
+                        edges: vec![],
+                    },
+                ))
+                .await
+                .expect("append fact");
+        }
+        projector.rebuild(&tenant, &repo).await.expect("rebuild");
+
+        let sample = projector
+            .sample_nodes(&tenant, &repo, 10)
+            .await
+            .expect("sample nodes");
+        let node_ids: Vec<&str> = sample.iter().map(|node| node.node_id.as_str()).collect();
+        assert_eq!(node_ids, vec!["artifact:a", "artifact:m", "artifact:z"]);
+    }
+
+    #[tokio::test]
+    async fn sample_nodes_is_tenant_scoped() {
+        let url = require_test_database!();
+        let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
+        let mut projector = Projector::connect(&url).await.expect("connect projector");
+        let tenant = format!("t-{}", uuid_ish());
+        let repo = "repo-sample-tenant".to_string();
+
+        ledger
+            .append(&structural_fact_envelope(
+                DedupKey {
+                    tenant_id: tenant.clone(),
+                    repository_id: repo.clone(),
+                    producer_id: "producer-a".to_string(),
+                    producer_sequence: 1,
+                },
+                b"digest-1",
+                &StructuralFact {
+                    node_id: "artifact:a".to_string(),
+                    node_type: "artifact".to_string(),
+                    label: "a".to_string(),
+                    edges: vec![],
+                },
+            ))
+            .await
+            .expect("append fact");
+        projector.rebuild(&tenant, &repo).await.expect("rebuild");
+
+        let other_tenant = format!("{tenant}-other");
+        let sample = projector
+            .sample_nodes(&other_tenant, &repo, 10)
+            .await
+            .expect("sample nodes for a different tenant");
+        assert!(sample.is_empty());
     }
 
     #[tokio::test]
