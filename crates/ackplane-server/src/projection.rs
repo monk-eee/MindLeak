@@ -135,6 +135,13 @@ pub enum ProjectionError {
     Database(#[from] tokio_postgres::Error),
 }
 
+/// Whether a SQLSTATE is PostgreSQL's own deadlock detection (40P01) — the
+/// one server-reported error its own documentation recommends retrying
+/// rather than treating as permanent.
+fn is_deadlock(code: &tokio_postgres::error::SqlState) -> bool {
+    *code == tokio_postgres::error::SqlState::T_R_DEADLOCK_DETECTED
+}
+
 /// A connection to Ackplane's projection tables (ADR-0087).
 pub struct Projector {
     client: Client,
@@ -163,7 +170,38 @@ impl Projector {
     /// [`STRUCTURAL_FACT_PAYLOAD_TYPE`] ledger records, in stream order, all
     /// inside one transaction — a caller never observes a half-rebuilt
     /// projection.
+    ///
+    /// Retries a genuine PostgreSQL deadlock (SQLSTATE 40P01) a bounded number
+    /// of times. No foreign key ties `projected_edges` to `projected_nodes`
+    /// (see `migrations/0002_projection.sql`), so this is B-tree index-page
+    /// lock contention between concurrent rebuilds of *unrelated* tenants
+    /// under enough parallel load, not a logical schema bug — confirmed live
+    /// once the Coverage CI gate started running these tests against a real
+    /// Postgres (ADR-0118) instead of hollow-skipping them. PostgreSQL's own
+    /// documentation recommends the client simply reissue a deadlocked
+    /// transaction; rebuild is naturally idempotent (exactly what
+    /// [`a_rebuild_reproduces_the_same_projection_from_the_same_ledger`]
+    /// proves), so a clean retry from scratch is safe.
     pub async fn rebuild(
+        &mut self,
+        tenant_id: &str,
+        repository_id: &str,
+    ) -> Result<ProjectionSummary, ProjectionError> {
+        const MAX_DEADLOCK_RETRIES: u32 = 3;
+        let mut attempt = 0;
+        loop {
+            match self.rebuild_once(tenant_id, repository_id).await {
+                Err(ProjectionError::Database(error))
+                    if attempt < MAX_DEADLOCK_RETRIES && error.code().is_some_and(is_deadlock) =>
+                {
+                    attempt += 1;
+                }
+                result => return result,
+            }
+        }
+    }
+
+    async fn rebuild_once(
         &mut self,
         tenant_id: &str,
         repository_id: &str,
@@ -656,6 +694,73 @@ mod tests {
             .expect("freshness")
             .expect("projected at least once");
         assert_eq!(freshness.stream_position, 2);
+    }
+
+    #[test]
+    fn is_deadlock_recognizes_only_the_deadlock_sqlstate() {
+        assert!(is_deadlock(
+            &tokio_postgres::error::SqlState::T_R_DEADLOCK_DETECTED
+        ));
+        assert!(!is_deadlock(
+            &tokio_postgres::error::SqlState::UNIQUE_VIOLATION
+        ));
+        assert!(!is_deadlock(
+            &tokio_postgres::error::SqlState::T_R_SERIALIZATION_FAILURE
+        ));
+    }
+
+    /// Real-database coverage, reproducing the contention `rebuild`'s retry
+    /// closes: many concurrent rebuilds of *unrelated* tenants used to
+    /// deadlock under enough parallel load (no FK ties `projected_edges` to
+    /// `projected_nodes`, so this is B-tree index-page lock contention, not a
+    /// logical schema bug) — confirmed live once the Coverage CI gate began
+    /// running these tests against a real Postgres (ADR-0118) instead of
+    /// hollow-skipping them. Every task must still succeed; a deadlock is
+    /// retried internally, never surfaced to the caller.
+    #[tokio::test]
+    async fn concurrent_rebuilds_of_unrelated_tenants_all_succeed() {
+        let url = require_test_database!();
+        let tasks = (0..12).map(|i| {
+            let url = url.clone();
+            tokio::spawn(async move {
+                let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
+                let mut projector = Projector::connect(&url).await.expect("connect projector");
+                let tenant = format!("t-{}-{}", i, uuid_ish());
+                let repo = "repo-a".to_string();
+
+                let fact = StructuralFact {
+                    node_id: "artifact:src/lib.rs".to_string(),
+                    node_type: "artifact".to_string(),
+                    label: "src/lib.rs".to_string(),
+                    edges: vec![StructuralEdgeFact {
+                        target_id: "symbol:src/lib.rs:main".to_string(),
+                        relation: "contains".to_string(),
+                        base_weight: 1.0,
+                        half_life_hours: 168.0,
+                    }],
+                };
+                ledger
+                    .append(&structural_fact_envelope(
+                        DedupKey {
+                            tenant_id: tenant.clone(),
+                            repository_id: repo.clone(),
+                            producer_id: "producer-a".to_string(),
+                            producer_sequence: 1,
+                        },
+                        b"digest-1",
+                        &fact,
+                    ))
+                    .await
+                    .expect("append fact");
+
+                projector.rebuild(&tenant, &repo).await.expect("rebuild")
+            })
+        });
+        for task in tasks {
+            let summary = task.await.expect("task did not panic");
+            assert_eq!(summary.nodes, 1);
+            assert_eq!(summary.edges, 1);
+        }
     }
 
     #[tokio::test]

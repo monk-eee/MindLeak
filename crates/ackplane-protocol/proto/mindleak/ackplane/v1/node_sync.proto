@@ -32,6 +32,13 @@ service KnowledgeService {
   rpc RetireKnowledge(RetireKnowledgeRequest) returns (RetireKnowledgeResult);
 }
 
+// ADR-0105 decision 6: the Industrial profile reports typed operational
+// telemetry rather than forwarding local tool logs or terminal output.
+service TelemetryService {
+  rpc RecordTelemetry(RecordTelemetryRequest) returns (TelemetryRecord);
+  rpc ReadTelemetry(TelemetryReadRequest) returns (TelemetrySnapshot);
+}
+
 // ADR-0106 decision 3: Constitution is a read-only projection of a
 // repository's own authoritative local Lodestar constitution -- published
 // here by that repository's tooling so Bridge can surface an enrolled
@@ -67,6 +74,113 @@ message KnowledgeAuthentication {
   string signed_at = 3;
   bytes nonce = 4;
   bytes signature = 5;
+}
+
+// Telemetry has its own signature domain and nonce space. A telemetry report
+// is neither a claim nor a knowledge statement, so sharing either request's
+// authentication would permit a signature to cross an unrelated operation.
+message TelemetryAuthentication {
+  string signing_key_id = 1;
+  string node_id = 2;
+  string signed_at = 3;
+  bytes nonce = 4;
+  bytes signature = 5;
+}
+
+enum TelemetrySignalKind {
+  TELEMETRY_SIGNAL_KIND_UNSPECIFIED = 0;
+  TELEMETRY_SIGNAL_KIND_TOOL = 1;
+  TELEMETRY_SIGNAL_KIND_TRANSPORT = 2;
+  TELEMETRY_SIGNAL_KIND_DIRECTIVE = 3;
+  TELEMETRY_SIGNAL_KIND_STORAGE = 4;
+  TELEMETRY_SIGNAL_KIND_PROJECTION = 5;
+}
+
+enum TelemetryOutcome {
+  TELEMETRY_OUTCOME_UNSPECIFIED = 0;
+  TELEMETRY_OUTCOME_OK = 1;
+  TELEMETRY_OUTCOME_ERROR = 2;
+  TELEMETRY_OUTCOME_REFUSED = 3;
+  TELEMETRY_OUTCOME_DEGRADED = 4;
+}
+
+// A small typed measurement accompanying an observation. The server enforces
+// bounded count, name length, and finite values; this protocol never accepts
+// terminal output, arbitrary blobs, or untyped log payloads as telemetry.
+message TelemetryMeasurement {
+  string name = 1;
+  double value = 2;
+}
+
+// The enrolled node identity comes from `authentication.node_id`; an optional
+// agent session distinguishes multiple supervisors behind that node.
+message RecordTelemetryRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string agent_session_id = 3;
+  TelemetrySignalKind kind = 4;
+  string name = 5;
+  TelemetryOutcome outcome = 6;
+  uint64 duration_ms = 7;
+  string occurred_at = 8;
+  repeated TelemetryMeasurement measurements = 9;
+  TelemetryAuthentication authentication = 10;
+}
+
+message TelemetryRecord {
+  string telemetry_id = 1;
+  string tenant_id = 2;
+  string repository_id = 3;
+  string node_id = 4;
+  string agent_session_id = 5;
+  TelemetrySignalKind kind = 6;
+  string name = 7;
+  TelemetryOutcome outcome = 8;
+  uint64 duration_ms = 9;
+  string occurred_at = 10;
+  string recorded_at = 11;
+}
+
+// Zero-valued kind and an empty name mean "all kinds" and "all names". The
+// server bounds the selected time range and point count before returning data.
+message TelemetryReadRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  TelemetrySignalKind kind = 3;
+  string name = 4;
+  uint32 bucket_seconds = 5;
+  uint32 max_points = 6;
+  TelemetryAuthentication authentication = 7;
+}
+
+message TelemetryMetric {
+  TelemetrySignalKind kind = 1;
+  string name = 2;
+  uint64 calls = 3;
+  uint64 errors = 4;
+  bool currently_failing = 5;
+  string last_success_at = 6;
+  string last_error_at = 7;
+  double average_duration_ms = 8;
+}
+
+message TelemetryPoint {
+  string bucket_start_at = 1;
+  uint64 calls = 2;
+  uint64 errors = 3;
+  double average_duration_ms = 4;
+}
+
+message TelemetrySeries {
+  TelemetrySignalKind kind = 1;
+  string name = 2;
+  repeated TelemetryPoint points = 3;
+}
+
+message TelemetrySnapshot {
+  repeated TelemetryMetric metrics = 1;
+  repeated TelemetrySeries series = 2;
+  string observed_at = 3;
 }
 
 message ClaimLeaseRequest {
