@@ -9,6 +9,8 @@ use std::{fmt, fs, io, net::SocketAddr, path::Path};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+pub mod live_feed;
+
 const DATABASE_URL_ENV: &str = "ACKPLANE_DATABASE_URL";
 const LISTEN_ENV: &str = "ACKPLANE_BRIDGE_LISTEN";
 const DEVELOPMENT_TENANT_ENV: &str = "ACKPLANE_BRIDGE_DEVELOPMENT_TENANT";

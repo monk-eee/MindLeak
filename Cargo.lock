@@ -7,9 +7,11 @@ name = "ackplane-bridge"
 version = "0.1.7-alpha"
 dependencies = [
  "ackplane-server",
+ "async-stream",
  "axum",
  "getrandom 0.2.17",
  "serde",
+ "serde_json",
  "sha2 0.10.9",
  "thiserror",
  "tokio",
