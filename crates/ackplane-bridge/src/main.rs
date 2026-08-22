@@ -19,6 +19,7 @@ use ackplane_server::readiness::{
     ReadinessPage, ReadinessStatus, ReadinessStore, RepositoryReadiness,
 };
 use ackplane_server::signing_keys::KeyResolution;
+use ackplane_server::telemetry_store::{ReadTelemetryRequest, TelemetryMetric, TelemetryStore};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -38,6 +39,7 @@ struct AppState {
     constitution: Arc<ConstitutionStore>,
     claims: Arc<Mutex<ClaimStore>>,
     readiness: Arc<ReadinessStore>,
+    telemetry: Arc<TelemetryStore>,
     tenant_id: Arc<str>,
 }
 
@@ -522,6 +524,43 @@ impl ConstitutionResponse {
     }
 }
 
+#[derive(Serialize)]
+struct TelemetryResponse {
+    metrics: Vec<TelemetryMetricSummary>,
+}
+
+/// Current health per (kind, name) -- derived from the most recent
+/// success/error, distinct from the lifetime `calls`/`errors` counts also
+/// reported, so a resolved past error stops reading as an active fault the
+/// moment a later call succeeds (mirrors mindleak-core's own local
+/// NameMetric/currently_failing logic, ADR-0010).
+#[derive(Serialize)]
+struct TelemetryMetricSummary {
+    kind: i16,
+    name: String,
+    calls: i64,
+    errors: i64,
+    currently_failing: bool,
+    last_success_at_seconds: Option<u64>,
+    last_error_at_seconds: Option<u64>,
+    average_duration_ms: f64,
+}
+
+impl From<TelemetryMetric> for TelemetryMetricSummary {
+    fn from(metric: TelemetryMetric) -> Self {
+        Self {
+            kind: metric.kind,
+            name: metric.name,
+            calls: metric.calls,
+            errors: metric.errors,
+            currently_failing: metric.currently_failing,
+            last_success_at_seconds: metric.last_success_at.and_then(unix_seconds),
+            last_error_at_seconds: metric.last_error_at.and_then(unix_seconds),
+            average_duration_ms: metric.average_duration_ms,
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let salt_path = match std::env::var("ACKPLANE_BRIDGE_SALT_PATH") {
@@ -586,12 +625,20 @@ async fn main() {
             return;
         }
     };
+    let telemetry_store = match TelemetryStore::connect(config.database_url()).await {
+        Ok(telemetry) => Arc::new(telemetry),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane telemetry domain: {error}");
+            return;
+        }
+    };
     let state = AppState {
         fleet: fleet_store,
         knowledge: knowledge_store,
         constitution: constitution_store,
         claims: claim_store,
         readiness: readiness_store,
+        telemetry: telemetry_store,
         tenant_id: Arc::from(config.development_tenant_token),
     };
     let application = Router::new()
@@ -626,6 +673,10 @@ async fn main() {
         .route(
             "/api/v1/repositories/:repository_id/constitution",
             get(repository_constitution),
+        )
+        .route(
+            "/api/v1/repositories/:repository_id/telemetry",
+            get(repository_telemetry),
         )
         .route(
             "/api/v1/repositories/:repository_id/tasks/:task_id/recover",
@@ -976,6 +1027,55 @@ async fn repository_constitution(
         Ok(None) => Ok(Json(ConstitutionResponse::not_found())),
         Err(error) => {
             tracing::error!(%error, "Bridge repository constitution query failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn repository_telemetry(
+    State(state): State<AppState>,
+    Path(repository_id): Path<String>,
+) -> Result<Json<TelemetryResponse>, StatusCode> {
+    // Same enrolment-first check every other Bridge route already follows: a
+    // repository outside the caller's tenant reads exactly like one that was
+    // never enrolled.
+    match state
+        .fleet
+        .repository(&state.tenant_id, &repository_id)
+        .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository telemetry lookup failed");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    // Zero/None select every kind/name (the same convention TelemetryService
+    // documents on the wire); series points are not rendered by this route
+    // yet -- the sparkline dashboard is task:60ba293846ec's own scope.
+    match state
+        .telemetry
+        .read(ReadTelemetryRequest {
+            tenant_id: state.tenant_id.to_string(),
+            repository_id,
+            kind: 0,
+            name: None,
+            bucket_seconds: 3600,
+            max_points: 1,
+        })
+        .await
+    {
+        Ok(snapshot) => Ok(Json(TelemetryResponse {
+            metrics: snapshot
+                .metrics
+                .into_iter()
+                .map(TelemetryMetricSummary::from)
+                .collect(),
+        })),
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository telemetry query failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
