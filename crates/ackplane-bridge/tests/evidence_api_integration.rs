@@ -371,6 +371,12 @@ async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
         .expect("serve Evidence audit export route");
     assert_eq!(export.status(), StatusCode::OK);
     let export = body_json(export).await;
+    let exported_original_evidence = export["evidence"]
+        .as_array()
+        .expect("exported Evidence entries are an array")
+        .iter()
+        .find(|entry| entry["evidence_id"] == evidence.record.evidence_id)
+        .expect("export includes the original Evidence");
     let expected_session_fingerprint = format!(
         "sha256:{}",
         Sha256::digest(raw_session_label.as_bytes())
@@ -379,13 +385,13 @@ async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
             .collect::<String>()
     );
     assert_eq!(
-        export["evidence"][0]["reported_agent_session_fingerprint"],
+        exported_original_evidence["reported_agent_session_fingerprint"],
         json!(expected_session_fingerprint)
     );
-    assert!(export["evidence"][0]
+    assert!(exported_original_evidence
         .get("reported_agent_session_id")
         .is_none());
-    assert!(export["evidence"][0].get("idempotency_key").is_none());
+    assert!(exported_original_evidence.get("idempotency_key").is_none());
 
     let foreign = application(&database_url, &format!("{tenant_id}-other"))
         .await
