@@ -20,6 +20,8 @@ mod tests {
         for required in [
             "id=\"repository\"",
             "id=\"task\"",
+            "id=\"agent\"",
+            "agent_id",
             "evidence-board",
             "evidence-board/export",
             "reported_constitution_version",

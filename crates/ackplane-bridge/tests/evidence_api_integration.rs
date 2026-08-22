@@ -163,6 +163,13 @@ async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
     let repository_id = format!("repository-{unique}");
     let task_id = format!("task:{unique}");
     let node_id = enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
+    let other_node_id = enroll_repository(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &format!("{unique}-other"),
+    )
+    .await;
     let raw_session_label = "session:v1:evidence-api-private";
     let evidence_store = EvidenceStore::connect(&database_url)
         .await
@@ -183,6 +190,22 @@ async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
         })
         .await
         .expect("record Evidence");
+    let other_evidence = evidence_store
+        .record(RecordEvidenceRequest {
+            tenant_id: tenant_id.clone(),
+            repository_id: repository_id.clone(),
+            task_id: task_id.clone(),
+            kind: EvidenceKind::Execution,
+            source_ref: format!("execution:{unique}"),
+            content_digest: vec![9; 32],
+            observed_at: SystemTime::now(),
+            reported_agent_session_id: "session:v1:other-agent".to_string(),
+            recorded_by: other_node_id,
+            idempotency_key: format!("other-evidence-{unique}"),
+            reported_constitution_version: Some("constitution:v4".to_string()),
+        })
+        .await
+        .expect("record other agent Evidence");
     let conformance = evidence_store
         .record_conformance(RecordConformanceRequest {
             tenant_id: tenant_id.clone(),
@@ -194,7 +217,7 @@ async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
             findings_digest: vec![8; 32],
             finding_codes: vec![ConformanceFindingCode::PolicyDrift],
             reported_checked_at: SystemTime::now(),
-            evaluated_by: node_id,
+            evaluated_by: node_id.clone(),
             idempotency_key: format!("conformance-{unique}"),
             reported_constitution_version: Some("constitution:v4".to_string()),
         })
@@ -234,6 +257,70 @@ async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
         board["evidence"]["entries"][0]["reported_constitution_version"],
         json!("constitution:v4")
     );
+    let original_board_evidence = board["evidence"]["entries"]
+        .as_array()
+        .expect("Board Evidence entries are an array")
+        .iter()
+        .find(|entry| entry["evidence_id"] == evidence.record.evidence_id)
+        .expect("unfiltered Board contains the original Evidence")
+        .clone();
+
+    let filtered_board = application(&database_url, &tenant_id)
+        .await
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/repositories/{repository_id}/tasks/{task_id}/evidence-board?limit=20&agent_id={node_id}"
+                ))
+                .body(Body::empty())
+                .expect("build filtered Evidence Board request"),
+        )
+        .await
+        .expect("serve filtered Evidence Board route");
+    assert_eq!(filtered_board.status(), StatusCode::OK);
+    let filtered_board = body_json(filtered_board).await;
+    assert_eq!(
+        filtered_board["evidence"]["entries"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        filtered_board["evidence"]["entries"][0]["evidence_id"],
+        json!(evidence.record.evidence_id)
+    );
+    assert_eq!(
+        filtered_board["conformance"]["entries"],
+        board["conformance"]["entries"]
+    );
+
+    let filtered_export = application(&database_url, &tenant_id)
+        .await
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/repositories/{repository_id}/tasks/{task_id}/evidence-board/export?limit=20&agent_id={node_id}"
+                ))
+                .body(Body::empty())
+                .expect("build filtered Evidence export request"),
+        )
+        .await
+        .expect("serve filtered Evidence export route");
+    assert_eq!(filtered_export.status(), StatusCode::OK);
+    let filtered_export = body_json(filtered_export).await;
+    assert_eq!(filtered_export["agent_id"], json!(node_id));
+    assert_eq!(
+        filtered_export["evidence"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        filtered_export["evidence"][0]["evidence_id"],
+        json!(evidence.record.evidence_id)
+    );
+    assert_ne!(
+        filtered_export["evidence"][0]["evidence_id"],
+        json!(other_evidence.record.evidence_id)
+    );
 
     let evidence_detail = app
         .clone()
@@ -249,10 +336,7 @@ async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
         .await
         .expect("serve Evidence detail route");
     assert_eq!(evidence_detail.status(), StatusCode::OK);
-    assert_eq!(
-        body_json(evidence_detail).await,
-        board["evidence"]["entries"][0].clone()
-    );
+    assert_eq!(body_json(evidence_detail).await, original_board_evidence);
 
     let conformance_detail = app
         .clone()

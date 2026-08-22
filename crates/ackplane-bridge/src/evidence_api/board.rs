@@ -24,6 +24,7 @@ use super::{
 #[derive(Deserialize)]
 pub(super) struct EvidenceBoardQuery {
     limit: Option<u32>,
+    agent_id: Option<String>,
     evidence_cursor: Option<String>,
     conformance_cursor: Option<String>,
 }
@@ -71,6 +72,7 @@ pub(super) async fn evidence_board(
             state.tenant_id.as_ref(),
             &repository_id,
             &task_id,
+            query.agent_id.as_deref(),
             evidence_cursor.as_ref(),
             query.limit,
         )
@@ -82,6 +84,7 @@ pub(super) async fn evidence_board(
             state.tenant_id.as_ref(),
             &repository_id,
             &task_id,
+            query.agent_id.as_deref(),
             conformance_cursor.as_ref(),
             query.limit,
         )

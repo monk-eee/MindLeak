@@ -92,6 +92,7 @@ pub fn evidence_routes(state: EvidenceApiState) -> Router {
 struct EvidencePageQuery {
     limit: Option<u32>,
     cursor: Option<String>,
+    agent_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -194,6 +195,7 @@ async fn task_evidence(
             state.tenant_id.as_ref(),
             &repository_id,
             &task_id,
+            query.agent_id.as_deref(),
             cursor.as_ref(),
             query.limit,
         )
@@ -233,6 +235,7 @@ async fn task_conformance(
             state.tenant_id.as_ref(),
             &repository_id,
             &task_id,
+            query.agent_id.as_deref(),
             cursor.as_ref(),
             query.limit,
         )

@@ -283,6 +283,7 @@ impl EvidenceGrpcService {
                 &request.tenant_id,
                 &request.repository_id,
                 &request.task_id,
+                None,
                 cursor.as_ref(),
                 i64::from(limit),
             )

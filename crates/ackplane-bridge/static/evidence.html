@@ -74,7 +74,7 @@
     .eyebrow { margin: 0 0 5px; font-size: 0.69rem; color: var(--soft); font-weight: 750; letter-spacing: .09em; text-transform: uppercase; }
     .heading h2 { margin: 0; font-size: 1.55rem; letter-spacing: 0; }
     .heading p { margin: 5px 0 0; color: var(--muted); font-size: .86rem; max-width: 50ch; }
-    .toolbar { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) 106px auto auto; gap: 10px; align-items: end; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 13px; box-shadow: var(--shadow); }
+    .toolbar { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) minmax(150px, 1fr) 106px auto auto; gap: 10px; align-items: end; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 13px; box-shadow: var(--shadow); }
     label { display: grid; gap: 5px; color: var(--soft); font-size: .7rem; font-weight: 700; letter-spacing: .045em; text-transform: uppercase; }
     input, select { width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--ink); background: var(--surface); font-size: .85rem; text-transform: none; letter-spacing: 0; }
     .command { height: 37px; padding: 0 13px; border: 1px solid transparent; border-radius: 6px; background: var(--ink); color: var(--surface); font-weight: 700; cursor: pointer; font-size: .82rem; }
@@ -142,6 +142,7 @@
     <form id="filters" class="toolbar">
       <label>Repository<input id="repository" name="repository" required autocomplete="off" spellcheck="false"></label>
       <label>Task<input id="task" name="task" required autocomplete="off" spellcheck="false"></label>
+      <label>Agent<input id="agent" name="agent" autocomplete="off" spellcheck="false" placeholder="Optional node ID"></label>
       <label>Page size<select id="limit" name="limit"><option>10</option><option selected>20</option><option>50</option><option>100</option></select></label>
       <button class="command" type="submit">Load</button>
       <button id="export" class="command secondary" type="button" disabled>Export</button>
@@ -163,7 +164,7 @@
   </main>
   <script>
     const els = {
-      form: document.getElementById("filters"), repository: document.getElementById("repository"), task: document.getElementById("task"), limit: document.getElementById("limit"),
+      form: document.getElementById("filters"), repository: document.getElementById("repository"), task: document.getElementById("task"), agent: document.getElementById("agent"), limit: document.getElementById("limit"),
       export: document.getElementById("export"), message: document.getElementById("message"), scope: document.getElementById("scope-label"),
       status: document.getElementById("status-grid"), board: document.getElementById("board"), links: document.getElementById("api-links"),
       evidence: document.getElementById("evidence-list"), conformance: document.getElementById("conformance-list"), evidenceCount: document.getElementById("evidence-count"), conformanceCount: document.getElementById("conformance-count")
@@ -172,6 +173,7 @@
     const params = new URLSearchParams(location.search);
     els.repository.value = params.get("repository") || "";
     els.task.value = params.get("task") || "";
+    els.agent.value = params.get("agent_id") || "";
     const escape = (value) => String(value ?? "").replace(/[&<>"]/g, character => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[character]));
     const when = (seconds) => Number.isFinite(seconds) ? new Date(seconds * 1000).toLocaleString() : "unknown";
     const setMessage = (text, error = false) => { els.message.textContent = text; els.message.classList.toggle("error", error); };
@@ -210,12 +212,16 @@
     async function load() {
       if (!els.form.reportValidity()) return;
       const query = new URLSearchParams({limit: els.limit.value});
+      const agentId = els.agent.value.trim();
+      if (agentId) query.set("agent_id", agentId);
       setMessage("Loading evidence..."); els.export.disabled = true;
       try {
         const response = await fetch(`${endpoint("evidence-board")}?${query}`);
         if (!response.ok) throw new Error(response.status === 404 ? "Repository or task is outside the current scope." : `Evidence Board request failed (${response.status}).`);
         draw(await response.json()); setMessage("Loaded.");
-        history.replaceState(null, "", `/evidence?repository=${encodeURIComponent(els.repository.value.trim())}&task=${encodeURIComponent(els.task.value.trim())}`);
+        const pageQuery = new URLSearchParams({repository: els.repository.value.trim(), task: els.task.value.trim()});
+        if (agentId) pageQuery.set("agent_id", agentId);
+        history.replaceState(null, "", `/evidence?${pageQuery}`);
       } catch (error) { setMessage(error.message, true); }
     }
     els.form.addEventListener("submit", event => { event.preventDefault(); load(); });
@@ -223,7 +229,10 @@
       if (!loaded) return;
       setMessage("Preparing audit package...");
       try {
-        const response = await fetch(`${endpoint("evidence-board/export")}?limit=${encodeURIComponent(els.limit.value)}`);
+        const query = new URLSearchParams({limit: els.limit.value});
+        const agentId = els.agent.value.trim();
+        if (agentId) query.set("agent_id", agentId);
+        const response = await fetch(`${endpoint("evidence-board/export")}?${query}`);
         if (!response.ok) throw new Error(`Audit export failed (${response.status}).`);
         const blob = new Blob([JSON.stringify(await response.json(), null, 2)], {type: "application/json"});
         const anchor = Object.assign(document.createElement("a"), {href: URL.createObjectURL(blob), download: `${els.task.value.trim().replace(/[^a-z0-9._-]/gi, "-")}-evidence.json`});

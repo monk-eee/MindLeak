@@ -555,7 +555,7 @@ mod tests {
         }
 
         let first = store
-            .list_conformance_page(&tenant_id, &repository_id, "task:123", None, 1)
+            .list_conformance_page(&tenant_id, &repository_id, "task:123", None, None, 1)
             .await
             .unwrap();
         let cursor = first
@@ -563,7 +563,14 @@ mod tests {
             .clone()
             .expect("a full first page must return a cursor");
         let second = store
-            .list_conformance_page(&tenant_id, &repository_id, "task:123", Some(&cursor), 1)
+            .list_conformance_page(
+                &tenant_id,
+                &repository_id,
+                "task:123",
+                None,
+                Some(&cursor),
+                1,
+            )
             .await
             .unwrap();
 

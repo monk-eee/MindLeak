@@ -209,6 +209,7 @@ impl BridgeEvidenceStore {
         tenant_id: &str,
         repository_id: &str,
         task_id: &str,
+        agent_id: Option<&str>,
         cursor: Option<&EvidenceCursor>,
         requested_limit: Option<u32>,
     ) -> Result<EvidencePage, EvidenceStoreError> {
@@ -217,6 +218,7 @@ impl BridgeEvidenceStore {
                 tenant_id,
                 repository_id,
                 task_id,
+                agent_id,
                 cursor,
                 page_limit(requested_limit),
             )
@@ -230,6 +232,7 @@ impl BridgeEvidenceStore {
         tenant_id: &str,
         repository_id: &str,
         task_id: &str,
+        agent_id: Option<&str>,
         cursor: Option<&ConformanceCursor>,
         requested_limit: Option<u32>,
     ) -> Result<ConformancePage, ConformanceStoreError> {
@@ -238,6 +241,7 @@ impl BridgeEvidenceStore {
                 tenant_id,
                 repository_id,
                 task_id,
+                agent_id,
                 cursor,
                 page_limit(requested_limit),
             )

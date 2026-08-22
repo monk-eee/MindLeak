@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use super::{
     is_bounded, row_to_evidence, EvidenceRecord, EvidenceStore, EvidenceStoreError,
-    MAX_TASK_ID_BYTES,
+    MAX_IDENTITY_BYTES, MAX_TASK_ID_BYTES,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,11 +25,15 @@ impl EvidenceStore {
         tenant_id: &str,
         repository_id: &str,
         task_id: &str,
+        agent_id: Option<&str>,
         cursor: Option<&EvidenceCursor>,
         limit: i64,
     ) -> Result<EvidencePage, EvidenceStoreError> {
         if !is_bounded(task_id, MAX_TASK_ID_BYTES) || limit < 1 {
             return Err(EvidenceStoreError::InvalidTaskId);
+        }
+        if agent_id.is_some_and(|agent_id| !is_bounded(agent_id, MAX_IDENTITY_BYTES)) {
+            return Err(EvidenceStoreError::InvalidIdentity);
         }
         if cursor.is_some_and(|cursor| !is_bounded(&cursor.evidence_id, MAX_TASK_ID_BYTES)) {
             return Err(EvidenceStoreError::InvalidCursor);
@@ -46,13 +50,15 @@ impl EvidenceStore {
                                 recorded_at, idempotency_key, reported_constitution_version \
                          FROM evidence_records \
                          WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 \
-                           AND (recorded_at < $4 OR (recorded_at = $4 AND evidence_id > $5)) \
+                                                     AND ($4::TEXT IS NULL OR recorded_by = $4) \
+                                                     AND (recorded_at < $5 OR (recorded_at = $5 AND evidence_id > $6)) \
                          ORDER BY recorded_at DESC, evidence_id ASC \
-                         LIMIT $6",
+                                                 LIMIT $7",
                         &[
                             &tenant_id,
                             &repository_id,
                             &task_id,
+                            &agent_id,
                             &cursor.recorded_at,
                             &cursor.evidence_id,
                             &fetch_limit,
@@ -68,9 +74,10 @@ impl EvidenceStore {
                                 recorded_at, idempotency_key, reported_constitution_version \
                          FROM evidence_records \
                          WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 \
+                                                     AND ($4::TEXT IS NULL OR recorded_by = $4) \
                          ORDER BY recorded_at DESC, evidence_id ASC \
-                         LIMIT $4",
-                        &[&tenant_id, &repository_id, &task_id, &fetch_limit],
+                                                 LIMIT $5",
+                                                &[&tenant_id, &repository_id, &task_id, &agent_id, &fetch_limit],
                     )
                     .await?
             }

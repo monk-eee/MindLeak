@@ -27,6 +27,7 @@ const EXPORT_SCHEMA_VERSION: u32 = 1;
 #[derive(Deserialize)]
 pub(super) struct EvidenceExportQuery {
     limit: Option<u32>,
+    agent_id: Option<String>,
     evidence_cursor: Option<String>,
     conformance_cursor: Option<String>,
 }
@@ -38,6 +39,7 @@ pub(super) struct EvidenceExportResponse {
     tenant_id: String,
     repository_id: String,
     task_id: String,
+    agent_id: Option<String>,
     effective_limit: i64,
     redaction: &'static str,
     evidence_complete: bool,
@@ -147,6 +149,7 @@ pub(super) async fn evidence_export(
             state.tenant_id.as_ref(),
             &repository_id,
             &task_id,
+            query.agent_id.as_deref(),
             evidence_cursor.as_ref(),
             query.limit,
         )
@@ -158,6 +161,7 @@ pub(super) async fn evidence_export(
             state.tenant_id.as_ref(),
             &repository_id,
             &task_id,
+            query.agent_id.as_deref(),
             conformance_cursor.as_ref(),
             query.limit,
         )
@@ -178,6 +182,7 @@ pub(super) async fn evidence_export(
         tenant_id: state.tenant_id.to_string(),
         repository_id,
         task_id,
+        agent_id: query.agent_id,
         effective_limit,
         redaction: "evidence bodies, finding bodies, credentials, raw session labels, and idempotency keys are omitted",
         evidence_complete: next_evidence_cursor.is_none(),
