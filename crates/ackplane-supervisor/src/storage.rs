@@ -1,12 +1,12 @@
-//! SQLite schema and persistence helpers for the durable supervisor inbox.
+//! SQLite schema and persistence helpers for durable supervisor queues.
+
+use std::time::Duration;
 
 use ackplane_protocol::{
     supervisor::{SupervisorIdentity, SupervisorSession},
     v1,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
-
-use crate::inbox::InboxError;
 
 pub(crate) const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS inbox_identity (
@@ -31,7 +31,26 @@ CREATE TABLE IF NOT EXISTS directive_inbox (
     receipt_reason INTEGER NOT NULL,
     occurred_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS outbound_frames (
+    sequence INTEGER PRIMARY KEY,
+    frame BLOB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS outbound_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    last_sequence INTEGER NOT NULL CHECK (last_sequence >= 0)
+);
+
+INSERT OR IGNORE INTO outbound_state (singleton, last_sequence)
+SELECT 1, COALESCE(MAX(sequence), 0) FROM outbound_frames;
 "#;
+
+pub(crate) fn configure(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.busy_timeout(Duration::from_secs(5))?;
+    conn.execute_batch(SCHEMA)
+}
 
 pub(crate) struct StoredReceipt {
     pub(crate) payload_digest: Vec<u8>,
@@ -68,12 +87,12 @@ impl StoredReceipt {
     }
 }
 
-pub(crate) fn ensure_inbox_identity(
+pub(crate) fn ensure_supervisor_identity(
     conn: &Connection,
     identity: &SupervisorIdentity,
     supervisor_id: &str,
     session: &SupervisorSession,
-) -> Result<(), InboxError> {
+) -> Result<bool, rusqlite::Error> {
     let stored: Option<(String, String, String, String, String)> = conn
         .query_row(
             "SELECT tenant_id, repository_id, node_id, supervisor_id, session_id FROM inbox_identity WHERE singleton = 1",
@@ -91,9 +110,9 @@ pub(crate) fn ensure_inbox_identity(
                 session.session_id.clone(),
             )
         {
-            return Err(InboxError::InboxIdentityMismatch);
+            return Ok(false);
         }
-        return Ok(());
+        return Ok(true);
     }
     conn.execute(
         "INSERT INTO inbox_identity (singleton, tenant_id, repository_id, node_id, supervisor_id, session_id) VALUES (1, ?1, ?2, ?3, ?4, ?5)",
@@ -105,7 +124,7 @@ pub(crate) fn ensure_inbox_identity(
             session.session_id,
         ],
     )?;
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) fn next_sequence(transaction: &Transaction<'_>) -> Result<i64, rusqlite::Error> {
@@ -164,4 +183,70 @@ pub(crate) fn store_receipt(
         ],
     )?;
     Ok(())
+}
+
+pub(crate) fn next_outbound_sequence(
+    transaction: &Transaction<'_>,
+) -> Result<i64, rusqlite::Error> {
+    transaction.query_row(
+        "SELECT last_sequence + 1 FROM outbound_state WHERE singleton = 1",
+        [],
+        |row| row.get(0),
+    )
+}
+
+pub(crate) fn load_outbound_frame(
+    transaction: &Transaction<'_>,
+    sequence: i64,
+) -> Result<Option<Vec<u8>>, rusqlite::Error> {
+    transaction
+        .query_row(
+            "SELECT frame FROM outbound_frames WHERE sequence = ?1",
+            params![sequence],
+            |row| row.get(0),
+        )
+        .optional()
+}
+
+pub(crate) fn store_outbound_frame(
+    transaction: &Transaction<'_>,
+    sequence: i64,
+    frame: &[u8],
+) -> Result<(), rusqlite::Error> {
+    transaction.execute(
+        "INSERT INTO outbound_frames (sequence, frame) VALUES (?1, ?2)",
+        params![sequence, frame],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn record_outbound_sequence(
+    transaction: &Transaction<'_>,
+    sequence: i64,
+) -> Result<(), rusqlite::Error> {
+    transaction.execute(
+        "UPDATE outbound_state SET last_sequence = ?1 WHERE singleton = 1",
+        params![sequence],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn pending_outbound_frames(
+    conn: &Connection,
+    limit: i64,
+) -> Result<Vec<(u64, Vec<u8>)>, rusqlite::Error> {
+    let mut statement =
+        conn.prepare("SELECT sequence, frame FROM outbound_frames ORDER BY sequence ASC LIMIT ?1")?;
+    let rows = statement.query_map(params![limit], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect()
+}
+
+pub(crate) fn acknowledge_outbound_frames(
+    transaction: &Transaction<'_>,
+    sequence: i64,
+) -> Result<usize, rusqlite::Error> {
+    transaction.execute(
+        "DELETE FROM outbound_frames WHERE sequence <= ?1",
+        params![sequence],
+    )
 }

@@ -6,6 +6,8 @@
 #![forbid(unsafe_code)]
 
 mod inbox;
+mod outbox;
 mod storage;
 
 pub use inbox::{InboxError, SupervisorInbox};
+pub use outbox::{OutboxError, QueueOutcome, QueuedFrame, SupervisorOutbox};

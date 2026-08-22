@@ -83,6 +83,7 @@ name = "ackplane-supervisor"
 version = "0.1.7-alpha"
 dependencies = [
  "ackplane-protocol",
+ "prost",
  "rusqlite",
  "thiserror",
  "time",

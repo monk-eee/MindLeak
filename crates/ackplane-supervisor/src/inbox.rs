@@ -5,9 +5,11 @@
 //! launch a worker, or execute a directive. A future transport adapter feeds
 //! [`SupervisorInbox::receive`] the directives it received over NodeSync.
 
-use std::{fs, path::Path, time::Duration};
+use std::{fs, path::Path};
 
-use crate::storage::{ensure_inbox_identity, load_receipt, next_sequence, store_receipt, SCHEMA};
+use crate::storage::{
+    configure, ensure_supervisor_identity, load_receipt, next_sequence, store_receipt,
+};
 
 use ackplane_protocol::{
     supervisor::{
@@ -60,15 +62,15 @@ impl SupervisorInbox {
             return Err(InboxError::SessionSupervisorMismatch);
         }
 
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.busy_timeout(Duration::from_secs(5))?;
-        conn.execute_batch(SCHEMA)?;
-        ensure_inbox_identity(
+        configure(&conn)?;
+        if !ensure_supervisor_identity(
             &conn,
             &registration.identity,
             &registration.supervisor_id,
             &session,
-        )?;
+        )? {
+            return Err(InboxError::InboxIdentityMismatch);
+        }
 
         Ok(Self {
             conn,
