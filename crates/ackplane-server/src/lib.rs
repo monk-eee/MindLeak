@@ -31,6 +31,7 @@ pub mod claim_store;
 pub mod constitution_service;
 pub mod constitution_signature;
 pub mod constitution_store;
+pub mod context_packet_store;
 pub mod enrollment;
 pub mod enrollment_service;
 pub mod enrollment_store;

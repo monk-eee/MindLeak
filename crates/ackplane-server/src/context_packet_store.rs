@@ -1,0 +1,558 @@
+//! ADR-0114: durable storage for the Industrial ContextPacket protocol model
+//! (`ackplane_protocol::context_packet`), first slice: an immutable packet
+//! store plus attributed use receipts (decisions 1, 5, 7). The compiler that
+//! produces packets (decisions 2-4), the authenticated request service
+//! (decision 6), and Bridge inspection are later slices, not this one.
+
+use ackplane_protocol::context_packet::{
+    ContextPacket, ContextPacketError, ContextPacketUseReason, ContextPacketUseReceipt,
+    ContextPacketUseStatus,
+};
+use sha2::{Digest, Sha256};
+use tokio_postgres::{Client, NoTls};
+
+use crate::migration_lock;
+
+const MIGRATION: &str = include_str!("../migrations/0020_context_packets.sql");
+
+pub struct ContextPacketStore {
+    client: Client,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ContextPacketStoreError {
+    #[error("ackplane database error: {0}")]
+    Database(#[from] tokio_postgres::Error),
+    #[error("invalid context packet: {0}")]
+    Invalid(#[from] ContextPacketError),
+    #[error(
+        "packet {packet_id} is already stored with different content -- packets are immutable"
+    )]
+    ImmutabilityViolation { packet_id: String },
+    #[error(
+        "no stored packet {packet_id} for this tenant/repository -- a receipt cannot reference an unknown packet"
+    )]
+    UnknownPacket { packet_id: String },
+    #[error("receipt scope for packet {packet_id} does not match the packet's own stored scope")]
+    ScopeMismatch { packet_id: String },
+    #[error("unknown context packet use status: {0}")]
+    UnknownUseStatus(String),
+    #[error("unknown context packet use reason: {0}")]
+    UnknownUseReason(String),
+    #[error("stored packet payload for {packet_id} is unreadable: {detail}")]
+    CorruptPayload { packet_id: String, detail: String },
+}
+
+impl ContextPacketStore {
+    pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
+        let (client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
+        tokio::spawn(async move {
+            if let Err(error) = connection.await {
+                eprintln!("ackplane-server: context packet store connection error: {error}");
+            }
+        });
+        let mut client = client;
+        migration_lock::migrate_locked(
+            &mut client,
+            migration_lock::key::CONTEXT_PACKETS,
+            MIGRATION,
+        )
+        .await?;
+        Ok(Self { client })
+    }
+
+    /// Decisions 1 and 5: store a validated packet once. A byte-identical
+    /// replay for the same `packet_id` succeeds idempotently (a packet can be
+    /// "fetched again... to resume"); any other content under the same id is
+    /// an immutability violation, never a silent overwrite.
+    pub async fn store_packet(
+        &mut self,
+        packet: &ContextPacket,
+    ) -> Result<(), ContextPacketStoreError> {
+        packet.validate()?;
+        let payload =
+            serde_json::to_vec(packet).expect("a validated ContextPacket always serializes");
+        let payload_digest = Sha256::digest(&payload).to_vec();
+        let tenant_id = &packet.scope.tenant_id;
+        let repository_id = &packet.scope.repository_id;
+
+        let transaction = self.client.transaction().await?;
+        let existing = transaction
+            .query_opt(
+                "SELECT payload_digest FROM context_packets \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND packet_id = $3",
+                &[tenant_id, repository_id, &packet.packet_id],
+            )
+            .await?;
+        if let Some(row) = existing {
+            let stored_digest: Vec<u8> = row.get(0);
+            transaction.commit().await?;
+            if stored_digest == payload_digest {
+                return Ok(());
+            }
+            return Err(ContextPacketStoreError::ImmutabilityViolation {
+                packet_id: packet.packet_id.clone(),
+            });
+        }
+
+        transaction
+            .execute(
+                "INSERT INTO context_packets \
+                 (tenant_id, repository_id, packet_id, task_id, goal_id, agent_session_id, \
+                  compiler_version, issued_at, expires_at, ledger_position, projection_position, \
+                  token_budget_requested, token_budget_used, payload, payload_digest) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+                &[
+                    tenant_id,
+                    repository_id,
+                    &packet.packet_id,
+                    &packet.scope.task_id,
+                    &packet.scope.goal_id,
+                    &packet.scope.agent_session_id,
+                    &packet.compiler_version,
+                    &packet.issued_at,
+                    &packet.expires_at,
+                    &(packet.source.ledger_position as i64),
+                    &(packet.source.projection_position as i64),
+                    &(packet.token_budget.requested as i32),
+                    &(packet.token_budget.used as i32),
+                    &payload,
+                    &payload_digest,
+                ],
+            )
+            .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// The stored packet, deserialized back through the same protocol type.
+    pub async fn get_packet(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        packet_id: &str,
+    ) -> Result<Option<ContextPacket>, ContextPacketStoreError> {
+        let row = self
+            .client
+            .query_opt(
+                "SELECT payload FROM context_packets \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND packet_id = $3",
+                &[&tenant_id, &repository_id, &packet_id],
+            )
+            .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let payload: Vec<u8> = row.get(0);
+        let packet: ContextPacket = serde_json::from_slice(&payload).map_err(|error| {
+            ContextPacketStoreError::CorruptPayload {
+                packet_id: packet_id.to_string(),
+                detail: error.to_string(),
+            }
+        })?;
+        Ok(Some(packet))
+    }
+
+    /// Decision 7: record a supervisor's attributed observation of how it
+    /// handled a packet. Refuses a receipt for a packet this tenant/
+    /// repository never stored, and refuses a receipt whose scope does not
+    /// match the packet's own stored scope -- both are typed, named
+    /// refusals rather than a bare foreign-key database error.
+    pub async fn record_use(
+        &mut self,
+        receipt: &ContextPacketUseReceipt,
+    ) -> Result<(), ContextPacketStoreError> {
+        receipt.validate()?;
+        let tenant_id = &receipt.scope.tenant_id;
+        let repository_id = &receipt.scope.repository_id;
+
+        let row = self
+            .client
+            .query_opt(
+                "SELECT task_id, goal_id, agent_session_id FROM context_packets \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND packet_id = $3",
+                &[tenant_id, repository_id, &receipt.packet_id],
+            )
+            .await?;
+        let Some(row) = row else {
+            return Err(ContextPacketStoreError::UnknownPacket {
+                packet_id: receipt.packet_id.clone(),
+            });
+        };
+        let task_id: String = row.get(0);
+        let goal_id: String = row.get(1);
+        let agent_session_id: String = row.get(2);
+        if task_id != receipt.scope.task_id
+            || goal_id != receipt.scope.goal_id
+            || agent_session_id != receipt.scope.agent_session_id
+        {
+            return Err(ContextPacketStoreError::ScopeMismatch {
+                packet_id: receipt.packet_id.clone(),
+            });
+        }
+
+        self.client
+            .execute(
+                "INSERT INTO context_packet_use_receipts \
+                 (tenant_id, repository_id, packet_id, status, reason, occurred_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+                &[
+                    tenant_id,
+                    repository_id,
+                    &receipt.packet_id,
+                    &use_status_str(receipt.status),
+                    &receipt.reason.map(use_reason_str),
+                    &receipt.occurred_at,
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Every receipt recorded against one packet, oldest first. The scope on
+    /// each returned receipt is the packet's own scope (a receipt can never
+    /// be stored under a different one -- see `record_use`), read back via a
+    /// join rather than duplicated per-row.
+    pub async fn list_use_receipts(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        packet_id: &str,
+    ) -> Result<Vec<ContextPacketUseReceipt>, ContextPacketStoreError> {
+        let rows = self
+            .client
+            .query(
+                "SELECT r.status, r.reason, r.occurred_at, p.task_id, p.goal_id, p.agent_session_id \
+                 FROM context_packet_use_receipts r \
+                 JOIN context_packets p \
+                   ON p.tenant_id = r.tenant_id AND p.repository_id = r.repository_id \
+                  AND p.packet_id = r.packet_id \
+                 WHERE r.tenant_id = $1 AND r.repository_id = $2 AND r.packet_id = $3 \
+                 ORDER BY r.receipt_id ASC",
+                &[&tenant_id, &repository_id, &packet_id],
+            )
+            .await?;
+
+        let mut receipts = Vec::with_capacity(rows.len());
+        for row in rows {
+            let status: String = row.get(0);
+            let reason: Option<String> = row.get(1);
+            let occurred_at: i64 = row.get(2);
+            let task_id: String = row.get(3);
+            let goal_id: String = row.get(4);
+            let agent_session_id: String = row.get(5);
+            receipts.push(ContextPacketUseReceipt {
+                packet_id: packet_id.to_string(),
+                scope: ackplane_protocol::context_packet::ContextPacketScope {
+                    tenant_id: tenant_id.to_string(),
+                    repository_id: repository_id.to_string(),
+                    task_id,
+                    goal_id,
+                    agent_session_id,
+                },
+                occurred_at,
+                status: parse_use_status(&status)?,
+                reason: reason.map(|value| parse_use_reason(&value)).transpose()?,
+            });
+        }
+        Ok(receipts)
+    }
+}
+
+fn use_status_str(status: ContextPacketUseStatus) -> &'static str {
+    match status {
+        ContextPacketUseStatus::Received => "received",
+        ContextPacketUseStatus::Accepted => "accepted",
+        ContextPacketUseStatus::AppliedToPlanning => "applied_to_planning",
+        ContextPacketUseStatus::Superseded => "superseded",
+        ContextPacketUseStatus::Refused => "refused",
+        ContextPacketUseStatus::Expired => "expired",
+    }
+}
+
+fn parse_use_status(value: &str) -> Result<ContextPacketUseStatus, ContextPacketStoreError> {
+    match value {
+        "received" => Ok(ContextPacketUseStatus::Received),
+        "accepted" => Ok(ContextPacketUseStatus::Accepted),
+        "applied_to_planning" => Ok(ContextPacketUseStatus::AppliedToPlanning),
+        "superseded" => Ok(ContextPacketUseStatus::Superseded),
+        "refused" => Ok(ContextPacketUseStatus::Refused),
+        "expired" => Ok(ContextPacketUseStatus::Expired),
+        other => Err(ContextPacketStoreError::UnknownUseStatus(other.to_string())),
+    }
+}
+
+fn use_reason_str(reason: ContextPacketUseReason) -> &'static str {
+    match reason {
+        ContextPacketUseReason::Superseded => "superseded",
+        ContextPacketUseReason::UnsupportedVersion => "unsupported_version",
+        ContextPacketUseReason::OutOfScope => "out_of_scope",
+        ContextPacketUseReason::IntegrityMismatch => "integrity_mismatch",
+        ContextPacketUseReason::PolicyChanged => "policy_changed",
+    }
+}
+
+fn parse_use_reason(value: &str) -> Result<ContextPacketUseReason, ContextPacketStoreError> {
+    match value {
+        "superseded" => Ok(ContextPacketUseReason::Superseded),
+        "unsupported_version" => Ok(ContextPacketUseReason::UnsupportedVersion),
+        "out_of_scope" => Ok(ContextPacketUseReason::OutOfScope),
+        "integrity_mismatch" => Ok(ContextPacketUseReason::IntegrityMismatch),
+        "policy_changed" => Ok(ContextPacketUseReason::PolicyChanged),
+        other => Err(ContextPacketStoreError::UnknownUseReason(other.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ackplane_protocol::context_packet::{
+        ContextPacketScope, ContextPacketSource, ContextTokenBudget,
+    };
+
+    use super::*;
+
+    fn unique_scope(label: &str) -> ContextPacketScope {
+        let mut bytes = [0u8; 8];
+        getrandom::getrandom(&mut bytes).expect("the OS random source should be available");
+        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        ContextPacketScope {
+            tenant_id: format!("tenant-{label}-{hex}"),
+            repository_id: format!("repo-{label}-{hex}"),
+            task_id: "task:abc123".to_string(),
+            goal_id: "goal:ackplane-federation-service".to_string(),
+            agent_session_id: format!("session-{hex}"),
+        }
+    }
+
+    fn packet(label: &str) -> ContextPacket {
+        let mut bytes = [0u8; 8];
+        getrandom::getrandom(&mut bytes).expect("the OS random source should be available");
+        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        ContextPacket {
+            packet_id: format!("packet-{label}-{hex}"),
+            scope: unique_scope(label),
+            compiler_version: "v1".to_string(),
+            issued_at: 1_000,
+            expires_at: 2_000,
+            source: ContextPacketSource {
+                ledger_position: 42,
+                projection_position: 41,
+            },
+            token_budget: ContextTokenBudget {
+                requested: 4000,
+                used: 1200,
+            },
+            selected: vec![],
+            excluded: vec![],
+        }
+    }
+
+    async fn store() -> Option<ContextPacketStore> {
+        let database_url = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()?;
+        Some(ContextPacketStore::connect(&database_url).await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_stored_packet_reads_back_unchanged() {
+        let Some(mut store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let packet = packet("roundtrip");
+
+        store.store_packet(&packet).await.unwrap();
+
+        let fetched = store
+            .get_packet(
+                &packet.scope.tenant_id,
+                &packet.scope.repository_id,
+                &packet.packet_id,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched, packet);
+    }
+
+    #[tokio::test]
+    async fn get_packet_returns_none_for_an_unknown_id() {
+        let Some(store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let scope = unique_scope("missing");
+
+        let fetched = store
+            .get_packet(
+                &scope.tenant_id,
+                &scope.repository_id,
+                "packet-does-not-exist",
+            )
+            .await
+            .unwrap();
+        assert_eq!(fetched, None);
+    }
+
+    #[tokio::test]
+    async fn storing_the_same_packet_twice_is_an_idempotent_no_op() {
+        let Some(mut store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let packet = packet("replay");
+
+        store.store_packet(&packet).await.unwrap();
+        store
+            .store_packet(&packet)
+            .await
+            .expect("a byte-identical replay must succeed, not error");
+
+        let fetched = store
+            .get_packet(
+                &packet.scope.tenant_id,
+                &packet.scope.repository_id,
+                &packet.packet_id,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched, packet);
+    }
+
+    #[tokio::test]
+    async fn storing_different_content_under_the_same_packet_id_is_rejected() {
+        let Some(mut store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let mut packet = packet("mutate");
+        store.store_packet(&packet).await.unwrap();
+
+        packet.compiler_version = "v2-mutated".to_string();
+        let error = store.store_packet(&packet).await.unwrap_err();
+        assert!(matches!(
+            error,
+            ContextPacketStoreError::ImmutabilityViolation { .. }
+        ));
+
+        // The original content must survive the rejected mutation attempt.
+        let fetched = store
+            .get_packet(
+                &packet.scope.tenant_id,
+                &packet.scope.repository_id,
+                &packet.packet_id,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched.compiler_version, "v1");
+    }
+
+    #[tokio::test]
+    async fn an_invalid_packet_is_rejected_before_persistence() {
+        let Some(mut store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let mut packet = packet("invalid");
+        packet.expires_at = packet.issued_at; // decision 1: expiry must follow issuance
+
+        let error = store.store_packet(&packet).await.unwrap_err();
+        assert!(matches!(error, ContextPacketStoreError::Invalid(_)));
+
+        let fetched = store
+            .get_packet(
+                &packet.scope.tenant_id,
+                &packet.scope.repository_id,
+                &packet.packet_id,
+            )
+            .await
+            .unwrap();
+        assert_eq!(fetched, None);
+    }
+
+    #[tokio::test]
+    async fn a_use_receipt_for_an_unknown_packet_is_rejected() {
+        let Some(mut store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let scope = unique_scope("orphan-receipt");
+        let receipt = ContextPacketUseReceipt {
+            packet_id: "packet-does-not-exist".to_string(),
+            scope,
+            occurred_at: 1_500,
+            status: ContextPacketUseStatus::Received,
+            reason: None,
+        };
+
+        let error = store.record_use(&receipt).await.unwrap_err();
+        assert!(matches!(
+            error,
+            ContextPacketStoreError::UnknownPacket { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_use_receipt_with_a_mismatched_scope_is_rejected() {
+        let Some(mut store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let packet = packet("scope-mismatch");
+        store.store_packet(&packet).await.unwrap();
+
+        let mut wrong_scope = packet.scope.clone();
+        wrong_scope.task_id = "task:someone-elses-task".to_string();
+        let receipt = ContextPacketUseReceipt {
+            packet_id: packet.packet_id.clone(),
+            scope: wrong_scope,
+            occurred_at: 1_500,
+            status: ContextPacketUseStatus::Received,
+            reason: None,
+        };
+
+        let error = store.record_use(&receipt).await.unwrap_err();
+        assert!(matches!(
+            error,
+            ContextPacketStoreError::ScopeMismatch { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn use_receipts_are_listed_oldest_first_with_the_packets_own_scope() {
+        let Some(mut store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let packet = packet("receipts");
+        store.store_packet(&packet).await.unwrap();
+
+        let received = ContextPacketUseReceipt {
+            packet_id: packet.packet_id.clone(),
+            scope: packet.scope.clone(),
+            occurred_at: 1_100,
+            status: ContextPacketUseStatus::Received,
+            reason: None,
+        };
+        let refused = ContextPacketUseReceipt {
+            packet_id: packet.packet_id.clone(),
+            scope: packet.scope.clone(),
+            occurred_at: 1_200,
+            status: ContextPacketUseStatus::Refused,
+            reason: Some(ContextPacketUseReason::PolicyChanged),
+        };
+        store.record_use(&received).await.unwrap();
+        store.record_use(&refused).await.unwrap();
+
+        let receipts = store
+            .list_use_receipts(
+                &packet.scope.tenant_id,
+                &packet.scope.repository_id,
+                &packet.packet_id,
+            )
+            .await
+            .unwrap();
+        assert_eq!(receipts, vec![received, refused]);
+    }
+}
