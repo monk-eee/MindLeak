@@ -18,6 +18,7 @@ tokio = { workspace = true, features = ["net", "sync"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+ackplane-protocol = { path = "../ackplane-protocol" }
 ed25519-dalek = "2.1"
 serde_json = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
