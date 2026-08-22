@@ -81,7 +81,7 @@ The engine. Modules:
 | [`consolidate.rs`](../crates/mindleak-core/src/consolidate.rs) | Optional OpenAI-compatible consolidation client and worker. |
 | [`embed.rs`](../crates/mindleak-core/src/embed.rs) | Optional semantic-recall embedding index (ADR-0008): configured `/v1/embeddings` client, derived `embeddings` table, cosine recall. Off the zero-token write path. |
 | [`net.rs`](../crates/mindleak-core/src/net.rs) | Network resilience for optional HTTP (ADR-0010): timeouts, bounded retry with backoff, per-endpoint circuit breaker. |
-| [`telemetry.rs`](../crates/mindleak-core/src/telemetry.rs) | Observability (ADR-0010): durable `telemetry_events` audit trail, metrics snapshot, stderr-only `tracing` init. |
+| [`telemetry/`](../crates/mindleak-core/src/telemetry/mod.rs) | Observability (ADR-0010): durable `telemetry_events` audit trail, metrics snapshot, stderr-only `tracing` init. |
 | [`lib.rs`](../crates/mindleak-core/src/lib.rs) | `MindLeak` facade wiring; behavior is grouped under `facade/`: `ingestion`, `query`, `observability`, `lifecycle`, and `consolidation`. |
 
 ### `mindleak-mcp` (binary)
@@ -244,6 +244,34 @@ responsibility. See [`USAGE.md`](USAGE.md) for the workflows those verbs
 compose into — the tool tables in [`TOOLS.md`](TOOLS.md) describe each verb,
 not the order to call them in.
 
+### `mindleak-coordinator` (binary)
+
+A third, thin MCP stdio server (ADR-0097): the one agent-facing entry point
+that composes `mindleak-mcp` and `lodestar-mcp` rather than adding a third
+source of graph or intent truth. `main.rs` spawns both as real child
+processes (`MINDLEAK_MCP_BIN`/`LODESTAR_MCP_BIN`, or a sibling binary next to
+it — the same env-var convention `scripts/canonical-push.mjs` already uses)
+and performs their `initialize` handshake before serving anything itself.
+`child.rs`'s `ChildClient<R, W>` is a minimal newline-delimited JSON-RPC
+client generic over its transport, so it is unit-tested against injected
+in-memory streams (mirroring how `clients/node/mindleak-client`'s
+`McpConnection` is tested) rather than a real subprocess; one end-to-end test
+does spawn the real binaries, but against a throwaway `git init`-ed directory
+under the OS temp dir so it resolves an isolated `repository_id` instead of
+writing into whatever repository the test happens to run inside. `tools.rs`
+composes decision 2 (`coordinator_open_session`: opens both planes with the
+same declared context and verifies they resolve the same `agent_id` and
+`repository_id`, naming whichever plane failed rather than presenting a
+partial open as complete) and decision 3 (`coordinator_preflight`: runs
+MindLeak's `check_overlap`, Lodestar's `task_query(view="overlap")`, and
+Lodestar's `advise` and merges them with per-plane provenance — the read a
+write should already have made). `server.rs` is the coordinator's own stdio
+front, mirroring `mindleak-mcp`/`lodestar-mcp`'s transport exactly. This is
+the first slice of ADR-0097; decisions 4-8 (client-side Git observation,
+goal-less scope reservations, governance-bootstrap helpers, memory-source
+reconciliation, and the usage retrospective) remain future work under the
+same task.
+
 ### `ackplane-core` (library)
 
 The repository side of the Ackplane federation boundary (ADR-0082). What a
@@ -298,6 +326,14 @@ Credential Manager, macOS Keychain, or Linux Secret Service, via the
 `keyring` crate) by default, per ADR-0085 decision 2 and ADR-0100 decision 5;
 an explicit environment variable remains available as a documented,
 non-hardened override for tests and constrained deployments.
+
+### `ackplane-supervisor` (library)
+
+The local durable directive inbox and outbox for one enrolled supervisor and worker session (ADR-0116). It owns a caller-provided SQLite database rather than either repository-local plane database. The inbox binds itself to one tenant, repository, node, supervisor, and agent session; verifies that an incoming directive targets that identity and names an advertised capability; rejects expired or out-of-sequence delivery; and persists accepted, capability-refused, and expired receipts before returning them. Replaying the same directive id and payload digest returns the original stored receipt, while a changed digest under the same id is refused without overwriting evidence.
+
+The outbox persists encoded `NodeFrame`s before a future sender may transmit them. It assigns a local positive contiguous sequence through a persisted high-water mark, replays an identical frame idempotently, refuses a changed frame at an existing sequence, returns pending frames in sequence order under a bounded limit, and prunes only frames at or below a caller-supplied acknowledged sequence. The inbox and outbox share the same durable supervisor identity/session binding so a different node or worker session cannot reopen the queue database.
+
+It does not open a network listener, spawn a worker, execute a directive, or offer a shell/process abstraction. A future NodeSync transport adapter reads pending outbound frames, acknowledges accepted delivery, and feeds received directives into the inbox; a future worker adapter reports application or checkpoint effects. This crate establishes the local durable queue boundary those adapters must preserve.
 
 
 ### `ackplane-server` (binary)
@@ -383,7 +419,23 @@ separator (`constitution_auth::CONSTITUTION_DOMAIN`), its own
 `ConstitutionOperation` enum, and its own
 `constitution_authentication_nonces` table.
 
-### `ackplane-bridge` (binary)
+`TelemetryService` (`telemetry_store.rs`/`telemetry_service.rs`) is Ackplane's
+typed operational-telemetry domain (ADR-0105 decision 6): `RecordTelemetry`
+(tool/transport/directive/storage/projection observations, each with a bounded
+count of small typed measurements) and `ReadTelemetry` (per-name current health
+plus bounded time-bucketed series). Health is derived at read time from the
+most recent success/error, never a lifetime count — `currently_failing`
+compares `last_error_at` against `last_success_at`, so a resolved past error
+stops reading as an active fault the moment a later call succeeds, mirroring
+mindleak-core's own local `NameMetric`/`currently_failing` logic (ADR-0010)
+expressed as a Postgres aggregate instead of a SQLite query. Bucketed series
+use `date_bin` and a `ROW_NUMBER() OVER (PARTITION BY kind, name ...)` window
+to keep only the most recent `max_points` buckets per series, so an unbounded
+read never becomes an unbounded response. Same authentication pattern as
+`KnowledgeService`/`ConstitutionService`: its own domain separator
+(`telemetry_auth::TELEMETRY_DOMAIN`), its own `TelemetryOperation` enum, and
+its own `telemetry_authentication_nonces` table.
+
 
 A separate axum HTTP server for the Bridge (assurance operations, ADR-0090):
 read-only Fleet views over Ackplane's accepted Postgres state for one
@@ -398,12 +450,16 @@ tenant has not enrolled rather than leaking a distinguishable error:
 | `GET /` | The Fleet page (static HTML/JS). |
 | `GET /api/v1/fleet` | One page of enrolled repositories for the tenant, with freshness (ADR-0112): optional `q` (substring on repository id, `%`/`_` escaped), `freshness`, `coordination`, `sort` (`field:asc\|desc`, allow-listed), `page`, and `page_size` (clamped 1-100), returning the true filtered `total` alongside the page. |
 | `GET /api/v1/agents` | One page of live delegated claims across EVERY repository the tenant has enrolled (`FleetStore::fleet_work`, ADR-0105 decision 5's Agents/Work control room) — the cross-repository "who is working on what, right now" view, distinct from the per-repository `/claims` route below. Optional `repository_id`/`owner_id` (substring, `%`/`_` escaped), `sort` (`field:asc\|desc`, allow-listed: `lease_expires_at`, `repository_id`, `owner_id`), `page`, and `page_size` (clamped 1-100), returning the true filtered `total`. |
+| `GET /api/v1/readiness` | One page of per-repository health (`ReadinessStore::readiness`, ADR-0105 decision 6's Workspace/Readiness row) — active node count, freshness, active claim count and soonest lease expiry, and signing-key health, composed entirely from Fleet/Claims/Signing-key state already exposed elsewhere rather than a new domain. Derives a `ready`/`attention_needed`/`not_ready` status per repository: `not_ready` when never projected; `attention_needed` when lagging or any signing key is expired/revoked/unknown/binding-mismatched; `ready` otherwise. `page` and `page_size` (clamped 1-100) only — no filter or sort in this first slice. |
 | `GET /api/v1/repositories/:repository_id` | One repository's ledger/projection detail. |
 | `GET /api/v1/repositories/:repository_id/timeline` | Its most recent accepted ledger events. |
 | `GET /api/v1/repositories/:repository_id/claims` | Its live delegated claims (`FleetStore::active_work`). |
+| `GET /api/v1/repositories/:repository_id/stranded-claims` | Its lease-expired delegated claims (`FleetStore::stranded_claims`) -- the complement of `/claims`, and what `recover` below needs an operator to discover rather than already know. |
 | `GET /api/v1/repositories/:repository_id/signing-keys` | Every enrolled signing key, judged as of now (`FleetStore::signing_keys`), reusing `signing_keys::judge` — the same rule an accepted envelope's own verification applies — rather than a second judgment invented for the health view. |
 | `GET /api/v1/repositories/:repository_id/knowledge` | Its recorded knowledge, recency-ordered (`KnowledgeStore::recall`, ADR-0106) — the same query the knowledge domain already exposes over gRPC, not a second one invented for the Bridge view. |
+| `GET /api/v1/repositories/:repository_id/graph` | A bounded Context Graph neighbourhood (`Projector::bounded_neighborhood`, ADR-0087), the same relevance-first traversal the projection worker already implements — wired to the Bridge for the first time rather than a new query. Optional `seeds` (comma-separated node ids; an absent value falls back to `Projector::sample_nodes`, the most recently touched nodes), `depth` (clamped 1-4), `max_nodes` (clamped 1-300), and `max_fanout` (clamped 1-30). Each edge's `effective_weight` is computed at response time from `base_weight`/`half_life_hours`/`updated_at`, mirroring `mindleak_core::decay::effective_weight` exactly — never stored. |
 | `GET /api/v1/repositories/:repository_id/constitution` | Its published constitution snapshot, if any (`ConstitutionStore::get_active`) — read-only; no adopt/tailor/reject/promote/waiver action is exposed here. |
+| `GET /api/v1/repositories/:repository_id/telemetry` | Its per-name current health (`TelemetryStore::read`, ADR-0105 decision 6) — lifetime `calls`/`errors` alongside `currently_failing`, derived from the most recent success/error rather than the lifetime count, so a resolved past error stops reading as an active fault once a later call succeeds. Bucketed time-series points are computed by the same query but not rendered by this route yet; the sparkline dashboard is a separate, later slice. |
 | `POST /api/v1/repositories/:repository_id/tasks/:task_id/recover` | Bridge's first claim **mutation** (ADR-0111): recovers a stranded claim by calling `ClaimStore::recover` directly, tenant-scoped and reason-required. `delegate`, `release`, and `renew` remain node-signed-only and are not exposed here. The handler resolves `expected_owner` itself via the new `FleetStore::claim_owner` (unlike `active_work`, this does not filter out an already-expired lease), rather than trusting a caller-supplied value. |
 
 ### `editors/vscode` (extension)

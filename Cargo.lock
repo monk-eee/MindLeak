@@ -53,6 +53,9 @@ version = "0.1.7-alpha"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
+ "serde",
+ "serde_json",
+ "thiserror",
  "tonic",
  "tonic-build",
 ]
@@ -76,6 +79,17 @@ dependencies = [
  "tonic",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "ackplane-supervisor"
+version = "0.1.7-alpha"
+dependencies = [
+ "ackplane-protocol",
+ "prost",
+ "rusqlite",
+ "thiserror",
+ "time",
 ]
 
 [[package]]
@@ -1494,6 +1508,15 @@ name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
+
+[[package]]
+name = "mindleak-coordinator"
+version = "0.1.7-alpha"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "mindleak-core"

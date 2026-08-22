@@ -9,6 +9,7 @@ use ackplane_protocol::v1::{
     knowledge_service_server::KnowledgeServiceServer,
     node_enrollment_service_server::NodeEnrollmentServiceServer,
     node_sync_service_server::NodeSyncServiceServer,
+    telemetry_service_server::TelemetryServiceServer,
 };
 use ackplane_server::{
     claim_service::ClaimDelegationService,
@@ -24,6 +25,8 @@ use ackplane_server::{
     ledger::LedgerStore,
     projection::{run_projection_worker, Projector},
     service::NodeSyncService,
+    telemetry_service::TelemetryGrpcService,
+    telemetry_store::TelemetryStore,
     ServerConfig,
 };
 
@@ -106,6 +109,15 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            let telemetry_store = match TelemetryStore::connect(config.database_url()).await {
+                Ok(store) => store,
+                Err(error) => {
+                    eprintln!(
+                        "ackplane-server: could not connect to the configured telemetry store: {error}"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            };
             // ADR-0086 clause 9: a projection worker reads the durable ledger
             // through checkpoints on its own cadence, decoupled from request
             // handling; a stalled or errored tick never stops the gRPC server.
@@ -115,7 +127,7 @@ async fn main() -> ExitCode {
             ));
 
             println!(
-                "ackplane-server: serving NodeSyncService.Synchronize, NodeEnrollmentService, ClaimDelegationService, KnowledgeService, EvidenceService, and ConstitutionService"
+                "ackplane-server: serving NodeSyncService.Synchronize, NodeEnrollmentService, ClaimDelegationService, KnowledgeService, EvidenceService, ConstitutionService, and TelemetryService"
             );
             let server = tonic::transport::Server::builder();
             let mut server = match tls {
@@ -151,6 +163,9 @@ async fn main() -> ExitCode {
                 .add_service(ConstitutionServiceServer::new(
                     ConstitutionGrpcService::new(constitution_store),
                 ))
+                .add_service(TelemetryServiceServer::new(TelemetryGrpcService::new(
+                    telemetry_store,
+                )))
                 .serve(config.listen)
                 .await
             {

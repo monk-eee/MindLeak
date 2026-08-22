@@ -1,0 +1,15 @@
+[package]
+name = "mindleak-coordinator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A thin local coordinator that composes MindLeak and Lodestar stdio MCP servers into one agent-facing entry point (ADR-0097)."
+
+[[bin]]
+name = "mindleak-coordinator"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

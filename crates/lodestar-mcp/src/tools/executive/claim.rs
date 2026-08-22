@@ -149,9 +149,6 @@ pub(super) fn claim(engine: &Lodestar, task_id: &str, args: &Value) -> Result<Va
     ok(&response)
 }
 
-/// Attach any questions addressed to this agent to a response (ADR-0046).
-///
-/// Delivered through calls the agent already makes — `claim_task` at pickup and
 /// Why a compare-and-swap claim missed, in words the caller can act on.
 ///
 /// Every one of these was already knowable from the row; `claim_task` simply
@@ -208,14 +205,6 @@ pub(super) fn lost_claim_reason(
     }
 }
 
-/// `renew_lease` as the heartbeat — rather than by a new obligation to poll.
-/// A capability nobody remembers to call is adopted at the rate we measured for
-/// the whole intent plane: zero. The heartbeat is the important one, because a
-/// question usually arrives *during* the work rather than before it.
-///
-/// Absent when nothing is waiting: no key, no empty array, nothing for a caller
-/// to interpret. A reader must never have to tell "no questions" apart from
-/// "this server does not report questions".
 /// How close a lease may get to expiry before the agent is told.
 ///
 /// Five minutes is the default lease and `cargo test --all` alone can outlast
@@ -315,6 +304,17 @@ pub(super) fn attach_lease_warning(
     Ok(())
 }
 
+/// Attach any questions addressed to this agent to a response (ADR-0046).
+///
+/// Delivered through calls the agent already makes — `claim_task` at pickup and
+/// `renew_lease` as the heartbeat — rather than by a new obligation to poll.
+/// A capability nobody remembers to call is adopted at the rate we measured for
+/// the whole intent plane: zero. The heartbeat is the important one, because a
+/// question usually arrives *during* the work rather than before it.
+///
+/// Absent when nothing is waiting: no key, no empty array, nothing for a caller
+/// to interpret. A reader must never have to tell "no questions" apart from
+/// "this server does not report questions".
 pub(in crate::tools) fn attach_owner_attention(
     engine: &Lodestar,
     args: &Value,

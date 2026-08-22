@@ -1,0 +1,1 @@
+- **Added:** `KnowledgeService.ReconfirmKnowledge` now accepts signed corroborating evidence, refreshes an active lesson's revalidation clock, and retains the authenticated reconfirming node and evidence reference in lifecycle history.

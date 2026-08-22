@@ -15,7 +15,12 @@ use ackplane_server::fleet::{
     TimelineEvent,
 };
 use ackplane_server::knowledge_store::{ActiveKnowledge, KnowledgeStore};
+use ackplane_server::projection::{BoundedNeighborhood, ProjectedNode, Projector};
+use ackplane_server::readiness::{
+    ReadinessPage, ReadinessStatus, ReadinessStore, RepositoryReadiness,
+};
 use ackplane_server::signing_keys::KeyResolution;
+use ackplane_server::telemetry_store::{ReadTelemetryRequest, TelemetryMetric, TelemetryStore};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -34,6 +39,9 @@ struct AppState {
     knowledge: Arc<KnowledgeStore>,
     constitution: Arc<ConstitutionStore>,
     claims: Arc<Mutex<ClaimStore>>,
+    projector: Arc<Projector>,
+    readiness: Arc<ReadinessStore>,
+    telemetry: Arc<TelemetryStore>,
     tenant_id: Arc<str>,
 }
 
@@ -167,6 +175,63 @@ impl From<FleetWorkItem> for AgentWorkSummary {
     }
 }
 
+/// `GET /api/v1/readiness` query parameters (ADR-0105 decision 6). All
+/// optional; a first slice needs no filter or sort, unlike Fleet/Agents.
+#[derive(Deserialize)]
+struct ReadinessQuery {
+    page: Option<i64>,
+    page_size: Option<i64>,
+}
+
+const DEFAULT_READINESS_PAGE_SIZE: i64 = 20;
+const MAX_READINESS_PAGE_SIZE: i64 = 100;
+
+#[derive(Serialize)]
+struct ReadinessResponse {
+    items: Vec<RepositoryReadinessSummary>,
+    total: i64,
+    page: i64,
+    page_size: i64,
+}
+
+#[derive(Serialize)]
+struct RepositoryReadinessSummary {
+    repository_id: String,
+    active_node_count: i64,
+    freshness: &'static str,
+    active_claim_count: i64,
+    soonest_lease_expires_at_seconds: Option<u64>,
+    signing_keys_resolved: i64,
+    signing_keys_needing_attention: i64,
+    status: &'static str,
+}
+
+/// The status word the Readiness UI badges on; distinct from
+/// `freshness_label` since it names the OVERALL judgment, not just the
+/// projection state one of its inputs.
+fn readiness_status_label(status: ReadinessStatus) -> &'static str {
+    match status {
+        ReadinessStatus::Ready => "ready",
+        ReadinessStatus::AttentionNeeded => "attention_needed",
+        ReadinessStatus::NotReady => "not_ready",
+    }
+}
+
+impl From<RepositoryReadiness> for RepositoryReadinessSummary {
+    fn from(item: RepositoryReadiness) -> Self {
+        Self {
+            repository_id: item.repository_id,
+            active_node_count: item.active_node_count,
+            freshness: freshness_label(item.freshness),
+            active_claim_count: item.active_claim_count,
+            soonest_lease_expires_at_seconds: item.soonest_lease_expires_at.and_then(unix_seconds),
+            signing_keys_resolved: item.signing_keys_resolved,
+            signing_keys_needing_attention: item.signing_keys_needing_attention,
+            status: readiness_status_label(item.status),
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct FleetSummary {
     repository_id: String,
@@ -236,6 +301,18 @@ impl From<RepositoryDetail> for RepositoryDetailResponse {
 #[derive(Serialize)]
 struct TimelineResponse {
     events: Vec<TimelineEventSummary>,
+    /// The `before` value that would fetch the next (older) page, or `None`
+    /// once a page comes back short of the limit -- there is nothing older
+    /// left to page to (ADR-0112 decision 1).
+    next_before: Option<i64>,
+}
+
+/// `GET /api/v1/repositories/:id/timeline` query parameters (ADR-0112
+/// decision 1). `before` is optional keyset pagination: omit it for the
+/// newest page, or pass the previous page's `next_before` to continue.
+#[derive(Deserialize)]
+struct TimelineQuery {
+    before: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -292,6 +369,11 @@ impl From<ActiveWorkItem> for ActiveWorkSummary {
             symbols: item.symbols,
         }
     }
+}
+
+#[derive(Serialize)]
+struct StrandedClaimsResponse {
+    claims: Vec<ActiveWorkSummary>,
 }
 
 #[derive(Deserialize)]
@@ -387,6 +469,82 @@ impl From<ActiveKnowledge> for KnowledgeEntrySummary {
     }
 }
 
+/// `GET /api/v1/repositories/:repository_id/graph` query parameters
+/// (ADR-0087's existing `bounded_neighborhood`, wired up for the first
+/// time). All optional: an absent `seeds` falls back to
+/// `Projector::sample_nodes`, the most recently touched nodes.
+#[derive(Deserialize)]
+struct GraphQuery {
+    seeds: Option<String>,
+    depth: Option<i32>,
+    max_nodes: Option<i32>,
+    max_fanout: Option<i32>,
+}
+
+const DEFAULT_GRAPH_DEPTH: i32 = 2;
+const MAX_GRAPH_DEPTH: i32 = 4;
+const DEFAULT_GRAPH_MAX_NODES: i32 = 75;
+const MAX_GRAPH_MAX_NODES: i32 = 300;
+const DEFAULT_GRAPH_MAX_FANOUT: i32 = 12;
+const MAX_GRAPH_MAX_FANOUT: i32 = 30;
+/// How many nodes `Projector::sample_nodes` seeds the view with when the
+/// caller has not chosen a seed yet.
+const DEFAULT_SEED_SAMPLE: i64 = 8;
+
+#[derive(Serialize)]
+struct GraphResponse {
+    nodes: Vec<GraphNodeSummary>,
+    edges: Vec<GraphEdgeSummary>,
+    projection_stream_position: Option<i64>,
+    projected_at_seconds: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct GraphNodeSummary {
+    node_id: String,
+    node_type: String,
+    label: String,
+    depth: i32,
+}
+
+impl From<ProjectedNode> for GraphNodeSummary {
+    fn from(node: ProjectedNode) -> Self {
+        Self {
+            node_id: node.node_id,
+            node_type: node.node_type,
+            label: node.label,
+            depth: node.depth,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct GraphEdgeSummary {
+    source_id: String,
+    target_id: String,
+    relation: String,
+    effective_weight: f64,
+}
+
+/// `W_eff = W_base * 2^(-Δt_hours / half_life)`, mirroring
+/// `mindleak_core::decay::effective_weight` and the SQL this same formula
+/// already runs as inside `bounded_neighborhood`'s own frontier ordering --
+/// computed here only for display, never stored. Clamps `elapsed <= 0` to
+/// `base_weight` directly, the same guard the Rust reference implementation
+/// and `knowledge_store`'s `EFFECTIVE_WEIGHT_SQL` both apply.
+fn effective_weight(
+    base_weight: f64,
+    half_life_hours: f64,
+    updated_at: SystemTime,
+    now: SystemTime,
+) -> f64 {
+    let elapsed_hours = match now.duration_since(updated_at) {
+        Ok(elapsed) if !elapsed.is_zero() => elapsed.as_secs_f64() / 3600.0,
+        _ => return base_weight,
+    };
+    base_weight * 2.0_f64.powf(-elapsed_hours / half_life_hours)
+}
+
 #[derive(Serialize)]
 struct ConstitutionResponse {
     found: bool,
@@ -456,6 +614,43 @@ impl ConstitutionResponse {
     }
 }
 
+#[derive(Serialize)]
+struct TelemetryResponse {
+    metrics: Vec<TelemetryMetricSummary>,
+}
+
+/// Current health per (kind, name) -- derived from the most recent
+/// success/error, distinct from the lifetime `calls`/`errors` counts also
+/// reported, so a resolved past error stops reading as an active fault the
+/// moment a later call succeeds (mirrors mindleak-core's own local
+/// NameMetric/currently_failing logic, ADR-0010).
+#[derive(Serialize)]
+struct TelemetryMetricSummary {
+    kind: i16,
+    name: String,
+    calls: i64,
+    errors: i64,
+    currently_failing: bool,
+    last_success_at_seconds: Option<u64>,
+    last_error_at_seconds: Option<u64>,
+    average_duration_ms: f64,
+}
+
+impl From<TelemetryMetric> for TelemetryMetricSummary {
+    fn from(metric: TelemetryMetric) -> Self {
+        Self {
+            kind: metric.kind,
+            name: metric.name,
+            calls: metric.calls,
+            errors: metric.errors,
+            currently_failing: metric.currently_failing,
+            last_success_at_seconds: metric.last_success_at.and_then(unix_seconds),
+            last_error_at_seconds: metric.last_error_at.and_then(unix_seconds),
+            average_duration_ms: metric.average_duration_ms,
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let salt_path = match std::env::var("ACKPLANE_BRIDGE_SALT_PATH") {
@@ -513,17 +708,42 @@ async fn main() {
             return;
         }
     };
+    let projector = match Projector::connect(config.database_url()).await {
+        Ok(projector) => Arc::new(projector),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane's graph projection: {error}");
+            return;
+        }
+    };
+    let readiness_store = match ReadinessStore::connect(config.database_url()).await {
+        Ok(readiness) => Arc::new(readiness),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane readiness rollup: {error}");
+            return;
+        }
+    };
+    let telemetry_store = match TelemetryStore::connect(config.database_url()).await {
+        Ok(telemetry) => Arc::new(telemetry),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane telemetry domain: {error}");
+            return;
+        }
+    };
     let state = AppState {
         fleet: fleet_store,
         knowledge: knowledge_store,
         constitution: constitution_store,
         claims: claim_store,
+        projector,
+        readiness: readiness_store,
+        telemetry: telemetry_store,
         tenant_id: Arc::from(config.development_tenant_token),
     };
     let application = Router::new()
         .route("/", get(fleet_page))
         .route("/api/v1/fleet", get(fleet))
         .route("/api/v1/agents", get(agents))
+        .route("/api/v1/readiness", get(readiness))
         .route(
             "/api/v1/repositories/:repository_id",
             get(repository_detail),
@@ -537,6 +757,10 @@ async fn main() {
             get(repository_claims),
         )
         .route(
+            "/api/v1/repositories/:repository_id/stranded-claims",
+            get(repository_stranded_claims),
+        )
+        .route(
             "/api/v1/repositories/:repository_id/signing-keys",
             get(repository_signing_keys),
         )
@@ -545,8 +769,16 @@ async fn main() {
             get(repository_knowledge),
         )
         .route(
+            "/api/v1/repositories/:repository_id/graph",
+            get(repository_graph),
+        )
+        .route(
             "/api/v1/repositories/:repository_id/constitution",
             get(repository_constitution),
+        )
+        .route(
+            "/api/v1/repositories/:repository_id/telemetry",
+            get(repository_telemetry),
         )
         .route(
             "/api/v1/repositories/:repository_id/tasks/:task_id/recover",
@@ -666,6 +898,40 @@ async fn agents(
         })
 }
 
+async fn readiness(
+    State(state): State<AppState>,
+    Query(query): Query<ReadinessQuery>,
+) -> Result<Json<ReadinessResponse>, StatusCode> {
+    let page = query.page.unwrap_or(1);
+    if page < 1 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let page_size = query
+        .page_size
+        .unwrap_or(DEFAULT_READINESS_PAGE_SIZE)
+        .clamp(1, MAX_READINESS_PAGE_SIZE);
+
+    state
+        .readiness
+        .readiness(&state.tenant_id, page, page_size, SystemTime::now())
+        .await
+        .map(|ReadinessPage { items, total }| {
+            Json(ReadinessResponse {
+                items: items
+                    .into_iter()
+                    .map(RepositoryReadinessSummary::from)
+                    .collect(),
+                total,
+                page,
+                page_size,
+            })
+        })
+        .map_err(|error| {
+            tracing::error!(%error, "Bridge Readiness query failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
 async fn repository_detail(
     State(state): State<AppState>,
     Path(repository_id): Path<String>,
@@ -684,9 +950,20 @@ async fn repository_detail(
     }
 }
 
+/// The `before` cursor for a caller's next timeline page, or `None` once a
+/// page comes back short of the limit -- a short page is proof nothing older
+/// remains, so only a full page earns a next cursor (ADR-0112 decision 1).
+fn next_timeline_cursor(events: &[TimelineEvent], limit: i64) -> Option<i64> {
+    if events.len() as i64 != limit {
+        return None;
+    }
+    events.last().map(|event| event.stream_position)
+}
+
 async fn repository_timeline(
     State(state): State<AppState>,
     Path(repository_id): Path<String>,
+    Query(query): Query<TimelineQuery>,
 ) -> Result<Json<TimelineResponse>, StatusCode> {
     // A repository outside the caller's tenant must read exactly like one
     // that was never enrolled: check enrolment first so a non-existent
@@ -706,12 +983,21 @@ async fn repository_timeline(
 
     match state
         .fleet
-        .timeline(&state.tenant_id, &repository_id, TIMELINE_LIMIT)
+        .timeline(
+            &state.tenant_id,
+            &repository_id,
+            query.before,
+            TIMELINE_LIMIT,
+        )
         .await
     {
-        Ok(events) => Ok(Json(TimelineResponse {
-            events: events.into_iter().map(TimelineEventSummary::from).collect(),
-        })),
+        Ok(events) => {
+            let next_before = next_timeline_cursor(&events, TIMELINE_LIMIT);
+            Ok(Json(TimelineResponse {
+                events: events.into_iter().map(TimelineEventSummary::from).collect(),
+                next_before,
+            }))
+        }
         Err(error) => {
             tracing::error!(%error, "Bridge repository timeline query failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -739,6 +1025,34 @@ async fn repository_claims(
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(error) => {
             tracing::error!(%error, "Bridge repository active-work query failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+// The complement of `repository_claims`: what `repository_recover_claim`
+// needs an operator to already know (ADR-0111 left no way to discover a
+// stranded task id other than already holding it).
+async fn repository_stranded_claims(
+    State(state): State<AppState>,
+    Path(repository_id): Path<String>,
+) -> Result<Json<StrandedClaimsResponse>, StatusCode> {
+    match state
+        .fleet
+        .stranded_claims(
+            &state.tenant_id,
+            &repository_id,
+            SystemTime::now(),
+            ACTIVE_WORK_LIMIT,
+        )
+        .await
+    {
+        Ok(Some(claims)) => Ok(Json(StrandedClaimsResponse {
+            claims: claims.into_iter().map(ActiveWorkSummary::from).collect(),
+        })),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository stranded-claims query failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -806,6 +1120,118 @@ async fn repository_knowledge(
     }
 }
 
+async fn repository_graph(
+    State(state): State<AppState>,
+    Path(repository_id): Path<String>,
+    Query(query): Query<GraphQuery>,
+) -> Result<Json<GraphResponse>, StatusCode> {
+    // Same enrolment-first check as `repository_knowledge`: a repository
+    // outside the caller's tenant reads exactly like one that was never
+    // enrolled.
+    match state
+        .fleet
+        .repository(&state.tenant_id, &repository_id)
+        .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository lookup before graph query failed");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    let depth = query
+        .depth
+        .unwrap_or(DEFAULT_GRAPH_DEPTH)
+        .clamp(1, MAX_GRAPH_DEPTH);
+    let max_nodes = query
+        .max_nodes
+        .unwrap_or(DEFAULT_GRAPH_MAX_NODES)
+        .clamp(1, MAX_GRAPH_MAX_NODES);
+    let max_fanout = query
+        .max_fanout
+        .unwrap_or(DEFAULT_GRAPH_MAX_FANOUT)
+        .clamp(1, MAX_GRAPH_MAX_FANOUT);
+
+    let seeds: Vec<String> = match query.seeds.as_deref() {
+        Some(raw) if !raw.trim().is_empty() => raw
+            .split(',')
+            .map(str::trim)
+            .filter(|seed| !seed.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => {
+            match state
+                .projector
+                .sample_nodes(&state.tenant_id, &repository_id, DEFAULT_SEED_SAMPLE)
+                .await
+            {
+                Ok(nodes) => nodes.into_iter().map(|node| node.node_id).collect(),
+                Err(error) => {
+                    tracing::error!(%error, "Bridge default graph seed sampling failed");
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+            }
+        }
+    };
+
+    // No seed and nothing to sample (never projected, or a genuinely empty
+    // graph): an empty response is the honest answer, not an error.
+    if seeds.is_empty() {
+        return Ok(Json(GraphResponse {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            projection_stream_position: None,
+            projected_at_seconds: None,
+        }));
+    }
+
+    match state
+        .projector
+        .bounded_neighborhood(
+            &state.tenant_id,
+            &repository_id,
+            &seeds,
+            depth,
+            max_nodes,
+            max_fanout,
+        )
+        .await
+    {
+        Ok(BoundedNeighborhood {
+            nodes,
+            edges,
+            freshness,
+        }) => {
+            let now = SystemTime::now();
+            Ok(Json(GraphResponse {
+                nodes: nodes.into_iter().map(GraphNodeSummary::from).collect(),
+                edges: edges
+                    .into_iter()
+                    .map(|edge| GraphEdgeSummary {
+                        effective_weight: effective_weight(
+                            edge.base_weight,
+                            edge.half_life_hours,
+                            edge.updated_at,
+                            now,
+                        ),
+                        source_id: edge.source_id,
+                        target_id: edge.target_id,
+                        relation: edge.relation,
+                    })
+                    .collect(),
+                projection_stream_position: freshness.as_ref().map(|f| f.stream_position),
+                projected_at_seconds: freshness.and_then(|f| unix_seconds(f.projected_at)),
+            }))
+        }
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository graph query failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
 async fn repository_constitution(
     State(state): State<AppState>,
     Path(repository_id): Path<String>,
@@ -835,6 +1261,55 @@ async fn repository_constitution(
         Ok(None) => Ok(Json(ConstitutionResponse::not_found())),
         Err(error) => {
             tracing::error!(%error, "Bridge repository constitution query failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn repository_telemetry(
+    State(state): State<AppState>,
+    Path(repository_id): Path<String>,
+) -> Result<Json<TelemetryResponse>, StatusCode> {
+    // Same enrolment-first check every other Bridge route already follows: a
+    // repository outside the caller's tenant reads exactly like one that was
+    // never enrolled.
+    match state
+        .fleet
+        .repository(&state.tenant_id, &repository_id)
+        .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository telemetry lookup failed");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    // Zero/None select every kind/name (the same convention TelemetryService
+    // documents on the wire); series points are not rendered by this route
+    // yet -- the sparkline dashboard is task:60ba293846ec's own scope.
+    match state
+        .telemetry
+        .read(ReadTelemetryRequest {
+            tenant_id: state.tenant_id.to_string(),
+            repository_id,
+            kind: 0,
+            name: None,
+            bucket_seconds: 3600,
+            max_points: 1,
+        })
+        .await
+    {
+        Ok(snapshot) => Ok(Json(TelemetryResponse {
+            metrics: snapshot
+                .metrics
+                .into_iter()
+                .map(TelemetryMetricSummary::from)
+                .collect(),
+        })),
+        Err(error) => {
+            tracing::error!(%error, "Bridge repository telemetry query failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -1016,6 +1491,34 @@ mod tests {
         }
     }
 
+    fn timeline_event(stream_position: i64) -> TimelineEvent {
+        TimelineEvent {
+            stream_position,
+            occurred_at: SystemTime::now(),
+            payload_type: "structural_fact".to_string(),
+            producer_id: "producer".to_string(),
+            signing_key_id: None,
+            key_status: None,
+        }
+    }
+
+    #[test]
+    fn next_timeline_cursor_is_the_oldest_position_when_the_page_is_full() {
+        let events = vec![timeline_event(5), timeline_event(4), timeline_event(3)];
+        assert_eq!(next_timeline_cursor(&events, 3), Some(3));
+    }
+
+    #[test]
+    fn next_timeline_cursor_is_none_when_the_page_is_short_of_the_limit() {
+        let events = vec![timeline_event(5), timeline_event(4)];
+        assert_eq!(next_timeline_cursor(&events, 3), None);
+    }
+
+    #[test]
+    fn next_timeline_cursor_is_none_for_an_empty_page() {
+        assert_eq!(next_timeline_cursor(&[], 3), None);
+    }
+
     #[test]
     fn validate_allow_listed_rejects_a_value_outside_the_list() {
         assert_eq!(
@@ -1100,5 +1603,25 @@ mod tests {
             parse_agents_sort(Some("repository_id")),
             Err(StatusCode::BAD_REQUEST)
         );
+    }
+
+    #[test]
+    fn effective_weight_is_unchanged_at_zero_elapsed_time() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        assert_eq!(effective_weight(1.0, 168.0, now, now), 1.0);
+    }
+
+    #[test]
+    fn effective_weight_halves_after_one_half_life() {
+        let updated_at = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let now = updated_at + Duration::from_secs(168 * 3600);
+        assert!((effective_weight(1.0, 168.0, updated_at, now) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn effective_weight_clamps_a_stale_updated_at_in_the_future_to_the_base_weight() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let updated_at = now + Duration::from_secs(60);
+        assert_eq!(effective_weight(1.0, 168.0, updated_at, now), 1.0);
     }
 }

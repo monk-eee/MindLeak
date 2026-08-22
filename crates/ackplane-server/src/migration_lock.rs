@@ -49,10 +49,20 @@ pub(crate) mod key {
     pub(crate) const CONSTITUTION: i64 = 9;
     /// `migrations/0010_constitution_authentication_nonces.sql`
     pub(crate) const CONSTITUTION_AUTHENTICATION_NONCES: i64 = 10;
+    /// `migrations/0011_knowledge_recorded_by.sql`
+    pub(crate) const KNOWLEDGE_RECORDED_BY: i64 = 11;
+    /// `migrations/0012_knowledge_reconfirmations.sql`
+    pub(crate) const KNOWLEDGE_RECONFIRMATIONS: i64 = 12;
+    /// `migrations/0013_knowledge_reach.sql`
+    pub(crate) const KNOWLEDGE_REACH: i64 = 13;
     /// `migrations/0014_evidence.sql`
     pub(crate) const EVIDENCE: i64 = 14;
     /// `migrations/0015_evidence_conformance.sql`
     pub(crate) const EVIDENCE_CONFORMANCE: i64 = 15;
+    /// `migrations/0016_telemetry.sql`
+    pub(crate) const TELEMETRY: i64 = 16;
+    /// `migrations/0017_telemetry_authentication_nonces.sql`
+    pub(crate) const TELEMETRY_AUTHENTICATION_NONCES: i64 = 17;
     /// `migrations/0018_evidence_review_filter.sql`
     pub(crate) const EVIDENCE_REVIEW_FILTER: i64 = 18;
 }

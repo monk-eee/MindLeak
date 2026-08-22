@@ -45,9 +45,13 @@ pub mod knowledge_store;
 pub mod ledger;
 mod migration_lock;
 pub mod projection;
+pub mod readiness;
 pub mod service;
 pub mod signing_keys;
 pub mod sync;
+pub mod telemetry_service;
+pub mod telemetry_signature;
+pub mod telemetry_store;
 #[cfg(test)]
 mod test_support;
 
