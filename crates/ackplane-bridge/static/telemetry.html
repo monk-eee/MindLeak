@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MindLeak Bridge Telemetry</title>
+  <script>
+    (() => {
+      const theme = new URLSearchParams(window.location.search).get("scoutTheme") ||
+        (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #faf6f3;
+      --surface: #ffffff;
+      --surface-soft: #f6f1ee;
+      --border: #e9dfd9;
+      --ink: #1f2542;
+      --muted: #62677f;
+      --soft: #9094aa;
+      --rose: #e8578f;
+      --rose-soft: #fbe6ee;
+      --teal: #169c99;
+      --teal-soft: #e2f5f3;
+      --amber: #d4881e;
+      --amber-soft: #fbefda;
+      --danger: #c03d58;
+      --danger-soft: #f9e3e8;
+      --shadow: 0 12px 28px rgba(31, 37, 66, 0.08);
+      --focus: 0 0 0 3px rgba(232, 87, 143, 0.28);
+    }
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #151827;
+      --surface: #1d2135;
+      --surface-soft: #252a42;
+      --border: #353b59;
+      --ink: #f1f2fd;
+      --muted: #afb3cd;
+      --soft: #8187a8;
+      --rose: #ff8bb5;
+      --rose-soft: rgba(255, 139, 181, 0.15);
+      --teal: #56d4ce;
+      --teal-soft: rgba(86, 212, 206, 0.14);
+      --amber: #f2ba65;
+      --amber-soft: rgba(242, 186, 101, 0.14);
+      --danger: #ff8eaa;
+      --danger-soft: rgba(255, 142, 170, 0.15);
+      --shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
+      --focus: 0 0 0 3px rgba(255, 139, 181, 0.36);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font-family: "Segoe UI Variable", Aptos, system-ui, sans-serif; }
+    button, input, select { font: inherit; }
+    button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: none; box-shadow: var(--focus); }
+    header { position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 94%, transparent); backdrop-filter: blur(14px); border-bottom: 1px solid var(--border); }
+    header::after { content: ""; display: block; height: 3px; background: linear-gradient(90deg, var(--rose), var(--teal)); }
+    .shell { width: min(1240px, calc(100% - 36px)); margin: 0 auto; }
+    .masthead { min-height: 74px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+    .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+    .mark { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; background: linear-gradient(155deg, var(--rose-soft), var(--teal-soft)); flex-shrink: 0; overflow: hidden; }
+    .brand h1 { margin: 0; font-size: 1.05rem; letter-spacing: 0; }
+    .brand p { margin: 2px 0 0; font-size: 0.76rem; color: var(--soft); }
+    .nav { display: flex; flex-wrap: wrap; justify-content: end; gap: 5px; }
+    .nav a { text-decoration: none; color: var(--muted); font-size: 0.78rem; font-weight: 650; padding: 7px 9px; border-radius: 6px; }
+    .nav a:hover, .nav a[aria-current="page"] { color: var(--ink); background: var(--surface-soft); }
+    .nav a[aria-disabled="true"] { cursor: default; opacity: .5; pointer-events: none; }
+    main { padding: 28px 0 56px; }
+    .heading { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 18px; flex-wrap: wrap; }
+    .eyebrow { margin: 0 0 5px; font-size: 0.69rem; color: var(--soft); font-weight: 750; letter-spacing: .09em; text-transform: uppercase; }
+    .heading h2 { margin: 0; font-size: 1.55rem; letter-spacing: 0; }
+    .heading p { margin: 5px 0 0; color: var(--muted); font-size: .86rem; max-width: 50ch; }
+    .toolbar { display: grid; grid-template-columns: minmax(200px, 1fr) auto; gap: 10px; align-items: end; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 13px; box-shadow: var(--shadow); }
+    label { display: grid; gap: 5px; color: var(--soft); font-size: .7rem; font-weight: 700; letter-spacing: .045em; text-transform: uppercase; }
+    input { width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--ink); background: var(--surface); font-size: .85rem; text-transform: none; letter-spacing: 0; }
+    .command { height: 37px; padding: 0 13px; border: 1px solid transparent; border-radius: 6px; background: var(--ink); color: var(--surface); font-weight: 700; cursor: pointer; font-size: .82rem; }
+    .command:hover { filter: brightness(1.08); }
+    .message { min-height: 21px; margin: 12px 2px 0; color: var(--muted); font-size: .82rem; }
+    .message.error { color: var(--danger); }
+    .summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin: 18px 0; }
+    .metric { min-height: 66px; padding: 13px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+    .metric span { display: block; color: var(--soft); font-size: .68rem; text-transform: uppercase; letter-spacing: .055em; font-weight: 700; }
+    .metric strong { display: block; margin-top: 8px; font-size: 1.1rem; }
+    .kind-section { margin-bottom: 20px; }
+    .kind-section h3 { margin: 0 0 10px; font-size: .88rem; color: var(--soft); text-transform: uppercase; letter-spacing: .06em; }
+    .kind-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+    .card { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); padding: 13px 14px; }
+    .card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+    .card-name { font-size: .84rem; font-weight: 700; overflow-wrap: anywhere; }
+    .health { display: inline-flex; align-items: center; gap: 6px; font-size: .72rem; font-weight: 700; padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+    .health::before { content: ""; width: 7px; height: 7px; border-radius: 50%; }
+    .health.healthy { color: var(--teal); background: var(--teal-soft); }
+    .health.healthy::before { background: var(--teal); }
+    .health.failing { color: var(--danger); background: var(--danger-soft); }
+    .health.failing::before { background: var(--danger); }
+    .card-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; color: var(--muted); font-size: .76rem; }
+    .card-stats b { display: block; color: var(--soft); font-size: .64rem; letter-spacing: .04em; text-transform: uppercase; margin-bottom: 2px; }
+    .empty { padding: 34px 18px; color: var(--soft); font-size: .83rem; text-align: center; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+    .hidden { display: none !important; }
+    @media (max-width: 850px) { .toolbar { grid-template-columns: 1fr; } .toolbar .command { width: 100%; } .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 600px) { .shell { width: min(100% - 24px, 1240px); } .masthead { align-items: start; padding: 14px 0; } .nav { justify-content: start; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="shell masthead">
+      <div class="brand">
+        <div class="mark" aria-hidden="true"></div>
+        <div><h1>MindLeak Bridge</h1><p>Telemetry</p></div>
+      </div>
+      <nav class="nav" aria-label="Industrial surfaces">
+        <a href="/">Fleet</a><a href="/evidence">Evidence</a><a href="/telemetry" aria-current="page">Telemetry</a>
+        <a id="work-link" href="#" aria-disabled="true">Work</a><a id="design-link" href="#" aria-disabled="true">Design</a>
+        <a id="constitution-link" href="#" aria-disabled="true">Constitution</a><a id="knowledge-link" href="#" aria-disabled="true">Knowledge</a>
+      </nav>
+    </div>
+  </header>
+  <main class="shell">
+    <div class="heading">
+      <div><p class="eyebrow">Observability surface</p><h2>Telemetry</h2><p id="scope-label">Select a repository.</p></div>
+    </div>
+    <form id="filters" class="toolbar">
+      <label>Repository<input id="repository" name="repository" required autocomplete="off" spellcheck="false"></label>
+      <button class="command" type="submit">Load</button>
+    </form>
+    <p id="message" class="message" role="status" aria-live="polite"></p>
+    <div id="summary" class="summary-grid hidden" aria-label="Telemetry summary">
+      <div class="metric"><span>Tools/transports/directives</span><strong id="summary-total">-</strong></div>
+      <div class="metric"><span>Currently failing</span><strong id="summary-failing">-</strong></div>
+      <div class="metric"><span>Total calls observed</span><strong id="summary-calls">-</strong></div>
+    </div>
+    <div id="sections" aria-live="polite"></div>
+  </main>
+  <script>
+    const KIND_LABELS = { 0: "Unspecified", 1: "Tool", 2: "Transport", 3: "Directive", 4: "Storage", 5: "Projection" };
+    const els = {
+      form: document.getElementById("filters"),
+      repository: document.getElementById("repository"),
+      message: document.getElementById("message"),
+      scope: document.getElementById("scope-label"),
+      summary: document.getElementById("summary"),
+      summaryTotal: document.getElementById("summary-total"),
+      summaryFailing: document.getElementById("summary-failing"),
+      summaryCalls: document.getElementById("summary-calls"),
+      sections: document.getElementById("sections"),
+    };
+    const params = new URLSearchParams(location.search);
+    els.repository.value = params.get("repository") || "";
+    const escape = (value) => String(value ?? "").replace(/[&<>"]/g, character => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[character]));
+    const when = (seconds) => Number.isFinite(seconds) ? new Date(seconds * 1000).toLocaleString() : "never";
+    const setMessage = (text, error = false) => { els.message.textContent = text; els.message.classList.toggle("error", error); };
+    const endpoint = () => `/api/v1/repositories/${encodeURIComponent(els.repository.value.trim())}/telemetry`;
+    const metricCard = (metric) => `<div class="card"><div class="card-head"><span class="card-name">${escape(metric.name)}</span><span class="health ${metric.currently_failing ? "failing" : "healthy"}">${metric.currently_failing ? "Failing" : "Healthy"}</span></div><div class="card-stats"><div><b>Calls</b>${escape(metric.calls)}</div><div><b>Errors</b>${escape(metric.errors)}</div><div><b>Avg duration</b>${escape(Math.round(metric.average_duration_ms))} ms</div><div><b>Last success</b>${escape(when(metric.last_success_at_seconds))}</div><div><b>Last error</b>${escape(when(metric.last_error_at_seconds))}</div></div></div>`;
+    const draw = (result) => {
+      const metrics = result.metrics || [];
+      els.summary.classList.remove("hidden");
+      els.summaryTotal.textContent = metrics.length;
+      els.summaryFailing.textContent = metrics.filter(metric => metric.currently_failing).length;
+      els.summaryCalls.textContent = metrics.reduce((total, metric) => total + (metric.calls || 0), 0);
+      els.scope.textContent = els.repository.value.trim();
+      if (!metrics.length) {
+        els.sections.innerHTML = `<div class="empty">No telemetry recorded for this repository yet.</div>`;
+        return;
+      }
+      const byKind = new Map();
+      for (const metric of metrics) {
+        const list = byKind.get(metric.kind) || [];
+        list.push(metric);
+        byKind.set(metric.kind, list);
+      }
+      els.sections.innerHTML = [...byKind.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([kind, entries]) => `<div class="kind-section"><h3>${escape(KIND_LABELS[kind] || `Kind ${kind}`)}</h3><div class="kind-grid">${entries
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map(metricCard)
+          .join("")}</div></div>`)
+        .join("");
+    };
+    async function load() {
+      if (!els.form.reportValidity()) return;
+      setMessage("Loading telemetry...");
+      els.summary.classList.add("hidden");
+      els.sections.innerHTML = "";
+      try {
+        const response = await fetch(endpoint());
+        if (!response.ok) throw new Error(response.status === 404 ? "Repository is outside the current scope." : `Telemetry request failed (${response.status}).`);
+        draw(await response.json());
+        setMessage("Loaded.");
+        history.replaceState(null, "", `/telemetry?${new URLSearchParams({repository: els.repository.value.trim()})}`);
+      } catch (error) { setMessage(error.message, true); }
+    }
+    els.form.addEventListener("submit", event => { event.preventDefault(); load(); });
+    if (els.repository.value) load();
+  </script>
+</body>
+</html>

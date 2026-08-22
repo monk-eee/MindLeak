@@ -5,10 +5,12 @@
 //! than racing them at boot.
 //!
 //! It applies no migration logic of its own: [`LedgerStore::connect`],
-//! [`Projector::connect`], [`EvidenceStore::connect`], and
-//! [`DelegationStore::connect`] each run their own idempotent migration as a
-//! side effect of connecting, so this binary's only job is to open all four connections in
-//! the Compose topology's `migrate` service and report success or failure.
+//! [`Projector::connect`], [`EvidenceStore::connect`],
+//! [`DelegationStore::connect`], and [`SupervisorStore::connect`] each run
+//! their own idempotent `CREATE TABLE IF NOT EXISTS` migration as a side
+//! effect of connecting, so this binary's only job is to open all five
+//! connections in the Compose topology's `migrate` service and report
+//! success or failure.
 
 use std::process::ExitCode;
 
@@ -16,6 +18,7 @@ use ackplane_server::delegation_store::DelegationStore;
 use ackplane_server::evidence_store::EvidenceStore;
 use ackplane_server::ledger::LedgerStore;
 use ackplane_server::projection::Projector;
+use ackplane_server::supervisor_store::SupervisorStore;
 
 const DATABASE_URL_ENV: &str = "ACKPLANE_DATABASE_URL";
 
@@ -32,7 +35,8 @@ async fn main() -> ExitCode {
     }
 
     println!(
-        "ackplane-migrate: ledger, projection, evidence, and delegation schemas are up to date"
+        "ackplane-migrate: ledger, projection, evidence, delegation, and supervisor schemas are \
+         up to date"
     );
     ExitCode::SUCCESS
 }
@@ -50,6 +54,9 @@ async fn migrate(database_url: &str) -> Result<(), String> {
     DelegationStore::connect(database_url)
         .await
         .map_err(|error| format!("delegation schema failed: {error}"))?;
+    SupervisorStore::connect(database_url)
+        .await
+        .map_err(|error| format!("supervisor schema failed: {error}"))?;
     Ok(())
 }
 
@@ -162,6 +169,50 @@ mod tests {
         assert_eq!(
             payload_columns,
             vec!["goal_digest".to_string(), "revocation_reason".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_runner_applies_supervisor_session_projection_schema() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        migrate(&database_url)
+            .await
+            .expect("migration runner must apply the supervisor projection schema");
+        let (client, connection) = tokio_postgres::connect(&database_url, NoTls)
+            .await
+            .expect("connect test database after migration");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let tables = client
+            .query(
+                "SELECT table_name \
+                 FROM information_schema.tables \
+                 WHERE table_schema = current_schema() \
+                   AND table_name IN (\
+                     'supervisor_registrations', \
+                     'supervisor_sessions', \
+                     'supervisor_lifecycle_receipts'\
+                   ) \
+                 ORDER BY table_name",
+                &[],
+            )
+            .await
+            .expect("query supervisor projection schema")
+            .into_iter()
+            .map(|row| row.get::<_, String>("table_name"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            tables,
+            vec![
+                "supervisor_lifecycle_receipts".to_string(),
+                "supervisor_registrations".to_string(),
+                "supervisor_sessions".to_string(),
+            ]
         );
     }
 }

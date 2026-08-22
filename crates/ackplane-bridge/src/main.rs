@@ -25,7 +25,7 @@ mod handlers;
 use handlers::{
     agents, fleet, readiness, repository_claims, repository_constitution, repository_detail,
     repository_graph, repository_knowledge, repository_recover_claim, repository_signing_keys,
-    repository_stranded_claims, repository_telemetry, repository_timeline,
+    repository_stranded_claims, repository_telemetry, repository_timeline, telemetry_page,
 };
 
 const FLEET_PAGE: &str = include_str!("../static/index.html");
@@ -160,6 +160,7 @@ async fn main() {
     };
     let application = Router::new()
         .route("/", get(fleet_page))
+        .route("/telemetry", get(telemetry_page))
         .route("/api/v1/fleet", get(fleet))
         .route("/api/v1/agents", get(agents))
         .route("/api/v1/readiness", get(readiness))
@@ -226,4 +227,29 @@ async fn main() {
 
 async fn fleet_page() -> impl IntoResponse {
     Html(FLEET_PAGE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn fleet_page_refreshes_fleet_agents_and_readiness_only_while_visible() {
+        let response = fleet_page().await.into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("reading the fleet page body");
+        let body = String::from_utf8(body.to_vec()).expect("fleet page body is valid UTF-8");
+
+        for required in [
+            "function startVisibleRefresh(load, intervalMs)",
+            "document.visibilityState === \"visible\"",
+            "document.addEventListener(\"visibilitychange\"",
+            "startVisibleRefresh(loadFleet, REFRESH_INTERVAL_MS)",
+            "startVisibleRefresh(loadAgents, REFRESH_INTERVAL_MS)",
+            "startVisibleRefresh(loadReadiness, REFRESH_INTERVAL_MS)",
+        ] {
+            assert!(body.contains(required), "index.html is missing {required}");
+        }
+    }
 }

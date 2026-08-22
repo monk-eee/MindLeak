@@ -85,3 +85,37 @@ pub async fn repository_telemetry(
         }
     }
 }
+
+const TELEMETRY_PAGE: &str = include_str!("../../../static/telemetry.html");
+
+pub async fn telemetry_page() -> axum::response::Html<&'static str> {
+    axum::response::Html(TELEMETRY_PAGE)
+}
+
+#[cfg(test)]
+mod page_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn page_renders_the_repository_filter_and_kind_grouped_cards() {
+        let axum::response::Html(body) = telemetry_page().await;
+
+        for required in [
+            "id=\"repository\"",
+            "id=\"summary-total\"",
+            "id=\"summary-failing\"",
+            "id=\"summary-calls\"",
+            "currently_failing",
+            "average_duration_ms",
+            "last_success_at_seconds",
+            "last_error_at_seconds",
+            "KIND_LABELS",
+            "aria-current=\"page\"",
+        ] {
+            assert!(
+                body.contains(required),
+                "telemetry.html is missing {required}"
+            );
+        }
+    }
+}
