@@ -61,3 +61,5 @@
   Closing that needs a `macos-latest` job added to the matrix, which is
   separate scope from installing a Linux Secret Service provider -- the CI
   platforms available and their setup steps are not the same problem.
+
+  **macOS strict verification is now implemented but remains OPEN until its first hosted run.** The dedicated `credential-facility-macos` job sets `MINDLEAK_REQUIRE_CREDENTIAL_FACILITY=1` and invokes only the real round-trip test. In that mode an unavailable Keychain turns the existing skip condition into a failure, so a green job proves the backend executed instead of silently skipping. Close this fragment only after CI reports the test's real `passed: round-tripped` output on macOS.

@@ -1,0 +1,1 @@
+- Fixed a genuine PostgreSQL deadlock in `Projector::rebuild` under concurrent test execution: it now retries once PostgreSQL reports a deadlock (SQLSTATE 40P01), instead of failing.
