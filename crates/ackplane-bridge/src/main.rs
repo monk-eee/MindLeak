@@ -25,7 +25,7 @@ mod handlers;
 use handlers::{
     agents, fleet, readiness, repository_claims, repository_constitution, repository_detail,
     repository_graph, repository_knowledge, repository_recover_claim, repository_signing_keys,
-    repository_stranded_claims, repository_telemetry, repository_timeline,
+    repository_stranded_claims, repository_telemetry, repository_timeline, telemetry_page,
 };
 
 const FLEET_PAGE: &str = include_str!("../static/index.html");
@@ -160,6 +160,7 @@ async fn main() {
     };
     let application = Router::new()
         .route("/", get(fleet_page))
+        .route("/telemetry", get(telemetry_page))
         .route("/api/v1/fleet", get(fleet))
         .route("/api/v1/agents", get(agents))
         .route("/api/v1/readiness", get(readiness))

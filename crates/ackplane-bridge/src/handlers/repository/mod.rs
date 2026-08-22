@@ -14,7 +14,7 @@ pub use constitution::repository_constitution;
 pub use graph::repository_graph;
 pub use knowledge::repository_knowledge;
 pub use signing_keys::repository_signing_keys;
-pub use telemetry::repository_telemetry;
+pub use telemetry::{repository_telemetry, telemetry_page};
 pub use timeline::repository_timeline;
 
 use axum::{extract::Path, extract::State, http::StatusCode, Json};
