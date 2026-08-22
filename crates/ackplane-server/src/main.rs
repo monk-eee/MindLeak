@@ -5,6 +5,7 @@ use std::{fs, process::ExitCode};
 use ackplane_protocol::v1::{
     self, claim_delegation_service_server::ClaimDelegationServiceServer,
     constitution_service_server::ConstitutionServiceServer,
+    evidence_service_server::EvidenceServiceServer,
     knowledge_service_server::KnowledgeServiceServer,
     node_enrollment_service_server::NodeEnrollmentServiceServer,
     node_sync_service_server::NodeSyncServiceServer,
@@ -17,6 +18,8 @@ use ackplane_server::{
     constitution_store::ConstitutionStore,
     enrollment_service::NodeEnrollmentService,
     enrollment_store::EnrollmentStore,
+    evidence_service::EvidenceGrpcService,
+    evidence_store::EvidenceStore,
     knowledge_service::KnowledgeGrpcService,
     knowledge_store::KnowledgeStore,
     ledger::LedgerStore,
@@ -88,6 +91,15 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            let evidence_store = match EvidenceStore::connect(config.database_url()).await {
+                Ok(store) => store,
+                Err(error) => {
+                    eprintln!(
+                        "ackplane-server: could not connect to the configured evidence store: {error}"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            };
             let constitution_store = match ConstitutionStore::connect(config.database_url()).await {
                 Ok(store) => store,
                 Err(error) => {
@@ -115,7 +127,7 @@ async fn main() -> ExitCode {
             ));
 
             println!(
-                "ackplane-server: serving NodeSyncService.Synchronize, NodeEnrollmentService, ClaimDelegationService, KnowledgeService, ConstitutionService, and TelemetryService"
+                "ackplane-server: serving NodeSyncService.Synchronize, NodeEnrollmentService, ClaimDelegationService, KnowledgeService, EvidenceService, ConstitutionService, and TelemetryService"
             );
             let server = tonic::transport::Server::builder();
             let mut server = match tls {
@@ -144,6 +156,9 @@ async fn main() -> ExitCode {
                 ))
                 .add_service(KnowledgeServiceServer::new(KnowledgeGrpcService::new(
                     knowledge_store,
+                )))
+                .add_service(EvidenceServiceServer::new(EvidenceGrpcService::new(
+                    evidence_store,
                 )))
                 .add_service(ConstitutionServiceServer::new(
                     ConstitutionGrpcService::new(constitution_store),

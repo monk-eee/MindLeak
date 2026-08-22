@@ -1,8 +1,9 @@
 # ADR-0120: Industrial Work is an authoritative task projection, not a mirrored board
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-22
-- Deciders: Pending human acceptance
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-22 by the repository owner, authorized directly in session — attributed human adoption after review.
 - Depends on: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md) (one authority per shared resource), [ADR-0086](0086-postgresql-is-the-ackplane-ledger-and-arbiter.md) (PostgreSQL authority and projections), [ADR-0096](0096-ackplane-arbitrates-federated-claims-through-leased-delegation.md) (Ackplane-authoritative claim leases), [ADR-0105](0105-bridge-is-the-server-version-of-the-vsix.md) (Industrial Work and Board Doctor parity)
 - Refines: ADR-0096 decision 1 (a deliberately Industrial task namespace publishes bounded task workflow records in addition to its existing federated leases, without copying a Local task store)
 - Related: [ADR-0020](0020-task-lifecycle-states.md) (Local task lifecycle), [ADR-0024](0024-preflight-overlap-detection.md) (declared scope and overlap), [ADR-0064](0064-the-log-is-the-ledger.md) (append-only task events), [ADR-0107](0107-registered-agents-accept-authenticated-control-directives.md) (typed local effects), [ADR-0111](0111-bridge-recovers-a-stranded-claim-as-a-tenant-scoped-administrative-action.md) (the first narrow Bridge claim mutation), [ADR-0112](0112-bridge-list-reads-are-paginated-sortable-and-filterable.md) (bounded Bridge reads)
