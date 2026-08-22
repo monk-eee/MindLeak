@@ -49,6 +49,7 @@ pub mod projection;
 pub mod readiness;
 pub mod service;
 pub mod signing_keys;
+pub mod supervisor_store;
 pub mod sync;
 pub mod telemetry_service;
 pub mod telemetry_signature;
