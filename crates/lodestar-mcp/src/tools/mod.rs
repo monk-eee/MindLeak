@@ -1329,7 +1329,7 @@ mod tests {
             "resolved_context",
         ];
 
-        const SOURCES: [(&str, &str); 12] = [
+        const SOURCES: [(&str, &str); 18] = [
             ("amendments", include_str!("amendments.rs")),
             ("constitution", include_str!("constitution.rs")),
             ("constitution_packs", include_str!("constitution_packs.rs")),
@@ -1344,7 +1344,13 @@ mod tests {
             ("executive", include_str!("executive/claim.rs")),
             ("executive", include_str!("executive/tasks.rs")),
             ("executive", include_str!("executive/render.rs")),
-            ("design", include_str!("design.rs")),
+            ("design", include_str!("design/mod.rs")),
+            ("design", include_str!("design/constants.rs")),
+            ("design", include_str!("design/definitions.rs")),
+            ("design", include_str!("design/register.rs")),
+            ("design", include_str!("design/decide.rs")),
+            ("design", include_str!("design/promote.rs")),
+            ("design", include_str!("design/query.rs")),
         ];
 
         let mut unreachable: Vec<String> = Vec::new();
@@ -1977,7 +1983,7 @@ mod tests {
             ("conformance", include_str!("conformance.rs")),
             ("constitution", include_str!("constitution.rs")),
             ("controls", include_str!("controls.rs")),
-            ("design", include_str!("design.rs")),
+            ("design", include_str!("design/mod.rs")),
             ("evidence", include_str!("evidence.rs")),
             // `dispatch`'s `match name {` block, the only thing this scan
             // looks for, stays in the top-level module file; the other
