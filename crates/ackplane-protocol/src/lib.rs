@@ -18,6 +18,7 @@ pub mod claim_auth;
 pub mod constitution_auth;
 pub mod context_packet;
 pub mod delegation;
+pub mod evidence_auth;
 pub mod knowledge_auth;
 mod signing_bytes;
 pub mod supervisor;

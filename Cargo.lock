@@ -8,11 +8,14 @@ version = "0.1.7-alpha"
 dependencies = [
  "ackplane-server",
  "axum",
+ "ed25519-dalek",
  "getrandom 0.2.17",
  "serde",
+ "serde_json",
  "sha2 0.10.9",
  "thiserror",
  "tokio",
+ "tower 0.5.3",
  "tracing",
 ]
 

@@ -3,6 +3,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use ackplane_bridge::evidence::BridgeEvidenceStore;
+use ackplane_bridge::evidence_api::{evidence_routes, EvidenceApiState};
 use ackplane_bridge::BridgeConfig;
 use ackplane_server::claim_store::ClaimStore;
 use ackplane_server::constitution_store::ConstitutionStore;
@@ -136,6 +138,16 @@ async fn main() {
             return;
         }
     };
+    let evidence_store = match BridgeEvidenceStore::connect(config.database_url()).await {
+        Ok(evidence) => Arc::new(evidence),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane evidence domain: {error}");
+            return;
+        }
+    };
+    let tenant_id: Arc<str> = Arc::from(config.development_tenant_token.clone());
+    let evidence_api_state =
+        EvidenceApiState::new(evidence_store, fleet_store.clone(), tenant_id.clone());
     let state = AppState {
         fleet: fleet_store,
         knowledge: knowledge_store,
@@ -144,7 +156,7 @@ async fn main() {
         projector,
         readiness: readiness_store,
         telemetry: telemetry_store,
-        tenant_id: Arc::from(config.development_tenant_token),
+        tenant_id,
     };
     let application = Router::new()
         .route("/", get(fleet_page))
@@ -191,7 +203,8 @@ async fn main() {
             "/api/v1/repositories/:repository_id/tasks/:task_id/recover",
             post(repository_recover_claim),
         )
-        .with_state(state);
+        .with_state(state)
+        .merge(evidence_routes(evidence_api_state));
     let listener = match tokio::net::TcpListener::bind(config.listen).await {
         Ok(listener) => listener,
         Err(error) => {
