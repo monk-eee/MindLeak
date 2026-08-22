@@ -65,6 +65,10 @@ pub(crate) mod key {
     pub(crate) const TELEMETRY_AUTHENTICATION_NONCES: i64 = 17;
     /// `migrations/0018_evidence_review_filter.sql`
     pub(crate) const EVIDENCE_REVIEW_FILTER: i64 = 18;
+    /// `migrations/0022_human_delegation.sql`
+    pub(crate) const HUMAN_DELEGATION: i64 = 22;
+    /// `migrations/0023_human_delegation_event_payloads.sql`
+    pub(crate) const HUMAN_DELEGATION_EVENT_PAYLOADS: i64 = 23;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

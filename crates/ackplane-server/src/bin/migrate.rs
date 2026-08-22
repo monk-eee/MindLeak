@@ -5,13 +5,14 @@
 //! than racing them at boot.
 //!
 //! It applies no migration logic of its own: [`LedgerStore::connect`],
-//! [`Projector::connect`], and [`EvidenceStore::connect`] each run their own
-//! idempotent `CREATE TABLE IF NOT EXISTS` migration as a side effect of
-//! connecting, so this binary's only job is to open all three connections in
+//! [`Projector::connect`], [`EvidenceStore::connect`], and
+//! [`DelegationStore::connect`] each run their own idempotent migration as a
+//! side effect of connecting, so this binary's only job is to open all four connections in
 //! the Compose topology's `migrate` service and report success or failure.
 
 use std::process::ExitCode;
 
+use ackplane_server::delegation_store::DelegationStore;
 use ackplane_server::evidence_store::EvidenceStore;
 use ackplane_server::ledger::LedgerStore;
 use ackplane_server::projection::Projector;
@@ -30,7 +31,9 @@ async fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    println!("ackplane-migrate: ledger, projection, and evidence schemas are up to date");
+    println!(
+        "ackplane-migrate: ledger, projection, evidence, and delegation schemas are up to date"
+    );
     ExitCode::SUCCESS
 }
 
@@ -44,6 +47,9 @@ async fn migrate(database_url: &str) -> Result<(), String> {
     EvidenceStore::connect(database_url)
         .await
         .map_err(|error| format!("evidence schema failed: {error}"))?;
+    DelegationStore::connect(database_url)
+        .await
+        .map_err(|error| format!("delegation schema failed: {error}"))?;
     Ok(())
 }
 
@@ -92,6 +98,70 @@ mod tests {
                 "finding_codes".to_string(),
                 "reported_constitution_version".to_string(),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_runner_applies_human_delegation_schema() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        migrate(&database_url)
+            .await
+            .expect("migration runner must apply the delegation schema");
+        let (client, connection) = tokio_postgres::connect(&database_url, NoTls)
+            .await
+            .expect("connect test database after migration");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let tables = client
+            .query(
+                "SELECT table_name \
+                 FROM information_schema.tables \
+                 WHERE table_schema = current_schema() \
+                   AND table_name IN (\
+                     'delegation_stream_heads', \
+                     'delegation_events', \
+                     'delegation_projections'\
+                   ) \
+                 ORDER BY table_name",
+                &[],
+            )
+            .await
+            .expect("query delegation schema")
+            .into_iter()
+            .map(|row| row.get::<_, String>("table_name"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            tables,
+            vec![
+                "delegation_events".to_string(),
+                "delegation_projections".to_string(),
+                "delegation_stream_heads".to_string(),
+            ]
+        );
+        let payload_columns = client
+            .query(
+                "SELECT column_name \
+                 FROM information_schema.columns \
+                 WHERE table_schema = current_schema() \
+                   AND table_name = 'delegation_events' \
+                   AND column_name IN ('goal_digest', 'revocation_reason') \
+                 ORDER BY column_name",
+                &[],
+            )
+            .await
+            .expect("query delegation event payload schema")
+            .into_iter()
+            .map(|row| row.get::<_, String>("column_name"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            payload_columns,
+            vec!["goal_digest".to_string(), "revocation_reason".to_string()]
         );
     }
 }
