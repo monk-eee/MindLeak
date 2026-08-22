@@ -149,6 +149,46 @@ async fn body_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&body).expect("parse Bridge JSON response")
 }
 
+// Regression: a malformed optional agent filter is caller input, not a
+// server fault. Both typed list routes must reject it with the same boundary
+// status rather than leaking a store-validation failure as HTTP 500.
+#[tokio::test]
+async fn malformed_agent_filter_is_a_bad_request_for_both_history_routes() {
+    let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let unique = unique_id("evidence-agent-filter");
+    let tenant_id = format!("tenant-{unique}");
+    let repository_id = format!("repository-{unique}");
+    let task_id = format!("task:{unique}");
+    enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
+    let invalid_agent_id = "a".repeat(257);
+    let app = application(&database_url, &tenant_id).await;
+
+    for route in [
+        format!(
+            "/api/v1/repositories/{repository_id}/tasks/{task_id}/evidence?limit=20&agent_id={invalid_agent_id}"
+        ),
+        format!(
+            "/api/v1/repositories/{repository_id}/tasks/{task_id}/conformance?limit=20&agent_id={invalid_agent_id}"
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&route)
+                    .body(Body::empty())
+                    .expect("build malformed filter request"),
+            )
+            .await
+            .expect("serve malformed filter route");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "route: {route}");
+    }
+}
+
 // Regression: the Evidence Board must read only its tenant's enrolled
 // repository, project structured codes into JSON, omit raw reported session
 // labels from browser data, and expose only an audit-export fingerprint.

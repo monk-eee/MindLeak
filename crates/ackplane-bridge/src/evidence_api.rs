@@ -276,14 +276,14 @@ pub(super) fn evidence_store_error(error: EvidenceStoreError) -> StatusCode {
     match error {
         EvidenceStoreError::InvalidTaskId
         | EvidenceStoreError::InvalidEvidenceId
-        | EvidenceStoreError::InvalidCursor => StatusCode::BAD_REQUEST,
+        | EvidenceStoreError::InvalidCursor
+        | EvidenceStoreError::InvalidIdentity => StatusCode::BAD_REQUEST,
         EvidenceStoreError::Database(error) => {
             tracing::error!(%error, "Bridge Evidence query failed");
             StatusCode::INTERNAL_SERVER_ERROR
         }
         EvidenceStoreError::InvalidSourceRef
         | EvidenceStoreError::InvalidDigest
-        | EvidenceStoreError::InvalidIdentity
         | EvidenceStoreError::InvalidConstitutionVersion
         | EvidenceStoreError::InvalidIdempotencyKey
         | EvidenceStoreError::IdempotencyConflict
@@ -293,9 +293,9 @@ pub(super) fn evidence_store_error(error: EvidenceStoreError) -> StatusCode {
 
 pub(super) fn conformance_store_error(error: ConformanceStoreError) -> StatusCode {
     match error {
-        ConformanceStoreError::InvalidTaskId | ConformanceStoreError::InvalidEvidenceId => {
-            StatusCode::BAD_REQUEST
-        }
+        ConformanceStoreError::InvalidTaskId
+        | ConformanceStoreError::InvalidEvidenceId
+        | ConformanceStoreError::InvalidEvaluator => StatusCode::BAD_REQUEST,
         ConformanceStoreError::Database(error) => {
             tracing::error!(%error, "Bridge conformance query failed");
             StatusCode::INTERNAL_SERVER_ERROR
@@ -304,7 +304,6 @@ pub(super) fn conformance_store_error(error: ConformanceStoreError) -> StatusCod
         | ConformanceStoreError::TooManyFindingCodes
         | ConformanceStoreError::DuplicateFindingCode
         | ConformanceStoreError::FindingCodeCountExceedsFindingCount
-        | ConformanceStoreError::InvalidEvaluator
         | ConformanceStoreError::InvalidConstitutionVersion
         | ConformanceStoreError::InvalidIdempotencyKey
         | ConformanceStoreError::MissingEvidence
