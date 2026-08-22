@@ -128,6 +128,9 @@ fn store_error(error: EvidenceStoreError) -> Status {
         EvidenceStoreError::InvalidTaskId => {
             Status::invalid_argument("task_id must be a bounded non-empty identifier")
         }
+        EvidenceStoreError::InvalidEvidenceId => {
+            Status::invalid_argument("evidence_id must be a bounded non-empty identifier")
+        }
         EvidenceStoreError::InvalidSourceRef => {
             Status::invalid_argument("source_ref must be a bounded non-empty reference")
         }

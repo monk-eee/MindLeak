@@ -10,6 +10,7 @@ use super::{
 };
 use tokio_postgres::Row;
 
+mod detail;
 mod finding;
 mod pagination;
 

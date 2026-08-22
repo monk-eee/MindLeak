@@ -3,6 +3,7 @@
 
 const EVIDENCE_API_RS: &str = include_str!("../src/evidence_api.rs");
 const BOARD_RS: &str = include_str!("../src/evidence_api/board.rs");
+const DETAIL_RS: &str = include_str!("../src/evidence_api/detail.rs");
 const EXPORT_RS: &str = include_str!("../src/evidence_api/export.rs");
 
 #[test]
@@ -10,6 +11,8 @@ fn every_evidence_data_handler_checks_tenant_repository_visibility() {
     for (source, handler) in [
         (EVIDENCE_API_RS, "task_evidence"),
         (EVIDENCE_API_RS, "task_conformance"),
+        (DETAIL_RS, "evidence_detail"),
+        (DETAIL_RS, "conformance_detail"),
         (BOARD_RS, "evidence_board"),
         (EXPORT_RS, "evidence_export"),
     ] {
@@ -26,7 +29,9 @@ fn router_registers_browser_board_data_and_redacted_export_routes() {
     for route in [
         ".route(\"/evidence\", get(page::evidence_page))",
         "/api/v1/repositories/:repository_id/tasks/:task_id/evidence",
+        "/api/v1/repositories/:repository_id/tasks/:task_id/evidence/:evidence_id",
         "/api/v1/repositories/:repository_id/tasks/:task_id/conformance",
+        "/api/v1/repositories/:repository_id/tasks/:task_id/conformance/:conformance_id",
         "/api/v1/repositories/:repository_id/tasks/:task_id/evidence-board",
         "/api/v1/repositories/:repository_id/tasks/:task_id/evidence-board/export",
     ] {

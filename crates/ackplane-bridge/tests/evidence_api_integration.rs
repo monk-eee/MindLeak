@@ -183,7 +183,7 @@ async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
         })
         .await
         .expect("record Evidence");
-    evidence_store
+    let conformance = evidence_store
         .record_conformance(RecordConformanceRequest {
             tenant_id: tenant_id.clone(),
             repository_id: repository_id.clone(),
@@ -203,8 +203,9 @@ async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
 
     let route =
         format!("/api/v1/repositories/{repository_id}/tasks/{task_id}/evidence-board?limit=20");
-    let board = application(&database_url, &tenant_id)
-        .await
+    let app = application(&database_url, &tenant_id).await;
+    let board = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri(&route)
@@ -232,6 +233,44 @@ async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
     assert_eq!(
         board["evidence"]["entries"][0]["reported_constitution_version"],
         json!("constitution:v4")
+    );
+
+    let evidence_detail = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/repositories/{repository_id}/tasks/{task_id}/evidence/{}",
+                    evidence.record.evidence_id
+                ))
+                .body(Body::empty())
+                .expect("build Evidence detail request"),
+        )
+        .await
+        .expect("serve Evidence detail route");
+    assert_eq!(evidence_detail.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(evidence_detail).await,
+        board["evidence"]["entries"][0].clone()
+    );
+
+    let conformance_detail = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/repositories/{repository_id}/tasks/{task_id}/conformance/{}",
+                    conformance.record.conformance_id
+                ))
+                .body(Body::empty())
+                .expect("build conformance detail request"),
+        )
+        .await
+        .expect("serve conformance detail route");
+    assert_eq!(conformance_detail.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(conformance_detail).await,
+        board["conformance"]["entries"][0].clone()
     );
 
     let export = application(&database_url, &tenant_id)
@@ -268,11 +307,14 @@ async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
         .await
         .oneshot(
             Request::builder()
-                .uri(&route)
+                .uri(format!(
+                    "/api/v1/repositories/{repository_id}/tasks/{task_id}/evidence/{}",
+                    evidence.record.evidence_id
+                ))
                 .body(Body::empty())
-                .expect("build foreign tenant request"),
+                .expect("build foreign Evidence detail request"),
         )
         .await
-        .expect("serve foreign tenant route");
+        .expect("serve foreign Evidence detail route");
     assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
 }

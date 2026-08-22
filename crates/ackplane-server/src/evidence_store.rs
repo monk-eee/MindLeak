@@ -9,6 +9,7 @@ use std::time::SystemTime;
 use tokio_postgres::{Client, NoTls};
 
 mod conformance;
+mod detail;
 mod pagination;
 
 pub(crate) use conformance::normalize_postgres_timestamp;
@@ -80,6 +81,8 @@ pub enum EvidenceStoreError {
     InvalidConstitutionVersion,
     #[error("page cursor must carry a bounded evidence identifier")]
     InvalidCursor,
+    #[error("evidence_id must be between 1 and {MAX_TASK_ID_BYTES} bytes")]
+    InvalidEvidenceId,
     #[error(
         "idempotency_key must be between 1 and {MAX_IDEMPOTENCY_KEY_BYTES} bytes when supplied"
     )]

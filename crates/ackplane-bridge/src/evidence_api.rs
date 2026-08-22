@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use crate::evidence::{page_limit, BridgeEvidenceStore, ConformanceView, EvidenceView};
 
 mod board;
+mod detail;
 mod export;
 mod page;
 
@@ -65,8 +66,16 @@ pub fn evidence_routes(state: EvidenceApiState) -> Router {
             get(task_evidence),
         )
         .route(
+            "/api/v1/repositories/:repository_id/tasks/:task_id/evidence/:evidence_id",
+            get(detail::evidence_detail),
+        )
+        .route(
             "/api/v1/repositories/:repository_id/tasks/:task_id/conformance",
             get(task_conformance),
+        )
+        .route(
+            "/api/v1/repositories/:repository_id/tasks/:task_id/conformance/:conformance_id",
+            get(detail::conformance_detail),
         )
         .route(
             "/api/v1/repositories/:repository_id/tasks/:task_id/evidence-board",
@@ -264,9 +273,9 @@ pub(super) async fn ensure_repository_visible(
 
 pub(super) fn evidence_store_error(error: EvidenceStoreError) -> StatusCode {
     match error {
-        EvidenceStoreError::InvalidTaskId | EvidenceStoreError::InvalidCursor => {
-            StatusCode::BAD_REQUEST
-        }
+        EvidenceStoreError::InvalidTaskId
+        | EvidenceStoreError::InvalidEvidenceId
+        | EvidenceStoreError::InvalidCursor => StatusCode::BAD_REQUEST,
         EvidenceStoreError::Database(error) => {
             tracing::error!(%error, "Bridge Evidence query failed");
             StatusCode::INTERNAL_SERVER_ERROR

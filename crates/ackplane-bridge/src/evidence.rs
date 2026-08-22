@@ -243,6 +243,30 @@ impl BridgeEvidenceStore {
             )
             .await
     }
+
+    pub async fn evidence_detail(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        task_id: &str,
+        evidence_id: &str,
+    ) -> Result<Option<EvidenceRecord>, EvidenceStoreError> {
+        self.store
+            .evidence_detail(tenant_id, repository_id, task_id, evidence_id)
+            .await
+    }
+
+    pub async fn conformance_detail(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        task_id: &str,
+        conformance_id: &str,
+    ) -> Result<Option<ConformanceRecord>, ConformanceStoreError> {
+        self.store
+            .conformance_detail(tenant_id, repository_id, task_id, conformance_id)
+            .await
+    }
 }
 
 pub fn page_limit(requested_limit: Option<u32>) -> i64 {
