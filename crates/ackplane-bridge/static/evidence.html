@@ -95,7 +95,11 @@
     section { min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); }
     .section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 14px 15px; border-bottom: 1px solid var(--border); }
     .section-head h3 { margin: 0; font-size: .9rem; }
+    .section-actions { display: flex; align-items: center; justify-content: end; gap: 8px; min-width: 0; }
     .count { color: var(--soft); font-size: .75rem; font-weight: 650; }
+    .load-older { min-height: 28px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-soft); color: var(--ink); font-size: .7rem; font-weight: 700; cursor: pointer; white-space: nowrap; }
+    .load-older:hover { background: var(--surface); border-color: var(--soft); }
+    .load-older:disabled { cursor: wait; opacity: .65; }
     .rows { list-style: none; margin: 0; padding: 0; }
     .row { border-bottom: 1px solid var(--border); }
     .row:last-child { border-bottom: 0; }
@@ -156,8 +160,8 @@
       <div id="freshness-state" class="metric"><span>Freshness</span><strong>-</strong><small id="freshness-time"></small></div>
     </div>
     <div id="board" class="board hidden">
-      <section aria-labelledby="evidence-heading"><div class="section-head"><h3 id="evidence-heading">Evidence</h3><span id="evidence-count" class="count"></span></div><ul id="evidence-list" class="rows"></ul></section>
-      <section aria-labelledby="conformance-heading"><div class="section-head"><h3 id="conformance-heading">Conformance</h3><span id="conformance-count" class="count"></span></div><ul id="conformance-list" class="rows"></ul></section>
+      <section aria-labelledby="evidence-heading"><div class="section-head"><h3 id="evidence-heading">Evidence</h3><div class="section-actions"><span id="evidence-count" class="count"></span><button id="evidence-older" class="load-older hidden" type="button">Load older</button></div></div><ul id="evidence-list" class="rows"></ul></section>
+      <section aria-labelledby="conformance-heading"><div class="section-head"><h3 id="conformance-heading">Conformance</h3><div class="section-actions"><span id="conformance-count" class="count"></span><button id="conformance-older" class="load-older hidden" type="button">Load older</button></div></div><ul id="conformance-list" class="rows"></ul></section>
     </div>
     <div id="api-links" class="api-links hidden" aria-label="Related Industrial records">
       <a id="work-api" href="/">Work</a><a id="constitution-api" href="/">Constitution</a><a id="knowledge-api" href="/">Knowledge</a>
@@ -168,7 +172,8 @@
       form: document.getElementById("filters"), repository: document.getElementById("repository"), task: document.getElementById("task"), agent: document.getElementById("agent"), limit: document.getElementById("limit"),
       export: document.getElementById("export"), message: document.getElementById("message"), scope: document.getElementById("scope-label"),
       status: document.getElementById("status-grid"), board: document.getElementById("board"), links: document.getElementById("api-links"),
-      evidence: document.getElementById("evidence-list"), conformance: document.getElementById("conformance-list"), evidenceCount: document.getElementById("evidence-count"), conformanceCount: document.getElementById("conformance-count")
+      evidence: document.getElementById("evidence-list"), conformance: document.getElementById("conformance-list"), evidenceCount: document.getElementById("evidence-count"), conformanceCount: document.getElementById("conformance-count"),
+      evidenceOlder: document.getElementById("evidence-older"), conformanceOlder: document.getElementById("conformance-older")
     };
     let loaded = null;
     const params = new URLSearchParams(location.search);
@@ -181,6 +186,13 @@
     const state = (id, value) => { const node = document.getElementById(id); node.className = `metric state-${value}`; node.querySelector("strong").textContent = value.replaceAll("_", " "); };
     const endpoint = (suffix) => `/api/v1/repositories/${encodeURIComponent(els.repository.value.trim())}/tasks/${encodeURIComponent(els.task.value.trim())}/${suffix}`;
     const detailHref = (kind, recordId) => endpoint(`${kind}/${encodeURIComponent(recordId)}`);
+    const listQuery = (cursor) => {
+      const query = new URLSearchParams({limit: els.limit.value});
+      const agentId = els.agent.value.trim();
+      if (agentId) query.set("agent_id", agentId);
+      if (cursor) query.set("cursor", cursor);
+      return query;
+    };
     const related = () => {
       const repo = encodeURIComponent(els.repository.value.trim());
       document.getElementById("work-api").href = `/api/v1/repositories/${repo}/claims`;
@@ -199,23 +211,28 @@
     const evidenceRow = entry => `<li class="row"><details><summary><span class="indicator ${escape(entry.kind)}"></span><span class="row-title">${escape(entry.source_ref)}</span><span class="row-meta">${escape(entry.kind)}</span></summary><div class="detail"><div><b>Digest</b><code>${escape(entry.content_digest_hex)}</code></div><div><b>Recorded</b>${escape(when(entry.recorded_at_seconds))}</div><div><b>Producer</b>${escape(entry.recorded_by)}</div><div><b>Constitution</b>${escape(entry.reported_constitution_version || "not reported")}</div>${entry.receipt_id ? `<div><b>Receipt</b><code>${escape(entry.receipt_id)}</code></div>` : ""}<a class="record-link" href="${detailHref("evidence", entry.evidence_id)}" target="_blank" rel="noopener">Open record</a></div></details></li>`;
     const conformanceRow = entry => `<li class="row"><details><summary><span class="indicator ${escape(entry.verdict)}"></span><span class="row-title">${escape(entry.verdict.replaceAll("_", " "))}</span><span class="row-meta">${escape(entry.review_state)}</span></summary><div class="detail"><div><b>Finding digest</b><code>${escape(entry.findings_digest_hex)}</code></div><div><b>Finding codes</b>${escape((entry.finding_codes || []).map(code => code.replaceAll("_", " ")).join(", ") || "not reported")}</div><div><b>Finding count</b>${escape(entry.finding_count)}</div><div><b>Evaluator</b>${escape(entry.evaluated_by)}</div><div><b>Constitution</b>${escape(entry.reported_constitution_version || "not reported")}</div><div><b>Checked</b>${escape(when(entry.reported_checked_at_seconds))}</div><a class="record-link" href="${detailHref("conformance", entry.conformance_id)}" target="_blank" rel="noopener">Open record</a></div></details></li>`;
     const list = (node, entries, render, empty) => { node.innerHTML = entries.length ? entries.map(render).join("") : `<li class="empty">${escape(empty)}</li>`; };
+    const count = entries => `${entries.length} record${entries.length === 1 ? "" : "s"}`;
+    const drawRecords = () => {
+      list(els.evidence, loaded.evidence.entries, evidenceRow, "No evidence records on this page.");
+      list(els.conformance, loaded.conformance.entries, conformanceRow, "No conformance records on this page.");
+      els.evidenceCount.textContent = count(loaded.evidence.entries);
+      els.conformanceCount.textContent = count(loaded.conformance.entries);
+      els.evidenceOlder.classList.toggle("hidden", !loaded.evidence.next_cursor);
+      els.conformanceOlder.classList.toggle("hidden", !loaded.conformance.next_cursor);
+    };
     const draw = result => {
       loaded = result;
       els.status.classList.remove("hidden"); els.board.classList.remove("hidden"); els.links.classList.remove("hidden"); els.export.disabled = false;
       state("evidence-state", result.status.evidence); state("conformance-state", result.status.conformance); state("review-state", result.status.review); state("freshness-state", result.status.freshness);
       document.getElementById("freshness-time").textContent = Number.isFinite(result.status.latest_recorded_at_seconds) ? `Recorded ${when(result.status.latest_recorded_at_seconds)}` : "";
       els.scope.textContent = `${els.repository.value.trim()} / ${els.task.value.trim()}`;
-      list(els.evidence, result.evidence.entries, evidenceRow, "No evidence records on this page.");
-      list(els.conformance, result.conformance.entries, conformanceRow, "No conformance records on this page.");
-      els.evidenceCount.textContent = `${result.evidence.entries.length} record${result.evidence.entries.length === 1 ? "" : "s"}${result.evidence.next_cursor ? " +" : ""}`;
-      els.conformanceCount.textContent = `${result.conformance.entries.length} record${result.conformance.entries.length === 1 ? "" : "s"}${result.conformance.next_cursor ? " +" : ""}`;
+      drawRecords();
       related();
     };
     async function load() {
       if (!els.form.reportValidity()) return;
-      const query = new URLSearchParams({limit: els.limit.value});
+      const query = listQuery();
       const agentId = els.agent.value.trim();
-      if (agentId) query.set("agent_id", agentId);
       setMessage("Loading evidence..."); els.export.disabled = true;
       try {
         const response = await fetch(`${endpoint("evidence-board")}?${query}`);
@@ -227,13 +244,28 @@
       } catch (error) { setMessage(error.message, true); }
     }
     els.form.addEventListener("submit", event => { event.preventDefault(); load(); });
+    async function loadOlder(kind) {
+      if (!loaded || !loaded[kind].next_cursor) return;
+      const button = kind === "evidence" ? els.evidenceOlder : els.conformanceOlder;
+      button.disabled = true;
+      setMessage(`Loading older ${kind}...`);
+      try {
+        const response = await fetch(`${endpoint(kind)}?${listQuery(loaded[kind].next_cursor)}`);
+        if (!response.ok) throw new Error(`Older ${kind} request failed (${response.status}).`);
+        const page = await response.json();
+        loaded[kind] = {...page, entries: [...loaded[kind].entries, ...page.entries]};
+        drawRecords();
+        setMessage(`Loaded older ${kind}.`);
+      } catch (error) { setMessage(error.message, true); }
+      finally { button.disabled = false; }
+    }
+    els.evidenceOlder.addEventListener("click", () => loadOlder("evidence"));
+    els.conformanceOlder.addEventListener("click", () => loadOlder("conformance"));
     els.export.addEventListener("click", async () => {
       if (!loaded) return;
       setMessage("Preparing audit package...");
       try {
-        const query = new URLSearchParams({limit: els.limit.value});
-        const agentId = els.agent.value.trim();
-        if (agentId) query.set("agent_id", agentId);
+        const query = listQuery();
         const response = await fetch(`${endpoint("evidence-board/export")}?${query}`);
         if (!response.ok) throw new Error(`Audit export failed (${response.status}).`);
         const blob = new Blob([JSON.stringify(await response.json(), null, 2)], {type: "application/json"});
