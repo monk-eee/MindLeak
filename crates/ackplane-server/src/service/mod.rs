@@ -7,10 +7,13 @@ use tokio::sync::{mpsc, Mutex};
 use tokio_stream::{wrappers::ReceiverStream, Stream};
 use tonic::{Request, Response, Status};
 
-use crate::{ledger::LedgerStore, signing_keys::EnvelopeBinding};
+use crate::{
+    ledger::LedgerStore, signing_keys::EnvelopeBinding, supervisor_store::SupervisorStore,
+};
 
 mod frame;
 mod handshake;
+mod supervisor;
 
 use frame::{handle_frame, must_terminate_after};
 
@@ -74,13 +77,32 @@ pub enum ConnectionState {
 /// stream is part of the receipt contract.
 pub struct NodeSyncService {
     ledger: Arc<Mutex<LedgerStore>>,
+    supervisor: Option<Arc<Mutex<SupervisorStore>>>,
     flow_control: v1::FlowControl,
 }
 
 impl NodeSyncService {
+    /// Constructs the pre-ADR-0116 NodeSync surface. Callers that have not
+    /// configured a supervisor store keep their existing stream behavior;
+    /// supervisor facts receive a retryable unavailable result.
     pub fn new(ledger: LedgerStore, flow_control: v1::FlowControl) -> Self {
         Self {
             ledger: Arc::new(Mutex::new(ledger)),
+            supervisor: None,
+            flow_control,
+        }
+    }
+
+    /// Constructs the production NodeSync service with durable supervisor
+    /// runtime fact ingestion enabled.
+    pub fn with_supervisor_store(
+        ledger: LedgerStore,
+        supervisor: SupervisorStore,
+        flow_control: v1::FlowControl,
+    ) -> Self {
+        Self {
+            ledger: Arc::new(Mutex::new(ledger)),
+            supervisor: Some(Arc::new(Mutex::new(supervisor))),
             flow_control,
         }
     }
@@ -95,6 +117,7 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
         request: Request<tonic::Streaming<v1::NodeFrame>>,
     ) -> Result<Response<Self::SynchronizeStream>, Status> {
         let ledger = Arc::clone(&self.ledger);
+        let supervisor = self.supervisor.as_ref().map(Arc::clone);
         let flow_control = self.flow_control;
         let (sender, receiver) = mpsc::channel(8);
 
@@ -104,26 +127,57 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
             'stream: loop {
                 match inbound.message().await {
                     Ok(Some(frame)) => {
-                        let responses = handle_frame(
-                            frame,
-                            flow_control,
-                            &mut state,
-                            |envelope| {
-                                let ledger = Arc::clone(&ledger);
-                                async move { ledger.lock().await.append(&envelope).await }
-                            },
-                            |binding| {
-                                let ledger = Arc::clone(&ledger);
-                                async move {
-                                    ledger
-                                        .lock()
-                                        .await
-                                        .resolve_signing_key(&binding.as_binding())
-                                        .await
-                                }
-                            },
-                        )
-                        .await;
+                        let authenticated_identity = match &state {
+                            ConnectionState::Authenticated {
+                                tenant_id,
+                                repository_id,
+                                producer_id,
+                            } => Some((
+                                tenant_id.clone(),
+                                repository_id.clone(),
+                                producer_id.clone(),
+                            )),
+                            _ => None,
+                        };
+                        let responses = if let Some((tenant_id, repository_id, node_id)) =
+                            authenticated_identity
+                                .filter(|_| supervisor::is_supervisor_frame(&frame))
+                        {
+                            if let Some(supervisor) = supervisor.as_ref() {
+                                let mut store = supervisor.lock().await;
+                                supervisor::handle_authenticated_frame(
+                                    frame,
+                                    &tenant_id,
+                                    &repository_id,
+                                    &node_id,
+                                    &mut store,
+                                )
+                                .await
+                            } else {
+                                vec![supervisor::unavailable_frame()]
+                            }
+                        } else {
+                            handle_frame(
+                                frame,
+                                flow_control,
+                                &mut state,
+                                |envelope| {
+                                    let ledger = Arc::clone(&ledger);
+                                    async move { ledger.lock().await.append(&envelope).await }
+                                },
+                                |binding| {
+                                    let ledger = Arc::clone(&ledger);
+                                    async move {
+                                        ledger
+                                            .lock()
+                                            .await
+                                            .resolve_signing_key(&binding.as_binding())
+                                            .await
+                                    }
+                                },
+                            )
+                            .await
+                        };
                         let terminate =
                             must_terminate_after(&responses) || state == ConnectionState::Rejected;
                         for frame in responses {
