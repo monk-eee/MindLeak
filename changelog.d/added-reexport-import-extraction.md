@@ -1,0 +1,1 @@
+- **Added:** JavaScript/TypeScript re-export declarations (`export { a } from '...'`, `export * from '...'`, `export * as ns from '...'`) now resolve to structural import edges exactly like an ordinary import, instead of being silently ignored.

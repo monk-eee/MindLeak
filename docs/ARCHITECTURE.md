@@ -81,7 +81,7 @@ The engine. Modules:
 | [`consolidate.rs`](../crates/mindleak-core/src/consolidate.rs) | Optional OpenAI-compatible consolidation client and worker. |
 | [`embed.rs`](../crates/mindleak-core/src/embed.rs) | Optional semantic-recall embedding index (ADR-0008): configured `/v1/embeddings` client, derived `embeddings` table, cosine recall. Off the zero-token write path. |
 | [`net.rs`](../crates/mindleak-core/src/net.rs) | Network resilience for optional HTTP (ADR-0010): timeouts, bounded retry with backoff, per-endpoint circuit breaker. |
-| [`telemetry.rs`](../crates/mindleak-core/src/telemetry.rs) | Observability (ADR-0010): durable `telemetry_events` audit trail, metrics snapshot, stderr-only `tracing` init. |
+| [`telemetry/`](../crates/mindleak-core/src/telemetry/mod.rs) | Observability (ADR-0010): durable `telemetry_events` audit trail, metrics snapshot, stderr-only `tracing` init. |
 | [`lib.rs`](../crates/mindleak-core/src/lib.rs) | `MindLeak` facade wiring; behavior is grouped under `facade/`: `ingestion`, `query`, `observability`, `lifecycle`, and `consolidation`. |
 
 ### `mindleak-mcp` (binary)
@@ -326,6 +326,14 @@ Credential Manager, macOS Keychain, or Linux Secret Service, via the
 `keyring` crate) by default, per ADR-0085 decision 2 and ADR-0100 decision 5;
 an explicit environment variable remains available as a documented,
 non-hardened override for tests and constrained deployments.
+
+### `ackplane-supervisor` (library)
+
+The local durable directive inbox and outbox for one enrolled supervisor and worker session (ADR-0116). It owns a caller-provided SQLite database rather than either repository-local plane database. The inbox binds itself to one tenant, repository, node, supervisor, and agent session; verifies that an incoming directive targets that identity and names an advertised capability; rejects expired or out-of-sequence delivery; and persists accepted, capability-refused, and expired receipts before returning them. Replaying the same directive id and payload digest returns the original stored receipt, while a changed digest under the same id is refused without overwriting evidence.
+
+The outbox persists encoded `NodeFrame`s before a future sender may transmit them. It assigns a local positive contiguous sequence through a persisted high-water mark, replays an identical frame idempotently, refuses a changed frame at an existing sequence, returns pending frames in sequence order under a bounded limit, and prunes only frames at or below a caller-supplied acknowledged sequence. The inbox and outbox share the same durable supervisor identity/session binding so a different node or worker session cannot reopen the queue database.
+
+It does not open a network listener, spawn a worker, execute a directive, or offer a shell/process abstraction. A future NodeSync transport adapter reads pending outbound frames, acknowledges accepted delivery, and feeds received directives into the inbox; a future worker adapter reports application or checkpoint effects. This crate establishes the local durable queue boundary those adapters must preserve.
 
 
 ### `ackplane-server` (binary)
