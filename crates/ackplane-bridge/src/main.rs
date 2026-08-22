@@ -301,6 +301,18 @@ impl From<RepositoryDetail> for RepositoryDetailResponse {
 #[derive(Serialize)]
 struct TimelineResponse {
     events: Vec<TimelineEventSummary>,
+    /// The `before` value that would fetch the next (older) page, or `None`
+    /// once a page comes back short of the limit -- there is nothing older
+    /// left to page to (ADR-0112 decision 1).
+    next_before: Option<i64>,
+}
+
+/// `GET /api/v1/repositories/:id/timeline` query parameters (ADR-0112
+/// decision 1). `before` is optional keyset pagination: omit it for the
+/// newest page, or pass the previous page's `next_before` to continue.
+#[derive(Deserialize)]
+struct TimelineQuery {
+    before: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -938,9 +950,20 @@ async fn repository_detail(
     }
 }
 
+/// The `before` cursor for a caller's next timeline page, or `None` once a
+/// page comes back short of the limit -- a short page is proof nothing older
+/// remains, so only a full page earns a next cursor (ADR-0112 decision 1).
+fn next_timeline_cursor(events: &[TimelineEvent], limit: i64) -> Option<i64> {
+    if events.len() as i64 != limit {
+        return None;
+    }
+    events.last().map(|event| event.stream_position)
+}
+
 async fn repository_timeline(
     State(state): State<AppState>,
     Path(repository_id): Path<String>,
+    Query(query): Query<TimelineQuery>,
 ) -> Result<Json<TimelineResponse>, StatusCode> {
     // A repository outside the caller's tenant must read exactly like one
     // that was never enrolled: check enrolment first so a non-existent
@@ -960,12 +983,21 @@ async fn repository_timeline(
 
     match state
         .fleet
-        .timeline(&state.tenant_id, &repository_id, TIMELINE_LIMIT)
+        .timeline(
+            &state.tenant_id,
+            &repository_id,
+            query.before,
+            TIMELINE_LIMIT,
+        )
         .await
     {
-        Ok(events) => Ok(Json(TimelineResponse {
-            events: events.into_iter().map(TimelineEventSummary::from).collect(),
-        })),
+        Ok(events) => {
+            let next_before = next_timeline_cursor(&events, TIMELINE_LIMIT);
+            Ok(Json(TimelineResponse {
+                events: events.into_iter().map(TimelineEventSummary::from).collect(),
+                next_before,
+            }))
+        }
         Err(error) => {
             tracing::error!(%error, "Bridge repository timeline query failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -1457,6 +1489,34 @@ mod tests {
                 Ok(Some(*value))
             );
         }
+    }
+
+    fn timeline_event(stream_position: i64) -> TimelineEvent {
+        TimelineEvent {
+            stream_position,
+            occurred_at: SystemTime::now(),
+            payload_type: "structural_fact".to_string(),
+            producer_id: "producer".to_string(),
+            signing_key_id: None,
+            key_status: None,
+        }
+    }
+
+    #[test]
+    fn next_timeline_cursor_is_the_oldest_position_when_the_page_is_full() {
+        let events = vec![timeline_event(5), timeline_event(4), timeline_event(3)];
+        assert_eq!(next_timeline_cursor(&events, 3), Some(3));
+    }
+
+    #[test]
+    fn next_timeline_cursor_is_none_when_the_page_is_short_of_the_limit() {
+        let events = vec![timeline_event(5), timeline_event(4)];
+        assert_eq!(next_timeline_cursor(&events, 3), None);
+    }
+
+    #[test]
+    fn next_timeline_cursor_is_none_for_an_empty_page() {
+        assert_eq!(next_timeline_cursor(&[], 3), None);
     }
 
     #[test]
