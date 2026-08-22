@@ -128,6 +128,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0118](0118-the-coverage-gate-provisions-postgres-for-ackplane.md) | The Coverage gate provisions Postgres for Ackplane's tests | Accepted |
 | [0119](0119-industrial-administration-lifecycle-policy.md) | Industrial administration is receipted, scoped, and never a reset | Accepted |
 | [0120](0120-industrial-work-domain-is-an-authoritative-task-projection.md) | Industrial Work is an authoritative task projection, not a mirrored board | Proposed |
+| [0121](0121-industrial-design-preserves-immutable-history.md) | Industrial Design preserves immutable history, not a mutable current snapshot | Proposed |
 
 ## Writing a new ADR
 
