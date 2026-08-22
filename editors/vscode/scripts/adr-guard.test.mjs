@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { reserveWorktreePath } from "./test-support/reserve-worktree-path.mjs";
+
 const adrGuard = join(dirname(fileURLToPath(import.meta.url)), "../../../scripts/adr-guard.mjs");
 const temporaryDirectories = [];
 
@@ -158,9 +160,11 @@ describe(
       "does not let another worktree's uncommitted ADR block this push",
       () => {
         const repo = repositoryWithPublishedAdr();
-        const linked = mkdtempSync(join(tmpdir(), "mindleak-adr-linked-"));
-        rmSync(linked, { recursive: true, force: true });
-        temporaryDirectories.push(linked);
+        // Reserve a not-yet-created path rather than mkdtemp-then-delete it,
+        // which raced `git worktree add` recreating it at the same name
+        // (gaps.d/a-scoped-commit-fixture-can-fall-outside-its-repository.md).
+        const { parent, path: linked } = reserveWorktreePath("mindleak-adr-linked-");
+        temporaryDirectories.push(parent);
         git(repo, ["worktree", "add", "-b", "fleet/other-agent", linked]);
 
         // The other agent is mid-renumber; this worktree is clean.

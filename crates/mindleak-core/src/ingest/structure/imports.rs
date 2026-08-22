@@ -79,6 +79,26 @@ pub fn extract(path: &str, content: &str) -> Vec<Import> {
                     .unwrap_or_default();
                 merge_import(&mut imports, build_import(path, specifier, bindings));
             }
+        } else if tokens[index].identifier() == Some("export") {
+            // A re-export (`export { a } from '...'`, `export * from '...'`,
+            // `export * as ns from '...'`) resolves a specifier exactly like
+            // an import. A local export declaration has no `from` clause
+            // before its statement ends, so `find_import_from` correctly
+            // finds nothing for `export function foo() {}`/`export { a };`.
+            if let Some((from, specifier_index)) = find_import_from(&tokens, index + 1) {
+                if let Some(specifier) = tokens[specifier_index].string_literal() {
+                    merge_import(
+                        &mut imports,
+                        build_import(
+                            path,
+                            specifier,
+                            parse_import_clause(&tokens[index + 1..from]),
+                        ),
+                    );
+                    index = specifier_index + 1;
+                    continue;
+                }
+            }
         }
         index += 1;
     }
@@ -124,7 +144,9 @@ fn parse_import_clause(tokens: &[Token]) -> Vec<ImportBinding> {
 
     let prefix = tokens
         .iter()
-        .take_while(|token| !token.is_punctuation(',') && !token.is_punctuation('{'))
+        .take_while(|token| {
+            !token.is_punctuation(',') && !token.is_punctuation('{') && !token.is_punctuation('*')
+        })
         .filter_map(Token::identifier)
         .find(|name| *name != "type");
     if let Some(prefix) = prefix {
@@ -311,6 +333,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn extracts_bare_namespace_import_with_no_default_binding() {
+        // Regression: `take_while` previously stopped only at `,`/`{`, so a
+        // bare `* as ns` (no preceding default identifier) let "as" leak
+        // through as a bogus `{imported: "default", local: "as"}` binding
+        // alongside the correct namespace one.
+        let imports = extract("src/consumer.ts", r#"import * as ns from "./dependency";"#);
+
+        assert_eq!(
+            imports[0].bindings,
+            vec![ImportBinding {
+                imported: "*".to_string(),
+                local: "ns".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn extracts_combined_default_and_namespace_import() {
+        let imports = extract(
+            "src/consumer.ts",
+            r#"import Default, * as ns from "./dependency";"#,
+        );
+
+        assert_eq!(
+            imports[0].bindings,
+            vec![
+                ImportBinding {
+                    imported: "default".to_string(),
+                    local: "Default".to_string(),
+                },
+                ImportBinding {
+                    imported: "*".to_string(),
+                    local: "ns".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn extracts_named_imports_and_resolves_relative_artifact() {
         let imports = extract(
             "src/feature/consumer.ts",
@@ -481,5 +542,79 @@ require("shadowed");
     #[test]
     fn ignores_unsupported_source_extensions() {
         assert!(extract("src/lib.rs", "use crate::dependency;").is_empty());
+    }
+
+    #[test]
+    fn extracts_named_reexport_and_resolves_relative_artifact() {
+        let imports = extract(
+            "src/feature/consumer.ts",
+            r#"export { dependency, helper as localHelper } from "../dependency";"#,
+        );
+
+        assert_eq!(imports.len(), 1);
+        let ImportTarget::ArtifactCandidates(candidates) = &imports[0].target else {
+            panic!("expected relative artifact candidates");
+        };
+        assert_eq!(candidates[0], "src/dependency.ts");
+        assert!(imports[0].bindings.contains(&ImportBinding {
+            imported: "dependency".to_string(),
+            local: "dependency".to_string(),
+        }));
+        assert!(imports[0].bindings.contains(&ImportBinding {
+            imported: "helper".to_string(),
+            local: "localHelper".to_string(),
+        }));
+    }
+
+    #[test]
+    fn extracts_star_reexport_with_no_local_binding() {
+        let imports = extract("src/consumer.ts", r#"export * from "./dependency";"#);
+
+        assert_eq!(imports.len(), 1);
+        assert!(imports[0].bindings.is_empty());
+    }
+
+    #[test]
+    fn extracts_star_reexport_bound_to_a_namespace() {
+        let imports = extract("src/consumer.ts", r#"export * as ns from "./dependency";"#);
+
+        assert_eq!(
+            imports[0].bindings,
+            vec![ImportBinding {
+                imported: "*".to_string(),
+                local: "ns".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn merges_a_reexport_into_an_existing_import_of_the_same_specifier() {
+        let imports = extract(
+            "src/consumer.ts",
+            r#"import { dependency } from "./shared";
+export { helper } from "./shared";"#,
+        );
+
+        assert_eq!(imports.len(), 1);
+        assert!(imports[0].bindings.contains(&ImportBinding {
+            imported: "dependency".to_string(),
+            local: "dependency".to_string(),
+        }));
+        assert!(imports[0].bindings.contains(&ImportBinding {
+            imported: "helper".to_string(),
+            local: "helper".to_string(),
+        }));
+    }
+
+    #[test]
+    fn ignores_local_export_declarations_with_no_specifier() {
+        let source = r#"
+export { a, b };
+export function foo() {}
+export default class {}
+export const x = 5;
+"#;
+
+        assert!(extract("src/consumer.ts", source).is_empty());
     }
 }
