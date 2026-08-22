@@ -56,6 +56,8 @@ pub(crate) mod key {
     pub(crate) const TELEMETRY: i64 = 16;
     /// `migrations/0017_telemetry_authentication_nonces.sql`
     pub(crate) const TELEMETRY_AUTHENTICATION_NONCES: i64 = 17;
+    /// `migrations/0020_live_feed.sql`
+    pub(crate) const LIVE_FEED: i64 = 20;
 }
 
 /// Apply `migration_sql` inside a transaction holding the advisory lock

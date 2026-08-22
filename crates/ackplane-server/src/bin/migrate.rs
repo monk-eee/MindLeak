@@ -6,12 +6,13 @@
 //! It applies no migration logic of its own: [`LedgerStore::connect`] and
 //! [`Projector::connect`] each run their own idempotent `CREATE TABLE IF NOT
 //! EXISTS` migration as a side effect of connecting, so this binary's only
-//! job is to open both connections in the Compose topology's `migrate`
+//! job is to open each store connection in the Compose topology's `migrate`
 //! service and report success or failure.
 
 use std::process::ExitCode;
 
 use ackplane_server::ledger::LedgerStore;
+use ackplane_server::live_feed_store::LiveFeedStore;
 use ackplane_server::projection::Projector;
 
 const DATABASE_URL_ENV: &str = "ACKPLANE_DATABASE_URL";
@@ -31,7 +32,11 @@ async fn main() -> ExitCode {
         eprintln!("ackplane-migrate: projection schema failed: {error}");
         return ExitCode::FAILURE;
     }
+    if let Err(error) = LiveFeedStore::connect(&database_url).await {
+        eprintln!("ackplane-migrate: live feed schema failed: {error}");
+        return ExitCode::FAILURE;
+    }
 
-    println!("ackplane-migrate: ledger and projection schemas are up to date");
+    println!("ackplane-migrate: ledger, projection, and live feed schemas are up to date");
     ExitCode::SUCCESS
 }
