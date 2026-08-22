@@ -225,32 +225,37 @@ fn every_bridge_route_handler_scopes_its_query_to_the_tenant() {
     }
 }
 
-/// Every `pub async fn NAME(...)` inside `impl <type_name> { ... }`, returning
-/// each method's name and its full (possibly multi-line) parameter list.
+/// Every `pub async fn NAME(...)` inside every `impl <type_name> { ... }`
+/// block in `source`, returning each method's name and its full (possibly
+/// multi-line) parameter list. A type's methods no longer have to live in a
+/// single `impl` block once a store is split below the module-length
+/// ratchet, so this collects every occurrence rather than assuming one.
 fn extract_impl_methods(source: &str, type_name: &str) -> Vec<(String, String)> {
     let impl_marker = format!("impl {type_name} {{");
-    let impl_start = source
-        .find(&impl_marker)
-        .unwrap_or_else(|| panic!("expected an `impl {type_name} {{` block"));
-    let impl_open = impl_start + impl_marker.len() - 1;
-    let impl_close = balanced_braces(source, impl_open)
-        .unwrap_or_else(|| panic!("`impl {type_name}` block is never closed"));
-    let impl_body = &source[impl_open..impl_close];
-
-    let marker = "pub async fn ";
     let mut methods = Vec::new();
-    let mut cursor = 0;
-    while let Some(start) = impl_body[cursor..].find(marker) {
-        let after_marker = cursor + start + marker.len();
-        let name_end = impl_body[after_marker..]
-            .find('(')
-            .expect("a fn name is followed by (");
-        let name = impl_body[after_marker..after_marker + name_end].to_string();
-        let params_start = after_marker + name_end;
-        let params_end = balanced_parens(impl_body, params_start)
-            .unwrap_or_else(|| panic!("FleetStore::{name}'s parameter list is never closed"));
-        methods.push((name, impl_body[params_start..params_end].to_string()));
-        cursor = params_end;
+    let mut search_from = 0;
+    while let Some(offset) = source[search_from..].find(&impl_marker) {
+        let impl_start = search_from + offset;
+        let impl_open = impl_start + impl_marker.len() - 1;
+        let impl_close = balanced_braces(source, impl_open)
+            .unwrap_or_else(|| panic!("`impl {type_name}` block is never closed"));
+        let impl_body = &source[impl_open..impl_close];
+
+        let marker = "pub async fn ";
+        let mut cursor = 0;
+        while let Some(start) = impl_body[cursor..].find(marker) {
+            let after_marker = cursor + start + marker.len();
+            let name_end = impl_body[after_marker..]
+                .find('(')
+                .expect("a fn name is followed by (");
+            let name = impl_body[after_marker..after_marker + name_end].to_string();
+            let params_start = after_marker + name_end;
+            let params_end = balanced_parens(impl_body, params_start)
+                .unwrap_or_else(|| panic!("{type_name}::{name}'s parameter list is never closed"));
+            methods.push((name, impl_body[params_start..params_end].to_string()));
+            cursor = params_end;
+        }
+        search_from = impl_close;
     }
     methods
 }
