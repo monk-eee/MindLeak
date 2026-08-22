@@ -24,6 +24,8 @@ mod tests {
             "evidence-board/export",
             "reported_constitution_version",
             "entry.finding_codes",
+            "detailHref(\"evidence\", entry.evidence_id)",
+            "detailHref(\"conformance\", entry.conformance_id)",
             "id=\"work-link\" href=\"#filters\" aria-disabled=\"true\"",
         ] {
             assert!(
