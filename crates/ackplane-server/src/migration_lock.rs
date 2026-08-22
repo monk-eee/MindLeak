@@ -20,6 +20,8 @@
 
 use tokio_postgres::Client;
 
+const APPLIED_MIGRATIONS_TABLE: &str = "ackplane_schema_migrations";
+
 /// Every schema migration first takes the global lock, then its own file key.
 /// The global lock prevents deadlocks between different DDL files that touch
 /// related tables; the file key keeps the migration identity explicit for
@@ -53,9 +55,10 @@ pub(crate) mod key {
     pub(crate) const EVIDENCE_CONFORMANCE: i64 = 15;
 }
 
-/// Apply `migration_sql` inside a transaction holding the global schema lock
-/// followed by the advisory lock named by `lock_key`. The fixed order means
-/// concurrent callers cannot deadlock while applying different DDL files.
+/// Apply `migration_sql` once per database under the global schema lock and
+/// the advisory lock named by `lock_key`. The applied-key ledger prevents a
+/// warm store connection from re-running `ALTER TABLE` DDL while other code is
+/// already using the table.
 pub(crate) async fn migrate_locked(
     client: &mut Client,
     lock_key: i64,
@@ -68,12 +71,39 @@ pub(crate) async fn migrate_locked(
     transaction
         .execute("SELECT pg_advisory_xact_lock($1)", &[&lock_key])
         .await?;
+    transaction
+        .batch_execute(&format!(
+            "CREATE TABLE IF NOT EXISTS {APPLIED_MIGRATIONS_TABLE} (\
+                 migration_key BIGINT PRIMARY KEY,\
+                 applied_at TIMESTAMPTZ NOT NULL DEFAULT now()\
+             )"
+        ))
+        .await?;
+    let already_applied = transaction
+        .query_opt(
+            &format!("SELECT 1 FROM {APPLIED_MIGRATIONS_TABLE} WHERE migration_key = $1"),
+            &[&lock_key],
+        )
+        .await?
+        .is_some();
+    if already_applied {
+        return transaction.commit().await;
+    }
     transaction.batch_execute(migration_sql).await?;
+    transaction
+        .execute(
+            &format!("INSERT INTO {APPLIED_MIGRATIONS_TABLE} (migration_key) VALUES ($1)"),
+            &[&lock_key],
+        )
+        .await?;
     transaction.commit().await
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    use tokio_postgres::error::SqlState;
     use tokio_postgres::NoTls;
 
     /// Proves the mutual-exclusion primitive itself, deterministically: a
@@ -82,6 +112,11 @@ mod tests {
     /// no real migration uses, so this can never contend with one actually
     /// running concurrently.
     const TEST_ONLY_LOCK_KEY: i64 = -1;
+
+    fn test_migration_key() -> i64 {
+        static NEXT_KEY: AtomicI64 = AtomicI64::new(-10_000);
+        NEXT_KEY.fetch_sub(1, Ordering::Relaxed)
+    }
 
     #[tokio::test]
     async fn a_second_connection_cannot_acquire_the_same_advisory_lock_while_the_first_holds_it() {
@@ -166,13 +201,9 @@ mod tests {
         );
     }
 
-    /// `migrate_locked` itself: idempotent DDL applied twice in a row (the
-    /// shape every `connect()` caller now uses) must succeed both times, not
-    /// only the first -- this is the direct regression test for the gap:
-    /// unguarded concurrent `CREATE TABLE IF NOT EXISTS` calls could each
-    /// see "missing" and race the catalog insert. Run sequentially here
-    /// (proving idempotency), with the two tests above proving the
-    /// concurrency guard that makes a real race impossible.
+    /// A warm store connection must skip DDL it has already applied. The
+    /// temporary table would make a repeated execution fail, so two successes
+    /// prove the applied-key ledger took the no-op path on the second call.
     #[tokio::test]
     async fn migrate_locked_is_safe_to_call_twice() {
         let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
@@ -183,12 +214,23 @@ mod tests {
         tokio::spawn(async move {
             let _ = connection.await;
         });
-        let ddl = "CREATE TABLE IF NOT EXISTS migrate_locked_smoke_test (id INTEGER PRIMARY KEY)";
+        let migration_key = test_migration_key();
+        let ddl = "CREATE TEMP TABLE migrate_locked_smoke_test (id INTEGER PRIMARY KEY)";
 
-        super::migrate_locked(&mut client, TEST_ONLY_LOCK_KEY - 2, ddl)
+        super::migrate_locked(&mut client, migration_key, ddl)
             .await
             .unwrap();
-        super::migrate_locked(&mut client, TEST_ONLY_LOCK_KEY - 2, ddl)
+        super::migrate_locked(&mut client, migration_key, ddl)
+            .await
+            .unwrap();
+        client
+            .execute(
+                &format!(
+                    "DELETE FROM {} WHERE migration_key = $1",
+                    super::APPLIED_MIGRATIONS_TABLE
+                ),
+                &[&migration_key],
+            )
             .await
             .unwrap();
     }
@@ -225,12 +267,14 @@ mod tests {
             .await
             .unwrap();
 
-        let error = super::migrate_locked(&mut contender, TEST_ONLY_LOCK_KEY - 3, "SELECT 1")
+        let error = super::migrate_locked(&mut contender, test_migration_key(), "SELECT 1")
             .await
             .expect_err("a distinct migration key must wait for the global schema lock");
         assert!(
-            error.to_string().contains("statement timeout"),
-            "expected the global schema lock to block the distinct migration: {error}"
+            error
+                .as_db_error()
+                .is_some_and(|error| error.code() == &SqlState::QUERY_CANCELED),
+            "expected the global schema lock to produce a statement timeout: {error}"
         );
 
         holder_txn.commit().await.unwrap();
