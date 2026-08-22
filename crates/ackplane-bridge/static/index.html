@@ -368,6 +368,32 @@
     </div>
   </main>
   <script>
+    // Same cadence a manual reload would use; only ticks while the tab is
+    // visible so a backgrounded dashboard does not keep polling.
+    const REFRESH_INTERVAL_MS = 15000;
+
+    function startVisibleRefresh(load, intervalMs) {
+      let timer = null;
+      function start() {
+        if (timer !== null) return;
+        timer = setInterval(load, intervalMs);
+      }
+      function stop() {
+        if (timer === null) return;
+        clearInterval(timer);
+        timer = null;
+      }
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") {
+          load();
+          start();
+        } else {
+          stop();
+        }
+      });
+      if (document.visibilityState === "visible") start();
+    }
+
     const status = document.getElementById("status");
     const fleet = document.getElementById("fleet");
     const searchInput = document.getElementById("fleet-search");
@@ -793,6 +819,7 @@
     }
     renderRows();
     loadFleet();
+    startVisibleRefresh(loadFleet, REFRESH_INTERVAL_MS);
 
     const agentsStatus = document.getElementById("agents-status");
     const agents = document.getElementById("agents");
@@ -931,6 +958,7 @@
     }
     renderAgentRows();
     loadAgents();
+    startVisibleRefresh(loadAgents, REFRESH_INTERVAL_MS);
 
     const readinessStatus = document.getElementById("readiness-status");
     const readiness = document.getElementById("readiness");
@@ -1029,6 +1057,7 @@
     }
     renderReadinessRows();
     loadReadiness();
+    startVisibleRefresh(loadReadiness, REFRESH_INTERVAL_MS);
   </script>
 </body>
 </html>
