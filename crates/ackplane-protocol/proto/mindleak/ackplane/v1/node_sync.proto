@@ -646,6 +646,114 @@ enum ClaimLeaseOutcome {
   CLAIM_LEASE_OUTCOME_REJECTED = 2;
 }
 
+// ADR-0116: these are bounded facts a supervisor publishes only after the
+// NodeSync connection challenge established its enrolled node identity. They
+// do not carry directives, local commands, source material, or opaque payloads.
+enum SupervisorDirectiveCapability {
+  SUPERVISOR_DIRECTIVE_CAPABILITY_UNSPECIFIED = 0;
+  SUPERVISOR_DIRECTIVE_CAPABILITY_NOTIFY = 1;
+  SUPERVISOR_DIRECTIVE_CAPABILITY_PROMPT = 2;
+  SUPERVISOR_DIRECTIVE_CAPABILITY_ASSIGN = 3;
+  SUPERVISOR_DIRECTIVE_CAPABILITY_STEER = 4;
+  SUPERVISOR_DIRECTIVE_CAPABILITY_PAUSE = 5;
+  SUPERVISOR_DIRECTIVE_CAPABILITY_RESUME = 6;
+  SUPERVISOR_DIRECTIVE_CAPABILITY_DRAIN = 7;
+  SUPERVISOR_DIRECTIVE_CAPABILITY_TERMINATE_GRACEFULLY = 8;
+  SUPERVISOR_DIRECTIVE_CAPABILITY_TERMINATE_FORCE = 9;
+}
+
+enum SupervisorOutboxDurability {
+  SUPERVISOR_OUTBOX_DURABILITY_UNSPECIFIED = 0;
+  SUPERVISOR_OUTBOX_DURABILITY_PERSISTENT = 1;
+  SUPERVISOR_OUTBOX_DURABILITY_EPHEMERAL = 2;
+}
+
+enum SupervisorRuntime {
+  SUPERVISOR_RUNTIME_UNSPECIFIED = 0;
+  SUPERVISOR_RUNTIME_LOCAL_MACHINE = 1;
+  SUPERVISOR_RUNTIME_CLOUD_WORKER = 2;
+  SUPERVISOR_RUNTIME_PIPELINE = 3;
+  SUPERVISOR_RUNTIME_SERVICE = 4;
+}
+
+enum SupervisorWorkerState {
+  SUPERVISOR_WORKER_STATE_UNSPECIFIED = 0;
+  SUPERVISOR_WORKER_STATE_STARTED = 1;
+  SUPERVISOR_WORKER_STATE_CHECKPOINTED = 2;
+  SUPERVISOR_WORKER_STATE_PAUSED = 3;
+  SUPERVISOR_WORKER_STATE_DRAINING = 4;
+  SUPERVISOR_WORKER_STATE_TERMINATED = 5;
+  SUPERVISOR_WORKER_STATE_FAILED = 6;
+  SUPERVISOR_WORKER_STATE_DISCONNECTED = 7;
+  SUPERVISOR_WORKER_STATE_RECONNECTED = 8;
+  SUPERVISOR_WORKER_STATE_COMPLETED = 9;
+}
+
+enum SupervisorLifecycleReason {
+  SUPERVISOR_LIFECYCLE_REASON_UNSPECIFIED = 0;
+  SUPERVISOR_LIFECYCLE_REASON_CAPABILITY_MISSING = 1;
+  SUPERVISOR_LIFECYCLE_REASON_CHECKPOINT_FAILED = 2;
+  SUPERVISOR_LIFECYCLE_REASON_DIRECTIVE_EXPIRED = 3;
+  SUPERVISOR_LIFECYCLE_REASON_OUTBOX_UNAVAILABLE = 4;
+  SUPERVISOR_LIFECYCLE_REASON_PROTOCOL_UNSUPPORTED = 5;
+  SUPERVISOR_LIFECYCLE_REASON_SUPERVISOR_FAILED = 6;
+  SUPERVISOR_LIFECYCLE_REASON_WORKER_LOST = 7;
+}
+
+message SupervisorRegistration {
+  string supervisor_id = 1;
+  // Must equal the authenticated NodeSync producer identity.
+  string node_id = 2;
+  string supervisor_version = 3;
+  string protocol_version = 4;
+  repeated SupervisorDirectiveCapability supported_directives = 5;
+  bool supports_checkpoint = 6;
+  bool supports_force_termination = 7;
+  SupervisorOutboxDurability outbox_durability = 8;
+  bool recoverable_outbox = 9;
+}
+
+message SupervisorHeartbeat {
+  string supervisor_id = 1;
+}
+
+message SupervisorSession {
+  string supervisor_id = 1;
+  string session_id = 2;
+  string worker_id = 3;
+  SupervisorRuntime runtime = 4;
+  string started_at = 5;
+  SupervisorWorkerState state = 6;
+}
+
+message SupervisorLifecycleReceipt {
+  string supervisor_id = 1;
+  string session_id = 2;
+  string worker_id = 3;
+  string occurred_at = 4;
+  SupervisorWorkerState state = 5;
+  SupervisorLifecycleReason reason = 6;
+  string idempotency_key = 7;
+}
+
+enum SupervisorFrameOperation {
+  SUPERVISOR_FRAME_OPERATION_UNSPECIFIED = 0;
+  SUPERVISOR_FRAME_OPERATION_REGISTRATION = 1;
+  SUPERVISOR_FRAME_OPERATION_HEARTBEAT = 2;
+  SUPERVISOR_FRAME_OPERATION_SESSION = 3;
+  SUPERVISOR_FRAME_OPERATION_LIFECYCLE = 4;
+}
+
+// Acknowledges the durable outcome of one typed supervisor fact. It does not
+// imply that a directive was delivered or a worker performed arbitrary work.
+message SupervisorFrameReceipt {
+  SupervisorFrameOperation operation = 1;
+  string supervisor_id = 2;
+  string session_id = 3;
+  bool idempotent_replay = 4;
+  bool projection_advanced = 5;
+}
+
 message NodeFrame {
   oneof frame {
     Hello hello = 1;
@@ -653,6 +761,10 @@ message NodeFrame {
     Heartbeat heartbeat = 3;
     ChallengeResponse challenge_response = 4;
     DirectiveReceipt directive_receipt = 5;
+    SupervisorRegistration supervisor_registration = 6;
+    SupervisorHeartbeat supervisor_heartbeat = 7;
+    SupervisorSession supervisor_session = 8;
+    SupervisorLifecycleReceipt supervisor_lifecycle_receipt = 9;
   }
 }
 
@@ -665,6 +777,7 @@ message AckplaneFrame {
     Notice notice = 5;
     ConnectionChallenge connection_challenge = 6;
     AgentDirective agent_directive = 7;
+    SupervisorFrameReceipt supervisor_frame_receipt = 8;
   }
 }
 
