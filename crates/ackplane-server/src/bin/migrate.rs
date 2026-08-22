@@ -4,11 +4,11 @@
 //! `ackplane` service can start only after migrations have finished rather
 //! than racing them at boot.
 //!
-//! It applies no migration logic of its own: [`LedgerStore::connect`] and
-//! [`Projector::connect`] each run their own idempotent `CREATE TABLE IF NOT
-//! EXISTS` migration as a side effect of connecting, so this binary's only
-//! job is to open both connections in the Compose topology's `migrate`
-//! service and report success or failure.
+//! It applies no migration logic of its own: [`LedgerStore::connect`],
+//! [`Projector::connect`], and [`EvidenceStore::connect`] each run their own
+//! idempotent `CREATE TABLE IF NOT EXISTS` migration as a side effect of
+//! connecting, so this binary's only job is to open all three connections in
+//! the Compose topology's `migrate` service and report success or failure.
 
 use std::process::ExitCode;
 
