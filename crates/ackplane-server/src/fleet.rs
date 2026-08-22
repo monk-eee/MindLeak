@@ -498,10 +498,18 @@ impl FleetStore {
     /// decision 12) -- one repository-wide key fetch, not one query per
     /// event, since a handful of enrolled keys typically sign every event in
     /// a bounded timeline page.
+    ///
+    /// `before` is keyset pagination (ADR-0112 decision 1): `None` returns
+    /// the newest page; `Some(cursor)` continues strictly older than the
+    /// last `stream_position` the caller already saw. Unlike `OFFSET`, a
+    /// concurrent append between two page requests cannot skip or repeat a
+    /// row, because the cursor names a fixed position rather than a shifting
+    /// row count.
     pub async fn timeline(
         &self,
         tenant_id: &str,
         repository_id: &str,
+        before: Option<i64>,
         limit: i64,
     ) -> Result<Vec<TimelineEvent>, SigningKeyError> {
         let rows = self
@@ -510,9 +518,10 @@ impl FleetStore {
                 "SELECT stream_position, occurred_at, payload_type, producer_id, signing_key_id \
                  FROM ledger_records \
                  WHERE tenant_id = $1 AND repository_id = $2 \
+                 AND ($4::bigint IS NULL OR stream_position < $4) \
                  ORDER BY stream_position DESC \
                  LIMIT $3",
-                &[&tenant_id, &repository_id, &limit],
+                &[&tenant_id, &repository_id, &limit, &before],
             )
             .await?;
 
@@ -890,13 +899,99 @@ mod tests {
         assert_eq!(detail.freshness, RepositoryFreshness::NeverProjected);
 
         let timeline = fleet
-            .timeline(&tenant_id, &repository_id, 50)
+            .timeline(&tenant_id, &repository_id, None, 50)
             .await
             .expect("query repository timeline");
         assert_eq!(timeline.len(), 1);
         assert_eq!(timeline[0].stream_position, 1);
         assert_eq!(timeline[0].payload_type, "structural_fact");
         assert_eq!(timeline[0].producer_id, envelope.key.producer_id);
+    }
+
+    /// Real keyset pagination against a real Postgres (ADR-0112 decision 1):
+    /// three events, a page smaller than the total, and the second page
+    /// continuing strictly older than the cursor rather than by row offset.
+    #[tokio::test]
+    async fn timeline_before_cursor_continues_strictly_older_than_the_cursor() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let (tenant_id, repository_id) =
+            enroll_and_activate(&database_url, &unique_id.to_string()).await;
+
+        let mut ledger = LedgerStore::connect(&database_url)
+            .await
+            .expect("connect ledger store");
+        for sequence in 1..=3i64 {
+            let envelope = EventEnvelope {
+                key: DedupKey {
+                    tenant_id: tenant_id.clone(),
+                    repository_id: repository_id.clone(),
+                    producer_id: format!("timeline-page-producer-{unique_id}"),
+                    producer_sequence: sequence,
+                },
+                payload: b"{}".to_vec(),
+                payload_digest: vec![1, 2, 3],
+                schema_version: "v1".to_string(),
+                occurred_at: SystemTime::now(),
+                payload_type: "structural_fact".to_string(),
+                previous_envelope_digest: None,
+                signing_key_id: None,
+                signature: None,
+                provenance: ProvenanceClass::EnrolledNode,
+            };
+            ledger.append(&envelope).await.expect("append envelope");
+        }
+
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+
+        let first_page = fleet
+            .timeline(&tenant_id, &repository_id, None, 2)
+            .await
+            .expect("query first page");
+        assert_eq!(
+            first_page
+                .iter()
+                .map(|e| e.stream_position)
+                .collect::<Vec<_>>(),
+            vec![3, 2],
+            "first page is the newest two events, newest first"
+        );
+
+        let cursor = first_page
+            .last()
+            .expect("first page has a last event")
+            .stream_position;
+        let second_page = fleet
+            .timeline(&tenant_id, &repository_id, Some(cursor), 2)
+            .await
+            .expect("query second page");
+        assert_eq!(
+            second_page
+                .iter()
+                .map(|e| e.stream_position)
+                .collect::<Vec<_>>(),
+            vec![1],
+            "second page continues strictly older than the cursor, not by row offset"
+        );
+
+        let exhausted = fleet
+            .timeline(
+                &tenant_id,
+                &repository_id,
+                Some(second_page[0].stream_position),
+                2,
+            )
+            .await
+            .expect("query past the oldest event");
+        assert!(
+            exhausted.is_empty(),
+            "a cursor at the oldest event has nothing older left to page to"
+        );
     }
 
     #[tokio::test]
@@ -1530,7 +1625,7 @@ mod tests {
             .await
             .expect("connect fleet store");
         let before_revocation = fleet
-            .timeline(&tenant_id, &repository_id, 50)
+            .timeline(&tenant_id, &repository_id, None, 50)
             .await
             .expect("query timeline before revocation");
         assert_eq!(before_revocation.len(), 1);
@@ -1568,7 +1663,7 @@ mod tests {
         transaction.commit().await.expect("commit revocation");
 
         let after_revocation = fleet
-            .timeline(&tenant_id, &repository_id, 50)
+            .timeline(&tenant_id, &repository_id, None, 50)
             .await
             .expect("query timeline after revocation");
         assert_eq!(after_revocation.len(), 1);
@@ -1625,7 +1720,7 @@ mod tests {
             .await
             .expect("connect fleet store");
         let timeline = fleet
-            .timeline(&tenant_id, &repository_id, 50)
+            .timeline(&tenant_id, &repository_id, None, 50)
             .await
             .expect("query timeline");
 

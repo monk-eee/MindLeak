@@ -1,8 +1,9 @@
 # ADR-0119: Industrial administration is receipted, scoped, and never a reset
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-22
-- Deciders: Pending human acceptance
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-22 by the repository owner, authorized directly in session — attributed human adoption after review.
 - Depends on: [ADR-0086](0086-postgresql-is-the-ackplane-ledger-and-arbiter.md) (Ackplane's durable authority and deferred lifecycle decisions), [ADR-0105](0105-bridge-is-the-server-version-of-the-vsix.md) (Bridge parity and typed server-owned actions), [ADR-0115](0115-human-delegation-bounds-industrial-agent-autonomy.md) (human authorization for sensitive export, retention, and irreversible effects)
 - Related: [ADR-0013](0013-local-data-lifecycle.md) (Local SQLite backup, export, and reset), [ADR-0088](0088-the-ackplane-runs-in-containers-the-planes-do-not.md) (container state lifecycle), [ADR-0107](0107-registered-agents-accept-authenticated-control-directives.md) (typed local actions), [ADR-0111](0111-bridge-recovers-a-stranded-claim-as-a-tenant-scoped-administrative-action.md) (narrow administrative actions under the current Bridge profile)
 
