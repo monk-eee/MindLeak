@@ -150,8 +150,8 @@ async fn body_json(response: axum::response::Response) -> Value {
 }
 
 // Regression: the Evidence Board must read only its tenant's enrolled
-// repository, project structured codes into JSON, and redact session labels
-// from the audit export rather than exposing a raw record dump.
+// repository, project structured codes into JSON, omit raw reported session
+// labels from browser data, and expose only an audit-export fingerprint.
 #[tokio::test]
 async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
     let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
@@ -264,6 +264,16 @@ async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
         .find(|entry| entry["evidence_id"] == evidence.record.evidence_id)
         .expect("unfiltered Board contains the original Evidence")
         .clone();
+    assert_eq!(
+        board["evidence"]["entries"]
+            .as_array()
+            .expect("Board Evidence entries are an array")
+            .iter()
+            .filter(|entry| entry.get("reported_agent_session_id").is_some())
+            .count(),
+        0,
+        "browser Evidence data must never carry raw reported session labels"
+    );
 
     let filtered_board = application(&database_url, &tenant_id)
         .await
