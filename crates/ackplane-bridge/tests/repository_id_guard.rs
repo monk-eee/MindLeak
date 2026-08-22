@@ -19,7 +19,13 @@ const REPOSITORY_CONSTITUTION_RS: &str = include_str!("../src/handlers/repositor
 const REPOSITORY_TELEMETRY_RS: &str = include_str!("../src/handlers/repository/telemetry.rs");
 const FLEET_RS: &str = include_str!("../../ackplane-server/src/fleet.rs");
 const KNOWLEDGE_STORE_RS: &str = include_str!("../../ackplane-server/src/knowledge_store.rs");
-const CLAIM_STORE_RS: &str = include_str!("../../ackplane-server/src/claim_store.rs");
+const CLAIM_STORE_MOD_RS: &str = include_str!("../../ackplane-server/src/claim_store/mod.rs");
+const CLAIM_STORE_LEASE_RS: &str = include_str!("../../ackplane-server/src/claim_store/lease.rs");
+
+/// `ClaimStore`'s methods live in two files: `mod.rs` (connection/read
+/// concerns) and `lease.rs` (the delegate/release/renew/recover lease
+/// mutations), each with its own `impl ClaimStore { ... }` block.
+const CLAIM_STORE_SOURCES: &[&str] = &[CLAIM_STORE_MOD_RS, CLAIM_STORE_LEASE_RS];
 const PROJECTION_RS: &str = include_str!("../../ackplane-server/src/projection.rs");
 const READINESS_RS: &str = include_str!("../../ackplane-server/src/readiness.rs");
 
@@ -98,7 +104,7 @@ const READINESS_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &["connect"];
 
 #[test]
 fn every_claim_store_query_requires_an_explicit_tenant_id() {
-    let methods = extract_impl_methods(CLAIM_STORE_RS, "ClaimStore");
+    let methods = extract_impl_methods_from_any(CLAIM_STORE_SOURCES, "ClaimStore");
     assert!(
         !methods.is_empty(),
         "expected to find at least one ClaimStore method - the parser may be broken"
@@ -273,6 +279,42 @@ fn extract_function_body_from_any(sources: &[&str], name: &str) -> Option<String
     sources
         .iter()
         .find_map(|source| extract_function_body(source, name))
+}
+
+/// `extract_impl_methods`, but collects every `impl <type_name> { ... }`
+/// block found across all of `sources` rather than assuming there is only
+/// one -- a struct's methods no longer have to live in a single file.
+fn extract_impl_methods_from_any(sources: &[&str], type_name: &str) -> Vec<(String, String)> {
+    let impl_marker = format!("impl {type_name} {{");
+    let mut methods = Vec::new();
+    for source in sources {
+        let mut search_from = 0;
+        while let Some(offset) = source[search_from..].find(&impl_marker) {
+            let impl_start = search_from + offset;
+            let impl_open = impl_start + impl_marker.len() - 1;
+            let impl_close = balanced_braces(source, impl_open)
+                .unwrap_or_else(|| panic!("`impl {type_name}` block is never closed"));
+            let impl_body = &source[impl_open..impl_close];
+
+            let marker = "pub async fn ";
+            let mut cursor = 0;
+            while let Some(start) = impl_body[cursor..].find(marker) {
+                let after_marker = cursor + start + marker.len();
+                let name_end = impl_body[after_marker..]
+                    .find('(')
+                    .expect("a fn name is followed by (");
+                let name = impl_body[after_marker..after_marker + name_end].to_string();
+                let params_start = after_marker + name_end;
+                let params_end = balanced_parens(impl_body, params_start).unwrap_or_else(|| {
+                    panic!("{type_name}::{name}'s parameter list is never closed")
+                });
+                methods.push((name, impl_body[params_start..params_end].to_string()));
+                cursor = params_end;
+            }
+            search_from = impl_close;
+        }
+    }
+    methods
 }
 
 /// The index just past the `)` that matches the `(` at `open`.
