@@ -130,13 +130,35 @@ if (ownership.action === "refuse") {
 // Stage only the declared paths.
 run(["add", "--", ...paths]);
 
+// A staged rename (e.g. `git mv old new`, or a delete+add git's -M heuristic
+// recognizes as similar enough) whose NEW side is declared needs its OLD side
+// in the commit pathspec too: `git commit -- <pathspec>` reconstructs its
+// tree from HEAD content for any path NOT named in the pathspec, including a
+// path deleted in the index -- so an unlisted rename source silently
+// resurrects the old file's HEAD content alongside the new one
+// (gaps.d/scoped-commit-cannot-express-a-rename-whose-old-path.md). The OLD
+// side can never go in the `git add` list above: it no longer exists on disk,
+// and `git add` refuses a pathspec matching nothing.
+const renamedSources = capture(["diff", "--cached", "--name-status", "-M"])
+  .split("\n")
+  .map((line) => line.trim())
+  .filter(Boolean)
+  .map((line) => line.split("\t"))
+  .filter(
+    ([status, , newPath]) => status.startsWith("R") && isDeclared(newPath),
+  )
+  .map(([, oldPath]) => oldPath);
+const isPartOfThisCommit = (file) =>
+  isDeclared(file) || renamedSources.includes(file);
+const commitPaths = [...new Set([...paths, ...renamedSources])];
+
 // Report any pre-existing staged paths outside the declared set — the pathspec
 // commit below leaves them untouched (they are NOT committed).
 const staged = capture(["diff", "--cached", "--name-only"])
   .split("\n")
   .map((s) => s.trim())
   .filter(Boolean);
-const foreign = staged.filter((file) => !isDeclared(file));
+const foreign = staged.filter((file) => !isPartOfThisCommit(file));
 if (foreign.length) {
   console.warn(
     "scoped-commit: note — these staged paths are not yours and will be left uncommitted:",
@@ -145,7 +167,7 @@ if (foreign.length) {
 }
 
 try {
-  run(["commit", ...messageArgs, "--", ...paths]);
+  run(["commit", ...messageArgs, "--", ...commitPaths]);
 } catch (err) {
   process.exit(typeof err.status === "number" ? err.status : 1);
 }

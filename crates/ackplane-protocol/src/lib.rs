@@ -21,3 +21,4 @@ pub mod delegation;
 pub mod knowledge_auth;
 mod signing_bytes;
 pub mod supervisor;
+pub mod telemetry_auth;
