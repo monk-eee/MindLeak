@@ -6,6 +6,17 @@
 //! trusting whoever adds the next one to remember.
 
 const MAIN_RS: &str = include_str!("../src/main.rs");
+const FLEET_HANDLER_RS: &str = include_str!("../src/handlers/fleet.rs");
+const AGENTS_HANDLER_RS: &str = include_str!("../src/handlers/agents.rs");
+const READINESS_HANDLER_RS: &str = include_str!("../src/handlers/readiness.rs");
+const REPOSITORY_MOD_RS: &str = include_str!("../src/handlers/repository/mod.rs");
+const REPOSITORY_TIMELINE_RS: &str = include_str!("../src/handlers/repository/timeline.rs");
+const REPOSITORY_CLAIMS_RS: &str = include_str!("../src/handlers/repository/claims.rs");
+const REPOSITORY_SIGNING_KEYS_RS: &str = include_str!("../src/handlers/repository/signing_keys.rs");
+const REPOSITORY_KNOWLEDGE_RS: &str = include_str!("../src/handlers/repository/knowledge.rs");
+const REPOSITORY_GRAPH_RS: &str = include_str!("../src/handlers/repository/graph.rs");
+const REPOSITORY_CONSTITUTION_RS: &str = include_str!("../src/handlers/repository/constitution.rs");
+const REPOSITORY_TELEMETRY_RS: &str = include_str!("../src/handlers/repository/telemetry.rs");
 const FLEET_RS: &str = include_str!("../../ackplane-server/src/fleet.rs");
 const KNOWLEDGE_STORE_RS: &str = include_str!("../../ackplane-server/src/knowledge_store.rs");
 const CLAIM_STORE_RS: &str = include_str!("../../ackplane-server/src/claim_store.rs");
@@ -38,6 +49,26 @@ const KNOWLEDGE_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &[
 /// `fleet_page` serves a static asset and never touches the store - it has
 /// nothing to scope.
 const ROUTE_HANDLERS_WITHOUT_A_STORE_QUERY: &[&str] = &["fleet_page"];
+
+/// Route handler bodies live wherever the crate split them across --
+/// `main.rs` wires the router, but each handler's own implementation is now
+/// in its own `handlers/**` module (one Bridge route handler per view, split
+/// below the module-length ratchet). Route registration is still read from
+/// `MAIN_RS` alone; a handler body can be in any of these.
+const HANDLER_SOURCES: &[&str] = &[
+    MAIN_RS,
+    FLEET_HANDLER_RS,
+    AGENTS_HANDLER_RS,
+    READINESS_HANDLER_RS,
+    REPOSITORY_MOD_RS,
+    REPOSITORY_TIMELINE_RS,
+    REPOSITORY_CLAIMS_RS,
+    REPOSITORY_SIGNING_KEYS_RS,
+    REPOSITORY_KNOWLEDGE_RS,
+    REPOSITORY_GRAPH_RS,
+    REPOSITORY_CONSTITUTION_RS,
+    REPOSITORY_TELEMETRY_RS,
+];
 
 /// `connect` is the constructor, same exemption as every other store.
 /// `rebuild_stale` sweeps every tenant's stale repositories in one pass by
@@ -171,7 +202,7 @@ fn every_bridge_route_handler_scopes_its_query_to_the_tenant() {
         if ROUTE_HANDLERS_WITHOUT_A_STORE_QUERY.contains(&handler.as_str()) {
             continue;
         }
-        let body = extract_function_body(MAIN_RS, &handler).unwrap_or_else(|| {
+        let body = extract_function_body_from_any(HANDLER_SOURCES, &handler).unwrap_or_else(|| {
             panic!("could not find the body of handler `{handler}` registered on a route")
         });
         assert!(
@@ -233,6 +264,15 @@ fn extract_function_body(source: &str, name: &str) -> Option<String> {
     let brace_start = source[start..].find('{')? + start;
     let end = balanced_braces(source, brace_start)?;
     Some(source[brace_start..end].to_string())
+}
+
+/// `extract_function_body`, tried against each source in turn -- a handler's
+/// registration and its implementation no longer have to live in the same
+/// file.
+fn extract_function_body_from_any(sources: &[&str], name: &str) -> Option<String> {
+    sources
+        .iter()
+        .find_map(|source| extract_function_body(source, name))
 }
 
 /// The index just past the `)` that matches the `(` at `open`.
