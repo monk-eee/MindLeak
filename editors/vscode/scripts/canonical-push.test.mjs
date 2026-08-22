@@ -63,13 +63,17 @@ const sandbox = () => {
 let templateRoot;
 
 // Derived, not guessed. Each test spawns the real publisher, which spawns git
-// many times; the slowest measures 12.75s on an idle machine after the shared
-// fixture landed. CI ran roughly four times slower when this suite timed out,
-// which puts the worst case near 50s, so 30s was never enough margin and the
-// failure landed on whichever test was unlucky rather than on a slow one. The
-// same contention hits beforeAll's own git-subprocess setup below, so it gets
-// this same explicit margin instead of Vitest's 10s hook default.
-const TIMEOUT_MS = 60_000;
+// many times; measured 5-9s locally (3 runs) under this same fleet's own
+// concurrent load. The 60s budget this constant previously held (raised once
+// already, from 30s) still timed out in CI (windows-latest, PR #616,
+// "publishes the current fleet branch's exact HEAD"), a 60_000ms+ run against
+// a 5-9s local baseline -- CI contention has grown past the factor that
+// justified 60s. Raised again with more headroom rather than re-tuning to the
+// exact factor observed once, since the fleet's own concurrency keeps
+// growing. The same contention hits beforeAll's own git-subprocess setup
+// below, so it gets this same explicit margin instead of Vitest's 10s hook
+// default.
+const TIMEOUT_MS = 120_000;
 
 beforeAll(() => {
   templateRoot = mkdtempSync(join(tmpdir(), "mindleak-canonical-push-template-"));
