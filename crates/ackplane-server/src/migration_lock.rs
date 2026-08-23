@@ -79,6 +79,13 @@ pub(crate) mod key {
     pub(crate) const CONSTITUTION_PUBLICATION_HISTORY: i64 = 26;
     /// `migrations/0027_industrial_designs.sql`
     pub(crate) const INDUSTRIAL_DESIGNS: i64 = 27;
+    /// `migrations/0028_work.sql`. Key 27 was deliberately skipped while
+    /// this was drafted: the shared development database already had it
+    /// recorded as applied by concurrent, then-not-yet-committed work
+    /// (observed against `ackplane_schema_migrations` while investigating
+    /// ADR-0120's own migration-identity gap) -- it landed as
+    /// `INDUSTRIAL_DESIGNS` above.
+    pub(crate) const WORK: i64 = 28;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

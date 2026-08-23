@@ -7,13 +7,13 @@
 //! It applies no migration logic of its own: each named store's `connect`
 //! runs its own idempotent `CREATE TABLE IF NOT EXISTS` migration as a side
 //! effect of connecting, so this binary's only job is to open every
-//! connection `main.rs` opens at boot -- plus `DelegationStore::connect`,
-//! which nothing in `main.rs` currently wires in but the Bridge and other
-//! direct consumers still depend on existing ahead of them -- in the Compose
-//! topology's `migrate` service, and report success or failure. Keep this
-//! list in lockstep with `main.rs`'s own store list: a store this binary
-//! does not cover is a migration race this binary cannot be trusted to
-//! have prevented.
+//! connection `main.rs` opens at boot -- plus `DelegationStore::connect` and
+//! `WorkStore::connect`, which nothing in `main.rs` currently wires in but
+//! the Bridge and other direct consumers still depend on existing ahead of
+//! them -- in the Compose topology's `migrate` service, and report success
+//! or failure. Keep this list in lockstep with `main.rs`'s own store list: a
+//! store this binary does not cover is a migration race this binary cannot
+//! be trusted to have prevented.
 
 use std::process::ExitCode;
 
@@ -27,6 +27,7 @@ use ackplane_server::ledger::LedgerStore;
 use ackplane_server::projection::Projector;
 use ackplane_server::supervisor_store::SupervisorStore;
 use ackplane_server::telemetry_store::TelemetryStore;
+use ackplane_server::work_store::WorkStore;
 
 const DATABASE_URL_ENV: &str = "ACKPLANE_DATABASE_URL";
 
@@ -44,7 +45,7 @@ async fn main() -> ExitCode {
 
     println!(
         "ackplane-migrate: ledger, enrollment, claim, projection, knowledge, evidence, \
-         constitution, telemetry, delegation, and supervisor schemas are up to date"
+         constitution, telemetry, delegation, supervisor, and work schemas are up to date"
     );
     ExitCode::SUCCESS
 }
@@ -80,6 +81,9 @@ async fn migrate(database_url: &str) -> Result<(), String> {
     SupervisorStore::connect(database_url)
         .await
         .map_err(|error| format!("supervisor schema failed: {error}"))?;
+    WorkStore::connect(database_url)
+        .await
+        .map_err(|error| format!("work schema failed: {error}"))?;
     Ok(())
 }
 
