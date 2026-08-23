@@ -620,6 +620,14 @@ message PublishConstitutionSnapshotRequest {
   string status = 5;
   repeated ConstitutionClause clauses = 6;
   ConstitutionAuthentication authentication = 7;
+  // ADR-0121 decision 1: fields for the immutable publication history entry
+  // recorded beside the mutable snapshot above. `schema_version` is this
+  // publication's own protocol/schema version, distinct from `version` (the
+  // constitution's version number). `source_ref` and `content_digest` are
+  // optional -- empty means the publisher supplied neither.
+  string schema_version = 8;
+  string source_ref = 9;
+  bytes content_digest = 10;
 }
 
 message PublishConstitutionSnapshotResult {
