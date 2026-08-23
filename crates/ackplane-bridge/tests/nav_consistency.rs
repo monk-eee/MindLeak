@@ -62,14 +62,15 @@ fn discover_pages() -> Vec<(String, String, String)> {
 }
 
 /// The full capability set from ADR-0105 decision 5's Bridge navigation
-/// surface (task:60ba293846ec). Agents and Readiness live as sections
-/// inside the Fleet page itself, so they are not separate nav entries. Names
-/// not yet backed by a real page in `static/` stay disabled placeholders
-/// until their own page lands -- this list only needs a hand-edit for a
+/// surface (task:60ba293846ec). Readiness lives as a section inside the
+/// Fleet page itself, so it is not a separate nav entry. Names not yet
+/// backed by a real page in `static/` stay disabled placeholders until
+/// their own page lands -- this list only needs a hand-edit for a
 /// capability that has no page yet; once a page exists, `discover_pages`
 /// and the tests below take over automatically.
 const CAPABILITIES: &[&str] = &[
     "Fleet",
+    "Agents",
     "Evidence",
     "Telemetry",
     "Context",

@@ -39,6 +39,7 @@ use handlers::{
 };
 
 const FLEET_PAGE: &str = include_str!("../static/index.html");
+const AGENTS_PAGE: &str = include_str!("../static/agents.html");
 
 #[derive(Clone)]
 struct AppState {
@@ -212,6 +213,7 @@ async fn main() {
     };
     let application = Router::new()
         .route("/", get(fleet_page))
+        .route("/agents", get(agents_page))
         .route("/telemetry", get(telemetry_page))
         .route("/api/v1/fleet", get(fleet))
         .route("/api/v1/agents", get(agents))
@@ -287,6 +289,10 @@ async fn fleet_page() -> impl IntoResponse {
     Html(FLEET_PAGE)
 }
 
+async fn agents_page() -> impl IntoResponse {
+    Html(AGENTS_PAGE)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,5 +315,41 @@ mod tests {
         ] {
             assert!(body.contains(required), "index.html is missing {required}");
         }
+    }
+
+    #[tokio::test]
+    async fn agents_page_refreshes_only_while_visible_and_links_the_fleet_agents_section() {
+        let response = agents_page().await.into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("reading the agents page body");
+        let body = String::from_utf8(body.to_vec()).expect("agents page body is valid UTF-8");
+
+        for required in [
+            "function startVisibleRefresh(load, intervalMs)",
+            "document.visibilityState === \"visible\"",
+            "document.addEventListener(\"visibilitychange\"",
+            "startVisibleRefresh(loadAgents, REFRESH_INTERVAL_MS)",
+            "id=\"agents-search-repo\"",
+            "id=\"agents-search-owner\"",
+            "id=\"agents-sort\"",
+            "/api/v1/agents?",
+        ] {
+            assert!(body.contains(required), "agents.html is missing {required}");
+        }
+    }
+
+    #[tokio::test]
+    async fn fleet_page_links_to_the_standalone_agents_dashboard() {
+        let response = fleet_page().await.into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("reading the fleet page body");
+        let body = String::from_utf8(body.to_vec()).expect("fleet page body is valid UTF-8");
+
+        assert!(
+            body.contains("href=\"/agents\""),
+            "index.html's Agents section must link to the standalone /agents dashboard"
+        );
     }
 }
