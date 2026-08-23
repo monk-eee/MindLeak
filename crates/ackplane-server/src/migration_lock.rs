@@ -86,6 +86,10 @@ pub(crate) mod key {
     /// ADR-0120's own migration-identity gap) -- it landed as
     /// `INDUSTRIAL_DESIGNS` above.
     pub(crate) const WORK: i64 = 28;
+    /// `migrations/0029_live_feed.sql`. Renumbered from 27 to 29: 27 was
+    /// this file's own next-available slot when drafted, but collided with
+    /// `INDUSTRIAL_DESIGNS`/`WORK` (27/28) landing concurrently.
+    pub(crate) const LIVE_FEED: i64 = 29;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

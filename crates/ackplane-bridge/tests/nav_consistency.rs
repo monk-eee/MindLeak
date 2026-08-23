@@ -14,8 +14,8 @@ const EVIDENCE: &str = include_str!("../static/evidence.html");
 
 /// `index.html` is served at `/` and is the Fleet page; every other page's
 /// filename already matches its own nav capability name (`evidence.html` ->
-/// "Evidence"). `index` and `board-doctor` are the only exceptions, not a
-/// second list to forget.
+/// "Evidence"). `index`, `board-doctor`, and `live-feed` are the only
+/// exceptions, not a growing list to forget.
 fn capability_name(file_name: &str) -> String {
     let stem = file_name.trim_end_matches(".html");
     if stem == "index" {
@@ -23,6 +23,9 @@ fn capability_name(file_name: &str) -> String {
     }
     if stem == "board-doctor" {
         return "BoardDoctor".to_string();
+    }
+    if stem == "live-feed" {
+        return "LiveFeed".to_string();
     }
     let mut chars = stem.chars();
     match chars.next() {
@@ -81,6 +84,7 @@ const CAPABILITIES: &[&str] = &[
     "Administration",
     "Supervisors",
     "Delegations",
+    "LiveFeed",
 ];
 
 /// Extract the `<nav ...>...</nav>` block, with `aria-current="page"`

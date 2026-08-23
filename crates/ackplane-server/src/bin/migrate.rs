@@ -24,6 +24,7 @@ use ackplane_server::enrollment_store::EnrollmentStore;
 use ackplane_server::evidence_store::EvidenceStore;
 use ackplane_server::knowledge_store::KnowledgeStore;
 use ackplane_server::ledger::LedgerStore;
+use ackplane_server::live_feed_store::LiveFeedStore;
 use ackplane_server::projection::Projector;
 use ackplane_server::supervisor_store::SupervisorStore;
 use ackplane_server::telemetry_store::TelemetryStore;
@@ -45,7 +46,8 @@ async fn main() -> ExitCode {
 
     println!(
         "ackplane-migrate: ledger, enrollment, claim, projection, knowledge, evidence, \
-         constitution, telemetry, delegation, supervisor, and work schemas are up to date"
+         constitution, telemetry, delegation, supervisor, live feed, and work schemas are up to \
+         date"
     );
     ExitCode::SUCCESS
 }
@@ -81,6 +83,9 @@ async fn migrate(database_url: &str) -> Result<(), String> {
     SupervisorStore::connect(database_url)
         .await
         .map_err(|error| format!("supervisor schema failed: {error}"))?;
+    LiveFeedStore::connect(database_url)
+        .await
+        .map_err(|error| format!("live feed schema failed: {error}"))?;
     WorkStore::connect(database_url)
         .await
         .map_err(|error| format!("work schema failed: {error}"))?;
@@ -111,7 +116,10 @@ mod tests {
             "EvidenceStore",
             "ConstitutionStore",
             "TelemetryStore",
+            "DelegationStore",
             "SupervisorStore",
+            "LiveFeedStore",
+            "WorkStore",
         ] {
             assert!(
                 SOURCE.contains(&format!("{store}::connect")),
@@ -266,6 +274,45 @@ mod tests {
                 "supervisor_lifecycle_receipts".to_string(),
                 "supervisor_registrations".to_string(),
                 "supervisor_sessions".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_runner_applies_live_feed_schema() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        migrate(&database_url)
+            .await
+            .expect("migration runner must apply the live feed schema");
+        let (client, connection) = tokio_postgres::connect(&database_url, NoTls)
+            .await
+            .expect("connect test database after migration");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let tables = client
+            .query(
+                "SELECT table_name \
+                 FROM information_schema.tables \
+                 WHERE table_schema = current_schema() \
+                   AND table_name IN ('live_feed_heads', 'live_feed_events') \
+                 ORDER BY table_name",
+                &[],
+            )
+            .await
+            .expect("query live feed schema")
+            .into_iter()
+            .map(|row| row.get::<_, String>("table_name"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            tables,
+            vec![
+                "live_feed_events".to_string(),
+                "live_feed_heads".to_string()
             ]
         );
     }
