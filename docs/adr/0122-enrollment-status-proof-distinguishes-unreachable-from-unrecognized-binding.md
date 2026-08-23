@@ -1,8 +1,9 @@
 # ADR-0122: Enrollment-status proof distinguishes unreachable from unrecognized binding
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-22
-- Deciders: Pending human acceptance
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-23 by the repository owner, authorized directly in session — attributed human adoption after review.
 - Depends on: [ADR-0085](0085-node-enrolment-requires-proof-of-possession.md)
   (node enrolment requires proof of possession),
   [ADR-0098](0098-connection-trust-reuses-the-enrolled-key-oidc-waits.md)

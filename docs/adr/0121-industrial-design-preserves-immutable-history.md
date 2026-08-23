@@ -1,8 +1,9 @@
 # ADR-0121: Industrial Design preserves immutable history, not a mutable current snapshot
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-22
-- Deciders: Pending human acceptance
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-23 by the repository owner, authorized directly in session — attributed human adoption after review.
 - Depends on: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md) (one authority per shared resource), [ADR-0086](0086-postgresql-is-the-ackplane-ledger-and-arbiter.md) (immutable records and checked projections), [ADR-0105](0105-bridge-is-the-server-version-of-the-vsix.md) (Bridge Design Board parity), [ADR-0106](0106-ackplane-closes-the-agentic-operating-loop.md) (Industrial Constitution projection)
 - Refines: ADR-0106 decision 3 (extends the current read-only signed Constitution projection with immutable published-version history; the existing active-snapshot table did not preserve that history)
 - Related: [ADR-0023](0023-design-board-accept-bridge.md) (Local design acceptance and reviewed materialization), [ADR-0042](0042-designs-are-retired-by-a-person.md) (retire rather than delete), [ADR-0064](0064-the-log-is-the-ledger.md) (append-only history), [ADR-0105](0105-bridge-is-the-server-version-of-the-vsix.md) (server-owned actions use typed APIs), [ADR-0112](0112-bridge-list-reads-are-paginated-sortable-and-filterable.md) (bounded Bridge lists)
