@@ -16,6 +16,7 @@ use ackplane_server::{
     claim_store::ClaimStore,
     constitution_service::ConstitutionGrpcService,
     constitution_store::ConstitutionStore,
+    directive_store::DirectiveStore,
     enrollment_service::NodeEnrollmentService,
     enrollment_store::EnrollmentStore,
     evidence_service::EvidenceGrpcService,
@@ -128,6 +129,15 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            let directive_store = match DirectiveStore::connect(config.database_url()).await {
+                Ok(store) => store,
+                Err(error) => {
+                    eprintln!(
+                        "ackplane-server: could not connect to the configured directive ledger: {error}"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            };
             // ADR-0086 clause 9: a projection worker reads the durable ledger
             // through checkpoints on its own cadence, decoupled from request
             // handling; a stalled or errored tick never stops the gRPC server.
@@ -137,7 +147,7 @@ async fn main() -> ExitCode {
             ));
 
             println!(
-                "ackplane-server: serving NodeSyncService.Synchronize, NodeEnrollmentService, ClaimDelegationService, KnowledgeService, EvidenceService, ConstitutionService, TelemetryService, and authenticated supervisor facts"
+                "ackplane-server: serving NodeSyncService.Synchronize, NodeEnrollmentService, ClaimDelegationService, KnowledgeService, EvidenceService, ConstitutionService, TelemetryService, authenticated supervisor facts, and directive receipts"
             );
             let server = tonic::transport::Server::builder();
             let mut server = match tls {
@@ -152,9 +162,10 @@ async fn main() -> ExitCode {
             };
             match server
                 .add_service(NodeSyncServiceServer::new(
-                    NodeSyncService::with_supervisor_store(
+                    NodeSyncService::with_supervisor_and_directive_store(
                         ledger,
                         supervisor_store,
+                        directive_store,
                         v1::FlowControl {
                             max_in_flight_batches: config.max_in_flight_batches,
                             max_batch_bytes: config.max_batch_bytes,
