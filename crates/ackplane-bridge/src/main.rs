@@ -6,6 +6,7 @@ use std::{
 use ackplane_bridge::context_api::{context_routes, ContextApiState};
 use ackplane_bridge::evidence::BridgeEvidenceStore;
 use ackplane_bridge::evidence_api::{evidence_routes, EvidenceApiState};
+use ackplane_bridge::knowledge_api::{knowledge_routes, KnowledgeApiState};
 use ackplane_bridge::supervisor_api::{supervisor_routes, SupervisorApiState};
 use ackplane_bridge::BridgeConfig;
 use ackplane_server::claim_store::ClaimStore;
@@ -168,6 +169,11 @@ async fn main() {
         EvidenceApiState::new(evidence_store, fleet_store.clone(), tenant_id.clone());
     let supervisor_api_state =
         SupervisorApiState::new(supervisor_store, fleet_store.clone(), tenant_id.clone());
+    let knowledge_api_state = KnowledgeApiState::new(
+        knowledge_store.clone(),
+        fleet_store.clone(),
+        tenant_id.clone(),
+    );
     let context_api_state =
         ContextApiState::new(context_packet_store, fleet_store.clone(), tenant_id.clone());
     let state = AppState {
@@ -228,6 +234,7 @@ async fn main() {
         )
         .with_state(state)
         .merge(evidence_routes(evidence_api_state))
+        .merge(knowledge_routes(knowledge_api_state))
         .merge(context_routes(context_api_state))
         .merge(supervisor_routes(supervisor_api_state));
     let listener = match tokio::net::TcpListener::bind(config.listen).await {
