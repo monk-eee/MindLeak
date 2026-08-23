@@ -751,6 +751,7 @@ enum SupervisorFrameOperation {
   SUPERVISOR_FRAME_OPERATION_HEARTBEAT = 2;
   SUPERVISOR_FRAME_OPERATION_SESSION = 3;
   SUPERVISOR_FRAME_OPERATION_LIFECYCLE = 4;
+  SUPERVISOR_FRAME_OPERATION_DIRECTIVE_RECEIPT = 5;
 }
 
 // Acknowledges the durable outcome of one typed supervisor fact. It does not

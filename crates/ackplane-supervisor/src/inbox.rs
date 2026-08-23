@@ -13,10 +13,10 @@ use crate::storage::{
 
 use ackplane_protocol::{
     supervisor::{
-        SupervisorDirectiveCapability, SupervisorError, SupervisorIdentity, SupervisorRegistration,
-        SupervisorSession,
+        directive_payload_digest, directive_requirement, SupervisorError, SupervisorIdentity,
+        SupervisorRegistration, SupervisorSession,
     },
-    v1::{self, agent_directive},
+    v1,
 };
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 use thiserror::Error;
@@ -97,6 +97,17 @@ impl SupervisorInbox {
                 directive_id: directive.directive_id.clone(),
             });
         }
+        if directive.payload_digest
+            != directive_payload_digest(directive).ok_or_else(|| {
+                InboxError::UnsupportedDirective {
+                    directive_id: directive.directive_id.clone(),
+                }
+            })?
+        {
+            return Err(InboxError::PayloadDigestMismatch {
+                directive_id: directive.directive_id.clone(),
+            });
+        }
 
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         if let Some(stored) = load_receipt(&transaction, &directive.directive_id)? {
@@ -108,11 +119,14 @@ impl SupervisorInbox {
             });
         }
 
-        let (capability, required_capability) = required_capability(directive)?;
-        if directive.required_capability != required_capability {
+        let requirement =
+            directive_requirement(directive).ok_or_else(|| InboxError::UnsupportedDirective {
+                directive_id: directive.directive_id.clone(),
+            })?;
+        if directive.required_capability != requirement.required_capability {
             return Err(InboxError::RequiredCapabilityMismatch {
                 directive_id: directive.directive_id.clone(),
-                expected: required_capability.to_string(),
+                expected: requirement.required_capability.to_string(),
                 actual: directive.required_capability.clone(),
             });
         }
@@ -152,7 +166,7 @@ impl SupervisorInbox {
             .registration
             .capabilities
             .supported_directives
-            .contains(&capability)
+            .contains(&requirement.capability)
         {
             (
                 v1::DirectiveReceiptStatus::Refused,
@@ -236,69 +250,6 @@ pub enum InboxError {
     ClockOutOfRange,
     #[error("the durable inbox is already bound to another supervisor identity or session")]
     InboxIdentityMismatch,
-}
-
-fn required_capability(
-    directive: &v1::AgentDirective,
-) -> Result<(SupervisorDirectiveCapability, &'static str), InboxError> {
-    let kind = v1::DirectiveKind::try_from(directive.kind).map_err(|_| {
-        InboxError::UnsupportedDirective {
-            directive_id: directive.directive_id.clone(),
-        }
-    })?;
-    let payload = directive
-        .payload
-        .as_ref()
-        .ok_or_else(|| InboxError::UnsupportedDirective {
-            directive_id: directive.directive_id.clone(),
-        })?;
-
-    let capability = match (kind, payload) {
-        (v1::DirectiveKind::Notify, agent_directive::Payload::Notify(_)) => {
-            (SupervisorDirectiveCapability::Notify, "notify.v1")
-        }
-        (v1::DirectiveKind::Prompt, agent_directive::Payload::Prompt(_)) => {
-            (SupervisorDirectiveCapability::Prompt, "prompt.v1")
-        }
-        (v1::DirectiveKind::Assign, agent_directive::Payload::Assign(_)) => {
-            (SupervisorDirectiveCapability::Assign, "assign.v1")
-        }
-        (v1::DirectiveKind::Steer, agent_directive::Payload::Steer(_)) => {
-            (SupervisorDirectiveCapability::Steer, "steer.v1")
-        }
-        (v1::DirectiveKind::Pause, agent_directive::Payload::Pause(_)) => {
-            (SupervisorDirectiveCapability::Pause, "pause.v1")
-        }
-        (v1::DirectiveKind::Resume, agent_directive::Payload::Resume(_)) => {
-            (SupervisorDirectiveCapability::Resume, "resume.v1")
-        }
-        (v1::DirectiveKind::Drain, agent_directive::Payload::Drain(_)) => {
-            (SupervisorDirectiveCapability::Drain, "drain.v1")
-        }
-        (v1::DirectiveKind::Terminate, agent_directive::Payload::Terminate(termination)) => {
-            match v1::TerminationMode::try_from(termination.mode).ok() {
-                Some(v1::TerminationMode::Graceful) => (
-                    SupervisorDirectiveCapability::TerminateGracefully,
-                    "terminate.graceful.v1",
-                ),
-                Some(v1::TerminationMode::ForceAfterDeadline | v1::TerminationMode::Force) => (
-                    SupervisorDirectiveCapability::TerminateForce,
-                    "terminate.force.v1",
-                ),
-                _ => {
-                    return Err(InboxError::UnsupportedDirective {
-                        directive_id: directive.directive_id.clone(),
-                    });
-                }
-            }
-        }
-        _ => {
-            return Err(InboxError::UnsupportedDirective {
-                directive_id: directive.directive_id.clone(),
-            });
-        }
-    };
-    Ok(capability)
 }
 
 fn receipt_for(
