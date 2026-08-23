@@ -3,17 +3,15 @@
 //!
 //! A design record is opaque `(tenant_id, repository_id, design_id)` identity
 //! plus bounded title/summary/source_version, a closed-vocabulary lifecycle
-//! state, and optional references into the Constitution/Evidence domains --
-//! each checked by a real composite foreign key against the referenced table
-//! in the SAME tenant and repository. A Work reference is part of ADR-0121
-//! decision 3's design but is deferred until the Work domain's own schema
-//! lands on `main` (gaps.d/industrial-design-has-no-work-task-reference-yet.md).
-//! Creation is idempotent (an identical retry no-ops; a different `design_id`
-//! reused with different content is refused), matching this crate's
-//! established immutable/append-only insert pattern. Every lifecycle
-//! transition is a separate, append-only decision-history row; nothing here
-//! authorizes WHO may record a transition -- that gate is a future typed
-//! command, per the ADR's own text.
+//! state, and optional references into the Constitution/Work/Evidence
+//! domains -- each checked by a real composite foreign key against the
+//! referenced table in the SAME tenant and repository. Creation is
+//! idempotent (an identical retry no-ops; a different `design_id` reused
+//! with different content is refused), matching this crate's established
+//! immutable/append-only insert pattern. Every lifecycle transition is a
+//! separate, append-only decision-history row; nothing here authorizes WHO
+//! may record a transition -- that gate is a future typed command, per the
+//! ADR's own text.
 
 use std::time::SystemTime;
 
@@ -21,6 +19,8 @@ use sha2::{Digest, Sha256};
 use tokio_postgres::{Client, NoTls};
 
 const MIGRATION: &str = include_str!("../migrations/0027_industrial_designs.sql");
+const WORK_REFERENCE_MIGRATION: &str =
+    include_str!("../migrations/0031_industrial_design_work_reference.sql");
 
 #[derive(Debug, thiserror::Error)]
 pub enum DesignStoreError {
@@ -82,6 +82,7 @@ pub struct CreateDesignRequest {
     pub summary: String,
     pub source_version: String,
     pub constitution_version_id: Option<String>,
+    pub work_task_id: Option<String>,
     pub evidence_id: Option<String>,
     pub proposed_by: String,
 }
@@ -106,6 +107,7 @@ pub struct Design {
     pub source_version: String,
     pub lifecycle_state: DesignLifecycleState,
     pub constitution_version_id: Option<String>,
+    pub work_task_id: Option<String>,
     pub evidence_id: Option<String>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
@@ -129,6 +131,7 @@ struct DesignIdentityPayload {
     summary: String,
     source_version: String,
     constitution_version_id: Option<String>,
+    work_task_id: Option<String>,
     evidence_id: Option<String>,
 }
 
@@ -148,6 +151,12 @@ impl DesignStore {
             &mut client,
             crate::migration_lock::key::INDUSTRIAL_DESIGNS,
             MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::INDUSTRIAL_DESIGN_WORK_REFERENCE,
+            WORK_REFERENCE_MIGRATION,
         )
         .await?;
         Ok(Self { client })
@@ -179,6 +188,7 @@ impl DesignStore {
             summary: request.summary.clone(),
             source_version: request.source_version.clone(),
             constitution_version_id: request.constitution_version_id.clone(),
+            work_task_id: request.work_task_id.clone(),
             evidence_id: request.evidence_id.clone(),
         };
         let payload_bytes =
@@ -212,9 +222,9 @@ impl DesignStore {
             .execute(
                 "INSERT INTO industrial_designs \
                  (tenant_id, repository_id, design_id, title, summary, source_version, \
-                  lifecycle_state, constitution_version_id, evidence_id, \
+                  lifecycle_state, constitution_version_id, work_task_id, evidence_id, \
                   content_digest) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
                 &[
                     &request.tenant_id,
                     &request.repository_id,
@@ -224,6 +234,7 @@ impl DesignStore {
                     &request.source_version,
                     &(DesignLifecycleState::Proposed as i16),
                     &request.constitution_version_id,
+                    &request.work_task_id,
                     &request.evidence_id,
                     &content_digest,
                 ],
@@ -318,7 +329,7 @@ impl DesignStore {
             .client
             .query_opt(
                 "SELECT title, summary, source_version, lifecycle_state, \
-                        constitution_version_id, evidence_id, created_at, \
+                        constitution_version_id, work_task_id, evidence_id, created_at, \
                         updated_at \
                  FROM industrial_designs \
                  WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3",
@@ -343,9 +354,10 @@ impl DesignStore {
                 }
             })?,
             constitution_version_id: row.get(4),
-            evidence_id: row.get(5),
-            created_at: row.get(6),
-            updated_at: row.get(7),
+            work_task_id: row.get(5),
+            evidence_id: row.get(6),
+            created_at: row.get(7),
+            updated_at: row.get(8),
         }))
     }
 
@@ -406,6 +418,7 @@ mod tests {
             summary: "a summary".to_string(),
             source_version: "v1".to_string(),
             constitution_version_id: None,
+            work_task_id: None,
             evidence_id: None,
             proposed_by: "agent:test".to_string(),
         }
@@ -605,5 +618,72 @@ mod tests {
         let result = store.create_design(request).await;
 
         assert!(matches!(result, Err(DesignStoreError::Database(_))));
+    }
+
+    #[tokio::test]
+    async fn a_reference_to_a_nonexistent_work_task_is_refused() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let mut store = DesignStore::connect(&database_url).await.unwrap();
+        let mut request = create_request(
+            &unique_id("tenant"),
+            &unique_id("repository"),
+            &unique_id("design"),
+        );
+        request.work_task_id = Some(unique_id("nonexistent-task"));
+
+        let result = store.create_design(request).await;
+
+        assert!(matches!(result, Err(DesignStoreError::Database(_))));
+    }
+
+    #[tokio::test]
+    async fn a_reference_to_an_existing_work_task_succeeds() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let tenant_id = unique_id("tenant");
+        let repository_id = unique_id("repository");
+        let task_id = unique_id("task");
+        let mut work_store = crate::work_store::WorkStore::connect(&database_url)
+            .await
+            .unwrap();
+        work_store
+            .create_task(
+                &crate::work_store::NewWorkTask {
+                    tenant_id: tenant_id.clone(),
+                    repository_id: repository_id.clone(),
+                    task_id: task_id.clone(),
+                    title: "a work task".to_string(),
+                    acceptance: "done when done".to_string(),
+                    goal_id: None,
+                    declared_paths: vec![],
+                    declared_symbols: vec![],
+                    published_by: "agent:test".to_string(),
+                },
+                &unique_id("event"),
+                SystemTime::now(),
+            )
+            .await
+            .expect("creating the work task should succeed");
+
+        let mut store = DesignStore::connect(&database_url).await.unwrap();
+        let mut request = create_request(&tenant_id, &repository_id, &unique_id("design"));
+        request.work_task_id = Some(task_id.clone());
+        let design_id = request.design_id.clone();
+        store
+            .create_design(request)
+            .await
+            .expect("a design referencing a real work task should succeed");
+
+        let design = store
+            .get_design(&tenant_id, &repository_id, &design_id)
+            .await
+            .expect("reading the design should succeed")
+            .expect("the design should exist");
+        assert_eq!(design.work_task_id, Some(task_id));
     }
 }
