@@ -430,6 +430,25 @@ so a rejected republish never silently moves the active pointer. Ackplane
 still never originates a publication itself (decision 2) — it verifies the
 publisher and stores the resulting projection.
 
+`DesignStore` (`design_store.rs`) is a separate Industrial-only authority
+(ADR-0121 decision 3), distinct from the Constitution projection above: an
+opaque `(tenant_id, repository_id, design_id)` design record carries bounded
+title/summary/source_version, a closed-vocabulary `lifecycle_state`
+(Proposed/Accepted/Rejected/Deferred/Retired/Superseded/Materialized), and
+optional references into the Constitution/Work/Evidence domains, each
+enforced by a real composite foreign key against the referenced table in the
+same tenant and repository. Creation is a digest-checked idempotent insert
+(an identical retry no-ops; the same `design_id` reused with different
+content is refused) that also writes the design's first, `Proposed` row into
+the append-only `industrial_design_decisions` history table. Every later
+lifecycle transition is a separate `record_decision` call appending one more
+history row and moving the design's own `lifecycle_state` to match, in one
+transaction — nothing in this store enforces which transitions are legal or
+who may request one; ADR-0121 decision 3 defers that authorization to a
+future typed command. Nothing here yet exposes an RPC/HTTP route,
+materialization plans/revisions (decision 4), or a Bridge Design Board
+(decision 7) — those are separate follow-on slices.
+
 `TelemetryService` (`telemetry_store.rs`/`telemetry_service.rs`) is Ackplane's
 typed operational-telemetry domain (ADR-0105 decision 6): `RecordTelemetry`
 (tool/transport/directive/storage/projection observations, each with a bounded
