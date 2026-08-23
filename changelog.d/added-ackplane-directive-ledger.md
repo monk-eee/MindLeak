@@ -1,0 +1,1 @@
+- **Ackplane now persists an immutable typed directive ledger.** Directives are validated against registered supervisor capabilities, sequenced per target, and paired with exact-bound receipt history before any future delivery or Bridge command surface is enabled.

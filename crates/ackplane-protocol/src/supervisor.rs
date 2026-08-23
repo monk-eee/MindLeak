@@ -7,8 +7,12 @@
 
 use std::collections::HashSet;
 
+use prost::Message;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
+
+use crate::v1::{self, agent_directive};
 
 /// An enrolled supervisor's stable identity within one tenant and repository.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,6 +113,88 @@ pub enum SupervisorDirectiveCapability {
     Drain,
     TerminateGracefully,
     TerminateForce,
+}
+
+/// The precise supervisor capability a closed wire directive requires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirectiveRequirement {
+    pub capability: SupervisorDirectiveCapability,
+    pub required_capability: &'static str,
+}
+
+/// Maps a typed `AgentDirective` payload to the capability a supervisor must
+/// have advertised. Unknown, unspecified, and mismatched kind/payload pairs
+/// deliberately produce no requirement rather than falling through to a
+/// permissive default.
+pub fn directive_requirement(directive: &v1::AgentDirective) -> Option<DirectiveRequirement> {
+    let kind = v1::DirectiveKind::try_from(directive.kind).ok()?;
+    let payload = directive.payload.as_ref()?;
+    let (capability, required_capability) = match (kind, payload) {
+        (v1::DirectiveKind::Notify, agent_directive::Payload::Notify(_)) => {
+            (SupervisorDirectiveCapability::Notify, "notify.v1")
+        }
+        (v1::DirectiveKind::Prompt, agent_directive::Payload::Prompt(_)) => {
+            (SupervisorDirectiveCapability::Prompt, "prompt.v1")
+        }
+        (v1::DirectiveKind::Assign, agent_directive::Payload::Assign(_)) => {
+            (SupervisorDirectiveCapability::Assign, "assign.v1")
+        }
+        (v1::DirectiveKind::Steer, agent_directive::Payload::Steer(_)) => {
+            (SupervisorDirectiveCapability::Steer, "steer.v1")
+        }
+        (v1::DirectiveKind::Pause, agent_directive::Payload::Pause(_)) => {
+            (SupervisorDirectiveCapability::Pause, "pause.v1")
+        }
+        (v1::DirectiveKind::Resume, agent_directive::Payload::Resume(_)) => {
+            (SupervisorDirectiveCapability::Resume, "resume.v1")
+        }
+        (v1::DirectiveKind::Drain, agent_directive::Payload::Drain(_)) => {
+            (SupervisorDirectiveCapability::Drain, "drain.v1")
+        }
+        (v1::DirectiveKind::Terminate, agent_directive::Payload::Terminate(termination)) => {
+            match v1::TerminationMode::try_from(termination.mode).ok()? {
+                v1::TerminationMode::Graceful => (
+                    SupervisorDirectiveCapability::TerminateGracefully,
+                    "terminate.graceful.v1",
+                ),
+                v1::TerminationMode::ForceAfterDeadline | v1::TerminationMode::Force => (
+                    SupervisorDirectiveCapability::TerminateForce,
+                    "terminate.force.v1",
+                ),
+                v1::TerminationMode::Unspecified => return None,
+            }
+        }
+        _ => return None,
+    };
+    Some(DirectiveRequirement {
+        capability,
+        required_capability,
+    })
+}
+
+/// Returns the domain-separated digest of a directive's typed payload.
+///
+/// The digest intentionally includes the declared kind as well as the encoded
+/// payload. Empty protobuf messages such as `Assign` and `Resume` otherwise
+/// have the same byte representation, which would let a receipt bind the
+/// wrong closed action to the same digest.
+pub fn directive_payload_digest(directive: &v1::AgentDirective) -> Option<Vec<u8>> {
+    directive_requirement(directive)?;
+    let payload = match directive.payload.as_ref()? {
+        agent_directive::Payload::Notify(value) => value.encode_to_vec(),
+        agent_directive::Payload::Prompt(value) => value.encode_to_vec(),
+        agent_directive::Payload::Assign(value) => value.encode_to_vec(),
+        agent_directive::Payload::Steer(value) => value.encode_to_vec(),
+        agent_directive::Payload::Pause(value) => value.encode_to_vec(),
+        agent_directive::Payload::Resume(value) => value.encode_to_vec(),
+        agent_directive::Payload::Drain(value) => value.encode_to_vec(),
+        agent_directive::Payload::Terminate(value) => value.encode_to_vec(),
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(b"mindleak.ackplane.v1.agent_directive.payload\0");
+    hasher.update(directive.kind.to_be_bytes());
+    hasher.update(payload);
+    Some(hasher.finalize().to_vec())
 }
 
 /// Whether a supervisor can honestly recover its local outbox after process loss.

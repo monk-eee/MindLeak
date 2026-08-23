@@ -20,6 +20,7 @@ use std::process::ExitCode;
 use ackplane_server::claim_store::ClaimStore;
 use ackplane_server::constitution_store::ConstitutionStore;
 use ackplane_server::delegation_store::DelegationStore;
+use ackplane_server::directive_store::DirectiveStore;
 use ackplane_server::enrollment_store::EnrollmentStore;
 use ackplane_server::evidence_store::EvidenceStore;
 use ackplane_server::knowledge_store::KnowledgeStore;
@@ -46,8 +47,8 @@ async fn main() -> ExitCode {
 
     println!(
         "ackplane-migrate: ledger, enrollment, claim, projection, knowledge, evidence, \
-         constitution, telemetry, delegation, supervisor, live feed, and work schemas are up to \
-         date"
+         constitution, telemetry, delegation, directive, supervisor, live feed, and work schemas \
+         are up to date"
     );
     ExitCode::SUCCESS
 }
@@ -80,6 +81,9 @@ async fn migrate(database_url: &str) -> Result<(), String> {
     DelegationStore::connect(database_url)
         .await
         .map_err(|error| format!("delegation schema failed: {error}"))?;
+    DirectiveStore::connect(database_url)
+        .await
+        .map_err(|error| format!("directive schema failed: {error}"))?;
     SupervisorStore::connect(database_url)
         .await
         .map_err(|error| format!("supervisor schema failed: {error}"))?;
@@ -102,9 +106,8 @@ mod tests {
 
     // Regression: this binary's own store list drifted from main.rs's (5 of
     // 9 boot-time stores covered), so a fresh deployment could start any of
-    // the other four services racing their own first migration. A source
-    // scan, not a DB-gated test, so it fails fast and locally the moment a
-    // future store is added to main.rs but not mirrored here.
+    // the other four services racing their own first migration. It also names
+    // direct-consumer stores whose schema must exist before their later wiring.
     #[test]
     fn migrate_covers_every_store_main_rs_connects_at_boot() {
         for store in [
@@ -117,6 +120,7 @@ mod tests {
             "ConstitutionStore",
             "TelemetryStore",
             "DelegationStore",
+            "DirectiveStore",
             "SupervisorStore",
             "LiveFeedStore",
             "WorkStore",
@@ -274,6 +278,46 @@ mod tests {
                 "supervisor_lifecycle_receipts".to_string(),
                 "supervisor_registrations".to_string(),
                 "supervisor_sessions".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_runner_applies_directive_ledger_schema() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        migrate(&database_url)
+            .await
+            .expect("migration runner must apply the directive ledger schema");
+        let (client, connection) = tokio_postgres::connect(&database_url, NoTls)
+            .await
+            .expect("connect test database after migration");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let tables = client
+            .query(
+                "SELECT table_name \
+                 FROM information_schema.tables \
+                 WHERE table_schema = current_schema() \
+                   AND table_name IN ('directive_stream_heads', 'agent_directives', 'directive_receipts') \
+                 ORDER BY table_name",
+                &[],
+            )
+            .await
+            .expect("query directive ledger schema")
+            .into_iter()
+            .map(|row| row.get::<_, String>("table_name"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            tables,
+            vec![
+                "agent_directives".to_string(),
+                "directive_receipts".to_string(),
+                "directive_stream_heads".to_string(),
             ]
         );
     }

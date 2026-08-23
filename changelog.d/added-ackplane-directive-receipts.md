@@ -1,0 +1,1 @@
+- **Ackplane now ingests authenticated typed directive receipts.** NodeSync validates the stream identity before durable receipt recording, acknowledges exact replays, and keeps outbound directive delivery and browser command issuance unavailable.
