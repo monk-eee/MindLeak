@@ -74,9 +74,10 @@ const KNOWLEDGE_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &[
     "consume_knowledge_nonce",
 ];
 
-/// `fleet_page` and `telemetry_page` serve a static asset and never touch
-/// the store - they have nothing to scope.
-const ROUTE_HANDLERS_WITHOUT_A_STORE_QUERY: &[&str] = &["fleet_page", "telemetry_page"];
+/// `fleet_page`, `agents_page`, and `telemetry_page` serve a static asset
+/// and never touch the store - they have nothing to scope.
+const ROUTE_HANDLERS_WITHOUT_A_STORE_QUERY: &[&str] =
+    &["fleet_page", "agents_page", "telemetry_page"];
 
 /// Route handler bodies live wherever the crate split them across --
 /// `main.rs` wires the router, but each handler's own implementation is now
