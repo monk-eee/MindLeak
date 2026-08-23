@@ -282,8 +282,10 @@
       .toolbar { flex-direction: column; align-items: flex-start; gap: 10px; }
     }
     @media (max-width: 600px) {
-      .masthead { align-items: start; padding: 14px 0; }
-      .nav { justify-content: start; }
+      .masthead { align-items: start; flex-wrap: wrap; padding: 14px 0; }
+      .masthead-right { width: 100%; min-width: 0; flex-wrap: wrap; justify-content: space-between; }
+      .nav { flex: 1 1 100%; justify-content: start; }
+      .segmented { max-width: 100%; flex-wrap: wrap; }
     }
   </style>
 </head>
@@ -303,8 +305,8 @@
         <span class="scope-pill" id="tenant-pill">accepted records only</span>
         <nav class="nav" aria-label="Industrial surfaces">
           <a href="/" aria-current="page">Fleet</a><a href="/evidence">Evidence</a><a href="/telemetry">Telemetry</a>
-          <a id="work-link" href="#" aria-disabled="true">Work</a><a id="design-link" href="#" aria-disabled="true">Design</a>
-          <a id="constitution-link" href="#" aria-disabled="true">Constitution</a><a id="knowledge-link" href="#" aria-disabled="true">Knowledge</a>
+          <a href="/context">Context</a><a href="/knowledge">Knowledge</a><a aria-disabled="true">Work</a>
+          <a aria-disabled="true">Design</a><a aria-disabled="true">Constitution</a><a aria-disabled="true">Administration</a>
         </nav>
       </div>
     </div>

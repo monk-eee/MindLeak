@@ -40,7 +40,7 @@ mod tests {
             "entry.finding_codes",
             "detailHref(\"evidence\", entry.evidence_id)",
             "detailHref(\"conformance\", entry.conformance_id)",
-            "id=\"work-link\" href=\"#filters\" aria-disabled=\"true\"",
+            "id=\"work-api\"",
         ] {
             assert!(
                 body.contains(required),
