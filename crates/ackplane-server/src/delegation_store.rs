@@ -29,6 +29,7 @@ mod model;
 mod read;
 mod replay;
 
+pub use ackplane_protocol::delegation::DelegatedAction;
 pub use model::{
     DelegationEvent, DelegationEventKind, DelegationEventPayload, DelegationGrantPayload,
     DelegationGrantRequest, DelegationOutcome, DelegationProjection, DelegationProjectionStatus,
