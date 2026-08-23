@@ -96,6 +96,8 @@ pub(crate) mod key {
     /// already recorded as applied in the shared development database by
     /// concurrent, then-not-yet-committed work at the time this was drafted.
     pub(crate) const INDUSTRIAL_DESIGN_WORK_REFERENCE: i64 = 31;
+    /// `migrations/0032_industrial_design_materializations.sql`
+    pub(crate) const INDUSTRIAL_DESIGN_MATERIALIZATIONS: i64 = 32;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and
