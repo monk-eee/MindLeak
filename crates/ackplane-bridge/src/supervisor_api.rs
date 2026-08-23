@@ -18,6 +18,8 @@ use axum::{
 };
 use serde::Serialize;
 
+mod dashboard;
+
 #[derive(Clone)]
 pub struct SupervisorApiState {
     supervisors: Arc<SupervisorStore>,
@@ -53,6 +55,7 @@ pub fn supervisor_routes(state: SupervisorApiState) -> Router {
             "/api/v1/repositories/:repository_id/supervisors/:supervisor_id/sessions/:session_id/lifecycle",
             get(session_lifecycle),
         )
+        .merge(dashboard::routes())
         .with_state(state)
 }
 
