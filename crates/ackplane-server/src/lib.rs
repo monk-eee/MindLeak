@@ -58,6 +58,7 @@ pub mod telemetry_signature;
 pub mod telemetry_store;
 #[cfg(test)]
 mod test_support;
+pub mod work_store;
 
 use thiserror::Error;
 

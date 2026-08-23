@@ -6,8 +6,10 @@ const EVIDENCE: &str = include_str!("../static/evidence.html");
 const FLEET: &str = include_str!("../static/index.html");
 const KNOWLEDGE: &str = include_str!("../static/knowledge.html");
 const TELEMETRY: &str = include_str!("../static/telemetry.html");
+const WORK: &str = include_str!("../static/work.html");
+const BOARD_DOCTOR: &str = include_str!("../static/board-doctor.html");
 
-const EXPECTED_NAVIGATION: &str = "<navclass=\"nav\"aria-label=\"Industrialsurfaces\"><ahref=\"/\">Fleet</a><ahref=\"/evidence\">Evidence</a><ahref=\"/telemetry\">Telemetry</a><ahref=\"/context\">Context</a><ahref=\"/knowledge\">Knowledge</a><aaria-disabled=\"true\">Work</a><aaria-disabled=\"true\">Design</a><aaria-disabled=\"true\">Constitution</a><aaria-disabled=\"true\">Administration</a></nav>";
+const EXPECTED_NAVIGATION: &str = "<navclass=\"nav\"aria-label=\"Industrialsurfaces\"><ahref=\"/\">Fleet</a><ahref=\"/evidence\">Evidence</a><ahref=\"/telemetry\">Telemetry</a><ahref=\"/context\">Context</a><ahref=\"/knowledge\">Knowledge</a><ahref=\"/work\">Work</a><ahref=\"/board-doctor\">BoardDoctor</a><aaria-disabled=\"true\">Design</a><aaria-disabled=\"true\">Constitution</a><aaria-disabled=\"true\">Administration</a></nav>";
 
 #[test]
 fn static_pages_share_one_capability_aware_navigation_contract() {
@@ -17,6 +19,8 @@ fn static_pages_share_one_capability_aware_navigation_contract() {
         ("Telemetry", TELEMETRY),
         ("Context", CONTEXT),
         ("Knowledge", KNOWLEDGE),
+        ("Work", WORK),
+        ("Board Doctor", BOARD_DOCTOR),
     ] {
         assert_eq!(
             normalize_navigation(source),
@@ -30,6 +34,7 @@ fn static_pages_share_one_capability_aware_navigation_contract() {
             "Context",
             "Knowledge",
             "Work",
+            "Board Doctor",
             "Design",
             "Constitution",
             "Administration",

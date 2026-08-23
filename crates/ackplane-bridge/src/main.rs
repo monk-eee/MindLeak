@@ -10,6 +10,7 @@ use ackplane_bridge::evidence::BridgeEvidenceStore;
 use ackplane_bridge::evidence_api::{evidence_routes, EvidenceApiState};
 use ackplane_bridge::knowledge_api::{knowledge_routes, KnowledgeApiState};
 use ackplane_bridge::supervisor_api::{supervisor_routes, SupervisorApiState};
+use ackplane_bridge::work_api::{work_routes, WorkApiState};
 use ackplane_bridge::BridgeConfig;
 use ackplane_server::claim_store::ClaimStore;
 use ackplane_server::constitution_store::ConstitutionStore;
@@ -21,6 +22,7 @@ use ackplane_server::projection::Projector;
 use ackplane_server::readiness::ReadinessStore;
 use ackplane_server::supervisor_store::SupervisorStore;
 use ackplane_server::telemetry_store::TelemetryStore;
+use ackplane_server::work_store::WorkStore;
 use axum::{
     response::{Html, IntoResponse},
     routing::{get, post},
@@ -174,6 +176,13 @@ async fn main() {
             return;
         }
     };
+    let work_store = match WorkStore::connect(config.database_url()).await {
+        Ok(work) => Arc::new(work),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane's Work domain: {error}");
+            return;
+        }
+    };
     let tenant_id: Arc<str> = Arc::from(config.development_tenant_token.clone());
     let evidence_api_state =
         EvidenceApiState::new(evidence_store, fleet_store.clone(), tenant_id.clone());
@@ -188,6 +197,7 @@ async fn main() {
         ContextApiState::new(context_packet_store, fleet_store.clone(), tenant_id.clone());
     let delegation_api_state =
         DelegationApiState::new(delegation_store, fleet_store.clone(), tenant_id.clone());
+    let work_api_state = WorkApiState::new(work_store, fleet_store.clone(), tenant_id.clone());
     let administration_api_state =
         AdministrationApiState::new(fleet_store.clone(), tenant_id.clone());
     let state = AppState {
@@ -252,7 +262,8 @@ async fn main() {
         .merge(context_routes(context_api_state))
         .merge(delegation_routes(delegation_api_state))
         .merge(administration_routes(administration_api_state))
-        .merge(supervisor_routes(supervisor_api_state));
+        .merge(supervisor_routes(supervisor_api_state))
+        .merge(work_routes(work_api_state));
     let listener = match tokio::net::TcpListener::bind(config.listen).await {
         Ok(listener) => listener,
         Err(error) => {

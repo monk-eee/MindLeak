@@ -6,11 +6,11 @@
 //!
 //! It applies no migration logic of its own: [`LedgerStore::connect`],
 //! [`Projector::connect`], [`EvidenceStore::connect`],
-//! [`DelegationStore::connect`], and [`SupervisorStore::connect`] each run
-//! their own idempotent `CREATE TABLE IF NOT EXISTS` migration as a side
-//! effect of connecting, so this binary's only job is to open all five
-//! connections in the Compose topology's `migrate` service and report
-//! success or failure.
+//! [`DelegationStore::connect`], [`SupervisorStore::connect`], and
+//! [`WorkStore::connect`] each run their own idempotent `CREATE TABLE IF NOT
+//! EXISTS` migration as a side effect of connecting, so this binary's only
+//! job is to open all six connections in the Compose topology's `migrate`
+//! service and report success or failure.
 
 use std::process::ExitCode;
 
@@ -19,6 +19,7 @@ use ackplane_server::evidence_store::EvidenceStore;
 use ackplane_server::ledger::LedgerStore;
 use ackplane_server::projection::Projector;
 use ackplane_server::supervisor_store::SupervisorStore;
+use ackplane_server::work_store::WorkStore;
 
 const DATABASE_URL_ENV: &str = "ACKPLANE_DATABASE_URL";
 
@@ -35,8 +36,8 @@ async fn main() -> ExitCode {
     }
 
     println!(
-        "ackplane-migrate: ledger, projection, evidence, delegation, and supervisor schemas are \
-         up to date"
+        "ackplane-migrate: ledger, projection, evidence, delegation, supervisor, and work schemas \
+         are up to date"
     );
     ExitCode::SUCCESS
 }
@@ -57,6 +58,9 @@ async fn migrate(database_url: &str) -> Result<(), String> {
     SupervisorStore::connect(database_url)
         .await
         .map_err(|error| format!("supervisor schema failed: {error}"))?;
+    WorkStore::connect(database_url)
+        .await
+        .map_err(|error| format!("work schema failed: {error}"))?;
     Ok(())
 }
 

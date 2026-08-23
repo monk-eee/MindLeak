@@ -77,6 +77,13 @@ pub(crate) mod key {
     pub(crate) const ENROLLMENT_STATUS_AUTHENTICATION_NONCES: i64 = 25;
     /// `migrations/0026_constitution_publication_history.sql`
     pub(crate) const CONSTITUTION_PUBLICATION_HISTORY: i64 = 26;
+    /// `migrations/0028_work.sql`. Key 27 is deliberately skipped: the shared
+    /// development database already has it recorded as applied by
+    /// concurrent, not-yet-committed work (observed against
+    /// `ackplane_schema_migrations` while investigating ADR-0120's own
+    /// migration-identity gap), so reusing it here would collide with a
+    /// migration this crate does not yet declare a file for.
+    pub(crate) const WORK: i64 = 28;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and
