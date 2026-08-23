@@ -92,6 +92,10 @@ pub(crate) mod key {
     pub(crate) const LIVE_FEED: i64 = 29;
     /// `migrations/0030_directives.sql`
     pub(crate) const DIRECTIVES: i64 = 30;
+    /// `migrations/0031_industrial_design_work_reference.sql`. Key 30 was
+    /// already recorded as applied in the shared development database by
+    /// concurrent, then-not-yet-committed work at the time this was drafted.
+    pub(crate) const INDUSTRIAL_DESIGN_WORK_REFERENCE: i64 = 31;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and
