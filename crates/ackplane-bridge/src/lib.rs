@@ -9,8 +9,10 @@ use std::{fmt, fs, io, net::SocketAddr, path::Path};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+pub mod context_api;
 pub mod evidence;
 pub mod evidence_api;
+pub mod knowledge_api;
 
 const DATABASE_URL_ENV: &str = "ACKPLANE_DATABASE_URL";
 const LISTEN_ENV: &str = "ACKPLANE_BRIDGE_LISTEN";
