@@ -1,132 +1,8 @@
-//! gRPC transport for Ackplane's node enrollment authority (ADR-0085).
+use super::*;
 
-use std::{sync::Arc, time::SystemTime};
-
-use ackplane_protocol::v1;
-use ed25519_dalek::VerifyingKey;
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-use tokio::sync::Mutex;
-use tonic::{Request, Response, Status};
-
-use crate::{
-    enrollment::{public_key_fingerprint, EnrollmentState},
-    enrollment_store::{
-        ActivationChallengeRequest, EnrollmentActivation, EnrollmentStatus, EnrollmentStore,
-        EnrollmentStoreError, EnrollmentSubmission, KeyRotation, KeyRotationOutcome,
-        KeyRotationRejection,
-    },
-};
-
-/// The gRPC enrollment authority. Database access is serialized because the
-/// store owns one PostgreSQL client and each authority operation is atomic.
-pub struct NodeEnrollmentService {
-    store: Arc<Mutex<EnrollmentStore>>,
-}
-
-impl NodeEnrollmentService {
-    pub fn new(store: EnrollmentStore) -> Self {
-        Self {
-            store: Arc::new(Mutex::new(store)),
-        }
-    }
-}
-
-#[tonic::async_trait]
-impl v1::node_enrollment_service_server::NodeEnrollmentService for NodeEnrollmentService {
-    async fn submit_enrollment_request(
-        &self,
-        request: Request<v1::EnrollmentRequest>,
-    ) -> Result<Response<v1::EnrollmentRequestStatus>, Status> {
-        let submission =
-            submission_from_wire(request.into_inner()).map_err(Status::invalid_argument)?;
-        let status = self
-            .store
-            .lock()
-            .await
-            .submit(&submission)
-            .await
-            .map_err(map_store_error)?;
-        Ok(Response::new(status_to_wire(status)))
-    }
-
-    async fn get_activation_challenge(
-        &self,
-        request: Request<v1::EnrollmentChallengeRequest>,
-    ) -> Result<Response<v1::EnrollmentChallenge>, Status> {
-        let binding = binding_from_challenge_request(request.into_inner())
-            .map_err(Status::invalid_argument)?;
-        let mut nonce = [0_u8; 32];
-        getrandom::getrandom(&mut nonce).map_err(|error| {
-            Status::internal(format!("could not generate activation nonce: {error}"))
-        })?;
-        let challenge = self
-            .store
-            .lock()
-            .await
-            .issue_challenge(&binding, &nonce, SystemTime::now())
-            .await
-            .map_err(map_store_error)?;
-        Ok(Response::new(v1::EnrollmentChallenge {
-            request_id: challenge.request.request_id,
-            tenant_id: challenge.request.tenant_id,
-            repository_id: challenge.request.repository_id,
-            proposed_node_id: challenge.request.proposed_node_id,
-            public_key_fingerprint: challenge.request.public_key_fingerprint,
-            nonce: challenge.nonce,
-            issued_at: rfc3339(challenge.issued_at).map_err(Status::internal)?,
-            expires_at: rfc3339(challenge.expires_at).map_err(Status::internal)?,
-            state: state_to_wire(challenge.state),
-        }))
-    }
-
-    async fn activate_enrollment(
-        &self,
-        request: Request<v1::EnrollmentActivationProof>,
-    ) -> Result<Response<v1::EnrollmentActivationResult>, Status> {
-        let proof = request.into_inner();
-        let activation = EnrollmentActivation {
-            request: binding_from_proof(&proof).map_err(Status::invalid_argument)?,
-            nonce: required_bytes(proof.nonce, "nonce").map_err(Status::invalid_argument)?,
-            signature: required_bytes(proof.signature, "signature")
-                .map_err(Status::invalid_argument)?,
-        };
-        let receipt_id = new_receipt_id().map_err(Status::internal)?;
-        let signing_key_id = new_signing_key_id().map_err(Status::internal)?;
-        let result = self
-            .store
-            .lock()
-            .await
-            .activate(&activation, &receipt_id, &signing_key_id, SystemTime::now())
-            .await
-            .map_err(map_store_error)?;
-        Ok(Response::new(v1::EnrollmentActivationResult {
-            request_id: result.request_id,
-            state: state_to_wire(result.state),
-            enrolment_receipt_id: result.enrollment_receipt_id,
-            rejection_reason: v1::EnrollmentRejectionReason::Unspecified as i32,
-            diagnostic: String::new(),
-            signing_key_id: result.signing_key_id,
-        }))
-    }
-
-    async fn rotate_node_key(
-        &self,
-        request: Request<v1::KeyRotationRequest>,
-    ) -> Result<Response<v1::KeyRotationResult>, Status> {
-        let rotation =
-            key_rotation_from_wire(request.into_inner()).map_err(Status::invalid_argument)?;
-        let result = self
-            .store
-            .lock()
-            .await
-            .rotate_key(&rotation, SystemTime::now())
-            .await
-            .map_err(map_store_error)?;
-        Ok(Response::new(key_rotation_result_to_wire(result)))
-    }
-}
-
-fn submission_from_wire(request: v1::EnrollmentRequest) -> Result<EnrollmentSubmission, String> {
+pub(super) fn submission_from_wire(
+    request: v1::EnrollmentRequest,
+) -> Result<EnrollmentSubmission, String> {
     let public_key = required_bytes(request.public_key, "public_key")?;
     let public_key_array = <&[u8; 32]>::try_from(public_key.as_slice())
         .map_err(|_| "public_key must be an Ed25519 public key".to_owned())?;
@@ -151,7 +27,7 @@ fn submission_from_wire(request: v1::EnrollmentRequest) -> Result<EnrollmentSubm
     })
 }
 
-fn binding_from_challenge_request(
+pub(super) fn binding_from_challenge_request(
     request: v1::EnrollmentChallengeRequest,
 ) -> Result<ActivationChallengeRequest, String> {
     Ok(ActivationChallengeRequest {
@@ -163,7 +39,7 @@ fn binding_from_challenge_request(
     })
 }
 
-fn binding_from_proof(
+pub(super) fn binding_from_proof(
     proof: &v1::EnrollmentActivationProof,
 ) -> Result<ActivationChallengeRequest, String> {
     Ok(ActivationChallengeRequest {
@@ -178,7 +54,9 @@ fn binding_from_proof(
     })
 }
 
-fn key_rotation_from_wire(request: v1::KeyRotationRequest) -> Result<KeyRotation, String> {
+pub(super) fn key_rotation_from_wire(
+    request: v1::KeyRotationRequest,
+) -> Result<KeyRotation, String> {
     Ok(KeyRotation {
         tenant_id: required(request.tenant_id, "tenant_id")?,
         repository_id: required(request.repository_id, "repository_id")?,
@@ -202,7 +80,48 @@ fn key_rotation_from_wire(request: v1::KeyRotationRequest) -> Result<KeyRotation
     })
 }
 
-fn key_rotation_result_to_wire(
+/// Extract and validate the structural fields of a `CheckEnrollmentStatus`
+/// request. `authentication` is deliberately left as `Option` rather than
+/// required here: an absent authentication is a verification failure, not a
+/// malformed request, and per ADR-0122 decision 5 it must collapse into the
+/// same unverified result every other verification failure does -- not a
+/// distinguishable `Status::invalid_argument`.
+pub(super) fn validated_status_request(
+    request: v1::EnrollmentStatusRequest,
+) -> Result<
+    (
+        String,
+        String,
+        String,
+        String,
+        Option<v1::EnrollmentStatusAuthentication>,
+    ),
+    String,
+> {
+    Ok((
+        required(request.tenant_id, "tenant_id")?,
+        required(request.repository_id, "repository_id")?,
+        required(request.candidate_node_id, "candidate_node_id")?,
+        required(
+            request.candidate_key_fingerprint,
+            "candidate_key_fingerprint",
+        )?,
+        request.authentication,
+    ))
+}
+
+/// The one shape every `CheckEnrollmentStatus` verification failure produces
+/// (ADR-0122 decision 5) -- an absent binding, a mismatched candidate, an
+/// invalid signature, a stale timestamp, and a replayed nonce are all
+/// indistinguishable from each other and from "this node has never enrolled".
+pub(super) fn unverified_enrollment_status() -> v1::EnrollmentStatusResult {
+    v1::EnrollmentStatusResult {
+        verified: false,
+        state: v1::EnrollmentState::Unspecified as i32,
+    }
+}
+
+pub(super) fn key_rotation_result_to_wire(
     result: crate::enrollment_store::KeyRotationResult,
 ) -> v1::KeyRotationResult {
     let (outcome, rejection_reason, diagnostic) = match result.outcome {
@@ -255,7 +174,7 @@ fn key_rotation_rejection_diagnostic(reason: KeyRotationRejection) -> &'static s
     }
 }
 
-fn required(value: String, field: &str) -> Result<String, String> {
+pub(super) fn required(value: String, field: &str) -> Result<String, String> {
     if value.trim().is_empty() {
         Err(format!("{field} is required"))
     } else {
@@ -263,7 +182,7 @@ fn required(value: String, field: &str) -> Result<String, String> {
     }
 }
 
-fn required_bytes(value: Vec<u8>, field: &str) -> Result<Vec<u8>, String> {
+pub(super) fn required_bytes(value: Vec<u8>, field: &str) -> Result<Vec<u8>, String> {
     if value.is_empty() {
         Err(format!("{field} is required"))
     } else {
@@ -271,7 +190,7 @@ fn required_bytes(value: Vec<u8>, field: &str) -> Result<Vec<u8>, String> {
     }
 }
 
-fn state_to_wire(state: EnrollmentState) -> i32 {
+pub(super) fn state_to_wire(state: EnrollmentState) -> i32 {
     match state {
         EnrollmentState::Pending => v1::EnrollmentState::Pending as i32,
         EnrollmentState::Approved => v1::EnrollmentState::Approved as i32,
@@ -283,7 +202,7 @@ fn state_to_wire(state: EnrollmentState) -> i32 {
     }
 }
 
-fn status_to_wire(status: EnrollmentStatus) -> v1::EnrollmentRequestStatus {
+pub(super) fn status_to_wire(status: EnrollmentStatus) -> v1::EnrollmentRequestStatus {
     v1::EnrollmentRequestStatus {
         request_id: status.request_id,
         state: state_to_wire(status.state),
@@ -292,13 +211,13 @@ fn status_to_wire(status: EnrollmentStatus) -> v1::EnrollmentRequestStatus {
     }
 }
 
-fn rfc3339(timestamp: SystemTime) -> Result<String, String> {
+pub(super) fn rfc3339(timestamp: SystemTime) -> Result<String, String> {
     OffsetDateTime::from(timestamp)
         .format(&Rfc3339)
         .map_err(|error| format!("could not format timestamp: {error}"))
 }
 
-fn new_receipt_id() -> Result<String, String> {
+pub(super) fn new_receipt_id() -> Result<String, String> {
     let mut bytes = [0_u8; 16];
     getrandom::getrandom(&mut bytes)
         .map_err(|error| format!("could not generate enrollment receipt id: {error}"))?;
@@ -313,7 +232,7 @@ fn new_receipt_id() -> Result<String, String> {
 /// names one binding of a key to a node for one lifetime, so re-enrolling the
 /// same key material must produce a different id rather than collide with the
 /// history of the earlier binding.
-fn new_signing_key_id() -> Result<String, String> {
+pub(super) fn new_signing_key_id() -> Result<String, String> {
     let mut bytes = [0_u8; 16];
     getrandom::getrandom(&mut bytes)
         .map_err(|error| format!("could not generate signing key id: {error}"))?;
@@ -324,7 +243,7 @@ fn new_signing_key_id() -> Result<String, String> {
     Ok(format!("signing-key-{encoded}"))
 }
 
-fn map_store_error(error: EnrollmentStoreError) -> Status {
+pub(super) fn map_store_error(error: EnrollmentStoreError) -> Status {
     match error {
         EnrollmentStoreError::RequestConflict { .. } => Status::already_exists(error.to_string()),
         EnrollmentStoreError::PublicKeyFingerprintMismatch { .. } => {
