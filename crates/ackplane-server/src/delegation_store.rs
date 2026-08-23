@@ -26,6 +26,7 @@ pub(super) const EVENT_COLUMNS: &str = "delegation_id, stream_position, event_ki
     expected_prior_version, resulting_version, idempotency_key, payload_digest, schema_version, recorded_at";
 
 mod model;
+mod read;
 mod replay;
 
 pub use model::{
@@ -36,8 +37,7 @@ pub use model::{
 
 use model::{
     event_schema_version, grant_payload_digest, normalize_timestamp, projection_at_event,
-    revocation_payload_digest, row_to_event, row_to_projection, validate_grant,
-    validate_revocation,
+    revocation_payload_digest, row_to_event, validate_grant, validate_revocation,
 };
 use replay::{
     advance_stream, grant_event_from_transaction, idempotent_outcome, lock_stream,
@@ -313,45 +313,6 @@ impl DelegationStore {
             event,
             idempotent_replay: false,
         })
-    }
-
-    pub async fn get(
-        &self,
-        tenant_id: &str,
-        repository_id: &str,
-        delegation_id: &str,
-    ) -> Result<Option<DelegationProjection>, DelegationStoreError> {
-        self.client
-            .query_opt(
-                &format!(
-                    "SELECT {PROJECTION_COLUMNS} FROM delegation_projections \
-                     WHERE tenant_id = $1 AND repository_id = $2 AND delegation_id = $3"
-                ),
-                &[&tenant_id, &repository_id, &delegation_id],
-            )
-            .await?
-            .map(|row| row_to_projection(&row))
-            .transpose()
-    }
-
-    pub async fn history(
-        &self,
-        tenant_id: &str,
-        repository_id: &str,
-        delegation_id: &str,
-    ) -> Result<Vec<DelegationEvent>, DelegationStoreError> {
-        let rows = self
-            .client
-            .query(
-                &format!(
-                    "SELECT {EVENT_COLUMNS} FROM delegation_events \
-                     WHERE tenant_id = $1 AND repository_id = $2 AND delegation_id = $3 \
-                     ORDER BY stream_position ASC"
-                ),
-                &[&tenant_id, &repository_id, &delegation_id],
-            )
-            .await?;
-        rows.iter().map(row_to_event).collect()
     }
 }
 
