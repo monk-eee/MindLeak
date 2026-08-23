@@ -1,0 +1,1 @@
+- **Bridge static pages now share a capability-aware navigation header.** Fleet, Evidence, Telemetry, Context, and Knowledge are real destinations; Work, Design, Constitution, and Administration remain visible but explicitly unavailable until their authorized workflows ship.
