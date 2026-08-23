@@ -32,6 +32,7 @@ impl DelegationStore {
         &self,
         tenant_id: &str,
         repository_id: &str,
+        limit: i64,
     ) -> Result<Vec<DelegationProjection>, DelegationStoreError> {
         let rows = self
             .client
@@ -39,9 +40,10 @@ impl DelegationStore {
                 &format!(
                     "SELECT {PROJECTION_COLUMNS} FROM delegation_projections \
                      WHERE tenant_id = $1 AND repository_id = $2 \
-                     ORDER BY source_event_position ASC, delegation_id ASC"
+                     ORDER BY source_event_position ASC, delegation_id ASC \
+                     LIMIT $3"
                 ),
-                &[&tenant_id, &repository_id],
+                &[&tenant_id, &repository_id, &limit],
             )
             .await?;
         rows.iter().map(row_to_projection).collect()

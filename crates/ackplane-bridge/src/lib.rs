@@ -11,6 +11,7 @@ use thiserror::Error;
 
 pub mod administration;
 pub mod context_api;
+pub mod delegation_api;
 pub mod evidence;
 pub mod evidence_api;
 pub mod knowledge_api;
