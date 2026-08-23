@@ -26,7 +26,7 @@
     .empty-state p:last-child { margin:0; font-size:.8rem; }
     .hidden { display:none !important; }
     @media (max-width:820px) { .toolbar { grid-template-columns:1fr 1fr; } .toolbar label:last-child { grid-column:1 / -1; } }
-    @media (max-width:600px) { .shell { width:min(calc(100% - 24px),1160px); } .masthead { align-items:start; padding:14px 0; } .nav { justify-content:start; } table { min-width:0; } th,td { padding:9px 8px; } th:nth-child(4),td:nth-child(4),th:nth-child(6),td:nth-child(6) { display:none; } }
+    @media (max-width:600px) { .shell { width:min(calc(100% - 24px),1160px); } .masthead { align-items:start; padding:14px 0; } .nav { justify-content:start; } table { min-width:0; } th,td { padding:9px 8px; } th:nth-child(4),td:nth-child(4),th:nth-child(7),td:nth-child(7) { display:none; } }
   </style>
 </head>
 <body>
@@ -51,7 +51,7 @@
       <div class="panel-head"><h3>Active claims</h3><span id="agents-count" class="count"></span></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Repository</th><th>Agent</th><th>Task</th><th>Branch</th><th>Lease</th><th>Scope</th></tr></thead>
+          <thead><tr><th>Repository</th><th>Agent</th><th>Task</th><th>Branch</th><th>Started</th><th>Lease</th><th>Scope</th></tr></thead>
           <tbody id="agents-rows"></tbody>
         </table>
       </div>
@@ -181,11 +181,15 @@
 
     function agentRow(item) {
       const leaseSeconds = item.lease_expires_at_seconds ?? null;
+      const startedSeconds = item.claim_started_at_seconds ?? null;
+      const lapses = item.claim_lapses ?? 0;
+      const startedLabel = lapses > 0 ? `${relativeTime(startedSeconds)} \u00b7 recovered ${lapses}\u00d7` : relativeTime(startedSeconds);
       return `<tr>
         <td>${escapeHtml(item.repository_id)}</td>
         <td>${escapeHtml(item.owner_id)}</td>
         <td>${escapeHtml(item.task_id)}</td>
         <td>${item.branch ? escapeHtml(item.branch) : "No branch"}</td>
+        <td title="${escapeHtml(absoluteTime(startedSeconds))}">${escapeHtml(startedLabel)}</td>
         <td title="${escapeHtml(absoluteTime(leaseSeconds))}">${escapeHtml(relativeTime(leaseSeconds))}</td>
         <td class="scope-cell">${scopeCell(item)}</td>
       </tr>`;
@@ -193,7 +197,7 @@
 
     function renderAgentRows(items) {
       if (items.length === 0) {
-        rows.innerHTML = '<tr><td colspan="6"></td></tr>';
+        rows.innerHTML = '<tr><td colspan="7"></td></tr>';
         rows.querySelector("td").appendChild(
           emptyState("Active claims will appear here as agents pick up work.", "No active claims match these filters")
         );

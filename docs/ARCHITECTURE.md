@@ -461,9 +461,31 @@ transition is a separate `record_decision` call appending one more history
 row and moving the design's own `lifecycle_state` to match, in one
 transaction — nothing in this store enforces which transitions are legal or
 who may request one; ADR-0121 decision 3 defers that authorization to a
-future typed command. Nothing here yet exposes an RPC/HTTP route,
-materialization plans/revisions (decision 4), or a Bridge Design Board
-(decision 7) — those are separate follow-on slices.
+future typed command. Nothing here yet exposes an RPC/HTTP route or a
+Bridge Design Board (decision 7) — those are separate follow-on slices.
+
+`MaterializationStore` (`design_materialization_store.rs`, a separate file
+from `design_store.rs` to stay under the module-length ratchet) is ADR-0121
+decision 4: an append-only, idempotency-key-scoped revision history of
+materialization decisions against a design, distinct from the design's own
+lifecycle-transition history above. A revision records its actor, a
+caller-supplied `idempotency_key`, optional rationale, a REQUIRED
+constitution_version_id reference (which Constitution publication the
+materialization was informed by), bounded optional Lodestar `goal_ids`
+(plain strings -- Lodestar goals live in a different plane, so these are not
+FK-checked), and a payload digest. Work-task references go through a
+junction table (`industrial_design_materialization_work_tasks`) rather than
+a bare array column, so each one is a real foreign key like every other
+cross-domain reference in this crate. `record_materialization` mirrors
+`evidence_store`'s own established idempotency contract exactly: an
+identical resubmission (same `idempotency_key`, same every other field)
+returns the original revision unchanged; the same `idempotency_key`
+resubmitted with any different field is refused as a conflict. A genuinely
+new submission (a fresh `idempotency_key`) always gets the next
+`revision_number` for that design, even if its content happens to match an
+earlier revision -- revisions are never deduplicated by content, only by
+idempotency key. Nothing here yet exposes an RPC/HTTP route or a Bridge
+Design Board (decision 7).
 
 `TelemetryService` (`telemetry_store.rs`/`telemetry_service.rs`) is Ackplane's
 typed operational-telemetry domain (ADR-0105 decision 6): `RecordTelemetry`
