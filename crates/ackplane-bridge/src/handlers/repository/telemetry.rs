@@ -9,7 +9,9 @@ use axum::{
 };
 use serde::Serialize;
 
-use ackplane_server::telemetry_store::{ReadTelemetryRequest, TelemetryMetric};
+use ackplane_server::telemetry_store::{
+    ReadTelemetryRequest, TelemetryMetric, TelemetryPoint, TelemetrySeries, TelemetrySnapshot,
+};
 
 use super::enrolled_or_not_found;
 use crate::{unix_seconds, AppState};
@@ -17,6 +19,7 @@ use crate::{unix_seconds, AppState};
 #[derive(Serialize)]
 pub struct TelemetryResponse {
     metrics: Vec<TelemetryMetricSummary>,
+    series: Vec<TelemetrySeriesSummary>,
 }
 
 /// Current health per (kind, name) -- derived from the most recent
@@ -51,15 +54,71 @@ impl From<TelemetryMetric> for TelemetryMetricSummary {
     }
 }
 
+#[derive(Serialize)]
+struct TelemetrySeriesSummary {
+    kind: i16,
+    name: String,
+    points: Vec<TelemetryPointSummary>,
+}
+
+impl From<TelemetrySeries> for TelemetrySeriesSummary {
+    fn from(series: TelemetrySeries) -> Self {
+        Self {
+            kind: series.kind,
+            name: series.name,
+            points: series
+                .points
+                .into_iter()
+                .map(TelemetryPointSummary::from)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct TelemetryPointSummary {
+    bucket_start_at_seconds: Option<u64>,
+    calls: i64,
+    errors: i64,
+    average_duration_ms: f64,
+}
+
+impl From<TelemetryPoint> for TelemetryPointSummary {
+    fn from(point: TelemetryPoint) -> Self {
+        Self {
+            bucket_start_at_seconds: unix_seconds(point.bucket_start_at),
+            calls: point.calls,
+            errors: point.errors,
+            average_duration_ms: point.average_duration_ms,
+        }
+    }
+}
+
+impl From<TelemetrySnapshot> for TelemetryResponse {
+    fn from(snapshot: TelemetrySnapshot) -> Self {
+        Self {
+            metrics: snapshot
+                .metrics
+                .into_iter()
+                .map(TelemetryMetricSummary::from)
+                .collect(),
+            series: snapshot
+                .series
+                .into_iter()
+                .map(TelemetrySeriesSummary::from)
+                .collect(),
+        }
+    }
+}
+
 pub async fn repository_telemetry(
     State(state): State<AppState>,
     Path(repository_id): Path<String>,
 ) -> Result<Json<TelemetryResponse>, StatusCode> {
     enrolled_or_not_found(&state, &repository_id, "telemetry").await?;
 
-    // Zero/None select every kind/name (the same convention TelemetryService
-    // documents on the wire); series points are not rendered by this route
-    // yet -- the sparkline dashboard is task:60ba293846ec's own scope.
+    // Zero/None select every kind/name. Bucket history remains bounded by the
+    // server so the browser visualizes accepted telemetry without deriving it.
     match state
         .telemetry
         .read(ReadTelemetryRequest {
@@ -67,18 +126,12 @@ pub async fn repository_telemetry(
             repository_id,
             kind: 0,
             name: None,
-            bucket_seconds: 3600,
-            max_points: 1,
+            bucket_seconds: 300,
+            max_points: 24,
         })
         .await
     {
-        Ok(snapshot) => Ok(Json(TelemetryResponse {
-            metrics: snapshot
-                .metrics
-                .into_iter()
-                .map(TelemetryMetricSummary::from)
-                .collect(),
-        })),
+        Ok(snapshot) => Ok(Json(snapshot.into())),
         Err(error) => {
             tracing::error!(%error, "Bridge repository telemetry query failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -94,6 +147,11 @@ pub async fn telemetry_page() -> axum::response::Html<&'static str> {
 
 #[cfg(test)]
 mod page_tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use ackplane_server::telemetry_store::TelemetrySnapshot;
+    use serde_json::json;
+
     use super::*;
 
     #[tokio::test]
@@ -109,6 +167,10 @@ mod page_tests {
             "average_duration_ms",
             "last_success_at_seconds",
             "last_error_at_seconds",
+            "bucket_start_at_seconds",
+            "drawSparkline",
+            "startVisibleRefresh(load, REFRESH_INTERVAL_MS)",
+            "document.visibilityState === \"visible\"",
             "KIND_LABELS",
             "aria-current=\"page\"",
         ] {
@@ -118,4 +180,68 @@ mod page_tests {
             );
         }
     }
+
+    #[test]
+    fn response_projects_server_health_and_bounded_series_without_derivation() {
+        let first_bucket = UNIX_EPOCH + Duration::from_secs(300);
+        let second_bucket = UNIX_EPOCH + Duration::from_secs(600);
+        let response = TelemetryResponse::from(TelemetrySnapshot {
+            metrics: vec![TelemetryMetric {
+                kind: 1,
+                name: "run_tests".to_string(),
+                calls: 3,
+                errors: 1,
+                currently_failing: false,
+                last_success_at: Some(second_bucket),
+                last_error_at: Some(first_bucket),
+                average_duration_ms: 42.5,
+            }],
+            series: vec![TelemetrySeries {
+                kind: 1,
+                name: "run_tests".to_string(),
+                points: vec![
+                    TelemetryPoint {
+                        bucket_start_at: first_bucket,
+                        calls: 1,
+                        errors: 1,
+                        average_duration_ms: 60.0,
+                    },
+                    TelemetryPoint {
+                        bucket_start_at: second_bucket,
+                        calls: 2,
+                        errors: 0,
+                        average_duration_ms: 33.75,
+                    },
+                ],
+            }],
+            observed_at: second_bucket,
+        });
+
+        assert_eq!(
+            serde_json::to_value(response).expect("telemetry response serializes"),
+            json!({
+                "metrics": [{
+                    "kind": 1,
+                    "name": "run_tests",
+                    "calls": 3,
+                    "errors": 1,
+                    "currently_failing": false,
+                    "last_success_at_seconds": 600,
+                    "last_error_at_seconds": 300,
+                    "average_duration_ms": 42.5,
+                }],
+                "series": [{
+                    "kind": 1,
+                    "name": "run_tests",
+                    "points": [
+                        {"bucket_start_at_seconds": 300, "calls": 1, "errors": 1, "average_duration_ms": 60.0},
+                        {"bucket_start_at_seconds": 600, "calls": 2, "errors": 0, "average_duration_ms": 33.75},
+                    ],
+                }],
+            })
+        );
+    }
 }
+
+#[cfg(test)]
+mod tests;
