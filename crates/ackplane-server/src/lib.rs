@@ -35,6 +35,7 @@ pub mod context_packet_store;
 pub mod delegation_store;
 pub mod enrollment;
 pub mod enrollment_service;
+pub mod enrollment_status_signature;
 pub mod enrollment_store;
 pub mod envelope_signature;
 pub mod evidence_service;

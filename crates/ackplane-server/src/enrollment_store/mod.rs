@@ -15,6 +15,8 @@ use crate::signing_keys::{self, KeyResolution, SigningKeyRecord};
 
 const MIGRATION: &str = include_str!("../../migrations/0003_enrollment.sql");
 const SIGNING_KEY_MIGRATION: &str = include_str!("../../migrations/0004_signing_keys.sql");
+const STATUS_AUTHENTICATION_NONCES_MIGRATION: &str =
+    include_str!("../../migrations/0025_enrollment_status_authentication_nonces.sql");
 pub const ACTIVATION_CHALLENGE_LIFETIME: Duration = Duration::from_secs(300);
 /// The most a retiring key may still settle in-flight records for after its
 /// successor takes over (ADR-0085 decision 7's "bounded overlap").
@@ -88,6 +90,15 @@ pub struct EnrollmentActivationResult {
     pub state: EnrollmentState,
     pub enrollment_receipt_id: String,
     pub signing_key_id: String,
+}
+
+/// The answer to "is this exact (node, key) binding enrolled right now", found
+/// by whichever of `signing_keys` or `enrollment_requests` actually has a row
+/// for it (ADR-0122).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnrollmentStatusLookup {
+    pub public_key: Vec<u8>,
+    pub state: EnrollmentState,
 }
 
 /// A node's request to replace its current signing key with a successor it
@@ -198,12 +209,19 @@ impl EnrollmentStore {
             SIGNING_KEY_MIGRATION,
         )
         .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::ENROLLMENT_STATUS_AUTHENTICATION_NONCES,
+            STATUS_AUTHENTICATION_NONCES_MIGRATION,
+        )
+        .await?;
         Ok(Self { client })
     }
 }
 
 mod activation;
 mod rotation;
+mod status_check;
 mod submission;
 
 fn rejected(rotation: &KeyRotation, reason: KeyRotationRejection) -> KeyRotationResult {
