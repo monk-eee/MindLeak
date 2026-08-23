@@ -4,21 +4,29 @@
 //! `ackplane` service can start only after migrations have finished rather
 //! than racing them at boot.
 //!
-//! It applies no migration logic of its own: [`LedgerStore::connect`],
-//! [`Projector::connect`], [`EvidenceStore::connect`],
-//! [`DelegationStore::connect`], [`SupervisorStore::connect`], and
-//! [`WorkStore::connect`] each run their own idempotent `CREATE TABLE IF NOT
-//! EXISTS` migration as a side effect of connecting, so this binary's only
-//! job is to open all six connections in the Compose topology's `migrate`
-//! service and report success or failure.
+//! It applies no migration logic of its own: each named store's `connect`
+//! runs its own idempotent `CREATE TABLE IF NOT EXISTS` migration as a side
+//! effect of connecting, so this binary's only job is to open every
+//! connection `main.rs` opens at boot -- plus `DelegationStore::connect` and
+//! `WorkStore::connect`, which nothing in `main.rs` currently wires in but
+//! the Bridge and other direct consumers still depend on existing ahead of
+//! them -- in the Compose topology's `migrate` service, and report success
+//! or failure. Keep this list in lockstep with `main.rs`'s own store list: a
+//! store this binary does not cover is a migration race this binary cannot
+//! be trusted to have prevented.
 
 use std::process::ExitCode;
 
+use ackplane_server::claim_store::ClaimStore;
+use ackplane_server::constitution_store::ConstitutionStore;
 use ackplane_server::delegation_store::DelegationStore;
+use ackplane_server::enrollment_store::EnrollmentStore;
 use ackplane_server::evidence_store::EvidenceStore;
+use ackplane_server::knowledge_store::KnowledgeStore;
 use ackplane_server::ledger::LedgerStore;
 use ackplane_server::projection::Projector;
 use ackplane_server::supervisor_store::SupervisorStore;
+use ackplane_server::telemetry_store::TelemetryStore;
 use ackplane_server::work_store::WorkStore;
 
 const DATABASE_URL_ENV: &str = "ACKPLANE_DATABASE_URL";
@@ -36,8 +44,8 @@ async fn main() -> ExitCode {
     }
 
     println!(
-        "ackplane-migrate: ledger, projection, evidence, delegation, supervisor, and work schemas \
-         are up to date"
+        "ackplane-migrate: ledger, enrollment, claim, projection, knowledge, evidence, \
+         constitution, telemetry, delegation, supervisor, and work schemas are up to date"
     );
     ExitCode::SUCCESS
 }
@@ -46,12 +54,27 @@ async fn migrate(database_url: &str) -> Result<(), String> {
     LedgerStore::connect(database_url)
         .await
         .map_err(|error| format!("ledger schema failed: {error}"))?;
+    EnrollmentStore::connect(database_url)
+        .await
+        .map_err(|error| format!("enrollment schema failed: {error}"))?;
+    ClaimStore::connect(database_url)
+        .await
+        .map_err(|error| format!("claim schema failed: {error}"))?;
     Projector::connect(database_url)
         .await
         .map_err(|error| format!("projection schema failed: {error}"))?;
+    KnowledgeStore::connect(database_url)
+        .await
+        .map_err(|error| format!("knowledge schema failed: {error}"))?;
     EvidenceStore::connect(database_url)
         .await
         .map_err(|error| format!("evidence schema failed: {error}"))?;
+    ConstitutionStore::connect(database_url)
+        .await
+        .map_err(|error| format!("constitution schema failed: {error}"))?;
+    TelemetryStore::connect(database_url)
+        .await
+        .map_err(|error| format!("telemetry schema failed: {error}"))?;
     DelegationStore::connect(database_url)
         .await
         .map_err(|error| format!("delegation schema failed: {error}"))?;
@@ -69,6 +92,33 @@ mod tests {
     use tokio_postgres::NoTls;
 
     use super::*;
+
+    const SOURCE: &str = include_str!("migrate.rs");
+
+    // Regression: this binary's own store list drifted from main.rs's (5 of
+    // 9 boot-time stores covered), so a fresh deployment could start any of
+    // the other four services racing their own first migration. A source
+    // scan, not a DB-gated test, so it fails fast and locally the moment a
+    // future store is added to main.rs but not mirrored here.
+    #[test]
+    fn migrate_covers_every_store_main_rs_connects_at_boot() {
+        for store in [
+            "LedgerStore",
+            "EnrollmentStore",
+            "ClaimStore",
+            "Projector",
+            "KnowledgeStore",
+            "EvidenceStore",
+            "ConstitutionStore",
+            "TelemetryStore",
+            "SupervisorStore",
+        ] {
+            assert!(
+                SOURCE.contains(&format!("{store}::connect")),
+                "migrate() must call {store}::connect -- main.rs connects it at boot"
+            );
+        }
+    }
 
     // Regression: Compose used to migrate only the ledger and projection, so
     // a fresh deployment could start EvidenceService before its tables existed.
