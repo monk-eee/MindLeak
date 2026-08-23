@@ -134,6 +134,11 @@
       padding: 6px 13px;
       white-space: nowrap;
     }
+    .masthead-right { display: flex; align-items: center; gap: 14px; }
+    .nav { display: flex; flex-wrap: wrap; justify-content: end; gap: 5px; }
+    .nav a { text-decoration: none; color: var(--ml-ink-muted); font-size: 0.78rem; font-weight: 650; padding: 7px 9px; border-radius: 6px; }
+    .nav a:hover, .nav a[aria-current="page"] { color: var(--ml-ink); background: var(--ml-surface-soft); }
+    .nav a[aria-disabled="true"] { cursor: default; opacity: .5; pointer-events: none; }
     main { padding: 34px 0 56px; }
     .kicker {
       margin: 0 0 4px;
@@ -276,6 +281,12 @@
       .stat-group { grid-area: stats; display: flex; gap: 18px; flex-wrap: wrap; }
       .toolbar { flex-direction: column; align-items: flex-start; gap: 10px; }
     }
+    @media (max-width: 600px) {
+      .masthead { align-items: start; flex-wrap: wrap; padding: 14px 0; }
+      .masthead-right { width: 100%; min-width: 0; flex-wrap: wrap; justify-content: space-between; }
+      .nav { flex: 1 1 100%; justify-content: start; }
+      .segmented { max-width: 100%; flex-wrap: wrap; }
+    }
   </style>
 </head>
 <body>
@@ -290,7 +301,14 @@
           <p class="brand-sub"><span class="pulse" aria-hidden="true"></span> Live assurance view</p>
         </div>
       </div>
-      <span class="scope-pill" id="tenant-pill">accepted records only</span>
+      <div class="masthead-right">
+        <span class="scope-pill" id="tenant-pill">accepted records only</span>
+        <nav class="nav" aria-label="Industrial surfaces">
+          <a href="/" aria-current="page">Fleet</a><a href="/evidence">Evidence</a><a href="/telemetry">Telemetry</a>
+          <a href="/context">Context</a><a href="/knowledge">Knowledge</a><a aria-disabled="true">Work</a>
+          <a aria-disabled="true">Design</a><a aria-disabled="true">Constitution</a><a aria-disabled="true">Administration</a>
+        </nav>
+      </div>
     </div>
   </header>
   <main>
@@ -368,6 +386,32 @@
     </div>
   </main>
   <script>
+    // Same cadence a manual reload would use; only ticks while the tab is
+    // visible so a backgrounded dashboard does not keep polling.
+    const REFRESH_INTERVAL_MS = 15000;
+
+    function startVisibleRefresh(load, intervalMs) {
+      let timer = null;
+      function start() {
+        if (timer !== null) return;
+        timer = setInterval(load, intervalMs);
+      }
+      function stop() {
+        if (timer === null) return;
+        clearInterval(timer);
+        timer = null;
+      }
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") {
+          load();
+          start();
+        } else {
+          stop();
+        }
+      });
+      if (document.visibilityState === "visible") start();
+    }
+
     const status = document.getElementById("status");
     const fleet = document.getElementById("fleet");
     const searchInput = document.getElementById("fleet-search");
@@ -473,8 +517,9 @@
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/stranded-claims`).then((r) => (r.ok ? r.json() : null)),
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/signing-keys`).then((r) => (r.ok ? r.json() : null)),
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/knowledge`).then((r) => (r.ok ? r.json() : null)),
+        fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/graph`).then((r) => (r.ok ? r.json() : null)),
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/constitution`).then((r) => (r.ok ? r.json() : null)),
-      ]).then(([detail, timeline, claims, strandedClaims, signingKeys, knowledge, constitution]) => ({ detail, timeline, claims, strandedClaims, signingKeys, knowledge, constitution }));
+      ]).then(([detail, timeline, claims, strandedClaims, signingKeys, knowledge, graph, constitution]) => ({ detail, timeline, claims, strandedClaims, signingKeys, knowledge, graph, constitution }));
       detailCache.set(repositoryId, promise);
       return promise;
     }
@@ -492,7 +537,7 @@
 
     function renderDetail(container, repositoryId) {
       container.innerHTML = '<div class="skeleton"></div>';
-      loadRepositoryDetail(repositoryId).then(({ detail, timeline, claims, strandedClaims, signingKeys, knowledge, constitution }) => {
+      loadRepositoryDetail(repositoryId).then(({ detail, timeline, claims, strandedClaims, signingKeys, knowledge, graph, constitution }) => {
         if (!detail) {
           container.innerHTML = '<p class="timeline-empty">Detail is unavailable for this repository.</p>';
           return;
@@ -586,6 +631,30 @@
                     <span class="when" title="${absoluteTime(event.occurred_at_seconds)}">${relativeTime(event.occurred_at_seconds)}</span>
                   </li>`).join("")}</ul>`
               : '<p class="timeline-empty">No accepted records yet.</p>'}
+          </div>
+          <div>
+            <p class="timeline-title">Context graph</p>
+            ${graph === null
+              ? '<p class="timeline-empty">The Context Graph is unavailable.</p>'
+              : graph.nodes.length
+                ? `
+                  <p class="recover-hint">${graph.nodes.length} node${graph.nodes.length === 1 ? "" : "s"}, ${graph.edges.length} edge${graph.edges.length === 1 ? "" : "s"}${graph.projected_at_seconds ? ` &middot; projection ${escapeHtml(relativeTime(graph.projected_at_seconds))}` : ""}</p>
+                  <ul class="timeline work-list">${graph.nodes.map((node) => `
+                    <li>
+                      <span class="payload">${escapeHtml(node.label)}</span>
+                      <span class="producer">${escapeHtml(node.node_type)}</span>
+                      <span class="branch">depth ${node.depth}</span>
+                    </li>`).join("")}</ul>
+                  ${graph.edges.length
+                    ? `<ul class="timeline">${graph.edges.map((edge) => `
+                        <li>
+                          <span class="payload">${escapeHtml(edge.source_id)} &rarr; ${escapeHtml(edge.target_id)}</span>
+                          <span class="producer">${escapeHtml(edge.relation)}</span>
+                          <span class="when">weight ${edge.effective_weight.toFixed(2)}</span>
+                        </li>`).join("")}</ul>`
+                    : ""}
+                `
+                : '<p class="timeline-empty">Nothing projected for this repository yet.</p>'}
           </div>
           <div>
             <p class="timeline-title">Knowledge</p>
@@ -768,6 +837,7 @@
     }
     renderRows();
     loadFleet();
+    startVisibleRefresh(loadFleet, REFRESH_INTERVAL_MS);
 
     const agentsStatus = document.getElementById("agents-status");
     const agents = document.getElementById("agents");
@@ -906,6 +976,7 @@
     }
     renderAgentRows();
     loadAgents();
+    startVisibleRefresh(loadAgents, REFRESH_INTERVAL_MS);
 
     const readinessStatus = document.getElementById("readiness-status");
     const readiness = document.getElementById("readiness");
@@ -1004,6 +1075,7 @@
     }
     renderReadinessRows();
     loadReadiness();
+    startVisibleRefresh(loadReadiness, REFRESH_INTERVAL_MS);
   </script>
 </body>
 </html>

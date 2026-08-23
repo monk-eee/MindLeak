@@ -89,6 +89,20 @@ jobs:
             cargo test -p ackplane-client a_stored_seed_round_trips_through_the_real_credential_facility -- --nocapture
           fi
 
+  credential-facility-macos:
+    name: Credential facility (macOS Keychain)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Require a real Keychain round trip
+        env:
+          MINDLEAK_REQUIRE_CREDENTIAL_FACILITY: "1"
+        run: cargo test -p ackplane-client a_stored_seed_round_trips_through_the_real_credential_facility -- --nocapture
+
   # ADR-0088 keeps the repository-local planes usable without Ackplane's
   # container and PostgreSQL stack. Dependencies are installed before this
   # proof; the commands under test then have no package registry escape hatch.

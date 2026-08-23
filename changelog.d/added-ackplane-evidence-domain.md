@@ -1,0 +1,1 @@
+- **Added:** Ackplane now exposes authenticated EvidenceService record and bounded list operations for task-bound evidence references, SHA-256 digests, and enrolled-node provenance without transmitting raw evidence bodies.

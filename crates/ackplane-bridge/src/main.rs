@@ -1,34 +1,40 @@
 use std::{
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
+use ackplane_bridge::administration::{administration_routes, AdministrationApiState};
+use ackplane_bridge::context_api::{context_routes, ContextApiState};
+use ackplane_bridge::delegation_api::{delegation_routes, DelegationApiState};
+use ackplane_bridge::evidence::BridgeEvidenceStore;
+use ackplane_bridge::evidence_api::{evidence_routes, EvidenceApiState};
+use ackplane_bridge::knowledge_api::{knowledge_routes, KnowledgeApiState};
+use ackplane_bridge::supervisor_api::{supervisor_routes, SupervisorApiState};
 use ackplane_bridge::BridgeConfig;
-use ackplane_server::claim_store::{
-    ClaimLeaseOutcome, ClaimRecoverRequest, ClaimStore, ClaimStoreError,
-};
-use ackplane_server::constitution_store::{ActiveConstitution, ClauseSnapshot, ConstitutionStore};
-use ackplane_server::fleet::{
-    escape_like_pattern, ActiveWorkItem, FleetFilter, FleetPage, FleetRepository, FleetSort,
-    FleetSortField, FleetStore, FleetWorkFilter, FleetWorkItem, FleetWorkPage, FleetWorkSort,
-    FleetWorkSortField, RepositoryDetail, RepositoryFreshness, SigningKeyStatus, SortDirection,
-    TimelineEvent,
-};
-use ackplane_server::knowledge_store::{ActiveKnowledge, KnowledgeStore};
-use ackplane_server::readiness::{
-    ReadinessPage, ReadinessStatus, ReadinessStore, RepositoryReadiness,
-};
-use ackplane_server::signing_keys::KeyResolution;
-use ackplane_server::telemetry_store::{ReadTelemetryRequest, TelemetryMetric, TelemetryStore};
+use ackplane_server::claim_store::ClaimStore;
+use ackplane_server::constitution_store::ConstitutionStore;
+use ackplane_server::context_packet_store::ContextPacketStore;
+use ackplane_server::delegation_store::DelegationStore;
+use ackplane_server::fleet::{FleetStore, RepositoryFreshness};
+use ackplane_server::knowledge_store::KnowledgeStore;
+use ackplane_server::projection::Projector;
+use ackplane_server::readiness::ReadinessStore;
+use ackplane_server::supervisor_store::SupervisorStore;
+use ackplane_server::telemetry_store::TelemetryStore;
 use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
     response::{Html, IntoResponse},
     routing::{get, post},
-    Json, Router,
+    Router,
 };
-use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+
+mod handlers;
+
+use handlers::{
+    agents, fleet, readiness, repository_claims, repository_constitution, repository_detail,
+    repository_graph, repository_knowledge, repository_recover_claim, repository_signing_keys,
+    repository_stranded_claims, repository_telemetry, repository_timeline, telemetry_page,
+};
 
 const FLEET_PAGE: &str = include_str!("../static/index.html");
 
@@ -38,219 +44,10 @@ struct AppState {
     knowledge: Arc<KnowledgeStore>,
     constitution: Arc<ConstitutionStore>,
     claims: Arc<Mutex<ClaimStore>>,
+    projector: Arc<Projector>,
     readiness: Arc<ReadinessStore>,
     telemetry: Arc<TelemetryStore>,
     tenant_id: Arc<str>,
-}
-
-#[derive(Serialize)]
-struct FleetResponse {
-    repositories: Vec<FleetSummary>,
-    total: i64,
-    page: i64,
-    page_size: i64,
-}
-
-/// `GET /api/v1/fleet` query parameters (ADR-0112). All optional.
-#[derive(Deserialize)]
-struct FleetQuery {
-    q: Option<String>,
-    freshness: Option<String>,
-    coordination: Option<String>,
-    sort: Option<String>,
-    page: Option<i64>,
-    page_size: Option<i64>,
-}
-
-const DEFAULT_FLEET_PAGE_SIZE: i64 = 20;
-const MAX_FLEET_PAGE_SIZE: i64 = 100;
-const FLEET_FRESHNESS_VALUES: &[&str] = &["never_projected", "lagging", "fresh"];
-const FLEET_COORDINATION_VALUES: &[&str] = &["active", "none"];
-
-/// Parse `field:asc`/`field:desc` against the allow-listed sort fields
-/// (ADR-0112). `None` (no `sort` param) is the existing default order,
-/// alphabetical by repository id; anything unrecognised or malformed is a
-/// `400`, never a silently-ignored value.
-fn parse_fleet_sort(raw: Option<&str>) -> Result<FleetSort, StatusCode> {
-    let Some(raw) = raw else {
-        return Ok(FleetSort::default_order());
-    };
-    let (field_part, direction_part) = raw.split_once(':').ok_or(StatusCode::BAD_REQUEST)?;
-    let field = match field_part {
-        "repository_id" => FleetSortField::RepositoryId,
-        "active_node_count" => FleetSortField::ActiveNodeCount,
-        "last_activated_at" => FleetSortField::LastActivatedAt,
-        _ => return Err(StatusCode::BAD_REQUEST),
-    };
-    let direction = match direction_part {
-        "asc" => SortDirection::Ascending,
-        "desc" => SortDirection::Descending,
-        _ => return Err(StatusCode::BAD_REQUEST),
-    };
-    Ok(FleetSort { field, direction })
-}
-
-/// Reject a `freshness`/`coordination` value outside its own allow-list with
-/// a `400` rather than letting it reach `FleetStore::repositories`, where an
-/// unrecognised value would otherwise match no row rather than error.
-fn validate_allow_listed<'a>(
-    value: &'a Option<String>,
-    allowed: &[&str],
-) -> Result<Option<&'a str>, StatusCode> {
-    match value {
-        None => Ok(None),
-        Some(value) if allowed.contains(&value.as_str()) => Ok(Some(value.as_str())),
-        Some(_) => Err(StatusCode::BAD_REQUEST),
-    }
-}
-
-/// `GET /api/v1/agents` query parameters (ADR-0105 decision 5). All optional.
-#[derive(Deserialize)]
-struct AgentsQuery {
-    repository_id: Option<String>,
-    owner_id: Option<String>,
-    sort: Option<String>,
-    page: Option<i64>,
-    page_size: Option<i64>,
-}
-
-const DEFAULT_AGENTS_PAGE_SIZE: i64 = 20;
-const MAX_AGENTS_PAGE_SIZE: i64 = 100;
-
-/// Parse `field:asc`/`field:desc` against the allow-listed Agents sort
-/// fields (ADR-0105 decision 5). `None` (no `sort` param) is the default
-/// order, soonest-expiring lease first; anything unrecognised or malformed
-/// is a `400`, never a silently-ignored value.
-fn parse_agents_sort(raw: Option<&str>) -> Result<FleetWorkSort, StatusCode> {
-    let Some(raw) = raw else {
-        return Ok(FleetWorkSort::default_order());
-    };
-    let (field_part, direction_part) = raw.split_once(':').ok_or(StatusCode::BAD_REQUEST)?;
-    let field = match field_part {
-        "lease_expires_at" => FleetWorkSortField::LeaseExpiresAt,
-        "repository_id" => FleetWorkSortField::RepositoryId,
-        "owner_id" => FleetWorkSortField::OwnerId,
-        _ => return Err(StatusCode::BAD_REQUEST),
-    };
-    let direction = match direction_part {
-        "asc" => SortDirection::Ascending,
-        "desc" => SortDirection::Descending,
-        _ => return Err(StatusCode::BAD_REQUEST),
-    };
-    Ok(FleetWorkSort { field, direction })
-}
-
-#[derive(Serialize)]
-struct AgentsResponse {
-    items: Vec<AgentWorkSummary>,
-    total: i64,
-    page: i64,
-    page_size: i64,
-}
-
-#[derive(Serialize)]
-struct AgentWorkSummary {
-    repository_id: String,
-    task_id: String,
-    owner_id: String,
-    branch: String,
-    lease_expires_at_seconds: Option<u64>,
-    paths: Vec<String>,
-    symbols: Vec<String>,
-}
-
-impl From<FleetWorkItem> for AgentWorkSummary {
-    fn from(item: FleetWorkItem) -> Self {
-        Self {
-            repository_id: item.repository_id,
-            task_id: item.task_id,
-            owner_id: item.owner_id,
-            branch: item.branch,
-            lease_expires_at_seconds: unix_seconds(item.lease_expires_at),
-            paths: item.paths,
-            symbols: item.symbols,
-        }
-    }
-}
-
-/// `GET /api/v1/readiness` query parameters (ADR-0105 decision 6). All
-/// optional; a first slice needs no filter or sort, unlike Fleet/Agents.
-#[derive(Deserialize)]
-struct ReadinessQuery {
-    page: Option<i64>,
-    page_size: Option<i64>,
-}
-
-const DEFAULT_READINESS_PAGE_SIZE: i64 = 20;
-const MAX_READINESS_PAGE_SIZE: i64 = 100;
-
-#[derive(Serialize)]
-struct ReadinessResponse {
-    items: Vec<RepositoryReadinessSummary>,
-    total: i64,
-    page: i64,
-    page_size: i64,
-}
-
-#[derive(Serialize)]
-struct RepositoryReadinessSummary {
-    repository_id: String,
-    active_node_count: i64,
-    freshness: &'static str,
-    active_claim_count: i64,
-    soonest_lease_expires_at_seconds: Option<u64>,
-    signing_keys_resolved: i64,
-    signing_keys_needing_attention: i64,
-    status: &'static str,
-}
-
-/// The status word the Readiness UI badges on; distinct from
-/// `freshness_label` since it names the OVERALL judgment, not just the
-/// projection state one of its inputs.
-fn readiness_status_label(status: ReadinessStatus) -> &'static str {
-    match status {
-        ReadinessStatus::Ready => "ready",
-        ReadinessStatus::AttentionNeeded => "attention_needed",
-        ReadinessStatus::NotReady => "not_ready",
-    }
-}
-
-impl From<RepositoryReadiness> for RepositoryReadinessSummary {
-    fn from(item: RepositoryReadiness) -> Self {
-        Self {
-            repository_id: item.repository_id,
-            active_node_count: item.active_node_count,
-            freshness: freshness_label(item.freshness),
-            active_claim_count: item.active_claim_count,
-            soonest_lease_expires_at_seconds: item.soonest_lease_expires_at.and_then(unix_seconds),
-            signing_keys_resolved: item.signing_keys_resolved,
-            signing_keys_needing_attention: item.signing_keys_needing_attention,
-            status: readiness_status_label(item.status),
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct FleetSummary {
-    repository_id: String,
-    active_node_count: i64,
-    last_activated_at_seconds: Option<u64>,
-    projection_stream_position: Option<i64>,
-    projection_updated_at_seconds: Option<u64>,
-    freshness: &'static str,
-}
-
-impl From<FleetRepository> for FleetSummary {
-    fn from(repository: FleetRepository) -> Self {
-        Self {
-            repository_id: repository.repository_id,
-            active_node_count: repository.active_node_count,
-            last_activated_at_seconds: unix_seconds(repository.last_activated_at),
-            projection_stream_position: repository.projection_stream_position,
-            projection_updated_at_seconds: repository.projection_updated_at.and_then(unix_seconds),
-            freshness: freshness_label(repository.freshness),
-        }
-    }
 }
 
 fn unix_seconds(timestamp: SystemTime) -> Option<u64> {
@@ -268,296 +65,6 @@ fn freshness_label(freshness: RepositoryFreshness) -> &'static str {
         RepositoryFreshness::NeverProjected => "never_projected",
         RepositoryFreshness::Lagging => "lagging",
         RepositoryFreshness::Fresh => "fresh",
-    }
-}
-
-#[derive(Serialize)]
-struct RepositoryDetailResponse {
-    repository_id: String,
-    active_node_count: i64,
-    last_activated_at_seconds: Option<u64>,
-    ledger_stream_position: i64,
-    projection_stream_position: Option<i64>,
-    projection_updated_at_seconds: Option<u64>,
-    freshness: &'static str,
-}
-
-impl From<RepositoryDetail> for RepositoryDetailResponse {
-    fn from(detail: RepositoryDetail) -> Self {
-        Self {
-            repository_id: detail.repository_id,
-            active_node_count: detail.active_node_count,
-            last_activated_at_seconds: unix_seconds(detail.last_activated_at),
-            ledger_stream_position: detail.ledger_stream_position,
-            projection_stream_position: detail.projection_stream_position,
-            projection_updated_at_seconds: detail.projection_updated_at.and_then(unix_seconds),
-            freshness: freshness_label(detail.freshness),
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct TimelineResponse {
-    events: Vec<TimelineEventSummary>,
-}
-
-#[derive(Serialize)]
-struct TimelineEventSummary {
-    stream_position: i64,
-    occurred_at_seconds: Option<u64>,
-    payload_type: String,
-    producer_id: String,
-    signing_key_id: Option<String>,
-    /// The same status word a repository's signing-keys list would report
-    /// for this key at this instant (ADR-0084 decision 12), so a timeline
-    /// entry can visibly flag a key that has since been revoked without
-    /// altering the event's own recorded fields above. `None` when the
-    /// event carries no signing key.
-    key_status: Option<&'static str>,
-}
-
-impl From<TimelineEvent> for TimelineEventSummary {
-    fn from(event: TimelineEvent) -> Self {
-        Self {
-            stream_position: event.stream_position,
-            occurred_at_seconds: unix_seconds(event.occurred_at),
-            payload_type: event.payload_type,
-            producer_id: event.producer_id,
-            signing_key_id: event.signing_key_id,
-            key_status: event.key_status.as_ref().map(key_resolution_label),
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct ActiveWorkResponse {
-    claims: Vec<ActiveWorkSummary>,
-}
-
-#[derive(Serialize)]
-struct ActiveWorkSummary {
-    task_id: String,
-    owner_id: String,
-    branch: String,
-    lease_expires_at_seconds: Option<u64>,
-    paths: Vec<String>,
-    symbols: Vec<String>,
-}
-
-impl From<ActiveWorkItem> for ActiveWorkSummary {
-    fn from(item: ActiveWorkItem) -> Self {
-        Self {
-            task_id: item.task_id,
-            owner_id: item.owner_id,
-            branch: item.branch,
-            lease_expires_at_seconds: unix_seconds(item.lease_expires_at),
-            paths: item.paths,
-            symbols: item.symbols,
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct StrandedClaimsResponse {
-    claims: Vec<ActiveWorkSummary>,
-}
-
-#[derive(Deserialize)]
-struct RecoverClaimRequest {
-    owner_id: String,
-    reason: String,
-    branch: String,
-    lease_seconds: u64,
-}
-
-#[derive(Serialize)]
-struct RecoverClaimResponse {
-    task_id: String,
-    owner_id: String,
-    branch: String,
-    claim_started_at_seconds: Option<u64>,
-    lease_expires_at_seconds: Option<u64>,
-    claim_lapses: u64,
-}
-
-#[derive(Serialize)]
-struct SigningKeysResponse {
-    keys: Vec<SigningKeyStatusSummary>,
-}
-
-#[derive(Serialize)]
-struct SigningKeyStatusSummary {
-    signing_key_id: String,
-    node_id: String,
-    public_key_fingerprint: String,
-    status: &'static str,
-    expires_at_seconds: Option<u64>,
-}
-
-impl From<SigningKeyStatus> for SigningKeyStatusSummary {
-    fn from(key: SigningKeyStatus) -> Self {
-        Self {
-            signing_key_id: key.signing_key_id,
-            node_id: key.node_id,
-            public_key_fingerprint: key.public_key_fingerprint,
-            status: key_resolution_label(&key.status),
-            expires_at_seconds: key.expires_at.and_then(unix_seconds),
-        }
-    }
-}
-
-/// A repository detail page's key-health row must read the same status word
-/// an envelope's own verification would report for a key at this instant.
-fn key_resolution_label(resolution: &KeyResolution) -> &'static str {
-    match resolution {
-        KeyResolution::Resolved(_) => "resolved",
-        KeyResolution::Unknown => "unknown",
-        KeyResolution::BindingMismatch => "binding_mismatch",
-        KeyResolution::NotYetActive => "not_yet_active",
-        KeyResolution::Expired => "expired",
-        KeyResolution::Revoked => "revoked",
-        KeyResolution::Retired => "retired",
-    }
-}
-
-/// How many timeline events one request returns. A first, fixed slice rather
-/// than caller-controlled paging - ADR-0095 does not yet define a paging
-/// contract, and an unbounded limit would let a request pull an entire
-/// repository's ledger history through the Bridge.
-const TIMELINE_LIMIT: i64 = 50;
-const ACTIVE_WORK_LIMIT: i64 = 50;
-/// Same fixed-slice rationale as `TIMELINE_LIMIT`, applied to a knowledge recall.
-const KNOWLEDGE_LIMIT: i64 = 50;
-
-#[derive(Serialize)]
-struct KnowledgeResponse {
-    entries: Vec<KnowledgeEntrySummary>,
-}
-
-#[derive(Serialize)]
-struct KnowledgeEntrySummary {
-    knowledge_id: String,
-    content: String,
-    source_ref: Option<String>,
-    effective_weight: f64,
-    confirmed_at_seconds: Option<u64>,
-}
-
-impl From<ActiveKnowledge> for KnowledgeEntrySummary {
-    fn from(entry: ActiveKnowledge) -> Self {
-        Self {
-            knowledge_id: entry.knowledge_id,
-            content: entry.content,
-            source_ref: entry.source_ref,
-            effective_weight: entry.effective_weight,
-            confirmed_at_seconds: unix_seconds(entry.confirmed_at),
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct ConstitutionResponse {
-    found: bool,
-    version_id: Option<String>,
-    version: Option<i64>,
-    status: Option<String>,
-    published_at_seconds: Option<u64>,
-    clauses: Vec<ConstitutionClauseSummary>,
-}
-
-#[derive(Serialize)]
-struct ConstitutionClauseSummary {
-    id: String,
-    slug: String,
-    kind: String,
-    title: String,
-    statement: String,
-    status: String,
-    consequence: Option<String>,
-    scope: Option<String>,
-    rationale: Option<String>,
-}
-
-impl From<ClauseSnapshot> for ConstitutionClauseSummary {
-    fn from(clause: ClauseSnapshot) -> Self {
-        Self {
-            id: clause.id,
-            slug: clause.slug,
-            kind: clause.kind,
-            title: clause.title,
-            statement: clause.statement,
-            status: clause.status,
-            consequence: clause.consequence,
-            scope: clause.scope,
-            rationale: clause.rationale,
-        }
-    }
-}
-
-impl From<ActiveConstitution> for ConstitutionResponse {
-    fn from(active: ActiveConstitution) -> Self {
-        Self {
-            found: true,
-            version_id: Some(active.version_id),
-            version: Some(active.version),
-            status: Some(active.status),
-            published_at_seconds: unix_seconds(active.published_at),
-            clauses: active
-                .clauses
-                .into_iter()
-                .map(ConstitutionClauseSummary::from)
-                .collect(),
-        }
-    }
-}
-
-impl ConstitutionResponse {
-    fn not_found() -> Self {
-        Self {
-            found: false,
-            version_id: None,
-            version: None,
-            status: None,
-            published_at_seconds: None,
-            clauses: Vec::new(),
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct TelemetryResponse {
-    metrics: Vec<TelemetryMetricSummary>,
-}
-
-/// Current health per (kind, name) -- derived from the most recent
-/// success/error, distinct from the lifetime `calls`/`errors` counts also
-/// reported, so a resolved past error stops reading as an active fault the
-/// moment a later call succeeds (mirrors mindleak-core's own local
-/// NameMetric/currently_failing logic, ADR-0010).
-#[derive(Serialize)]
-struct TelemetryMetricSummary {
-    kind: i16,
-    name: String,
-    calls: i64,
-    errors: i64,
-    currently_failing: bool,
-    last_success_at_seconds: Option<u64>,
-    last_error_at_seconds: Option<u64>,
-    average_duration_ms: f64,
-}
-
-impl From<TelemetryMetric> for TelemetryMetricSummary {
-    fn from(metric: TelemetryMetric) -> Self {
-        Self {
-            kind: metric.kind,
-            name: metric.name,
-            calls: metric.calls,
-            errors: metric.errors,
-            currently_failing: metric.currently_failing,
-            last_success_at_seconds: metric.last_success_at.and_then(unix_seconds),
-            last_error_at_seconds: metric.last_error_at.and_then(unix_seconds),
-            average_duration_ms: metric.average_duration_ms,
-        }
     }
 }
 
@@ -618,6 +125,13 @@ async fn main() {
             return;
         }
     };
+    let projector = match Projector::connect(config.database_url()).await {
+        Ok(projector) => Arc::new(projector),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane's graph projection: {error}");
+            return;
+        }
+    };
     let readiness_store = match ReadinessStore::connect(config.database_url()).await {
         Ok(readiness) => Arc::new(readiness),
         Err(error) => {
@@ -632,17 +146,63 @@ async fn main() {
             return;
         }
     };
+    let evidence_store = match BridgeEvidenceStore::connect(config.database_url()).await {
+        Ok(evidence) => Arc::new(evidence),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane evidence domain: {error}");
+            return;
+        }
+    };
+    let supervisor_store = match SupervisorStore::connect(config.database_url()).await {
+        Ok(store) => Arc::new(store),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane supervisor store: {error}");
+            return;
+        }
+    };
+    let context_packet_store = match ContextPacketStore::connect(config.database_url()).await {
+        Ok(context_packets) => Arc::new(context_packets),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane context packets: {error}");
+            return;
+        }
+    };
+    let delegation_store = match DelegationStore::connect(config.database_url()).await {
+        Ok(delegations) => Arc::new(delegations),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane delegations: {error}");
+            return;
+        }
+    };
+    let tenant_id: Arc<str> = Arc::from(config.development_tenant_token.clone());
+    let evidence_api_state =
+        EvidenceApiState::new(evidence_store, fleet_store.clone(), tenant_id.clone());
+    let supervisor_api_state =
+        SupervisorApiState::new(supervisor_store, fleet_store.clone(), tenant_id.clone());
+    let knowledge_api_state = KnowledgeApiState::new(
+        knowledge_store.clone(),
+        fleet_store.clone(),
+        tenant_id.clone(),
+    );
+    let context_api_state =
+        ContextApiState::new(context_packet_store, fleet_store.clone(), tenant_id.clone());
+    let delegation_api_state =
+        DelegationApiState::new(delegation_store, fleet_store.clone(), tenant_id.clone());
+    let administration_api_state =
+        AdministrationApiState::new(fleet_store.clone(), tenant_id.clone());
     let state = AppState {
         fleet: fleet_store,
         knowledge: knowledge_store,
         constitution: constitution_store,
         claims: claim_store,
+        projector,
         readiness: readiness_store,
         telemetry: telemetry_store,
-        tenant_id: Arc::from(config.development_tenant_token),
+        tenant_id,
     };
     let application = Router::new()
         .route("/", get(fleet_page))
+        .route("/telemetry", get(telemetry_page))
         .route("/api/v1/fleet", get(fleet))
         .route("/api/v1/agents", get(agents))
         .route("/api/v1/readiness", get(readiness))
@@ -671,6 +231,10 @@ async fn main() {
             get(repository_knowledge),
         )
         .route(
+            "/api/v1/repositories/:repository_id/graph",
+            get(repository_graph),
+        )
+        .route(
             "/api/v1/repositories/:repository_id/constitution",
             get(repository_constitution),
         )
@@ -682,7 +246,13 @@ async fn main() {
             "/api/v1/repositories/:repository_id/tasks/:task_id/recover",
             post(repository_recover_claim),
         )
-        .with_state(state);
+        .with_state(state)
+        .merge(evidence_routes(evidence_api_state))
+        .merge(knowledge_routes(knowledge_api_state))
+        .merge(context_routes(context_api_state))
+        .merge(delegation_routes(delegation_api_state))
+        .merge(administration_routes(administration_api_state))
+        .merge(supervisor_routes(supervisor_api_state));
     let listener = match tokio::net::TcpListener::bind(config.listen).await {
         Ok(listener) => listener,
         Err(error) => {
@@ -702,644 +272,31 @@ async fn main() {
     }
 }
 
-async fn fleet(
-    State(state): State<AppState>,
-    Query(query): Query<FleetQuery>,
-) -> Result<Json<FleetResponse>, StatusCode> {
-    let sort = parse_fleet_sort(query.sort.as_deref())?;
-    let freshness = validate_allow_listed(&query.freshness, FLEET_FRESHNESS_VALUES)?;
-    let coordination = validate_allow_listed(&query.coordination, FLEET_COORDINATION_VALUES)?;
-    let page = query.page.unwrap_or(1);
-    if page < 1 {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    let page_size = query
-        .page_size
-        .unwrap_or(DEFAULT_FLEET_PAGE_SIZE)
-        .clamp(1, MAX_FLEET_PAGE_SIZE);
-    let escaped_q = query.q.as_deref().map(escape_like_pattern);
-    let filter = FleetFilter {
-        q: escaped_q.as_deref(),
-        freshness,
-        coordination,
-    };
-
-    state
-        .fleet
-        .repositories(&state.tenant_id, filter, sort, page, page_size)
-        .await
-        .map(
-            |FleetPage {
-                 repositories,
-                 total,
-             }| {
-                Json(FleetResponse {
-                    repositories: repositories.into_iter().map(FleetSummary::from).collect(),
-                    total,
-                    page,
-                    page_size,
-                })
-            },
-        )
-        .map_err(|error| {
-            tracing::error!(%error, "Bridge Fleet query failed");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
-}
-
 async fn fleet_page() -> impl IntoResponse {
     Html(FLEET_PAGE)
-}
-
-async fn agents(
-    State(state): State<AppState>,
-    Query(query): Query<AgentsQuery>,
-) -> Result<Json<AgentsResponse>, StatusCode> {
-    let sort = parse_agents_sort(query.sort.as_deref())?;
-    let page = query.page.unwrap_or(1);
-    if page < 1 {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    let page_size = query
-        .page_size
-        .unwrap_or(DEFAULT_AGENTS_PAGE_SIZE)
-        .clamp(1, MAX_AGENTS_PAGE_SIZE);
-    let escaped_repository_id = query.repository_id.as_deref().map(escape_like_pattern);
-    let escaped_owner_id = query.owner_id.as_deref().map(escape_like_pattern);
-    let filter = FleetWorkFilter {
-        repository_id: escaped_repository_id.as_deref(),
-        owner_id: escaped_owner_id.as_deref(),
-    };
-
-    state
-        .fleet
-        .fleet_work(
-            &state.tenant_id,
-            filter,
-            sort,
-            page,
-            page_size,
-            SystemTime::now(),
-        )
-        .await
-        .map(|FleetWorkPage { items, total }| {
-            Json(AgentsResponse {
-                items: items.into_iter().map(AgentWorkSummary::from).collect(),
-                total,
-                page,
-                page_size,
-            })
-        })
-        .map_err(|error| {
-            tracing::error!(%error, "Bridge Agents query failed");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
-}
-
-async fn readiness(
-    State(state): State<AppState>,
-    Query(query): Query<ReadinessQuery>,
-) -> Result<Json<ReadinessResponse>, StatusCode> {
-    let page = query.page.unwrap_or(1);
-    if page < 1 {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    let page_size = query
-        .page_size
-        .unwrap_or(DEFAULT_READINESS_PAGE_SIZE)
-        .clamp(1, MAX_READINESS_PAGE_SIZE);
-
-    state
-        .readiness
-        .readiness(&state.tenant_id, page, page_size, SystemTime::now())
-        .await
-        .map(|ReadinessPage { items, total }| {
-            Json(ReadinessResponse {
-                items: items
-                    .into_iter()
-                    .map(RepositoryReadinessSummary::from)
-                    .collect(),
-                total,
-                page,
-                page_size,
-            })
-        })
-        .map_err(|error| {
-            tracing::error!(%error, "Bridge Readiness query failed");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
-}
-
-async fn repository_detail(
-    State(state): State<AppState>,
-    Path(repository_id): Path<String>,
-) -> Result<Json<RepositoryDetailResponse>, StatusCode> {
-    match state
-        .fleet
-        .repository(&state.tenant_id, &repository_id)
-        .await
-    {
-        Ok(Some(detail)) => Ok(Json(detail.into())),
-        Ok(None) => Err(StatusCode::NOT_FOUND),
-        Err(error) => {
-            tracing::error!(%error, "Bridge repository detail query failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
-}
-
-async fn repository_timeline(
-    State(state): State<AppState>,
-    Path(repository_id): Path<String>,
-) -> Result<Json<TimelineResponse>, StatusCode> {
-    // A repository outside the caller's tenant must read exactly like one
-    // that was never enrolled: check enrolment first so a non-existent
-    // timeline never leaks a 200 for a repository this tenant cannot see.
-    match state
-        .fleet
-        .repository(&state.tenant_id, &repository_id)
-        .await
-    {
-        Ok(Some(_)) => {}
-        Ok(None) => return Err(StatusCode::NOT_FOUND),
-        Err(error) => {
-            tracing::error!(%error, "Bridge repository timeline lookup failed");
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    }
-
-    match state
-        .fleet
-        .timeline(&state.tenant_id, &repository_id, TIMELINE_LIMIT)
-        .await
-    {
-        Ok(events) => Ok(Json(TimelineResponse {
-            events: events.into_iter().map(TimelineEventSummary::from).collect(),
-        })),
-        Err(error) => {
-            tracing::error!(%error, "Bridge repository timeline query failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
-}
-
-async fn repository_claims(
-    State(state): State<AppState>,
-    Path(repository_id): Path<String>,
-) -> Result<Json<ActiveWorkResponse>, StatusCode> {
-    match state
-        .fleet
-        .active_work(
-            &state.tenant_id,
-            &repository_id,
-            SystemTime::now(),
-            ACTIVE_WORK_LIMIT,
-        )
-        .await
-    {
-        Ok(Some(claims)) => Ok(Json(ActiveWorkResponse {
-            claims: claims.into_iter().map(ActiveWorkSummary::from).collect(),
-        })),
-        Ok(None) => Err(StatusCode::NOT_FOUND),
-        Err(error) => {
-            tracing::error!(%error, "Bridge repository active-work query failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
-}
-
-// The complement of `repository_claims`: what `repository_recover_claim`
-// needs an operator to already know (ADR-0111 left no way to discover a
-// stranded task id other than already holding it).
-async fn repository_stranded_claims(
-    State(state): State<AppState>,
-    Path(repository_id): Path<String>,
-) -> Result<Json<StrandedClaimsResponse>, StatusCode> {
-    match state
-        .fleet
-        .stranded_claims(
-            &state.tenant_id,
-            &repository_id,
-            SystemTime::now(),
-            ACTIVE_WORK_LIMIT,
-        )
-        .await
-    {
-        Ok(Some(claims)) => Ok(Json(StrandedClaimsResponse {
-            claims: claims.into_iter().map(ActiveWorkSummary::from).collect(),
-        })),
-        Ok(None) => Err(StatusCode::NOT_FOUND),
-        Err(error) => {
-            tracing::error!(%error, "Bridge repository stranded-claims query failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
-}
-
-async fn repository_signing_keys(
-    State(state): State<AppState>,
-    Path(repository_id): Path<String>,
-) -> Result<Json<SigningKeysResponse>, StatusCode> {
-    match state
-        .fleet
-        .signing_keys(&state.tenant_id, &repository_id)
-        .await
-    {
-        Ok(Some(keys)) => Ok(Json(SigningKeysResponse {
-            keys: keys
-                .into_iter()
-                .map(SigningKeyStatusSummary::from)
-                .collect(),
-        })),
-        Ok(None) => Err(StatusCode::NOT_FOUND),
-        Err(error) => {
-            tracing::error!(%error, "Bridge repository signing-key health query failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
-}
-
-async fn repository_knowledge(
-    State(state): State<AppState>,
-    Path(repository_id): Path<String>,
-) -> Result<Json<KnowledgeResponse>, StatusCode> {
-    // Same enrolment-first check as `repository_timeline`: a repository
-    // outside the caller's tenant must read exactly like one that was never
-    // enrolled, not leak a 200 for a repository this tenant cannot see.
-    match state
-        .fleet
-        .repository(&state.tenant_id, &repository_id)
-        .await
-    {
-        Ok(Some(_)) => {}
-        Ok(None) => return Err(StatusCode::NOT_FOUND),
-        Err(error) => {
-            tracing::error!(%error, "Bridge repository knowledge lookup failed");
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    }
-
-    match state
-        .knowledge
-        .recall(&state.tenant_id, &repository_id, None, KNOWLEDGE_LIMIT)
-        .await
-    {
-        Ok(result) => Ok(Json(KnowledgeResponse {
-            entries: result
-                .entries
-                .into_iter()
-                .map(KnowledgeEntrySummary::from)
-                .collect(),
-        })),
-        Err(error) => {
-            tracing::error!(%error, "Bridge repository knowledge query failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
-}
-
-async fn repository_constitution(
-    State(state): State<AppState>,
-    Path(repository_id): Path<String>,
-) -> Result<Json<ConstitutionResponse>, StatusCode> {
-    // Same enrolment-first check as `repository_knowledge`: a repository
-    // outside the caller's tenant must read exactly like one that was never
-    // enrolled, not leak a 200 for a repository this tenant cannot see.
-    match state
-        .fleet
-        .repository(&state.tenant_id, &repository_id)
-        .await
-    {
-        Ok(Some(_)) => {}
-        Ok(None) => return Err(StatusCode::NOT_FOUND),
-        Err(error) => {
-            tracing::error!(%error, "Bridge repository constitution lookup failed");
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    }
-
-    match state
-        .constitution
-        .get_active(&state.tenant_id, &repository_id)
-        .await
-    {
-        Ok(Some(active)) => Ok(Json(ConstitutionResponse::from(active))),
-        Ok(None) => Ok(Json(ConstitutionResponse::not_found())),
-        Err(error) => {
-            tracing::error!(%error, "Bridge repository constitution query failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
-}
-
-async fn repository_telemetry(
-    State(state): State<AppState>,
-    Path(repository_id): Path<String>,
-) -> Result<Json<TelemetryResponse>, StatusCode> {
-    // Same enrolment-first check every other Bridge route already follows: a
-    // repository outside the caller's tenant reads exactly like one that was
-    // never enrolled.
-    match state
-        .fleet
-        .repository(&state.tenant_id, &repository_id)
-        .await
-    {
-        Ok(Some(_)) => {}
-        Ok(None) => return Err(StatusCode::NOT_FOUND),
-        Err(error) => {
-            tracing::error!(%error, "Bridge repository telemetry lookup failed");
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    }
-
-    // Zero/None select every kind/name (the same convention TelemetryService
-    // documents on the wire); series points are not rendered by this route
-    // yet -- the sparkline dashboard is task:60ba293846ec's own scope.
-    match state
-        .telemetry
-        .read(ReadTelemetryRequest {
-            tenant_id: state.tenant_id.to_string(),
-            repository_id,
-            kind: 0,
-            name: None,
-            bucket_seconds: 3600,
-            max_points: 1,
-        })
-        .await
-    {
-        Ok(snapshot) => Ok(Json(TelemetryResponse {
-            metrics: snapshot
-                .metrics
-                .into_iter()
-                .map(TelemetryMetricSummary::from)
-                .collect(),
-        })),
-        Err(error) => {
-            tracing::error!(%error, "Bridge repository telemetry query failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
-}
-
-async fn repository_recover_claim(
-    State(state): State<AppState>,
-    Path((repository_id, task_id)): Path<(String, String)>,
-    Json(request): Json<RecoverClaimRequest>,
-) -> Result<Json<RecoverClaimResponse>, StatusCode> {
-    // Same enrolment-first check every other Bridge route already follows:
-    // a repository outside the caller's tenant reads exactly like one that
-    // was never enrolled.
-    match state
-        .fleet
-        .repository(&state.tenant_id, &repository_id)
-        .await
-    {
-        Ok(Some(_)) => {}
-        Ok(None) => return Err(StatusCode::NOT_FOUND),
-        Err(error) => {
-            tracing::error!(%error, "Bridge repository lookup before claim recovery failed");
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    }
-
-    // The caller names who should hold the claim next, not who holds it now -
-    // the handler derives that itself, the same way a human today reads
-    // `owner` off Lodestar's own overlap view before deciding to recover.
-    let current = match state
-        .fleet
-        .claim_owner(&state.tenant_id, &repository_id, &task_id)
-        .await
-    {
-        Ok(Some(claim)) => claim,
-        Ok(None) => return Err(StatusCode::NOT_FOUND),
-        Err(error) => {
-            tracing::error!(%error, "Bridge claim-owner lookup before recovery failed");
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    };
-
-    let recover_request = ClaimRecoverRequest {
-        tenant_id: state.tenant_id.to_string(),
-        repository_id,
-        task_id,
-        expected_owner: current.owner_id,
-        owner_id: request.owner_id,
-        reason: request.reason,
-        branch: request.branch,
-        lease: Duration::from_secs(request.lease_seconds),
-        paths: current.paths,
-        symbols: current.symbols,
-    };
-
-    let mut claims = state.claims.lock().await;
-    match claims.recover(&recover_request, SystemTime::now()).await {
-        Ok(result) if result.outcome == ClaimLeaseOutcome::Granted => {
-            Ok(Json(RecoverClaimResponse {
-                task_id: recover_request.task_id,
-                owner_id: result.owner_id,
-                branch: result.branch,
-                claim_started_at_seconds: unix_seconds(result.claim_started_at),
-                lease_expires_at_seconds: unix_seconds(result.lease_expires_at),
-                claim_lapses: result.claim_lapses,
-            }))
-        }
-        // Rejected means the owner changed concurrently or the lease is
-        // still live - ClaimStore::recover's own unconditional expiry check
-        // (ADR-0111), not a judgment Bridge makes itself.
-        Ok(_rejected) => Err(StatusCode::CONFLICT),
-        Err(ClaimStoreError::MissingReason | ClaimStoreError::InvalidLease) => {
-            Err(StatusCode::BAD_REQUEST)
-        }
-        Err(error) => {
-            tracing::error!(%error, "Bridge claim recovery failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn parse_fleet_sort_defaults_to_repository_id_ascending_when_absent() {
-        assert_eq!(
-            parse_fleet_sort(None).expect("default sort"),
-            FleetSort {
-                field: FleetSortField::RepositoryId,
-                direction: SortDirection::Ascending,
-            }
-        );
-    }
+    #[tokio::test]
+    async fn fleet_page_refreshes_fleet_agents_and_readiness_only_while_visible() {
+        let response = fleet_page().await.into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("reading the fleet page body");
+        let body = String::from_utf8(body.to_vec()).expect("fleet page body is valid UTF-8");
 
-    #[test]
-    fn parse_fleet_sort_accepts_every_allow_listed_field_and_direction() {
-        let cases = [
-            (
-                "repository_id:asc",
-                FleetSortField::RepositoryId,
-                SortDirection::Ascending,
-            ),
-            (
-                "repository_id:desc",
-                FleetSortField::RepositoryId,
-                SortDirection::Descending,
-            ),
-            (
-                "active_node_count:asc",
-                FleetSortField::ActiveNodeCount,
-                SortDirection::Ascending,
-            ),
-            (
-                "active_node_count:desc",
-                FleetSortField::ActiveNodeCount,
-                SortDirection::Descending,
-            ),
-            (
-                "last_activated_at:asc",
-                FleetSortField::LastActivatedAt,
-                SortDirection::Ascending,
-            ),
-            (
-                "last_activated_at:desc",
-                FleetSortField::LastActivatedAt,
-                SortDirection::Descending,
-            ),
-        ];
-        for (raw, field, direction) in cases {
-            assert_eq!(
-                parse_fleet_sort(Some(raw)).unwrap_or_else(|_| panic!("{raw} must parse")),
-                FleetSort { field, direction },
-                "parsing {raw}"
-            );
+        for required in [
+            "function startVisibleRefresh(load, intervalMs)",
+            "document.visibilityState === \"visible\"",
+            "document.addEventListener(\"visibilitychange\"",
+            "startVisibleRefresh(loadFleet, REFRESH_INTERVAL_MS)",
+            "startVisibleRefresh(loadAgents, REFRESH_INTERVAL_MS)",
+            "startVisibleRefresh(loadReadiness, REFRESH_INTERVAL_MS)",
+        ] {
+            assert!(body.contains(required), "index.html is missing {required}");
         }
-    }
-
-    #[test]
-    fn parse_fleet_sort_rejects_an_unrecognised_field() {
-        assert_eq!(
-            parse_fleet_sort(Some("nonexistent_column:asc")),
-            Err(StatusCode::BAD_REQUEST)
-        );
-    }
-
-    #[test]
-    fn parse_fleet_sort_rejects_an_unrecognised_direction() {
-        assert_eq!(
-            parse_fleet_sort(Some("repository_id:sideways")),
-            Err(StatusCode::BAD_REQUEST)
-        );
-    }
-
-    #[test]
-    fn parse_fleet_sort_rejects_a_value_with_no_colon() {
-        assert_eq!(
-            parse_fleet_sort(Some("repository_id")),
-            Err(StatusCode::BAD_REQUEST)
-        );
-    }
-
-    #[test]
-    fn validate_allow_listed_accepts_an_absent_value() {
-        assert_eq!(
-            validate_allow_listed(&None, FLEET_FRESHNESS_VALUES),
-            Ok(None)
-        );
-    }
-
-    #[test]
-    fn validate_allow_listed_accepts_every_allow_listed_value() {
-        for value in FLEET_FRESHNESS_VALUES {
-            assert_eq!(
-                validate_allow_listed(&Some((*value).to_string()), FLEET_FRESHNESS_VALUES),
-                Ok(Some(*value))
-            );
-        }
-    }
-
-    #[test]
-    fn validate_allow_listed_rejects_a_value_outside_the_list() {
-        assert_eq!(
-            validate_allow_listed(&Some("bogus".to_string()), FLEET_COORDINATION_VALUES),
-            Err(StatusCode::BAD_REQUEST)
-        );
-    }
-
-    #[test]
-    fn parse_agents_sort_defaults_to_lease_expires_at_ascending_when_absent() {
-        assert_eq!(
-            parse_agents_sort(None).expect("default sort"),
-            FleetWorkSort {
-                field: FleetWorkSortField::LeaseExpiresAt,
-                direction: SortDirection::Ascending,
-            }
-        );
-    }
-
-    #[test]
-    fn parse_agents_sort_accepts_every_allow_listed_field_and_direction() {
-        let cases = [
-            (
-                "lease_expires_at:asc",
-                FleetWorkSortField::LeaseExpiresAt,
-                SortDirection::Ascending,
-            ),
-            (
-                "lease_expires_at:desc",
-                FleetWorkSortField::LeaseExpiresAt,
-                SortDirection::Descending,
-            ),
-            (
-                "repository_id:asc",
-                FleetWorkSortField::RepositoryId,
-                SortDirection::Ascending,
-            ),
-            (
-                "repository_id:desc",
-                FleetWorkSortField::RepositoryId,
-                SortDirection::Descending,
-            ),
-            (
-                "owner_id:asc",
-                FleetWorkSortField::OwnerId,
-                SortDirection::Ascending,
-            ),
-            (
-                "owner_id:desc",
-                FleetWorkSortField::OwnerId,
-                SortDirection::Descending,
-            ),
-        ];
-        for (raw, field, direction) in cases {
-            assert_eq!(
-                parse_agents_sort(Some(raw)).unwrap_or_else(|_| panic!("{raw} must parse")),
-                FleetWorkSort { field, direction },
-                "parsing {raw}"
-            );
-        }
-    }
-
-    #[test]
-    fn parse_agents_sort_rejects_an_unrecognised_field() {
-        assert_eq!(
-            parse_agents_sort(Some("nonexistent_column:asc")),
-            Err(StatusCode::BAD_REQUEST)
-        );
-    }
-
-    #[test]
-    fn parse_agents_sort_rejects_an_unrecognised_direction() {
-        assert_eq!(
-            parse_agents_sort(Some("repository_id:sideways")),
-            Err(StatusCode::BAD_REQUEST)
-        );
-    }
-
-    #[test]
-    fn parse_agents_sort_rejects_a_value_with_no_colon() {
-        assert_eq!(
-            parse_agents_sort(Some("repository_id")),
-            Err(StatusCode::BAD_REQUEST)
-        );
     }
 }

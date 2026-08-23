@@ -11,6 +11,7 @@ service NodeEnrollmentService {
   rpc GetActivationChallenge(EnrollmentChallengeRequest) returns (EnrollmentChallenge);
   rpc ActivateEnrollment(EnrollmentActivationProof) returns (EnrollmentActivationResult);
   rpc RotateNodeKey(KeyRotationRequest) returns (KeyRotationResult);
+  rpc CheckEnrollmentStatus(EnrollmentStatusRequest) returns (EnrollmentStatusResult);
 }
 
 service ClaimDelegationService {
@@ -30,6 +31,16 @@ service KnowledgeService {
   rpc GetKnowledgeHistory(KnowledgeHistoryRequest) returns (KnowledgeHistoryResult);
   rpc ReconfirmKnowledge(ReconfirmKnowledgeRequest) returns (ReconfirmKnowledgeResult);
   rpc RetireKnowledge(RetireKnowledgeRequest) returns (RetireKnowledgeResult);
+}
+
+// ADR-0106 decision 3: Evidence is a PostgreSQL-backed Industrial domain.
+// The first contract preserves bounded references, digests, and provenance;
+// it never transmits terminal output, source text, or credentials as evidence.
+service EvidenceService {
+  rpc RecordEvidence(RecordEvidenceRequest) returns (EvidenceRecord);
+  rpc ListEvidence(ListEvidenceRequest) returns (ListEvidenceResult);
+  rpc RecordConformance(RecordConformanceRequest) returns (ConformanceRecord);
+  rpc ListConformance(ListConformanceRequest) returns (ListConformanceResult);
 }
 
 // ADR-0105 decision 6: the Industrial profile reports typed operational
@@ -69,6 +80,17 @@ message ClaimAuthentication {
 // binding claim fields here would sign nothing meaningful, and sharing one
 // nonce table would couple two unrelated domains' replay protection.
 message KnowledgeAuthentication {
+  string signing_key_id = 1;
+  string node_id = 2;
+  string signed_at = 3;
+  bytes nonce = 4;
+  bytes signature = 5;
+}
+
+// The enrolled node's proof for an EvidenceService request. This has a
+// distinct domain and nonce space from claims, knowledge, and constitutions:
+// an evidence record binds task, kind, reference, digest, time, and session.
+message EvidenceAuthentication {
   string signing_key_id = 1;
   string node_id = 2;
   string signed_at = 3;
@@ -390,6 +412,177 @@ message RetireKnowledgeResult {
   bool retired = 1;
 }
 
+// A closed evidence vocabulary keeps the first Evidence Board contract
+// inspectable without treating arbitrary user text as a type system.
+enum EvidenceKind {
+  EVIDENCE_KIND_UNSPECIFIED = 0;
+  EVIDENCE_KIND_COMMIT = 1;
+  EVIDENCE_KIND_EXECUTION = 2;
+  EVIDENCE_KIND_RECEIPT = 3;
+  EVIDENCE_KIND_CONFORMANCE = 4;
+  EVIDENCE_KIND_REVIEW = 5;
+}
+
+// Records a bounded, provenance-bearing evidence reference for one task.
+// `content_digest` is a SHA-256 digest of the referenced evidence, not the
+// evidence body. `source_ref` is a bounded reference such as `commit:<sha>`
+// or `receipt:<id>`, interpreted by the closed `kind` vocabulary.
+message RecordEvidenceRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string task_id = 3;
+  EvidenceKind kind = 4;
+  string source_ref = 5;
+  bytes content_digest = 6;
+  string observed_at = 7;
+  // A node-reported session label. The signature proves only that this node
+  // asserted the value; it does not prove the session exists or is owned here.
+  string reported_agent_session_id = 8;
+  EvidenceAuthentication authentication = 9;
+  // Optional for v1 compatibility. New clients sign a caller-selected value
+  // so a retry after a lost response returns the original Evidence record.
+  string idempotency_key = 10;
+  // The active local Constitution version the node evaluated when it recorded
+  // the reference. It is node-reported and signed, not server-approved policy.
+  string reported_constitution_version = 11;
+}
+
+message EvidenceRecord {
+  string evidence_id = 1;
+  string tenant_id = 2;
+  string repository_id = 3;
+  string task_id = 4;
+  EvidenceKind kind = 5;
+  string source_ref = 6;
+  bytes content_digest = 7;
+  string observed_at = 8;
+  string reported_agent_session_id = 9;
+  string recorded_by = 10;
+  string recorded_at = 11;
+  bool idempotent_replay = 12;
+  string reported_constitution_version = 13;
+}
+
+// Lists task-bound evidence for one repository. A zero limit selects the
+// service default; the result reports the effective bounded limit.
+message ListEvidenceRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string task_id = 3;
+  uint32 limit = 4;
+  EvidenceAuthentication authentication = 5;
+  // Both page fields are empty for the first page, or both identify the last
+  // returned row for stable keyset pagination ordered by server-recorded time.
+  string page_before_recorded_at = 6;
+  string page_before_evidence_id = 7;
+}
+
+message ListEvidenceResult {
+  repeated EvidenceRecord entries = 1;
+  uint32 effective_limit = 2;
+  string next_recorded_at = 3;
+  string next_evidence_id = 4;
+}
+
+// Mirrors Lodestar's durable verdict vocabulary. A verdict is not a generic
+// success flag: drift and needs-human remain visible review states, while a
+// violation remains blocked rather than being softened to pending review.
+enum ConformanceVerdict {
+  CONFORMANCE_VERDICT_UNSPECIFIED = 0;
+  CONFORMANCE_VERDICT_ALIGNED = 1;
+  CONFORMANCE_VERDICT_DRIFT = 2;
+  CONFORMANCE_VERDICT_VIOLATION = 3;
+  CONFORMANCE_VERDICT_NEEDS_HUMAN = 4;
+}
+
+// Derived from the initial verdict. Future reviewed human decisions are a
+// separate typed action; recording a conformance result does not pretend an
+// enrolled node can approve its own drift or needs-human outcome.
+enum ConformanceReviewState {
+  CONFORMANCE_REVIEW_STATE_UNSPECIFIED = 0;
+  CONFORMANCE_REVIEW_STATE_NOT_REQUIRED = 1;
+  CONFORMANCE_REVIEW_STATE_PENDING = 2;
+  CONFORMANCE_REVIEW_STATE_BLOCKED = 3;
+}
+
+// A closed, body-free summary of why a conformance outcome needs attention.
+// The full private finding set remains represented by finding_count and
+// findings_digest; these codes let Bridge explain a result without carrying
+// arbitrary terminal output, source excerpts, or unbounded free-form text.
+enum ConformanceFindingCode {
+  CONFORMANCE_FINDING_CODE_UNSPECIFIED = 0;
+  CONFORMANCE_FINDING_CODE_EVIDENCE_MISSING = 1;
+  CONFORMANCE_FINDING_CODE_EVIDENCE_STALE = 2;
+  CONFORMANCE_FINDING_CODE_SCOPE_UNCOVERED = 3;
+  CONFORMANCE_FINDING_CODE_POLICY_DRIFT = 4;
+  CONFORMANCE_FINDING_CODE_POLICY_VIOLATION = 5;
+  CONFORMANCE_FINDING_CODE_RECEIPT_MISSING = 6;
+  CONFORMANCE_FINDING_CODE_HUMAN_REVIEW_REQUIRED = 7;
+}
+
+// Records one node-reported conformance outcome for an existing Evidence
+// record. The server verifies that the reporting node created that evidence;
+// human acceptance and override remain separate reviewed actions. Findings
+// stay at their source; this carries only a count and SHA-256 digest.
+message RecordConformanceRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string task_id = 3;
+  string evidence_id = 4;
+  ConformanceVerdict verdict = 5;
+  uint32 finding_count = 6;
+  bytes findings_digest = 7;
+  // Node-reported check time. The server orders history by recorded_at, so
+  // this value cannot promote a future-dated result over a later record.
+  string reported_checked_at = 8;
+  EvidenceAuthentication authentication = 9;
+  // Signed caller-selected identity used to make retrying a lost response
+  // safe. Reuse with different logical fields is refused.
+  string idempotency_key = 10;
+  // The active local Constitution version the evaluator checked. This remains
+  // a signed node assertion; human review and policy approval are separate.
+  string reported_constitution_version = 11;
+  // Bounded closed-code summaries. They are signed with the result and never
+  // carry the private free-form finding bodies represented by findings_digest.
+  repeated ConformanceFindingCode finding_codes = 12;
+}
+
+message ConformanceRecord {
+  string conformance_id = 1;
+  string tenant_id = 2;
+  string repository_id = 3;
+  string task_id = 4;
+  string evidence_id = 5;
+  ConformanceVerdict verdict = 6;
+  uint32 finding_count = 7;
+  bytes findings_digest = 8;
+  ConformanceReviewState review_state = 9;
+  string reported_checked_at = 10;
+  string evaluated_by = 11;
+  string recorded_at = 12;
+  string idempotency_key = 13;
+  bool idempotent_replay = 14;
+  string reported_constitution_version = 15;
+  repeated ConformanceFindingCode finding_codes = 16;
+}
+
+message ListConformanceRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string task_id = 3;
+  uint32 limit = 4;
+  EvidenceAuthentication authentication = 5;
+  string page_before_recorded_at = 6;
+  string page_before_conformance_id = 7;
+}
+
+message ListConformanceResult {
+  repeated ConformanceRecord entries = 1;
+  uint32 effective_limit = 2;
+  string next_recorded_at = 3;
+  string next_conformance_id = 4;
+}
+
 // The enrolled node's proof for a ConstitutionService request. A distinct
 // message, domain, and nonce space from KnowledgeAuthentication: a
 // constitution snapshot has no equivalent of a knowledge statement's fields,
@@ -427,6 +620,14 @@ message PublishConstitutionSnapshotRequest {
   string status = 5;
   repeated ConstitutionClause clauses = 6;
   ConstitutionAuthentication authentication = 7;
+  // ADR-0121 decision 1: fields for the immutable publication history entry
+  // recorded beside the mutable snapshot above. `schema_version` is this
+  // publication's own protocol/schema version, distinct from `version` (the
+  // constitution's version number). `source_ref` and `content_digest` are
+  // optional -- empty means the publisher supplied neither.
+  string schema_version = 8;
+  string source_ref = 9;
+  bytes content_digest = 10;
 }
 
 message PublishConstitutionSnapshotResult {
@@ -454,6 +655,114 @@ enum ClaimLeaseOutcome {
   CLAIM_LEASE_OUTCOME_REJECTED = 2;
 }
 
+// ADR-0116: these are bounded facts a supervisor publishes only after the
+// NodeSync connection challenge established its enrolled node identity. They
+// do not carry directives, local commands, source material, or opaque payloads.
+enum SupervisorDirectiveCapability {
+  SUPERVISOR_DIRECTIVE_CAPABILITY_UNSPECIFIED = 0;
+  SUPERVISOR_DIRECTIVE_CAPABILITY_NOTIFY = 1;
+  SUPERVISOR_DIRECTIVE_CAPABILITY_PROMPT = 2;
+  SUPERVISOR_DIRECTIVE_CAPABILITY_ASSIGN = 3;
+  SUPERVISOR_DIRECTIVE_CAPABILITY_STEER = 4;
+  SUPERVISOR_DIRECTIVE_CAPABILITY_PAUSE = 5;
+  SUPERVISOR_DIRECTIVE_CAPABILITY_RESUME = 6;
+  SUPERVISOR_DIRECTIVE_CAPABILITY_DRAIN = 7;
+  SUPERVISOR_DIRECTIVE_CAPABILITY_TERMINATE_GRACEFULLY = 8;
+  SUPERVISOR_DIRECTIVE_CAPABILITY_TERMINATE_FORCE = 9;
+}
+
+enum SupervisorOutboxDurability {
+  SUPERVISOR_OUTBOX_DURABILITY_UNSPECIFIED = 0;
+  SUPERVISOR_OUTBOX_DURABILITY_PERSISTENT = 1;
+  SUPERVISOR_OUTBOX_DURABILITY_EPHEMERAL = 2;
+}
+
+enum SupervisorRuntime {
+  SUPERVISOR_RUNTIME_UNSPECIFIED = 0;
+  SUPERVISOR_RUNTIME_LOCAL_MACHINE = 1;
+  SUPERVISOR_RUNTIME_CLOUD_WORKER = 2;
+  SUPERVISOR_RUNTIME_PIPELINE = 3;
+  SUPERVISOR_RUNTIME_SERVICE = 4;
+}
+
+enum SupervisorWorkerState {
+  SUPERVISOR_WORKER_STATE_UNSPECIFIED = 0;
+  SUPERVISOR_WORKER_STATE_STARTED = 1;
+  SUPERVISOR_WORKER_STATE_CHECKPOINTED = 2;
+  SUPERVISOR_WORKER_STATE_PAUSED = 3;
+  SUPERVISOR_WORKER_STATE_DRAINING = 4;
+  SUPERVISOR_WORKER_STATE_TERMINATED = 5;
+  SUPERVISOR_WORKER_STATE_FAILED = 6;
+  SUPERVISOR_WORKER_STATE_DISCONNECTED = 7;
+  SUPERVISOR_WORKER_STATE_RECONNECTED = 8;
+  SUPERVISOR_WORKER_STATE_COMPLETED = 9;
+}
+
+enum SupervisorLifecycleReason {
+  SUPERVISOR_LIFECYCLE_REASON_UNSPECIFIED = 0;
+  SUPERVISOR_LIFECYCLE_REASON_CAPABILITY_MISSING = 1;
+  SUPERVISOR_LIFECYCLE_REASON_CHECKPOINT_FAILED = 2;
+  SUPERVISOR_LIFECYCLE_REASON_DIRECTIVE_EXPIRED = 3;
+  SUPERVISOR_LIFECYCLE_REASON_OUTBOX_UNAVAILABLE = 4;
+  SUPERVISOR_LIFECYCLE_REASON_PROTOCOL_UNSUPPORTED = 5;
+  SUPERVISOR_LIFECYCLE_REASON_SUPERVISOR_FAILED = 6;
+  SUPERVISOR_LIFECYCLE_REASON_WORKER_LOST = 7;
+}
+
+message SupervisorRegistration {
+  string supervisor_id = 1;
+  // Must equal the authenticated NodeSync producer identity.
+  string node_id = 2;
+  string supervisor_version = 3;
+  string protocol_version = 4;
+  repeated SupervisorDirectiveCapability supported_directives = 5;
+  bool supports_checkpoint = 6;
+  bool supports_force_termination = 7;
+  SupervisorOutboxDurability outbox_durability = 8;
+  bool recoverable_outbox = 9;
+}
+
+message SupervisorHeartbeat {
+  string supervisor_id = 1;
+}
+
+message SupervisorSession {
+  string supervisor_id = 1;
+  string session_id = 2;
+  string worker_id = 3;
+  SupervisorRuntime runtime = 4;
+  string started_at = 5;
+  SupervisorWorkerState state = 6;
+}
+
+message SupervisorLifecycleReceipt {
+  string supervisor_id = 1;
+  string session_id = 2;
+  string worker_id = 3;
+  string occurred_at = 4;
+  SupervisorWorkerState state = 5;
+  SupervisorLifecycleReason reason = 6;
+  string idempotency_key = 7;
+}
+
+enum SupervisorFrameOperation {
+  SUPERVISOR_FRAME_OPERATION_UNSPECIFIED = 0;
+  SUPERVISOR_FRAME_OPERATION_REGISTRATION = 1;
+  SUPERVISOR_FRAME_OPERATION_HEARTBEAT = 2;
+  SUPERVISOR_FRAME_OPERATION_SESSION = 3;
+  SUPERVISOR_FRAME_OPERATION_LIFECYCLE = 4;
+}
+
+// Acknowledges the durable outcome of one typed supervisor fact. It does not
+// imply that a directive was delivered or a worker performed arbitrary work.
+message SupervisorFrameReceipt {
+  SupervisorFrameOperation operation = 1;
+  string supervisor_id = 2;
+  string session_id = 3;
+  bool idempotent_replay = 4;
+  bool projection_advanced = 5;
+}
+
 message NodeFrame {
   oneof frame {
     Hello hello = 1;
@@ -461,6 +770,10 @@ message NodeFrame {
     Heartbeat heartbeat = 3;
     ChallengeResponse challenge_response = 4;
     DirectiveReceipt directive_receipt = 5;
+    SupervisorRegistration supervisor_registration = 6;
+    SupervisorHeartbeat supervisor_heartbeat = 7;
+    SupervisorSession supervisor_session = 8;
+    SupervisorLifecycleReceipt supervisor_lifecycle_receipt = 9;
   }
 }
 
@@ -473,6 +786,7 @@ message AckplaneFrame {
     Notice notice = 5;
     ConnectionChallenge connection_challenge = 6;
     AgentDirective agent_directive = 7;
+    SupervisorFrameReceipt supervisor_frame_receipt = 8;
   }
 }
 
@@ -758,6 +1072,42 @@ enum EnrollmentRejectionReason {
   ENROLLMENT_REJECTION_REASON_BINDING_MISMATCH = 4;
   ENROLLMENT_REJECTION_REASON_CHALLENGE_EXPIRED = 5;
   ENROLLMENT_REJECTION_REASON_CHALLENGE_ALREADY_USED = 6;
+}
+
+// The candidate's proof of possession of the exact key it asks about
+// (ADR-0122). Keyed on `key_fingerprint`, not `signing_key_id`: a node that
+// has never submitted an enrollment request has no server-assigned key id
+// yet, only the fingerprint of the Ed25519 key it generated locally.
+message EnrollmentStatusAuthentication {
+  string node_id = 1;
+  string key_fingerprint = 2;
+  string signed_at = 3;
+  bytes nonce = 4;
+  bytes signature = 5;
+}
+
+// Names the exact candidate binding being asked about, not a repository: a
+// bare repository-level query would let any caller who can reach the port
+// learn whether a tenant's repository has ever been enrolled by anyone.
+message EnrollmentStatusRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string candidate_node_id = 3;
+  string candidate_key_fingerprint = 4;
+  EnrollmentStatusAuthentication authentication = 5;
+}
+
+// `verified: false` means the caller did not prove possession of the exact
+// (tenant_id, repository_id, candidate_node_id, candidate_key_fingerprint)
+// binding it asked about -- an absent binding, a mismatched key, a stale
+// timestamp, a replayed nonce, and a forged signature all produce this
+// identical result, so a caller who is not the exact node it asked about
+// learns nothing (ADR-0122 decision 5). `state` is meaningful only when
+// `verified` is true; a revoked node's key still lets it learn it is
+// revoked (decision 6), since this RPC grants no new authority.
+message EnrollmentStatusResult {
+  bool verified = 1;
+  EnrollmentState state = 2;
 }
 
 message HelloAccepted {

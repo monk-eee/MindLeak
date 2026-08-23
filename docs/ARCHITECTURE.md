@@ -419,6 +419,17 @@ separator (`constitution_auth::CONSTITUTION_DOMAIN`), its own
 `ConstitutionOperation` enum, and its own
 `constitution_authentication_nonces` table.
 
+Beside that mutable active snapshot, `PublishConstitutionSnapshot` also
+records an immutable, append-only publication history entry (ADR-0121
+decision 1: `ConstitutionStore::record_publication`, table
+`constitution_publications`, keyed on `(tenant_id, repository_id,
+version_id)`). The immutable record is checked first: retrying an identical
+publication is an idempotent no-op, but publishing the same `version_id`
+under different content is refused before the mutable snapshot ever changes,
+so a rejected republish never silently moves the active pointer. Ackplane
+still never originates a publication itself (decision 2) — it verifies the
+publisher and stores the resulting projection.
+
 `TelemetryService` (`telemetry_store.rs`/`telemetry_service.rs`) is Ackplane's
 typed operational-telemetry domain (ADR-0105 decision 6): `RecordTelemetry`
 (tool/transport/directive/storage/projection observations, each with a bounded
@@ -457,8 +468,9 @@ tenant has not enrolled rather than leaking a distinguishable error:
 | `GET /api/v1/repositories/:repository_id/stranded-claims` | Its lease-expired delegated claims (`FleetStore::stranded_claims`) -- the complement of `/claims`, and what `recover` below needs an operator to discover rather than already know. |
 | `GET /api/v1/repositories/:repository_id/signing-keys` | Every enrolled signing key, judged as of now (`FleetStore::signing_keys`), reusing `signing_keys::judge` — the same rule an accepted envelope's own verification applies — rather than a second judgment invented for the health view. |
 | `GET /api/v1/repositories/:repository_id/knowledge` | Its recorded knowledge, recency-ordered (`KnowledgeStore::recall`, ADR-0106) — the same query the knowledge domain already exposes over gRPC, not a second one invented for the Bridge view. |
+| `GET /api/v1/repositories/:repository_id/graph` | A bounded Context Graph neighbourhood (`Projector::bounded_neighborhood`, ADR-0087), the same relevance-first traversal the projection worker already implements — wired to the Bridge for the first time rather than a new query. Optional `seeds` (comma-separated node ids; an absent value falls back to `Projector::sample_nodes`, the most recently touched nodes), `depth` (clamped 1-4), `max_nodes` (clamped 1-300), and `max_fanout` (clamped 1-30). Each edge's `effective_weight` is computed at response time from `base_weight`/`half_life_hours`/`updated_at`, mirroring `mindleak_core::decay::effective_weight` exactly — never stored. |
 | `GET /api/v1/repositories/:repository_id/constitution` | Its published constitution snapshot, if any (`ConstitutionStore::get_active`) — read-only; no adopt/tailor/reject/promote/waiver action is exposed here. |
-| `GET /api/v1/repositories/:repository_id/telemetry` | Its per-name current health (`TelemetryStore::read`, ADR-0105 decision 6) — lifetime `calls`/`errors` alongside `currently_failing`, derived from the most recent success/error rather than the lifetime count, so a resolved past error stops reading as an active fault once a later call succeeds. Bucketed time-series points are computed by the same query but not rendered by this route yet; the sparkline dashboard is a separate, later slice. |
+| `GET /api/v1/repositories/:repository_id/telemetry` | Its per-name current health (`TelemetryStore::read`, ADR-0105 decision 6) — lifetime `calls`/`errors` alongside `currently_failing`, derived from the most recent success/error rather than the lifetime count, so a resolved past error stops reading as an active fault once a later call succeeds. Rendered as tenant-scoped health cards, grouped by kind, at `GET /telemetry` (static HTML/JS). Bucketed time-series points are computed by the same query but not rendered anywhere yet; the sparkline dashboard remains a separate, later slice of task:60ba293846ec. |
 | `POST /api/v1/repositories/:repository_id/tasks/:task_id/recover` | Bridge's first claim **mutation** (ADR-0111): recovers a stranded claim by calling `ClaimStore::recover` directly, tenant-scoped and reason-required. `delegate`, `release`, and `renew` remain node-signed-only and are not exposed here. The handler resolves `expected_owner` itself via the new `FleetStore::claim_owner` (unlike `active_work`, this does not filter out an already-expired lease), rather than trusting a caller-supplied value. |
 
 ### `editors/vscode` (extension)

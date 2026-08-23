@@ -1,0 +1,1 @@
+- **Bridge now provides a read-only delegation authority view at `/delegations`.** Operators can inspect tenant-scoped delegated authority envelopes and immutable grant/revocation history without grant, revoke, approval, credential, idempotency, raw-payload, or remote-execution controls.

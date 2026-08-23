@@ -1,0 +1,1 @@
+- **Ackplane now exposes a tenant- and repository-scoped delegation projection list for future authority inspection.** Active and revoked grants remain visible in durable update order, without adding any browser mutation control or exposing raw event payloads.

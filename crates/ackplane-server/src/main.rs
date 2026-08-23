@@ -5,6 +5,7 @@ use std::{fs, process::ExitCode};
 use ackplane_protocol::v1::{
     self, claim_delegation_service_server::ClaimDelegationServiceServer,
     constitution_service_server::ConstitutionServiceServer,
+    evidence_service_server::EvidenceServiceServer,
     knowledge_service_server::KnowledgeServiceServer,
     node_enrollment_service_server::NodeEnrollmentServiceServer,
     node_sync_service_server::NodeSyncServiceServer,
@@ -17,11 +18,14 @@ use ackplane_server::{
     constitution_store::ConstitutionStore,
     enrollment_service::NodeEnrollmentService,
     enrollment_store::EnrollmentStore,
+    evidence_service::EvidenceGrpcService,
+    evidence_store::EvidenceStore,
     knowledge_service::KnowledgeGrpcService,
     knowledge_store::KnowledgeStore,
     ledger::LedgerStore,
     projection::{run_projection_worker, Projector},
     service::NodeSyncService,
+    supervisor_store::SupervisorStore,
     telemetry_service::TelemetryGrpcService,
     telemetry_store::TelemetryStore,
     ServerConfig,
@@ -88,6 +92,15 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            let evidence_store = match EvidenceStore::connect(config.database_url()).await {
+                Ok(store) => store,
+                Err(error) => {
+                    eprintln!(
+                        "ackplane-server: could not connect to the configured evidence store: {error}"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            };
             let constitution_store = match ConstitutionStore::connect(config.database_url()).await {
                 Ok(store) => store,
                 Err(error) => {
@@ -106,6 +119,15 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            let supervisor_store = match SupervisorStore::connect(config.database_url()).await {
+                Ok(store) => store,
+                Err(error) => {
+                    eprintln!(
+                        "ackplane-server: could not connect to the configured supervisor store: {error}"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            };
             // ADR-0086 clause 9: a projection worker reads the durable ledger
             // through checkpoints on its own cadence, decoupled from request
             // handling; a stalled or errored tick never stops the gRPC server.
@@ -115,7 +137,7 @@ async fn main() -> ExitCode {
             ));
 
             println!(
-                "ackplane-server: serving NodeSyncService.Synchronize, NodeEnrollmentService, ClaimDelegationService, KnowledgeService, ConstitutionService, and TelemetryService"
+                "ackplane-server: serving NodeSyncService.Synchronize, NodeEnrollmentService, ClaimDelegationService, KnowledgeService, EvidenceService, ConstitutionService, TelemetryService, and authenticated supervisor facts"
             );
             let server = tonic::transport::Server::builder();
             let mut server = match tls {
@@ -129,13 +151,16 @@ async fn main() -> ExitCode {
                 None => server,
             };
             match server
-                .add_service(NodeSyncServiceServer::new(NodeSyncService::new(
-                    ledger,
-                    v1::FlowControl {
-                        max_in_flight_batches: config.max_in_flight_batches,
-                        max_batch_bytes: config.max_batch_bytes,
-                    },
-                )))
+                .add_service(NodeSyncServiceServer::new(
+                    NodeSyncService::with_supervisor_store(
+                        ledger,
+                        supervisor_store,
+                        v1::FlowControl {
+                            max_in_flight_batches: config.max_in_flight_batches,
+                            max_batch_bytes: config.max_batch_bytes,
+                        },
+                    ),
+                ))
                 .add_service(NodeEnrollmentServiceServer::new(
                     NodeEnrollmentService::new(enrollment_store),
                 ))
@@ -144,6 +169,9 @@ async fn main() -> ExitCode {
                 ))
                 .add_service(KnowledgeServiceServer::new(KnowledgeGrpcService::new(
                     knowledge_store,
+                )))
+                .add_service(EvidenceServiceServer::new(EvidenceGrpcService::new(
+                    evidence_store,
                 )))
                 .add_service(ConstitutionServiceServer::new(
                     ConstitutionGrpcService::new(constitution_store),
