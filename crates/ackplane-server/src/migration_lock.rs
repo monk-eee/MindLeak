@@ -77,6 +77,8 @@ pub(crate) mod key {
     pub(crate) const ENROLLMENT_STATUS_AUTHENTICATION_NONCES: i64 = 25;
     /// `migrations/0026_constitution_publication_history.sql`
     pub(crate) const CONSTITUTION_PUBLICATION_HISTORY: i64 = 26;
+    /// `migrations/0027_live_feed.sql`
+    pub(crate) const LIVE_FEED: i64 = 27;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

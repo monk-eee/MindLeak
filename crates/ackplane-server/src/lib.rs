@@ -46,6 +46,7 @@ pub mod knowledge_service;
 pub mod knowledge_signature;
 pub mod knowledge_store;
 pub mod ledger;
+pub mod live_feed_store;
 mod migration_lock;
 pub mod projection;
 pub mod readiness;

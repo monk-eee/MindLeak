@@ -6,17 +6,18 @@
 //!
 //! It applies no migration logic of its own: [`LedgerStore::connect`],
 //! [`Projector::connect`], [`EvidenceStore::connect`],
-//! [`DelegationStore::connect`], and [`SupervisorStore::connect`] each run
-//! their own idempotent `CREATE TABLE IF NOT EXISTS` migration as a side
-//! effect of connecting, so this binary's only job is to open all five
-//! connections in the Compose topology's `migrate` service and report
-//! success or failure.
+//! [`DelegationStore::connect`], [`SupervisorStore::connect`], and
+//! [`LiveFeedStore::connect`] each run their own idempotent `CREATE TABLE IF
+//! NOT EXISTS` migration as a side effect of connecting, so this binary's
+//! only job is to open all six connections in the Compose topology's
+//! `migrate` service and report success or failure.
 
 use std::process::ExitCode;
 
 use ackplane_server::delegation_store::DelegationStore;
 use ackplane_server::evidence_store::EvidenceStore;
 use ackplane_server::ledger::LedgerStore;
+use ackplane_server::live_feed_store::LiveFeedStore;
 use ackplane_server::projection::Projector;
 use ackplane_server::supervisor_store::SupervisorStore;
 
@@ -35,8 +36,8 @@ async fn main() -> ExitCode {
     }
 
     println!(
-        "ackplane-migrate: ledger, projection, evidence, delegation, and supervisor schemas are \
-         up to date"
+        "ackplane-migrate: ledger, projection, evidence, delegation, supervisor, and live feed \
+         schemas are up to date"
     );
     ExitCode::SUCCESS
 }
@@ -57,6 +58,9 @@ async fn migrate(database_url: &str) -> Result<(), String> {
     SupervisorStore::connect(database_url)
         .await
         .map_err(|error| format!("supervisor schema failed: {error}"))?;
+    LiveFeedStore::connect(database_url)
+        .await
+        .map_err(|error| format!("live feed schema failed: {error}"))?;
     Ok(())
 }
 
@@ -212,6 +216,45 @@ mod tests {
                 "supervisor_lifecycle_receipts".to_string(),
                 "supervisor_registrations".to_string(),
                 "supervisor_sessions".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_runner_applies_live_feed_schema() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        migrate(&database_url)
+            .await
+            .expect("migration runner must apply the live feed schema");
+        let (client, connection) = tokio_postgres::connect(&database_url, NoTls)
+            .await
+            .expect("connect test database after migration");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let tables = client
+            .query(
+                "SELECT table_name \
+                 FROM information_schema.tables \
+                 WHERE table_schema = current_schema() \
+                   AND table_name IN ('live_feed_heads', 'live_feed_events') \
+                 ORDER BY table_name",
+                &[],
+            )
+            .await
+            .expect("query live feed schema")
+            .into_iter()
+            .map(|row| row.get::<_, String>("table_name"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            tables,
+            vec![
+                "live_feed_events".to_string(),
+                "live_feed_heads".to_string()
             ]
         );
     }

@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MindLeak Bridge Live Feed</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --canvas: #f7f5ef;
+      --surface: #ffffff;
+      --surface-muted: #f1ede5;
+      --line: #ddd7cb;
+      --ink: #202a33;
+      --muted: #66737e;
+      --subtle: #8c989e;
+      --teal: #147d73;
+      --teal-soft: #def3ed;
+      --coral: #c95445;
+      --coral-soft: #f9e3de;
+      --amber: #ae7411;
+      --amber-soft: #fbf0d8;
+      --blue: #336f9f;
+      --blue-soft: #e3eef7;
+      --shadow: 0 12px 30px rgba(32, 42, 51, 0.08);
+      --focus: 0 0 0 3px rgba(51, 111, 159, 0.28);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --canvas: #152024;
+        --surface: #1d2a2f;
+        --surface-muted: #24343a;
+        --line: #3c4d51;
+        --ink: #edf4f3;
+        --muted: #b1c0c0;
+        --subtle: #839596;
+        --teal: #61d5c3;
+        --teal-soft: rgba(97, 213, 195, 0.15);
+        --coral: #ff9585;
+        --coral-soft: rgba(255, 149, 133, 0.14);
+        --amber: #f0bf62;
+        --amber-soft: rgba(240, 191, 98, 0.16);
+        --blue: #91c7ed;
+        --blue-soft: rgba(145, 199, 237, 0.16);
+        --shadow: 0 16px 34px rgba(0, 0, 0, 0.24);
+        --focus: 0 0 0 3px rgba(145, 199, 237, 0.32);
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      color: var(--ink);
+      background-color: var(--canvas);
+      background-image: linear-gradient(90deg, rgba(20, 125, 115, 0.04) 1px, transparent 1px), linear-gradient(rgba(20, 125, 115, 0.04) 1px, transparent 1px);
+      background-size: 28px 28px;
+      font-family: "Segoe UI Variable", "Aptos", system-ui, sans-serif;
+      letter-spacing: 0;
+    }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, input:focus-visible { outline: none; box-shadow: var(--focus); }
+    .shell { width: min(1180px, calc(100% - 32px)); margin: 0 auto; }
+    header { border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--canvas) 92%, transparent); backdrop-filter: blur(12px); }
+    .topbar { min-height: 72px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+    .brand { display: flex; align-items: center; gap: 12px; text-decoration: none; color: inherit; }
+    .mark { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid var(--teal); border-radius: 6px; color: var(--teal); font-weight: 800; }
+    .brand-name { margin: 0; font-size: 1rem; font-weight: 760; }
+    .brand-name span { color: var(--subtle); font-weight: 600; }
+    .topbar nav { display: flex; gap: 16px; font-size: 0.86rem; }
+    .topbar nav a { color: var(--muted); text-decoration: none; }
+    .topbar nav a:hover { color: var(--ink); }
+    main { padding: 38px 0 58px; }
+    .eyebrow { margin: 0 0 8px; color: var(--teal); font-size: 0.76rem; font-weight: 760; letter-spacing: 0.08em; text-transform: uppercase; }
+    h1 { max-width: 720px; margin: 0; font-size: clamp(2rem, 4vw, 3.5rem); line-height: 1.04; font-weight: 780; }
+    .intro { max-width: 640px; margin: 16px 0 28px; color: var(--muted); line-height: 1.55; }
+    .control-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: end; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); }
+    .control-row label { display: grid; gap: 6px; font-size: 0.78rem; font-weight: 700; color: var(--muted); }
+    .control-row input { min-width: 0; padding: 10px 12px; color: var(--ink); background: var(--surface-muted); border: 1px solid var(--line); border-radius: 6px; }
+    .command { min-height: 42px; padding: 0 16px; border: 1px solid var(--ink); border-radius: 6px; background: var(--ink); color: var(--surface); font-weight: 700; }
+    .command.secondary { border-color: var(--line); background: transparent; color: var(--ink); }
+    .command:disabled { cursor: not-allowed; opacity: 0.5; }
+    .status-band { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px; align-items: center; margin: 22px 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+    .state-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--subtle); box-shadow: 0 0 0 4px var(--surface-muted); }
+    .state-dot[data-state="connected"] { background: var(--teal); }
+    .state-dot[data-state="reconnecting"], .state-dot[data-state="resyncing"], .state-dot[data-state="stale"] { background: var(--amber); }
+    .state-dot[data-state="disconnected"] { background: var(--coral); }
+    .state-copy { min-width: 0; }
+    .state-title { margin: 0; font-weight: 760; }
+    .state-detail { margin: 3px 0 0; color: var(--muted); font-size: 0.86rem; overflow-wrap: anywhere; }
+    .snapshot { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--line); }
+    .metric { min-height: 92px; padding: 16px; background: var(--surface); }
+    .metric-label { display: block; color: var(--subtle); font-size: 0.72rem; font-weight: 760; letter-spacing: 0.06em; text-transform: uppercase; }
+    .metric-value { display: block; margin-top: 8px; font-family: "Cascadia Code", Consolas, monospace; font-size: 0.9rem; font-weight: 700; overflow-wrap: anywhere; }
+    .feed-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 34px 0 12px; }
+    .feed-heading h2 { margin: 0; font-size: 1.15rem; }
+    .feed-heading span { color: var(--muted); font-size: 0.84rem; }
+    .event-list { display: grid; gap: 10px; }
+    .event-card { display: grid; grid-template-columns: 8px minmax(0, 1fr); overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: 0 3px 12px rgba(32, 42, 51, 0.04); }
+    .event-stripe { background: var(--blue); }
+    .event-card[data-change="attention_required"] .event-stripe, .event-card[data-change="failed"] .event-stripe { background: var(--coral); }
+    .event-card[data-change="healthy"] .event-stripe, .event-card[data-change="available"] .event-stripe { background: var(--teal); }
+    .event-content { padding: 15px 16px; }
+    .event-top { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+    .event-name { margin: 0; font-weight: 760; overflow-wrap: anywhere; }
+    .event-time { flex: 0 0 auto; color: var(--subtle); font-size: 0.78rem; }
+    .event-meta { display: flex; flex-wrap: wrap; gap: 8px; margin: 9px 0 0; color: var(--muted); font-size: 0.82rem; }
+    .tag { padding: 3px 7px; border-radius: 5px; background: var(--surface-muted); color: var(--muted); font-family: "Cascadia Code", Consolas, monospace; font-size: 0.74rem; }
+    .tag.reload { background: var(--amber-soft); color: var(--amber); }
+    .empty { padding: 38px 20px; border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); text-align: center; background: color-mix(in srgb, var(--surface) 84%, transparent); }
+    .hidden { display: none !important; }
+    #live-announcement { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+    @media (max-width: 760px) {
+      .shell { width: min(100% - 24px, 1180px); }
+      .topbar { min-height: 64px; }
+      .topbar nav { gap: 10px; font-size: 0.78rem; }
+      main { padding-top: 28px; }
+      .control-row { grid-template-columns: 1fr 1fr; }
+      .control-row label { grid-column: 1 / -1; }
+      .snapshot { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .event-top { align-items: flex-start; flex-direction: column; gap: 4px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="shell topbar">
+      <a class="brand" href="/" aria-label="MindLeak Bridge Fleet">
+        <span class="mark" aria-hidden="true">ML</span>
+        <p class="brand-name">mind leak <span>/ bridge</span></p>
+      </a>
+      <nav aria-label="Bridge navigation">
+        <a href="/">Fleet</a>
+        <a href="/live" aria-current="page">Live feed</a>
+      </nav>
+    </div>
+  </header>
+  <main class="shell" id="live-app" data-connection="disconnected">
+    <p class="eyebrow">Operations stream</p>
+    <h1>Live Feed</h1>
+    <p class="intro">A bounded view of accepted operations state. The page loads a repository snapshot before it opens the replayable event stream.</p>
+
+    <form class="control-row" id="repository-form">
+      <label for="repository-id">Repository
+        <input id="repository-id" name="repository_id" autocomplete="off" placeholder="repository identifier" required>
+      </label>
+      <button class="command" type="submit" id="connect-button">Load snapshot</button>
+      <button class="command secondary" type="button" id="reload-button">Reload snapshot</button>
+    </form>
+
+    <section class="status-band" aria-labelledby="connection-title">
+      <span class="state-dot" id="connection-dot" data-state="disconnected" aria-hidden="true"></span>
+      <div class="state-copy">
+        <p class="state-title" id="connection-title">Disconnected</p>
+        <p class="state-detail" id="connection-detail">Choose a repository to load its current snapshot.</p>
+      </div>
+    </section>
+
+    <section class="snapshot" aria-label="Repository snapshot">
+      <div class="metric"><span class="metric-label">Repository</span><span class="metric-value" id="snapshot-repository">--</span></div>
+      <div class="metric"><span class="metric-label">Freshness</span><span class="metric-value" id="snapshot-freshness">--</span></div>
+      <div class="metric"><span class="metric-label">Projection position</span><span class="metric-value" id="snapshot-projection">--</span></div>
+      <div class="metric"><span class="metric-label">Newest cursor</span><span class="metric-value" id="snapshot-cursor">--</span></div>
+    </section>
+
+    <div class="feed-heading">
+      <h2>Operations</h2>
+      <span id="event-count">0 events</span>
+    </div>
+    <div class="empty" id="empty-state">Load a snapshot to begin the live operations view.</div>
+    <section class="event-list" id="event-list" aria-label="Live operations events"></section>
+    <p id="live-announcement" aria-live="polite" aria-atomic="true"></p>
+  </main>
+  <script>
+    const app = document.getElementById("live-app");
+    const form = document.getElementById("repository-form");
+    const repositoryInput = document.getElementById("repository-id");
+    const connectButton = document.getElementById("connect-button");
+    const reloadButton = document.getElementById("reload-button");
+    const connectionDot = document.getElementById("connection-dot");
+    const connectionTitle = document.getElementById("connection-title");
+    const connectionDetail = document.getElementById("connection-detail");
+    const announcement = document.getElementById("live-announcement");
+    const eventList = document.getElementById("event-list");
+    const emptyState = document.getElementById("empty-state");
+    const eventCount = document.getElementById("event-count");
+    const snapshotRepository = document.getElementById("snapshot-repository");
+    const snapshotFreshness = document.getElementById("snapshot-freshness");
+    const snapshotProjection = document.getElementById("snapshot-projection");
+    const snapshotCursor = document.getElementById("snapshot-cursor");
+    const maximumEvents = 50;
+    let stream = null;
+    let latestCursor = null;
+    let events = [];
+
+    function setConnection(state, title, detail) {
+      app.dataset.connection = state;
+      connectionDot.dataset.state = state;
+      connectionTitle.textContent = title;
+      connectionDetail.textContent = detail;
+      announcement.textContent = `${title}. ${detail}`;
+    }
+
+    function formatTime(seconds) {
+      return Number.isFinite(seconds) ? new Date(seconds * 1000).toLocaleTimeString() : "time unavailable";
+    }
+
+    function setRepositoryInUrl(repositoryId) {
+      const locationUrl = new URL(window.location.href);
+      locationUrl.searchParams.set("repository_id", repositoryId);
+      window.history.replaceState({}, "", locationUrl);
+    }
+
+    function disconnect() {
+      if (stream) {
+        stream.close();
+        stream = null;
+      }
+    }
+
+    function renderSnapshot(snapshot) {
+      snapshotRepository.textContent = snapshot.repository_id || "--";
+      snapshotFreshness.textContent = snapshot.freshness || "unknown";
+      snapshotProjection.textContent = snapshot.projection_stream_position ?? "not projected";
+    }
+
+    function renderEvents() {
+      eventList.replaceChildren();
+      eventCount.textContent = `${events.length} ${events.length === 1 ? "event" : "events"}`;
+      emptyState.classList.toggle("hidden", events.length > 0);
+      for (const event of events) {
+        const card = document.createElement("article");
+        card.className = "event-card";
+        card.dataset.change = event.change_kind;
+        const stripe = document.createElement("div");
+        stripe.className = "event-stripe";
+        const content = document.createElement("div");
+        content.className = "event-content";
+        const top = document.createElement("div");
+        top.className = "event-top";
+        const name = document.createElement("p");
+        name.className = "event-name";
+        name.textContent = `${event.event_kind} / ${event.resource_type}`;
+        const time = document.createElement("span");
+        time.className = "event-time";
+        time.textContent = formatTime(event.emitted_at_seconds);
+        top.append(name, time);
+        const meta = document.createElement("div");
+        meta.className = "event-meta";
+        for (const value of [event.resource_id, event.change_kind, event.projection_freshness].filter(Boolean)) {
+          const tag = document.createElement("span");
+          tag.className = "tag";
+          tag.textContent = value;
+          meta.append(tag);
+        }
+        if (event.snapshot_reload) {
+          const tag = document.createElement("span");
+          tag.className = "tag reload";
+          tag.textContent = "snapshot reload";
+          meta.append(tag);
+        }
+        content.append(top, meta);
+        card.append(stripe, content);
+        eventList.append(card);
+      }
+    }
+
+    function handleOperation(message) {
+      const event = JSON.parse(message.data);
+      if (!event.cursor || !event.event_kind || !event.resource_id) {
+        setConnection("stale", "Stream event ignored", "The event was incomplete. Reload the repository snapshot.");
+        return;
+      }
+      latestCursor = event.cursor;
+      snapshotCursor.textContent = latestCursor;
+      events = [event, ...events.filter((existing) => existing.cursor !== event.cursor)].slice(0, maximumEvents);
+      renderEvents();
+      setConnection("connected", "Connected", `Applied ${event.event_kind} for ${event.resource_id}.`);
+    }
+
+    function connectStream(repositoryId) {
+      disconnect();
+      const streamUrl = new URL("/api/v1/live", window.location.origin);
+      streamUrl.searchParams.set("repository_id", repositoryId);
+      setConnection("reconnecting", "Connecting", "Opening the replayable operations stream.");
+      stream = new EventSource(streamUrl);
+      stream.addEventListener("open", () => {
+        setConnection("connected", "Connected", "Receiving bounded operations events.");
+      });
+      stream.addEventListener("operation", handleOperation);
+      stream.addEventListener("resync_required", () => {
+        disconnect();
+        setConnection("resyncing", "Resync required", "The stream cannot safely replay this cursor. Reload the repository snapshot.");
+      });
+      stream.addEventListener("error", () => {
+        if (navigator.onLine) {
+          setConnection("reconnecting", "Reconnecting", "Waiting for the browser to resume the operations stream.");
+        }
+      });
+    }
+
+    async function loadSnapshot() {
+      const repositoryId = repositoryInput.value.trim();
+      if (!repositoryId) {
+        repositoryInput.focus();
+        setConnection("disconnected", "Repository required", "Enter a repository identifier before loading the snapshot.");
+        return;
+      }
+      disconnect();
+      connectButton.disabled = true;
+      reloadButton.disabled = true;
+      setConnection("stale", "Loading snapshot", "Fetching the current repository state before opening the stream.");
+      try {
+        const response = await fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}`);
+        if (!response.ok) {
+          throw new Error(response.status === 404 ? "Repository is not visible to this tenant." : "Snapshot is unavailable.");
+        }
+        const snapshot = await response.json();
+        setRepositoryInUrl(repositoryId);
+        renderSnapshot(snapshot);
+        events = [];
+        latestCursor = null;
+        snapshotCursor.textContent = "waiting for event";
+        renderEvents();
+        connectStream(repositoryId);
+      } catch (error) {
+        setConnection("disconnected", "Snapshot unavailable", error.message || "The repository snapshot could not be loaded.");
+      } finally {
+        connectButton.disabled = false;
+        reloadButton.disabled = false;
+      }
+    }
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      loadSnapshot();
+    });
+    reloadButton.addEventListener("click", loadSnapshot);
+    window.addEventListener("offline", () => {
+      disconnect();
+      setConnection("disconnected", "Disconnected", "Network connectivity is unavailable.");
+    });
+    window.addEventListener("online", () => {
+      if (repositoryInput.value.trim()) loadSnapshot();
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        disconnect();
+        setConnection("stale", "Paused while hidden", "Reload the snapshot when this view becomes visible again.");
+      } else if (repositoryInput.value.trim()) {
+        loadSnapshot();
+      }
+    });
+
+    const initialRepository = new URLSearchParams(window.location.search).get("repository_id");
+    if (initialRepository) {
+      repositoryInput.value = initialRepository;
+      loadSnapshot();
+    }
+  </script>
+</body>
+</html>
