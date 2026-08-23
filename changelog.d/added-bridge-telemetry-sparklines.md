@@ -1,0 +1,1 @@
+- **Bridge telemetry now exposes bounded server-authoritative bucket history as accessible sparklines.** The page preserves current health versus lifetime errors, supplies a textual latest-bucket alternative, and refreshes only while the page is visible; it does not synthesize telemetry or add operational controls.

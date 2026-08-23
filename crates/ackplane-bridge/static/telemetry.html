@@ -98,6 +98,7 @@
     .health.failing::before { background: var(--danger); }
     .card-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; color: var(--muted); font-size: .76rem; }
     .card-stats b { display: block; color: var(--soft); font-size: .64rem; letter-spacing: .04em; text-transform: uppercase; margin-bottom: 2px; }
+    .sparkline-wrap { margin-top: 10px; } .sparkline { display: block; width: 100%; height: 44px; border-radius: 4px; background: var(--surface-soft); } .sparkline-meta { display: block; margin-top: 4px; color: var(--soft); font-size: .68rem; }
     .empty { padding: 34px 18px; color: var(--soft); font-size: .83rem; text-align: center; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
     .hidden { display: none !important; }
     @media (max-width: 850px) { .toolbar { grid-template-columns: 1fr; } .toolbar .command { width: 100%; } .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
@@ -135,6 +136,7 @@
     <div id="sections" aria-live="polite"></div>
   </main>
   <script>
+    const REFRESH_INTERVAL_MS = 15_000;
     const KIND_LABELS = { 0: "Unspecified", 1: "Tool", 2: "Transport", 3: "Directive", 4: "Storage", 5: "Projection" };
     const els = {
       form: document.getElementById("filters"),
@@ -153,9 +155,15 @@
     const when = (seconds) => Number.isFinite(seconds) ? new Date(seconds * 1000).toLocaleString() : "never";
     const setMessage = (text, error = false) => { els.message.textContent = text; els.message.classList.toggle("error", error); };
     const endpoint = () => `/api/v1/repositories/${encodeURIComponent(els.repository.value.trim())}/telemetry`;
-    const metricCard = (metric) => `<div class="card"><div class="card-head"><span class="card-name">${escape(metric.name)}</span><span class="health ${metric.currently_failing ? "failing" : "healthy"}">${metric.currently_failing ? "Failing" : "Healthy"}</span></div><div class="card-stats"><div><b>Calls</b>${escape(metric.calls)}</div><div><b>Errors</b>${escape(metric.errors)}</div><div><b>Avg duration</b>${escape(Math.round(metric.average_duration_ms))} ms</div><div><b>Last success</b>${escape(when(metric.last_success_at_seconds))}</div><div><b>Last error</b>${escape(when(metric.last_error_at_seconds))}</div></div></div>`;
+    let latestResult = null;
+    const seriesKey = (kind, name) => `${kind}:${name}`;
+    const latestBucketText = (points) => { const point = points[points.length - 1]; return point ? `${when(point.bucket_start_at_seconds)}: ${point.calls} calls / ${point.errors} errors in latest bucket` : "No buckets recorded"; };
+    const metricCard = (metric, points) => `<div class="card"><div class="card-head"><span class="card-name">${escape(metric.name)}</span><span class="health ${metric.currently_failing ? "failing" : "healthy"}">${metric.currently_failing ? "Failing" : "Healthy"}</span></div><div class="card-stats"><div><b>Calls</b>${escape(metric.calls)}</div><div><b>Errors</b>${escape(metric.errors)}</div><div><b>Avg duration</b>${escape(Math.round(metric.average_duration_ms))} ms</div><div><b>Last success</b>${escape(when(metric.last_success_at_seconds))}</div><div><b>Last error</b>${escape(when(metric.last_error_at_seconds))}</div></div><div class="sparkline-wrap"><canvas class="sparkline" width="260" height="44" role="img" aria-label="${escape(metric.name)} call history" data-kind="${escape(metric.kind)}" data-name="${escape(metric.name)}"></canvas><span class="sparkline-meta">${escape(latestBucketText(points))}</span></div></div>`;
+    function drawSparkline(canvas, points, failing) { const context = canvas.getContext("2d"); if (!context) return; const bounds = canvas.getBoundingClientRect(); const ratio = window.devicePixelRatio || 1; const width = Math.max(1, Math.floor(bounds.width * ratio)); const height = Math.max(1, Math.floor(bounds.height * ratio)); canvas.width = width; canvas.height = height; context.scale(ratio, ratio); const cssWidth = Math.max(1, bounds.width); const cssHeight = Math.max(1, bounds.height); context.clearRect(0, 0, cssWidth, cssHeight); const values = points.map(point => point.calls); const maximum = Math.max(...values, 1); const color = failing ? "#c03d58" : "#169c99"; context.strokeStyle = color; context.lineWidth = 2; context.beginPath(); values.forEach((value, index) => { const x = values.length < 2 ? cssWidth / 2 : index * cssWidth / (values.length - 1); const y = cssHeight - 5 - (value / maximum) * (cssHeight - 10); if (index === 0) context.moveTo(x, y); else context.lineTo(x, y); }); context.stroke(); if (values.length === 1) { context.fillStyle = color; context.beginPath(); context.arc(cssWidth / 2, cssHeight / 2, 3, 0, Math.PI * 2); context.fill(); } }
     const draw = (result) => {
+      latestResult = result;
       const metrics = result.metrics || [];
+      const series = new Map((result.series || []).map(entry => [seriesKey(entry.kind, entry.name), entry.points || []]));
       els.summary.classList.remove("hidden");
       els.summaryTotal.textContent = metrics.length;
       els.summaryFailing.textContent = metrics.filter(metric => metric.currently_failing).length;
@@ -175,24 +183,26 @@
         .sort(([a], [b]) => a - b)
         .map(([kind, entries]) => `<div class="kind-section"><h3>${escape(KIND_LABELS[kind] || `Kind ${kind}`)}</h3><div class="kind-grid">${entries
           .sort((a, b) => a.name.localeCompare(b.name))
-          .map(metricCard)
+          .map(metric => metricCard(metric, series.get(seriesKey(metric.kind, metric.name)) || []))
           .join("")}</div></div>`)
         .join("");
+      document.querySelectorAll("canvas.sparkline").forEach(canvas => { const metric = metrics.find(entry => String(entry.kind) === canvas.dataset.kind && entry.name === canvas.dataset.name); if (metric) drawSparkline(canvas, series.get(seriesKey(metric.kind, metric.name)) || [], metric.currently_failing); });
     };
-    async function load() {
-      if (!els.form.reportValidity()) return;
-      setMessage("Loading telemetry...");
-      els.summary.classList.add("hidden");
-      els.sections.innerHTML = "";
+    async function load(refresh = false) {
+      if (!refresh && !els.form.reportValidity()) return;
+      if (!els.repository.value.trim()) return;
+      if (!refresh) { setMessage("Loading telemetry..."); els.summary.classList.add("hidden"); els.sections.innerHTML = ""; }
       try {
         const response = await fetch(endpoint());
         if (!response.ok) throw new Error(response.status === 404 ? "Repository is outside the current scope." : `Telemetry request failed (${response.status}).`);
         draw(await response.json());
-        setMessage("Loaded.");
-        history.replaceState(null, "", `/telemetry?${new URLSearchParams({repository: els.repository.value.trim()})}`);
+        if (!refresh) { setMessage("Loaded."); history.replaceState(null, "", `/telemetry?${new URLSearchParams({repository: els.repository.value.trim()})}`); }
       } catch (error) { setMessage(error.message, true); }
     }
+    function startVisibleRefresh(load, intervalMs) { const refresh = () => { if (document.visibilityState === "visible" && els.repository.value.trim()) load(true); }; window.setInterval(refresh, intervalMs); document.addEventListener("visibilitychange", refresh); }
     els.form.addEventListener("submit", event => { event.preventDefault(); load(); });
+    window.addEventListener("resize", () => { if (latestResult) draw(latestResult); });
+    startVisibleRefresh(load, REFRESH_INTERVAL_MS);
     if (els.repository.value) load();
   </script>
 </body>
