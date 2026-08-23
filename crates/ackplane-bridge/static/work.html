@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MindLeak Bridge Work</title>
+  <style>
+    :root { color-scheme: light; --canvas:#f7f5ef; --surface:#fff; --line:#ddd7cb; --ink:#202a33; --muted:#66737e; --subtle:#8c989e; --teal:#147d73; --teal-soft:#def3ed; --amber:#ae7411; --amber-soft:#fbf0d8; --coral:#c95445; --coral-soft:#f9e3de; --focus:0 0 0 3px rgba(51,111,159,.28); }
+    @media (prefers-color-scheme: dark) { :root { color-scheme:dark; --canvas:#152024; --surface:#1d2a2f; --line:#3c4d51; --ink:#edf4f3; --muted:#b1c0c0; --subtle:#839596; --teal:#61d5c3; --teal-soft:rgba(97,213,195,.15); --amber:#f0bf62; --amber-soft:rgba(240,191,98,.16); --coral:#ff9585; --coral-soft:rgba(255,149,133,.14); --focus:0 0 0 3px rgba(145,199,237,.32); } }
+    * { box-sizing:border-box; }
+    body { min-height:100vh; margin:0; background:var(--canvas); color:var(--ink); font-family:"Segoe UI Variable",Aptos,system-ui,sans-serif; background-image:linear-gradient(90deg,rgba(20,125,115,.04) 1px,transparent 1px),linear-gradient(rgba(20,125,115,.04) 1px,transparent 1px); background-size:28px 28px; }
+    button,input,select { font:inherit; } button { cursor:pointer; } button:focus-visible,input:focus-visible,select:focus-visible { outline:none; box-shadow:var(--focus); }
+    .shell { width:min(1040px,calc(100% - 32px)); margin:0 auto; }
+    header { border-bottom:1px solid var(--line); background:color-mix(in srgb,var(--canvas) 92%,transparent); backdrop-filter:blur(12px); }
+    .topbar { min-height:72px; display:flex; align-items:center; justify-content:space-between; gap:16px; }
+    .brand { display:flex; align-items:center; gap:10px; text-decoration:none; color:inherit; } .mark { width:34px; height:34px; display:grid; place-items:center; border:1px solid var(--teal); border-radius:6px; color:var(--teal); font-weight:800; } .brand p { margin:0; font-weight:760; } .brand span { color:var(--subtle); font-weight:600; }
+    nav { display:flex; gap:16px; font-size:.86rem; } nav a { color:var(--muted); text-decoration:none; } nav a:hover { color:var(--ink); }
+    main { padding:38px 0 58px; } .eyebrow { margin:0 0 8px; color:var(--teal); font-size:.76rem; font-weight:760; letter-spacing:.08em; text-transform:uppercase; } h1 { margin:0; font-size:clamp(2rem,4vw,3.5rem); line-height:1.04; } .intro { max-width:680px; margin:16px 0 28px; color:var(--muted); line-height:1.55; }
+    form { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:10px; align-items:end; padding:16px; border:1px solid var(--line); border-radius:8px; background:var(--surface); } label { display:grid; gap:6px; color:var(--muted); font-size:.78rem; font-weight:700; } input,select { min-width:0; padding:10px 12px; border:1px solid var(--line); border-radius:6px; background:transparent; color:var(--ink); } button { min-height:42px; padding:0 16px; border:1px solid var(--ink); border-radius:6px; background:var(--ink); color:var(--surface); font-weight:700; } button:disabled { opacity:.5; cursor:not-allowed; }
+    .notice { margin:22px 0; padding:14px 16px; border:1px solid var(--amber); border-radius:8px; background:var(--amber-soft); color:var(--amber); } .notice[hidden] { display:none; }
+    h2 { margin:34px 0 12px; font-size:1.15rem; } table { width:100%; border-collapse:collapse; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:var(--surface); } th,td { padding:10px 12px; text-align:left; border-bottom:1px solid var(--line); font-size:.86rem; } th { color:var(--subtle); font-weight:760; text-transform:uppercase; font-size:.72rem; letter-spacing:.06em; } tbody tr:last-child td { border-bottom:none; } .badge { padding:2px 8px; border-radius:999px; font-size:.74rem; border:1px solid var(--line); } .badge[data-state="open"],.badge[data-state="claimed"] { border-color:var(--teal); color:var(--teal); } .badge[data-state="blocked"],.badge[data-state="waiting"] { border-color:var(--amber); color:var(--amber); } .badge[data-state="abandoned"] { border-color:var(--coral); color:var(--coral); }
+    .empty { padding:38px 20px; border:1px dashed var(--line); border-radius:8px; color:var(--muted); text-align:center; background:color-mix(in srgb,var(--surface) 84%,transparent); }
+    .pager { display:flex; justify-content:space-between; align-items:center; margin-top:14px; color:var(--muted); font-size:.84rem; } .pager button { min-height:36px; padding:0 12px; }
+    #announcement { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); clip-path:inset(50%); white-space:nowrap; }
+    @media (max-width:700px) { .shell { width:min(100% - 24px,1040px); } .topbar { min-height:64px; } nav { gap:10px; font-size:.78rem; } main { padding-top:28px; } form { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <header><div class="shell topbar"><a class="brand" href="/" aria-label="MindLeak Bridge Fleet"><span class="mark" aria-hidden="true">ML</span><p>mind leak <span>/ bridge</span></p></a><nav class="nav" aria-label="Industrial surfaces"><a href="/">Fleet</a><a href="/evidence">Evidence</a><a href="/telemetry">Telemetry</a><a href="/context">Context</a><a href="/knowledge">Knowledge</a><a href="/work" aria-current="page">Work</a><a href="/board-doctor">Board Doctor</a><a href="/supervisors">Supervisors</a><a href="/administration">Administration</a><a href="/delegations">Delegations</a><a href="/live">Live Feed</a><a aria-disabled="true">Design</a><a aria-disabled="true">Constitution</a></nav></div></header>
+  <main class="shell">
+    <p class="eyebrow">Industrial task projection</p><h1>Work</h1><p class="intro">The Ackplane-authoritative task projection for one repository (ADR-0120): title, goal, lifecycle state, allocation, and lease -- derived from the Work event log, never a mirror of a Local Lodestar board.</p>
+    <form id="repository-form"><label for="repository-id">Repository<input id="repository-id" name="repository_id" autocomplete="off" placeholder="repository identifier" required></label><label for="state-filter">State<select id="state-filter"><option value="">All</option><option value="open">Open</option><option value="claimed">Claimed</option><option value="waiting">Waiting</option><option value="paused">Paused</option><option value="blocked">Blocked</option><option value="in_review">In review</option><option value="completed">Completed</option><option value="abandoned">Abandoned</option></select></label><button id="load-work" type="submit">Load</button></form>
+    <p class="notice" id="notice" hidden></p>
+    <h2>Tasks</h2>
+    <table aria-label="Work tasks"><thead><tr><th>Task</th><th>Title</th><th>Goal</th><th>State</th><th>Owner</th><th>Updated</th></tr></thead><tbody id="rows"><tr><td colspan="6"><div class="empty">Load a repository to view its Work task list.</div></td></tr></tbody></table>
+    <div class="pager"><span id="pager-summary"></span><span><button type="button" id="prev-page">Previous</button> <button type="button" id="next-page">Next</button></span></div>
+    <p id="announcement" aria-live="polite" aria-atomic="true"></p>
+  </main>
+  <script>
+    const form=document.getElementById("repository-form"), input=document.getElementById("repository-id"), stateFilter=document.getElementById("state-filter"), button=document.getElementById("load-work"), notice=document.getElementById("notice"), rows=document.getElementById("rows"), announcement=document.getElementById("announcement"), summary=document.getElementById("pager-summary"), prevButton=document.getElementById("prev-page"), nextButton=document.getElementById("next-page");
+    let page=1; const pageSize=20;
+    function say(message, warning=false){ notice.hidden=!message; notice.textContent=message||""; notice.style.borderColor=warning?"var(--coral)":""; announcement.textContent=message||""; }
+    function formatTimestamp(seconds){ return typeof seconds==="number" ? new Date(seconds*1000).toLocaleString() : "--"; }
+    function render(result){ rows.replaceChildren(); if(result.items.length===0){ const row=document.createElement("tr"); const cell=document.createElement("td"); cell.colSpan=6; const empty=document.createElement("div"); empty.className="empty"; empty.textContent="No Work tasks match this filter."; cell.append(empty); row.append(cell); rows.append(row); }
+      for(const task of result.items){ const row=document.createElement("tr"); const cells=[task.task_id, task.title, task.goal_id||"--"]; for(const text of cells){ const cell=document.createElement("td"); cell.textContent=text; row.append(cell); } const stateCell=document.createElement("td"); const badge=document.createElement("span"); badge.className="badge"; badge.dataset.state=task.state; badge.textContent=task.state; stateCell.append(badge); row.append(stateCell); const ownerCell=document.createElement("td"); ownerCell.textContent=task.owner_id||"--"; row.append(ownerCell); const updatedCell=document.createElement("td"); updatedCell.textContent=formatTimestamp(task.updated_at_seconds); row.append(updatedCell); rows.append(row); }
+      const start=result.total===0?0:(result.page-1)*result.page_size+1; const end=Math.min(result.page*result.page_size, result.total); summary.textContent=`${start}-${end} of ${result.total}`; prevButton.disabled=result.page<=1; nextButton.disabled=end>=result.total;
+    }
+    async function load(){ const repositoryId=input.value.trim(); if(!repositoryId){ input.focus(); say("A repository identifier is required.",true); return; } button.disabled=true; say("Loading Work tasks."); try { const params=new URLSearchParams({page:String(page), page_size:String(pageSize)}); if(stateFilter.value) params.set("state", stateFilter.value); const response=await fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/work?${params}`); if(!response.ok) throw new Error(response.status===404?"Repository is not visible to this tenant.":"Work list is unavailable."); const result=await response.json(); const url=new URL(window.location.href); url.searchParams.set("repository_id",repositoryId); window.history.replaceState({},"",url); say(""); render(result); } catch(error) { say(error.message||"Work list is unavailable.",true); } finally { button.disabled=false; } }
+    form.addEventListener("submit",event=>{event.preventDefault();page=1;load();});
+    prevButton.addEventListener("click",()=>{ if(page>1){ page-=1; load(); } });
+    nextButton.addEventListener("click",()=>{ page+=1; load(); });
+    const initial=new URLSearchParams(window.location.search).get("repository_id"); if(initial){input.value=initial;load();}
+  </script>
+</body>
+</html>

@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 const REPLAY_BATCH_LIMIT: i64 = 100;
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
-const LIVE_FEED_PAGE: &str = include_str!("../static/live_feed.html");
+const LIVE_FEED_PAGE: &str = include_str!("../static/live-feed.html");
 
 /// Dependencies injected by the Bridge entry point when it merges Live Feed
 /// routes into the application.

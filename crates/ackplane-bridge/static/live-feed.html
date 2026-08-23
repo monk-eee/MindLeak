@@ -71,6 +71,7 @@
     .topbar nav { display: flex; gap: 16px; font-size: 0.86rem; }
     .topbar nav a { color: var(--muted); text-decoration: none; }
     .topbar nav a:hover { color: var(--ink); }
+    .topbar nav a[aria-disabled="true"] { color: var(--subtle); opacity: 0.55; cursor: default; pointer-events: none; }
     main { padding: 38px 0 58px; }
     .eyebrow { margin: 0 0 8px; color: var(--teal); font-size: 0.76rem; font-weight: 760; letter-spacing: 0.08em; text-transform: uppercase; }
     h1 { max-width: 720px; margin: 0; font-size: clamp(2rem, 4vw, 3.5rem); line-height: 1.04; font-weight: 780; }
@@ -130,9 +131,8 @@
         <span class="mark" aria-hidden="true">ML</span>
         <p class="brand-name">mind leak <span>/ bridge</span></p>
       </a>
-      <nav aria-label="Bridge navigation">
-        <a href="/">Fleet</a>
-        <a href="/live" aria-current="page">Live feed</a>
+      <nav class="nav" aria-label="Industrial surfaces">
+        <a href="/">Fleet</a><a href="/evidence">Evidence</a><a href="/telemetry">Telemetry</a><a href="/context">Context</a><a href="/knowledge">Knowledge</a><a href="/work">Work</a><a href="/board-doctor">Board Doctor</a><a href="/supervisors">Supervisors</a><a href="/administration">Administration</a><a href="/delegations">Delegations</a><a href="/live" aria-current="page">Live Feed</a><a aria-disabled="true">Design</a><a aria-disabled="true">Constitution</a>
       </nav>
     </div>
   </header>

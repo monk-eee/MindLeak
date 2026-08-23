@@ -5,7 +5,7 @@ use std::time::SystemTime;
 
 use tokio_postgres::{Client, NoTls};
 
-const MIGRATION: &str = include_str!("../migrations/0027_live_feed.sql");
+const MIGRATION: &str = include_str!("../migrations/0029_live_feed.sql");
 mod model;
 
 use model::{row_to_event, unique_cursor, validate_publication, validate_read};

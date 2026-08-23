@@ -77,8 +77,19 @@ pub(crate) mod key {
     pub(crate) const ENROLLMENT_STATUS_AUTHENTICATION_NONCES: i64 = 25;
     /// `migrations/0026_constitution_publication_history.sql`
     pub(crate) const CONSTITUTION_PUBLICATION_HISTORY: i64 = 26;
-    /// `migrations/0027_live_feed.sql`
-    pub(crate) const LIVE_FEED: i64 = 27;
+    /// `migrations/0027_industrial_designs.sql`
+    pub(crate) const INDUSTRIAL_DESIGNS: i64 = 27;
+    /// `migrations/0028_work.sql`. Key 27 was deliberately skipped while
+    /// this was drafted: the shared development database already had it
+    /// recorded as applied by concurrent, then-not-yet-committed work
+    /// (observed against `ackplane_schema_migrations` while investigating
+    /// ADR-0120's own migration-identity gap) -- it landed as
+    /// `INDUSTRIAL_DESIGNS` above.
+    pub(crate) const WORK: i64 = 28;
+    /// `migrations/0029_live_feed.sql`. Renumbered from 27 to 29: 27 was
+    /// this file's own next-available slot when drafted, but collided with
+    /// `INDUSTRIAL_DESIGNS`/`WORK` (27/28) landing concurrently.
+    pub(crate) const LIVE_FEED: i64 = 29;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and
