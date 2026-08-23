@@ -8,9 +8,11 @@ use tokio_stream::{wrappers::ReceiverStream, Stream};
 use tonic::{Request, Response, Status};
 
 use crate::{
-    ledger::LedgerStore, signing_keys::EnvelopeBinding, supervisor_store::SupervisorStore,
+    directive_store::DirectiveStore, ledger::LedgerStore, signing_keys::EnvelopeBinding,
+    supervisor_store::SupervisorStore,
 };
 
+mod directive_receipt;
 mod frame;
 mod handshake;
 mod supervisor;
@@ -78,6 +80,7 @@ pub enum ConnectionState {
 pub struct NodeSyncService {
     ledger: Arc<Mutex<LedgerStore>>,
     supervisor: Option<Arc<Mutex<SupervisorStore>>>,
+    directives: Option<Arc<Mutex<DirectiveStore>>>,
     flow_control: v1::FlowControl,
 }
 
@@ -89,6 +92,7 @@ impl NodeSyncService {
         Self {
             ledger: Arc::new(Mutex::new(ledger)),
             supervisor: None,
+            directives: None,
             flow_control,
         }
     }
@@ -103,6 +107,23 @@ impl NodeSyncService {
         Self {
             ledger: Arc::new(Mutex::new(ledger)),
             supervisor: Some(Arc::new(Mutex::new(supervisor))),
+            directives: None,
+            flow_control,
+        }
+    }
+
+    /// Constructs the production NodeSync service with durable supervisor
+    /// facts and directive receipt ingestion enabled.
+    pub fn with_supervisor_and_directive_store(
+        ledger: LedgerStore,
+        supervisor: SupervisorStore,
+        directives: DirectiveStore,
+        flow_control: v1::FlowControl,
+    ) -> Self {
+        Self {
+            ledger: Arc::new(Mutex::new(ledger)),
+            supervisor: Some(Arc::new(Mutex::new(supervisor))),
+            directives: Some(Arc::new(Mutex::new(directives))),
             flow_control,
         }
     }
@@ -118,6 +139,7 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
     ) -> Result<Response<Self::SynchronizeStream>, Status> {
         let ledger = Arc::clone(&self.ledger);
         let supervisor = self.supervisor.as_ref().map(Arc::clone);
+        let directives = self.directives.as_ref().map(Arc::clone);
         let flow_control = self.flow_control;
         let (sender, receiver) = mpsc::channel(8);
 
@@ -139,45 +161,86 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
                             )),
                             _ => None,
                         };
-                        let responses = if let Some((tenant_id, repository_id, node_id)) =
-                            authenticated_identity
-                                .filter(|_| supervisor::is_supervisor_frame(&frame))
-                        {
-                            if let Some(supervisor) = supervisor.as_ref() {
-                                let mut store = supervisor.lock().await;
-                                supervisor::handle_authenticated_frame(
-                                    frame,
-                                    &tenant_id,
-                                    &repository_id,
-                                    &node_id,
-                                    &mut store,
-                                )
-                                .await
-                            } else {
-                                vec![supervisor::unavailable_frame()]
-                            }
-                        } else {
-                            handle_frame(
-                                frame,
-                                flow_control,
-                                &mut state,
-                                |envelope| {
-                                    let ledger = Arc::clone(&ledger);
-                                    async move { ledger.lock().await.append(&envelope).await }
-                                },
-                                |binding| {
-                                    let ledger = Arc::clone(&ledger);
-                                    async move {
-                                        ledger
-                                            .lock()
-                                            .await
-                                            .resolve_signing_key(&binding.as_binding())
-                                            .await
+                        let responses =
+                            match authenticated_identity {
+                                Some((tenant_id, repository_id, node_id))
+                                    if supervisor::is_supervisor_frame(&frame) =>
+                                {
+                                    if let Some(supervisor) = supervisor.as_ref() {
+                                        let mut store = supervisor.lock().await;
+                                        supervisor::handle_authenticated_frame(
+                                            frame,
+                                            &tenant_id,
+                                            &repository_id,
+                                            &node_id,
+                                            &mut store,
+                                        )
+                                        .await
+                                    } else {
+                                        vec![supervisor::unavailable_frame()]
                                     }
-                                },
-                            )
-                            .await
-                        };
+                                }
+                                Some((tenant_id, repository_id, node_id))
+                                    if directive_receipt::is_directive_receipt_frame(&frame) =>
+                                {
+                                    if let (Some(supervisor), Some(directives)) =
+                                        (supervisor.as_ref(), directives.as_ref())
+                                    {
+                                        let outcome = {
+                                            let mut store = directives.lock().await;
+                                            directive_receipt::record_authenticated_receipt(
+                                                frame,
+                                                &tenant_id,
+                                                &repository_id,
+                                                &node_id,
+                                                &mut store,
+                                            )
+                                            .await
+                                        };
+                                        match outcome {
+                                            Ok(outcome) => {
+                                                let store = supervisor.lock().await;
+                                                match directive_receipt::acknowledgement(
+                                                    outcome,
+                                                    &tenant_id,
+                                                    &repository_id,
+                                                    &store,
+                                                )
+                                                .await
+                                                {
+                                                    Ok(frame) => vec![frame],
+                                                    Err(error) => {
+                                                        vec![directive_receipt::rejection(error)]
+                                                    }
+                                                }
+                                            }
+                                            Err(error) => vec![directive_receipt::rejection(error)],
+                                        }
+                                    } else {
+                                        vec![directive_receipt::unavailable_frame()]
+                                    }
+                                }
+                                _ => handle_frame(
+                                    frame,
+                                    flow_control,
+                                    &mut state,
+                                    |envelope| {
+                                        let ledger = Arc::clone(&ledger);
+                                        async move { ledger.lock().await.append(&envelope).await }
+                                    },
+                                    |binding| {
+                                        let ledger = Arc::clone(&ledger);
+                                        async move {
+                                            ledger
+                                                .lock()
+                                                .await
+                                                .resolve_signing_key(&binding.as_binding())
+                                                .await
+                                        }
+                                    },
+                                )
+                                .await,
+                            };
                         let terminate =
                             must_terminate_after(&responses) || state == ConnectionState::Rejected;
                         for frame in responses {

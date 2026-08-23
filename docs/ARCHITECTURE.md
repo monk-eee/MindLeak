@@ -376,6 +376,8 @@ to the stored directive; identical retries replay their original record. This
 foundation has no Bridge command route, does not issue a directive from an
 unauthenticated principal, and does not yet send an outbound stream frame.
 
+Authenticated `NodeSync` streams now ingest `DirectiveReceipt` frames through that same ledger only after their tenant, repository, and node match the completed connection challenge. Ackplane returns a typed `SupervisorFrameReceipt` for a durable write or exact replay, resolving the supervisor only from the receipt's scoped session; unknown or cross-scope directives receive a generic refusal rather than a directive-existence disclosure. This remains receipt ingress only: it adds neither outbound directive delivery nor a Bridge issuance route.
+
 `NodeEnrollmentService` persists pending requests, an append-only authority
 transition history, approved public-key bindings, single-use short-lived
 challenges, and immutable enrollment receipts. A node may submit a request, but
