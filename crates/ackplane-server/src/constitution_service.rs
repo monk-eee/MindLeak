@@ -18,6 +18,7 @@ use tonic::{Request, Response, Status};
 use crate::constitution_signature::{self, ConstitutionAuthRefusal};
 use crate::constitution_store::{
     ClauseSnapshot, ConstitutionStore, ConstitutionStoreError, PublishConstitutionRequest,
+    RecordConstitutionPublicationRequest,
 };
 
 pub struct ConstitutionGrpcService {
@@ -178,6 +179,31 @@ impl v1::constitution_service_server::ConstitutionService for ConstitutionGrpcSe
             request.authentication.as_ref(),
         )
         .await?;
+        let clauses: Vec<ClauseSnapshot> =
+            request.clauses.into_iter().map(from_proto_clause).collect();
+        let published_at = SystemTime::now();
+        // ADR-0121 decision 1/2: record the immutable publication FIRST. An
+        // immutability violation (this version_id already recorded under
+        // different content) must refuse before the mutable active snapshot
+        // changes, not after -- so a rejected republish never silently moves
+        // the active pointer.
+        self.store
+            .lock()
+            .await
+            .record_publication(RecordConstitutionPublicationRequest {
+                tenant_id: request.tenant_id.clone(),
+                repository_id: request.repository_id.clone(),
+                version_id: request.version_id.clone(),
+                schema_version: request.schema_version,
+                status: request.status.clone(),
+                clauses: clauses.clone(),
+                source_reference: (!request.source_ref.is_empty()).then_some(request.source_ref),
+                source_digest: (!request.content_digest.is_empty())
+                    .then_some(request.content_digest),
+                published_at,
+            })
+            .await
+            .map_err(store_error)?;
         self.store
             .lock()
             .await
@@ -187,7 +213,7 @@ impl v1::constitution_service_server::ConstitutionService for ConstitutionGrpcSe
                 version_id: request.version_id,
                 version: request.version as i64,
                 status: request.status,
-                clauses: request.clauses.into_iter().map(from_proto_clause).collect(),
+                clauses,
             })
             .await
             .map_err(store_error)?;
@@ -305,13 +331,8 @@ mod tests {
             .expect("the registration transaction should commit");
     }
 
-    fn authenticated_publish_request(
-        identity: &TestIdentity,
-        version_id: &str,
-        nonce_byte: u8,
-    ) -> v1::PublishConstitutionSnapshotRequest {
-        let key = signing_key();
-        let clauses = vec![v1::ConstitutionClause {
+    fn default_clause() -> v1::ConstitutionClause {
+        v1::ConstitutionClause {
             id: "clause-a".to_string(),
             slug: "clause-a-slug".to_string(),
             kind: "constraint".to_string(),
@@ -321,7 +342,17 @@ mod tests {
             consequence: "block".to_string(),
             scope: String::new(),
             rationale: "because".to_string(),
-        }];
+        }
+    }
+
+    fn authenticated_publish_request(
+        identity: &TestIdentity,
+        version_id: &str,
+        nonce_byte: u8,
+        schema_version: &str,
+        clauses: Vec<v1::ConstitutionClause>,
+    ) -> v1::PublishConstitutionSnapshotRequest {
+        let key = signing_key();
         let mut authentication = v1::ConstitutionAuthentication {
             signing_key_id: identity.signing_key_id.clone(),
             node_id: identity.node_id.clone(),
@@ -352,6 +383,9 @@ mod tests {
             status: "active".to_owned(),
             clauses,
             authentication: Some(authentication),
+            schema_version: schema_version.to_owned(),
+            source_ref: String::new(),
+            content_digest: Vec::new(),
         }
     }
 
@@ -374,6 +408,9 @@ mod tests {
                 status: "active".to_string(),
                 clauses: vec![],
                 authentication: None,
+                schema_version: "v1".to_string(),
+                source_ref: String::new(),
+                content_digest: Vec::new(),
             }))
             .await;
 
@@ -391,7 +428,8 @@ mod tests {
         };
         let identity = TestIdentity::fresh("replay");
         register_test_key(&database_url, &identity).await;
-        let request = authenticated_publish_request(&identity, "version-1", 1);
+        let request =
+            authenticated_publish_request(&identity, "version-1", 1, "v1", vec![default_clause()]);
         let store = ConstitutionStore::connect(&database_url).await.unwrap();
         let service = ConstitutionGrpcService::new(store);
 
@@ -414,7 +452,8 @@ mod tests {
         };
         let identity = TestIdentity::fresh("get-active");
         register_test_key(&database_url, &identity).await;
-        let publish_request = authenticated_publish_request(&identity, "version-7", 3);
+        let publish_request =
+            authenticated_publish_request(&identity, "version-7", 3, "v1", vec![default_clause()]);
         let store = ConstitutionStore::connect(&database_url).await.unwrap();
         let service = ConstitutionGrpcService::new(store);
 
@@ -498,5 +537,151 @@ mod tests {
 
         assert!(!response.found);
         assert!(response.clauses.is_empty());
+    }
+
+    /// ADR-0121 decision 2: the authenticated publish RPC must actually wire
+    /// into the immutable history store, not just the mutable snapshot.
+    #[tokio::test]
+    async fn publishing_a_snapshot_also_records_immutable_publication_history() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let identity = TestIdentity::fresh("history");
+        register_test_key(&database_url, &identity).await;
+        let mut request = authenticated_publish_request(
+            &identity,
+            "version-history-1",
+            21,
+            "v1",
+            vec![default_clause()],
+        );
+        request.source_ref = "commit:abc123".to_string();
+        request.content_digest = vec![1, 2, 3, 4];
+        // Re-sign: authenticated_publish_request already signed over the
+        // operation-shaped fields only (version_id/version/status/clause
+        // count), none of which changed, so the existing signature is still
+        // valid for this mutated request.
+        let store = ConstitutionStore::connect(&database_url).await.unwrap();
+        let service = ConstitutionGrpcService::new(store);
+
+        service
+            .publish_constitution_snapshot(Request::new(request))
+            .await
+            .expect("publish should succeed");
+
+        let verification_store = ConstitutionStore::connect(&database_url).await.unwrap();
+        let recorded = verification_store
+            .get_publication(
+                &identity.tenant_id,
+                &identity.repository_id,
+                "version-history-1",
+            )
+            .await
+            .expect("reading the recorded publication should succeed")
+            .expect("the publication should have been recorded");
+
+        assert_eq!(recorded.schema_version, "v1");
+        assert_eq!(recorded.status, "active");
+        assert_eq!(recorded.clauses, vec![from_proto_clause(default_clause())]);
+        assert_eq!(recorded.source_reference, Some("commit:abc123".to_string()));
+        assert_eq!(recorded.source_digest, Some(vec![1, 2, 3, 4]));
+    }
+
+    /// ADR-0121 decision 1: an immutability violation must refuse before the
+    /// mutable active snapshot changes -- a rejected republish never silently
+    /// moves the active pointer to the new, refused content.
+    #[tokio::test]
+    async fn republishing_the_same_version_with_different_clauses_is_refused_and_the_active_snapshot_is_unchanged(
+    ) {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let identity = TestIdentity::fresh("immutability");
+        register_test_key(&database_url, &identity).await;
+        let store = ConstitutionStore::connect(&database_url).await.unwrap();
+        let service = ConstitutionGrpcService::new(store);
+
+        let first_request = authenticated_publish_request(
+            &identity,
+            "version-immutable-1",
+            31,
+            "v1",
+            vec![default_clause()],
+        );
+        service
+            .publish_constitution_snapshot(Request::new(first_request))
+            .await
+            .expect("the first publish should succeed");
+
+        let mut different_clause = default_clause();
+        different_clause.statement = "a completely different statement".to_string();
+        let second_request = authenticated_publish_request(
+            &identity,
+            "version-immutable-1",
+            32,
+            "v1",
+            vec![different_clause],
+        );
+        let second = service
+            .publish_constitution_snapshot(Request::new(second_request))
+            .await;
+        assert_eq!(second.unwrap_err().code(), tonic::Code::FailedPrecondition);
+
+        let key = signing_key();
+        let mut authentication = v1::ConstitutionAuthentication {
+            signing_key_id: identity.signing_key_id.clone(),
+            node_id: identity.node_id.clone(),
+            signed_at: time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+            nonce: vec![33; 16],
+            signature: Vec::new(),
+        };
+        let bytes = constitution_signature::constitution_signing_bytes(
+            &identity.tenant_id,
+            &identity.repository_id,
+            &ConstitutionOperation::GetActive,
+            &authentication,
+        );
+        authentication.signature = key.sign(&bytes).to_bytes().to_vec();
+        let active = service
+            .get_active_constitution(Request::new(v1::GetActiveConstitutionRequest {
+                tenant_id: identity.tenant_id,
+                repository_id: identity.repository_id,
+                authentication: Some(authentication),
+            }))
+            .await
+            .expect("get_active should succeed")
+            .into_inner();
+
+        assert_eq!(active.clauses.len(), 1);
+        assert_eq!(active.clauses[0].statement, "a statement");
+    }
+
+    #[tokio::test]
+    async fn an_empty_schema_version_is_rejected_as_invalid_argument() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let identity = TestIdentity::fresh("empty-schema-version");
+        register_test_key(&database_url, &identity).await;
+        let request = authenticated_publish_request(
+            &identity,
+            "version-empty-schema",
+            41,
+            "",
+            vec![default_clause()],
+        );
+        let store = ConstitutionStore::connect(&database_url).await.unwrap();
+        let service = ConstitutionGrpcService::new(store);
+
+        let result = service
+            .publish_constitution_snapshot(Request::new(request))
+            .await;
+
+        assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
     }
 }

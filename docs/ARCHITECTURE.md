@@ -419,6 +419,17 @@ separator (`constitution_auth::CONSTITUTION_DOMAIN`), its own
 `ConstitutionOperation` enum, and its own
 `constitution_authentication_nonces` table.
 
+Beside that mutable active snapshot, `PublishConstitutionSnapshot` also
+records an immutable, append-only publication history entry (ADR-0121
+decision 1: `ConstitutionStore::record_publication`, table
+`constitution_publications`, keyed on `(tenant_id, repository_id,
+version_id)`). The immutable record is checked first: retrying an identical
+publication is an idempotent no-op, but publishing the same `version_id`
+under different content is refused before the mutable snapshot ever changes,
+so a rejected republish never silently moves the active pointer. Ackplane
+still never originates a publication itself (decision 2) — it verifies the
+publisher and stores the resulting projection.
+
 `TelemetryService` (`telemetry_store.rs`/`telemetry_service.rs`) is Ackplane's
 typed operational-telemetry domain (ADR-0105 decision 6): `RecordTelemetry`
 (tool/transport/directive/storage/projection observations, each with a bounded
