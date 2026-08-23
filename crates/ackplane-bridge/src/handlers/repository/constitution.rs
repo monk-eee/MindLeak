@@ -9,7 +9,9 @@ use axum::{
 };
 use serde::Serialize;
 
-use ackplane_server::constitution_store::{ActiveConstitution, ClauseSnapshot};
+use ackplane_server::constitution_store::{
+    ActiveConstitution, ClauseSnapshot, ConstitutionPublication,
+};
 
 use super::enrolled_or_not_found;
 use crate::{unix_seconds, AppState};
@@ -21,6 +23,8 @@ pub struct ConstitutionResponse {
     version: Option<i64>,
     status: Option<String>,
     published_at_seconds: Option<u64>,
+    source_reference: Option<String>,
+    source_digest_hex: Option<String>,
     clauses: Vec<ConstitutionClauseSummary>,
 }
 
@@ -53,14 +57,26 @@ impl From<ClauseSnapshot> for ConstitutionClauseSummary {
     }
 }
 
-impl From<ActiveConstitution> for ConstitutionResponse {
-    fn from(active: ActiveConstitution) -> Self {
+impl ConstitutionResponse {
+    fn from_active(
+        active: ActiveConstitution,
+        publication: Option<ConstitutionPublication>,
+    ) -> Self {
+        let source_reference = publication
+            .as_ref()
+            .and_then(|publication| publication.source_reference.clone());
+        let source_digest_hex = publication
+            .as_ref()
+            .and_then(|publication| publication.source_digest.as_deref())
+            .map(digest_hex);
         Self {
             found: true,
             version_id: Some(active.version_id),
             version: Some(active.version),
             status: Some(active.status),
             published_at_seconds: unix_seconds(active.published_at),
+            source_reference,
+            source_digest_hex,
             clauses: active
                 .clauses
                 .into_iter()
@@ -68,9 +84,7 @@ impl From<ActiveConstitution> for ConstitutionResponse {
                 .collect(),
         }
     }
-}
 
-impl ConstitutionResponse {
     fn not_found() -> Self {
         Self {
             found: false,
@@ -78,9 +92,15 @@ impl ConstitutionResponse {
             version: None,
             status: None,
             published_at_seconds: None,
+            source_reference: None,
+            source_digest_hex: None,
             clauses: Vec::new(),
         }
     }
+}
+
+fn digest_hex(digest: &[u8]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 pub async fn repository_constitution(
@@ -94,11 +114,96 @@ pub async fn repository_constitution(
         .get_active(&state.tenant_id, &repository_id)
         .await
     {
-        Ok(Some(active)) => Ok(Json(ConstitutionResponse::from(active))),
+        Ok(Some(active)) => {
+            let publication = match state
+                .constitution
+                .get_publication(&state.tenant_id, &repository_id, &active.version_id)
+                .await
+            {
+                Ok(publication) => publication,
+                Err(error) => {
+                    tracing::error!(%error, "Bridge repository constitution publication query failed");
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+            };
+            Ok(Json(ConstitutionResponse::from_active(active, publication)))
+        }
         Ok(None) => Ok(Json(ConstitutionResponse::not_found())),
         Err(error) => {
             tracing::error!(%error, "Bridge repository constitution query failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+const CONSTITUTION_PAGE: &str = include_str!("../../../static/constitution.html");
+
+pub async fn constitution_page() -> axum::response::Html<&'static str> {
+    axum::response::Html(CONSTITUTION_PAGE)
+}
+
+#[cfg(test)]
+mod page_tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn response_projects_active_policy_and_immutable_publication_provenance() {
+        let active = ActiveConstitution {
+            version_id: "constitution:v2".to_string(),
+            version: 2,
+            status: "active".to_string(),
+            clauses: Vec::new(),
+            published_at: UNIX_EPOCH + Duration::from_secs(300),
+        };
+        let publication = ConstitutionPublication {
+            tenant_id: "tenant-a".to_string(),
+            repository_id: "repository-a".to_string(),
+            version_id: active.version_id.clone(),
+            schema_version: "v1".to_string(),
+            status: active.status.clone(),
+            clauses: Vec::new(),
+            source_reference: Some("docs/adr/0121-design.md".to_string()),
+            source_digest: Some(vec![0xca, 0xfe]),
+            published_at: active.published_at,
+        };
+
+        assert_eq!(
+            serde_json::to_value(ConstitutionResponse::from_active(active, Some(publication),))
+                .expect("constitution response serializes"),
+            json!({
+                "found": true,
+                "version_id": "constitution:v2",
+                "version": 2,
+                "status": "active",
+                "published_at_seconds": 300,
+                "source_reference": "docs/adr/0121-design.md",
+                "source_digest_hex": "cafe",
+                "clauses": [],
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn page_renders_provenance_clauses_and_visible_only_refresh() {
+        let axum::response::Html(body) = constitution_page().await;
+
+        for required in [
+            "id=\"constitution-form\"",
+            "source_reference",
+            "source_digest_hex",
+            "renderClause",
+            "startVisibleRefresh(load, intervalMs)",
+            "document.visibilityState === \"visible\"",
+            "aria-current=\"page\"",
+        ] {
+            assert!(
+                body.contains(required),
+                "constitution.html is missing {required}"
+            );
         }
     }
 }
