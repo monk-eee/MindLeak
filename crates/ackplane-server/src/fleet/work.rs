@@ -17,7 +17,8 @@ impl FleetStore {
         let rows = self
             .client
             .query(
-                "SELECT task_id, owner_id, branch, lease_expires_at, paths, symbols \
+                "SELECT task_id, owner_id, branch, claim_started_at, lease_expires_at, \
+                        claim_lapses, paths, symbols \
                  FROM delegated_claims \
                  WHERE tenant_id = $1 AND repository_id = $2 AND lease_expires_at > $3 \
                  ORDER BY lease_expires_at ASC, task_id ASC \
@@ -32,9 +33,11 @@ impl FleetStore {
                     task_id: row.get(0),
                     owner_id: row.get(1),
                     branch: row.get(2),
-                    lease_expires_at: row.get(3),
-                    paths: row.get(4),
-                    symbols: row.get(5),
+                    claim_started_at: row.get(3),
+                    lease_expires_at: row.get(4),
+                    claim_lapses: u64::try_from(row.get::<_, i64>(5)).unwrap_or(0),
+                    paths: row.get(6),
+                    symbols: row.get(7),
                 })
                 .collect(),
         ))
@@ -58,7 +61,8 @@ impl FleetStore {
         let rows = self
             .client
             .query(
-                "SELECT task_id, owner_id, branch, lease_expires_at, paths, symbols \
+                "SELECT task_id, owner_id, branch, claim_started_at, lease_expires_at, \
+                        claim_lapses, paths, symbols \
                  FROM delegated_claims \
                  WHERE tenant_id = $1 AND repository_id = $2 AND lease_expires_at <= $3 \
                  ORDER BY lease_expires_at ASC, task_id ASC \
@@ -73,9 +77,11 @@ impl FleetStore {
                     task_id: row.get(0),
                     owner_id: row.get(1),
                     branch: row.get(2),
-                    lease_expires_at: row.get(3),
-                    paths: row.get(4),
-                    symbols: row.get(5),
+                    claim_started_at: row.get(3),
+                    lease_expires_at: row.get(4),
+                    claim_lapses: u64::try_from(row.get::<_, i64>(5)).unwrap_or(0),
+                    paths: row.get(6),
+                    symbols: row.get(7),
                 })
                 .collect(),
         ))
@@ -99,7 +105,8 @@ impl FleetStore {
     ) -> Result<FleetWorkPage, tokio_postgres::Error> {
         let offset = (page - 1) * page_size;
         let query = format!(
-            "SELECT repository_id, task_id, owner_id, branch, lease_expires_at, paths, symbols, \
+            "SELECT repository_id, task_id, owner_id, branch, claim_started_at, \
+                    lease_expires_at, claim_lapses, paths, symbols, \
                     COUNT(*) OVER()::BIGINT \
              FROM delegated_claims \
              WHERE tenant_id = $1 AND lease_expires_at > $2 \
@@ -124,7 +131,7 @@ impl FleetStore {
             )
             .await?;
 
-        let total = rows.first().map(|row| row.get::<_, i64>(7)).unwrap_or(0);
+        let total = rows.first().map(|row| row.get::<_, i64>(9)).unwrap_or(0);
         let items = rows
             .into_iter()
             .map(|row| FleetWorkItem {
@@ -132,9 +139,11 @@ impl FleetStore {
                 task_id: row.get(1),
                 owner_id: row.get(2),
                 branch: row.get(3),
-                lease_expires_at: row.get(4),
-                paths: row.get(5),
-                symbols: row.get(6),
+                claim_started_at: row.get(4),
+                lease_expires_at: row.get(5),
+                claim_lapses: u64::try_from(row.get::<_, i64>(6)).unwrap_or(0),
+                paths: row.get(7),
+                symbols: row.get(8),
             })
             .collect();
         Ok(FleetWorkPage { items, total })
@@ -156,7 +165,8 @@ impl FleetStore {
         let row = self
             .client
             .query_opt(
-                "SELECT task_id, owner_id, branch, lease_expires_at, paths, symbols \
+                "SELECT task_id, owner_id, branch, claim_started_at, lease_expires_at, \
+                        claim_lapses, paths, symbols \
                  FROM delegated_claims \
                  WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3",
                 &[&tenant_id, &repository_id, &task_id],
@@ -167,9 +177,11 @@ impl FleetStore {
             task_id: row.get(0),
             owner_id: row.get(1),
             branch: row.get(2),
-            lease_expires_at: row.get(3),
-            paths: row.get(4),
-            symbols: row.get(5),
+            claim_started_at: row.get(3),
+            lease_expires_at: row.get(4),
+            claim_lapses: u64::try_from(row.get::<_, i64>(5)).unwrap_or(0),
+            paths: row.get(6),
+            symbols: row.get(7),
         }))
     }
 }
@@ -180,7 +192,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        claim_store::{ClaimLeaseRequest, ClaimStore},
+        claim_store::{ClaimLeaseOutcome, ClaimLeaseRequest, ClaimRecoverRequest, ClaimStore},
         test_support::{enroll_and_activate_in, uuid_ish},
     };
 
@@ -239,7 +251,9 @@ mod tests {
                 task_id: "task:active".to_string(),
                 owner_id: "agent:active".to_string(),
                 branch: "work/task:active".to_string(),
+                claim_started_at: now,
                 lease_expires_at: now + Duration::from_secs(120),
+                claim_lapses: 0,
                 paths: vec!["src/task:active.rs".to_string()],
                 symbols: vec!["symbol:task:active".to_string()],
             }]
@@ -311,7 +325,9 @@ mod tests {
                 task_id: "task:expired".to_string(),
                 owner_id: "agent:expired".to_string(),
                 branch: "work/task:expired".to_string(),
+                claim_started_at: now,
                 lease_expires_at: now + Duration::from_secs(30),
+                claim_lapses: 0,
                 paths: vec!["src/task:expired.rs".to_string()],
                 symbols: vec!["symbol:task:expired".to_string()],
             }]
@@ -326,6 +342,98 @@ mod tests {
             .await
             .expect("query wrong tenant")
             .is_none());
+    }
+
+    // Regression: a recovered claim's freshness signal must show its true
+    // history, not read like a brand-new claim -- `claim_started_at` stays
+    // pinned to the ORIGINAL grant (ADR-0052: a same-owner recovery is a
+    // continuation, not a new claim), while `claim_lapses` counts the real
+    // lapse so an operator can tell a just-recovered claim apart from one
+    // that has never had trouble.
+    #[tokio::test]
+    async fn active_work_reports_the_original_claim_start_and_a_real_lapse_count_after_recovery() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let (tenant_id, repository_id) =
+            crate::test_support::enroll_and_activate(&database_url, &unique_id.to_string()).await;
+        let granted_at = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let mut claims = ClaimStore::connect(&database_url)
+            .await
+            .expect("connect claim store");
+        claims
+            .delegate(
+                &ClaimLeaseRequest {
+                    tenant_id: tenant_id.clone(),
+                    repository_id: repository_id.clone(),
+                    task_id: "task:lapsed".to_string(),
+                    owner_id: "agent:original".to_string(),
+                    branch: "work/task:lapsed".to_string(),
+                    lease: Duration::from_secs(30),
+                    paths: vec!["src/lapsed.rs".to_string()],
+                    symbols: vec!["symbol:lapsed".to_string()],
+                },
+                granted_at,
+            )
+            .await
+            .expect("delegate the original claim");
+
+        let recovered_at = granted_at + Duration::from_secs(60);
+        let recovery = claims
+            .recover(
+                &ClaimRecoverRequest {
+                    tenant_id: tenant_id.clone(),
+                    repository_id: repository_id.clone(),
+                    task_id: "task:lapsed".to_string(),
+                    expected_owner: "agent:original".to_string(),
+                    owner_id: "agent:original".to_string(),
+                    reason: "resuming after a lapsed lease".to_string(),
+                    branch: "work/task:lapsed".to_string(),
+                    lease: Duration::from_secs(120),
+                    paths: vec!["src/lapsed.rs".to_string()],
+                    symbols: vec!["symbol:lapsed".to_string()],
+                },
+                recovered_at,
+            )
+            .await
+            .expect("recover the lapsed claim");
+        assert_eq!(
+            recovery.outcome,
+            ClaimLeaseOutcome::Granted,
+            "recovering an expired claim as its own owner must be granted"
+        );
+
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+        let active = fleet
+            .active_work(
+                &tenant_id,
+                &repository_id,
+                recovered_at + Duration::from_secs(1),
+                50,
+            )
+            .await
+            .expect("query active work")
+            .expect("repository is enrolled");
+
+        assert_eq!(
+            active,
+            vec![ActiveWorkItem {
+                task_id: "task:lapsed".to_string(),
+                owner_id: "agent:original".to_string(),
+                branch: "work/task:lapsed".to_string(),
+                claim_started_at: granted_at,
+                lease_expires_at: recovered_at + Duration::from_secs(120),
+                claim_lapses: 1,
+                paths: vec!["src/lapsed.rs".to_string()],
+                symbols: vec!["symbol:lapsed".to_string()],
+            }],
+            "claim_started_at must stay pinned to the original grant and claim_lapses must \
+             count the real lapse, not reset as if this were a fresh claim"
+        );
     }
 
     #[tokio::test]
@@ -401,7 +509,9 @@ mod tests {
                     task_id: "task:repo-a".to_string(),
                     owner_id: "agent:a".to_string(),
                     branch: "work/task:repo-a".to_string(),
+                    claim_started_at: now,
                     lease_expires_at: now + Duration::from_secs(120),
+                    claim_lapses: 0,
                     paths: vec!["src/task:repo-a.rs".to_string()],
                     symbols: vec!["symbol:task:repo-a".to_string()],
                 },
@@ -410,7 +520,9 @@ mod tests {
                     task_id: "task:repo-b".to_string(),
                     owner_id: "agent:b".to_string(),
                     branch: "work/task:repo-b".to_string(),
+                    claim_started_at: now,
                     lease_expires_at: now + Duration::from_secs(180),
+                    claim_lapses: 0,
                     paths: vec!["src/task:repo-b.rs".to_string()],
                     symbols: vec!["symbol:task:repo-b".to_string()],
                 },
