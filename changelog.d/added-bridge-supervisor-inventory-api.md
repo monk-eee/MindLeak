@@ -1,0 +1,1 @@
+- **Bridge now exposes tenant-scoped, read-only supervisor inventory, worker-session, and lifecycle-history resources backed by Ackplane's durable runtime projection.** The browser receives bounded runtime metadata and receipts only; supervisor directives, idempotency keys, credentials, local process details, and mutation controls remain unavailable.
