@@ -33,6 +33,7 @@ pub mod constitution_signature;
 pub mod constitution_store;
 pub mod context_packet_store;
 pub mod delegation_store;
+pub mod design_materialization_store;
 pub mod design_store;
 pub mod enrollment;
 pub mod enrollment_service;
