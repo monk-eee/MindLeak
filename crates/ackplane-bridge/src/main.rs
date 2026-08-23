@@ -5,6 +5,7 @@ use std::{
 
 use ackplane_bridge::administration::{administration_routes, AdministrationApiState};
 use ackplane_bridge::context_api::{context_routes, ContextApiState};
+use ackplane_bridge::delegation_api::{delegation_routes, DelegationApiState};
 use ackplane_bridge::evidence::BridgeEvidenceStore;
 use ackplane_bridge::evidence_api::{evidence_routes, EvidenceApiState};
 use ackplane_bridge::knowledge_api::{knowledge_routes, KnowledgeApiState};
@@ -14,6 +15,7 @@ use ackplane_bridge::BridgeConfig;
 use ackplane_server::claim_store::ClaimStore;
 use ackplane_server::constitution_store::ConstitutionStore;
 use ackplane_server::context_packet_store::ContextPacketStore;
+use ackplane_server::delegation_store::DelegationStore;
 use ackplane_server::fleet::{FleetStore, RepositoryFreshness};
 use ackplane_server::knowledge_store::KnowledgeStore;
 use ackplane_server::live_feed_store::LiveFeedStore;
@@ -174,6 +176,13 @@ async fn main() {
             return;
         }
     };
+    let delegation_store = match DelegationStore::connect(config.database_url()).await {
+        Ok(delegations) => Arc::new(delegations),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane delegations: {error}");
+            return;
+        }
+    };
     let tenant_id: Arc<str> = Arc::from(config.development_tenant_token.clone());
     let evidence_api_state =
         EvidenceApiState::new(evidence_store, fleet_store.clone(), tenant_id.clone());
@@ -186,6 +195,8 @@ async fn main() {
     );
     let context_api_state =
         ContextApiState::new(context_packet_store, fleet_store.clone(), tenant_id.clone());
+    let delegation_api_state =
+        DelegationApiState::new(delegation_store, fleet_store.clone(), tenant_id.clone());
     let administration_api_state =
         AdministrationApiState::new(fleet_store.clone(), tenant_id.clone());
     let live_feed_api_state =
@@ -250,6 +261,7 @@ async fn main() {
         .merge(evidence_routes(evidence_api_state))
         .merge(knowledge_routes(knowledge_api_state))
         .merge(context_routes(context_api_state))
+        .merge(delegation_routes(delegation_api_state))
         .merge(administration_routes(administration_api_state))
         .merge(supervisor_routes(supervisor_api_state))
         .merge(live_feed_routes(live_feed_api_state));
