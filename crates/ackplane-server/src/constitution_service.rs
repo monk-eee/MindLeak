@@ -106,6 +106,20 @@ fn store_error(error: ConstitutionStoreError) -> Status {
         ConstitutionStoreError::EmptyVersionId => {
             Status::invalid_argument("version_id must not be empty")
         }
+        ConstitutionStoreError::EmptySchemaVersion => {
+            Status::invalid_argument("schema_version must not be empty")
+        }
+        ConstitutionStoreError::EmptyStatus => Status::invalid_argument("status must not be empty"),
+        ConstitutionStoreError::PublicationImmutabilityViolation { version_id } => {
+            Status::failed_precondition(format!(
+                "publication {version_id} is already recorded with different content"
+            ))
+        }
+        ConstitutionStoreError::CorruptPublicationPayload { version_id, detail } => {
+            Status::internal(format!(
+                "stored publication {version_id} is unreadable: {detail}"
+            ))
+        }
         ConstitutionStoreError::Database(error) => Status::internal(error.to_string()),
     }
 }
