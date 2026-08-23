@@ -3,6 +3,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use ackplane_bridge::administration::{administration_routes, AdministrationApiState};
 use ackplane_bridge::context_api::{context_routes, ContextApiState};
 use ackplane_bridge::evidence::BridgeEvidenceStore;
 use ackplane_bridge::evidence_api::{evidence_routes, EvidenceApiState};
@@ -176,6 +177,8 @@ async fn main() {
     );
     let context_api_state =
         ContextApiState::new(context_packet_store, fleet_store.clone(), tenant_id.clone());
+    let administration_api_state =
+        AdministrationApiState::new(fleet_store.clone(), tenant_id.clone());
     let state = AppState {
         fleet: fleet_store,
         knowledge: knowledge_store,
@@ -236,6 +239,7 @@ async fn main() {
         .merge(evidence_routes(evidence_api_state))
         .merge(knowledge_routes(knowledge_api_state))
         .merge(context_routes(context_api_state))
+        .merge(administration_routes(administration_api_state))
         .merge(supervisor_routes(supervisor_api_state));
     let listener = match tokio::net::TcpListener::bind(config.listen).await {
         Ok(listener) => listener,
