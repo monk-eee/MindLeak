@@ -58,7 +58,7 @@ async fn list_returns_current_projections_in_durable_order_and_keeps_scopes_isol
 
     assert_eq!(
         store
-            .list(&tenant_id, &repository_id)
+            .list(&tenant_id, &repository_id, 10)
             .await
             .expect("empty delegation list"),
         Vec::new()
@@ -95,21 +95,28 @@ async fn list_returns_current_projections_in_durable_order_and_keeps_scopes_isol
 
     assert_eq!(
         store
-            .list(&tenant_id, &repository_id)
+            .list(&tenant_id, &repository_id, 10)
             .await
             .expect("list current delegation projections"),
-        vec![second.projection, revoked.projection]
+        vec![second.projection.clone(), revoked.projection]
     );
     assert_eq!(
         store
-            .list(&foreign_tenant_id, &repository_id)
+            .list(&tenant_id, &repository_id, 1)
+            .await
+            .expect("limit delegation projections"),
+        vec![second.projection]
+    );
+    assert_eq!(
+        store
+            .list(&foreign_tenant_id, &repository_id, 10)
             .await
             .expect("foreign tenant list"),
         Vec::new()
     );
     assert_eq!(
         store
-            .list(&tenant_id, &foreign_repository_id)
+            .list(&tenant_id, &foreign_repository_id, 10)
             .await
             .expect("foreign repository list"),
         Vec::new()
