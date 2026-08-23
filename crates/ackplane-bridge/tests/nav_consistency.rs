@@ -14,8 +14,8 @@ const EVIDENCE: &str = include_str!("../static/evidence.html");
 
 /// `index.html` is served at `/` and is the Fleet page; every other page's
 /// filename already matches its own nav capability name (`evidence.html` ->
-/// "Evidence"). `index` and `board-doctor` are the only exceptions, not a
-/// second list to forget.
+/// "Evidence"). `index`, `board-doctor`, and `live-feed` are the only
+/// exceptions, not a growing list to forget.
 fn capability_name(file_name: &str) -> String {
     let stem = file_name.trim_end_matches(".html");
     if stem == "index" {
@@ -23,6 +23,9 @@ fn capability_name(file_name: &str) -> String {
     }
     if stem == "board-doctor" {
         return "BoardDoctor".to_string();
+    }
+    if stem == "live-feed" {
+        return "LiveFeed".to_string();
     }
     let mut chars = stem.chars();
     match chars.next() {
@@ -62,14 +65,15 @@ fn discover_pages() -> Vec<(String, String, String)> {
 }
 
 /// The full capability set from ADR-0105 decision 5's Bridge navigation
-/// surface (task:60ba293846ec). Agents and Readiness live as sections
-/// inside the Fleet page itself, so they are not separate nav entries. Names
-/// not yet backed by a real page in `static/` stay disabled placeholders
-/// until their own page lands -- this list only needs a hand-edit for a
+/// surface (task:60ba293846ec). Readiness lives as a section inside the
+/// Fleet page itself, so it is not a separate nav entry. Names not yet
+/// backed by a real page in `static/` stay disabled placeholders until
+/// their own page lands -- this list only needs a hand-edit for a
 /// capability that has no page yet; once a page exists, `discover_pages`
 /// and the tests below take over automatically.
 const CAPABILITIES: &[&str] = &[
     "Fleet",
+    "Agents",
     "Evidence",
     "Telemetry",
     "Context",
@@ -81,6 +85,7 @@ const CAPABILITIES: &[&str] = &[
     "Administration",
     "Supervisors",
     "Delegations",
+    "LiveFeed",
 ];
 
 /// Extract the `<nav ...>...</nav>` block, with `aria-current="page"`
