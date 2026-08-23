@@ -5,7 +5,8 @@
   Constitution projection. An opaque `(tenant_id, repository_id, design_id)`
   design record carries bounded title/summary/source_version, a
   closed-vocabulary lifecycle state, and optional references into the
-  Constitution/Work/Evidence domains, each checked by a real foreign key.
+  Constitution/Evidence domains, each checked by a real foreign key (a Work
+  reference is deferred until the Work domain's own schema lands).
   Creation is a digest-checked idempotent insert that also records the
   design's first (`Proposed`) row in a new append-only
   `industrial_design_decisions` history table; later transitions append

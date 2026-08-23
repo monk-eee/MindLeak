@@ -435,14 +435,17 @@ publisher and stores the resulting projection.
 opaque `(tenant_id, repository_id, design_id)` design record carries bounded
 title/summary/source_version, a closed-vocabulary `lifecycle_state`
 (Proposed/Accepted/Rejected/Deferred/Retired/Superseded/Materialized), and
-optional references into the Constitution/Work/Evidence domains, each
-enforced by a real composite foreign key against the referenced table in the
-same tenant and repository. Creation is a digest-checked idempotent insert
-(an identical retry no-ops; the same `design_id` reused with different
-content is refused) that also writes the design's first, `Proposed` row into
-the append-only `industrial_design_decisions` history table. Every later
-lifecycle transition is a separate `record_decision` call appending one more
-history row and moving the design's own `lifecycle_state` to match, in one
+optional references into the Constitution/Evidence domains, each enforced by
+a real composite foreign key against the referenced table in the same tenant
+and repository. A Work reference is part of decision 3's design but is
+deferred until the Work domain's own schema lands on `main`
+(gaps.d/industrial-design-has-no-work-task-reference-yet.md). Creation is a
+digest-checked idempotent insert (an identical retry no-ops; the same
+`design_id` reused with different content is refused) that also writes the
+design's first, `Proposed` row into the append-only
+`industrial_design_decisions` history table. Every later lifecycle
+transition is a separate `record_decision` call appending one more history
+row and moving the design's own `lifecycle_state` to match, in one
 transaction — nothing in this store enforces which transitions are legal or
 who may request one; ADR-0121 decision 3 defers that authorization to a
 future typed command. Nothing here yet exposes an RPC/HTTP route,

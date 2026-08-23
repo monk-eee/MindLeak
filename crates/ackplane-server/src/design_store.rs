@@ -3,14 +3,17 @@
 //!
 //! A design record is opaque `(tenant_id, repository_id, design_id)` identity
 //! plus bounded title/summary/source_version, a closed-vocabulary lifecycle
-//! state, and optional references into the Constitution/Work/Evidence domains
-//! -- each checked by a real composite foreign key against the referenced
-//! table in the SAME tenant and repository. Creation is idempotent (an
-//! identical retry no-ops; a different `design_id` reused with different
-//! content is refused), matching this crate's established immutable/
-//! append-only insert pattern. Every lifecycle transition is a separate,
-//! append-only decision-history row; nothing here authorizes WHO may record a
-//! transition -- that gate is a future typed command, per the ADR's own text.
+//! state, and optional references into the Constitution/Evidence domains --
+//! each checked by a real composite foreign key against the referenced table
+//! in the SAME tenant and repository. A Work reference is part of ADR-0121
+//! decision 3's design but is deferred until the Work domain's own schema
+//! lands on `main` (gaps.d/industrial-design-has-no-work-task-reference-yet.md).
+//! Creation is idempotent (an identical retry no-ops; a different `design_id`
+//! reused with different content is refused), matching this crate's
+//! established immutable/append-only insert pattern. Every lifecycle
+//! transition is a separate, append-only decision-history row; nothing here
+//! authorizes WHO may record a transition -- that gate is a future typed
+//! command, per the ADR's own text.
 
 use std::time::SystemTime;
 
@@ -79,7 +82,6 @@ pub struct CreateDesignRequest {
     pub summary: String,
     pub source_version: String,
     pub constitution_version_id: Option<String>,
-    pub work_task_id: Option<String>,
     pub evidence_id: Option<String>,
     pub proposed_by: String,
 }
@@ -104,7 +106,6 @@ pub struct Design {
     pub source_version: String,
     pub lifecycle_state: DesignLifecycleState,
     pub constitution_version_id: Option<String>,
-    pub work_task_id: Option<String>,
     pub evidence_id: Option<String>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
@@ -128,7 +129,6 @@ struct DesignIdentityPayload {
     summary: String,
     source_version: String,
     constitution_version_id: Option<String>,
-    work_task_id: Option<String>,
     evidence_id: Option<String>,
 }
 
@@ -179,7 +179,6 @@ impl DesignStore {
             summary: request.summary.clone(),
             source_version: request.source_version.clone(),
             constitution_version_id: request.constitution_version_id.clone(),
-            work_task_id: request.work_task_id.clone(),
             evidence_id: request.evidence_id.clone(),
         };
         let payload_bytes =
@@ -213,9 +212,9 @@ impl DesignStore {
             .execute(
                 "INSERT INTO industrial_designs \
                  (tenant_id, repository_id, design_id, title, summary, source_version, \
-                  lifecycle_state, constitution_version_id, work_task_id, evidence_id, \
+                  lifecycle_state, constitution_version_id, evidence_id, \
                   content_digest) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
                 &[
                     &request.tenant_id,
                     &request.repository_id,
@@ -225,7 +224,6 @@ impl DesignStore {
                     &request.source_version,
                     &(DesignLifecycleState::Proposed as i16),
                     &request.constitution_version_id,
-                    &request.work_task_id,
                     &request.evidence_id,
                     &content_digest,
                 ],
@@ -320,7 +318,7 @@ impl DesignStore {
             .client
             .query_opt(
                 "SELECT title, summary, source_version, lifecycle_state, \
-                        constitution_version_id, work_task_id, evidence_id, created_at, \
+                        constitution_version_id, evidence_id, created_at, \
                         updated_at \
                  FROM industrial_designs \
                  WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3",
@@ -345,10 +343,9 @@ impl DesignStore {
                 }
             })?,
             constitution_version_id: row.get(4),
-            work_task_id: row.get(5),
-            evidence_id: row.get(6),
-            created_at: row.get(7),
-            updated_at: row.get(8),
+            evidence_id: row.get(5),
+            created_at: row.get(6),
+            updated_at: row.get(7),
         }))
     }
 
@@ -409,7 +406,6 @@ mod tests {
             summary: "a summary".to_string(),
             source_version: "v1".to_string(),
             constitution_version_id: None,
-            work_task_id: None,
             evidence_id: None,
             proposed_by: "agent:test".to_string(),
         }
@@ -593,7 +589,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_reference_to_a_nonexistent_work_task_is_refused() {
+    async fn a_reference_to_a_nonexistent_evidence_record_is_refused() {
         let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
@@ -604,7 +600,7 @@ mod tests {
             &unique_id("repository"),
             &unique_id("design"),
         );
-        request.work_task_id = Some(unique_id("nonexistent-task"));
+        request.evidence_id = Some(unique_id("nonexistent-evidence"));
 
         let result = store.create_design(request).await;
 

@@ -7,7 +7,6 @@ CREATE TABLE IF NOT EXISTS industrial_designs (
     source_version          TEXT        NOT NULL,
     lifecycle_state         SMALLINT    NOT NULL,
     constitution_version_id TEXT,
-    work_task_id            TEXT,
     evidence_id             TEXT,
     content_digest          BYTEA       NOT NULL,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -26,9 +25,6 @@ CREATE TABLE IF NOT EXISTS industrial_designs (
     CONSTRAINT industrial_designs_constitution_version_fkey
         FOREIGN KEY (tenant_id, repository_id, constitution_version_id)
         REFERENCES constitution_publications (tenant_id, repository_id, version_id),
-    CONSTRAINT industrial_designs_work_task_fkey
-        FOREIGN KEY (tenant_id, repository_id, work_task_id)
-        REFERENCES work_tasks (tenant_id, repository_id, task_id),
     CONSTRAINT industrial_designs_evidence_fkey
         FOREIGN KEY (tenant_id, repository_id, evidence_id)
         REFERENCES evidence_records (tenant_id, repository_id, evidence_id)
