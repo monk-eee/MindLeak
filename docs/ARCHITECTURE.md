@@ -365,6 +365,17 @@ enrollment path from ADR-0085. The synchronization stream acknowledges a hello,
 translates event batches into ledger appends, returns durable positions in
 receipts, and emits typed rejections for malformed or conflicting records.
 
+`DirectiveStore` (`directive_store/`) is the durable, pre-delivery half of
+ADR-0107's control channel. It accepts only the closed `AgentDirective` wire
+family for an already registered supervisor session, validates the shared
+directive-to-capability mapping and domain-separated typed payload digest,
+assigns server time and per-target sequence, and retains bounded encoded
+directive envelopes before any future sender can deliver them. `DirectiveReceipt` records append separately only when their
+tenant, repository, node, session, sequence, and payload digest bind exactly
+to the stored directive; identical retries replay their original record. This
+foundation has no Bridge command route, does not issue a directive from an
+unauthenticated principal, and does not yet send an outbound stream frame.
+
 `NodeEnrollmentService` persists pending requests, an append-only authority
 transition history, approved public-key bindings, single-use short-lived
 challenges, and immutable enrollment receipts. A node may submit a request, but
@@ -471,12 +482,14 @@ its own `telemetry_authentication_nonces` table.
 
 
 A separate axum HTTP server for the Bridge (assurance operations, ADR-0090):
-read-only Fleet views over Ackplane's accepted Postgres state for one
+tenant-scoped Fleet views over Ackplane's accepted Postgres state for one
 development tenant, resolved from a loopback-only salt file
 (`ACKPLANE_BRIDGE_SALT_PATH`). It links `ackplane-server::fleet` directly and
-never writes — enrolment, claims, and the ledger are mutated only through
-Ackplane's own gRPC services. Current routes, each 404 on a repository the
-tenant has not enrolled rather than leaking a distinguishable error:
+is predominantly read-only. ADR-0111's tenant-scoped, reason-required
+stranded-claim recovery is the sole current Bridge mutation; enrolment, normal
+claim lifecycle, and ledger records remain behind Ackplane's typed service
+boundaries. Current routes, each 404 on a repository the tenant has not
+enrolled rather than leaking a distinguishable error:
 
 | Route | Serves |
 |---|---|

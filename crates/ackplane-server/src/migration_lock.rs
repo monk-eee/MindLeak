@@ -90,6 +90,8 @@ pub(crate) mod key {
     /// this file's own next-available slot when drafted, but collided with
     /// `INDUSTRIAL_DESIGNS`/`WORK` (27/28) landing concurrently.
     pub(crate) const LIVE_FEED: i64 = 29;
+    /// `migrations/0030_directives.sql`
+    pub(crate) const DIRECTIVES: i64 = 30;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and
