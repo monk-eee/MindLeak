@@ -134,6 +134,11 @@
       padding: 6px 13px;
       white-space: nowrap;
     }
+    .masthead-right { display: flex; align-items: center; gap: 14px; }
+    .nav { display: flex; flex-wrap: wrap; justify-content: end; gap: 5px; }
+    .nav a { text-decoration: none; color: var(--ml-ink-muted); font-size: 0.78rem; font-weight: 650; padding: 7px 9px; border-radius: 6px; }
+    .nav a:hover, .nav a[aria-current="page"] { color: var(--ml-ink); background: var(--ml-surface-soft); }
+    .nav a[aria-disabled="true"] { cursor: default; opacity: .5; pointer-events: none; }
     main { padding: 34px 0 56px; }
     .kicker {
       margin: 0 0 4px;
@@ -276,6 +281,10 @@
       .stat-group { grid-area: stats; display: flex; gap: 18px; flex-wrap: wrap; }
       .toolbar { flex-direction: column; align-items: flex-start; gap: 10px; }
     }
+    @media (max-width: 600px) {
+      .masthead { align-items: start; padding: 14px 0; }
+      .nav { justify-content: start; }
+    }
   </style>
 </head>
 <body>
@@ -290,7 +299,14 @@
           <p class="brand-sub"><span class="pulse" aria-hidden="true"></span> Live assurance view</p>
         </div>
       </div>
-      <span class="scope-pill" id="tenant-pill">accepted records only</span>
+      <div class="masthead-right">
+        <span class="scope-pill" id="tenant-pill">accepted records only</span>
+        <nav class="nav" aria-label="Industrial surfaces">
+          <a href="/" aria-current="page">Fleet</a><a href="/evidence">Evidence</a><a href="/telemetry">Telemetry</a>
+          <a id="work-link" href="#" aria-disabled="true">Work</a><a id="design-link" href="#" aria-disabled="true">Design</a>
+          <a id="constitution-link" href="#" aria-disabled="true">Constitution</a><a id="knowledge-link" href="#" aria-disabled="true">Knowledge</a>
+        </nav>
+      </div>
     </div>
   </header>
   <main>
