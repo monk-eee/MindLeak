@@ -1,0 +1,1 @@
+- **Bridge now provides a read-only supervisor runtime dashboard.** Operators can inspect tenant-scoped runtime freshness, declared controls, outbox durability, worker sessions, and lifecycle receipts without receiving directive controls, idempotency data, credentials, process details, or any remote execution capability.
