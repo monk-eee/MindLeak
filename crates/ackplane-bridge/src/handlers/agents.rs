@@ -62,7 +62,9 @@ struct AgentWorkSummary {
     task_id: String,
     owner_id: String,
     branch: String,
+    claim_started_at_seconds: Option<u64>,
     lease_expires_at_seconds: Option<u64>,
+    claim_lapses: u64,
     paths: Vec<String>,
     symbols: Vec<String>,
 }
@@ -74,7 +76,9 @@ impl From<FleetWorkItem> for AgentWorkSummary {
             task_id: item.task_id,
             owner_id: item.owner_id,
             branch: item.branch,
+            claim_started_at_seconds: unix_seconds(item.claim_started_at),
             lease_expires_at_seconds: unix_seconds(item.lease_expires_at),
+            claim_lapses: item.claim_lapses,
             paths: item.paths,
             symbols: item.symbols,
         }

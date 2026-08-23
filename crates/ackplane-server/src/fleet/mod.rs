@@ -104,7 +104,18 @@ pub struct ActiveWorkItem {
     pub task_id: String,
     pub owner_id: String,
     pub branch: String,
+    /// When the current owner's claim began (ADR-0052: preserved across a
+    /// same-owner renewal or recovery, reset only when a different owner
+    /// takes the claim) -- the Bridge's "how long has this agent been on
+    /// this task" signal.
+    pub claim_started_at: SystemTime,
     pub lease_expires_at: SystemTime,
+    /// How many times this claim's lease has lapsed before being recovered
+    /// (ADR-0052 "a lease is a heartbeat, not a deadline"): a durable
+    /// reliability signal distinct from the lease's current state, since a
+    /// claim can be live right now and still carry a history of prior
+    /// lapses.
+    pub claim_lapses: u64,
     pub paths: Vec<String>,
     pub symbols: Vec<String>,
 }
@@ -121,7 +132,9 @@ pub struct FleetWorkItem {
     pub task_id: String,
     pub owner_id: String,
     pub branch: String,
+    pub claim_started_at: SystemTime,
     pub lease_expires_at: SystemTime,
+    pub claim_lapses: u64,
     pub paths: Vec<String>,
     pub symbols: Vec<String>,
 }
