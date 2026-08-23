@@ -135,8 +135,8 @@
       </div>
       <nav class="nav" aria-label="Industrial surfaces">
         <a href="/">Fleet</a><a href="/evidence" aria-current="page">Evidence</a><a href="/telemetry">Telemetry</a>
-        <a id="work-link" href="#filters" aria-disabled="true">Work</a><a id="design-link" href="#filters" aria-disabled="true">Design</a>
-        <a id="constitution-link" href="#filters" aria-disabled="true">Constitution</a><a id="knowledge-link" href="#filters" aria-disabled="true">Knowledge</a>
+        <a href="/context">Context</a><a href="/knowledge">Knowledge</a><a aria-disabled="true">Work</a>
+        <a aria-disabled="true">Design</a><a aria-disabled="true">Constitution</a><a aria-disabled="true">Administration</a>
       </nav>
     </div>
   </header>
@@ -201,15 +201,6 @@
       document.getElementById("work-api").href = `/api/v1/repositories/${repo}/claims`;
       document.getElementById("constitution-api").href = `/api/v1/repositories/${repo}/constitution`;
       document.getElementById("knowledge-api").href = `/api/v1/repositories/${repo}/knowledge`;
-      for (const [id, href] of [
-        ["work-link", `/api/v1/repositories/${repo}/claims`],
-        ["constitution-link", `/api/v1/repositories/${repo}/constitution`],
-        ["knowledge-link", `/api/v1/repositories/${repo}/knowledge`],
-      ]) {
-        const link = document.getElementById(id);
-        link.href = href;
-        link.removeAttribute("aria-disabled");
-      }
     };
     const evidenceRow = entry => `<li class="row"><details><summary><span class="indicator ${escape(entry.kind)}"></span><span class="row-title">${escape(entry.source_ref)}</span><span class="row-meta">${escape(entry.kind)}</span></summary><div class="detail"><div><b>Digest</b><code>${escape(entry.content_digest_hex)}</code></div><div><b>Recorded</b>${escape(when(entry.recorded_at_seconds))}</div><div><b>Producer</b>${escape(entry.recorded_by)}</div><div><b>Constitution</b>${escape(entry.reported_constitution_version || "not reported")}</div>${entry.receipt_id ? `<div><b>Receipt</b><code>${escape(entry.receipt_id)}</code></div>` : ""}<a class="record-link" href="${detailHref("evidence", entry.evidence_id)}" target="_blank" rel="noopener">Open record</a></div></details></li>`;
     const conformanceRow = entry => `<li class="row"><details><summary><span class="indicator ${escape(entry.verdict)}"></span><span class="row-title">${escape(entry.verdict.replaceAll("_", " "))}</span><span class="row-meta">${escape(entry.review_state)}</span></summary><div class="detail"><div><b>Finding digest</b><code>${escape(entry.findings_digest_hex)}</code></div><div><b>Finding codes</b>${escape((entry.finding_codes || []).map(code => code.replaceAll("_", " ")).join(", ") || "not reported")}</div><div><b>Finding count</b>${escape(entry.finding_count)}</div><div><b>Evaluator</b>${escape(entry.evaluated_by)}</div><div><b>Constitution</b>${escape(entry.reported_constitution_version || "not reported")}</div><div><b>Checked</b>${escape(when(entry.reported_checked_at_seconds))}</div><a class="record-link" href="${detailHref("conformance", entry.conformance_id)}" target="_blank" rel="noopener">Open record</a></div></details></li>`;
