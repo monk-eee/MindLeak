@@ -142,8 +142,36 @@ async fn returns_an_honest_status_for_the_tenant_and_hides_it_from_another_tenan
         .expect("the Administration page response should have a bounded body");
     let page = String::from_utf8(page_body.to_vec())
         .expect("the Administration page response should be UTF-8");
-    assert!(page.contains("Administration"));
-    assert!(!page.contains("DROP DATABASE"));
+    for required in [
+        "Administration",
+        "claim_recovery",
+        "Recover stranded claims",
+        "stranded-claims",
+        "Recover expired claim",
+        "/stranded-claims",
+        "method:\"POST\"",
+        "/tasks/${encodeURIComponent(taskId)}/recover",
+    ] {
+        assert!(
+            page.contains(required),
+            "Administration page is missing {required}"
+        );
+    }
+    for forbidden in [
+        "DROP DATABASE",
+        "TRUNCATE",
+        "database credentials",
+        "/delegate",
+        "/release",
+        "/renew",
+        "/prompt",
+        "/terminate",
+    ] {
+        assert!(
+            !page.contains(forbidden),
+            "Administration page must not expose {forbidden}"
+        );
+    }
 
     let response = authorized
         .oneshot(
@@ -179,6 +207,7 @@ async fn returns_an_honest_status_for_the_tenant_and_hides_it_from_another_tenan
                 {"operation":"status_inspection","state":"available","reason":"Tenant-scoped projection and capability status are readable."},
                 {"operation":"snapshot","state":"refused","reason":"A verified principal and adopted policy are required."},
                 {"operation":"export","state":"refused","reason":"A verified principal, purpose, and redaction policy are required."},
+                {"operation":"claim_recovery","state":"available","reason":"Only an expired claim can be recovered; the next owner and a reason are recorded, and live claims refuse."},
                 {"operation":"recovery_inspection","state":"unavailable","reason":"An identified backup artifact and recovery evidence are required."},
                 {"operation":"lifecycle_purge","state":"refused","reason":"A verified principal, retention basis, and impact plan are required."},
             ],
