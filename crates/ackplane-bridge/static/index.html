@@ -150,6 +150,8 @@
     }
     .summary { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
     .summary h2 { margin: 0; font-size: 1.35rem; font-weight: 750; letter-spacing: -0.01em; }
+    .section-link { margin-left: 10px; font-size: 0.78rem; font-weight: 650; color: var(--ml-pink-ink); text-decoration: none; }
+    .section-link:hover { text-decoration: underline; }
     #status { margin: 0; color: var(--ml-ink-muted); font-size: 0.86rem; }
     .toolbar { display: flex; gap: 18px; align-items: center; margin-bottom: 22px; flex-wrap: wrap; }
     .segmented { display: inline-flex; gap: 2px; padding: 3px; background: var(--ml-surface-soft); border: 1px solid var(--ml-border); border-radius: 11px; align-items: center; }
@@ -304,7 +306,7 @@
       <div class="masthead-right">
         <span class="scope-pill" id="tenant-pill">accepted records only</span>
         <nav class="nav" aria-label="Industrial surfaces">
-          <a href="/" aria-current="page">Fleet</a><a href="/evidence">Evidence</a><a href="/telemetry">Telemetry</a>
+          <a href="/" aria-current="page">Fleet</a><a href="/agents">Agents</a><a href="/evidence">Evidence</a><a href="/telemetry">Telemetry</a>
           <a href="/context">Context</a><a href="/knowledge">Knowledge</a><a href="/work">Work</a>
           <a href="/board-doctor">Board Doctor</a><a href="/supervisors">Supervisors</a><a href="/administration">Administration</a><a href="/delegations">Delegations</a><a href="/live">Live Feed</a>
           <a aria-disabled="true">Design</a><a aria-disabled="true">Constitution</a>
@@ -348,7 +350,7 @@
     </div>
     <p class="kicker">Agents</p>
     <div class="summary">
-      <h2 id="agents-heading">Active work across the fleet</h2>
+      <div><h2 id="agents-heading">Active work across the fleet</h2><a href="/agents" class="section-link">Open full dashboard →</a></div>
       <p id="agents-status" aria-live="polite">Loading agents…</p>
     </div>
     <div class="toolbar">

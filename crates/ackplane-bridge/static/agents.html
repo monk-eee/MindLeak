@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MindLeak Bridge Agents</title>
+  <style>
+    :root { color-scheme: light; --bg:#faf6f3; --surface:#fff; --soft:#f6f1ee; --line:#e9dfd9; --ink:#1f2542; --muted:#62677f; --quiet:#9094aa; --teal:#169c99; --amber:#d4881e; --rose:#e8578f; --danger:#c03d58; --focus:0 0 0 3px rgba(232,87,143,.28); }
+    @media (prefers-color-scheme: dark) { :root { color-scheme:dark; --bg:#151827; --surface:#1d2135; --soft:#252a42; --line:#353b59; --ink:#f1f2fd; --muted:#afb3cd; --quiet:#8187a8; --teal:#56d4ce; --amber:#f2ba65; --rose:#ff8bb5; --danger:#ff8eaa; --focus:0 0 0 3px rgba(255,139,181,.36); } }
+    * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font-family:"Segoe UI Variable", Aptos, system-ui, sans-serif; }
+    button,input,select { font:inherit; } button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible { outline:none; box-shadow:var(--focus); }
+    header { position:sticky; top:0; z-index:3; background:color-mix(in srgb,var(--bg) 94%,transparent); backdrop-filter:blur(14px); border-bottom:1px solid var(--line); } header::after { content:""; display:block; height:3px; background:linear-gradient(90deg,var(--teal),var(--rose)); }
+    .shell { width:min(1160px,calc(100% - 36px)); margin:0 auto; } .masthead { min-height:72px; display:flex; align-items:center; justify-content:space-between; gap:18px; } .brand { display:flex; align-items:center; gap:11px; min-width:0; } .mark { width:34px; height:34px; border-radius:8px; background:linear-gradient(155deg,color-mix(in srgb,var(--teal) 18%,var(--surface)),color-mix(in srgb,var(--rose) 18%,var(--surface))); } .brand h1 { margin:0; font-size:1.05rem; } .brand p { margin:2px 0 0; font-size:.76rem; color:var(--quiet); }
+    .nav { display:flex; flex-wrap:wrap; justify-content:end; gap:5px; } .nav a { padding:7px 9px; border-radius:6px; color:var(--muted); text-decoration:none; font-size:.78rem; font-weight:650; } .nav a:hover,.nav a[aria-current="page"] { background:var(--soft); color:var(--ink); } .nav a[aria-disabled="true"] { opacity:.5; pointer-events:none; }
+    main { padding:28px 0 56px; } .heading { display:flex; justify-content:space-between; gap:18px; flex-wrap:wrap; align-items:end; margin-bottom:18px; } .eyebrow { margin:0 0 5px; color:var(--quiet); font-size:.69rem; font-weight:750; letter-spacing:.09em; text-transform:uppercase; } h2 { margin:0; font-size:1.55rem; } .heading p:last-child { margin:5px 0 0; color:var(--muted); font-size:.86rem; }
+    .toolbar { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) 220px; gap:10px; align-items:end; padding:13px; border:1px solid var(--line); border-radius:8px; background:var(--surface); margin-bottom:16px; }
+    label { display:grid; gap:5px; color:var(--quiet); font-size:.7rem; font-weight:700; letter-spacing:.045em; text-transform:uppercase; } input,select { width:100%; min-width:0; padding:9px 10px; color:var(--ink); background:var(--surface); border:1px solid var(--line); border-radius:6px; font-size:.85rem; text-transform:none; letter-spacing:0; }
+    .panel { border:1px solid var(--line); border-radius:8px; background:var(--surface); } .panel-head { display:flex; justify-content:space-between; gap:10px; align-items:center; padding:14px 15px; border-bottom:1px solid var(--line); } .panel-head h3 { margin:0; font-size:.92rem; } .count { color:var(--quiet); font-size:.74rem; }
+    .table-wrap { overflow:auto; } table { width:100%; border-collapse:collapse; min-width:760px; } th,td { padding:11px 13px; text-align:left; border-bottom:1px solid var(--line); font-size:.79rem; vertical-align:top; } th { color:var(--quiet); font-size:.66rem; letter-spacing:.05em; text-transform:uppercase; } tr:last-child td { border-bottom:0; }
+    .scope-cell { font-family:"Cascadia Code",Consolas,monospace; font-size:.72rem; color:var(--muted); overflow-wrap:anywhere; }
+    .pager { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px 15px; border-top:1px solid var(--line); font-size:.78rem; color:var(--muted); }
+    .pager button { height:31px; padding:0 12px; border:1px solid var(--line); border-radius:6px; background:var(--soft); color:var(--ink); font-size:.78rem; font-weight:650; cursor:pointer; }
+    .pager button:disabled { opacity:.5; cursor:not-allowed; }
+    .empty-state { display:grid; justify-items:center; gap:6px; padding:34px 20px; text-align:center; color:var(--quiet); }
+    .empty-state .empty-title { margin:0; font-weight:700; color:var(--muted); font-size:.86rem; }
+    .empty-state p:last-child { margin:0; font-size:.8rem; }
+    .hidden { display:none !important; }
+    @media (max-width:820px) { .toolbar { grid-template-columns:1fr 1fr; } .toolbar label:last-child { grid-column:1 / -1; } }
+    @media (max-width:600px) { .shell { width:min(calc(100% - 24px),1160px); } .masthead { align-items:start; padding:14px 0; } .nav { justify-content:start; } table { min-width:0; } th,td { padding:9px 8px; } th:nth-child(4),td:nth-child(4),th:nth-child(6),td:nth-child(6) { display:none; } }
+  </style>
+</head>
+<body>
+  <header><div class="shell masthead"><div class="brand"><div class="mark" aria-hidden="true"></div><div><h1>MindLeak Bridge</h1><p>Active work across the fleet</p></div></div><nav class="nav" aria-label="Industrial surfaces"><a href="/">Fleet</a><a href="/agents" aria-current="page">Agents</a><a href="/evidence">Evidence</a><a href="/telemetry">Telemetry</a><a href="/context">Context</a><a href="/knowledge">Knowledge</a><a href="/work">Work</a><a href="/board-doctor">Board Doctor</a><a href="/supervisors">Supervisors</a><a href="/administration">Administration</a><a href="/delegations">Delegations</a><a href="/live">Live Feed</a><a aria-disabled="true">Design</a><a aria-disabled="true">Constitution</a></nav></div></header>
+  <main class="shell">
+    <div class="heading">
+      <div><p class="eyebrow">Agents</p><h2 id="agents-heading">Active work across the fleet</h2><p id="agents-status" aria-live="polite">Loading agents…</p></div>
+    </div>
+    <form class="toolbar" id="filters">
+      <label>Repository<input type="search" id="agents-search-repo" placeholder="repository id contains…" autocomplete="off" aria-label="Search agents by repository id"></label>
+      <label>Agent<input type="search" id="agents-search-owner" placeholder="agent id contains…" autocomplete="off" aria-label="Search agents by agent id"></label>
+      <label>Sort<select id="agents-sort" aria-label="Sort active claims">
+        <option value="lease_expires_at:asc" selected>Lease expires · soonest first</option>
+        <option value="lease_expires_at:desc">Lease expires · latest first</option>
+        <option value="repository_id:asc">Repository · A to Z</option>
+        <option value="repository_id:desc">Repository · Z to A</option>
+        <option value="owner_id:asc">Agent · A to Z</option>
+        <option value="owner_id:desc">Agent · Z to A</option>
+      </select></label>
+    </form>
+    <section class="panel">
+      <div class="panel-head"><h3>Active claims</h3><span id="agents-count" class="count"></span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Repository</th><th>Agent</th><th>Task</th><th>Branch</th><th>Lease</th><th>Scope</th></tr></thead>
+          <tbody id="agents-rows"></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <span id="agents-pager-range"></span>
+        <div>
+          <button type="button" id="agents-prev">Previous</button>
+          <button type="button" id="agents-next">Next</button>
+        </div>
+      </div>
+    </section>
+  </main>
+  <script>
+    // Same cadence a manual reload would use; only ticks while the tab is
+    // visible so a backgrounded dashboard does not keep polling.
+    const REFRESH_INTERVAL_MS = 15000;
+
+    function startVisibleRefresh(load, intervalMs) {
+      let timer = null;
+      function start() {
+        if (timer !== null) return;
+        timer = setInterval(load, intervalMs);
+      }
+      function stop() {
+        if (timer === null) return;
+        clearInterval(timer);
+        timer = null;
+      }
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") {
+          load();
+          start();
+        } else {
+          stop();
+        }
+      });
+      if (document.visibilityState === "visible") start();
+    }
+
+    function relativeTime(seconds) {
+      if (!seconds) return "Unknown";
+      const deltaMs = Date.now() - seconds * 1000;
+      const abs = Math.abs(deltaMs);
+      const units = [
+        ["y", 31536000000], ["mo", 2592000000], ["d", 86400000],
+        ["h", 3600000], ["m", 60000],
+      ];
+      for (const [name, ms] of units) {
+        if (abs >= ms) {
+          const value = Math.round(abs / ms);
+          return deltaMs >= 0 ? `${value}${name} ago` : `in ${value}${name}`;
+        }
+      }
+      return "just now";
+    }
+
+    function absoluteTime(seconds) {
+      return seconds ? new Date(seconds * 1000).toLocaleString() : "Unknown";
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      })[character]);
+    }
+
+    function emptyState(message, title) {
+      const wrap = document.createElement("div");
+      wrap.className = "empty-state";
+      const heading = document.createElement("p");
+      heading.className = "empty-title";
+      heading.textContent = title;
+      const body = document.createElement("p");
+      body.textContent = message;
+      wrap.append(heading, body);
+      return wrap;
+    }
+
+    const status = document.getElementById("agents-status");
+    const rows = document.getElementById("agents-rows");
+    const countLabel = document.getElementById("agents-count");
+    const repoInput = document.getElementById("agents-search-repo");
+    const ownerInput = document.getElementById("agents-search-owner");
+    const sortSelect = document.getElementById("agents-sort");
+    const pagerRange = document.getElementById("agents-pager-range");
+    const prevButton = document.getElementById("agents-prev");
+    const nextButton = document.getElementById("agents-next");
+
+    const filters = { repository_id: "", owner_id: "" };
+    const pageState = { page: 1, pageSize: 20 };
+    let totalAgents = 0;
+    let searchDebounce = null;
+
+    function debounceAgentsSearch(key, input) {
+      input.addEventListener("input", () => {
+        clearTimeout(searchDebounce);
+        searchDebounce = setTimeout(() => {
+          filters[key] = input.value.trim();
+          pageState.page = 1;
+          loadAgents();
+        }, 300);
+      });
+    }
+    debounceAgentsSearch("repository_id", repoInput);
+    debounceAgentsSearch("owner_id", ownerInput);
+
+    sortSelect.addEventListener("change", () => {
+      pageState.page = 1;
+      loadAgents();
+    });
+
+    prevButton.addEventListener("click", () => {
+      if (pageState.page <= 1) return;
+      pageState.page -= 1;
+      loadAgents();
+    });
+    nextButton.addEventListener("click", () => {
+      if (pageState.page * pageState.pageSize >= totalAgents) return;
+      pageState.page += 1;
+      loadAgents();
+    });
+
+    function scopeCell(item) {
+      const entries = [...(item.paths || []), ...(item.symbols || [])];
+      return entries.length ? entries.map(escapeHtml).join(" · ") : "No declared scope";
+    }
+
+    function agentRow(item) {
+      const leaseSeconds = item.lease_expires_at_seconds ?? null;
+      return `<tr>
+        <td>${escapeHtml(item.repository_id)}</td>
+        <td>${escapeHtml(item.owner_id)}</td>
+        <td>${escapeHtml(item.task_id)}</td>
+        <td>${item.branch ? escapeHtml(item.branch) : "No branch"}</td>
+        <td title="${escapeHtml(absoluteTime(leaseSeconds))}">${escapeHtml(relativeTime(leaseSeconds))}</td>
+        <td class="scope-cell">${scopeCell(item)}</td>
+      </tr>`;
+    }
+
+    function renderAgentRows(items) {
+      if (items.length === 0) {
+        rows.innerHTML = '<tr><td colspan="6"></td></tr>';
+        rows.querySelector("td").appendChild(
+          emptyState("Active claims will appear here as agents pick up work.", "No active claims match these filters")
+        );
+        return;
+      }
+      rows.innerHTML = items.map(agentRow).join("");
+    }
+
+    function updatePager() {
+      const start = totalAgents === 0 ? 0 : (pageState.page - 1) * pageState.pageSize + 1;
+      const end = Math.min(pageState.page * pageState.pageSize, totalAgents);
+      pagerRange.textContent = totalAgents === 0 ? "0 of 0" : `${start}-${end} of ${totalAgents}`;
+      prevButton.disabled = pageState.page <= 1;
+      nextButton.disabled = pageState.page * pageState.pageSize >= totalAgents;
+      countLabel.textContent = `${totalAgents} claim${totalAgents === 1 ? "" : "s"}`;
+    }
+
+    async function loadAgents() {
+      status.textContent = "Loading agents…";
+      status.classList.remove("error");
+      const params = new URLSearchParams();
+      if (filters.repository_id) params.set("repository_id", filters.repository_id);
+      if (filters.owner_id) params.set("owner_id", filters.owner_id);
+      params.set("sort", sortSelect.value);
+      params.set("page", String(pageState.page));
+      params.set("page_size", String(pageState.pageSize));
+      try {
+        const response = await fetch(`/api/v1/agents?${params.toString()}`);
+        if (!response.ok) throw new Error(`Agents request failed (${response.status}).`);
+        const result = await response.json();
+        totalAgents = result.total;
+        renderAgentRows(result.items);
+        updatePager();
+        status.textContent = result.items.length
+          ? `Showing ${result.items.length} of ${totalAgents} active claim${totalAgents === 1 ? "" : "s"}.`
+          : "No active claims match these filters.";
+      } catch (error) {
+        rows.innerHTML = '<tr><td colspan="6"></td></tr>';
+        rows.querySelector("td").appendChild(emptyState(error.message, "Agents unavailable"));
+        pagerRange.textContent = "0 of 0";
+        prevButton.disabled = true;
+        nextButton.disabled = true;
+        countLabel.textContent = "";
+        status.textContent = "Agents unavailable.";
+        status.classList.add("error");
+      }
+    }
+
+    renderAgentRows([]);
+    loadAgents();
+    startVisibleRefresh(loadAgents, REFRESH_INTERVAL_MS);
+  </script>
+</body>
+</html>
