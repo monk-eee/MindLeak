@@ -1,0 +1,1 @@
+- **Bridge now exposes a read-only Constitution page.** Operators can inspect a tenant-scoped repository's published policy version, immutable source/digest provenance, and clauses without accessing local Lodestar storage or issuing a governance mutation.
