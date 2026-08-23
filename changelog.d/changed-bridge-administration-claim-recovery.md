@@ -1,0 +1,1 @@
+- **Bridge Administration now surfaces stranded claim recovery.** Operators can inspect bounded expired claims and invoke the existing tenant-scoped recovery action with a next owner, branch, lease duration, and recorded reason; the database continues to refuse live claims.
