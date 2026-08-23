@@ -381,7 +381,10 @@ fn validate_identity(identity: &SupervisorIdentity) -> Result<(), SupervisorStor
     Ok(())
 }
 
-fn require_identifier(field: &'static str, value: &str) -> Result<(), SupervisorStoreError> {
+pub(super) fn require_identifier(
+    field: &'static str,
+    value: &str,
+) -> Result<(), SupervisorStoreError> {
     if value.trim().is_empty() || value.len() > MAX_IDENTIFIER_BYTES {
         return Err(SupervisorStoreError::InvalidIdentifier { field });
     }

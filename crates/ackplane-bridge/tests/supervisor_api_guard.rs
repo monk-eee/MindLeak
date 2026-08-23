@@ -2,7 +2,11 @@
 //! Structural guard for Bridge's tenant-scoped, read-only supervisor API.
 
 const SUPERVISOR_API_RS: &str = include_str!("../src/supervisor_api.rs");
-const SUPERVISOR_STORE_RS: &str = include_str!("../../ackplane-server/src/supervisor_store.rs");
+const SUPERVISOR_STORE_MOD_RS: &str =
+    include_str!("../../ackplane-server/src/supervisor_store/mod.rs");
+const SUPERVISOR_STORE_READS_RS: &str =
+    include_str!("../../ackplane-server/src/supervisor_store/reads.rs");
+const SUPERVISOR_STORE_SOURCES: &[&str] = &[SUPERVISOR_STORE_MOD_RS, SUPERVISOR_STORE_READS_RS];
 
 #[test]
 fn supervisor_routes_are_read_only_and_check_containment_before_queries() {
@@ -52,10 +56,12 @@ fn supervisor_store_direct_queries_carry_the_tenant_scope() {
         "list_supervisors",
         "list_supervisors_at",
         "list_sessions",
+        "session",
         "lifecycle_history",
     ] {
         assert!(
-            method_signature(SUPERVISOR_STORE_RS, method).contains("tenant_id: &str"),
+            method_signature(SUPERVISOR_STORE_SOURCES, method)
+                .is_some_and(|signature| signature.contains("tenant_id: &str")),
             "SupervisorStore::{method} must carry the tenant scope explicitly"
         );
     }
@@ -64,7 +70,7 @@ fn supervisor_store_direct_queries_carry_the_tenant_scope() {
         "request: &SupervisorLifecycleReceiptRequest",
     ] {
         assert!(
-            SUPERVISOR_STORE_RS.contains(scoped_request),
+            SUPERVISOR_STORE_MOD_RS.contains(scoped_request),
             "typed write requests must retain their tenant and repository identity"
         );
     }
@@ -84,15 +90,18 @@ fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
     &source[body_start..body_end]
 }
 
-fn method_signature<'a>(source: &'a str, name: &str) -> &'a str {
+fn method_signature<'a>(sources: &[&'a str], name: &str) -> Option<&'a str> {
+    sources
+        .iter()
+        .find_map(|source| method_signature_in(source, name))
+}
+
+fn method_signature_in<'a>(source: &'a str, name: &str) -> Option<&'a str> {
     let marker = format!("pub async fn {name}(");
-    let method_start = source
-        .find(&marker)
-        .unwrap_or_else(|| panic!("expected SupervisorStore::{name}"));
+    let method_start = source.find(&marker)?;
     let params_start = method_start + marker.len() - 1;
-    let params_end = balanced_parens(source, params_start)
-        .unwrap_or_else(|| panic!("expected parameter list for SupervisorStore::{name}"));
-    &source[params_start..params_end]
+    let params_end = balanced_parens(source, params_start)?;
+    Some(&source[params_start..params_end])
 }
 
 fn balanced_braces(source: &str, open: usize) -> Option<usize> {

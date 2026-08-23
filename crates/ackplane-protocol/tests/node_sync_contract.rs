@@ -7,6 +7,7 @@ use ackplane_protocol::v1::{
     EnrollmentChallenge, EnrollmentChallengeRequest, EnrollmentRequest, EnrollmentState,
     EventEnvelope, Hello, KeyRotationOutcome, KeyRotationRejectionReason, KeyRotationRequest,
     KeyRotationResult, NodeFrame, Notice, PromptDirective, ProvenanceClass,
+    SupervisorFrameOperation,
 };
 use prost::Message;
 
@@ -123,6 +124,11 @@ fn directive_enums_default_to_unspecified() {
             DirectiveReceiptReason::Unspecified as i32,
         )
     );
+}
+
+#[test]
+fn supervisor_directive_receipt_acknowledgement_is_an_additive_operation() {
+    assert_eq!(SupervisorFrameOperation::DirectiveReceipt as i32, 5);
 }
 
 #[test]

@@ -90,10 +90,14 @@ pub(crate) mod key {
     /// this file's own next-available slot when drafted, but collided with
     /// `INDUSTRIAL_DESIGNS`/`WORK` (27/28) landing concurrently.
     pub(crate) const LIVE_FEED: i64 = 29;
+    /// `migrations/0030_directives.sql`
+    pub(crate) const DIRECTIVES: i64 = 30;
     /// `migrations/0031_industrial_design_work_reference.sql`. Key 30 was
     /// already recorded as applied in the shared development database by
     /// concurrent, then-not-yet-committed work at the time this was drafted.
     pub(crate) const INDUSTRIAL_DESIGN_WORK_REFERENCE: i64 = 31;
+    /// `migrations/0032_industrial_design_materializations.sql`
+    pub(crate) const INDUSTRIAL_DESIGN_MATERIALIZATIONS: i64 = 32;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

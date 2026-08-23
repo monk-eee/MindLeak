@@ -7,9 +7,9 @@ use std::{
 
 use ackplane_protocol::{
     supervisor::{
-        SupervisorCapabilities, SupervisorDirectiveCapability, SupervisorIdentity,
-        SupervisorOutboxDurability, SupervisorRegistration, SupervisorRuntime, SupervisorSession,
-        SupervisorWorkerState,
+        directive_payload_digest, SupervisorCapabilities, SupervisorDirectiveCapability,
+        SupervisorIdentity, SupervisorOutboxDurability, SupervisorRegistration, SupervisorRuntime,
+        SupervisorSession, SupervisorWorkerState,
     },
     v1::{self, agent_directive},
 };
@@ -68,7 +68,7 @@ fn session() -> SupervisorSession {
 }
 
 fn directive(sequence: u64, expires_at: OffsetDateTime) -> v1::AgentDirective {
-    v1::AgentDirective {
+    let mut directive = v1::AgentDirective {
         directive_id: format!("directive-{sequence}"),
         tenant_id: "tenant-a".to_string(),
         project_id: "project-a".to_string(),
@@ -86,7 +86,7 @@ fn directive(sequence: u64, expires_at: OffsetDateTime) -> v1::AgentDirective {
         expires_at: expires_at.format(&Rfc3339).expect("format expiry time"),
         sequence,
         idempotency_key: format!("directive-{sequence}-v1"),
-        payload_digest: vec![7; 32],
+        payload_digest: Vec::new(),
         required_capability: "prompt.v1".to_string(),
         policy_refs: vec!["policy:v1".to_string()],
         knowledge_refs: Vec::new(),
@@ -94,7 +94,10 @@ fn directive(sequence: u64, expires_at: OffsetDateTime) -> v1::AgentDirective {
         payload: Some(agent_directive::Payload::Prompt(v1::PromptDirective {
             instruction: "work only within the context packet".to_string(),
         })),
-    }
+    };
+    directive.payload_digest =
+        directive_payload_digest(&directive).expect("prompt directive has a closed payload");
+    directive
 }
 
 #[test]
@@ -143,6 +146,34 @@ fn changed_digest_replay_is_refused_without_overwriting_the_original_receipt() {
     assert_eq!(
         inbox.receive(&directive, now()).expect("replay original"),
         first
+    );
+    drop(inbox);
+    remove_database(&path);
+}
+
+#[test]
+fn mismatched_payload_digest_is_refused_without_consuming_the_first_sequence() {
+    let path = database_path("payload-digest-mismatch");
+    remove_database(&path);
+    let inbox = SupervisorInbox::open(
+        &path,
+        registration(vec![SupervisorDirectiveCapability::Prompt]),
+        session(),
+    )
+    .expect("open inbox");
+    let mut mismatched = directive(1, now() + Duration::minutes(10));
+    mismatched.payload_digest = vec![0; 32];
+
+    assert!(matches!(
+        inbox.receive(&mismatched, now()),
+        Err(InboxError::PayloadDigestMismatch { .. })
+    ));
+    assert_eq!(
+        inbox
+            .receive(&directive(1, now() + Duration::minutes(10)), now())
+            .expect("accept first valid directive")
+            .status,
+        v1::DirectiveReceiptStatus::Accepted as i32
     );
     drop(inbox);
     remove_database(&path);

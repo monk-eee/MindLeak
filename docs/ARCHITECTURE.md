@@ -365,6 +365,19 @@ enrollment path from ADR-0085. The synchronization stream acknowledges a hello,
 translates event batches into ledger appends, returns durable positions in
 receipts, and emits typed rejections for malformed or conflicting records.
 
+`DirectiveStore` (`directive_store/`) is the durable, pre-delivery half of
+ADR-0107's control channel. It accepts only the closed `AgentDirective` wire
+family for an already registered supervisor session, validates the shared
+directive-to-capability mapping and domain-separated typed payload digest,
+assigns server time and per-target sequence, and retains bounded encoded
+directive envelopes before any future sender can deliver them. `DirectiveReceipt` records append separately only when their
+tenant, repository, node, session, sequence, and payload digest bind exactly
+to the stored directive; identical retries replay their original record. This
+foundation has no Bridge command route, does not issue a directive from an
+unauthenticated principal, and does not yet send an outbound stream frame.
+
+Authenticated `NodeSync` streams now ingest `DirectiveReceipt` frames through that same ledger only after their tenant, repository, and node match the completed connection challenge. Ackplane returns a typed `SupervisorFrameReceipt` for a durable write or exact replay, resolving the supervisor only from the receipt's scoped session; unknown or cross-scope directives receive a generic refusal rather than a directive-existence disclosure. This remains receipt ingress only: it adds neither outbound directive delivery nor a Bridge issuance route.
+
 `NodeEnrollmentService` persists pending requests, an append-only authority
 transition history, approved public-key bindings, single-use short-lived
 challenges, and immutable enrollment receipts. A node may submit a request, but
@@ -448,9 +461,31 @@ transition is a separate `record_decision` call appending one more history
 row and moving the design's own `lifecycle_state` to match, in one
 transaction — nothing in this store enforces which transitions are legal or
 who may request one; ADR-0121 decision 3 defers that authorization to a
-future typed command. Nothing here yet exposes an RPC/HTTP route,
-materialization plans/revisions (decision 4), or a Bridge Design Board
-(decision 7) — those are separate follow-on slices.
+future typed command. Nothing here yet exposes an RPC/HTTP route or a
+Bridge Design Board (decision 7) — those are separate follow-on slices.
+
+`MaterializationStore` (`design_materialization_store.rs`, a separate file
+from `design_store.rs` to stay under the module-length ratchet) is ADR-0121
+decision 4: an append-only, idempotency-key-scoped revision history of
+materialization decisions against a design, distinct from the design's own
+lifecycle-transition history above. A revision records its actor, a
+caller-supplied `idempotency_key`, optional rationale, a REQUIRED
+constitution_version_id reference (which Constitution publication the
+materialization was informed by), bounded optional Lodestar `goal_ids`
+(plain strings -- Lodestar goals live in a different plane, so these are not
+FK-checked), and a payload digest. Work-task references go through a
+junction table (`industrial_design_materialization_work_tasks`) rather than
+a bare array column, so each one is a real foreign key like every other
+cross-domain reference in this crate. `record_materialization` mirrors
+`evidence_store`'s own established idempotency contract exactly: an
+identical resubmission (same `idempotency_key`, same every other field)
+returns the original revision unchanged; the same `idempotency_key`
+resubmitted with any different field is refused as a conflict. A genuinely
+new submission (a fresh `idempotency_key`) always gets the next
+`revision_number` for that design, even if its content happens to match an
+earlier revision -- revisions are never deduplicated by content, only by
+idempotency key. Nothing here yet exposes an RPC/HTTP route or a Bridge
+Design Board (decision 7).
 
 `TelemetryService` (`telemetry_store.rs`/`telemetry_service.rs`) is Ackplane's
 typed operational-telemetry domain (ADR-0105 decision 6): `RecordTelemetry`
@@ -471,12 +506,14 @@ its own `telemetry_authentication_nonces` table.
 
 
 A separate axum HTTP server for the Bridge (assurance operations, ADR-0090):
-read-only Fleet views over Ackplane's accepted Postgres state for one
+tenant-scoped Fleet views over Ackplane's accepted Postgres state for one
 development tenant, resolved from a loopback-only salt file
 (`ACKPLANE_BRIDGE_SALT_PATH`). It links `ackplane-server::fleet` directly and
-never writes — enrolment, claims, and the ledger are mutated only through
-Ackplane's own gRPC services. Current routes, each 404 on a repository the
-tenant has not enrolled rather than leaking a distinguishable error:
+is predominantly read-only. ADR-0111's tenant-scoped, reason-required
+stranded-claim recovery is the sole current Bridge mutation; enrolment, normal
+claim lifecycle, and ledger records remain behind Ackplane's typed service
+boundaries. Current routes, each 404 on a repository the tenant has not
+enrolled rather than leaking a distinguishable error:
 
 | Route | Serves |
 |---|---|
