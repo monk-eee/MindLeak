@@ -73,6 +73,8 @@ pub(crate) mod key {
     pub(crate) const HUMAN_DELEGATION_EVENT_PAYLOADS: i64 = 23;
     /// `migrations/0024_supervisor_session_projection.sql`
     pub(crate) const SUPERVISOR_SESSION_PROJECTION: i64 = 24;
+    /// `migrations/0025_enrollment_status_authentication_nonces.sql`
+    pub(crate) const ENROLLMENT_STATUS_AUTHENTICATION_NONCES: i64 = 25;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

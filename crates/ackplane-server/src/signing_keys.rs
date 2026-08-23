@@ -306,6 +306,68 @@ pub async fn resolve(
     ))
 }
 
+/// Find the lifecycle of the signing key registered for a specific candidate
+/// binding, keyed on the fingerprint the candidate itself computed and
+/// presented -- not a `signing_key_id`, because `CheckEnrollmentStatus`
+/// (ADR-0122) exists for exactly the callers who have none to offer: a
+/// pre-activation candidate has never been assigned one, and a caller
+/// presenting a fingerprint from before its most recent rotation was assigned
+/// a *different* id than its current key holds.
+///
+/// This is the authoritative source for a binding's current status once it
+/// has ever been activated: unlike `enrollment_requests.state`, retirement and
+/// revocation are written directly to this table's `retired_at`/`revoked_at`
+/// columns as they happen, so a caller must consult this before falling back
+/// to the enrollment request's own (potentially stale) state column.
+///
+/// Not `FOR UPDATE`: a status check observes, it never contends with a
+/// concurrent rotation or revocation for the row. `LIMIT 1` guards the
+/// unlikely case of the same key material being registered under two
+/// different `signing_key_id`s for the same node (e.g. revoke, then
+/// re-enroll with identical key bytes); the most recently activated binding
+/// is the one a fresh status check should answer for.
+pub async fn lifecycle_for_binding(
+    client: &Client,
+    tenant_id: &str,
+    repository_id: &str,
+    node_id: &str,
+    public_key_fingerprint: &str,
+) -> Result<Option<SigningKeyLifecycle>, SigningKeyError> {
+    let row = client
+        .query_opt(
+            "SELECT signing_key_id, tenant_id, repository_id, node_id, public_key, \
+             public_key_fingerprint, activated_at, expires_at, retired_at, revoked_at \
+             FROM signing_keys WHERE tenant_id = $1 AND repository_id = $2 \
+             AND node_id = $3 AND public_key_fingerprint = $4 \
+             ORDER BY activated_at DESC LIMIT 1",
+            &[
+                &tenant_id,
+                &repository_id,
+                &node_id,
+                &public_key_fingerprint,
+            ],
+        )
+        .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    Ok(Some(SigningKeyLifecycle {
+        record: SigningKeyRecord {
+            signing_key_id: row.get(0),
+            tenant_id: row.get(1),
+            repository_id: row.get(2),
+            node_id: row.get(3),
+            public_key: row.get(4),
+            public_key_fingerprint: row.get(5),
+            activated_at: row.get(6),
+            expires_at: row.get(7),
+        },
+        retired_at: row.get(8),
+        revoked_at: row.get(9),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
