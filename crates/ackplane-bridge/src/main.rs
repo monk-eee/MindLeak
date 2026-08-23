@@ -9,6 +9,7 @@ use ackplane_bridge::delegation_api::{delegation_routes, DelegationApiState};
 use ackplane_bridge::evidence::BridgeEvidenceStore;
 use ackplane_bridge::evidence_api::{evidence_routes, EvidenceApiState};
 use ackplane_bridge::knowledge_api::{knowledge_routes, KnowledgeApiState};
+use ackplane_bridge::live_feed::{live_feed_routes, LiveFeedApiState};
 use ackplane_bridge::supervisor_api::{supervisor_routes, SupervisorApiState};
 use ackplane_bridge::work_api::{work_routes, WorkApiState};
 use ackplane_bridge::BridgeConfig;
@@ -18,6 +19,7 @@ use ackplane_server::context_packet_store::ContextPacketStore;
 use ackplane_server::delegation_store::DelegationStore;
 use ackplane_server::fleet::{FleetStore, RepositoryFreshness};
 use ackplane_server::knowledge_store::KnowledgeStore;
+use ackplane_server::live_feed_store::LiveFeedStore;
 use ackplane_server::projection::Projector;
 use ackplane_server::readiness::ReadinessStore;
 use ackplane_server::supervisor_store::SupervisorStore;
@@ -170,6 +172,13 @@ async fn main() {
             return;
         }
     };
+    let live_feed_store = match LiveFeedStore::connect(config.database_url()).await {
+        Ok(live_feed) => Arc::new(live_feed),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane live feed: {error}");
+            return;
+        }
+    };
     let delegation_store = match DelegationStore::connect(config.database_url()).await {
         Ok(delegations) => Arc::new(delegations),
         Err(error) => {
@@ -201,6 +210,8 @@ async fn main() {
     let work_api_state = WorkApiState::new(work_store, fleet_store.clone(), tenant_id.clone());
     let administration_api_state =
         AdministrationApiState::new(fleet_store.clone(), tenant_id.clone());
+    let live_feed_api_state =
+        LiveFeedApiState::new(live_feed_store, fleet_store.clone(), tenant_id.clone());
     let state = AppState {
         fleet: fleet_store,
         knowledge: knowledge_store,
@@ -265,6 +276,7 @@ async fn main() {
         .merge(delegation_routes(delegation_api_state))
         .merge(administration_routes(administration_api_state))
         .merge(supervisor_routes(supervisor_api_state))
+        .merge(live_feed_routes(live_feed_api_state))
         .merge(work_routes(work_api_state));
     let listener = match tokio::net::TcpListener::bind(config.listen).await {
         Ok(listener) => listener,
