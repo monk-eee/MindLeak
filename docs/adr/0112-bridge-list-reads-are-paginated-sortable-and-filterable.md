@@ -108,6 +108,10 @@ underlying data grows, not applied identically everywhere.**
   - **Update:** `timeline` adopted keyset pagination (`before`, a
     `stream_position` cursor) when next touched, exactly as decided above.
     `claims` and `knowledge` are unchanged and still pending.
+- **Update:** `knowledge` adopted compound keyset pagination when next
+  touched. Its `(confirmed_at DESC, knowledge_id ASC)` cursor is exposed as
+  paired `before_confirmed_at_micros` and `before_knowledge_id` query fields,
+  with `next_before` carrying the next page boundary.
 - Any future Bridge list view chooses one of these two named shapes at
   design time based on its own data's growth pattern, rather than each view
   inventing its own bespoke limit-and-hope-nobody-asks-for-page-2 pattern the
