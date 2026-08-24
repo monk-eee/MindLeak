@@ -40,6 +40,21 @@
   `mindleak-storage/src/build_identity.rs`. Every one is a file added recently,
   which is the residual gap: a binding is applied to the tree as it was, and a
   new module arrives ungoverned and silent.
+  **24 Aug re-measurement, second confirmation of the same residual gap.**
+  `binding-audit.mjs` reported 0 of those five unbound (all long since folded
+  into other work) but a completely DIFFERENT five: `bin/register-me/main.rs`,
+  `claim_store/mod.rs`, `enrollment_service/wire.rs`, `fleet/repositories.rs`,
+  and `service/mod.rs` — every one a sibling file created by a module-length
+  split of an already-governed file (`claim_store.rs`, `enrollment_service.rs`,
+  `fleet.rs`, `service.rs`; the split leaves the original binding pointing at a
+  path that no longer exists rather than following the file to its new home).
+  Bound via `constitution_define(bind)` the same session (task:eb66335f3264);
+  `binding-audit.mjs` now reports 0 unbound and 18 stale bindings naming the
+  pre-split paths (left as-is — cleaning up a stale binding is not the same
+  gap as leaving a file unbound, and wasn't this task's acceptance). The
+  pattern repeats exactly as predicted: this is not a one-time fix, it is a
+  standing tax on every future split, and nothing currently binds a file
+  automatically at split time.
   **Still true, and re-verified 09:29Z: `scripts/conformance-gate.mjs` cannot
   run.** It reads the manifest exported by `export_conformance_manifest`, and
   `.gitignore` still excludes `/.lodestar/*` with a single exception for
