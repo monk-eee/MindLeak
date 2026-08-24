@@ -7,7 +7,7 @@ use ackplane_protocol::v1::{
     EnrollmentChallenge, EnrollmentChallengeRequest, EnrollmentRequest, EnrollmentState,
     EventEnvelope, Hello, KeyRotationOutcome, KeyRotationRejectionReason, KeyRotationRequest,
     KeyRotationResult, NodeFrame, Notice, PromptDirective, ProvenanceClass,
-    SupervisorFrameOperation,
+    SupervisorFrameOperation, WorkTaskCreate, WorkTaskReceipt,
 };
 use prost::Message;
 
@@ -47,6 +47,55 @@ fn v1_node_frames_tolerate_unknown_additive_fields() {
     encoded.extend([0x98, 0x06, 0x01]);
 
     assert_eq!(NodeFrame::decode(encoded.as_slice()).unwrap(), frame);
+}
+
+#[test]
+fn native_work_creation_and_receipt_round_trip_in_opposite_stream_directions() {
+    let request = WorkTaskCreate {
+        creation_id: "work-create-a".into(),
+        title: "Publish an authenticated Work record".into(),
+        acceptance: "The Work Board lists the native record.".into(),
+        goal_id: "goal:ackplane-federation-service@constitution:v4".into(),
+        declared_paths: vec!["crates/ackplane-server/src/service/work_ingress.rs".into()],
+        declared_symbols: vec!["NodeSyncService::synchronize".into()],
+    };
+    let receipt = WorkTaskReceipt {
+        work_id: "work:6d6e8f".into(),
+        idempotent_replay: false,
+    };
+    let node_frame = NodeFrame {
+        frame: Some(node_frame::Frame::WorkTaskCreate(request)),
+    };
+    let server_frame = AckplaneFrame {
+        frame: Some(ackplane_frame::Frame::WorkTaskReceipt(receipt)),
+    };
+
+    assert_eq!(
+        (
+            NodeFrame::decode(node_frame.encode_to_vec().as_slice()).unwrap(),
+            AckplaneFrame::decode(server_frame.encode_to_vec().as_slice()).unwrap(),
+        ),
+        (node_frame, server_frame)
+    );
+}
+
+#[test]
+fn work_creation_keeps_authority_on_the_authenticated_stream() {
+    const PROTO: &str = include_str!("../proto/mindleak/ackplane/v1/node_sync.proto");
+    let (_, message) = PROTO
+        .split_once("message WorkTaskCreate {")
+        .expect("the v1 protocol declares native Work creation");
+    let fields = message
+        .split_once('}')
+        .expect("the WorkTaskCreate message is closed")
+        .0;
+
+    for authority_field in ["tenant_id", "repository_id", "publisher_id", "node_id"] {
+        assert!(
+            !fields.contains(authority_field),
+            "WorkTaskCreate must not accept caller-supplied {authority_field} authority"
+        );
+    }
 }
 
 #[test]
