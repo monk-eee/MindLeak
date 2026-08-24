@@ -454,6 +454,13 @@ mod tests {
         }
     }
 
+    fn truncate_to_postgres_microseconds(value: SystemTime) -> SystemTime {
+        let elapsed = value
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("telemetry fixture timestamps are after the Unix epoch");
+        SystemTime::UNIX_EPOCH + std::time::Duration::from_micros(elapsed.as_micros() as u64)
+    }
+
     #[tokio::test]
     async fn recorded_telemetry_is_read_back_as_a_current_health_metric() {
         let Some(store) = connect().await else {
@@ -590,7 +597,9 @@ mod tests {
             return;
         };
         let (tenant_id, repository_id) = unique_scope("recent-events");
-        let baseline = SystemTime::now();
+        // PostgreSQL `timestamptz` stores microsecond precision. The response
+        // should still be exact, so make the fixture use that same precision.
+        let baseline = truncate_to_postgres_microseconds(SystemTime::now());
         let mut oldest = request(&tenant_id, &repository_id, "oldest", 1);
         oldest.occurred_at = baseline - std::time::Duration::from_secs(120);
         oldest.duration_ms = 10;
