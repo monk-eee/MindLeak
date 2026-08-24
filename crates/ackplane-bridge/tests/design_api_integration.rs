@@ -16,6 +16,7 @@ use ackplane_server::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
         EnrollmentSubmission,
     },
+    evidence_store::EvidenceStore,
     fleet::FleetStore,
 };
 use axum::{
@@ -108,6 +109,23 @@ async fn enroll_repository(database_url: &str, tenant_id: &str, repository_id: &
 }
 
 async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
+    // `industrial_designs`' own migration carries FK references into both
+    // `constitution_publications` and `evidence_records` (unconditionally,
+    // regardless of whether any row ever sets those columns). Each store's
+    // `connect()` only runs its OWN migration, and Cargo runs every
+    // `tests/*.rs` file as an independent binary against a shared fresh
+    // database with no guaranteed cross-binary ordering -- so this file must
+    // create those tables itself rather than rely on some other, unrelated
+    // test binary happening to run first (observed failing in CI as
+    // "relation \"evidence_records\" does not exist" precisely because
+    // nothing else in this binary ever connects an EvidenceStore).
+    ConstitutionStore::connect(database_url)
+        .await
+        .expect("connect Constitution store (industrial_designs' FK dependency)");
+    EvidenceStore::connect(database_url)
+        .await
+        .expect("connect Evidence store (industrial_designs' FK dependency)");
+
     let designs = Arc::new(Mutex::new(
         DesignStore::connect(database_url)
             .await
