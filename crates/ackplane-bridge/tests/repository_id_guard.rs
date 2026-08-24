@@ -18,6 +18,19 @@ const REPOSITORY_KNOWLEDGE_RS: &str = include_str!("../src/handlers/repository/k
 const REPOSITORY_GRAPH_RS: &str = include_str!("../src/handlers/repository/graph.rs");
 const REPOSITORY_CONSTITUTION_RS: &str = include_str!("../src/handlers/repository/constitution.rs");
 const REPOSITORY_TELEMETRY_RS: &str = include_str!("../src/handlers/repository/telemetry.rs");
+const ADMINISTRATION_RS: &str = include_str!("../src/administration.rs");
+const CONTEXT_API_RS: &str = include_str!("../src/context_api.rs");
+const DELEGATION_API_RS: &str = include_str!("../src/delegation_api.rs");
+const DESIGN_API_RS: &str = include_str!("../src/design_api.rs");
+const EVIDENCE_API_RS: &str = include_str!("../src/evidence_api.rs");
+const EVIDENCE_API_BOARD_RS: &str = include_str!("../src/evidence_api/board.rs");
+const EVIDENCE_API_DETAIL_RS: &str = include_str!("../src/evidence_api/detail.rs");
+const EVIDENCE_API_EXPORT_RS: &str = include_str!("../src/evidence_api/export.rs");
+const EVIDENCE_API_PAGE_RS: &str = include_str!("../src/evidence_api/page.rs");
+const KNOWLEDGE_API_RS: &str = include_str!("../src/knowledge_api.rs");
+const LIVE_FEED_RS: &str = include_str!("../src/live_feed.rs");
+const SUPERVISOR_API_RS: &str = include_str!("../src/supervisor_api.rs");
+const WORK_API_RS: &str = include_str!("../src/work_api.rs");
 const FLEET_MOD_RS: &str = include_str!("../../ackplane-server/src/fleet/mod.rs");
 const FLEET_REPOSITORIES_RS: &str = include_str!("../../ackplane-server/src/fleet/repositories.rs");
 const FLEET_WORK_RS: &str = include_str!("../../ackplane-server/src/fleet/work.rs");
@@ -94,20 +107,32 @@ const KNOWLEDGE_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &[
     "consume_knowledge_nonce",
 ];
 
-/// `fleet_page`, `agents_page`, `telemetry_page`, and `constitution_page` serve a static asset
-/// and never touch the store - they have nothing to scope.
+/// `fleet_page`, `agents_page`, `telemetry_page`, `constitution_page`,
+/// `administration_page`, `context_page`, `delegations_page`, `design_page`,
+/// `knowledge_page`, `live_feed_page`, `work_page`, `board_doctor_page`, and
+/// `evidence_page` each serve a static asset and never touch the store -
+/// they have nothing to scope.
 const ROUTE_HANDLERS_WITHOUT_A_STORE_QUERY: &[&str] = &[
     "fleet_page",
     "agents_page",
     "telemetry_page",
     "constitution_page",
+    "administration_page",
+    "context_page",
+    "delegations_page",
+    "design_page",
+    "knowledge_page",
+    "live_feed_page",
+    "work_page",
+    "board_doctor_page",
+    "evidence_page",
 ];
 
 /// Route handler bodies live wherever the crate split them across --
-/// `main.rs` wires the router, but each handler's own implementation is now
-/// in its own `handlers/**` module (one Bridge route handler per view, split
-/// below the module-length ratchet). Route registration is still read from
-/// `MAIN_RS` alone; a handler body can be in any of these.
+/// `main.rs` wires its own routes, and every merged domain module wires its
+/// own (one Bridge route handler per view, split below the module-length
+/// ratchet). Route registration is read from `ROUTE_REGISTRATION_SOURCES`
+/// below; a handler body can be in any of these.
 const HANDLER_SOURCES: &[&str] = &[
     MAIN_RS,
     FLEET_HANDLER_RS,
@@ -121,6 +146,37 @@ const HANDLER_SOURCES: &[&str] = &[
     REPOSITORY_GRAPH_RS,
     REPOSITORY_CONSTITUTION_RS,
     REPOSITORY_TELEMETRY_RS,
+    ADMINISTRATION_RS,
+    CONTEXT_API_RS,
+    DELEGATION_API_RS,
+    DESIGN_API_RS,
+    EVIDENCE_API_RS,
+    EVIDENCE_API_BOARD_RS,
+    EVIDENCE_API_DETAIL_RS,
+    EVIDENCE_API_EXPORT_RS,
+    EVIDENCE_API_PAGE_RS,
+    KNOWLEDGE_API_RS,
+    LIVE_FEED_RS,
+    SUPERVISOR_API_RS,
+    WORK_API_RS,
+];
+
+/// Every `(source, router-building-fn-name)` pair whose function registers
+/// routes with `.route("...", get(handler))`/`.post(handler)`. `main.rs`
+/// merges the rest, each of which owns and registers its own routes -- this
+/// guard must scan every one, not just `main.rs`
+/// (`gaps.d/repository-id-guard-does-not-scan-the-newer-flat-api-modules.md`).
+const ROUTE_REGISTRATION_SOURCES: &[(&str, &str)] = &[
+    (MAIN_RS, "main"),
+    (ADMINISTRATION_RS, "administration_routes"),
+    (CONTEXT_API_RS, "context_routes"),
+    (DELEGATION_API_RS, "delegation_routes"),
+    (DESIGN_API_RS, "design_routes"),
+    (EVIDENCE_API_RS, "evidence_routes"),
+    (KNOWLEDGE_API_RS, "knowledge_routes"),
+    (LIVE_FEED_RS, "live_feed_routes"),
+    (SUPERVISOR_API_RS, "supervisor_routes"),
+    (WORK_API_RS, "work_routes"),
 ];
 
 /// `connect` is the constructor, same exemption as every other store.
@@ -274,7 +330,10 @@ fn every_knowledge_store_query_requires_an_explicit_tenant_id() {
 
 #[test]
 fn every_bridge_route_handler_scopes_its_query_to_the_tenant() {
-    let handlers = extract_route_handlers(MAIN_RS);
+    let handlers: Vec<String> = ROUTE_REGISTRATION_SOURCES
+        .iter()
+        .flat_map(|(source, fn_name)| extract_route_handlers_in_fn(source, fn_name))
+        .collect();
     assert!(
         !handlers.is_empty(),
         "expected to find at least one Bridge route - the parser may be broken"
@@ -329,18 +388,44 @@ fn extract_impl_methods(source: &str, type_name: &str) -> Vec<(String, String)> 
     methods
 }
 
-/// Every handler name passed to `get(...)` on a registered route.
-fn extract_route_handlers(source: &str) -> Vec<String> {
-    let marker = "get(";
-    let mut handlers = Vec::new();
-    let mut cursor = 0;
-    while let Some(start) = source[cursor..].find(marker) {
-        let name_start = cursor + start + marker.len();
-        let name_end = source[name_start..].find(')').expect("get(...) is closed");
-        handlers.push(source[name_start..name_start + name_end].trim().to_string());
-        cursor = name_start + name_end;
-    }
-    handlers
+/// Every handler name passed to `get(...)`/`post(...)` on a route registered
+/// inside the named router-building function, scoped to that function's own
+/// body rather than the whole file. A handler function defined elsewhere in
+/// the same file can itself call an unrelated `.get(...)` on a store or map
+/// (e.g. `state.delegations.get(tenant_id, ...)`) that a whole-file scan
+/// cannot tell apart from a real route registration. A module-qualified
+/// handler (`page::evidence_page`, from a route split across submodules
+/// below the module-length ratchet) has its qualifier stripped, since both
+/// the body lookup and the exemption lists key on the bare function name.
+fn extract_route_handlers_in_fn(source: &str, fn_name: &str) -> Vec<String> {
+    let marker = format!("fn {fn_name}(");
+    let Some(fn_start) = source.find(&marker) else {
+        return Vec::new();
+    };
+    let Some(brace_start) = source[fn_start..].find('{').map(|offset| fn_start + offset) else {
+        return Vec::new();
+    };
+    let Some(brace_end) = balanced_braces(source, brace_start) else {
+        return Vec::new();
+    };
+    let body = &source[brace_start..brace_end];
+    ["get(", "post("]
+        .into_iter()
+        .flat_map(|marker| {
+            let mut handlers = Vec::new();
+            let mut cursor = 0;
+            while let Some(start) = body[cursor..].find(marker) {
+                let name_start = cursor + start + marker.len();
+                let Some(name_end) = body[name_start..].find(')') else {
+                    break;
+                };
+                let raw = body[name_start..name_start + name_end].trim();
+                handlers.push(raw.rsplit("::").next().unwrap_or(raw).to_string());
+                cursor = name_start + name_end;
+            }
+            handlers
+        })
+        .collect()
 }
 
 /// The full brace-balanced body of `async fn NAME(...) ... { ... }`.
@@ -351,7 +436,6 @@ fn extract_function_body(source: &str, name: &str) -> Option<String> {
     let end = balanced_braces(source, brace_start)?;
     Some(source[brace_start..end].to_string())
 }
-
 /// `extract_function_body`, tried against each source in turn -- a handler's
 /// registration and its implementation no longer have to live in the same
 /// file.
@@ -475,14 +559,63 @@ mod parser_tests {
     }
 
     #[test]
-    fn extract_route_handlers_reads_every_get_handler_in_order() {
-        let sample = "Router::new()\n\
-            .route(\"/\", get(page))\n\
-            .route(\"/api/v1/thing\", get(thing_handler))";
+    fn extract_route_handlers_in_fn_reads_get_and_post_handlers_in_order() {
+        let sample = "pub fn thing_routes(state: State) -> Router {\n\
+            \x20   Router::new()\n\
+            \x20       .route(\"/\", get(page))\n\
+            \x20       .route(\"/api/v1/thing\", get(thing_list).post(create_thing))\n\
+            }";
 
         assert_eq!(
-            extract_route_handlers(sample),
-            vec!["page".to_string(), "thing_handler".to_string()]
+            extract_route_handlers_in_fn(sample, "thing_routes"),
+            vec![
+                "page".to_string(),
+                "thing_list".to_string(),
+                "create_thing".to_string(),
+            ]
+        );
+    }
+
+    /// A handler defined in the same file as the router-building function can
+    /// itself call an unrelated `.get(...)` on a store or map (e.g.
+    /// `state.delegations.get(tenant_id, ...)`) — scoping the scan to just the
+    /// router-building function's own body must not mistake that for a route.
+    #[test]
+    fn extract_route_handlers_in_fn_ignores_an_unrelated_get_outside_the_named_function() {
+        let sample = "pub fn thing_routes(state: State) -> Router {\n\
+            \x20   Router::new().route(\"/\", get(page))\n\
+            }\n\
+            async fn page(state: State) {\n\
+            \x20   state.store.get(state.tenant_id.as_ref(), &id).await;\n\
+            }";
+
+        assert_eq!(
+            extract_route_handlers_in_fn(sample, "thing_routes"),
+            vec!["page".to_string()]
+        );
+    }
+
+    /// A route split across submodules below the module-length ratchet
+    /// registers a module-qualified handler (`page::evidence_page`) — the
+    /// qualifier must be stripped, since the body lookup and exemption lists
+    /// both key on the bare function name.
+    #[test]
+    fn extract_route_handlers_in_fn_strips_a_module_qualifier() {
+        let sample = "pub fn thing_routes(state: State) -> Router {\n\
+            \x20   Router::new().route(\"/\", get(page::thing_page))\n\
+            }";
+
+        assert_eq!(
+            extract_route_handlers_in_fn(sample, "thing_routes"),
+            vec!["thing_page".to_string()]
+        );
+    }
+
+    #[test]
+    fn extract_route_handlers_in_fn_returns_empty_for_a_missing_function() {
+        assert_eq!(
+            extract_route_handlers_in_fn("pub fn other_routes() -> Router { todo!() }", "absent"),
+            Vec::<String>::new()
         );
     }
 
