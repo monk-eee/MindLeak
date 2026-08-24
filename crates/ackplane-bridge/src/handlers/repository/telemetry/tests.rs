@@ -18,6 +18,7 @@ use ackplane_server::{
     projection::Projector,
     readiness::ReadinessStore,
     telemetry_store::{RecordTelemetryRequest, TelemetryStore},
+    work_store::WorkStore,
 };
 use axum::{
     body::{to_bytes, Body},
@@ -149,6 +150,11 @@ async fn application(database_url: &str, tenant_id: &str) -> Router {
             TelemetryStore::connect(database_url)
                 .await
                 .expect("connect Telemetry store"),
+        ),
+        work: Arc::new(
+            WorkStore::connect(database_url)
+                .await
+                .expect("connect Work store"),
         ),
         tenant_id: Arc::from(tenant_id.to_string()),
     };

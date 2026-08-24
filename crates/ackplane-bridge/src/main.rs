@@ -56,6 +56,7 @@ struct AppState {
     projector: Arc<Projector>,
     readiness: Arc<ReadinessStore>,
     telemetry: Arc<TelemetryStore>,
+    work: Arc<WorkStore>,
     tenant_id: Arc<str>,
 }
 
@@ -229,7 +230,8 @@ async fn main() {
         ContextApiState::new(context_packet_store, fleet_store.clone(), tenant_id.clone());
     let delegation_api_state =
         DelegationApiState::new(delegation_store, fleet_store.clone(), tenant_id.clone());
-    let work_api_state = WorkApiState::new(work_store, fleet_store.clone(), tenant_id.clone());
+    let work_api_state =
+        WorkApiState::new(work_store.clone(), fleet_store.clone(), tenant_id.clone());
     let administration_api_state =
         AdministrationApiState::new(fleet_store.clone(), tenant_id.clone());
     let live_feed_api_state =
@@ -248,6 +250,7 @@ async fn main() {
         projector,
         readiness: readiness_store,
         telemetry: telemetry_store,
+        work: work_store,
         tenant_id,
     };
     let application = Router::new()

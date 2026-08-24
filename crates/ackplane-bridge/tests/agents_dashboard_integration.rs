@@ -119,3 +119,28 @@ fn agents_page_shares_the_canonical_nav_and_marks_itself_current() {
         "agents.html's own nav entry must be marked as the current page"
     );
 }
+
+#[test]
+fn agents_page_marks_each_claim_with_its_native_work_state() {
+    assert!(
+        AGENTS_PAGE.contains("<th>Native Work</th>"),
+        "agents.html's claims table must show whether a claim is backed by a native Work task"
+    );
+    assert!(
+        AGENTS_PAGE.contains("item.has_native_work_task"),
+        "agents.html must read has_native_work_task from the existing /api/v1/agents response"
+    );
+}
+
+#[test]
+fn agents_page_lists_unresolved_waits_from_the_same_response() {
+    assert!(
+        AGENTS_PAGE.contains(r#"id="unresolved-waits-panel""#),
+        "agents.html must expose an unresolved-waits panel"
+    );
+    assert!(
+        AGENTS_PAGE.contains("result.unresolved_waits"),
+        "agents.html must render unresolved_waits from the existing /api/v1/agents response, \
+         not a second network call"
+    );
+}
