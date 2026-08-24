@@ -110,13 +110,12 @@ fn agents_page_reads_the_existing_agents_api_and_nothing_else() {
 
 #[test]
 fn agents_page_shares_the_canonical_nav_and_marks_itself_current() {
+    // The nav itself is now rendered by the shared chrome.js from a single
+    // NAV_ITEMS source (see nav_consistency.rs); this page only needs to
+    // carry the mount point and declare itself as the current capability.
     assert!(
-        AGENTS_PAGE.contains(r#"<nav class="nav" aria-label="Industrial surfaces">"#),
-        "agents.html must carry the shared Bridge nav"
-    );
-    assert!(
-        AGENTS_PAGE.contains(r#"<a href="/agents" aria-current="page">Agents</a>"#),
-        "agents.html's own nav entry must be marked as the current page"
+        AGENTS_PAGE.contains(r#"<nav class="nav" aria-label="Industrial surfaces" data-bridge-nav data-current="agents"></nav>"#),
+        "agents.html must carry the shared Bridge nav mount point, marked current"
     );
 }
 

@@ -273,7 +273,6 @@ fn work_page_renders_publication_state_without_a_mutation_surface() {
         "Claims awaiting an Industrial Work record",
         "class=\"table-scroll\"",
         ".table-scroll table { min-width:720px; }",
-        "nav { flex-wrap:wrap; gap:10px; font-size:.78rem; }",
     ] {
         assert!(
             WORK_PAGE.contains(required),

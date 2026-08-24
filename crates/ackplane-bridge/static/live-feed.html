@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MindLeak Bridge Live Feed</title>
+  <link rel="stylesheet" href="/static/shared/chrome.css">
   <style>
     :root {
       color-scheme: light;
@@ -24,6 +25,12 @@
       --blue-soft: #e3eef7;
       --shadow: 0 12px 30px rgba(32, 42, 51, 0.08);
       --focus: 0 0 0 3px rgba(51, 111, 159, 0.28);
+      --chrome-surface: var(--surface);
+      --chrome-line: var(--line);
+      --chrome-ink: var(--ink);
+      --chrome-muted: var(--muted);
+      --chrome-accent: var(--teal);
+      --chrome-focus: var(--focus);
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -68,10 +75,6 @@
     .mark { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid var(--teal); border-radius: 6px; color: var(--teal); font-weight: 800; }
     .brand-name { margin: 0; font-size: 1rem; font-weight: 760; }
     .brand-name span { color: var(--subtle); font-weight: 600; }
-    .topbar nav { display: flex; gap: 16px; font-size: 0.86rem; }
-    .topbar nav a { color: var(--muted); text-decoration: none; }
-    .topbar nav a:hover { color: var(--ink); }
-    .topbar nav a[aria-disabled="true"] { color: var(--subtle); opacity: 0.55; cursor: default; pointer-events: none; }
     main { padding: 38px 0 58px; }
     .eyebrow { margin: 0 0 8px; color: var(--teal); font-size: 0.76rem; font-weight: 760; letter-spacing: 0.08em; text-transform: uppercase; }
     h1 { max-width: 720px; margin: 0; font-size: clamp(2rem, 4vw, 3.5rem); line-height: 1.04; font-weight: 780; }
@@ -115,7 +118,6 @@
     @media (max-width: 760px) {
       .shell { width: min(100% - 24px, 1180px); }
       .topbar { min-height: 64px; }
-      .topbar nav { gap: 10px; font-size: 0.78rem; }
       main { padding-top: 28px; }
       .control-row { grid-template-columns: 1fr 1fr; }
       .control-row label { grid-column: 1 / -1; }
@@ -127,15 +129,12 @@
 <body>
   <header>
     <div class="shell topbar">
-      <a class="brand" href="/" aria-label="MindLeak Bridge Fleet">
-        <span class="mark" aria-hidden="true">ML</span>
-        <p class="brand-name">mind leak <span>/ bridge</span></p>
-      </a>
-      <nav class="nav" aria-label="Industrial surfaces">
-        <a href="/">Fleet</a><a href="/agents">Agents</a><a href="/evidence">Evidence</a><a href="/telemetry">Telemetry</a><a href="/context">Context</a><a href="/knowledge">Knowledge</a><a href="/work">Work</a><a href="/board-doctor">Board Doctor</a><a href="/supervisors">Supervisors</a><a href="/administration">Administration</a><a href="/delegations">Delegations</a><a href="/live" aria-current="page">Live Feed</a><a href="/design">Design</a><a href="/constitution">Constitution</a>
-      </nav>
+      <a class="brand" href="/" aria-label="MindLeak Bridge Fleet" data-bridge-brand>MindLeak Bridge</a>
+      <nav class="nav" aria-label="Industrial surfaces" data-bridge-nav data-current="live-feed"></nav>
     </div>
   </header>
+  <script src="/static/shared/chrome.js" defer></script>
+  <script src="/static/shared/repo-picker.js" defer></script>
   <main class="shell" id="live-app" data-connection="disconnected">
     <p class="eyebrow">Operations stream</p>
     <h1>Live Feed</h1>
@@ -143,8 +142,9 @@
 
     <form class="control-row" id="repository-form">
       <label for="repository-id">Repository
-        <input id="repository-id" name="repository_id" autocomplete="off" placeholder="repository identifier" required>
+        <input id="repository-id" name="repository_id" list="known-repositories" autocomplete="off" placeholder="repository identifier" required>
       </label>
+      <datalist id="known-repositories" data-repo-datalist></datalist>
       <button class="command" type="submit" id="connect-button">Load snapshot</button>
       <button class="command secondary" type="button" id="reload-button">Reload snapshot</button>
     </form>
