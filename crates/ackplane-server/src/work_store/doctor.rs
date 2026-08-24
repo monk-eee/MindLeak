@@ -55,24 +55,14 @@ impl WorkStore {
     ) -> Result<Vec<WorkDoctorFinding>, WorkStoreError> {
         let mut findings = Vec::new();
 
-        let claims_only_rows = self
-            .client
-            .query(
-                "SELECT dc.task_id, dc.owner_id, dc.lease_expires_at FROM delegated_claims dc \
-                 WHERE dc.tenant_id = $1 AND dc.repository_id = $2 AND dc.lease_expires_at > $3 \
-                   AND NOT EXISTS ( \
-                       SELECT 1 FROM work_tasks wt \
-                       WHERE wt.tenant_id = dc.tenant_id AND wt.repository_id = dc.repository_id \
-                         AND wt.task_id = dc.task_id) \
-                 ORDER BY dc.task_id",
-                &[&tenant_id, &repository_id, &now],
-            )
+        let (_, claims_only) = self
+            .claims_only_records(tenant_id, repository_id, now, i64::MAX)
             .await?;
-        for row in &claims_only_rows {
+        for claim in claims_only {
             findings.push(WorkDoctorFinding::ClaimsOnly {
-                task_id: row.get("task_id"),
-                owner_id: row.get("owner_id"),
-                lease_expires_at: row.get("lease_expires_at"),
+                task_id: claim.task_id,
+                owner_id: claim.owner_id,
+                lease_expires_at: claim.lease_expires_at,
             });
         }
 
