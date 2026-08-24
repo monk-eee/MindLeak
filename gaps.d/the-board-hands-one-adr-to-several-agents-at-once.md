@@ -41,7 +41,18 @@
   same-title live task under another goal separately, naming the goal it already
   serves. — Still open, and unchanged by any of it: every report here is advisory
   under ADR-0015, so an agent that ignores one still creates the duplicate, and
-  nothing reconciles the result afterwards — all 28 were retired by hand. The
-  deeper cause is upstream of the reports: work generated under whichever goal
-  was to hand will keep being wrong while a subsystem has no goal of its own,
-  which is what ADR-0092 proposes to fix.
+  nothing reconciles the result afterwards — all 28 were retired by hand.
+  **The "deeper cause" sentence that followed here is now stale — verified
+  24 Aug: ADR-0092 was Accepted and adopted 2026-08-13 as
+  `amendment:a334b7f2c123`, creating `goal:ackplane-federation-service@constitution:v4`
+  and binding it to Ackplane's crates.** Work generated under "whichever goal
+  was to hand" for Ackplane specifically is closed by that adoption, not merely
+  proposed — routine `decompose_goal`/`task_create` calls against that goal id
+  in this fleet confirm it is live and in ordinary use. What ADR-0092 did not
+  touch, and what is still genuinely open, is the sentence before it: every
+  duplicate-task report in this fragment is advisory under ADR-0015, so an
+  agent that ignores one still creates the duplicate, and nothing reconciles
+  the result afterwards. That is a distinct question (should a same-title,
+  same-goal `task_create` be refused rather than merely flagged?) from the one
+  ADR-0092 answered (which goal does a subsystem's work belong to?), and it
+  remains unaddressed.
