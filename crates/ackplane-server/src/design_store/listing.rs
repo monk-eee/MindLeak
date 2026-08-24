@@ -1,6 +1,83 @@
 use super::*;
 
 impl DesignStore {
+    pub async fn get_design(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        design_id: &str,
+    ) -> Result<Option<Design>, DesignStoreError> {
+        let row = self
+            .client
+            .query_opt(
+                "SELECT title, summary, source_version, lifecycle_state, \
+                        constitution_version_id, work_task_id, evidence_id, created_at, \
+                        updated_at \
+                 FROM industrial_designs \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3",
+                &[&tenant_id, &repository_id, &design_id],
+            )
+            .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let lifecycle_state: i16 = row.get(3);
+        Ok(Some(Design {
+            tenant_id: tenant_id.to_string(),
+            repository_id: repository_id.to_string(),
+            design_id: design_id.to_string(),
+            title: row.get(0),
+            summary: row.get(1),
+            source_version: row.get(2),
+            lifecycle_state: DesignLifecycleState::try_from(lifecycle_state).map_err(|()| {
+                DesignStoreError::CorruptLifecycleState {
+                    design_id: design_id.to_string(),
+                    value: lifecycle_state,
+                }
+            })?,
+            constitution_version_id: row.get(4),
+            work_task_id: row.get(5),
+            evidence_id: row.get(6),
+            created_at: row.get(7),
+            updated_at: row.get(8),
+        }))
+    }
+
+    pub async fn list_decisions(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        design_id: &str,
+    ) -> Result<Vec<DesignDecision>, DesignStoreError> {
+        let rows = self
+            .client
+            .query(
+                "SELECT sequence_number, decision_kind, actor, rationale, recorded_at \
+                 FROM industrial_design_decisions \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3 \
+                 ORDER BY sequence_number ASC",
+                &[&tenant_id, &repository_id, &design_id],
+            )
+            .await?;
+        rows.into_iter()
+            .map(|row| {
+                let decision_kind: i16 = row.get(1);
+                Ok(DesignDecision {
+                    sequence_number: row.get(0),
+                    decision_kind: DesignLifecycleState::try_from(decision_kind).map_err(|()| {
+                        DesignStoreError::CorruptLifecycleState {
+                            design_id: design_id.to_string(),
+                            value: decision_kind,
+                        }
+                    })?,
+                    actor: row.get(2),
+                    rationale: row.get(3),
+                    recorded_at: row.get(4),
+                })
+            })
+            .collect()
+    }
+
     /// Bounded, paginated design list (ADR-0121 decision 6 read surface).
     /// Ordered most-recently-updated first, matching `WorkStore::list_tasks`.
     pub async fn list_designs(

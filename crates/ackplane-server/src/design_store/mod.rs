@@ -22,6 +22,18 @@ const MIGRATION: &str = include_str!("../../migrations/0027_industrial_designs.s
 const WORK_REFERENCE_MIGRATION: &str =
     include_str!("../../migrations/0031_industrial_design_work_reference.sql");
 
+// Dependency migrations: 0027 foreign-keys into `evidence_records` and
+// `constitution_publications`, and 0031 foreign-keys into `work_tasks` --
+// none of them created by this store's own migration keys. A shared,
+// long-lived local dev database already has all three tables from other
+// stores' earlier connects, which hid this against a genuinely fresh
+// database (`relation "constitution_publications" does not exist`) until a
+// throwaway, freshly-created Postgres instance was used to test against.
+const EVIDENCE_DEPENDENCY_MIGRATION: &str = include_str!("../../migrations/0014_evidence.sql");
+const CONSTITUTION_PUBLICATION_HISTORY_DEPENDENCY_MIGRATION: &str =
+    include_str!("../../migrations/0026_constitution_publication_history.sql");
+const WORK_DEPENDENCY_MIGRATION: &str = include_str!("../../migrations/0028_work.sql");
+
 #[derive(Debug, thiserror::Error)]
 pub enum DesignStoreError {
     #[error("industrial design database error: {0}")]
@@ -167,6 +179,24 @@ impl DesignStore {
                 tracing::error!(%error, "ackplane design store connection closed with an error");
             }
         });
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::EVIDENCE,
+            EVIDENCE_DEPENDENCY_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::CONSTITUTION_PUBLICATION_HISTORY,
+            CONSTITUTION_PUBLICATION_HISTORY_DEPENDENCY_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::WORK,
+            WORK_DEPENDENCY_MIGRATION,
+        )
+        .await?;
         crate::migration_lock::migrate_locked(
             &mut client,
             crate::migration_lock::key::INDUSTRIAL_DESIGNS,
@@ -377,83 +407,6 @@ impl DesignStore {
             .await?;
         transaction.commit().await?;
         Ok(())
-    }
-
-    pub async fn get_design(
-        &self,
-        tenant_id: &str,
-        repository_id: &str,
-        design_id: &str,
-    ) -> Result<Option<Design>, DesignStoreError> {
-        let row = self
-            .client
-            .query_opt(
-                "SELECT title, summary, source_version, lifecycle_state, \
-                        constitution_version_id, work_task_id, evidence_id, created_at, \
-                        updated_at \
-                 FROM industrial_designs \
-                 WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3",
-                &[&tenant_id, &repository_id, &design_id],
-            )
-            .await?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let lifecycle_state: i16 = row.get(3);
-        Ok(Some(Design {
-            tenant_id: tenant_id.to_string(),
-            repository_id: repository_id.to_string(),
-            design_id: design_id.to_string(),
-            title: row.get(0),
-            summary: row.get(1),
-            source_version: row.get(2),
-            lifecycle_state: DesignLifecycleState::try_from(lifecycle_state).map_err(|()| {
-                DesignStoreError::CorruptLifecycleState {
-                    design_id: design_id.to_string(),
-                    value: lifecycle_state,
-                }
-            })?,
-            constitution_version_id: row.get(4),
-            work_task_id: row.get(5),
-            evidence_id: row.get(6),
-            created_at: row.get(7),
-            updated_at: row.get(8),
-        }))
-    }
-
-    pub async fn list_decisions(
-        &self,
-        tenant_id: &str,
-        repository_id: &str,
-        design_id: &str,
-    ) -> Result<Vec<DesignDecision>, DesignStoreError> {
-        let rows = self
-            .client
-            .query(
-                "SELECT sequence_number, decision_kind, actor, rationale, recorded_at \
-                 FROM industrial_design_decisions \
-                 WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3 \
-                 ORDER BY sequence_number ASC",
-                &[&tenant_id, &repository_id, &design_id],
-            )
-            .await?;
-        rows.into_iter()
-            .map(|row| {
-                let decision_kind: i16 = row.get(1);
-                Ok(DesignDecision {
-                    sequence_number: row.get(0),
-                    decision_kind: DesignLifecycleState::try_from(decision_kind).map_err(|()| {
-                        DesignStoreError::CorruptLifecycleState {
-                            design_id: design_id.to_string(),
-                            value: decision_kind,
-                        }
-                    })?,
-                    actor: row.get(2),
-                    rationale: row.get(3),
-                    recorded_at: row.get(4),
-                })
-            })
-            .collect()
     }
 }
 
