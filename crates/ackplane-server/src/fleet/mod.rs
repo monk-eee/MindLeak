@@ -8,15 +8,20 @@
 use std::collections::HashMap;
 use std::time::SystemTime;
 
+use thiserror::Error;
 use tokio_postgres::{Client, NoTls};
 
-use crate::signing_keys::{self, EnvelopeBinding, KeyResolution, SigningKeyError};
+use crate::{
+    signing_keys::{self, EnvelopeBinding, KeyResolution, SigningKeyError},
+    work_store::{WorkStoreError, WorkTaskState},
+};
 
 const ENROLLMENT_MIGRATION: &str = include_str!("../../migrations/0003_enrollment.sql");
 const PROJECTION_MIGRATION: &str = include_str!("../../migrations/0002_projection.sql");
 const LEDGER_MIGRATION: &str = include_str!("../../migrations/0001_ledger.sql");
 const CLAIM_MIGRATION: &str = include_str!("../../migrations/0005_claim_delegation.sql");
 const SIGNING_KEYS_MIGRATION: &str = include_str!("../../migrations/0004_signing_keys.sql");
+const WORK_MIGRATION: &str = include_str!("../../migrations/0028_work.sql");
 
 /// One repository represented in a tenant's Fleet view.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +142,23 @@ pub struct FleetWorkItem {
     pub claim_lapses: u64,
     pub paths: Vec<String>,
     pub symbols: Vec<String>,
+    /// Native Industrial Work state for the same task id. `None` is an
+    /// honest claims-only row, not an inferred task state.
+    pub work_state: Option<WorkTaskState>,
+    /// Unanswered native Work waits for this task. Claims-only rows have no
+    /// native waits and report zero.
+    pub unresolved_wait_count: u64,
+}
+
+/// Failure reading a tenant's Fleet Work projection. Work state is constrained
+/// by its schema, but an out-of-contract value is a read-model failure rather
+/// than a state the Bridge should silently reinterpret as claims-only.
+#[derive(Debug, Error)]
+pub enum FleetWorkError {
+    #[error("fleet Work database error: {0}")]
+    Database(#[from] tokio_postgres::Error),
+    #[error("fleet Work state cannot be interpreted: {0}")]
+    NativeWorkState(#[from] WorkStoreError),
 }
 
 /// One enrolled node's signing key, judged as of now rather than as of some
@@ -288,12 +310,14 @@ impl FleetWorkSort {
         use FleetWorkSortField::{LeaseExpiresAt, OwnerId, RepositoryId};
         use SortDirection::{Ascending, Descending};
         match (self.field, self.direction) {
-            (LeaseExpiresAt, Ascending) => "ORDER BY lease_expires_at ASC, task_id ASC",
-            (LeaseExpiresAt, Descending) => "ORDER BY lease_expires_at DESC, task_id ASC",
-            (RepositoryId, Ascending) => "ORDER BY repository_id ASC, task_id ASC",
-            (RepositoryId, Descending) => "ORDER BY repository_id DESC, task_id ASC",
-            (OwnerId, Ascending) => "ORDER BY owner_id ASC, task_id ASC",
-            (OwnerId, Descending) => "ORDER BY owner_id DESC, task_id ASC",
+            (LeaseExpiresAt, Ascending) => "ORDER BY claim.lease_expires_at ASC, claim.task_id ASC",
+            (LeaseExpiresAt, Descending) => {
+                "ORDER BY claim.lease_expires_at DESC, claim.task_id ASC"
+            }
+            (RepositoryId, Ascending) => "ORDER BY claim.repository_id ASC, claim.task_id ASC",
+            (RepositoryId, Descending) => "ORDER BY claim.repository_id DESC, claim.task_id ASC",
+            (OwnerId, Ascending) => "ORDER BY claim.owner_id ASC, claim.task_id ASC",
+            (OwnerId, Descending) => "ORDER BY claim.owner_id DESC, claim.task_id ASC",
         }
     }
 }
@@ -355,6 +379,12 @@ impl FleetStore {
             &mut client,
             crate::migration_lock::key::SIGNING_KEYS,
             SIGNING_KEYS_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::WORK,
+            WORK_MIGRATION,
         )
         .await?;
         Ok(Self { client })
@@ -424,24 +454,45 @@ mod tests {
     }
 
     #[test]
-    fn fleet_work_sort_order_by_clause_always_carries_a_task_id_tiebreaker() {
-        let sorts = [
-            FleetWorkSortField::LeaseExpiresAt,
-            FleetWorkSortField::RepositoryId,
-            FleetWorkSortField::OwnerId,
+    fn fleet_work_sort_order_by_clause_qualifies_claim_columns_and_carries_a_task_id_tiebreaker() {
+        let cases = [
+            (
+                FleetWorkSortField::LeaseExpiresAt,
+                SortDirection::Ascending,
+                "ORDER BY claim.lease_expires_at ASC, claim.task_id ASC",
+            ),
+            (
+                FleetWorkSortField::LeaseExpiresAt,
+                SortDirection::Descending,
+                "ORDER BY claim.lease_expires_at DESC, claim.task_id ASC",
+            ),
+            (
+                FleetWorkSortField::RepositoryId,
+                SortDirection::Ascending,
+                "ORDER BY claim.repository_id ASC, claim.task_id ASC",
+            ),
+            (
+                FleetWorkSortField::RepositoryId,
+                SortDirection::Descending,
+                "ORDER BY claim.repository_id DESC, claim.task_id ASC",
+            ),
+            (
+                FleetWorkSortField::OwnerId,
+                SortDirection::Ascending,
+                "ORDER BY claim.owner_id ASC, claim.task_id ASC",
+            ),
+            (
+                FleetWorkSortField::OwnerId,
+                SortDirection::Descending,
+                "ORDER BY claim.owner_id DESC, claim.task_id ASC",
+            ),
         ];
-        for field in sorts {
-            for direction in [SortDirection::Ascending, SortDirection::Descending] {
-                let clause = FleetWorkSort { field, direction }.order_by_clause();
-                assert!(
-                    clause.contains("task_id"),
-                    "{field:?}/{direction:?} clause must break ties by task_id: {clause}"
-                );
-                assert!(
-                    clause.starts_with("ORDER BY"),
-                    "not a valid ORDER BY: {clause}"
-                );
-            }
+        for (field, direction, expected) in cases {
+            assert_eq!(
+                FleetWorkSort { field, direction }.order_by_clause(),
+                expected,
+                "{field:?}/{direction:?} must stay unambiguous after joining native Work"
+            );
         }
     }
 }

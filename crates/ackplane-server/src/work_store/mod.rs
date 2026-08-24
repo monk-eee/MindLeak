@@ -51,7 +51,7 @@ impl WorkTaskState {
         }
     }
 
-    fn from_i16(value: i16) -> Result<Self, WorkStoreError> {
+    pub(crate) fn from_i16(value: i16) -> Result<Self, WorkStoreError> {
         match value {
             1 => Ok(Self::Open),
             2 => Ok(Self::Claimed),

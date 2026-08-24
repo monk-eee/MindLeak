@@ -109,6 +109,48 @@ fn agents_page_reads_the_existing_agents_api_and_nothing_else() {
 }
 
 #[test]
+fn agents_page_distinguishes_native_work_state_waits_and_claims_only_rows() {
+    for required in [
+        ">State</th>",
+        ">Waits</th>",
+        "const workStateLabels = Object.freeze({",
+        "function workStateCell(item)",
+        "function workWaitCell(item)",
+        "item.work_state",
+        "item.unresolved_wait_count",
+        "Claims only",
+    ] {
+        assert!(
+            AGENTS_PAGE.contains(required),
+            "agents.html must render native Work state and waits: {required}"
+        );
+    }
+}
+
+#[test]
+fn agents_page_prioritizes_native_work_state_and_waits_on_mobile() {
+    let mobile = AGENTS_PAGE
+        .split("@media (max-width:600px)")
+        .last()
+        .expect("agents.html defines a mobile layout");
+
+    assert!(
+        mobile.contains("table-layout:fixed"),
+        "the compact Agents table must fit the panel rather than make State and Waits scroll-only"
+    );
+    assert!(
+        mobile.contains("th:nth-child(3),td:nth-child(3)"),
+        "the lower-priority task identifier must yield space to State and Waits on mobile"
+    );
+    for retained_column in ["th:nth-child(4)", "th:nth-child(5)"] {
+        assert!(
+            !mobile.contains(retained_column),
+            "the mobile layout must not hide native Work State or Waits ({retained_column})"
+        );
+    }
+}
+
+#[test]
 fn agents_page_shares_the_canonical_nav_and_marks_itself_current() {
     assert!(
         AGENTS_PAGE.contains(r#"<nav class="nav" aria-label="Industrial surfaces">"#),

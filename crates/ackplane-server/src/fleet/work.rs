@@ -1,4 +1,5 @@
 use super::*;
+use crate::work_store::WorkTaskState;
 
 impl FleetStore {
     /// Active delegated work for one tenant-scoped repository, ordered by the
@@ -102,16 +103,26 @@ impl FleetStore {
         page: i64,
         page_size: i64,
         now: SystemTime,
-    ) -> Result<FleetWorkPage, tokio_postgres::Error> {
+    ) -> Result<FleetWorkPage, FleetWorkError> {
         let offset = (page - 1) * page_size;
         let query = format!(
-            "SELECT repository_id, task_id, owner_id, branch, claim_started_at, \
-                    lease_expires_at, claim_lapses, paths, symbols, \
-                    COUNT(*) OVER()::BIGINT \
-             FROM delegated_claims \
-             WHERE tenant_id = $1 AND lease_expires_at > $2 \
-               AND ($3::text IS NULL OR repository_id ILIKE '%' || $3 || '%' ESCAPE '\\') \
-               AND ($4::text IS NULL OR owner_id ILIKE '%' || $4 || '%' ESCAPE '\\') \
+                        "SELECT claim.repository_id, claim.task_id, claim.owner_id, claim.branch, \
+                                        claim.claim_started_at, claim.lease_expires_at, claim.claim_lapses, \
+                                        claim.paths, claim.symbols, work_task.state, \
+                                        (SELECT COUNT(*)::BIGINT FROM work_task_waits AS wait \
+                                         WHERE wait.tenant_id = claim.tenant_id \
+                                             AND wait.repository_id = claim.repository_id \
+                                             AND wait.task_id = claim.task_id \
+                                             AND wait.answer IS NULL), \
+                                        COUNT(*) OVER()::BIGINT \
+                         FROM delegated_claims AS claim \
+                         LEFT JOIN work_tasks AS work_task \
+                             ON work_task.tenant_id = claim.tenant_id \
+                            AND work_task.repository_id = claim.repository_id \
+                            AND work_task.task_id = claim.task_id \
+                         WHERE claim.tenant_id = $1 AND claim.lease_expires_at > $2 \
+                             AND ($3::text IS NULL OR claim.repository_id ILIKE '%' || $3 || '%' ESCAPE '\\') \
+                             AND ($4::text IS NULL OR claim.owner_id ILIKE '%' || $4 || '%' ESCAPE '\\') \
              {order_by} \
              LIMIT $5 OFFSET $6",
             order_by = sort.order_by_clause(),
@@ -131,10 +142,14 @@ impl FleetStore {
             )
             .await?;
 
-        let total = rows.first().map(|row| row.get::<_, i64>(9)).unwrap_or(0);
-        let items = rows
-            .into_iter()
-            .map(|row| FleetWorkItem {
+        let total = rows.first().map(|row| row.get::<_, i64>(11)).unwrap_or(0);
+        let mut items = Vec::with_capacity(rows.len());
+        for row in rows {
+            let work_state = row
+                .get::<_, Option<i16>>(9)
+                .map(WorkTaskState::from_i16)
+                .transpose()?;
+            items.push(FleetWorkItem {
                 repository_id: row.get(0),
                 task_id: row.get(1),
                 owner_id: row.get(2),
@@ -144,8 +159,10 @@ impl FleetStore {
                 claim_lapses: u64::try_from(row.get::<_, i64>(6)).unwrap_or(0),
                 paths: row.get(7),
                 symbols: row.get(8),
-            })
-            .collect();
+                work_state,
+                unresolved_wait_count: u64::try_from(row.get::<_, i64>(10)).unwrap_or(0),
+            });
+        }
         Ok(FleetWorkPage { items, total })
     }
 
@@ -194,7 +211,9 @@ mod tests {
     use crate::{
         claim_store::{ClaimLeaseOutcome, ClaimLeaseRequest, ClaimRecoverRequest, ClaimStore},
         test_support::{enroll_and_activate_in, uuid_ish},
+        work_store::{NewWorkTask, WorkStore},
     };
+    use tokio_postgres::NoTls;
 
     #[tokio::test]
     async fn active_work_is_tenant_scoped_and_excludes_expired_claims() {
@@ -514,6 +533,8 @@ mod tests {
                     claim_lapses: 0,
                     paths: vec!["src/task:repo-a.rs".to_string()],
                     symbols: vec!["symbol:task:repo-a".to_string()],
+                    work_state: None,
+                    unresolved_wait_count: 0,
                 },
                 FleetWorkItem {
                     repository_id: repository_ids[1].clone(),
@@ -525,6 +546,8 @@ mod tests {
                     claim_lapses: 0,
                     paths: vec!["src/task:repo-b.rs".to_string()],
                     symbols: vec!["symbol:task:repo-b".to_string()],
+                    work_state: None,
+                    unresolved_wait_count: 0,
                 },
             ]
         );
@@ -706,5 +729,169 @@ mod tests {
             .expect("query descending");
         assert_eq!(descending.items[0].task_id, "task:latest");
         assert_eq!(descending.items[1].task_id, "task:soonest");
+    }
+
+    #[tokio::test]
+    async fn fleet_work_keeps_claims_only_rows_distinct_from_native_work_with_unresolved_waits() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let tenant_id = format!("fleet-work-native-state-tenant-{unique_id}");
+        let repository_id = format!("fleet-work-native-state-repository-{unique_id}");
+        enroll_and_activate_in(
+            &database_url,
+            &tenant_id,
+            &repository_id,
+            &format!("{unique_id}-native-state"),
+        )
+        .await;
+
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let native_task_id = format!("task:native-{unique_id}");
+        let claims_only_task_id = format!("task:claims-only-{unique_id}");
+        let mut claims = ClaimStore::connect(&database_url)
+            .await
+            .expect("connect claim store");
+        for (task_id, owner_id, lease_secs) in [
+            (&native_task_id, "agent:native", 120),
+            (&claims_only_task_id, "agent:claims-only", 180),
+        ] {
+            claims
+                .delegate(
+                    &ClaimLeaseRequest {
+                        tenant_id: tenant_id.clone(),
+                        repository_id: repository_id.clone(),
+                        task_id: task_id.clone(),
+                        owner_id: owner_id.to_string(),
+                        branch: format!("work/{task_id}"),
+                        lease: Duration::from_secs(lease_secs),
+                        paths: vec![format!("src/{task_id}.rs")],
+                        symbols: vec![format!("symbol:{task_id}")],
+                    },
+                    now,
+                )
+                .await
+                .expect("delegate claim");
+        }
+
+        let mut work = WorkStore::connect(&database_url)
+            .await
+            .expect("connect Work store");
+        work.create_task(
+            &NewWorkTask {
+                tenant_id: tenant_id.clone(),
+                repository_id: repository_id.clone(),
+                task_id: native_task_id.clone(),
+                title: "Surface native Work state in Agents".to_string(),
+                acceptance: "Agents distinguishes native Work from claims-only rows.".to_string(),
+                goal_id: None,
+                declared_paths: Vec::new(),
+                declared_symbols: Vec::new(),
+                published_by: "node:native".to_string(),
+            },
+            &format!("event:native-{unique_id}"),
+            now,
+        )
+        .await
+        .expect("create native Work task");
+
+        let (wait_client, wait_connection) = tokio_postgres::connect(&database_url, NoTls)
+            .await
+            .expect("connect direct wait fixture");
+        tokio::spawn(async move {
+            let _ = wait_connection.await;
+        });
+        wait_client
+            .execute(
+                "UPDATE work_tasks SET state = $4 \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3",
+                &[&tenant_id, &repository_id, &native_task_id, &3_i16],
+            )
+            .await
+            .expect("mark native Work task waiting");
+        wait_client
+            .execute(
+                "INSERT INTO work_task_waits (tenant_id, repository_id, wait_id, task_id, question, asked_by) \
+                 VALUES ($1,$2,$3,$4,$5,$6)",
+                &[
+                    &tenant_id,
+                    &repository_id,
+                    &format!("wait:unresolved-{unique_id}"),
+                    &native_task_id,
+                    &"Which owner can answer this?",
+                    &"node:native",
+                ],
+            )
+            .await
+            .expect("record unresolved native Work wait");
+        wait_client
+            .execute(
+                "INSERT INTO work_task_waits (tenant_id, repository_id, wait_id, task_id, question, asked_by, answered_by, answer, answered_at) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now())",
+                &[
+                    &tenant_id,
+                    &repository_id,
+                    &format!("wait:answered-{unique_id}"),
+                    &native_task_id,
+                    &"Which owner already answered?",
+                    &"node:native",
+                    &"agent:answerer",
+                    &"The answer is recorded.",
+                ],
+            )
+            .await
+            .expect("record answered native Work wait");
+
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+        let page = fleet
+            .fleet_work(
+                &tenant_id,
+                FleetWorkFilter::default(),
+                FleetWorkSort::default_order(),
+                1,
+                50,
+                now + Duration::from_secs(1),
+            )
+            .await
+            .expect("query fleet Work");
+
+        assert_eq!(
+            page,
+            FleetWorkPage {
+                total: 2,
+                items: vec![
+                    FleetWorkItem {
+                        repository_id: repository_id.clone(),
+                        task_id: native_task_id.clone(),
+                        owner_id: "agent:native".to_string(),
+                        branch: format!("work/{native_task_id}"),
+                        claim_started_at: now,
+                        lease_expires_at: now + Duration::from_secs(120),
+                        claim_lapses: 0,
+                        paths: vec![format!("src/{native_task_id}.rs")],
+                        symbols: vec![format!("symbol:{native_task_id}")],
+                        work_state: Some(WorkTaskState::Waiting),
+                        unresolved_wait_count: 1,
+                    },
+                    FleetWorkItem {
+                        repository_id,
+                        task_id: claims_only_task_id.clone(),
+                        owner_id: "agent:claims-only".to_string(),
+                        branch: format!("work/{claims_only_task_id}"),
+                        claim_started_at: now,
+                        lease_expires_at: now + Duration::from_secs(180),
+                        claim_lapses: 0,
+                        paths: vec![format!("src/{claims_only_task_id}.rs")],
+                        symbols: vec![format!("symbol:{claims_only_task_id}")],
+                        work_state: None,
+                        unresolved_wait_count: 0,
+                    },
+                ],
+            }
+        );
     }
 }

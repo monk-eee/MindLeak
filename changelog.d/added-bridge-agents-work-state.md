@@ -1,0 +1,1 @@
+- **Bridge Agents now surfaces optional native Industrial Work state.** Active claim rows show the bounded lifecycle state and unanswered wait count for matching Ackplane Work records, while rows without a native record remain explicitly claims-only rather than inferring task data.

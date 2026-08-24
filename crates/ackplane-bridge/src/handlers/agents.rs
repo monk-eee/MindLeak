@@ -8,6 +8,7 @@ use ackplane_server::fleet::{
     escape_like_pattern, FleetWorkFilter, FleetWorkItem, FleetWorkPage, FleetWorkSort,
     FleetWorkSortField, SortDirection,
 };
+use ackplane_server::work_store::WorkTaskState;
 use std::time::SystemTime;
 
 use crate::{unix_seconds, AppState};
@@ -56,7 +57,7 @@ fn parse_agents_sort(raw: Option<&str>) -> Result<FleetWorkSort, StatusCode> {
     Ok(FleetWorkSort { field, direction })
 }
 
-#[derive(Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize)]
 struct AgentWorkSummary {
     repository_id: String,
     task_id: String,
@@ -67,6 +68,21 @@ struct AgentWorkSummary {
     claim_lapses: u64,
     paths: Vec<String>,
     symbols: Vec<String>,
+    work_state: Option<&'static str>,
+    unresolved_wait_count: u64,
+}
+
+fn work_state_label(state: WorkTaskState) -> &'static str {
+    match state {
+        WorkTaskState::Open => "open",
+        WorkTaskState::Claimed => "claimed",
+        WorkTaskState::Waiting => "waiting",
+        WorkTaskState::Paused => "paused",
+        WorkTaskState::Blocked => "blocked",
+        WorkTaskState::InReview => "in_review",
+        WorkTaskState::Completed => "completed",
+        WorkTaskState::Abandoned => "abandoned",
+    }
 }
 
 impl From<FleetWorkItem> for AgentWorkSummary {
@@ -81,6 +97,8 @@ impl From<FleetWorkItem> for AgentWorkSummary {
             claim_lapses: item.claim_lapses,
             paths: item.paths,
             symbols: item.symbols,
+            work_state: item.work_state.map(work_state_label),
+            unresolved_wait_count: item.unresolved_wait_count,
         }
     }
 }
@@ -133,6 +151,22 @@ pub async fn agents(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fleet_item(work_state: Option<WorkTaskState>, unresolved_wait_count: u64) -> FleetWorkItem {
+        FleetWorkItem {
+            repository_id: "repository-a".to_string(),
+            task_id: "task:a".to_string(),
+            owner_id: "agent:a".to_string(),
+            branch: "feat/a".to_string(),
+            claim_started_at: SystemTime::UNIX_EPOCH,
+            lease_expires_at: SystemTime::UNIX_EPOCH,
+            claim_lapses: 1,
+            paths: vec!["src/a.rs".to_string()],
+            symbols: vec!["symbol:a".to_string()],
+            work_state,
+            unresolved_wait_count,
+        }
+    }
 
     #[test]
     fn parse_agents_sort_defaults_to_lease_expires_at_ascending_when_absent() {
@@ -209,6 +243,49 @@ mod tests {
         assert_eq!(
             parse_agents_sort(Some("repository_id")),
             Err(StatusCode::BAD_REQUEST)
+        );
+    }
+
+    #[test]
+    fn native_work_states_have_stable_agents_api_labels() {
+        for (state, label) in [
+            (WorkTaskState::Open, "open"),
+            (WorkTaskState::Claimed, "claimed"),
+            (WorkTaskState::Waiting, "waiting"),
+            (WorkTaskState::Paused, "paused"),
+            (WorkTaskState::Blocked, "blocked"),
+            (WorkTaskState::InReview, "in_review"),
+            (WorkTaskState::Completed, "completed"),
+            (WorkTaskState::Abandoned, "abandoned"),
+        ] {
+            assert_eq!(work_state_label(state), label);
+        }
+    }
+
+    #[test]
+    fn agent_work_summary_preserves_native_work_state_waits_and_claims_only_rows() {
+        let native = AgentWorkSummary::from(fleet_item(Some(WorkTaskState::Waiting), 2));
+        let claims_only = AgentWorkSummary::from(fleet_item(None, 0));
+
+        assert_eq!(
+            native,
+            AgentWorkSummary {
+                repository_id: "repository-a".to_string(),
+                task_id: "task:a".to_string(),
+                owner_id: "agent:a".to_string(),
+                branch: "feat/a".to_string(),
+                claim_started_at_seconds: Some(0),
+                lease_expires_at_seconds: Some(0),
+                claim_lapses: 1,
+                paths: vec!["src/a.rs".to_string()],
+                symbols: vec!["symbol:a".to_string()],
+                work_state: Some("waiting"),
+                unresolved_wait_count: 2,
+            }
+        );
+        assert_eq!(
+            (claims_only.work_state, claims_only.unresolved_wait_count),
+            (None, 0)
         );
     }
 }

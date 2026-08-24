@@ -16,8 +16,12 @@
     .toolbar { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) 220px; gap:10px; align-items:end; padding:13px; border:1px solid var(--line); border-radius:8px; background:var(--surface); margin-bottom:16px; }
     label { display:grid; gap:5px; color:var(--quiet); font-size:.7rem; font-weight:700; letter-spacing:.045em; text-transform:uppercase; } input,select { width:100%; min-width:0; padding:9px 10px; color:var(--ink); background:var(--surface); border:1px solid var(--line); border-radius:6px; font-size:.85rem; text-transform:none; letter-spacing:0; }
     .panel { border:1px solid var(--line); border-radius:8px; background:var(--surface); } .panel-head { display:flex; justify-content:space-between; gap:10px; align-items:center; padding:14px 15px; border-bottom:1px solid var(--line); } .panel-head h3 { margin:0; font-size:.92rem; } .count { color:var(--quiet); font-size:.74rem; }
-    .table-wrap { overflow:auto; } table { width:100%; border-collapse:collapse; min-width:760px; } th,td { padding:11px 13px; text-align:left; border-bottom:1px solid var(--line); font-size:.79rem; vertical-align:top; } th { color:var(--quiet); font-size:.66rem; letter-spacing:.05em; text-transform:uppercase; } tr:last-child td { border-bottom:0; }
+    .table-wrap { overflow:auto; } table { width:100%; border-collapse:collapse; min-width:940px; } th,td { padding:11px 13px; text-align:left; border-bottom:1px solid var(--line); font-size:.79rem; vertical-align:top; } th { color:var(--quiet); font-size:.66rem; letter-spacing:.05em; text-transform:uppercase; } tr:last-child td { border-bottom:0; }
     .scope-cell { font-family:"Cascadia Code",Consolas,monospace; font-size:.72rem; color:var(--muted); overflow-wrap:anywhere; }
+    .work-state,.wait-count { display:inline-flex; align-items:center; min-height:24px; padding:3px 7px; border-radius:999px; font-size:.7rem; font-weight:700; white-space:nowrap; }
+    .work-state.open,.work-state.claimed,.work-state.in_review,.wait-count.none { color:var(--teal); background:color-mix(in srgb,var(--teal) 13%,transparent); }
+    .work-state.waiting,.work-state.paused,.work-state.blocked,.wait-count.open { color:var(--amber); background:color-mix(in srgb,var(--amber) 14%,transparent); }
+    .work-state.completed,.work-state.abandoned,.work-state.claims-only,.work-state.unknown,.wait-count.unavailable { color:var(--quiet); background:var(--soft); }
     .pager { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px 15px; border-top:1px solid var(--line); font-size:.78rem; color:var(--muted); }
     .pager button { height:31px; padding:0 12px; border:1px solid var(--line); border-radius:6px; background:var(--soft); color:var(--ink); font-size:.78rem; font-weight:650; cursor:pointer; }
     .pager button:disabled { opacity:.5; cursor:not-allowed; }
@@ -26,7 +30,7 @@
     .empty-state p:last-child { margin:0; font-size:.8rem; }
     .hidden { display:none !important; }
     @media (max-width:820px) { .toolbar { grid-template-columns:1fr 1fr; } .toolbar label:last-child { grid-column:1 / -1; } }
-    @media (max-width:600px) { .shell { width:min(calc(100% - 24px),1160px); } .masthead { align-items:start; padding:14px 0; } .nav { justify-content:start; } table { min-width:0; } th,td { padding:9px 8px; } th:nth-child(4),td:nth-child(4),th:nth-child(7),td:nth-child(7) { display:none; } }
+    @media (max-width:600px) { .shell { width:min(calc(100% - 24px),1160px); } .masthead { align-items:start; padding:14px 0; } .nav { justify-content:start; } table { width:100%; min-width:0; table-layout:fixed; } th,td { padding:9px 8px; overflow-wrap:anywhere; } .work-state,.wait-count { justify-content:center; text-align:center; white-space:normal; } th:nth-child(3),td:nth-child(3),th:nth-child(6),td:nth-child(6),th:nth-child(7),td:nth-child(7),th:nth-child(9),td:nth-child(9) { display:none; } }
   </style>
 </head>
 <body>
@@ -51,7 +55,7 @@
       <div class="panel-head"><h3>Active claims</h3><span id="agents-count" class="count"></span></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Repository</th><th>Agent</th><th>Task</th><th>Branch</th><th>Started</th><th>Lease</th><th>Scope</th></tr></thead>
+          <thead><tr><th>Repository</th><th>Agent</th><th>Task</th><th>State</th><th>Waits</th><th>Branch</th><th>Started</th><th>Lease</th><th>Scope</th></tr></thead>
           <tbody id="agents-rows"></tbody>
         </table>
       </div>
@@ -179,6 +183,32 @@
       return entries.length ? entries.map(escapeHtml).join(" · ") : "No declared scope";
     }
 
+    const workStateLabels = Object.freeze({
+      open: "Open",
+      claimed: "Claimed",
+      waiting: "Waiting",
+      paused: "Paused",
+      blocked: "Blocked",
+      in_review: "In review",
+      completed: "Completed",
+      abandoned: "Abandoned",
+    });
+
+    function workStateCell(item) {
+      if (!item.work_state) {
+        return '<span class="work-state claims-only" title="No native Industrial Work record is published for this claim">Claims only</span>';
+      }
+      const state = Object.hasOwn(workStateLabels, item.work_state) ? item.work_state : "unknown";
+      return `<span class="work-state ${state}">${escapeHtml(workStateLabels[state] || "Unavailable")}</span>`;
+    }
+
+    function workWaitCell(item) {
+      if (!item.work_state) return '<span class="wait-count unavailable">—</span>';
+      const count = Number.isSafeInteger(item.unresolved_wait_count) ? item.unresolved_wait_count : 0;
+      if (count === 0) return '<span class="wait-count none">None</span>';
+      return `<span class="wait-count open">${count} open</span>`;
+    }
+
     function agentRow(item) {
       const leaseSeconds = item.lease_expires_at_seconds ?? null;
       const startedSeconds = item.claim_started_at_seconds ?? null;
@@ -188,6 +218,8 @@
         <td>${escapeHtml(item.repository_id)}</td>
         <td>${escapeHtml(item.owner_id)}</td>
         <td>${escapeHtml(item.task_id)}</td>
+        <td>${workStateCell(item)}</td>
+        <td>${workWaitCell(item)}</td>
         <td>${item.branch ? escapeHtml(item.branch) : "No branch"}</td>
         <td title="${escapeHtml(absoluteTime(startedSeconds))}">${escapeHtml(startedLabel)}</td>
         <td title="${escapeHtml(absoluteTime(leaseSeconds))}">${escapeHtml(relativeTime(leaseSeconds))}</td>
@@ -197,7 +229,7 @@
 
     function renderAgentRows(items) {
       if (items.length === 0) {
-        rows.innerHTML = '<tr><td colspan="7"></td></tr>';
+        rows.innerHTML = '<tr><td colspan="9"></td></tr>';
         rows.querySelector("td").appendChild(
           emptyState("Active claims will appear here as agents pick up work.", "No active claims match these filters")
         );
@@ -235,7 +267,7 @@
           ? `Showing ${result.items.length} of ${totalAgents} active claim${totalAgents === 1 ? "" : "s"}.`
           : "No active claims match these filters.";
       } catch (error) {
-        rows.innerHTML = '<tr><td colspan="6"></td></tr>';
+        rows.innerHTML = '<tr><td colspan="9"></td></tr>';
         rows.querySelector("td").appendChild(emptyState(error.message, "Agents unavailable"));
         pagerRange.textContent = "0 of 0";
         prevButton.disabled = true;
