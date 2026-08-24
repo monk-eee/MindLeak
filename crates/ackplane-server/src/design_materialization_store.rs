@@ -19,6 +19,19 @@ use tokio_postgres::{Client, NoTls};
 
 const MIGRATION: &str = include_str!("../migrations/0032_industrial_design_materializations.sql");
 
+// Dependency migrations: 0032 foreign-keys into `industrial_designs`,
+// `constitution_publications`, and `work_tasks`, none of them created by
+// this store's own migration key; `industrial_designs` (0027) in turn
+// foreign-keys into `evidence_records`. See design_store::mod's identical
+// note -- a shared, long-lived local dev database hides this until tested
+// against a genuinely fresh Postgres instance.
+const EVIDENCE_DEPENDENCY_MIGRATION: &str = include_str!("../migrations/0014_evidence.sql");
+const INDUSTRIAL_DESIGNS_DEPENDENCY_MIGRATION: &str =
+    include_str!("../migrations/0027_industrial_designs.sql");
+const CONSTITUTION_PUBLICATION_HISTORY_DEPENDENCY_MIGRATION: &str =
+    include_str!("../migrations/0026_constitution_publication_history.sql");
+const WORK_DEPENDENCY_MIGRATION: &str = include_str!("../migrations/0028_work.sql");
+
 const MAX_ACTOR_BYTES: usize = 256;
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
 const MAX_RATIONALE_BYTES: usize = 8192;
@@ -140,6 +153,30 @@ impl MaterializationStore {
                 tracing::error!(%error, "ackplane materialization store connection closed with an error");
             }
         });
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::EVIDENCE,
+            EVIDENCE_DEPENDENCY_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::CONSTITUTION_PUBLICATION_HISTORY,
+            CONSTITUTION_PUBLICATION_HISTORY_DEPENDENCY_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::WORK,
+            WORK_DEPENDENCY_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::INDUSTRIAL_DESIGNS,
+            INDUSTRIAL_DESIGNS_DEPENDENCY_MIGRATION,
+        )
+        .await?;
         crate::migration_lock::migrate_locked(
             &mut client,
             crate::migration_lock::key::INDUSTRIAL_DESIGN_MATERIALIZATIONS,
