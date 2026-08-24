@@ -14,6 +14,10 @@ description = "The Ackplane federation service: a separately deployable arbiter 
 # The wire contract this service exists to serve. ADR-0082 clause 1 forbids
 # depending on a plane crate, which this is not.
 ackplane-protocol = { path = "../ackplane-protocol" }
+# register-me's own candidate-identity default path/format must match what
+# ackplane-core resolves for a repository's own `compiled_federation_readiness`
+# check -- not a plane crate, so this does not reopen ADR-0082 clause 1.
+ackplane-client = { path = "../ackplane-client" }
 ed25519-dalek = "2.1"
 getrandom = "0.2"
 pgvector = { workspace = true }
