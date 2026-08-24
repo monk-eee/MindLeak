@@ -167,7 +167,7 @@ mod commands;
 
 fn print_usage() {
     eprintln!(
-        "register-me: enroll a repository node with Ackplane (ADR-0085)\n\n\
+        "register-me: enroll a repository node with Ackplane\n\n\
          USAGE:\n\
          \x20 register-me request  --repo R --node N (--tenant-name T --salt-path PATH | --tenant-id ID)\n\
          \x20                      [--grpc-endpoint URL] [--key-path PATH] [--display-name NAME]\n\
@@ -179,12 +179,12 @@ fn print_usage() {
          `--key-path` defaults to the same repository-local path on every subcommand\n\
          (see `ackplane_client::identity::DEFAULT_KEY_PATH`; override with\n\
          `MINDLEAK_ACKPLANE_KEY_PATH` or an explicit flag).\n\n\
-         `--tenant-name` + `--salt-path` derive the same tenant id the Bridge queries for\n\
-         (ADR-0098 decision 3) -- use it, or the enrolled repository will never appear there.\n\
+         `--tenant-name` + `--salt-path` derive the same tenant id the Bridge queries for --\n\
+         use it, or the enrolled repository will never appear there.\n\
          `--tenant-id` is a raw override for a deployment that assigns tenant ids some other way.\n\n\
          `request` is the only step a real node runs unattended; `approve` is a separate\n\
          administrator action (a local-dev database shortcut standing in for the approval\n\
-         RPC/UI ADR-0085 does not build yet); `activate` proves possession and opens one real\n\
+         RPC/UI that does not exist yet); `activate` proves possession and opens one real\n\
          NodeSync stream with a signed heartbeat event, using the signing_key_id\n\
          EnrollmentActivationResult returns directly -- no database access needed."
     );

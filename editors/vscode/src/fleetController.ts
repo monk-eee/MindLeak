@@ -45,7 +45,13 @@ export class FleetController {
         this.lodestar.callTool("fleet_view", {})
       ),
       this.read<LodestarTask[]>(this.lodestar, "board", () =>
-        this.lodestar.callTool("task_query", { view: "board", include_terminal: false })
+        // fleetDashboard's FleetTaskRow mapping only reads id/title/status/
+        // lease_expires_at -- never scope/claim_window/receipt/acceptance.
+        this.lodestar.callTool("task_query", {
+          view: "board",
+          include_terminal: false,
+          detail: false,
+        })
       ),
       this.read<StalledEntry[]>(this.lodestar, "stalled work", () =>
         this.lodestar.callTool("task_query", { view: "stalled" })

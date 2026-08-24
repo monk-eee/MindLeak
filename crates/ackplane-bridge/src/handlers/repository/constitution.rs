@@ -198,7 +198,7 @@ mod page_tests {
             "renderClause",
             "startVisibleRefresh(load, intervalMs)",
             "document.visibilityState === \"visible\"",
-            "aria-current=\"page\"",
+            "data-current=\"constitution\"",
         ] {
             assert!(
                 body.contains(required),

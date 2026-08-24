@@ -236,7 +236,9 @@ if (server && /^[0-9a-f]{32}$/.test(sessionId)) {
       },
       {
         name: "task_query",
-        arguments: { view: "board", include_terminal: false },
+        // Only status/owner/lease_expires_at/branch feed the claim gate below --
+        // scope/claim_window/receipt/acceptance would be fetched for nothing.
+        arguments: { view: "board", include_terminal: false, detail: false },
       },
       { name: "task_query", arguments: { view: "overlap", paths: changed } },
     ]);
