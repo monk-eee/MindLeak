@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MindLeak Bridge Design</title>
+  <style>
+    :root { color-scheme: light; --canvas:#f7f5ef; --surface:#fff; --line:#ddd7cb; --ink:#202a33; --muted:#66737e; --subtle:#8c989e; --teal:#147d73; --teal-soft:#def3ed; --amber:#ae7411; --amber-soft:#fbf0d8; --coral:#c95445; --coral-soft:#f9e3de; --focus:0 0 0 3px rgba(51,111,159,.28); }
+    @media (prefers-color-scheme: dark) { :root { color-scheme:dark; --canvas:#152024; --surface:#1d2a2f; --line:#3c4d51; --ink:#edf4f3; --muted:#b1c0c0; --subtle:#839596; --teal:#61d5c3; --teal-soft:rgba(97,213,195,.15); --amber:#f0bf62; --amber-soft:rgba(240,191,98,.16); --coral:#ff9585; --coral-soft:rgba(255,149,133,.14); --focus:0 0 0 3px rgba(145,199,237,.32); } }
+    * { box-sizing:border-box; }
+    body { min-height:100vh; margin:0; background:var(--canvas); color:var(--ink); font-family:"Segoe UI Variable",Aptos,system-ui,sans-serif; background-image:linear-gradient(90deg,rgba(20,125,115,.04) 1px,transparent 1px),linear-gradient(rgba(20,125,115,.04) 1px,transparent 1px); background-size:28px 28px; }
+    button,input,select { font:inherit; } button { cursor:pointer; } button:focus-visible,input:focus-visible,select:focus-visible { outline:none; box-shadow:var(--focus); }
+    .shell { width:min(1040px,calc(100% - 32px)); margin:0 auto; }
+    header { border-bottom:1px solid var(--line); background:color-mix(in srgb,var(--canvas) 92%,transparent); backdrop-filter:blur(12px); }
+    .topbar { min-height:72px; display:flex; align-items:center; justify-content:space-between; gap:16px; }
+    .brand { display:flex; align-items:center; gap:10px; text-decoration:none; color:inherit; } .mark { width:34px; height:34px; display:grid; place-items:center; border:1px solid var(--teal); border-radius:6px; color:var(--teal); font-weight:800; } .brand p { margin:0; font-weight:760; } .brand span { color:var(--subtle); font-weight:600; }
+    nav { display:flex; gap:16px; font-size:.86rem; } nav a { color:var(--muted); text-decoration:none; } nav a:hover { color:var(--ink); }
+    main { padding:38px 0 58px; } .eyebrow { margin:0 0 8px; color:var(--teal); font-size:.76rem; font-weight:760; letter-spacing:.08em; text-transform:uppercase; } h1 { margin:0; font-size:clamp(2rem,4vw,3.5rem); line-height:1.04; } .intro { max-width:680px; margin:16px 0 28px; color:var(--muted); line-height:1.55; }
+    form { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:10px; align-items:end; padding:16px; border:1px solid var(--line); border-radius:8px; background:var(--surface); } label { display:grid; gap:6px; color:var(--muted); font-size:.78rem; font-weight:700; } input,select { min-width:0; padding:10px 12px; border:1px solid var(--line); border-radius:6px; background:transparent; color:var(--ink); } button { min-height:42px; padding:0 16px; border:1px solid var(--ink); border-radius:6px; background:var(--ink); color:var(--surface); font-weight:700; } button:disabled { opacity:.5; cursor:not-allowed; }
+    .notice { margin:22px 0; padding:14px 16px; border:1px solid var(--amber); border-radius:8px; background:var(--amber-soft); color:var(--amber); } .notice[hidden] { display:none; }
+    h2 { margin:34px 0 12px; font-size:1.15rem; } table { width:100%; border-collapse:collapse; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:var(--surface); } th,td { padding:10px 12px; text-align:left; border-bottom:1px solid var(--line); font-size:.86rem; } th { color:var(--subtle); font-weight:760; text-transform:uppercase; font-size:.72rem; letter-spacing:.06em; } tbody tr:last-child td { border-bottom:none; } tbody tr[data-design-id] { cursor:pointer; } tbody tr[data-design-id]:hover { background:color-mix(in srgb,var(--teal-soft) 60%,transparent); } .badge { padding:2px 8px; border-radius:999px; font-size:.74rem; border:1px solid var(--line); } .badge[data-state="proposed"] { border-color:var(--teal); color:var(--teal); } .badge[data-state="deferred"] { border-color:var(--amber); color:var(--amber); } .badge[data-state="rejected"] { border-color:var(--coral); color:var(--coral); }
+    .empty { padding:38px 20px; border:1px dashed var(--line); border-radius:8px; color:var(--muted); text-align:center; background:color-mix(in srgb,var(--surface) 84%,transparent); }
+    .pager { display:flex; justify-content:space-between; align-items:center; margin-top:14px; color:var(--muted); font-size:.84rem; } .pager button { min-height:36px; padding:0 12px; }
+    .detail { margin-top:20px; padding:16px; border:1px solid var(--line); border-radius:8px; background:var(--surface); } .detail[hidden] { display:none; } .detail h3 { margin:0 0 4px; font-size:1rem; } .detail p { margin:2px 0 14px; color:var(--muted); font-size:.84rem; } .detail h4 { margin:16px 0 6px; font-size:.82rem; text-transform:uppercase; letter-spacing:.05em; color:var(--subtle); }
+    .form-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; padding:16px; border:1px solid var(--line); border-radius:8px; background:var(--surface); } .form-grid .actions { grid-column:1/-1; display:flex; justify-content:flex-end; }
+    details.panel { margin-top:20px; border:1px solid var(--line); border-radius:8px; background:var(--surface); overflow:hidden; } details.panel summary { padding:14px 16px; cursor:pointer; font-weight:760; list-style:none; } details.panel summary::-webkit-details-marker { display:none; } details.panel[open] summary { border-bottom:1px solid var(--line); } details.panel .form-grid { border:none; border-radius:0; padding:16px; }
+    #announcement { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); clip-path:inset(50%); white-space:nowrap; }
+    @media (max-width:700px) { .shell { width:min(100% - 24px,1040px); } .topbar { min-height:64px; } nav { gap:10px; font-size:.78rem; } main { padding-top:28px; } form { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <header><div class="shell topbar"><a class="brand" href="/" aria-label="MindLeak Bridge Fleet"><span class="mark" aria-hidden="true">ML</span><p>mind leak <span>/ bridge</span></p></a><nav class="nav" aria-label="Industrial surfaces"><a href="/">Fleet</a><a href="/agents">Agents</a><a href="/evidence">Evidence</a><a href="/telemetry">Telemetry</a><a href="/context">Context</a><a href="/knowledge">Knowledge</a><a href="/work">Work</a><a href="/board-doctor">Board Doctor</a><a href="/supervisors">Supervisors</a><a href="/administration">Administration</a><a href="/delegations">Delegations</a><a href="/live">Live Feed</a><a href="/design" aria-current="page">Design</a><a aria-disabled="true">Constitution</a></nav></div></header>
+  <main class="shell">
+    <p class="eyebrow">Industrial design authority</p><h1>Design</h1><p class="intro">Industrial design records and their materialization revisions for one repository (ADR-0121): title, lifecycle state, decision history, and which Constitution publication and Work tasks a materialization referenced -- never a mirror of a Local Design Board.</p>
+    <form id="repository-form"><label for="repository-id">Repository<input id="repository-id" name="repository_id" autocomplete="off" placeholder="repository identifier" required></label><label for="lifecycle-state">State<select id="lifecycle-state"><option value="">All</option><option value="proposed">Proposed</option><option value="accepted">Accepted</option><option value="rejected">Rejected</option><option value="deferred">Deferred</option><option value="retired">Retired</option><option value="superseded">Superseded</option><option value="materialized">Materialized</option></select></label><button id="load-designs" type="submit">Load</button></form>
+    <p class="notice" id="notice" hidden></p>
+    <details class="panel" id="propose-panel"><summary>Propose a design</summary><form id="propose-form" class="form-grid">
+      <label for="propose-design-id">Design id<input id="propose-design-id" name="design_id" autocomplete="off" required></label>
+      <label for="propose-title">Title<input id="propose-title" name="title" autocomplete="off" required></label>
+      <label for="propose-summary">Summary<input id="propose-summary" name="summary" autocomplete="off" required></label>
+      <label for="propose-source-version">Source version<input id="propose-source-version" name="source_version" autocomplete="off" required></label>
+      <label for="propose-constitution-version-id">Constitution version (optional)<input id="propose-constitution-version-id" name="constitution_version_id" autocomplete="off"></label>
+      <label for="propose-work-task-id">Work task (optional)<input id="propose-work-task-id" name="work_task_id" autocomplete="off"></label>
+      <label for="propose-evidence-id">Evidence (optional)<input id="propose-evidence-id" name="evidence_id" autocomplete="off"></label>
+      <label for="propose-actor">Proposed by<input id="propose-actor" name="proposed_by" autocomplete="off" required></label>
+      <div class="actions"><button type="submit">Propose</button></div>
+    </form></details>
+    <h2>Designs</h2>
+    <table aria-label="Industrial designs"><thead><tr><th>Design</th><th>Title</th><th>State</th><th>Source version</th><th>Updated</th></tr></thead><tbody id="rows"><tr><td colspan="5"><div class="empty">Load a repository to view its Industrial design list.</div></td></tr></tbody></table>
+    <div class="pager"><span id="pager-summary"></span><span><button type="button" id="prev-page">Previous</button> <button type="button" id="next-page">Next</button></span></div>
+    <section class="detail" id="detail" hidden>
+      <h3 id="detail-title"></h3><p id="detail-summary"></p>
+      <h4>Decision history</h4><table aria-label="Decision history"><thead><tr><th>#</th><th>Decision</th><th>Actor</th><th>Rationale</th><th>Recorded</th></tr></thead><tbody id="detail-decisions"></tbody></table>
+      <h4>Materialization revisions</h4><table aria-label="Materialization revisions"><thead><tr><th>#</th><th>Actor</th><th>Constitution version</th><th>Work tasks</th><th>Goals</th><th>Recorded</th></tr></thead><tbody id="detail-materializations"></tbody></table>
+      <h4>Record a decision</h4><form id="decision-form" class="form-grid">
+        <label for="decision-kind">Decision<select id="decision-kind" name="decision_kind" required><option value="accepted">Accept</option><option value="rejected">Reject</option><option value="deferred">Defer</option><option value="retired">Retire</option><option value="superseded">Supersede</option><option value="materialized">Materialize</option></select></label>
+        <label for="decision-actor">Actor<input id="decision-actor" name="actor" autocomplete="off" required></label>
+        <label for="decision-rationale">Rationale (optional)<input id="decision-rationale" name="rationale" autocomplete="off"></label>
+        <input type="hidden" id="decision-expected-state" name="expected_lifecycle_state">
+        <div class="actions"><button type="submit">Record decision</button></div>
+      </form>
+      <h4>Record a materialization</h4><form id="materialization-form" class="form-grid">
+        <label for="materialization-actor">Actor<input id="materialization-actor" name="actor" autocomplete="off" required></label>
+        <label for="materialization-idempotency-key">Idempotency key<input id="materialization-idempotency-key" name="idempotency_key" autocomplete="off" required></label>
+        <label for="materialization-constitution-version-id">Constitution version<input id="materialization-constitution-version-id" name="constitution_version_id" autocomplete="off" required></label>
+        <label for="materialization-work-task-ids">Work tasks (comma-separated, optional)<input id="materialization-work-task-ids" name="work_task_ids" autocomplete="off"></label>
+        <label for="materialization-goal-ids">Goals (comma-separated, optional)<input id="materialization-goal-ids" name="goal_ids" autocomplete="off"></label>
+        <label for="materialization-rationale">Rationale (optional)<input id="materialization-rationale" name="rationale" autocomplete="off"></label>
+        <div class="actions"><button type="submit">Record materialization</button></div>
+      </form>
+    </section>
+    <p id="announcement" aria-live="polite" aria-atomic="true"></p>
+  </main>
+  <script>
+    const form=document.getElementById("repository-form"), input=document.getElementById("repository-id"), lifecycleFilter=document.getElementById("lifecycle-state"), button=document.getElementById("load-designs"), notice=document.getElementById("notice"), rows=document.getElementById("rows"), announcement=document.getElementById("announcement"), summary=document.getElementById("pager-summary"), prevButton=document.getElementById("prev-page"), nextButton=document.getElementById("next-page"), detail=document.getElementById("detail"), detailTitle=document.getElementById("detail-title"), detailSummary=document.getElementById("detail-summary"), detailDecisions=document.getElementById("detail-decisions"), detailMaterializations=document.getElementById("detail-materializations");
+    const proposeForm=document.getElementById("propose-form"), decisionForm=document.getElementById("decision-form"), decisionExpectedState=document.getElementById("decision-expected-state"), materializationForm=document.getElementById("materialization-form");
+    let page=1; const pageSize=20; let currentDesignId=null;
+    function say(message, warning=false){ notice.hidden=!message; notice.textContent=message||""; notice.style.borderColor=warning?"var(--coral)":""; announcement.textContent=message||""; }
+    function formatTimestamp(seconds){ return typeof seconds==="number" ? new Date(seconds*1000).toLocaleString() : "--"; }
+    function fieldValue(id){ return document.getElementById(id).value.trim(); }
+    function splitIds(value){ return value.split(",").map(part=>part.trim()).filter(Boolean); }
+    async function postJson(url, body){ const response=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); let json=null; try{ json=await response.json(); } catch(_error) { /* no JSON body, e.g. 201 with no content */ } return {ok:response.ok, status:response.status, json}; }
+    function render(result){ rows.replaceChildren(); if(result.items.length===0){ const row=document.createElement("tr"); const cell=document.createElement("td"); cell.colSpan=5; const empty=document.createElement("div"); empty.className="empty"; empty.textContent="No designs match this filter."; cell.append(empty); row.append(cell); rows.append(row); }
+      for(const design of result.items){ const row=document.createElement("tr"); row.dataset.designId=design.design_id; const cells=[design.design_id, design.title]; for(const text of cells){ const cell=document.createElement("td"); cell.textContent=text; row.append(cell); } const stateCell=document.createElement("td"); const badge=document.createElement("span"); badge.className="badge"; badge.dataset.state=design.lifecycle_state; badge.textContent=design.lifecycle_state; stateCell.append(badge); row.append(stateCell); const versionCell=document.createElement("td"); versionCell.textContent=design.source_version; row.append(versionCell); const updatedCell=document.createElement("td"); updatedCell.textContent=formatTimestamp(design.updated_at_seconds); row.append(updatedCell); row.addEventListener("click",()=>loadDetail(design.design_id)); rows.append(row); }
+      const start=result.total===0?0:(result.page-1)*result.page_size+1; const end=Math.min(result.page*result.page_size, result.total); summary.textContent=`${start}-${end} of ${result.total}`; prevButton.disabled=result.page<=1; nextButton.disabled=end>=result.total;
+    }
+    async function loadDetail(designId){ const repositoryId=input.value.trim(); try { const response=await fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/designs/${encodeURIComponent(designId)}`); if(!response.ok) throw new Error("Design detail is unavailable."); const result=await response.json(); detail.hidden=false; currentDesignId=designId; detailTitle.textContent=result.design.title; detailSummary.textContent=result.design.summary; decisionExpectedState.value=result.design.lifecycle_state;
+        detailDecisions.replaceChildren(); for(const decision of result.decisions){ const row=document.createElement("tr"); const cells=[String(decision.sequence_number), decision.decision_kind, decision.actor, decision.rationale||"--", formatTimestamp(decision.recorded_at_seconds)]; for(const text of cells){ const cell=document.createElement("td"); cell.textContent=text; row.append(cell); } detailDecisions.append(row); }
+        detailMaterializations.replaceChildren(); for(const revision of result.materializations){ const row=document.createElement("tr"); const cells=[String(revision.revision_number), revision.actor, revision.constitution_version_id, revision.work_task_ids.join(", ")||"--", revision.goal_ids.join(", ")||"--", formatTimestamp(revision.recorded_at_seconds)]; for(const text of cells){ const cell=document.createElement("td"); cell.textContent=text; row.append(cell); } detailMaterializations.append(row); }
+      } catch(error) { say(error.message||"Design detail is unavailable.",true); } }
+    async function load(){ const repositoryId=input.value.trim(); if(!repositoryId){ input.focus(); say("A repository identifier is required.",true); return; } button.disabled=true; say("Loading designs."); try { const params=new URLSearchParams({page:String(page), page_size:String(pageSize)}); if(lifecycleFilter.value) params.set("lifecycle_state", lifecycleFilter.value); const response=await fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/designs?${params}`); if(!response.ok) throw new Error(response.status===404?"Repository is not visible to this tenant.":"Design list is unavailable."); const result=await response.json(); const url=new URL(window.location.href); url.searchParams.set("repository_id",repositoryId); window.history.replaceState({},"",url); say(""); render(result); } catch(error) { say(error.message||"Design list is unavailable.",true); } finally { button.disabled=false; } }
+    form.addEventListener("submit",event=>{event.preventDefault();page=1;detail.hidden=true;currentDesignId=null;load();});
+    prevButton.addEventListener("click",()=>{ if(page>1){ page-=1; load(); } });
+    nextButton.addEventListener("click",()=>{ page+=1; load(); });
+    proposeForm.addEventListener("submit", async event => { event.preventDefault(); const repositoryId=input.value.trim(); if(!repositoryId){ input.focus(); say("A repository identifier is required.",true); return; }
+      const body={ design_id:fieldValue("propose-design-id"), title:fieldValue("propose-title"), summary:fieldValue("propose-summary"), source_version:fieldValue("propose-source-version"), constitution_version_id:fieldValue("propose-constitution-version-id")||null, work_task_id:fieldValue("propose-work-task-id")||null, evidence_id:fieldValue("propose-evidence-id")||null, proposed_by:fieldValue("propose-actor") };
+      const result=await postJson(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/designs`, body);
+      if(result.ok){ say("Design proposed."); proposeForm.reset(); page=1; load(); }
+      else if(result.status===409){ say("A design with this id already exists with different content.",true); }
+      else if(result.status===400){ say("Proposing the design failed: check the required fields and any Constitution/Work/Evidence reference.",true); }
+      else { say("Proposing the design failed.",true); }
+    });
+    decisionForm.addEventListener("submit", async event => { event.preventDefault(); const repositoryId=input.value.trim(); if(!currentDesignId){ say("Load a design's detail before recording a decision.",true); return; }
+      const body={ decision_kind:document.getElementById("decision-kind").value, actor:fieldValue("decision-actor"), rationale:fieldValue("decision-rationale")||null, expected_lifecycle_state:decisionExpectedState.value };
+      const result=await postJson(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/designs/${encodeURIComponent(currentDesignId)}/decisions`, body);
+      if(result.ok){ say("Decision recorded."); decisionForm.reset(); loadDetail(currentDesignId); load(); }
+      else if(result.status===409){ say("This design changed since it was loaded -- its current state has been reloaded.",true); loadDetail(currentDesignId); }
+      else if(result.status===404){ say("This design no longer exists.",true); }
+      else { say("Recording the decision failed.",true); }
+    });
+    materializationForm.addEventListener("submit", async event => { event.preventDefault(); const repositoryId=input.value.trim(); if(!currentDesignId){ say("Load a design's detail before recording a materialization.",true); return; }
+      const body={ actor:fieldValue("materialization-actor"), idempotency_key:fieldValue("materialization-idempotency-key"), rationale:fieldValue("materialization-rationale")||null, constitution_version_id:fieldValue("materialization-constitution-version-id"), work_task_ids:splitIds(fieldValue("materialization-work-task-ids")), goal_ids:splitIds(fieldValue("materialization-goal-ids")) };
+      const result=await postJson(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/designs/${encodeURIComponent(currentDesignId)}/materializations`, body);
+      if(result.ok){ say("Materialization recorded."); materializationForm.reset(); loadDetail(currentDesignId); }
+      else if(result.status===409){ say("This idempotency key was already used with different content.",true); }
+      else { say("Recording the materialization failed.",true); }
+    });
+    const initial=new URLSearchParams(window.location.search).get("repository_id"); if(initial){input.value=initial;load();}
+  </script>
+</body>
+</html>
