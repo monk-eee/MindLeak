@@ -423,7 +423,10 @@ impl WorkStore {
 }
 
 mod doctor;
+mod publication;
+
 pub use doctor::WorkDoctorFinding;
+pub use publication::{ClaimsOnlyWork, WorkPublication};
 
 #[cfg(test)]
 mod tests {

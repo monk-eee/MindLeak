@@ -16,9 +16,7 @@ use ackplane_server::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
         EnrollmentSubmission,
     },
-    evidence_store::EvidenceStore,
     fleet::FleetStore,
-    work_store::WorkStore,
 };
 use axum::{
     body::{to_bytes, Body},
@@ -110,29 +108,9 @@ async fn enroll_repository(database_url: &str, tenant_id: &str, repository_id: &
 }
 
 async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
-    // `industrial_designs`' own migrations carry FK references into
-    // `constitution_publications`, `evidence_records` (migration 0027), and
-    // `work_tasks` (migration 0031) -- unconditionally, regardless of
-    // whether any row ever sets those columns. Each store's `connect()`
-    // only runs its OWN migration, and Cargo runs every `tests/*.rs` file
-    // as an independent binary against a shared fresh database with no
-    // guaranteed cross-binary ordering -- so this file must create every
-    // one of those tables itself rather than rely on some other, unrelated
-    // test binary happening to run first (observed failing in CI first as
-    // "relation \"evidence_records\" does not exist", then, once that was
-    // fixed alone, as "relation \"work_tasks\" does not exist" -- every FK
-    // target needs its own store connected here, not just the first one
-    // that surfaces).
-    ConstitutionStore::connect(database_url)
-        .await
-        .expect("connect Constitution store (industrial_designs' FK dependency)");
-    EvidenceStore::connect(database_url)
-        .await
-        .expect("connect Evidence store (industrial_designs' FK dependency)");
-    WorkStore::connect(database_url)
-        .await
-        .expect("connect Work store (industrial_designs' FK dependency, migration 0031)");
-
+    // `DesignStore::connect`/`MaterializationStore::connect` apply their
+    // own dependency migrations (Evidence, Constitution, Work) internally,
+    // so this file does not need to pre-connect those stores itself.
     let designs = Arc::new(Mutex::new(
         DesignStore::connect(database_url)
             .await
