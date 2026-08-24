@@ -1,0 +1,1 @@
+- **Bridge Telemetry now shows bounded recent events.** Each tenant-scoped repository telemetry response includes up to 50 newest authoritative events, rendered alongside current health cards and sparklines with time, kind, outcome, and duration.
