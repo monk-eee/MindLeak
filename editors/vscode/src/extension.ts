@@ -896,9 +896,14 @@ async function refreshEvidence(): Promise<void> {
     return;
   }
   try {
+    // Only id/title/status are ever read below -- scope/claim_window/receipt/
+    // acceptance would be fetched for every task this repository has ever
+    // created and thrown away unread, which is what made this exact call
+    // reach megabyte scale on a long-lived board.
     const tasks = await lodestar.callTool("task_query", {
       view: "board",
       include_terminal: true,
+      detail: false,
     });
     const list: LodestarTask[] = Array.isArray(tasks) ? tasks : [];
     // Only completed/reviewed/blocked work carries conformance proof; skip the

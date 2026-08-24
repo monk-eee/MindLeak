@@ -10,7 +10,8 @@ use axum::{
 use serde::Serialize;
 
 use ackplane_server::telemetry_store::{
-    ReadTelemetryRequest, TelemetryMetric, TelemetryPoint, TelemetrySeries, TelemetrySnapshot,
+    ReadTelemetryRequest, RecentTelemetryEvent, TelemetryMetric, TelemetryPoint, TelemetrySeries,
+    TelemetrySnapshot,
 };
 
 use super::enrolled_or_not_found;
@@ -20,7 +21,10 @@ use crate::{unix_seconds, AppState};
 pub struct TelemetryResponse {
     metrics: Vec<TelemetryMetricSummary>,
     series: Vec<TelemetrySeriesSummary>,
+    recent_events: Vec<RecentTelemetryEventSummary>,
 }
+
+const MAX_RECENT_EVENTS: i64 = 50;
 
 /// Current health per (kind, name) -- derived from the most recent
 /// success/error, distinct from the lifetime `calls`/`errors` counts also
@@ -94,6 +98,27 @@ impl From<TelemetryPoint> for TelemetryPointSummary {
     }
 }
 
+#[derive(Serialize)]
+struct RecentTelemetryEventSummary {
+    kind: i16,
+    name: String,
+    outcome: i16,
+    duration_ms: i64,
+    occurred_at_seconds: Option<u64>,
+}
+
+impl From<RecentTelemetryEvent> for RecentTelemetryEventSummary {
+    fn from(event: RecentTelemetryEvent) -> Self {
+        Self {
+            kind: event.kind,
+            name: event.name,
+            outcome: event.outcome,
+            duration_ms: event.duration_ms,
+            occurred_at_seconds: unix_seconds(event.occurred_at),
+        }
+    }
+}
+
 impl From<TelemetrySnapshot> for TelemetryResponse {
     fn from(snapshot: TelemetrySnapshot) -> Self {
         Self {
@@ -107,6 +132,7 @@ impl From<TelemetrySnapshot> for TelemetryResponse {
                 .into_iter()
                 .map(TelemetrySeriesSummary::from)
                 .collect(),
+            recent_events: Vec::new(),
         }
     }
 }
@@ -119,24 +145,35 @@ pub async fn repository_telemetry(
 
     // Zero/None select every kind/name. Bucket history remains bounded by the
     // server so the browser visualizes accepted telemetry without deriving it.
-    match state
+    let snapshot = state
         .telemetry
         .read(ReadTelemetryRequest {
             tenant_id: state.tenant_id.to_string(),
-            repository_id,
+            repository_id: repository_id.clone(),
             kind: 0,
             name: None,
             bucket_seconds: 300,
             max_points: 24,
         })
         .await
-    {
-        Ok(snapshot) => Ok(Json(snapshot.into())),
-        Err(error) => {
+        .map_err(|error| {
             tracing::error!(%error, "Bridge repository telemetry query failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let recent_events = state
+        .telemetry
+        .recent_events(&state.tenant_id, &repository_id, MAX_RECENT_EVENTS)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "Bridge recent telemetry event query failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let mut response = TelemetryResponse::from(snapshot);
+    response.recent_events = recent_events
+        .into_iter()
+        .map(RecentTelemetryEventSummary::from)
+        .collect();
+    Ok(Json(response))
 }
 
 const TELEMETRY_PAGE: &str = include_str!("../../../static/telemetry.html");
@@ -168,6 +205,11 @@ mod page_tests {
             "last_success_at_seconds",
             "last_error_at_seconds",
             "bucket_start_at_seconds",
+            "recent_events",
+            "occurred_at_seconds",
+            "recent-events-panel",
+            "recent-events-rows",
+            "renderRecentEvents",
             "drawSparkline",
             "startVisibleRefresh(load, REFRESH_INTERVAL_MS)",
             "document.visibilityState === \"visible\"",
@@ -239,6 +281,7 @@ mod page_tests {
                         {"bucket_start_at_seconds": 600, "calls": 2, "errors": 0, "average_duration_ms": 33.75},
                     ],
                 }],
+                "recent_events": [],
             })
         );
     }
