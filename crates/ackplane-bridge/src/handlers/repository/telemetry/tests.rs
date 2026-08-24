@@ -182,7 +182,7 @@ fn telemetry_event(
 }
 
 #[tokio::test]
-async fn telemetry_route_preserves_bounded_server_buckets_and_tenant_scope() {
+async fn telemetry_route_preserves_bounded_server_buckets_recent_events_and_tenant_scope() {
     let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
         println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
@@ -253,6 +253,10 @@ async fn telemetry_route_preserves_bounded_server_buckets_and_tenant_scope() {
                     {"bucket_start_at_seconds": 1_700_000_400_u64, "calls": 1, "errors": 1, "average_duration_ms": 120.0},
                 ],
             }],
+            "recent_events": [
+                {"kind": 1, "name": "run_tests", "outcome": 2, "duration_ms": 120, "occurred_at_seconds": 1_700_000_400_u64},
+                {"kind": 1, "name": "run_tests", "outcome": 1, "duration_ms": 60, "occurred_at_seconds": 1_700_000_100_u64},
+            ],
         })
     );
 
