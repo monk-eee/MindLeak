@@ -2,24 +2,42 @@
 //! `GET /api/v1/repositories/:id/knowledge` (ADR-0105 parity): a
 //! repository's active recorded knowledge.
 
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use ackplane_server::knowledge_store::ActiveKnowledge;
+use ackplane_server::knowledge_store::{
+    ActiveKnowledge, ActiveKnowledgeCursor, ActiveKnowledgePage,
+};
 
 use super::enrolled_or_not_found;
 use crate::{unix_seconds, AppState};
 
-/// Same fixed-slice rationale as `TIMELINE_LIMIT`, applied to a knowledge recall.
-const KNOWLEDGE_LIMIT: i64 = 50;
+const KNOWLEDGE_PAGE_SIZE: i64 = 50;
 
 #[derive(Serialize)]
 pub struct KnowledgeResponse {
     entries: Vec<KnowledgeEntrySummary>,
+    next_before: Option<KnowledgeCursorSummary>,
+}
+
+/// A direct compound keyset cursor. Both fields are required together so a
+/// timestamp shared by several entries never makes a page boundary ambiguous.
+#[derive(Deserialize)]
+pub struct KnowledgePageQuery {
+    before_confirmed_at_micros: Option<i64>,
+    before_knowledge_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct KnowledgeCursorSummary {
+    confirmed_at_micros: i64,
+    knowledge_id: String,
 }
 
 #[derive(Serialize)]
@@ -46,24 +64,181 @@ impl From<ActiveKnowledge> for KnowledgeEntrySummary {
 pub async fn repository_knowledge(
     State(state): State<AppState>,
     Path(repository_id): Path<String>,
+    Query(query): Query<KnowledgePageQuery>,
 ) -> Result<Json<KnowledgeResponse>, StatusCode> {
     enrolled_or_not_found(&state, &repository_id, "knowledge").await?;
+    let before = parse_knowledge_cursor(query)?;
 
     match state
         .knowledge
-        .recall(&state.tenant_id, &repository_id, None, KNOWLEDGE_LIMIT)
+        .active_page(
+            &state.tenant_id,
+            &repository_id,
+            before.as_ref(),
+            KNOWLEDGE_PAGE_SIZE,
+        )
         .await
     {
-        Ok(result) => Ok(Json(KnowledgeResponse {
-            entries: result
-                .entries
-                .into_iter()
-                .map(KnowledgeEntrySummary::from)
-                .collect(),
-        })),
+        Ok(page) => Ok(Json(KnowledgeResponse::try_from(page)?)),
         Err(error) => {
             tracing::error!(%error, "Bridge repository knowledge query failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
+    }
+}
+
+fn parse_knowledge_cursor(
+    query: KnowledgePageQuery,
+) -> Result<Option<ActiveKnowledgeCursor>, StatusCode> {
+    match (query.before_confirmed_at_micros, query.before_knowledge_id) {
+        (None, None) => Ok(None),
+        (Some(confirmed_at_micros), Some(knowledge_id)) if !knowledge_id.is_empty() => {
+            let confirmed_at = system_time_from_epoch_micros(confirmed_at_micros)
+                .ok_or(StatusCode::BAD_REQUEST)?;
+            Ok(Some(ActiveKnowledgeCursor {
+                confirmed_at,
+                knowledge_id,
+            }))
+        }
+        _ => Err(StatusCode::BAD_REQUEST),
+    }
+}
+
+fn system_time_from_epoch_micros(value: i64) -> Option<SystemTime> {
+    let duration = Duration::from_micros(value.unsigned_abs());
+    if value >= 0 {
+        UNIX_EPOCH.checked_add(duration)
+    } else {
+        UNIX_EPOCH.checked_sub(duration)
+    }
+}
+
+fn epoch_micros(value: SystemTime) -> Option<i64> {
+    match value.duration_since(UNIX_EPOCH) {
+        Ok(duration) => i64::try_from(duration.as_micros()).ok(),
+        Err(error) => i64::try_from(error.duration().as_micros())
+            .ok()
+            .and_then(i64::checked_neg),
+    }
+}
+
+impl TryFrom<ActiveKnowledgePage> for KnowledgeResponse {
+    type Error = StatusCode;
+
+    fn try_from(page: ActiveKnowledgePage) -> Result<Self, Self::Error> {
+        let next_before = page
+            .next_before
+            .map(KnowledgeCursorSummary::try_from)
+            .transpose()?;
+        Ok(Self {
+            entries: page
+                .entries
+                .into_iter()
+                .map(KnowledgeEntrySummary::from)
+                .collect(),
+            next_before,
+        })
+    }
+}
+
+impl TryFrom<ActiveKnowledgeCursor> for KnowledgeCursorSummary {
+    type Error = StatusCode;
+
+    fn try_from(cursor: ActiveKnowledgeCursor) -> Result<Self, Self::Error> {
+        Ok(Self {
+            confirmed_at_micros: epoch_micros(cursor.confirmed_at)
+                .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?,
+            knowledge_id: cursor.knowledge_id,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn knowledge_cursor_requires_both_compound_key_fields() {
+        for query in [
+            KnowledgePageQuery {
+                before_confirmed_at_micros: Some(1),
+                before_knowledge_id: None,
+            },
+            KnowledgePageQuery {
+                before_confirmed_at_micros: None,
+                before_knowledge_id: Some("knowledge:a".to_string()),
+            },
+            KnowledgePageQuery {
+                before_confirmed_at_micros: Some(1),
+                before_knowledge_id: Some(String::new()),
+            },
+            KnowledgePageQuery {
+                before_confirmed_at_micros: None,
+                before_knowledge_id: Some(String::new()),
+            },
+        ] {
+            assert_eq!(parse_knowledge_cursor(query), Err(StatusCode::BAD_REQUEST));
+        }
+    }
+
+    #[test]
+    fn knowledge_cursor_round_trips_signed_epoch_microseconds() {
+        let before_epoch = KnowledgePageQuery {
+            before_confirmed_at_micros: Some(-1),
+            before_knowledge_id: Some("knowledge:before".to_string()),
+        };
+        let after_epoch = KnowledgePageQuery {
+            before_confirmed_at_micros: Some(1),
+            before_knowledge_id: Some("knowledge:after".to_string()),
+        };
+
+        let before = parse_knowledge_cursor(before_epoch)
+            .expect("before-epoch cursor parses")
+            .expect("cursor exists");
+        let after = parse_knowledge_cursor(after_epoch)
+            .expect("after-epoch cursor parses")
+            .expect("cursor exists");
+        assert_eq!(
+            (epoch_micros(before.confirmed_at), before.knowledge_id),
+            (Some(-1), "knowledge:before".to_string())
+        );
+        assert_eq!(
+            (epoch_micros(after.confirmed_at), after.knowledge_id),
+            (Some(1), "knowledge:after".to_string())
+        );
+    }
+
+    #[test]
+    fn terminal_knowledge_page_has_no_next_cursor() {
+        let response = KnowledgeResponse::try_from(ActiveKnowledgePage {
+            entries: Vec::new(),
+            next_before: None,
+        })
+        .expect("terminal page converts to a response");
+
+        assert_eq!(response.next_before, None);
+    }
+
+    #[test]
+    fn nonterminal_knowledge_page_serializes_its_compound_next_cursor() {
+        let response = KnowledgeResponse::try_from(ActiveKnowledgePage {
+            entries: Vec::new(),
+            next_before: Some(ActiveKnowledgeCursor {
+                confirmed_at: UNIX_EPOCH + Duration::from_micros(42),
+                knowledge_id: "knowledge:next".to_string(),
+            }),
+        })
+        .expect("nonterminal page converts to a response");
+
+        assert_eq!(
+            serde_json::to_value(response).expect("response serializes"),
+            serde_json::json!({
+                "entries": [],
+                "next_before": {
+                    "confirmed_at_micros": 42,
+                    "knowledge_id": "knowledge:next",
+                },
+            })
+        );
     }
 }

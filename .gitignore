@@ -28,6 +28,10 @@ editors/vscode/coverage/
 /.github/instructions/
 /.github/prompts/
 
+# Local Ackplane dev config (ports, salt path) -- see .env.example for the
+# documented defaults; real values here are developer-machine-local only.
+/.env
+
 # Editor / OS
 .DS_Store
 Thumbs.db
