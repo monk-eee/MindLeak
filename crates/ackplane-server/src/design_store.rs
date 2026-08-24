@@ -21,6 +21,25 @@ use tokio_postgres::{Client, NoTls};
 const MIGRATION: &str = include_str!("../migrations/0027_industrial_designs.sql");
 const WORK_REFERENCE_MIGRATION: &str =
     include_str!("../migrations/0031_industrial_design_work_reference.sql");
+// `industrial_designs` carries real composite foreign keys into the
+// Constitution and Evidence domains (see MIGRATION above) -- connecting
+// DesignStore in isolation (nothing else in the same process has connected
+// EvidenceStore/ConstitutionStore yet) must not depend on some OTHER store
+// having already migrated those tables first, or the FKs fail to resolve
+// with "relation ... does not exist" the moment nothing else did.
+const CONSTITUTION_PUBLICATION_HISTORY_MIGRATION: &str =
+    include_str!("../migrations/0026_constitution_publication_history.sql");
+const EVIDENCE_MIGRATION: &str = include_str!("../migrations/0014_evidence.sql");
+const EVIDENCE_CONFORMANCE_MIGRATION: &str =
+    include_str!("../migrations/0015_evidence_conformance.sql");
+const EVIDENCE_REVIEW_FILTER_MIGRATION: &str =
+    include_str!("../migrations/0018_evidence_review_filter.sql");
+// `industrial_design_work_reference` (WORK_REFERENCE_MIGRATION) carries a
+// foreign key into `work_tasks`, owned by WorkStore, which itself depends
+// on `delegated_claims` -- mirror WorkStore::connect's own dependency
+// chain exactly rather than assuming WorkStore has already connected.
+const CLAIM_DELEGATION_MIGRATION: &str = include_str!("../migrations/0005_claim_delegation.sql");
+const WORK_MIGRATION: &str = include_str!("../migrations/0028_work.sql");
 
 #[derive(Debug, thiserror::Error)]
 pub enum DesignStoreError {
@@ -149,8 +168,44 @@ impl DesignStore {
         });
         crate::migration_lock::migrate_locked(
             &mut client,
+            crate::migration_lock::key::CONSTITUTION_PUBLICATION_HISTORY,
+            CONSTITUTION_PUBLICATION_HISTORY_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::EVIDENCE,
+            EVIDENCE_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::EVIDENCE_CONFORMANCE,
+            EVIDENCE_CONFORMANCE_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::EVIDENCE_REVIEW_FILTER,
+            EVIDENCE_REVIEW_FILTER_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
             crate::migration_lock::key::INDUSTRIAL_DESIGNS,
             MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::CLAIM_DELEGATION,
+            CLAIM_DELEGATION_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::WORK,
+            WORK_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
@@ -421,6 +476,48 @@ mod tests {
             work_task_id: None,
             evidence_id: None,
             proposed_by: "agent:test".to_string(),
+        }
+    }
+
+    // Regression: `industrial_designs` (MIGRATION) carries real composite
+    // foreign keys into `evidence_records` and `constitution_publications`,
+    // owned by EvidenceStore/ConstitutionStore respectively. Before this
+    // fix, `DesignStore::connect` only ran its OWN migrations, so a caller
+    // that connects DesignStore without anything else in the same process
+    // having already connected those two stores hit a bare
+    // `relation "evidence_records" does not exist` from Postgres itself --
+    // observed for real in ackplane-bridge's design_api_integration.rs,
+    // which never constructs an EvidenceStore. `DesignStore::connect` must
+    // be self-sufficient for its own foreign keys, not rely on incidental
+    // ordering from whatever else happens to run in the same test binary.
+    #[tokio::test]
+    async fn connect_leaves_every_foreign_keyed_table_industrial_designs_needs() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let _store = DesignStore::connect(&database_url).await.unwrap();
+
+        let (client, connection) = tokio_postgres::connect(&database_url, tokio_postgres::NoTls)
+            .await
+            .expect("connect a plain client to inspect the schema");
+        tokio::spawn(connection);
+        for table in ["evidence_records", "constitution_publications"] {
+            let exists: bool = client
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.tables \
+                     WHERE table_name = $1)",
+                    &[&table],
+                )
+                .await
+                .expect("query information_schema.tables")
+                .get(0);
+            assert!(
+                exists,
+                "DesignStore::connect must leave {table} in place for industrial_designs' \
+                 own foreign key to resolve, even when nothing else has connected the store \
+                 that owns it"
+            );
         }
     }
 
