@@ -1,0 +1,1 @@
+- **Bridge Work now explains whether Industrial Work has been published.** The tenant-scoped list distinguishes native Work records, active claims without an Industrial Work projection, and no publication, showing bounded Ackplane claim details without importing Local Lodestar tasks or adding a Work mutation.
