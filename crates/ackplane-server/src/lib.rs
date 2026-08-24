@@ -284,15 +284,15 @@ impl ServerConfig {
 pub enum ConfigError {
     #[error(
         "{DATABASE_URL_ENV} is not set, so this deployment has no ledger. Ackplane holds no \
-         authoritative local state and cannot accept work without one (ADR-0086 clause 1); \
-         refusing to start rather than failing on the first request that arrives"
+         authoritative local state and cannot accept work without one; refusing to start \
+         rather than failing on the first request that arrives"
     )]
     NoDatabase,
     #[error(
         "{DURABILITY_ENV} is `quorum_durable` but {SYNCHRONOUS_STANDBYS_ENV} names no standby. \
-         A durability claim that nothing backs is exactly the asynchronously replicated \
-         acknowledgement ADR-0086 clause 12 refuses to label as zero-loss; declare the \
-         synchronous failure domain or report `single_node`"
+         A durability claim that nothing backs is exactly what an asynchronously replicated \
+         acknowledgement cannot honestly call zero-loss; declare the synchronous failure \
+         domain or report `single_node`"
     )]
     UnbackedQuorumClaim,
     #[error(
@@ -305,7 +305,7 @@ pub enum ConfigError {
     InvalidListen(String),
     #[error(
         "{LISTEN_ENV} is not loopback but neither {TLS_CERTIFICATE_PATH_ENV} nor {TLS_KEY_PATH_ENV} is set; \
-         ADR-0083 clause 8 requires TLS outside loopback"
+         TLS is required outside loopback"
     )]
     NonLoopbackWithoutTls,
     #[error(
@@ -355,8 +355,8 @@ mod tests {
 
         assert_eq!(error, ConfigError::NoDatabase);
         assert!(
-            error.to_string().contains("ADR-0086 clause 1"),
-            "the refusal cites what it is enforcing: {error}"
+            error.to_string().contains("authoritative local state"),
+            "the refusal explains what it is enforcing: {error}"
         );
     }
 
