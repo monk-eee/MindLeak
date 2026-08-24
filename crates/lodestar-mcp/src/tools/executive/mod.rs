@@ -1617,6 +1617,66 @@ mod tests {
         assert_eq!(row(&lapsed.id)["lease_state"], "lapsed");
     }
 
+    /// `detail=false` must drop exactly the per-row lookups and the free-text
+    /// acceptance field, and nothing else -- every task still appears, and the
+    /// cheap `lease_state` derivation (no engine call) still rides along.
+    #[test]
+    fn board_tool_detail_false_omits_lookups_and_acceptance_but_drops_no_task() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "do it", None)
+            .unwrap();
+        let task = engine
+            .create_task(&goal.id, "Has real acceptance text", "what done means")
+            .unwrap();
+        assert!(engine.claim_task(&task.id, "alice", 600).unwrap());
+
+        let full: Value = serde_json::from_str(
+            call(
+                &engine,
+                &json!({ "name": "task_query", "arguments": { "view": "board" } }),
+            )
+            .unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let full_row = full
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == task.id)
+            .unwrap();
+        assert!(full_row.get("scope").is_some(), "{full_row}");
+        assert!(full_row.get("claim_window").is_some(), "{full_row}");
+        assert_eq!(full_row["acceptance"], "what done means");
+        assert_eq!(full_row["lease_state"], "live");
+
+        let lean: Value = serde_json::from_str(
+            call(
+                &engine,
+                &json!({ "name": "task_query", "arguments": { "view": "board", "detail": false } }),
+            )
+            .unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let lean_rows = lean.as_array().unwrap();
+        assert_eq!(
+            lean_rows.len(),
+            full.as_array().unwrap().len(),
+            "no task is dropped: {lean_rows:?}"
+        );
+        let lean_row = lean_rows.iter().find(|row| row["id"] == task.id).unwrap();
+        assert!(lean_row.get("scope").is_none(), "{lean_row}");
+        assert!(lean_row.get("claim_window").is_none(), "{lean_row}");
+        assert!(lean_row.get("receipt").is_none(), "{lean_row}");
+        assert!(lean_row.get("acceptance").is_none(), "{lean_row}");
+        assert_eq!(lean_row["lease_state"], "live");
+        assert_eq!(lean_row["title"], "Has real acceptance text");
+    }
+
     #[test]
     fn create_task_rejects_malformed_predecessor_and_preserves_legacy_calls() {
         let engine = Lodestar::open_in_memory().unwrap();
