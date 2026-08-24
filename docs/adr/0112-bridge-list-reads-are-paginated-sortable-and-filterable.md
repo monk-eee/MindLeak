@@ -98,20 +98,23 @@ underlying data grows, not applied identically everywhere.**
   the first time; today's unbounded query is the one thing standing between
   "works fine in every demo" and "the first real customer's page never
   finishes loading."
-- `timeline`, `claims`, and `knowledge` remain at their existing fixed
-  50-item cap with no way to page further, which is exactly the standing gap
-  already named for `claims` specifically (the Bridge cannot list a stranded
-  claim to recover, gaps.d, still pending on PR #573 at the time of writing).
-  This ADR gives that follow-up work a named, decided pagination shape
-  (keyset, not `page`/`page_size`) rather than leaving it to invent one from
-  scratch.
+- At adoption, `timeline`, `claims`, and `knowledge` remained at their
+  existing fixed 50-item cap with no way to page further, which was exactly
+  the standing gap already named for `claims` specifically (the Bridge could
+  not list a stranded claim to recover, gaps.d, still pending on PR #573 at
+  the time of writing). This ADR gives that follow-up work a named, decided
+  pagination shape (keyset, not `page`/`page_size`) rather than leaving it to
+  invent one from scratch.
   - **Update:** `timeline` adopted keyset pagination (`before`, a
     `stream_position` cursor) when next touched, exactly as decided above.
-    `claims` and `knowledge` are unchanged and still pending.
-- **Update:** `knowledge` adopted compound keyset pagination when next
-  touched. Its `(confirmed_at DESC, knowledge_id ASC)` cursor is exposed as
-  paired `before_confirmed_at_micros` and `before_knowledge_id` query fields,
-  with `next_before` carrying the next page boundary.
+  - **Update:** `claims` and `stranded-claims` adopted compound keyset
+    pagination when next touched. Their `(lease_expires_at, task_id)` cursor
+    is exposed as paired `after_lease_expires_at_micros` and `after_task_id`
+    query fields, with `next_after` carrying the next page boundary.
+  - **Update:** `knowledge` adopted compound keyset pagination when next
+    touched. Its `(confirmed_at DESC, knowledge_id ASC)` cursor is exposed as
+    paired `before_confirmed_at_micros` and `before_knowledge_id` query
+    fields, with `next_before` carrying the next page boundary.
 - Any future Bridge list view chooses one of these two named shapes at
   design time based on its own data's growth pattern, rather than each view
   inventing its own bespoke limit-and-hope-nobody-asks-for-page-2 pattern the
