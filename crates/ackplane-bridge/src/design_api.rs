@@ -540,6 +540,25 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn design_page_cross_links_constitution_work_and_evidence_references() {
+        let Html(body) = design_page().await;
+
+        for required in [
+            "id=\"detail-constitution-version\"",
+            "id=\"detail-work-task\"",
+            "id=\"detail-evidence\"",
+            "/constitution?",
+            "/work?",
+            "/evidence?",
+        ] {
+            assert!(
+                body.contains(required),
+                "Design page must retain its {required} reference-linking binding"
+            );
+        }
+    }
+
     #[test]
     fn propose_design_error_maps_bounded_field_violations_to_bad_request() {
         assert_eq!(

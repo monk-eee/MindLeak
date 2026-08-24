@@ -8,9 +8,18 @@ use ackplane_server::fleet::{
     escape_like_pattern, FleetWorkFilter, FleetWorkItem, FleetWorkPage, FleetWorkSort,
     FleetWorkSortField, SortDirection,
 };
-use std::time::SystemTime;
+use ackplane_server::work_store::FleetUnansweredWait;
+use std::{collections::HashSet, time::SystemTime};
 
 use crate::{unix_seconds, AppState};
+
+/// A wait unanswered longer than this is worth an operator's attention --
+/// matches `work_api.rs`'s own per-repository Board Doctor threshold so an
+/// agent never reads as stalled on one page and fine on another.
+const UNANSWERED_WAIT_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+/// Bounds the unresolved-waits list the same way `publication`'s
+/// `claims_only` sample is bounded -- a diagnostic sample, not a paged list.
+const MAX_UNRESOLVED_WAITS: i64 = 20;
 
 #[derive(Serialize)]
 pub struct AgentsResponse {
@@ -18,6 +27,7 @@ pub struct AgentsResponse {
     total: i64,
     page: i64,
     page_size: i64,
+    unresolved_waits: Vec<AgentUnansweredWait>,
 }
 
 /// `GET /api/v1/agents` query parameters (ADR-0105 decision 5). All optional.
@@ -67,20 +77,49 @@ struct AgentWorkSummary {
     claim_lapses: u64,
     paths: Vec<String>,
     symbols: Vec<String>,
+    has_native_work_task: bool,
 }
 
-impl From<FleetWorkItem> for AgentWorkSummary {
-    fn from(item: FleetWorkItem) -> Self {
+/// `claims_only` names every `(repository_id, task_id)` this tenant's claims
+/// span that has no native Work task at all (`WorkStore::fleet_claims_only_keys`)
+/// -- a claim absent from that set is genuinely backed by one.
+fn agent_work_summary(
+    item: FleetWorkItem,
+    claims_only: &HashSet<(String, String)>,
+) -> AgentWorkSummary {
+    let has_native_work_task =
+        !claims_only.contains(&(item.repository_id.clone(), item.task_id.clone()));
+    AgentWorkSummary {
+        repository_id: item.repository_id,
+        task_id: item.task_id,
+        owner_id: item.owner_id,
+        branch: item.branch,
+        claim_started_at_seconds: unix_seconds(item.claim_started_at),
+        lease_expires_at_seconds: unix_seconds(item.lease_expires_at),
+        claim_lapses: item.claim_lapses,
+        paths: item.paths,
+        symbols: item.symbols,
+        has_native_work_task,
+    }
+}
+
+#[derive(Serialize)]
+struct AgentUnansweredWait {
+    repository_id: String,
+    task_id: String,
+    wait_id: String,
+    question: String,
+    asked_at_seconds: Option<u64>,
+}
+
+impl From<FleetUnansweredWait> for AgentUnansweredWait {
+    fn from(wait: FleetUnansweredWait) -> Self {
         Self {
-            repository_id: item.repository_id,
-            task_id: item.task_id,
-            owner_id: item.owner_id,
-            branch: item.branch,
-            claim_started_at_seconds: unix_seconds(item.claim_started_at),
-            lease_expires_at_seconds: unix_seconds(item.lease_expires_at),
-            claim_lapses: item.claim_lapses,
-            paths: item.paths,
-            symbols: item.symbols,
+            repository_id: wait.repository_id,
+            task_id: wait.task_id,
+            wait_id: wait.wait_id,
+            question: wait.question,
+            asked_at_seconds: unix_seconds(wait.asked_at),
         }
     }
 }
@@ -104,35 +143,89 @@ pub async fn agents(
         repository_id: escaped_repository_id.as_deref(),
         owner_id: escaped_owner_id.as_deref(),
     };
+    let now = SystemTime::now();
 
-    state
+    let FleetWorkPage { items, total } = state
         .fleet
-        .fleet_work(
+        .fleet_work(&state.tenant_id, filter, sort, page, page_size, now)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "Bridge Agents claim query failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let claims_only = state
+        .work
+        .fleet_claims_only_keys(&state.tenant_id, now)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "Bridge Agents native Work state query failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let unresolved_waits = state
+        .work
+        .fleet_unanswered_waits(
             &state.tenant_id,
-            filter,
-            sort,
-            page,
-            page_size,
-            SystemTime::now(),
+            now,
+            UNANSWERED_WAIT_THRESHOLD,
+            MAX_UNRESOLVED_WAITS,
         )
         .await
-        .map(|FleetWorkPage { items, total }| {
-            Json(AgentsResponse {
-                items: items.into_iter().map(AgentWorkSummary::from).collect(),
-                total,
-                page,
-                page_size,
-            })
-        })
         .map_err(|error| {
-            tracing::error!(%error, "Bridge Agents query failed");
+            tracing::error!(%error, "Bridge Agents unresolved waits query failed");
             StatusCode::INTERNAL_SERVER_ERROR
-        })
+        })?;
+
+    Ok(Json(AgentsResponse {
+        items: items
+            .into_iter()
+            .map(|item| agent_work_summary(item, &claims_only))
+            .collect(),
+        total,
+        page,
+        page_size,
+        unresolved_waits: unresolved_waits.into_iter().map(Into::into).collect(),
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn claim(repository_id: &str, task_id: &str) -> FleetWorkItem {
+        FleetWorkItem {
+            repository_id: repository_id.to_string(),
+            task_id: task_id.to_string(),
+            owner_id: "agent:test".to_string(),
+            branch: "feat/test".to_string(),
+            claim_started_at: SystemTime::UNIX_EPOCH,
+            lease_expires_at: SystemTime::UNIX_EPOCH,
+            claim_lapses: 0,
+            paths: Vec::new(),
+            symbols: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn agent_work_summary_reports_a_native_task_when_the_claim_is_absent_from_claims_only() {
+        let summary = agent_work_summary(claim("repo-a", "task-a"), &HashSet::new());
+        assert!(summary.has_native_work_task);
+    }
+
+    #[test]
+    fn agent_work_summary_reports_no_native_task_when_the_claim_is_claims_only() {
+        let claims_only = HashSet::from([("repo-a".to_string(), "task-a".to_string())]);
+        let summary = agent_work_summary(claim("repo-a", "task-a"), &claims_only);
+        assert!(!summary.has_native_work_task);
+    }
+
+    #[test]
+    fn agent_work_summary_only_matches_the_exact_repository_and_task_pair() {
+        // A claims-only entry for a DIFFERENT repository sharing the same
+        // task id must never mark this repository's own claim as claims-only.
+        let claims_only = HashSet::from([("repo-b".to_string(), "task-a".to_string())]);
+        let summary = agent_work_summary(claim("repo-a", "task-a"), &claims_only);
+        assert!(summary.has_native_work_task);
+    }
 
     #[test]
     fn parse_agents_sort_defaults_to_lease_expires_at_ascending_when_absent() {
