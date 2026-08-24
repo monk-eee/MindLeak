@@ -146,14 +146,18 @@ pub(crate) fn server_version() -> String {
 }
 
 fn initialize_result() -> Value {
-    json!({
+    let mut result = json!({
         "protocolVersion": PROTOCOL_VERSION,
         "capabilities": { "tools": { "listChanged": false } },
         "serverInfo": {
             "name": "lodestar-mcp",
             "version": server_version()
         }
-    })
+    });
+    if let Some(note) = tools::narrowed_profile_note() {
+        result["instructions"] = Value::String(note.to_string());
+    }
+    result
 }
 
 fn tool_error(message: &str) -> Value {
@@ -327,6 +331,23 @@ mod tests {
             )
         );
         assert_eq!(resp["result"]["protocolVersion"], PROTOCOL_VERSION);
+    }
+
+    /// `gaps.d/new-mcp-tools-are-invisible-until-vs-code.md`: a narrowed
+    /// `tools/list` reads as "this tool does not exist" unless something says
+    /// otherwise. Under the default profile (no `LODESTAR_TOOL_PROFILE` set,
+    /// which is what a bare test process is), `initialize` must carry that
+    /// disambiguation itself, since a client reads it once at the handshake
+    /// rather than on every `tools/list` call.
+    #[test]
+    fn initialize_notes_that_narrowed_tools_still_dispatch() {
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} });
+        let resp = handle(&engine(), &sessions(), &req).unwrap();
+        let instructions = resp["result"]["instructions"]
+            .as_str()
+            .expect("default profile must carry an instructions note");
+        assert!(instructions.contains("dispatch"));
+        assert!(instructions.contains("LODESTAR_TOOL_PROFILE=full"));
     }
 
     #[test]

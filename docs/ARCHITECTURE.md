@@ -378,6 +378,8 @@ unauthenticated principal, and does not yet send an outbound stream frame.
 
 Authenticated `NodeSync` streams now ingest `DirectiveReceipt` frames through that same ledger only after their tenant, repository, and node match the completed connection challenge. Ackplane returns a typed `SupervisorFrameReceipt` for a durable write or exact replay, resolving the supervisor only from the receipt's scoped session; unknown or cross-scope directives receive a generic refusal rather than a directive-existence disclosure. This remains receipt ingress only: it adds neither outbound directive delivery nor a Bridge issuance route.
 
+Authenticated `NodeSync` streams also accept the closed `WorkTaskCreate` frame for one native Industrial Work record. The frame carries only a node-scoped creation id and bounded task content; the completed connection challenge supplies tenant, repository, and publisher identity. Ackplane derives an opaque Work id from that authenticated identity and creation id, writes the current task projection and initial history event transactionally, and returns a typed `WorkTaskReceipt`. An exact retry returns the original Work id with `idempotent_replay`; changed content under the same creation id receives a non-retryable conflict. This is native Ackplane Work publication, not a Local Lodestar import: the Bridge remains a bounded read-only projection and exposes no Work mutation route.
+
 `NodeEnrollmentService` persists pending requests, an append-only authority
 transition history, approved public-key bindings, single-use short-lived
 challenges, and immutable enrollment receipts. A node may submit a request, but
