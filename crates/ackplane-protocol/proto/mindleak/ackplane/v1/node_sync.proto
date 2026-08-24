@@ -764,6 +764,25 @@ message SupervisorFrameReceipt {
   bool projection_advanced = 5;
 }
 
+// A node requests creation of one native Industrial Work record. The
+// authenticated NodeSync connection supplies tenant, repository, and
+// publisher identity; `creation_id` is idempotency identity, not authority.
+message WorkTaskCreate {
+  string creation_id = 1;
+  string title = 2;
+  string acceptance = 3;
+  string goal_id = 4;
+  repeated string declared_paths = 5;
+  repeated string declared_symbols = 6;
+}
+
+// Ackplane assigns the opaque work id from the authenticated stream identity
+// and creation id. An exact retry returns the original id with replay set.
+message WorkTaskReceipt {
+  string work_id = 1;
+  bool idempotent_replay = 2;
+}
+
 message NodeFrame {
   oneof frame {
     Hello hello = 1;
@@ -775,6 +794,7 @@ message NodeFrame {
     SupervisorHeartbeat supervisor_heartbeat = 7;
     SupervisorSession supervisor_session = 8;
     SupervisorLifecycleReceipt supervisor_lifecycle_receipt = 9;
+    WorkTaskCreate work_task_create = 10;
   }
 }
 
@@ -788,6 +808,7 @@ message AckplaneFrame {
     ConnectionChallenge connection_challenge = 6;
     AgentDirective agent_directive = 7;
     SupervisorFrameReceipt supervisor_frame_receipt = 8;
+    WorkTaskReceipt work_task_receipt = 9;
   }
 }
 
