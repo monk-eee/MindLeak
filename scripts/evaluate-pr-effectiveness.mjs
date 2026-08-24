@@ -628,6 +628,9 @@ const collect = async ({ root, limit }) => {
     const board = await lodestar.call("task_query", {
       view: "board",
       include_terminal: true,
+      // claimStartedAt() below only ever reads the base claim_started_at
+      // field; scope/claim_window/receipt/acceptance are never used.
+      detail: false,
     });
     const tasks = Array.isArray(board) ? board : Object.values(board ?? {});
     const threadsByTask = {};

@@ -477,6 +477,8 @@ export class DesignBoardController {
       (await this.client.callTool("task_query", {
         view: "board",
         include_terminal: true,
+        // Only title/status/id/goal_id are read below.
+        detail: false,
       })) as DesignTask[]
     ).filter((task) => task.status !== "abandoned");
     const selected = await vscode.window.showQuickPick(

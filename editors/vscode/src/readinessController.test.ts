@@ -40,6 +40,7 @@ describe("ReadinessController", () => {
     expect(intent.callTool).toHaveBeenCalledWith("task_query", {
       view: "board",
       include_terminal: false,
+      detail: false,
     });
     expect(intent.callTool).toHaveBeenCalledWith("design_query", { view: "board" });
     expect(snapshot.state).toBe("coordinating");

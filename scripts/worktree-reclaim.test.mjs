@@ -127,7 +127,7 @@ test("reads live claim branches through the shared Lodestar client", () => {
   assert.deepEqual(requested, [
     {
       name: "task_query",
-      arguments: { view: "board", include_terminal: false },
+      arguments: { view: "board", include_terminal: false, detail: false },
     },
   ]);
 });

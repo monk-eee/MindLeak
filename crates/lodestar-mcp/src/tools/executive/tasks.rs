@@ -124,43 +124,65 @@ pub(super) fn complete(engine: &Lodestar, task_id: &str, args: &Value) -> Result
 /// otherwise have to go and derive — declared scope, the receipt it closed on,
 /// whether its evidence window is continuous, and whether the claim is actually
 /// being held rather than merely recorded.
+///
+/// `detail=false` skips the three per-row lookups below (each a further
+/// engine call) and the free-text `acceptance` field, without omitting any
+/// task: measured on this repository's own board, the full-detail form of a
+/// long-lived history reached megabyte scale in a single reply.
 pub(super) fn board(engine: &Lodestar, args: &Value) -> Result<Value, String> {
     let tasks = engine
         .board(bool_arg(args, "include_terminal", true))
         .map_err(|e| e.to_string())?;
+    let detail = bool_arg(args, "detail", true);
     let mut rows = Vec::with_capacity(tasks.len());
     for task in tasks {
-        let scope = engine.task_scope(&task.id).map_err(|e| e.to_string())?;
-        // The receipt the task closed on, beside the status rather than
-        // one query away. A `done` row says nothing about whether its
-        // evidence ever affirmed the work, and most of them did not.
-        let receipt = engine.task_receipt(&task.id).map_err(|e| e.to_string())?;
-        // Evidence-window continuity, derived from the task log rather
-        // than read off the row (ADR-0064 d5). It rides here because a
-        // discontinuous window is why a task cannot close itself, and
-        // that is a fact about the row a reader should not have to go
-        // looking for.
-        let window = engine.claim_window(&task.id).map_err(|e| e.to_string())?;
         // Whether the claim is actually being held, beside the status
         // rather than inferred from a timestamp. `claimed` alone read as
         // work in progress: measured once at 36 claimed rows of which 4
         // had a live lease, and finding that out took a bespoke script.
+        // Pure derivation from fields already on the row, so this stays
+        // regardless of `detail`.
         let lease_state = match (task.status, task.lease_expires_at) {
             (TaskStatus::Claimed, Some(expires)) if expires >= now_unix() => Some("live"),
             (TaskStatus::Claimed, _) => Some("lapsed"),
             _ => None,
         };
+        let enrichment = if detail {
+            Some((
+                engine.task_scope(&task.id).map_err(|e| e.to_string())?,
+                // Evidence-window continuity, derived from the task log
+                // rather than read off the row (ADR-0064 d5). It rides
+                // here because a discontinuous window is why a task
+                // cannot close itself, and that is a fact about the row
+                // a reader should not have to go looking for.
+                engine.claim_window(&task.id).map_err(|e| e.to_string())?,
+                // The receipt the task closed on, beside the status
+                // rather than one query away. A `done` row says nothing
+                // about whether its evidence ever affirmed the work, and
+                // most of them did not.
+                engine.task_receipt(&task.id).map_err(|e| e.to_string())?,
+            ))
+        } else {
+            None
+        };
         let mut row = serde_json::to_value(task).map_err(|e| e.to_string())?;
         let object = row
             .as_object_mut()
             .ok_or_else(|| "task did not serialize as an object".to_string())?;
-        object.insert("scope".to_string(), json!(scope));
-        object.insert("claim_window".to_string(), json!(window));
         if let Some(state) = lease_state {
             object.insert("lease_state".to_string(), json!(state));
         }
-        if let Some(receipt) = receipt {
-            object.insert("receipt".to_string(), json!(receipt));
+        match enrichment {
+            Some((scope, window, receipt)) => {
+                object.insert("scope".to_string(), json!(scope));
+                object.insert("claim_window".to_string(), json!(window));
+                if let Some(receipt) = receipt {
+                    object.insert("receipt".to_string(), json!(receipt));
+                }
+            }
+            None => {
+                object.remove("acceptance");
+            }
         }
         rows.push(row);
     }

@@ -156,7 +156,8 @@ async function main() {
     [
       { name: "lodestar_stats" },
       { name: "task_query", arguments: { view: "doctor" } },
-      { name: "task_query", arguments: { view: "board" } },
+      // liveClaims below only reads id/title/status/owner/lease_expires_at.
+      { name: "task_query", arguments: { view: "board", detail: false } },
     ],
     // view=board returns every task this repository has ever created, done
     // or not; a mature board measures well past execFileSync's 1 MiB default.

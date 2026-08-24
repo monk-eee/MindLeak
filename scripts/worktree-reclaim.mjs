@@ -473,7 +473,8 @@ export function readLiveClaimState(
     const [response] = callToolsFn(server, repoRoot, [
       {
         name: "task_query",
-        arguments: { view: "board", include_terminal: false },
+        // liveClaimBranches below only reads status/branch/lease_expires_at.
+        arguments: { view: "board", include_terminal: false, detail: false },
       },
     ]);
     const tasks = Array.isArray(response) ? response : response?.tasks;
