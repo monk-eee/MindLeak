@@ -18,9 +18,21 @@ use std::time::SystemTime;
 use sha2::{Digest, Sha256};
 use tokio_postgres::{Client, NoTls};
 
-const MIGRATION: &str = include_str!("../migrations/0027_industrial_designs.sql");
+const MIGRATION: &str = include_str!("../../migrations/0027_industrial_designs.sql");
 const WORK_REFERENCE_MIGRATION: &str =
-    include_str!("../migrations/0031_industrial_design_work_reference.sql");
+    include_str!("../../migrations/0031_industrial_design_work_reference.sql");
+
+// Dependency migrations: 0027 foreign-keys into `evidence_records` and
+// `constitution_publications`, and 0031 foreign-keys into `work_tasks` --
+// none of them created by this store's own migration keys. A shared,
+// long-lived local dev database already has all three tables from other
+// stores' earlier connects, which hid this against a genuinely fresh
+// database (`relation "constitution_publications" does not exist`) until a
+// throwaway, freshly-created Postgres instance was used to test against.
+const EVIDENCE_DEPENDENCY_MIGRATION: &str = include_str!("../../migrations/0014_evidence.sql");
+const CONSTITUTION_PUBLICATION_HISTORY_DEPENDENCY_MIGRATION: &str =
+    include_str!("../../migrations/0026_constitution_publication_history.sql");
+const WORK_DEPENDENCY_MIGRATION: &str = include_str!("../../migrations/0028_work.sql");
 
 #[derive(Debug, thiserror::Error)]
 pub enum DesignStoreError {
@@ -40,6 +52,16 @@ pub enum DesignStoreError {
     DesignImmutabilityViolation { design_id: String },
     #[error("design {design_id} has a corrupt lifecycle_state value {value}")]
     CorruptLifecycleState { design_id: String, value: i16 },
+    #[error("design {design_id} was not found")]
+    UnknownDesign { design_id: String },
+    #[error(
+        "design {design_id} is now {actual:?}, not the {expected:?} last observed -- reload and retry"
+    )]
+    LifecycleStateConflict {
+        design_id: String,
+        expected: DesignLifecycleState,
+        actual: DesignLifecycleState,
+    },
 }
 
 /// The closed vocabulary both `industrial_designs.lifecycle_state` and
@@ -95,6 +117,10 @@ pub struct RecordDecisionRequest {
     pub decision_kind: DesignLifecycleState,
     pub actor: String,
     pub rationale: Option<String>,
+    /// The lifecycle_state the caller last observed. The update below only
+    /// lands if the stored row still matches it, so two concurrent
+    /// decisions against the same design can never both land silently.
+    pub expected_lifecycle_state: DesignLifecycleState,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -122,6 +148,12 @@ pub struct DesignDecision {
     pub recorded_at: SystemTime,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct DesignPage {
+    pub items: Vec<Design>,
+    pub total: i64,
+}
+
 /// Private wire shape used only to compute `content_digest` -- a design's
 /// queryable columns are the durable record; this is never stored or read
 /// back on its own.
@@ -147,6 +179,24 @@ impl DesignStore {
                 tracing::error!(%error, "ackplane design store connection closed with an error");
             }
         });
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::EVIDENCE,
+            EVIDENCE_DEPENDENCY_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::CONSTITUTION_PUBLICATION_HISTORY,
+            CONSTITUTION_PUBLICATION_HISTORY_DEPENDENCY_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::WORK,
+            WORK_DEPENDENCY_MIGRATION,
+        )
+        .await?;
         crate::migration_lock::migrate_locked(
             &mut client,
             crate::migration_lock::key::INDUSTRIAL_DESIGNS,
@@ -260,12 +310,17 @@ impl DesignStore {
     }
 
     /// Append one decision-history row and move the design's own
-    /// `lifecycle_state` to match, in one transaction. Legality of a
-    /// particular transition (e.g. whether `Rejected` may return to
-    /// `Proposed`) is deliberately NOT enforced here -- ADR-0121 decision 3
-    /// defers that authorization to a future typed command. A decision
-    /// against an unknown `design_id` is refused by the history table's own
-    /// foreign key, before the update below ever runs.
+    /// `lifecycle_state` to match, in one transaction. The guarded UPDATE
+    /// runs first: it only matches a row whose `lifecycle_state` still
+    /// equals `expected_lifecycle_state`, so two concurrent decisions
+    /// against the same design can never both land -- the loser gets
+    /// `LifecycleStateConflict` (an unknown `design_id` gets `UnknownDesign`
+    /// instead), mirroring `ClaimStore::recover`'s own compare-and-swap
+    /// (ADR-0111). Only once that guarded update actually lands does the
+    /// decision-history row get appended. Legality of a particular
+    /// transition (e.g. whether `Rejected` may return to `Proposed`) remains
+    /// deliberately unenforced beyond that race -- ADR-0121 decision 3
+    /// leaves the broader state-machine policy to a later decision.
     pub async fn record_decision(
         &mut self,
         request: RecordDecisionRequest,
@@ -274,6 +329,53 @@ impl DesignStore {
             return Err(DesignStoreError::EmptyActor);
         }
         let transaction = self.client.transaction().await?;
+        let updated = transaction
+            .execute(
+                "UPDATE industrial_designs SET lifecycle_state = $4, updated_at = now() \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3 \
+                   AND lifecycle_state = $5",
+                &[
+                    &request.tenant_id,
+                    &request.repository_id,
+                    &request.design_id,
+                    &(request.decision_kind as i16),
+                    &(request.expected_lifecycle_state as i16),
+                ],
+            )
+            .await?;
+        if updated == 0 {
+            let current = transaction
+                .query_opt(
+                    "SELECT lifecycle_state FROM industrial_designs \
+                     WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3",
+                    &[
+                        &request.tenant_id,
+                        &request.repository_id,
+                        &request.design_id,
+                    ],
+                )
+                .await?;
+            transaction.commit().await?;
+            return match current {
+                None => Err(DesignStoreError::UnknownDesign {
+                    design_id: request.design_id,
+                }),
+                Some(row) => {
+                    let actual_value: i16 = row.get(0);
+                    let actual = DesignLifecycleState::try_from(actual_value).map_err(|()| {
+                        DesignStoreError::CorruptLifecycleState {
+                            design_id: request.design_id.clone(),
+                            value: actual_value,
+                        }
+                    })?;
+                    Err(DesignStoreError::LifecycleStateConflict {
+                        design_id: request.design_id,
+                        expected: request.expected_lifecycle_state,
+                        actual,
+                    })
+                }
+            };
+        }
         let next_sequence: i64 = transaction
             .query_one(
                 "SELECT COALESCE(MAX(sequence_number), 0) + 1 FROM industrial_design_decisions \
@@ -303,99 +405,12 @@ impl DesignStore {
                 ],
             )
             .await?;
-        transaction
-            .execute(
-                "UPDATE industrial_designs SET lifecycle_state = $4, updated_at = now() \
-                 WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3",
-                &[
-                    &request.tenant_id,
-                    &request.repository_id,
-                    &request.design_id,
-                    &(request.decision_kind as i16),
-                ],
-            )
-            .await?;
         transaction.commit().await?;
         Ok(())
     }
-
-    pub async fn get_design(
-        &self,
-        tenant_id: &str,
-        repository_id: &str,
-        design_id: &str,
-    ) -> Result<Option<Design>, DesignStoreError> {
-        let row = self
-            .client
-            .query_opt(
-                "SELECT title, summary, source_version, lifecycle_state, \
-                        constitution_version_id, work_task_id, evidence_id, created_at, \
-                        updated_at \
-                 FROM industrial_designs \
-                 WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3",
-                &[&tenant_id, &repository_id, &design_id],
-            )
-            .await?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let lifecycle_state: i16 = row.get(3);
-        Ok(Some(Design {
-            tenant_id: tenant_id.to_string(),
-            repository_id: repository_id.to_string(),
-            design_id: design_id.to_string(),
-            title: row.get(0),
-            summary: row.get(1),
-            source_version: row.get(2),
-            lifecycle_state: DesignLifecycleState::try_from(lifecycle_state).map_err(|()| {
-                DesignStoreError::CorruptLifecycleState {
-                    design_id: design_id.to_string(),
-                    value: lifecycle_state,
-                }
-            })?,
-            constitution_version_id: row.get(4),
-            work_task_id: row.get(5),
-            evidence_id: row.get(6),
-            created_at: row.get(7),
-            updated_at: row.get(8),
-        }))
-    }
-
-    pub async fn list_decisions(
-        &self,
-        tenant_id: &str,
-        repository_id: &str,
-        design_id: &str,
-    ) -> Result<Vec<DesignDecision>, DesignStoreError> {
-        let rows = self
-            .client
-            .query(
-                "SELECT sequence_number, decision_kind, actor, rationale, recorded_at \
-                 FROM industrial_design_decisions \
-                 WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3 \
-                 ORDER BY sequence_number ASC",
-                &[&tenant_id, &repository_id, &design_id],
-            )
-            .await?;
-        rows.into_iter()
-            .map(|row| {
-                let decision_kind: i16 = row.get(1);
-                Ok(DesignDecision {
-                    sequence_number: row.get(0),
-                    decision_kind: DesignLifecycleState::try_from(decision_kind).map_err(|()| {
-                        DesignStoreError::CorruptLifecycleState {
-                            design_id: design_id.to_string(),
-                            value: decision_kind,
-                        }
-                    })?,
-                    actor: row.get(2),
-                    rationale: row.get(3),
-                    recorded_at: row.get(4),
-                })
-            })
-            .collect()
-    }
 }
+
+mod listing;
 
 #[cfg(test)]
 mod tests {
@@ -557,6 +572,7 @@ mod tests {
                 decision_kind: DesignLifecycleState::Accepted,
                 actor: "agent:reviewer".to_string(),
                 rationale: Some("looks good".to_string()),
+                expected_lifecycle_state: DesignLifecycleState::Proposed,
             })
             .await
             .expect("recording a decision should succeed");
@@ -579,26 +595,84 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recording_a_decision_against_an_unknown_design_is_refused_by_the_history_foreign_key()
-    {
+    async fn recording_a_decision_against_an_unknown_design_is_refused() {
         let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
         let mut store = DesignStore::connect(&database_url).await.unwrap();
+        let design_id = unique_id("design");
 
         let result = store
             .record_decision(RecordDecisionRequest {
                 tenant_id: unique_id("tenant"),
                 repository_id: unique_id("repository"),
-                design_id: unique_id("design"),
+                design_id: design_id.clone(),
                 decision_kind: DesignLifecycleState::Accepted,
                 actor: "agent:reviewer".to_string(),
                 rationale: None,
+                expected_lifecycle_state: DesignLifecycleState::Proposed,
             })
             .await;
 
-        assert!(matches!(result, Err(DesignStoreError::Database(_))));
+        assert!(matches!(
+            result,
+            Err(DesignStoreError::UnknownDesign { design_id: ref id }) if *id == design_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn recording_a_decision_with_a_stale_expected_state_is_refused() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let tenant_id = unique_id("tenant");
+        let repository_id = unique_id("repository");
+        let design_id = unique_id("design");
+        let mut store = DesignStore::connect(&database_url).await.unwrap();
+        store
+            .create_design(create_request(&tenant_id, &repository_id, &design_id))
+            .await
+            .expect("creating a design should succeed");
+
+        // The design is actually Proposed, but the caller claims to have
+        // last observed Accepted -- exactly what a second, slower operator
+        // would submit after someone else's decision already landed.
+        let result = store
+            .record_decision(RecordDecisionRequest {
+                tenant_id: tenant_id.clone(),
+                repository_id: repository_id.clone(),
+                design_id: design_id.clone(),
+                decision_kind: DesignLifecycleState::Rejected,
+                actor: "agent:reviewer".to_string(),
+                rationale: None,
+                expected_lifecycle_state: DesignLifecycleState::Accepted,
+            })
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(DesignStoreError::LifecycleStateConflict {
+                expected: DesignLifecycleState::Accepted,
+                actual: DesignLifecycleState::Proposed,
+                ..
+            })
+        ));
+
+        // The rejected conflict must not have appended a history row or
+        // moved the design's own state.
+        let design = store
+            .get_design(&tenant_id, &repository_id, &design_id)
+            .await
+            .expect("reading the design should succeed")
+            .expect("the design should exist");
+        assert_eq!(design.lifecycle_state, DesignLifecycleState::Proposed);
+        let decisions = store
+            .list_decisions(&tenant_id, &repository_id, &design_id)
+            .await
+            .expect("listing decisions should succeed");
+        assert_eq!(decisions.len(), 1, "only the original Proposed row");
     }
 
     #[tokio::test]

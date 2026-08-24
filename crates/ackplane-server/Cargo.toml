@@ -28,4 +28,4 @@ tokio-stream = "0.1"
 tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-time = { version = "=0.3.36", features = ["formatting", "parsing"] }
+time = { version = "0.3.47", features = ["formatting", "parsing"] }
