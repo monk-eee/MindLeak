@@ -55,6 +55,25 @@
   pattern repeats exactly as predicted: this is not a one-time fix, it is a
   standing tax on every future split, and nothing currently binds a file
   automatically at split time.
+  **Later same day, third confirmation, both halves of the residual closed
+  for now.** `binding-audit.mjs` had drifted again: 1 newly unbound file
+  (`ackplane-bridge/src/shared_assets.rs`, added since the last measurement)
+  and 17 stale bindings naming pre-split paths across `lodestar-core`,
+  `lodestar-mcp`, `mindleak-core`, and `ackplane-server`
+  (`facade/executive.rs`, `tools/executive.rs`, `tools/design.rs`,
+  `facade/constitution.rs`, `model/executive.rs`, `ingest/ast.rs`,
+  `telemetry.rs`, `projection.rs`, `service.rs`, `bin/register-me.rs`,
+  `claim_store.rs`, `enrollment_service.rs`, `enrollment_store.rs`,
+  `fleet.rs`, `constitution_store.rs`, `supervisor_store.rs`,
+  `design_store.rs` — every one confirmed, before touching anything, to
+  already have its real successor file(s) bound to the same goal via
+  `constitution_query(governing, ...)`, so this was pure dangling-reference
+  cleanup, never a coverage gap). Fixed the new file with `bind`, removed all
+  17 stale rows with `unbind`. `binding-audit.mjs` now reports **0 unbound, 0
+  stale, 0 stranded** — the first time this fragment's own re-measurement has
+  found nothing left to fix. Expect this to drift again the next time a file
+  is added or a module is split; re-run `node scripts/binding-audit.mjs`
+  before trusting either number, exactly as this fragment keeps saying.
   **Still true, and re-verified 09:29Z: `scripts/conformance-gate.mjs` cannot
   run.** It reads the manifest exported by `export_conformance_manifest`, and
   `.gitignore` still excludes `/.lodestar/*` with a single exception for
