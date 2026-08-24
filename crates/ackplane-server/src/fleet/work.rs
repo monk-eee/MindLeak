@@ -9,11 +9,17 @@ impl FleetStore {
         tenant_id: &str,
         repository_id: &str,
         now: SystemTime,
-        limit: i64,
-    ) -> Result<Option<Vec<ActiveWorkItem>>, tokio_postgres::Error> {
+        after: Option<&ClaimListCursor>,
+        page_size: i64,
+    ) -> Result<Option<ClaimListPage>, tokio_postgres::Error> {
         if self.repository(tenant_id, repository_id).await?.is_none() {
             return Ok(None);
         }
+        let page_size = page_size.max(1);
+        let after_lease_expires_at = after.map(|cursor| cursor.lease_expires_at);
+        let after_task_id = after
+            .map(|cursor| cursor.task_id.as_str())
+            .unwrap_or_default();
         let rows = self
             .client
             .query(
@@ -21,26 +27,23 @@ impl FleetStore {
                         claim_lapses, paths, symbols \
                  FROM delegated_claims \
                  WHERE tenant_id = $1 AND repository_id = $2 AND lease_expires_at > $3 \
+                   AND ($4::timestamptz IS NULL \
+                        OR lease_expires_at > $4 \
+                        OR (lease_expires_at = $4 AND task_id > $5)) \
                  ORDER BY lease_expires_at ASC, task_id ASC \
-                 LIMIT $4",
-                &[&tenant_id, &repository_id, &now, &limit],
+                 LIMIT $6",
+                &[
+                    &tenant_id,
+                    &repository_id,
+                    &now,
+                    &after_lease_expires_at,
+                    &after_task_id,
+                    &page_size.saturating_add(1),
+                ],
             )
             .await?;
 
-        Ok(Some(
-            rows.into_iter()
-                .map(|row| ActiveWorkItem {
-                    task_id: row.get(0),
-                    owner_id: row.get(1),
-                    branch: row.get(2),
-                    claim_started_at: row.get(3),
-                    lease_expires_at: row.get(4),
-                    claim_lapses: u64::try_from(row.get::<_, i64>(5)).unwrap_or(0),
-                    paths: row.get(6),
-                    symbols: row.get(7),
-                })
-                .collect(),
-        ))
+        Ok(Some(Self::claim_page(rows, page_size)))
     }
 
     /// Every stranded (lease-expired) delegated claim for one tenant-scoped
@@ -53,11 +56,17 @@ impl FleetStore {
         tenant_id: &str,
         repository_id: &str,
         now: SystemTime,
-        limit: i64,
-    ) -> Result<Option<Vec<ActiveWorkItem>>, tokio_postgres::Error> {
+        after: Option<&ClaimListCursor>,
+        page_size: i64,
+    ) -> Result<Option<ClaimListPage>, tokio_postgres::Error> {
         if self.repository(tenant_id, repository_id).await?.is_none() {
             return Ok(None);
         }
+        let page_size = page_size.max(1);
+        let after_lease_expires_at = after.map(|cursor| cursor.lease_expires_at);
+        let after_task_id = after
+            .map(|cursor| cursor.task_id.as_str())
+            .unwrap_or_default();
         let rows = self
             .client
             .query(
@@ -65,26 +74,50 @@ impl FleetStore {
                         claim_lapses, paths, symbols \
                  FROM delegated_claims \
                  WHERE tenant_id = $1 AND repository_id = $2 AND lease_expires_at <= $3 \
+                   AND ($4::timestamptz IS NULL \
+                        OR lease_expires_at > $4 \
+                        OR (lease_expires_at = $4 AND task_id > $5)) \
                  ORDER BY lease_expires_at ASC, task_id ASC \
-                 LIMIT $4",
-                &[&tenant_id, &repository_id, &now, &limit],
+                 LIMIT $6",
+                &[
+                    &tenant_id,
+                    &repository_id,
+                    &now,
+                    &after_lease_expires_at,
+                    &after_task_id,
+                    &page_size.saturating_add(1),
+                ],
             )
             .await?;
 
-        Ok(Some(
-            rows.into_iter()
-                .map(|row| ActiveWorkItem {
-                    task_id: row.get(0),
-                    owner_id: row.get(1),
-                    branch: row.get(2),
-                    claim_started_at: row.get(3),
-                    lease_expires_at: row.get(4),
-                    claim_lapses: u64::try_from(row.get::<_, i64>(5)).unwrap_or(0),
-                    paths: row.get(6),
-                    symbols: row.get(7),
+        Ok(Some(Self::claim_page(rows, page_size)))
+    }
+
+    fn claim_page(rows: Vec<tokio_postgres::Row>, page_size: i64) -> ClaimListPage {
+        let has_next_page = rows.len() > page_size as usize;
+        let claims = rows
+            .into_iter()
+            .take(page_size as usize)
+            .map(|row| ActiveWorkItem {
+                task_id: row.get(0),
+                owner_id: row.get(1),
+                branch: row.get(2),
+                claim_started_at: row.get(3),
+                lease_expires_at: row.get(4),
+                claim_lapses: u64::try_from(row.get::<_, i64>(5)).unwrap_or(0),
+                paths: row.get(6),
+                symbols: row.get(7),
+            })
+            .collect::<Vec<_>>();
+        let next_after = has_next_page
+            .then(|| {
+                claims.last().map(|claim| ClaimListCursor {
+                    lease_expires_at: claim.lease_expires_at,
+                    task_id: claim.task_id.clone(),
                 })
-                .collect(),
-        ))
+            })
+            .flatten();
+        ClaimListPage { claims, next_after }
     }
 
     /// One page of every live delegated claim across ALL of a tenant's
@@ -240,13 +273,14 @@ mod tests {
                 &tenant_id,
                 &repository_id,
                 now + Duration::from_secs(31),
+                None,
                 50,
             )
             .await
             .expect("query active work");
 
         assert_eq!(
-            active.expect("repository is enrolled"),
+            active.expect("repository is enrolled").claims,
             vec![ActiveWorkItem {
                 task_id: "task:active".to_string(),
                 owner_id: "agent:active".to_string(),
@@ -263,6 +297,7 @@ mod tests {
                 &format!("{tenant_id}-other"),
                 &repository_id,
                 now + Duration::from_secs(31),
+                None,
                 50,
             )
             .await
@@ -314,13 +349,14 @@ mod tests {
                 &tenant_id,
                 &repository_id,
                 now + Duration::from_secs(31),
+                None,
                 50,
             )
             .await
             .expect("query stranded claims");
 
         assert_eq!(
-            stranded.expect("repository is enrolled"),
+            stranded.expect("repository is enrolled").claims,
             vec![ActiveWorkItem {
                 task_id: "task:expired".to_string(),
                 owner_id: "agent:expired".to_string(),
@@ -337,6 +373,7 @@ mod tests {
                 &format!("{tenant_id}-other"),
                 &repository_id,
                 now + Duration::from_secs(31),
+                None,
                 50,
             )
             .await
@@ -413,6 +450,7 @@ mod tests {
                 &tenant_id,
                 &repository_id,
                 recovered_at + Duration::from_secs(1),
+                None,
                 50,
             )
             .await
@@ -420,7 +458,7 @@ mod tests {
             .expect("repository is enrolled");
 
         assert_eq!(
-            active,
+            active.claims,
             vec![ActiveWorkItem {
                 task_id: "task:lapsed".to_string(),
                 owner_id: "agent:original".to_string(),
@@ -434,6 +472,125 @@ mod tests {
             "claim_started_at must stay pinned to the original grant and claim_lapses must \
              count the real lapse, not reset as if this were a fresh claim"
         );
+    }
+
+    #[tokio::test]
+    async fn repository_claim_lists_page_after_a_compound_lease_and_task_cursor() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let (tenant_id, repository_id) =
+            crate::test_support::enroll_and_activate(&database_url, &unique_id.to_string()).await;
+        let granted_at = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let page_at = granted_at + Duration::from_secs(100);
+        let mut claims = ClaimStore::connect(&database_url)
+            .await
+            .expect("connect claim store");
+        for (task_id, lease_secs) in [
+            ("task:active-a", 200),
+            ("task:active-b", 200),
+            ("task:active-c", 300),
+            ("task:stranded-a", 10),
+            ("task:stranded-b", 10),
+            ("task:stranded-c", 20),
+        ] {
+            claims
+                .delegate(
+                    &ClaimLeaseRequest {
+                        tenant_id: tenant_id.clone(),
+                        repository_id: repository_id.clone(),
+                        task_id: task_id.to_string(),
+                        owner_id: "agent:pagination".to_string(),
+                        branch: format!("work/{task_id}"),
+                        lease: Duration::from_secs(lease_secs),
+                        paths: Vec::new(),
+                        symbols: Vec::new(),
+                    },
+                    granted_at,
+                )
+                .await
+                .expect("delegate paginated claim");
+        }
+
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+        let active_first = fleet
+            .active_work(&tenant_id, &repository_id, page_at, None, 2)
+            .await
+            .expect("read first active page")
+            .expect("repository is enrolled");
+        assert_eq!(
+            active_first
+                .claims
+                .iter()
+                .map(|claim| claim.task_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["task:active-a", "task:active-b"]
+        );
+        assert_eq!(
+            active_first.next_after,
+            Some(ClaimListCursor {
+                lease_expires_at: granted_at + Duration::from_secs(200),
+                task_id: "task:active-b".to_string(),
+            })
+        );
+        let active_second = fleet
+            .active_work(
+                &tenant_id,
+                &repository_id,
+                page_at,
+                active_first.next_after.as_ref(),
+                2,
+            )
+            .await
+            .expect("read second active page")
+            .expect("repository is enrolled");
+        assert_eq!(
+            active_second
+                .claims
+                .iter()
+                .map(|claim| claim.task_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["task:active-c"]
+        );
+        assert_eq!(active_second.next_after, None);
+
+        let stranded_first = fleet
+            .stranded_claims(&tenant_id, &repository_id, page_at, None, 2)
+            .await
+            .expect("read first stranded page")
+            .expect("repository is enrolled");
+        assert_eq!(
+            stranded_first
+                .claims
+                .iter()
+                .map(|claim| claim.task_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["task:stranded-a", "task:stranded-b"]
+        );
+        let stranded_second = fleet
+            .stranded_claims(
+                &tenant_id,
+                &repository_id,
+                page_at,
+                stranded_first.next_after.as_ref(),
+                2,
+            )
+            .await
+            .expect("read second stranded page")
+            .expect("repository is enrolled");
+        assert_eq!(
+            stranded_second
+                .claims
+                .iter()
+                .map(|claim| claim.task_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["task:stranded-c"]
+        );
+        assert_eq!(stranded_second.next_after, None);
     }
 
     #[tokio::test]

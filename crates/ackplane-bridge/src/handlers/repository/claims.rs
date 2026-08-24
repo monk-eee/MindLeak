@@ -3,27 +3,26 @@
 //! `POST .../tasks/:task_id/recover` (ADR-0111): live delegated work, the
 //! stranded claims an operator can recover, and the recovery action itself.
 
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
 use serde::{Deserialize, Serialize};
 
 use ackplane_server::claim_store::{ClaimLeaseOutcome, ClaimRecoverRequest, ClaimStoreError};
-use ackplane_server::fleet::ActiveWorkItem;
+use ackplane_server::fleet::{ActiveWorkItem, ClaimListCursor, ClaimListPage};
 
 use crate::{unix_seconds, AppState};
 
-/// Shared with `signing_keys`'s own bound: a first, fixed slice rather than
-/// caller-controlled paging, for the same reason `TIMELINE_LIMIT` is.
-const ACTIVE_WORK_LIMIT: i64 = 50;
+const CLAIM_PAGE_SIZE: i64 = 50;
 
 #[derive(Serialize)]
 pub struct ActiveWorkResponse {
     claims: Vec<ActiveWorkSummary>,
+    next_after: Option<ClaimCursorSummary>,
 }
 
 #[derive(Serialize)]
@@ -56,6 +55,21 @@ impl From<ActiveWorkItem> for ActiveWorkSummary {
 #[derive(Serialize)]
 pub struct StrandedClaimsResponse {
     claims: Vec<ActiveWorkSummary>,
+    next_after: Option<ClaimCursorSummary>,
+}
+
+/// A direct compound keyset cursor. Both fields are required together: a
+/// lease timestamp alone cannot distinguish claims expiring at the same time.
+#[derive(Deserialize)]
+pub struct ClaimListQuery {
+    after_lease_expires_at_micros: Option<i64>,
+    after_task_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct ClaimCursorSummary {
+    lease_expires_at_micros: i64,
+    task_id: String,
 }
 
 #[derive(Deserialize)]
@@ -79,20 +93,21 @@ pub struct RecoverClaimResponse {
 pub async fn repository_claims(
     State(state): State<AppState>,
     Path(repository_id): Path<String>,
+    Query(query): Query<ClaimListQuery>,
 ) -> Result<Json<ActiveWorkResponse>, StatusCode> {
+    let after = parse_claim_cursor(query)?;
     match state
         .fleet
         .active_work(
             &state.tenant_id,
             &repository_id,
             SystemTime::now(),
-            ACTIVE_WORK_LIMIT,
+            after.as_ref(),
+            CLAIM_PAGE_SIZE,
         )
         .await
     {
-        Ok(Some(claims)) => Ok(Json(ActiveWorkResponse {
-            claims: claims.into_iter().map(ActiveWorkSummary::from).collect(),
-        })),
+        Ok(Some(page)) => Ok(Json(ActiveWorkResponse::try_from(page)?)),
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(error) => {
             tracing::error!(%error, "Bridge repository active-work query failed");
@@ -107,25 +122,109 @@ pub async fn repository_claims(
 pub async fn repository_stranded_claims(
     State(state): State<AppState>,
     Path(repository_id): Path<String>,
+    Query(query): Query<ClaimListQuery>,
 ) -> Result<Json<StrandedClaimsResponse>, StatusCode> {
+    let after = parse_claim_cursor(query)?;
     match state
         .fleet
         .stranded_claims(
             &state.tenant_id,
             &repository_id,
             SystemTime::now(),
-            ACTIVE_WORK_LIMIT,
+            after.as_ref(),
+            CLAIM_PAGE_SIZE,
         )
         .await
     {
-        Ok(Some(claims)) => Ok(Json(StrandedClaimsResponse {
-            claims: claims.into_iter().map(ActiveWorkSummary::from).collect(),
-        })),
+        Ok(Some(page)) => Ok(Json(StrandedClaimsResponse::try_from(page)?)),
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(error) => {
             tracing::error!(%error, "Bridge repository stranded-claims query failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
+    }
+}
+
+fn parse_claim_cursor(query: ClaimListQuery) -> Result<Option<ClaimListCursor>, StatusCode> {
+    match (query.after_lease_expires_at_micros, query.after_task_id) {
+        (None, None) => Ok(None),
+        (Some(lease_expires_at_micros), Some(task_id)) if !task_id.is_empty() => {
+            let lease_expires_at = system_time_from_epoch_micros(lease_expires_at_micros)
+                .ok_or(StatusCode::BAD_REQUEST)?;
+            Ok(Some(ClaimListCursor {
+                lease_expires_at,
+                task_id,
+            }))
+        }
+        _ => Err(StatusCode::BAD_REQUEST),
+    }
+}
+
+fn system_time_from_epoch_micros(value: i64) -> Option<SystemTime> {
+    let duration = Duration::from_micros(value.unsigned_abs());
+    if value >= 0 {
+        UNIX_EPOCH.checked_add(duration)
+    } else {
+        UNIX_EPOCH.checked_sub(duration)
+    }
+}
+
+fn epoch_micros(value: SystemTime) -> Option<i64> {
+    match value.duration_since(UNIX_EPOCH) {
+        Ok(duration) => i64::try_from(duration.as_micros()).ok(),
+        Err(error) => i64::try_from(error.duration().as_micros())
+            .ok()
+            .and_then(i64::checked_neg),
+    }
+}
+
+impl TryFrom<ClaimListPage> for ActiveWorkResponse {
+    type Error = StatusCode;
+
+    fn try_from(page: ClaimListPage) -> Result<Self, Self::Error> {
+        let next_after = page
+            .next_after
+            .map(ClaimCursorSummary::try_from)
+            .transpose()?;
+        Ok(Self {
+            claims: page
+                .claims
+                .into_iter()
+                .map(ActiveWorkSummary::from)
+                .collect(),
+            next_after,
+        })
+    }
+}
+
+impl TryFrom<ClaimListPage> for StrandedClaimsResponse {
+    type Error = StatusCode;
+
+    fn try_from(page: ClaimListPage) -> Result<Self, Self::Error> {
+        let next_after = page
+            .next_after
+            .map(ClaimCursorSummary::try_from)
+            .transpose()?;
+        Ok(Self {
+            claims: page
+                .claims
+                .into_iter()
+                .map(ActiveWorkSummary::from)
+                .collect(),
+            next_after,
+        })
+    }
+}
+
+impl TryFrom<ClaimListCursor> for ClaimCursorSummary {
+    type Error = StatusCode;
+
+    fn try_from(cursor: ClaimListCursor) -> Result<Self, Self::Error> {
+        Ok(Self {
+            lease_expires_at_micros: epoch_micros(cursor.lease_expires_at)
+                .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?,
+            task_id: cursor.task_id,
+        })
     }
 }
 
@@ -202,5 +301,95 @@ pub async fn repository_recover_claim(
             tracing::error!(%error, "Bridge claim recovery failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claim_cursor_requires_both_compound_key_fields() {
+        for query in [
+            ClaimListQuery {
+                after_lease_expires_at_micros: Some(1),
+                after_task_id: None,
+            },
+            ClaimListQuery {
+                after_lease_expires_at_micros: None,
+                after_task_id: Some("task:a".to_string()),
+            },
+            ClaimListQuery {
+                after_lease_expires_at_micros: Some(1),
+                after_task_id: Some(String::new()),
+            },
+            ClaimListQuery {
+                after_lease_expires_at_micros: None,
+                after_task_id: Some(String::new()),
+            },
+        ] {
+            assert_eq!(parse_claim_cursor(query), Err(StatusCode::BAD_REQUEST));
+        }
+    }
+
+    #[test]
+    fn claim_cursor_round_trips_signed_epoch_microseconds() {
+        let before_epoch = ClaimListQuery {
+            after_lease_expires_at_micros: Some(-1),
+            after_task_id: Some("task:before".to_string()),
+        };
+        let after_epoch = ClaimListQuery {
+            after_lease_expires_at_micros: Some(1),
+            after_task_id: Some("task:after".to_string()),
+        };
+
+        let before = parse_claim_cursor(before_epoch)
+            .expect("before-epoch cursor parses")
+            .expect("cursor exists");
+        let after = parse_claim_cursor(after_epoch)
+            .expect("after-epoch cursor parses")
+            .expect("cursor exists");
+        assert_eq!(
+            (epoch_micros(before.lease_expires_at), before.task_id),
+            (Some(-1), "task:before".to_string())
+        );
+        assert_eq!(
+            (epoch_micros(after.lease_expires_at), after.task_id),
+            (Some(1), "task:after".to_string())
+        );
+    }
+
+    #[test]
+    fn terminal_claim_page_has_no_next_cursor() {
+        let response = ActiveWorkResponse::try_from(ClaimListPage {
+            claims: Vec::new(),
+            next_after: None,
+        })
+        .expect("terminal page converts to a response");
+
+        assert_eq!(response.next_after, None);
+    }
+
+    #[test]
+    fn nonterminal_claim_page_serializes_its_compound_next_cursor() {
+        let response = ActiveWorkResponse::try_from(ClaimListPage {
+            claims: Vec::new(),
+            next_after: Some(ClaimListCursor {
+                lease_expires_at: UNIX_EPOCH + Duration::from_micros(42),
+                task_id: "task:next".to_string(),
+            }),
+        })
+        .expect("nonterminal page converts to a response");
+
+        assert_eq!(
+            serde_json::to_value(response).expect("response serializes"),
+            serde_json::json!({
+                "claims": [],
+                "next_after": {
+                    "lease_expires_at_micros": 42,
+                    "task_id": "task:next",
+                },
+            })
+        );
     }
 }

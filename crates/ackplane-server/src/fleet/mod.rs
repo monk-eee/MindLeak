@@ -120,6 +120,22 @@ pub struct ActiveWorkItem {
     pub symbols: Vec<String>,
 }
 
+/// The compound ordering key for one repository's active or stranded claim
+/// lists. Claim lease expiry alone is not unique, so task id makes a cursor
+/// unambiguous and prevents a next page from skipping same-expiry claims.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimListCursor {
+    pub lease_expires_at: SystemTime,
+    pub task_id: String,
+}
+
+/// One bounded keyset page of repository-scoped claims.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimListPage {
+    pub claims: Vec<ActiveWorkItem>,
+    pub next_after: Option<ClaimListCursor>,
+}
+
 /// One live delegated claim anywhere in a tenant's fleet (ADR-0105 decision
 /// 5's Agents/Work control room). Unlike `ActiveWorkItem`, which is already
 /// scoped to a repository the caller named, this carries its own
