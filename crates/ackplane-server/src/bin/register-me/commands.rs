@@ -17,7 +17,7 @@ pub(super) async fn run_request(flags: HashMap<String, String>) -> Result<(), St
         .map(|value| value.split(',').map(str::to_string).collect())
         .unwrap_or_else(|| vec!["synchronize".to_string()]);
 
-    let path = key_path(&flags, &node_id);
+    let path = key_path(&flags);
     let signing_key =
         load_or_generate_key(&path).map_err(|error| format!("key {}: {error}", path.display()))?;
     let public_key = signing_key.verifying_key().to_bytes().to_vec();
@@ -123,10 +123,7 @@ pub(super) async fn run_approve(flags: HashMap<String, String>) -> Result<(), St
 
 pub(super) async fn run_activate(flags: HashMap<String, String>) -> Result<(), String> {
     let request_id = require(&flags, "request-id")?.to_string();
-    let path = flags
-        .get("key-path")
-        .map(PathBuf::from)
-        .ok_or("--key-path is required (the path `register-me request` printed)")?;
+    let path = key_path(&flags);
     let state = state_path(&path);
     let saved: SavedRequest = serde_json::from_slice(
         &std::fs::read(&state).map_err(|error| format!("{}: {error}", state.display()))?,

@@ -112,12 +112,14 @@
     </div>
   </header>
   <script src="/static/shared/chrome.js" defer></script>
+  <script src="/static/shared/repo-picker.js" defer></script>
   <main class="shell">
     <div class="heading">
       <div><p class="eyebrow">Observability surface</p><h2>Telemetry</h2><p id="scope-label">Select a repository.</p></div>
     </div>
     <form id="filters" class="toolbar">
-      <label>Repository<input id="repository" name="repository" required autocomplete="off" spellcheck="false"></label>
+      <label>Repository<input id="repository" name="repository" list="known-repositories" required autocomplete="off" spellcheck="false"></label>
+      <datalist id="known-repositories" data-repo-datalist></datalist>
       <button class="command" type="submit">Load</button>
     </form>
     <p id="message" class="message" role="status" aria-live="polite"></p>

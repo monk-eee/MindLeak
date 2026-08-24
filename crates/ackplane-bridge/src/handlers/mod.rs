@@ -10,7 +10,7 @@ pub(crate) use agents::agents;
 pub(crate) use fleet::fleet;
 pub(crate) use readiness::readiness;
 pub(crate) use repository::{
-    repository_claims, repository_constitution, repository_detail, repository_graph,
-    repository_knowledge, repository_recover_claim, repository_signing_keys,
+    constitution_page, repository_claims, repository_constitution, repository_detail,
+    repository_graph, repository_knowledge, repository_recover_claim, repository_signing_keys,
     repository_stranded_claims, repository_telemetry, repository_timeline, telemetry_page,
 };

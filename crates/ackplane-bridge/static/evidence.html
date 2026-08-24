@@ -132,12 +132,14 @@
     </div>
   </header>
   <script src="/static/shared/chrome.js" defer></script>
+  <script src="/static/shared/repo-picker.js" defer></script>
   <main class="shell">
     <div class="heading">
       <div><p class="eyebrow">Review surface</p><h2>Evidence Board</h2><p id="scope-label">Select a repository and task.</p></div>
     </div>
     <form id="filters" class="toolbar">
-      <label>Repository<input id="repository" name="repository" required autocomplete="off" spellcheck="false"></label>
+      <label>Repository<input id="repository" name="repository" list="known-repositories" required autocomplete="off" spellcheck="false"></label>
+      <datalist id="known-repositories" data-repo-datalist></datalist>
       <label>Task<input id="task" name="task" required autocomplete="off" spellcheck="false"></label>
       <label>Agent<input id="agent" name="agent" autocomplete="off" spellcheck="false" placeholder="Optional node ID"></label>
       <label>Review state<select id="review-filter" name="review-state"><option value="">All states</option><option value="pending">Pending</option><option value="blocked">Blocked</option><option value="not_required">Not required</option></select></label>
@@ -211,7 +213,7 @@
       els.status.classList.remove("hidden"); els.board.classList.remove("hidden"); els.links.classList.remove("hidden"); els.export.disabled = false;
       state("evidence-state", result.status.evidence); state("conformance-state", result.status.conformance); state("review-state", result.status.review); state("freshness-state", result.status.freshness);
       document.getElementById("freshness-time").textContent = Number.isFinite(result.status.latest_recorded_at_seconds) ? `Recorded ${when(result.status.latest_recorded_at_seconds)}` : "";
-      const reviewScope = result.review_state_filter ? ` · review: ${result.review_state_filter.replaceAll("_", " ")}` : "";
+      const reviewScope = result.review_state_filter ? ` Â· review: ${result.review_state_filter.replaceAll("_", " ")}` : "";
       els.scope.textContent = `${els.repository.value.trim()} / ${els.task.value.trim()}${reviewScope}`;
       drawRecords();
       related();

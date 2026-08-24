@@ -24,9 +24,10 @@
 <body>
   <header><div class="shell masthead"><a class="brand" href="/" aria-label="MindLeak Bridge Fleet" data-bridge-brand data-subtitle="Supervisor runtime">MindLeak Bridge</a><nav class="nav" aria-label="Industrial surfaces" data-bridge-nav data-current="supervisors"></nav></div></header>
   <script src="/static/shared/chrome.js" defer></script>
+  <script src="/static/shared/repo-picker.js" defer></script>
   <main class="shell">
     <div class="heading"><div><p class="eyebrow">Runtime assurance</p><h2>Supervisors</h2><p id="scope">Select an enrolled repository to inspect its published supervisor runtime state.</p></div></div>
-    <form id="filters" class="toolbar"><label>Repository<input id="repository" required autocomplete="off" spellcheck="false" placeholder="repository identifier"></label><button type="submit">Load runtime</button></form>
+    <form id="filters" class="toolbar"><label>Repository<input id="repository" list="known-repositories" required autocomplete="off" spellcheck="false" placeholder="repository identifier"></label><datalist id="known-repositories" data-repo-datalist></datalist><button type="submit">Load runtime</button></form>
     <p id="message" class="message" role="status" aria-live="polite"></p>
     <section id="summary" class="summary hidden" aria-label="Supervisor freshness"><div class="metric"><span>Current</span><strong id="current-count">0</strong></div><div class="metric"><span>Stale</span><strong id="stale-count">0</strong></div><div class="metric"><span>Never reported</span><strong id="never-count">0</strong></div></section>
     <div id="layout" class="layout hidden"><section class="panel"><div class="panel-head"><h3>Supervisor inventory</h3><span id="supervisor-count" class="count"></span></div><ul id="supervisors" class="rows"></ul></section><aside class="panel"><div class="panel-head"><h3 id="detail-title">Sessions</h3><span id="detail-count" class="count"></span></div><div id="sessions" class="row empty">Choose a supervisor to inspect its sessions.</div><div id="lifecycle" class="row hidden"></div></aside></div>

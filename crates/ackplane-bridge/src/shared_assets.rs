@@ -7,6 +7,7 @@ use axum::{http::header::CONTENT_TYPE, response::IntoResponse, routing::get, Rou
 
 const CHROME_CSS: &str = include_str!("../static/shared/chrome.css");
 const CHROME_JS: &str = include_str!("../static/shared/chrome.js");
+const REPO_PICKER_JS: &str = include_str!("../static/shared/repo-picker.js");
 
 async fn chrome_css() -> impl IntoResponse {
     ([(CONTENT_TYPE, "text/css; charset=utf-8")], CHROME_CSS)
@@ -19,12 +20,20 @@ async fn chrome_js() -> impl IntoResponse {
     )
 }
 
+async fn repo_picker_js() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        REPO_PICKER_JS,
+    )
+}
+
 /// Mounted once in the application router; carries no tenant-scoped state,
 /// since it serves the same bytes to every caller.
 pub fn shared_asset_routes() -> Router {
     Router::new()
         .route("/static/shared/chrome.css", get(chrome_css))
         .route("/static/shared/chrome.js", get(chrome_js))
+        .route("/static/shared/repo-picker.js", get(repo_picker_js))
 }
 
 #[cfg(test)]
@@ -56,5 +65,18 @@ mod tests {
         assert!(String::from_utf8(body.to_vec())
             .unwrap()
             .contains("NAV_ITEMS"));
+    }
+
+    #[tokio::test]
+    async fn repo_picker_js_is_served_as_javascript() {
+        let response = repo_picker_js().await.into_response();
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            "text/javascript; charset=utf-8"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8(body.to_vec())
+            .unwrap()
+            .contains("data-repo-datalist"));
     }
 }

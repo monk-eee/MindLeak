@@ -6,6 +6,7 @@ use std::{
 use ackplane_bridge::administration::{administration_routes, AdministrationApiState};
 use ackplane_bridge::context_api::{context_routes, ContextApiState};
 use ackplane_bridge::delegation_api::{delegation_routes, DelegationApiState};
+use ackplane_bridge::design_api::{design_routes, DesignApiState};
 use ackplane_bridge::evidence::BridgeEvidenceStore;
 use ackplane_bridge::evidence_api::{evidence_routes, EvidenceApiState};
 use ackplane_bridge::knowledge_api::{knowledge_routes, KnowledgeApiState};
@@ -18,6 +19,8 @@ use ackplane_server::claim_store::ClaimStore;
 use ackplane_server::constitution_store::ConstitutionStore;
 use ackplane_server::context_packet_store::ContextPacketStore;
 use ackplane_server::delegation_store::DelegationStore;
+use ackplane_server::design_materialization_store::MaterializationStore;
+use ackplane_server::design_store::DesignStore;
 use ackplane_server::fleet::{FleetStore, RepositoryFreshness};
 use ackplane_server::knowledge_store::KnowledgeStore;
 use ackplane_server::live_feed_store::LiveFeedStore;
@@ -36,9 +39,10 @@ use tokio::sync::Mutex;
 mod handlers;
 
 use handlers::{
-    agents, fleet, readiness, repository_claims, repository_constitution, repository_detail,
-    repository_graph, repository_knowledge, repository_recover_claim, repository_signing_keys,
-    repository_stranded_claims, repository_telemetry, repository_timeline, telemetry_page,
+    agents, constitution_page, fleet, readiness, repository_claims, repository_constitution,
+    repository_detail, repository_graph, repository_knowledge, repository_recover_claim,
+    repository_signing_keys, repository_stranded_claims, repository_telemetry, repository_timeline,
+    telemetry_page,
 };
 
 const FLEET_PAGE: &str = include_str!("../static/index.html");
@@ -53,6 +57,7 @@ struct AppState {
     projector: Arc<Projector>,
     readiness: Arc<ReadinessStore>,
     telemetry: Arc<TelemetryStore>,
+    work: Arc<WorkStore>,
     tenant_id: Arc<str>,
 }
 
@@ -194,6 +199,24 @@ async fn main() {
             return;
         }
     };
+    let design_store = match DesignStore::connect(config.database_url()).await {
+        Ok(design) => Arc::new(Mutex::new(design)),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane's Design domain: {error}");
+            return;
+        }
+    };
+    let design_materialization_store = match MaterializationStore::connect(config.database_url())
+        .await
+    {
+        Ok(materializations) => Arc::new(Mutex::new(materializations)),
+        Err(error) => {
+            eprintln!(
+                "ackplane-bridge: could not connect to Ackplane's Design materialization domain: {error}"
+            );
+            return;
+        }
+    };
     let tenant_id: Arc<str> = Arc::from(config.development_tenant_token.clone());
     let evidence_api_state =
         EvidenceApiState::new(evidence_store, fleet_store.clone(), tenant_id.clone());
@@ -208,11 +231,18 @@ async fn main() {
         ContextApiState::new(context_packet_store, fleet_store.clone(), tenant_id.clone());
     let delegation_api_state =
         DelegationApiState::new(delegation_store, fleet_store.clone(), tenant_id.clone());
-    let work_api_state = WorkApiState::new(work_store, fleet_store.clone(), tenant_id.clone());
+    let work_api_state =
+        WorkApiState::new(work_store.clone(), fleet_store.clone(), tenant_id.clone());
     let administration_api_state =
         AdministrationApiState::new(fleet_store.clone(), tenant_id.clone());
     let live_feed_api_state =
         LiveFeedApiState::new(live_feed_store, fleet_store.clone(), tenant_id.clone());
+    let design_api_state = DesignApiState::new(
+        design_store,
+        design_materialization_store,
+        fleet_store.clone(),
+        tenant_id.clone(),
+    );
     let state = AppState {
         fleet: fleet_store,
         knowledge: knowledge_store,
@@ -221,12 +251,14 @@ async fn main() {
         projector,
         readiness: readiness_store,
         telemetry: telemetry_store,
+        work: work_store,
         tenant_id,
     };
     let application = Router::new()
         .route("/", get(fleet_page))
         .route("/agents", get(agents_page))
         .route("/telemetry", get(telemetry_page))
+        .route("/constitution", get(constitution_page))
         .route("/api/v1/fleet", get(fleet))
         .route("/api/v1/agents", get(agents))
         .route("/api/v1/readiness", get(readiness))
@@ -279,6 +311,7 @@ async fn main() {
         .merge(supervisor_routes(supervisor_api_state))
         .merge(live_feed_routes(live_feed_api_state))
         .merge(work_routes(work_api_state))
+        .merge(design_routes(design_api_state))
         .merge(shared_asset_routes());
     let listener = match tokio::net::TcpListener::bind(config.listen).await {
         Ok(listener) => listener,

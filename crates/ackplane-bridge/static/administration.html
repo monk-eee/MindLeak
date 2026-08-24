@@ -26,9 +26,10 @@
 <body>
   <header><div class="shell topbar"><a class="brand" href="/" aria-label="MindLeak Bridge Fleet" data-bridge-brand>MindLeak Bridge</a><nav class="nav" aria-label="Industrial surfaces" data-bridge-nav data-current="administration"></nav></div></header>
   <script src="/static/shared/chrome.js" defer></script>
+  <script src="/static/shared/repo-picker.js" defer></script>
   <main class="shell">
     <p class="eyebrow">Lifecycle authority</p><h1>Administration</h1><p class="intro">Deployment and capability status are explicit. Privileged lifecycle actions remain refused until a verified principal and adopted policy authorize one immutable request.</p>
-    <form id="repository-form"><label for="repository-id">Repository<input id="repository-id" name="repository_id" autocomplete="off" placeholder="repository identifier" required></label><button id="load-status" type="submit">Load status</button></form>
+    <form id="repository-form"><label for="repository-id">Repository<input id="repository-id" name="repository_id" list="known-repositories" autocomplete="off" placeholder="repository identifier" required></label><datalist id="known-repositories" data-repo-datalist></datalist><button id="load-status" type="submit">Load status</button></form>
     <p class="notice" id="notice" hidden></p>
     <section class="status" aria-label="Administration status"><div class="metric"><span class="metric-label">Repository</span><span class="metric-value" id="repository-value">--</span></div><div class="metric"><span class="metric-label">Projection freshness</span><span class="metric-value" id="freshness-value">--</span></div><div class="metric"><span class="metric-label">Ledger position</span><span class="metric-value" id="ledger-value">--</span></div><div class="metric"><span class="metric-label">Durability</span><span class="metric-value" id="durability-value">--</span></div></section>
     <h2>Operation capabilities</h2><section class="capabilities" id="capabilities" aria-label="Administration operation capabilities"><div class="empty">Load a repository status to view current authority and refusals.</div></section>

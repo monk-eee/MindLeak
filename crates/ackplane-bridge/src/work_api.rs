@@ -10,7 +10,8 @@ use std::{sync::Arc, time::SystemTime};
 use ackplane_server::{
     fleet::FleetStore,
     work_store::{
-        WorkDoctorFinding, WorkStore, WorkStoreError, WorkTask, WorkTaskDetail, WorkTaskState,
+        ClaimsOnlyWork, WorkDoctorFinding, WorkPublication, WorkStore, WorkStoreError, WorkTask,
+        WorkTaskDetail, WorkTaskState,
     },
 };
 use axum::{
@@ -175,6 +176,58 @@ struct WorkListResponse {
     total: i64,
     page: i64,
     page_size: i64,
+    publication: WorkPublicationResponse,
+}
+
+#[derive(Serialize)]
+struct ClaimsOnlyWorkResponse {
+    task_id: String,
+    owner_id: String,
+    branch: String,
+    lease_expires_at_seconds: Option<u64>,
+    declared_paths: Vec<String>,
+    declared_symbols: Vec<String>,
+}
+
+impl From<ClaimsOnlyWork> for ClaimsOnlyWorkResponse {
+    fn from(claim: ClaimsOnlyWork) -> Self {
+        Self {
+            task_id: claim.task_id,
+            owner_id: claim.owner_id,
+            branch: claim.branch,
+            lease_expires_at_seconds: unix_seconds(claim.lease_expires_at),
+            declared_paths: claim.declared_paths,
+            declared_symbols: claim.declared_symbols,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct WorkPublicationResponse {
+    state: &'static str,
+    claims_only_total: i64,
+    claims_only: Vec<ClaimsOnlyWorkResponse>,
+}
+
+impl From<WorkPublication> for WorkPublicationResponse {
+    fn from(publication: WorkPublication) -> Self {
+        let state = if publication.has_work_tasks {
+            "current"
+        } else if publication.claims_only_total > 0 {
+            "claims_only"
+        } else {
+            "not_published"
+        };
+        Self {
+            state,
+            claims_only_total: publication.claims_only_total,
+            claims_only: publication
+                .claims_only
+                .into_iter()
+                .map(ClaimsOnlyWorkResponse::from)
+                .collect(),
+        }
+    }
 }
 
 async fn work_list(
@@ -195,6 +248,11 @@ async fn work_list(
         Some(raw) => Some(parse_state(&raw).ok_or(StatusCode::BAD_REQUEST)?),
         None => None,
     };
+    let publication = state
+        .work
+        .publication(state.tenant_id.as_ref(), &repository_id, SystemTime::now())
+        .await
+        .map_err(work_store_error)?;
     let result = state
         .work
         .list_tasks(
@@ -215,6 +273,7 @@ async fn work_list(
         total: result.total,
         page,
         page_size,
+        publication: WorkPublicationResponse::from(publication),
     }))
 }
 

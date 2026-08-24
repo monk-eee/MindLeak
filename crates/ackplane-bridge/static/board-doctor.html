@@ -27,9 +27,10 @@
 <body>
   <header><div class="shell topbar"><a class="brand" href="/" aria-label="MindLeak Bridge Fleet" data-bridge-brand>MindLeak Bridge</a><nav class="nav" aria-label="Industrial surfaces" data-bridge-nav data-current="board-doctor"></nav></div></header>
   <script src="/static/shared/chrome.js" defer></script>
+  <script src="/static/shared/repo-picker.js" defer></script>
   <main class="shell">
     <p class="eyebrow">Work domain diagnostics</p><h1>Board Doctor</h1><p class="intro">A deterministic diagnostic over the Industrial Work namespace and claim leases. It never mutates a task: a missing task publication, an impossible state/lease combination, a duplicate title under one goal, a long-unanswered wait, and overlapping declared scope are all read-only findings for a human to act on.</p>
-    <form id="repository-form"><label for="repository-id">Repository<input id="repository-id" name="repository_id" autocomplete="off" placeholder="repository identifier" required></label><button id="run-analysis" type="submit">Run analysis</button></form>
+    <form id="repository-form"><label for="repository-id">Repository<input id="repository-id" name="repository_id" list="known-repositories" autocomplete="off" placeholder="repository identifier" required></label><datalist id="known-repositories" data-repo-datalist></datalist><button id="run-analysis" type="submit">Run analysis</button></form>
     <p class="notice" id="notice" hidden></p>
     <section class="status" aria-label="Board Doctor run summary"><div class="metric"><span class="metric-label">Repository</span><span class="metric-value" id="repository-value">--</span></div><div class="metric"><span class="metric-label">Findings</span><span class="metric-value" id="finding-count-value">--</span></div><div class="metric"><span class="metric-label">Checked at</span><span class="metric-value" id="checked-at-value">--</span></div><div class="metric"><span class="metric-label">Status</span><span class="metric-value" id="status-value">--</span></div></section>
     <h2>Findings</h2><section class="findings" id="findings" aria-label="Board Doctor findings"><div class="empty">Run an analysis to view Board Doctor findings for a repository.</div></section>

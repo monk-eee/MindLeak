@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MindLeak Bridge Constitution</title>
+  <script>
+    (() => {
+      const theme = new URLSearchParams(window.location.search).get("scoutTheme") ||
+        (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/shared/chrome.css">
+  <style>
+    :root { color-scheme: light; --bg:#faf6f3; --surface:#fff; --soft-surface:#f6f1ee; --border:#e9dfd9; --ink:#1f2542; --muted:#62677f; --soft:#9094aa; --rose:#e8578f; --rose-soft:#fbe6ee; --teal:#169c99; --teal-soft:#e2f5f3; --amber:#d4881e; --amber-soft:#fbefda; --shadow:0 12px 28px rgba(31,37,66,.08); --focus:0 0 0 3px rgba(232,87,143,.28); --chrome-surface:var(--surface); --chrome-line:var(--border); --chrome-ink:var(--ink); --chrome-muted:var(--muted); --chrome-accent:var(--teal); --chrome-focus:var(--focus); }
+    html[data-theme="dark"] { color-scheme: dark; --bg:#151827; --surface:#1d2135; --soft-surface:#252a42; --border:#353b59; --ink:#f1f2fd; --muted:#afb3cd; --soft:#8187a8; --rose:#ff8bb5; --rose-soft:rgba(255,139,181,.15); --teal:#56d4ce; --teal-soft:rgba(86,212,206,.14); --amber:#f2ba65; --amber-soft:rgba(242,186,101,.14); --shadow:0 14px 34px rgba(0,0,0,.28); --focus:0 0 0 3px rgba(255,139,181,.36); }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font-family:"Segoe UI Variable",Aptos,system-ui,sans-serif; }
+    button,input { font:inherit; }
+    button:focus-visible,input:focus-visible,a:focus-visible { outline:none; box-shadow:var(--focus); }
+    header { position:sticky; top:0; z-index:10; background:color-mix(in srgb,var(--bg) 94%,transparent); backdrop-filter:blur(14px); border-bottom:1px solid var(--border); }
+    header::after { content:""; display:block; height:3px; background:linear-gradient(90deg,var(--rose),var(--teal)); }
+    .shell { width:min(1240px,calc(100% - 36px)); margin:0 auto; }
+    .masthead { min-height:74px; display:flex; align-items:center; justify-content:space-between; gap:18px; }
+    main { padding:28px 0 56px; }
+    .heading { display:flex; align-items:end; justify-content:space-between; gap:18px; margin-bottom:18px; flex-wrap:wrap; }
+    .eyebrow { margin:0 0 5px; font-size:.69rem; color:var(--soft); font-weight:750; letter-spacing:.09em; text-transform:uppercase; }
+    .heading h2 { margin:0; font-size:1.55rem; letter-spacing:0; }
+    .heading p { margin:5px 0 0; color:var(--muted); font-size:.86rem; max-width:58ch; }
+    .toolbar { display:grid; grid-template-columns:minmax(200px,1fr) auto; gap:10px; align-items:end; padding:13px; border:1px solid var(--border); border-radius:8px; background:var(--surface); box-shadow:var(--shadow); }
+    label { display:grid; gap:5px; color:var(--soft); font-size:.7rem; font-weight:700; letter-spacing:.045em; text-transform:uppercase; }
+    input { width:100%; min-width:0; padding:9px 10px; border:1px solid var(--border); border-radius:6px; color:var(--ink); background:var(--surface); font-size:.85rem; text-transform:none; letter-spacing:0; }
+    .command { height:37px; padding:0 13px; border:1px solid transparent; border-radius:6px; background:var(--ink); color:var(--surface); font-weight:700; cursor:pointer; font-size:.82rem; }
+    .command:hover { filter:brightness(1.08); }
+    .message { min-height:21px; margin:12px 2px 0; color:var(--muted); font-size:.82rem; }
+    .message.error { color:var(--rose); }
+    .hidden { display:none !important; }
+    .metadata { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:9px; margin:18px 0; }
+    .metadata div { min-height:70px; padding:12px; border:1px solid var(--border); border-radius:8px; background:var(--surface); }
+    .metadata dt { color:var(--soft); font-size:.66rem; font-weight:700; letter-spacing:.05em; text-transform:uppercase; }
+    .metadata dd { margin:7px 0 0; color:var(--ink); font-size:.82rem; overflow-wrap:anywhere; }
+    .metadata code { font-size:.72rem; }
+    .section-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; margin:24px 0 10px; }
+    .section-heading h3 { margin:0; color:var(--soft); font-size:.78rem; letter-spacing:.06em; text-transform:uppercase; }
+    .clause-list { display:grid; gap:10px; }
+    .clause { padding:15px; border:1px solid var(--border); border-radius:8px; background:var(--surface); box-shadow:var(--shadow); }
+    .clause-head { display:flex; align-items:start; justify-content:space-between; gap:12px; }
+    .clause h4 { margin:0; font-size:.96rem; overflow-wrap:anywhere; }
+    .clause-id { margin:4px 0 0; color:var(--soft); font-size:.73rem; overflow-wrap:anywhere; }
+    .badge { flex-shrink:0; padding:3px 8px; border-radius:999px; background:var(--teal-soft); color:var(--teal); font-size:.7rem; font-weight:700; text-transform:capitalize; }
+    .statement { margin:14px 0 0; color:var(--muted); font-size:.86rem; line-height:1.55; white-space:pre-wrap; }
+    .details { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px; margin-top:14px; }
+    .details div { padding:9px 10px; border-radius:6px; background:var(--soft-surface); color:var(--muted); font-size:.77rem; overflow-wrap:anywhere; }
+    .details b { display:block; margin-bottom:3px; color:var(--soft); font-size:.64rem; letter-spacing:.05em; text-transform:uppercase; }
+    .empty { padding:34px 18px; color:var(--soft); font-size:.83rem; text-align:center; border:1px solid var(--border); border-radius:8px; background:var(--surface); }
+    @media (max-width:850px) { .toolbar { grid-template-columns:1fr; } .toolbar .command { width:100%; } .metadata { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+    @media (max-width:600px) { .shell { width:min(100% - 24px,1240px); } .masthead { align-items:stretch; flex-direction:column; padding:14px 0; } .metadata { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <header><div class="shell masthead"><a class="brand" href="/" aria-label="MindLeak Bridge Fleet" data-bridge-brand data-subtitle="Published tenant policy">MindLeak Bridge</a><nav class="nav" aria-label="Industrial surfaces" data-bridge-nav data-current="constitution"></nav></div></header>
+  <script src="/static/shared/chrome.js" defer></script>
+  <script src="/static/shared/repo-picker.js" defer></script>
+  <main class="shell">
+    <div class="heading"><div><p class="eyebrow">Governance projection</p><h2>Constitution</h2><p id="scope-label">Select a repository to inspect its published policy snapshot.</p></div></div>
+    <form id="constitution-form" class="toolbar"><label>Repository<input id="repository" name="repository" list="known-repositories" required autocomplete="off" spellcheck="false"></label><datalist id="known-repositories" data-repo-datalist></datalist><button class="command" type="submit">Load</button></form>
+    <p id="constitution-status" class="message" role="status" aria-live="polite"></p>
+    <dl id="constitution-metadata" class="metadata hidden" aria-label="Published constitution metadata"><div><dt>Version</dt><dd id="constitution-version">-</dd></div><div><dt>Status</dt><dd id="constitution-state">-</dd></div><div><dt>Published</dt><dd id="constitution-published">-</dd></div><div><dt>Source</dt><dd id="constitution-source">-</dd></div><div><dt>Source digest</dt><dd><code id="constitution-digest">-</code></dd></div><div><dt>Clauses</dt><dd id="constitution-clause-count">-</dd></div></dl>
+    <div class="section-heading"><h3>Published clauses</h3></div><section id="constitution-clauses" class="clause-list" aria-live="polite"></section>
+  </main>
+  <script>
+    const REFRESH_INTERVAL_MS = 15_000;
+    const elements = {
+      form: document.getElementById("constitution-form"), repository: document.getElementById("repository"), status: document.getElementById("constitution-status"), scope: document.getElementById("scope-label"), metadata: document.getElementById("constitution-metadata"), clauses: document.getElementById("constitution-clauses"), version: document.getElementById("constitution-version"), state: document.getElementById("constitution-state"), published: document.getElementById("constitution-published"), source: document.getElementById("constitution-source"), digest: document.getElementById("constitution-digest"), clauseCount: document.getElementById("constitution-clause-count"),
+    };
+    const parameters = new URLSearchParams(location.search);
+    elements.repository.value = parameters.get("repository") || "";
+    const endpoint = () => `/api/v1/repositories/${encodeURIComponent(elements.repository.value.trim())}/constitution`;
+    const when = seconds => Number.isFinite(seconds) ? new Date(seconds * 1000).toLocaleString() : "Not recorded";
+    const label = value => String(value ?? "Not recorded").replaceAll("_", " ");
+    const setStatus = (text, error = false) => { elements.status.textContent = text; elements.status.classList.toggle("error", error); };
+    const detail = (labelText, value) => { const item = document.createElement("div"); const heading = document.createElement("b"); const content = document.createElement("span"); heading.textContent = labelText; content.textContent = value; item.append(heading, content); return item; };
+    function renderClause(clause) {
+      const article = document.createElement("article"); article.className = "clause";
+      const header = document.createElement("div"); header.className = "clause-head";
+      const identity = document.createElement("div"); const title = document.createElement("h4"); const id = document.createElement("p"); const badge = document.createElement("span");
+      title.textContent = clause.title || clause.slug || clause.id; id.className = "clause-id"; id.textContent = `${clause.kind || "clause"} / ${clause.id || "unidentified"}`; badge.className = "badge"; badge.textContent = label(clause.status);
+      identity.append(title, id); header.append(identity, badge); article.append(header);
+      const statement = document.createElement("p"); statement.className = "statement"; statement.textContent = clause.statement || "No statement was published."; article.append(statement);
+      const details = document.createElement("div"); details.className = "details";
+      for (const [detailLabel, value] of [["Scope", clause.scope], ["Consequence", clause.consequence], ["Rationale", clause.rationale]]) { if (value) details.append(detail(detailLabel, value)); }
+      if (details.childElementCount) article.append(details);
+      return article;
+    }
+    function render(result) {
+      elements.scope.textContent = elements.repository.value.trim(); elements.clauses.replaceChildren();
+      if (!result.found) { elements.metadata.classList.add("hidden"); const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "No constitution has been published for this repository."; elements.clauses.append(empty); return; }
+      const clauses = result.clauses || [];
+      elements.metadata.classList.remove("hidden"); elements.version.textContent = result.version == null ? result.version_id || "Not recorded" : `v${result.version} / ${result.version_id || "unidentified"}`; elements.state.textContent = label(result.status); elements.published.textContent = when(result.published_at_seconds); elements.source.textContent = result.source_reference || "Not recorded"; elements.digest.textContent = result.source_digest_hex || "Not recorded"; elements.clauseCount.textContent = clauses.length;
+      if (!clauses.length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "The active constitution has no clauses."; elements.clauses.append(empty); return; }
+      for (const clause of clauses) elements.clauses.append(renderClause(clause));
+    }
+    async function load(refresh = false) {
+      if (!refresh && !elements.form.reportValidity()) return;
+      if (!elements.repository.value.trim()) return;
+      if (!refresh) { setStatus("Loading published constitution..."); elements.metadata.classList.add("hidden"); elements.clauses.replaceChildren(); }
+      try { const response = await fetch(endpoint()); if (!response.ok) throw new Error(response.status === 404 ? "Repository is outside the current scope." : `Constitution request failed (${response.status}).`); render(await response.json()); if (!refresh) { setStatus("Loaded."); history.replaceState(null, "", `/constitution?${new URLSearchParams({ repository: elements.repository.value.trim() })}`); } } catch (error) { setStatus(error.message, true); }
+    }
+    function startVisibleRefresh(load, intervalMs) { const refresh = () => { if (document.visibilityState === "visible" && elements.repository.value.trim()) load(true); }; window.setInterval(refresh, intervalMs); document.addEventListener("visibilitychange", refresh); }
+    elements.form.addEventListener("submit", event => { event.preventDefault(); load(); }); startVisibleRefresh(load, REFRESH_INTERVAL_MS); if (elements.repository.value) load();
+  </script>
+</body>
+</html>

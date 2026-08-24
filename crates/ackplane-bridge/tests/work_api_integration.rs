@@ -2,7 +2,10 @@
 //! Real PostgreSQL-gated coverage for Bridge's Work list and Board Doctor
 //! views (ADR-0120).
 
-use std::{sync::Arc, time::SystemTime};
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use ackplane_bridge::work_api::{work_routes, WorkApiState};
 use ackplane_server::{
@@ -166,17 +169,17 @@ async fn work_list_and_board_doctor_report_a_real_task_and_an_orphan_claim() {
         .await
         .expect("connect Claim store for fixtures");
     let orphan_task_id = format!("orphan-{unique}");
-    claim_store
+    let claim = claim_store
         .delegate(
             &ClaimLeaseRequest {
                 tenant_id: tenant_id.clone(),
                 repository_id: repository_id.clone(),
                 task_id: orphan_task_id.clone(),
                 owner_id: "owner-1".to_owned(),
-                branch: "main".to_owned(),
+                branch: "claims-only".to_owned(),
                 lease: std::time::Duration::from_secs(3600),
-                paths: Vec::new(),
-                symbols: Vec::new(),
+                paths: vec!["crates/ackplane-bridge/src/work_api.rs".to_owned()],
+                symbols: vec!["symbol:work-api".to_owned()],
             },
             SystemTime::now(),
         )
@@ -224,6 +227,25 @@ async fn work_list_and_board_doctor_report_a_real_task_and_an_orphan_claim() {
     assert_eq!(list["total"], serde_json::json!(1));
     assert_eq!(list["items"][0]["task_id"], serde_json::json!(task_id));
     assert_eq!(list["items"][0]["state"], serde_json::json!("open"));
+    assert_eq!(
+        list["publication"],
+        serde_json::json!({
+            "state": "current",
+            "claims_only_total": 1,
+            "claims_only": [{
+                "task_id": orphan_task_id,
+                "owner_id": "owner-1",
+                "branch": "claims-only",
+                "lease_expires_at_seconds": claim
+                    .lease_expires_at
+                    .duration_since(UNIX_EPOCH)
+                    .expect("lease expiry is after the Unix epoch")
+                    .as_secs(),
+                "declared_paths": ["crates/ackplane-bridge/src/work_api.rs"],
+                "declared_symbols": ["symbol:work-api"],
+            }],
+        })
+    );
 
     let detail = app
         .clone()

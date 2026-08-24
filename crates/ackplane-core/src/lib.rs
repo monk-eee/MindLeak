@@ -109,6 +109,18 @@ pub enum FederationReadiness {
 /// never called for `CoordinationMode::Local`, so a repository-local build
 /// never attempts a connection it does not need (ADR-0094's local path stays
 /// network-free regardless of which cargo features this workspace enables).
+///
+/// Reachability only: an unreachable arbiter is `ArbiterUnreachable`, a
+/// reachable one is `Ready`. This deliberately still cannot answer
+/// `NotEnrolled` -- that would mean signing a `CheckEnrollmentStatus`
+/// request with this repository's own candidate private key.
+/// `ackplane_client::identity` now sources and persists that key for
+/// CLI-side bootstrapping (`register-me`), narrowing
+/// `gaps.d/ackplane-client-cannot-detect-unenrolled-repositories.md`, but it
+/// is deliberately NOT wired in here: doing so would make every `federated`
+/// local plane load and sign with the raw key itself at startup, which
+/// ADR-0100 decision 3 reserves for the `ackplane-node` companion's
+/// non-exporting signer. That remains this function's one open gap.
 #[cfg(feature = "federation-client")]
 pub fn compiled_federation_readiness<F>(environment: &F) -> FederationReadiness
 where

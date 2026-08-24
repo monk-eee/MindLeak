@@ -134,6 +134,7 @@
     </div>
   </header>
   <script src="/static/shared/chrome.js" defer></script>
+  <script src="/static/shared/repo-picker.js" defer></script>
   <main class="shell" id="live-app" data-connection="disconnected">
     <p class="eyebrow">Operations stream</p>
     <h1>Live Feed</h1>
@@ -141,8 +142,9 @@
 
     <form class="control-row" id="repository-form">
       <label for="repository-id">Repository
-        <input id="repository-id" name="repository_id" autocomplete="off" placeholder="repository identifier" required>
+        <input id="repository-id" name="repository_id" list="known-repositories" autocomplete="off" placeholder="repository identifier" required>
       </label>
+      <datalist id="known-repositories" data-repo-datalist></datalist>
       <button class="command" type="submit" id="connect-button">Load snapshot</button>
       <button class="command secondary" type="button" id="reload-button">Reload snapshot</button>
     </form>

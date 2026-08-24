@@ -130,6 +130,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0120](0120-industrial-work-domain-is-an-authoritative-task-projection.md) | Industrial Work is an authoritative task projection, not a mirrored board | Accepted |
 | [0121](0121-industrial-design-preserves-immutable-history.md) | Industrial Design preserves immutable history, not a mutable current snapshot | Accepted |
 | [0122](0122-enrollment-status-proof-distinguishes-unreachable-from-unrecognized-binding.md) | Enrollment-status proof distinguishes unreachable from unrecognized binding | Accepted |
+| [0123](0123-bridge-exposes-a-first-industrial-design-mutation-slice.md) | Bridge exposes a first bounded Industrial Design mutation slice | Accepted |
 | [0124](0124-bridge-static-pages-share-one-chrome-asset-not-a-copy-each.md) | Bridge static pages share one chrome asset, not a copy each | Accepted |
 
 ## Writing a new ADR
