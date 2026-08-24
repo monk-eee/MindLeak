@@ -51,7 +51,7 @@
       <div class="panel-head"><h3>Active claims</h3><span id="agents-count" class="count"></span></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Repository</th><th>Agent</th><th>Task</th><th>Branch</th><th>Started</th><th>Lease</th><th>Scope</th></tr></thead>
+          <thead><tr><th>Repository</th><th>Agent</th><th>Task</th><th>Branch</th><th>Started</th><th>Lease</th><th>Scope</th><th>Native Work</th></tr></thead>
           <tbody id="agents-rows"></tbody>
         </table>
       </div>
@@ -61,6 +61,15 @@
           <button type="button" id="agents-prev">Previous</button>
           <button type="button" id="agents-next">Next</button>
         </div>
+      </div>
+    </section>
+    <section class="panel" id="unresolved-waits-panel">
+      <div class="panel-head"><h3>Unresolved waits</h3><span id="unresolved-waits-count" class="count"></span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Repository</th><th>Task</th><th>Question</th><th>Asked</th></tr></thead>
+          <tbody id="unresolved-waits-rows"></tbody>
+        </table>
       </div>
     </section>
   </main>
@@ -139,6 +148,8 @@
     const pagerRange = document.getElementById("agents-pager-range");
     const prevButton = document.getElementById("agents-prev");
     const nextButton = document.getElementById("agents-next");
+    const unresolvedWaitsRows = document.getElementById("unresolved-waits-rows");
+    const unresolvedWaitsCount = document.getElementById("unresolved-waits-count");
 
     const filters = { repository_id: "", owner_id: "" };
     const pageState = { page: 1, pageSize: 20 };
@@ -184,6 +195,7 @@
       const startedSeconds = item.claim_started_at_seconds ?? null;
       const lapses = item.claim_lapses ?? 0;
       const startedLabel = lapses > 0 ? `${relativeTime(startedSeconds)} \u00b7 recovered ${lapses}\u00d7` : relativeTime(startedSeconds);
+      const nativeWorkLabel = item.has_native_work_task ? "Published" : "Claims-only";
       return `<tr>
         <td>${escapeHtml(item.repository_id)}</td>
         <td>${escapeHtml(item.owner_id)}</td>
@@ -192,18 +204,40 @@
         <td title="${escapeHtml(absoluteTime(startedSeconds))}">${escapeHtml(startedLabel)}</td>
         <td title="${escapeHtml(absoluteTime(leaseSeconds))}">${escapeHtml(relativeTime(leaseSeconds))}</td>
         <td class="scope-cell">${scopeCell(item)}</td>
+        <td>${escapeHtml(nativeWorkLabel)}</td>
       </tr>`;
     }
 
     function renderAgentRows(items) {
       if (items.length === 0) {
-        rows.innerHTML = '<tr><td colspan="7"></td></tr>';
+        rows.innerHTML = '<tr><td colspan="8"></td></tr>';
         rows.querySelector("td").appendChild(
           emptyState("Active claims will appear here as agents pick up work.", "No active claims match these filters")
         );
         return;
       }
       rows.innerHTML = items.map(agentRow).join("");
+    }
+
+    function unresolvedWaitRow(wait) {
+      return `<tr>
+        <td>${escapeHtml(wait.repository_id)}</td>
+        <td>${escapeHtml(wait.task_id)}</td>
+        <td>${escapeHtml(wait.question)}</td>
+        <td title="${escapeHtml(absoluteTime(wait.asked_at_seconds))}">${escapeHtml(relativeTime(wait.asked_at_seconds))}</td>
+      </tr>`;
+    }
+
+    function renderUnresolvedWaits(waits) {
+      unresolvedWaitsCount.textContent = `${waits.length} wait${waits.length === 1 ? "" : "s"}`;
+      if (waits.length === 0) {
+        unresolvedWaitsRows.innerHTML = '<tr><td colspan="4"></td></tr>';
+        unresolvedWaitsRows.querySelector("td").appendChild(
+          emptyState("No task has an unanswered wait past the staleness threshold.", "No unresolved waits")
+        );
+        return;
+      }
+      unresolvedWaitsRows.innerHTML = waits.map(unresolvedWaitRow).join("");
     }
 
     function updatePager() {
@@ -230,12 +264,13 @@
         const result = await response.json();
         totalAgents = result.total;
         renderAgentRows(result.items);
+        renderUnresolvedWaits(result.unresolved_waits || []);
         updatePager();
         status.textContent = result.items.length
           ? `Showing ${result.items.length} of ${totalAgents} active claim${totalAgents === 1 ? "" : "s"}.`
           : "No active claims match these filters.";
       } catch (error) {
-        rows.innerHTML = '<tr><td colspan="6"></td></tr>';
+        rows.innerHTML = '<tr><td colspan="8"></td></tr>';
         rows.querySelector("td").appendChild(emptyState(error.message, "Agents unavailable"));
         pagerRange.textContent = "0 of 0";
         prevButton.disabled = true;
@@ -247,6 +282,7 @@
     }
 
     renderAgentRows([]);
+    renderUnresolvedWaits([]);
     loadAgents();
     startVisibleRefresh(loadAgents, REFRESH_INTERVAL_MS);
   </script>

@@ -26,6 +26,26 @@ const FLEET_WORK_RS: &str = include_str!("../../ackplane-server/src/fleet/work.r
 /// { ... }` block - this guard must scan all three, not just one.
 const FLEET_SOURCES: &[&str] = &[FLEET_MOD_RS, FLEET_REPOSITORIES_RS, FLEET_WORK_RS];
 const KNOWLEDGE_STORE_RS: &str = include_str!("../../ackplane-server/src/knowledge_store.rs");
+const KNOWLEDGE_STORE_CONNECTION_RS: &str =
+    include_str!("../../ackplane-server/src/knowledge_store/connection.rs");
+const KNOWLEDGE_STORE_QUERY_RS: &str =
+    include_str!("../../ackplane-server/src/knowledge_store/query.rs");
+const KNOWLEDGE_STORE_RECORD_RS: &str =
+    include_str!("../../ackplane-server/src/knowledge_store/record.rs");
+const KNOWLEDGE_STORE_RECONFIRMATION_RS: &str =
+    include_str!("../../ackplane-server/src/knowledge_store/reconfirmation.rs");
+/// `KnowledgeStore`'s methods are split (below the module-length ratchet)
+/// across `knowledge_store.rs`/`connection.rs`/`query.rs`/`record.rs`/
+/// `reconfirmation.rs`, each with its own `impl KnowledgeStore { ... }`
+/// block - this guard must scan all five, not just one. `reach.rs` has no
+/// `impl KnowledgeStore` block (free functions only), so it is not scanned.
+const KNOWLEDGE_STORE_SOURCES: &[&str] = &[
+    KNOWLEDGE_STORE_RS,
+    KNOWLEDGE_STORE_CONNECTION_RS,
+    KNOWLEDGE_STORE_QUERY_RS,
+    KNOWLEDGE_STORE_RECORD_RS,
+    KNOWLEDGE_STORE_RECONFIRMATION_RS,
+];
 const CLAIM_STORE_MOD_RS: &str = include_str!("../../ackplane-server/src/claim_store/mod.rs");
 const CLAIM_STORE_LEASE_RS: &str = include_str!("../../ackplane-server/src/claim_store/lease.rs");
 
@@ -235,7 +255,7 @@ fn every_fleet_store_query_requires_an_explicit_tenant_id() {
 
 #[test]
 fn every_knowledge_store_query_requires_an_explicit_tenant_id() {
-    let methods = extract_impl_methods(KNOWLEDGE_STORE_RS, "KnowledgeStore");
+    let methods = extract_impl_methods_from_any(KNOWLEDGE_STORE_SOURCES, "KnowledgeStore");
     assert!(
         !methods.is_empty(),
         "expected to find at least one KnowledgeStore method - the parser may be broken"

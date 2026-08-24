@@ -12,6 +12,8 @@ ackplane-protocol = { path = "../ackplane-protocol" }
 ed25519-dalek = "2.1"
 getrandom = "0.2"
 keyring = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 time = { version = "0.3.47", features = ["formatting"] }
 tokio = { workspace = true }
@@ -19,7 +21,6 @@ tonic = { workspace = true }
 
 [dev-dependencies]
 ackplane-server = { path = "../ackplane-server" }
-serde_json = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true, features = ["net", "sync"] }
 tokio-postgres = { workspace = true }
