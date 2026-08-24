@@ -176,6 +176,59 @@ impl WorkStore {
 
         Ok(findings)
     }
+
+    /// The `UnansweredWait` finding from `board_doctor`, read across ALL of a
+    /// tenant's repositories at once and bounded to `limit` oldest-first --
+    /// the cross-repository view the Bridge Agents page needs so an operator
+    /// does not have to open Board Doctor once per repository to find a
+    /// stalled agent.
+    pub async fn fleet_unanswered_waits(
+        &self,
+        tenant_id: &str,
+        now: SystemTime,
+        unanswered_wait_threshold: std::time::Duration,
+        limit: i64,
+    ) -> Result<Vec<FleetUnansweredWait>, WorkStoreError> {
+        let stale_before = now
+            .checked_sub(unanswered_wait_threshold)
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let rows = self
+            .client
+            .query(
+                "SELECT w.repository_id, w.task_id, w.wait_id, w.question, w.asked_at \
+                 FROM work_task_waits w \
+                 INNER JOIN work_tasks t \
+                    ON t.tenant_id = w.tenant_id AND t.repository_id = w.repository_id \
+                   AND t.task_id = w.task_id \
+                 WHERE w.tenant_id = $1 AND w.answered_at IS NULL \
+                   AND w.asked_at < $2 AND t.state NOT IN (7, 8) \
+                 ORDER BY w.asked_at ASC LIMIT $3",
+                &[&tenant_id, &stale_before, &limit],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| FleetUnansweredWait {
+                repository_id: row.get("repository_id"),
+                task_id: row.get("task_id"),
+                wait_id: row.get("wait_id"),
+                question: row.get("question"),
+                asked_at: row.get("asked_at"),
+            })
+            .collect())
+    }
+}
+
+/// One unresolved wait, named to its repository, as read by
+/// `fleet_unanswered_waits` -- the cross-repository counterpart of
+/// `WorkDoctorFinding::UnansweredWait`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FleetUnansweredWait {
+    pub repository_id: String,
+    pub task_id: String,
+    pub wait_id: String,
+    pub question: String,
+    pub asked_at: SystemTime,
 }
 
 #[cfg(test)]
@@ -652,6 +705,138 @@ mod tests {
                 state: WorkTaskState::Completed,
                 detail: "a terminal task still carries an owner or a live lease".to_owned(),
             }]
+        );
+    }
+
+    #[tokio::test]
+    async fn fleet_unanswered_waits_spans_every_repository_and_excludes_another_tenant() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let tenant_id = unique_id("tenant");
+        let first_repository_id = unique_id("repo");
+        let second_repository_id = unique_id("repo");
+        let other_tenant_id = unique_id("tenant");
+        let other_repository_id = unique_id("repo");
+        let mut store = WorkStore::connect(&database_url).await.expect("connect");
+        let raw = raw_client(&database_url).await;
+
+        let older_task_id = unique_id("task");
+        let older_wait_id = unique_id("wait");
+        store
+            .create_task(
+                &new_task(
+                    &tenant_id,
+                    &first_repository_id,
+                    &older_task_id,
+                    "Ship the older thing",
+                ),
+                &unique_id("event"),
+                SystemTime::now(),
+            )
+            .await
+            .expect("create the first repository's task");
+        let older_asked_at =
+            truncate_to_micros(SystemTime::now() - Duration::from_secs(3 * 24 * 3600));
+        raw.execute(
+            "INSERT INTO work_task_waits (tenant_id, repository_id, wait_id, task_id, question, \
+                asked_by, asked_at) VALUES ($1,$2,$3,$4,'older question','tester',$5)",
+            &[
+                &tenant_id,
+                &first_repository_id,
+                &older_wait_id,
+                &older_task_id,
+                &older_asked_at,
+            ],
+        )
+        .await
+        .expect("insert the older unanswered wait");
+
+        let newer_task_id = unique_id("task");
+        let newer_wait_id = unique_id("wait");
+        store
+            .create_task(
+                &new_task(
+                    &tenant_id,
+                    &second_repository_id,
+                    &newer_task_id,
+                    "Ship the newer thing",
+                ),
+                &unique_id("event"),
+                SystemTime::now(),
+            )
+            .await
+            .expect("create the second repository's task");
+        let newer_asked_at =
+            truncate_to_micros(SystemTime::now() - Duration::from_secs(2 * 24 * 3600));
+        raw.execute(
+            "INSERT INTO work_task_waits (tenant_id, repository_id, wait_id, task_id, question, \
+                asked_by, asked_at) VALUES ($1,$2,$3,$4,'newer question','tester',$5)",
+            &[
+                &tenant_id,
+                &second_repository_id,
+                &newer_wait_id,
+                &newer_task_id,
+                &newer_asked_at,
+            ],
+        )
+        .await
+        .expect("insert the newer unanswered wait");
+
+        let other_task_id = unique_id("task");
+        store
+            .create_task(
+                &new_task(
+                    &other_tenant_id,
+                    &other_repository_id,
+                    &other_task_id,
+                    "Ship another tenant's thing",
+                ),
+                &unique_id("event"),
+                SystemTime::now(),
+            )
+            .await
+            .expect("create the other tenant's task");
+        let other_asked_at =
+            truncate_to_micros(SystemTime::now() - Duration::from_secs(3 * 24 * 3600));
+        raw.execute(
+            "INSERT INTO work_task_waits (tenant_id, repository_id, wait_id, task_id, question, \
+                asked_by, asked_at) VALUES ($1,$2,$3,$4,'other tenant question','tester',$5)",
+            &[
+                &other_tenant_id,
+                &other_repository_id,
+                &unique_id("wait"),
+                &other_task_id,
+                &other_asked_at,
+            ],
+        )
+        .await
+        .expect("insert the other tenant's unanswered wait");
+
+        let waits = store
+            .fleet_unanswered_waits(&tenant_id, SystemTime::now(), Duration::from_secs(3600), 20)
+            .await
+            .expect("fleet unanswered waits");
+
+        assert_eq!(
+            waits,
+            vec![
+                FleetUnansweredWait {
+                    repository_id: first_repository_id,
+                    task_id: older_task_id,
+                    wait_id: older_wait_id,
+                    question: "older question".to_owned(),
+                    asked_at: older_asked_at,
+                },
+                FleetUnansweredWait {
+                    repository_id: second_repository_id,
+                    task_id: newer_task_id,
+                    wait_id: newer_wait_id,
+                    question: "newer question".to_owned(),
+                    asked_at: newer_asked_at,
+                },
+            ]
         );
     }
 }

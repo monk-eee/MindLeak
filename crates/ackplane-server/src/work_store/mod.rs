@@ -430,7 +430,7 @@ mod doctor;
 mod ingress;
 mod publication;
 
-pub use doctor::WorkDoctorFinding;
+pub use doctor::{FleetUnansweredWait, WorkDoctorFinding};
 pub(crate) use ingress::WorkTaskCreationOutcome;
 pub use publication::{ClaimsOnlyWork, WorkPublication};
 

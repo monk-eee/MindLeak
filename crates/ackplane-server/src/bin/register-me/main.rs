@@ -4,7 +4,7 @@
 //!   register-me request  --repo R --node N (--tenant-name T --salt-path PATH | --tenant-id ID)
 //!   register-me approve  --request-id ID (--tenant-name T --salt-path PATH | --tenant-id ID)
 //!                        --repo R --fingerprint FP --admin-database-url URL
-//!   register-me activate --request-id ID --key-path PATH
+//!   register-me activate --request-id ID
 //!
 //! `request` is the only step a node ever runs unattended. `approve` is a
 //! separate administrator action — ADR-0085 gives a node no way to approve
@@ -17,6 +17,13 @@
 //! is visibly live (e.g. in the Bridge Fleet view). `EnrollmentActivationResult`
 //! returns the assigned `signing_key_id` directly, so `activate` needs no
 //! database access at all.
+//!
+//! `--key-path` defaults to `ackplane_client::identity::DEFAULT_KEY_PATH`
+//! (override with `MINDLEAK_ACKPLANE_KEY_PATH` or an explicit `--key-path`)
+//! so a single-node repository's identity lands somewhere
+//! `compiled_federation_readiness` already knows to look, without the node
+//! and the administrator needing to pass a path between each other by hand
+//! (closes `gaps.d/ackplane-client-cannot-detect-unenrolled-repositories.md`).
 //!
 //! `--tenant-name` + `--salt-path` derive the same tenant id the Bridge
 //! queries for (ADR-0098 decision 3) -- use it, or an enrolled repository
@@ -105,11 +112,16 @@ fn require<'a>(flags: &'a HashMap<String, String>, name: &str) -> Result<&'a str
         .ok_or_else(|| format!("--{name} is required"))
 }
 
-fn key_path(flags: &HashMap<String, String>, node_id: &str) -> PathBuf {
+/// The key path this invocation should use: an explicit `--key-path`
+/// override, or the same repository-local default (and
+/// `MINDLEAK_ACKPLANE_KEY_PATH` override) `ackplane-core`'s
+/// `compiled_federation_readiness` resolves, so a single-node repository
+/// never has to pass a path from `request` to `activate` by hand.
+fn key_path(flags: &HashMap<String, String>) -> PathBuf {
     flags
         .get("key-path")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(format!("register-me-{node_id}.key")))
+        .unwrap_or_else(|| ackplane_client::resolve_key_path(&|name| std::env::var(name).ok()))
 }
 
 fn state_path(key_path: &Path) -> PathBuf {
@@ -139,6 +151,11 @@ fn load_or_generate_key(path: &Path) -> std::io::Result<SigningKey> {
             return Ok(SigningKey::from_bytes(&seed));
         }
     }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
     let mut seed = [0_u8; 32];
     getrandom::getrandom(&mut seed)
         .map_err(|error| std::io::Error::other(format!("could not generate a key: {error}")))?;
@@ -158,7 +175,10 @@ fn print_usage() {
          \x20 register-me approve  --request-id ID (--tenant-name T --salt-path PATH | --tenant-id ID)\n\
          \x20                      --repo R --fingerprint FP --admin-database-url URL\n\
          \x20                      [--approved-by NAME]\n\
-         \x20 register-me activate --request-id ID --key-path PATH [--grpc-endpoint URL] [--skip-sync]\n\n\
+         \x20 register-me activate --request-id ID [--key-path PATH] [--grpc-endpoint URL] [--skip-sync]\n\n\
+         `--key-path` defaults to the same repository-local path on every subcommand\n\
+         (see `ackplane_client::identity::DEFAULT_KEY_PATH`; override with\n\
+         `MINDLEAK_ACKPLANE_KEY_PATH` or an explicit flag).\n\n\
          `--tenant-name` + `--salt-path` derive the same tenant id the Bridge queries for\n\
          (ADR-0098 decision 3) -- use it, or the enrolled repository will never appear there.\n\
          `--tenant-id` is a raw override for a deployment that assigns tenant ids some other way.\n\n\
@@ -235,11 +255,11 @@ mod tests {
     }
 
     #[test]
-    fn key_path_defaults_to_a_name_derived_from_the_node_id() {
+    fn key_path_defaults_to_the_well_known_repository_local_path() {
         let flags = HashMap::new();
         assert_eq!(
-            key_path(&flags, "my-node"),
-            PathBuf::from("register-me-my-node.key")
+            key_path(&flags),
+            PathBuf::from(ackplane_client::DEFAULT_KEY_PATH)
         );
     }
 
@@ -247,10 +267,7 @@ mod tests {
     fn key_path_honors_an_explicit_override() {
         let mut flags = HashMap::new();
         flags.insert("key-path".to_string(), "/tmp/explicit.key".to_string());
-        assert_eq!(
-            key_path(&flags, "my-node"),
-            PathBuf::from("/tmp/explicit.key")
-        );
+        assert_eq!(key_path(&flags), PathBuf::from("/tmp/explicit.key"));
     }
 
     #[test]
