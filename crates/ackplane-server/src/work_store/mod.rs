@@ -8,10 +8,10 @@
 //! findings -- decision 7's "first Bridge Work surface is read-only and
 //! bounded". It does not yet implement the full event-sourced
 //! expected-prior-version/idempotency-key optimistic concurrency decision 3
-//! describes, and nothing yet produces Work events in production (no
-//! ingestion RPC exists) -- `create_task` is the seed path for tests and any
-//! future producer. Bridge-exposed mutation commands remain out of scope
-//! entirely per decision 8.
+//! describes. Authenticated NodeSync work creation supplies the initial
+//! idempotent event in production; later lifecycle mutations remain deferred.
+//! Bridge-exposed mutation commands remain out of scope entirely per decision
+//! 8.
 #![allow(dead_code)]
 
 use std::time::SystemTime;
@@ -91,9 +91,9 @@ pub struct WorkTask {
     pub updated_at: SystemTime,
 }
 
-/// A new task's initial event (ADR-0120 decision 2). `source_digest` is
-/// computed from `title`+`acceptance`+`declared_paths`+`declared_symbols` so
-/// a replay can verify the projection was built from this exact content.
+/// A new task's initial event (ADR-0120 decision 2). `source_digest` covers
+/// its immutable bounded content; the event identity and publisher bind the
+/// remaining replay authority.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewWorkTask {
     pub tenant_id: String,
@@ -157,21 +157,30 @@ pub enum WorkStoreError {
     },
 }
 
-fn source_digest(title: &str, acceptance: &str, paths: &[String], symbols: &[String]) -> Vec<u8> {
+fn source_digest(task: &NewWorkTask) -> Vec<u8> {
     let mut hasher = Sha256::new();
-    hasher.update(title.as_bytes());
-    hasher.update([0]);
-    hasher.update(acceptance.as_bytes());
-    hasher.update([0]);
-    for path in paths {
-        hasher.update(path.as_bytes());
-        hasher.update([0]);
+    append_digest_part(&mut hasher, b"mindleak.ackplane.work.task.v1");
+    append_digest_part(&mut hasher, task.title.as_bytes());
+    append_digest_part(&mut hasher, task.acceptance.as_bytes());
+    match &task.goal_id {
+        Some(goal_id) => {
+            hasher.update([1]);
+            append_digest_part(&mut hasher, goal_id.as_bytes());
+        }
+        None => hasher.update([0]),
     }
-    for symbol in symbols {
-        hasher.update(symbol.as_bytes());
-        hasher.update([0]);
+    for values in [&task.declared_paths, &task.declared_symbols] {
+        hasher.update((values.len() as u64).to_be_bytes());
+        for value in values {
+            append_digest_part(&mut hasher, value.as_bytes());
+        }
     }
     hasher.finalize().to_vec()
+}
+
+fn append_digest_part(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update((value.len() as u64).to_be_bytes());
+    hasher.update(value);
 }
 
 /// Read-write access to a tenant's Industrial Work namespace.
@@ -211,12 +220,7 @@ impl WorkStore {
         event_id: &str,
         now: SystemTime,
     ) -> Result<WorkTask, WorkStoreError> {
-        let digest = source_digest(
-            &task.title,
-            &task.acceptance,
-            &task.declared_paths,
-            &task.declared_symbols,
-        );
+        let digest = source_digest(task);
         let transaction = self.client.transaction().await?;
         let inserted = transaction
             .execute(
@@ -423,9 +427,11 @@ impl WorkStore {
 }
 
 mod doctor;
+mod ingress;
 mod publication;
 
 pub use doctor::WorkDoctorFinding;
+pub(crate) use ingress::WorkTaskCreationOutcome;
 pub use publication::{ClaimsOnlyWork, WorkPublication};
 
 #[cfg(test)]
