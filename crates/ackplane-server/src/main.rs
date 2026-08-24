@@ -29,6 +29,7 @@ use ackplane_server::{
     supervisor_store::SupervisorStore,
     telemetry_service::TelemetryGrpcService,
     telemetry_store::TelemetryStore,
+    work_store::WorkStore,
     ServerConfig,
 };
 
@@ -138,6 +139,15 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            let work_store = match WorkStore::connect(config.database_url()).await {
+                Ok(store) => store,
+                Err(error) => {
+                    eprintln!(
+                        "ackplane-server: could not connect to the configured Industrial Work store: {error}"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            };
             // ADR-0086 clause 9: a projection worker reads the durable ledger
             // through checkpoints on its own cadence, decoupled from request
             // handling; a stalled or errored tick never stops the gRPC server.
@@ -147,7 +157,7 @@ async fn main() -> ExitCode {
             ));
 
             println!(
-                "ackplane-server: serving NodeSyncService.Synchronize, NodeEnrollmentService, ClaimDelegationService, KnowledgeService, EvidenceService, ConstitutionService, TelemetryService, authenticated supervisor facts, and directive receipts"
+                "ackplane-server: serving NodeSyncService.Synchronize, NodeEnrollmentService, ClaimDelegationService, KnowledgeService, EvidenceService, ConstitutionService, TelemetryService, authenticated supervisor facts, directive receipts, and native Industrial Work ingress"
             );
             let server = tonic::transport::Server::builder();
             let mut server = match tls {
@@ -162,10 +172,11 @@ async fn main() -> ExitCode {
             };
             match server
                 .add_service(NodeSyncServiceServer::new(
-                    NodeSyncService::with_supervisor_and_directive_store(
+                    NodeSyncService::with_supervisor_directive_and_work_store(
                         ledger,
                         supervisor_store,
                         directive_store,
+                        work_store,
                         v1::FlowControl {
                             max_in_flight_batches: config.max_in_flight_batches,
                             max_batch_bytes: config.max_batch_bytes,

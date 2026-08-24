@@ -9,13 +9,14 @@ use tonic::{Request, Response, Status};
 
 use crate::{
     directive_store::DirectiveStore, ledger::LedgerStore, signing_keys::EnvelopeBinding,
-    supervisor_store::SupervisorStore,
+    supervisor_store::SupervisorStore, work_store::WorkStore,
 };
 
 mod directive_receipt;
 mod frame;
 mod handshake;
 mod supervisor;
+mod work_ingress;
 
 use frame::{handle_frame, must_terminate_after};
 
@@ -81,6 +82,7 @@ pub struct NodeSyncService {
     ledger: Arc<Mutex<LedgerStore>>,
     supervisor: Option<Arc<Mutex<SupervisorStore>>>,
     directives: Option<Arc<Mutex<DirectiveStore>>>,
+    work: Option<Arc<Mutex<WorkStore>>>,
     flow_control: v1::FlowControl,
 }
 
@@ -93,6 +95,7 @@ impl NodeSyncService {
             ledger: Arc::new(Mutex::new(ledger)),
             supervisor: None,
             directives: None,
+            work: None,
             flow_control,
         }
     }
@@ -108,6 +111,7 @@ impl NodeSyncService {
             ledger: Arc::new(Mutex::new(ledger)),
             supervisor: Some(Arc::new(Mutex::new(supervisor))),
             directives: None,
+            work: None,
             flow_control,
         }
     }
@@ -124,6 +128,41 @@ impl NodeSyncService {
             ledger: Arc::new(Mutex::new(ledger)),
             supervisor: Some(Arc::new(Mutex::new(supervisor))),
             directives: Some(Arc::new(Mutex::new(directives))),
+            work: None,
+            flow_control,
+        }
+    }
+
+    /// Constructs a NodeSync service that accepts native Industrial Work
+    /// creation after the connection challenge authenticates its publisher.
+    pub fn with_work_store(
+        ledger: LedgerStore,
+        work: WorkStore,
+        flow_control: v1::FlowControl,
+    ) -> Self {
+        Self {
+            ledger: Arc::new(Mutex::new(ledger)),
+            supervisor: None,
+            directives: None,
+            work: Some(Arc::new(Mutex::new(work))),
+            flow_control,
+        }
+    }
+
+    /// Constructs the production NodeSync service with supervisor, directive,
+    /// and native Industrial Work persistence enabled.
+    pub fn with_supervisor_directive_and_work_store(
+        ledger: LedgerStore,
+        supervisor: SupervisorStore,
+        directives: DirectiveStore,
+        work: WorkStore,
+        flow_control: v1::FlowControl,
+    ) -> Self {
+        Self {
+            ledger: Arc::new(Mutex::new(ledger)),
+            supervisor: Some(Arc::new(Mutex::new(supervisor))),
+            directives: Some(Arc::new(Mutex::new(directives))),
+            work: Some(Arc::new(Mutex::new(work))),
             flow_control,
         }
     }
@@ -140,6 +179,7 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
         let ledger = Arc::clone(&self.ledger);
         let supervisor = self.supervisor.as_ref().map(Arc::clone);
         let directives = self.directives.as_ref().map(Arc::clone);
+        let work = self.work.as_ref().map(Arc::clone);
         let flow_control = self.flow_control;
         let (sender, receiver) = mpsc::channel(8);
 
@@ -218,6 +258,23 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
                                         }
                                     } else {
                                         vec![directive_receipt::unavailable_frame()]
+                                    }
+                                }
+                                Some((tenant_id, repository_id, node_id))
+                                    if work_ingress::is_work_task_create_frame(&frame) =>
+                                {
+                                    if let Some(work) = work.as_ref() {
+                                        let mut store = work.lock().await;
+                                        work_ingress::handle_authenticated_frame(
+                                            frame,
+                                            &tenant_id,
+                                            &repository_id,
+                                            &node_id,
+                                            &mut store,
+                                        )
+                                        .await
+                                    } else {
+                                        vec![work_ingress::unavailable_frame()]
                                     }
                                 }
                                 _ => handle_frame(
