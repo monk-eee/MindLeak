@@ -103,7 +103,10 @@ impl LodestarStore {
             }
         } else if !compatible_legacy_owner(expected_owner, target_agent, target_name) {
             return Err(LodestarError::Invalid(
-                "claim recovery requires a compatible legacy owner and registered session identity"
+                "claim recovery requires a compatible legacy owner and registered session \
+                 identity; recover exists only for a pre-ADR-0054 owner string or an early \
+                 paused-task transfer, not an ordinary lapsed claimed lease -- call task_claim \
+                 with step=claim instead, which already succeeds once the lease has expired"
                     .to_string(),
             ));
         }
