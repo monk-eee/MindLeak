@@ -111,7 +111,10 @@ underlying data grows, not applied identically everywhere.**
     pagination when next touched. Their `(lease_expires_at, task_id)` cursor
     is exposed as paired `after_lease_expires_at_micros` and `after_task_id`
     query fields, with `next_after` carrying the next page boundary.
-    `knowledge` remains pending.
+  - **Update:** `knowledge` adopted compound keyset pagination when next
+    touched. Its `(confirmed_at DESC, knowledge_id ASC)` cursor is exposed as
+    paired `before_confirmed_at_micros` and `before_knowledge_id` query
+    fields, with `next_before` carrying the next page boundary.
 - Any future Bridge list view chooses one of these two named shapes at
   design time based on its own data's growth pattern, rather than each view
   inventing its own bespoke limit-and-hope-nobody-asks-for-page-2 pattern the

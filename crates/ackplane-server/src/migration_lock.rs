@@ -98,6 +98,8 @@ pub(crate) mod key {
     pub(crate) const INDUSTRIAL_DESIGN_WORK_REFERENCE: i64 = 31;
     /// `migrations/0032_industrial_design_materializations.sql`
     pub(crate) const INDUSTRIAL_DESIGN_MATERIALIZATIONS: i64 = 32;
+    /// `migrations/0033_knowledge_active_page_index.sql`
+    pub(crate) const KNOWLEDGE_ACTIVE_PAGE_INDEX: i64 = 33;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

@@ -1,5 +1,8 @@
+use tokio_postgres::Row;
+
 use super::{
-    ActiveKnowledge, KnowledgeHistoryEntry, KnowledgeStore, KnowledgeStoreError, RecallResult,
+    ActiveKnowledge, ActiveKnowledgeCursor, ActiveKnowledgePage, KnowledgeHistoryEntry,
+    KnowledgeStore, KnowledgeStoreError, RecallResult,
 };
 
 /// The same decay expression as `mindleak-core::decay::effective_weight`,
@@ -85,25 +88,73 @@ impl KnowledgeStore {
                     .await?
             }
         };
-        let entries = rows
-            .into_iter()
-            .map(|row| ActiveKnowledge {
-                knowledge_id: row.get("knowledge_id"),
-                content: row.get("content"),
-                source_ref: row.get("source_ref"),
-                recorded_by: row.get("recorded_by"),
-                reach_node_ids: row.get("reach_node_ids"),
-                reach_goal_id: row.get("reach_goal_id"),
-                last_reconfirmed_at: row.get("last_reconfirmed_at"),
-                last_reconfirmed_by: row.get("last_reconfirmed_by"),
-                last_reconfirmation_evidence_ref: row.get("last_reconfirmation_evidence_ref"),
-                effective_weight: row.get("effective_weight"),
-                confirmed_at: row.get("confirmed_at"),
-            })
-            .collect();
+        let entries = rows.into_iter().map(active_knowledge_from_row).collect();
         Ok(RecallResult {
             entries,
             ranked_by_similarity,
+        })
+    }
+
+    /// One deterministic, recency-ordered page of active knowledge for the
+    /// Bridge. This stays separate from [`Self::recall`], whose decay or
+    /// similarity ranking is deliberately semantic rather than cursor-stable.
+    pub async fn active_page(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        before: Option<&ActiveKnowledgeCursor>,
+        page_size: i64,
+    ) -> Result<ActiveKnowledgePage, KnowledgeStoreError> {
+        let page_size = page_size.max(1);
+        let before_confirmed_at = before.map(|cursor| cursor.confirmed_at);
+        let before_knowledge_id = before
+            .map(|cursor| cursor.knowledge_id.as_str())
+            .unwrap_or_default();
+        let rows = self
+            .client
+            .query(
+                &format!(
+                    "SELECT k.knowledge_id, k.content, k.source_ref, k.recorded_by, k.reach_node_ids, k.reach_goal_id, k.confirmed_at, \
+                            latest_reconfirmation.last_reconfirmed_at, \
+                            latest_reconfirmation.last_reconfirmed_by, \
+                            latest_reconfirmation.last_reconfirmation_evidence_ref, \
+                                {EFFECTIVE_WEIGHT_SQL} AS effective_weight \
+                     FROM knowledge k \
+                     {LATEST_RECONFIRMATION_JOIN} \
+                     WHERE k.tenant_id = $1 AND k.repository_id = $2 AND k.retired_at IS NULL \
+                       AND ($3::timestamptz IS NULL \
+                            OR k.confirmed_at < $3 \
+                            OR (k.confirmed_at = $3 AND k.knowledge_id > $4)) \
+                     ORDER BY k.confirmed_at DESC, k.knowledge_id ASC \
+                     LIMIT $5"
+                ),
+                &[
+                    &tenant_id,
+                    &repository_id,
+                    &before_confirmed_at,
+                    &before_knowledge_id,
+                    &page_size.saturating_add(1),
+                ],
+            )
+            .await?;
+        let has_next_page = rows.len() > page_size as usize;
+        let entries = rows
+            .into_iter()
+            .take(page_size as usize)
+            .map(active_knowledge_from_row)
+            .collect::<Vec<_>>();
+        let next_before = has_next_page
+            .then(|| {
+                entries.last().map(|entry| ActiveKnowledgeCursor {
+                    confirmed_at: entry.confirmed_at,
+                    knowledge_id: entry.knowledge_id.clone(),
+                })
+            })
+            .flatten();
+
+        Ok(ActiveKnowledgePage {
+            entries,
+            next_before,
         })
     }
 
@@ -151,5 +202,21 @@ impl KnowledgeStore {
                 retired_by: row.get("retired_by"),
             })
             .collect())
+    }
+}
+
+fn active_knowledge_from_row(row: Row) -> ActiveKnowledge {
+    ActiveKnowledge {
+        knowledge_id: row.get("knowledge_id"),
+        content: row.get("content"),
+        source_ref: row.get("source_ref"),
+        recorded_by: row.get("recorded_by"),
+        reach_node_ids: row.get("reach_node_ids"),
+        reach_goal_id: row.get("reach_goal_id"),
+        last_reconfirmed_at: row.get("last_reconfirmed_at"),
+        last_reconfirmed_by: row.get("last_reconfirmed_by"),
+        last_reconfirmation_evidence_ref: row.get("last_reconfirmation_evidence_ref"),
+        effective_weight: row.get("effective_weight"),
+        confirmed_at: row.get("confirmed_at"),
     }
 }
