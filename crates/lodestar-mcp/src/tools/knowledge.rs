@@ -5,6 +5,16 @@ use super::{i64_arg, ok, opt_str, req_str, str_array, text};
 use lodestar_core::{KnowledgeMatches, KnowledgeReach, Lodestar, SignalPromotion};
 use serde_json::{json, Value};
 
+/// Cap on the `knowledge` array `active_knowledge` returns in one call.
+///
+/// An unfiltered read of a long-lived repository's lesson history had no
+/// bound: every active statement's full text, once per record, in a single
+/// reply a chat client then persists in full. Already ordered strongest
+/// first, so truncating keeps the most relevant lessons, not an arbitrary
+/// prefix. `count`/`never_surfaces`/`reaches_by_goal_only` are computed
+/// before this cut and stay exact regardless of it.
+const KNOWLEDGE_PREVIEW_LIMIT: usize = 50;
+
 pub(super) fn definitions() -> Vec<Value> {
     vec![
         json!({
@@ -92,7 +102,7 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "active_knowledge",
-            "description": "Read what this repository has learned and not yet forgotten. Knowledge was write-only from this surface: it could be recorded, promoted, reconfirmed and pruned, but never read, so the only consumer was the conformance advisory and an agent could not find out what was already known before rediscovering it. Pass `query` to ask a question rather than guess a spelling. Each entry reports how it reaches an agent: `reach` is `node` when the nodes it names carry it unconditionally, `goal:<id>` when it names none but still reaches work under the goal it was learned under (a capped, contended path), and `none` when it has neither and arrives nowhere.",
+            "description": "Read what this repository has learned and not yet forgotten. Knowledge was write-only from this surface: it could be recorded, promoted, reconfirmed and pruned, but never read, so the only consumer was the conformance advisory and an agent could not find out what was already known before rediscovering it. Pass `query` to ask a question rather than guess a spelling. Each entry reports how it reaches an agent: `reach` is `node` when the nodes it names carry it unconditionally, `goal:<id>` when it names none but still reaches work under the goal it was learned under (a capped, contended path), and `none` when it has neither and arrives nowhere. The `knowledge` array returned is capped at the strongest 50 entries (`knowledge_truncated` says whether more exist); `count`/`never_surfaces`/`reaches_by_goal_only` still describe the full matching set, not just what was returned.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -372,6 +382,16 @@ pub(super) fn dispatch(
                     );
                 }
             }
+            // The reply above is sized off the full matching set; only the
+            // array actually sent over the wire is cut, and only here, so
+            // every count above stays a true count of what matched.
+            if let Some(object) = body.as_object_mut() {
+                if let Some(Value::Array(knowledge)) = object.get_mut("knowledge") {
+                    let truncated = knowledge.len() > KNOWLEDGE_PREVIEW_LIMIT;
+                    knowledge.truncate(KNOWLEDGE_PREVIEW_LIMIT);
+                    object.insert("knowledge_truncated".to_string(), json!(truncated));
+                }
+            }
             ok(&body)
         })()),
         "reconfirm_knowledge" => Some((|| {
@@ -450,6 +470,45 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    // Regression: an unfiltered `active_knowledge` call had no bound on the
+    // `knowledge` array at all, so a repository with hundreds of active
+    // lessons turned one read into a multi-megabyte reply. The returned array
+    // must be capped, and the full-set counts must still describe everything
+    // that matched, not just what made it into the truncated reply.
+    #[test]
+    fn an_unfiltered_read_is_capped_but_still_counts_the_full_set() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let total = super::KNOWLEDGE_PREVIEW_LIMIT + 5;
+        for i in 0..total {
+            record(&engine, &format!("lesson {i}"), "{}");
+        }
+
+        let body = payload(
+            call(
+                &engine,
+                &json!({ "name": "active_knowledge", "arguments": {} }),
+            )
+            .unwrap(),
+        );
+
+        assert_eq!(
+            body["count"],
+            json!(total),
+            "the full set is still counted: {body}"
+        );
+        assert_eq!(
+            body["never_surfaces"],
+            json!(total),
+            "diagnostic counts describe the full set, not just what was returned: {body}"
+        );
+        assert_eq!(
+            body["knowledge"].as_array().unwrap().len(),
+            super::KNOWLEDGE_PREVIEW_LIMIT,
+            "the reply itself is capped: {body}"
+        );
+        assert_eq!(body["knowledge_truncated"], json!(true), "{body}");
     }
 
     /// The advertised schema tells a caller what evidence must carry.
