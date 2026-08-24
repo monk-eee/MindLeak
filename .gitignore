@@ -28,6 +28,18 @@ editors/vscode/coverage/
 /.github/instructions/
 /.github/prompts/
 
+# Local Ackplane dev config (ports, salt path) -- see .env.example for the
+# documented defaults; real values here are developer-machine-local only.
+/.env
+
 # Editor / OS
 .DS_Store
 Thumbs.db
+
+# A linked worktree occasionally lands nested inside this checkout instead of
+# as a sibling directory (ADR-0038 expects the latter). It carries its own
+# .git file and is not this checkout's content; without this, an untracked
+# nested worktree makes every status/clean-tree check here see "uncommitted
+# changes" that are not actually uncommitted -- they belong to another branch
+# entirely.
+/MindLeak-*/

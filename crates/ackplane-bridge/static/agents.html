@@ -4,14 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MindLeak Bridge Agents</title>
+  <link rel="stylesheet" href="/static/shared/chrome.css">
   <style>
-    :root { color-scheme: light; --bg:#faf6f3; --surface:#fff; --soft:#f6f1ee; --line:#e9dfd9; --ink:#1f2542; --muted:#62677f; --quiet:#9094aa; --teal:#169c99; --amber:#d4881e; --rose:#e8578f; --danger:#c03d58; --focus:0 0 0 3px rgba(232,87,143,.28); }
+    :root { color-scheme: light; --bg:#faf6f3; --surface:#fff; --soft:#f6f1ee; --line:#e9dfd9; --ink:#1f2542; --muted:#62677f; --quiet:#9094aa; --teal:#169c99; --amber:#d4881e; --rose:#e8578f; --danger:#c03d58; --focus:0 0 0 3px rgba(232,87,143,.28); --chrome-surface:var(--surface); --chrome-line:var(--line); --chrome-ink:var(--ink); --chrome-muted:var(--muted); --chrome-accent:var(--teal); --chrome-focus:var(--focus); }
     @media (prefers-color-scheme: dark) { :root { color-scheme:dark; --bg:#151827; --surface:#1d2135; --soft:#252a42; --line:#353b59; --ink:#f1f2fd; --muted:#afb3cd; --quiet:#8187a8; --teal:#56d4ce; --amber:#f2ba65; --rose:#ff8bb5; --danger:#ff8eaa; --focus:0 0 0 3px rgba(255,139,181,.36); } }
     * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font-family:"Segoe UI Variable", Aptos, system-ui, sans-serif; }
     button,input,select { font:inherit; } button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible { outline:none; box-shadow:var(--focus); }
     header { position:sticky; top:0; z-index:3; background:color-mix(in srgb,var(--bg) 94%,transparent); backdrop-filter:blur(14px); border-bottom:1px solid var(--line); } header::after { content:""; display:block; height:3px; background:linear-gradient(90deg,var(--teal),var(--rose)); }
-    .shell { width:min(1160px,calc(100% - 36px)); margin:0 auto; } .masthead { min-height:72px; display:flex; align-items:center; justify-content:space-between; gap:18px; } .brand { display:flex; align-items:center; gap:11px; min-width:0; } .mark { width:34px; height:34px; border-radius:8px; background:linear-gradient(155deg,color-mix(in srgb,var(--teal) 18%,var(--surface)),color-mix(in srgb,var(--rose) 18%,var(--surface))); } .brand h1 { margin:0; font-size:1.05rem; } .brand p { margin:2px 0 0; font-size:.76rem; color:var(--quiet); }
-    .nav { display:flex; flex-wrap:wrap; justify-content:end; gap:5px; } .nav a { padding:7px 9px; border-radius:6px; color:var(--muted); text-decoration:none; font-size:.78rem; font-weight:650; } .nav a:hover,.nav a[aria-current="page"] { background:var(--soft); color:var(--ink); } .nav a[aria-disabled="true"] { opacity:.5; pointer-events:none; }
+    .shell { width:min(1160px,calc(100% - 36px)); margin:0 auto; } .masthead { min-height:72px; display:flex; align-items:center; justify-content:space-between; gap:18px; }
     main { padding:28px 0 56px; } .heading { display:flex; justify-content:space-between; gap:18px; flex-wrap:wrap; align-items:end; margin-bottom:18px; } .eyebrow { margin:0 0 5px; color:var(--quiet); font-size:.69rem; font-weight:750; letter-spacing:.09em; text-transform:uppercase; } h2 { margin:0; font-size:1.55rem; } .heading p:last-child { margin:5px 0 0; color:var(--muted); font-size:.86rem; }
     .toolbar { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) 220px; gap:10px; align-items:end; padding:13px; border:1px solid var(--line); border-radius:8px; background:var(--surface); margin-bottom:16px; }
     label { display:grid; gap:5px; color:var(--quiet); font-size:.7rem; font-weight:700; letter-spacing:.045em; text-transform:uppercase; } input,select { width:100%; min-width:0; padding:9px 10px; color:var(--ink); background:var(--surface); border:1px solid var(--line); border-radius:6px; font-size:.85rem; text-transform:none; letter-spacing:0; }
@@ -26,11 +26,12 @@
     .empty-state p:last-child { margin:0; font-size:.8rem; }
     .hidden { display:none !important; }
     @media (max-width:820px) { .toolbar { grid-template-columns:1fr 1fr; } .toolbar label:last-child { grid-column:1 / -1; } }
-    @media (max-width:600px) { .shell { width:min(calc(100% - 24px),1160px); } .masthead { align-items:start; padding:14px 0; } .nav { justify-content:start; } table { min-width:0; } th,td { padding:9px 8px; } th:nth-child(4),td:nth-child(4),th:nth-child(7),td:nth-child(7) { display:none; } }
+    @media (max-width:600px) { .shell { width:min(calc(100% - 24px),1160px); } .masthead { align-items:start; padding:14px 0; } table { min-width:0; } th,td { padding:9px 8px; } th:nth-child(4),td:nth-child(4),th:nth-child(7),td:nth-child(7) { display:none; } }
   </style>
 </head>
 <body>
-  <header><div class="shell masthead"><div class="brand"><div class="mark" aria-hidden="true"></div><div><h1>MindLeak Bridge</h1><p>Active work across the fleet</p></div></div><nav class="nav" aria-label="Industrial surfaces"><a href="/">Fleet</a><a href="/agents" aria-current="page">Agents</a><a href="/evidence">Evidence</a><a href="/telemetry">Telemetry</a><a href="/context">Context</a><a href="/knowledge">Knowledge</a><a href="/work">Work</a><a href="/board-doctor">Board Doctor</a><a href="/supervisors">Supervisors</a><a href="/administration">Administration</a><a href="/delegations">Delegations</a><a href="/live">Live Feed</a><a href="/design">Design</a><a href="/constitution">Constitution</a></nav></div></header>
+  <header><div class="shell masthead"><a class="brand" href="/" aria-label="MindLeak Bridge Fleet" data-bridge-brand data-subtitle="Active work across the fleet">MindLeak Bridge</a><nav class="nav" aria-label="Industrial surfaces" data-bridge-nav data-current="agents"></nav></div></header>
+  <script src="/static/shared/chrome.js" defer></script>
   <main class="shell">
     <div class="heading">
       <div><p class="eyebrow">Agents</p><h2 id="agents-heading">Active work across the fleet</h2><p id="agents-status" aria-live="polite">Loading agents…</p></div>

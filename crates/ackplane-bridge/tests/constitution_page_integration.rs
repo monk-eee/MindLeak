@@ -47,9 +47,15 @@ fn constitution_page_reads_only_the_existing_constitution_endpoint() {
 
 #[test]
 fn constitution_page_marks_its_navigation_entry_current() {
+    // The nav itself is now rendered by the shared chrome.js from a single
+    // NAV_ITEMS source (see nav_consistency.rs); this page only needs to
+    // carry the mount point and declare itself as the current capability.
     assert!(
-        CONSTITUTION_PAGE
-            .contains("<a href=\"/constitution\" aria-current=\"page\">Constitution</a>"),
+        CONSTITUTION_PAGE.contains("data-bridge-nav"),
+        "the Constitution page must carry the shared Bridge nav mount point"
+    );
+    assert!(
+        CONSTITUTION_PAGE.contains("data-current=\"constitution\""),
         "the Constitution page must mark its own shared navigation entry current"
     );
 }

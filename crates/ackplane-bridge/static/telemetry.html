@@ -11,6 +11,7 @@
       document.documentElement.dataset.theme = theme;
     })();
   </script>
+  <link rel="stylesheet" href="/static/shared/chrome.css">
   <style>
     :root {
       color-scheme: light;
@@ -31,6 +32,12 @@
       --danger-soft: #f9e3e8;
       --shadow: 0 12px 28px rgba(31, 37, 66, 0.08);
       --focus: 0 0 0 3px rgba(232, 87, 143, 0.28);
+      --chrome-surface: var(--surface);
+      --chrome-line: var(--border);
+      --chrome-ink: var(--ink);
+      --chrome-muted: var(--muted);
+      --chrome-accent: var(--teal);
+      --chrome-focus: var(--focus);
     }
     html[data-theme="dark"] {
       color-scheme: dark;
@@ -60,14 +67,6 @@
     header::after { content: ""; display: block; height: 3px; background: linear-gradient(90deg, var(--rose), var(--teal)); }
     .shell { width: min(1240px, calc(100% - 36px)); margin: 0 auto; }
     .masthead { min-height: 74px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
-    .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
-    .mark { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; background: linear-gradient(155deg, var(--rose-soft), var(--teal-soft)); flex-shrink: 0; overflow: hidden; }
-    .brand h1 { margin: 0; font-size: 1.05rem; letter-spacing: 0; }
-    .brand p { margin: 2px 0 0; font-size: 0.76rem; color: var(--soft); }
-    .nav { display: flex; flex-wrap: wrap; justify-content: end; gap: 5px; }
-    .nav a { text-decoration: none; color: var(--muted); font-size: 0.78rem; font-weight: 650; padding: 7px 9px; border-radius: 6px; }
-    .nav a:hover, .nav a[aria-current="page"] { color: var(--ink); background: var(--surface-soft); }
-    .nav a[aria-disabled="true"] { cursor: default; opacity: .5; pointer-events: none; }
     main { padding: 28px 0 56px; }
     .heading { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 18px; flex-wrap: wrap; }
     .eyebrow { margin: 0 0 5px; font-size: 0.69rem; color: var(--soft); font-weight: 750; letter-spacing: .09em; text-transform: uppercase; }
@@ -114,29 +113,25 @@
     .empty { padding: 34px 18px; color: var(--soft); font-size: .83rem; text-align: center; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
     .hidden { display: none !important; }
     @media (max-width: 850px) { .toolbar { grid-template-columns: 1fr; } .toolbar .command { width: 100%; } .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-    @media (max-width: 600px) { .shell { width: min(100% - 24px, 1240px); } .masthead { align-items: start; padding: 14px 0; } .nav { justify-content: start; } }
+    @media (max-width: 600px) { .shell { width: min(100% - 24px, 1240px); } .masthead { align-items: start; padding: 14px 0; } }
   </style>
 </head>
 <body>
   <header>
     <div class="shell masthead">
-      <div class="brand">
-        <div class="mark" aria-hidden="true"></div>
-        <div><h1>MindLeak Bridge</h1><p>Telemetry</p></div>
-      </div>
-      <nav class="nav" aria-label="Industrial surfaces">
-        <a href="/">Fleet</a><a href="/agents">Agents</a><a href="/evidence">Evidence</a><a href="/telemetry" aria-current="page">Telemetry</a>
-        <a href="/context">Context</a><a href="/knowledge">Knowledge</a><a href="/work">Work</a><a href="/board-doctor">Board Doctor</a>
-        <a href="/supervisors">Supervisors</a><a href="/administration">Administration</a><a href="/delegations">Delegations</a><a href="/live">Live Feed</a><a href="/design">Design</a><a href="/constitution">Constitution</a>
-      </nav>
+      <a class="brand" href="/" aria-label="MindLeak Bridge Fleet" data-bridge-brand data-subtitle="Telemetry">MindLeak Bridge</a>
+      <nav class="nav" aria-label="Industrial surfaces" data-bridge-nav data-current="telemetry"></nav>
     </div>
   </header>
+  <script src="/static/shared/chrome.js" defer></script>
+  <script src="/static/shared/repo-picker.js" defer></script>
   <main class="shell">
     <div class="heading">
       <div><p class="eyebrow">Observability surface</p><h2>Telemetry</h2><p id="scope-label">Select a repository.</p></div>
     </div>
     <form id="filters" class="toolbar">
-      <label>Repository<input id="repository" name="repository" required autocomplete="off" spellcheck="false"></label>
+      <label>Repository<input id="repository" name="repository" list="known-repositories" required autocomplete="off" spellcheck="false"></label>
+      <datalist id="known-repositories" data-repo-datalist></datalist>
       <button class="command" type="submit">Load</button>
     </form>
     <p id="message" class="message" role="status" aria-live="polite"></p>

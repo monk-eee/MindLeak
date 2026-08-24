@@ -69,7 +69,7 @@ pub(super) async fn run_request(flags: HashMap<String, String>) -> Result<(), St
     println!("submitted: {status:?}");
     println!("key saved at {}", path.display());
     println!();
-    println!("A repository never approves itself (ADR-0085). Have an administrator run:");
+    println!("A repository never approves itself. Have an administrator run:");
     println!(
         "  register-me approve --request-id {request_id} --tenant-id {tenant_id} \\\n    --repo {repository_id} --fingerprint {fingerprint} \\\n    --admin-database-url <ACKPLANE_DATABASE_URL>"
     );
@@ -99,8 +99,8 @@ pub(super) async fn run_approve(flags: HashMap<String, String>) -> Result<(), St
 
     println!(
         "NOTE: approving via a direct database connection ({approved_by}). This stands in for \
-         the administrative approval RPC/UI ADR-0085 expects but that does not exist yet — it \
-         is a single-operator developer shortcut, not how a real deployment approves nodes."
+         the administrative approval RPC/UI that does not exist yet — it is a single-operator \
+         developer shortcut, not how a real deployment approves nodes."
     );
 
     let mut store = EnrollmentStore::connect(&database_url)
