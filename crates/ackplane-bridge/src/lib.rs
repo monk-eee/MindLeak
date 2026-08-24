@@ -16,6 +16,7 @@ pub mod evidence;
 pub mod evidence_api;
 pub mod knowledge_api;
 pub mod live_feed;
+pub mod shared_assets;
 pub mod supervisor_api;
 pub mod work_api;
 
@@ -134,9 +135,7 @@ pub enum ConfigError {
     InvalidListen,
     #[error("ACKPLANE_BRIDGE_DEVELOPMENT_TENANT must be set for the loopback developer profile")]
     NoDevelopmentTenant,
-    #[error(
-        "a per-installation salt is required to derive the developer-tenant token (ADR-0098 decision 3)"
-    )]
+    #[error("a per-installation salt is required to derive the developer-tenant token")]
     NoDevelopmentTenantSalt,
     #[error(
         "the Bridge developer profile may bind only to loopback; configure a production authentication verifier before exposing it"

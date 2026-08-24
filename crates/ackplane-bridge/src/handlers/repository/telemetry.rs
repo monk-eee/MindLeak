@@ -172,7 +172,8 @@ mod page_tests {
             "startVisibleRefresh(load, REFRESH_INTERVAL_MS)",
             "document.visibilityState === \"visible\"",
             "KIND_LABELS",
-            "aria-current=\"page\"",
+            "data-bridge-nav",
+            "data-current=\"telemetry\"",
         ] {
             assert!(
                 body.contains(required),

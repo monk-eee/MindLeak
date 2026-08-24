@@ -10,6 +10,7 @@ use ackplane_bridge::evidence::BridgeEvidenceStore;
 use ackplane_bridge::evidence_api::{evidence_routes, EvidenceApiState};
 use ackplane_bridge::knowledge_api::{knowledge_routes, KnowledgeApiState};
 use ackplane_bridge::live_feed::{live_feed_routes, LiveFeedApiState};
+use ackplane_bridge::shared_assets::shared_asset_routes;
 use ackplane_bridge::supervisor_api::{supervisor_routes, SupervisorApiState};
 use ackplane_bridge::work_api::{work_routes, WorkApiState};
 use ackplane_bridge::BridgeConfig;
@@ -277,7 +278,8 @@ async fn main() {
         .merge(administration_routes(administration_api_state))
         .merge(supervisor_routes(supervisor_api_state))
         .merge(live_feed_routes(live_feed_api_state))
-        .merge(work_routes(work_api_state));
+        .merge(work_routes(work_api_state))
+        .merge(shared_asset_routes());
     let listener = match tokio::net::TcpListener::bind(config.listen).await {
         Ok(listener) => listener,
         Err(error) => {
