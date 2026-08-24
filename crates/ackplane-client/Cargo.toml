@@ -13,7 +13,7 @@ ed25519-dalek = "2.1"
 getrandom = "0.2"
 keyring = "2"
 thiserror = { workspace = true }
-time = { version = "=0.3.36", features = ["formatting"] }
+time = { version = "0.3.47", features = ["formatting"] }
 tokio = { workspace = true }
 tonic = { workspace = true }
 
