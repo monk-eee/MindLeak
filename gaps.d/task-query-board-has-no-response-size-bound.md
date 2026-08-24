@@ -25,16 +25,25 @@
   skips the three per-row `scope`/`claim_window`/`receipt` engine lookups and
   the free-text `acceptance` field, while still returning every task — only
   the cheap, already-in-hand `lease_state` derivation rides along regardless.
-  Three callers that only ever read `id`/`title`/`status`/`goal_id` now pass
-  it: `scripts/board-health.mjs`, `editors/vscode/src/
-  designBoardController.ts`'s quick-pick, and `editors/vscode/src/
-  extension.ts`'s `refreshEvidence`.
-  Left for later: `scripts/canonical-push.mjs`, `scripts/stranded-report.mjs`,
-  `scripts/worktree-reclaim.mjs`, `scripts/evaluate-pr-effectiveness.mjs`, and
-  the VS Code providers `boardViewProvider`, `fleetController`,
-  `readinessController`, `evidenceBoardViewProvider` still call `board()` at
-  its default (`detail=true`) and so still pay for the full enrichment —
-  each needs its own tolerance checked (some may render `scope`/`receipt`)
-  before switching. `board()` also still returns a bare array rather than an
-  object, so it has no room for a truncation/paging signal the way
-  `active_knowledge` gained one; that reshape is unchanged by this fix.
+  Nine callers verified (by reading their own field usage, not assumed) to
+  read only base task fields (`id`/`title`/`status`/`goal_id`/`owner`/
+  `branch`/`lease_expires_at`/`claim_started_at`) now pass it:
+  `scripts/board-health.mjs`, `scripts/canonical-push.mjs` (its claim gate
+  reads only status/owner/lease/branch), `scripts/evaluate-pr-effectiveness.mjs`
+  (`claimStartedAt()` prefers the base `claim_started_at` field over
+  `claim_window.started_at`), `scripts/status.mjs` (`liveClaims`),
+  `scripts/worktree-reclaim.mjs` (`liveClaimBranches`), `editors/vscode/src/
+  designBoardController.ts`'s quick-pick, `editors/vscode/src/
+  extension.ts`'s `refreshEvidence`, `editors/vscode/src/fleetController.ts`
+  (`FleetTaskRow` mapping), and `editors/vscode/src/readinessController.ts`
+  (reads only the array's `.length`).
+  Left for later: `scripts/stranded-report.mjs` genuinely reads
+  `task.claim_window.lapses`/`.unleased_seconds`, and `editors/vscode/src/
+  extension.ts`'s `refreshBoard` (feeding `boardViewProvider.ts` via
+  `util.ts`'s `taskTooltip`/`taskDescription`) genuinely reads
+  `task.scope.paths`/`.symbols` and `task.acceptance` — both stay at the
+  default `detail=true`. `boardViewProvider`/`evidenceBoardViewProvider` never
+  call `board()` themselves; they render whatever `refreshBoard`/
+  `refreshEvidence` already fetched. `board()` also still returns a bare array
+  rather than an object, so it has no room for a truncation/paging signal the
+  way `active_knowledge` gained one; that reshape is unchanged by this fix.

@@ -70,7 +70,12 @@ export class ReadinessController {
     if (this.intent.isReady()) {
       try {
         const [tasks, designs] = await Promise.all([
-          this.intent.callTool("task_query", { view: "board", include_terminal: false }),
+          // Only tasks.length is read below.
+          this.intent.callTool("task_query", {
+            view: "board",
+            include_terminal: false,
+            detail: false,
+          }),
           this.intent.callTool("design_query", { view: "board" }),
         ]);
         facts.actionableTasks = Array.isArray(tasks) ? tasks.length : 0;
