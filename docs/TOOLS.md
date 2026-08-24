@@ -83,7 +83,11 @@ worktrees share one intent plane and one memory graph by default.
 > maintenance, audit exports, and database admin are not advertised by default
 > but stay fully reachable: dispatch is unchanged, so a specialist tool called
 > by name still runs. Set `LODESTAR_TOOL_PROFILE=full` to advertise everything.
-> Measure any time with `node scripts/measure-tool-surface.mjs`.
+> Measure any time with `node scripts/measure-tool-surface.mjs`. Under the
+> default profile, `initialize`'s `instructions` field states this in-band too,
+> so an agent reading its own `tools/list` does not conclude an absent
+> specialist tool was never written
+> (`gaps.d/new-mcp-tools-are-invisible-until-vs-code.md`).
 
 `constitution_define` supports `action="goal"`, `action="import"`,
 `action="supersede"`, `action="bind"`, and `action="unbind"`.

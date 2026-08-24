@@ -6,6 +6,7 @@ use std::{
 use ackplane_bridge::administration::{administration_routes, AdministrationApiState};
 use ackplane_bridge::context_api::{context_routes, ContextApiState};
 use ackplane_bridge::delegation_api::{delegation_routes, DelegationApiState};
+use ackplane_bridge::design_api::{design_routes, DesignApiState};
 use ackplane_bridge::evidence::BridgeEvidenceStore;
 use ackplane_bridge::evidence_api::{evidence_routes, EvidenceApiState};
 use ackplane_bridge::knowledge_api::{knowledge_routes, KnowledgeApiState};
@@ -17,6 +18,8 @@ use ackplane_server::claim_store::ClaimStore;
 use ackplane_server::constitution_store::ConstitutionStore;
 use ackplane_server::context_packet_store::ContextPacketStore;
 use ackplane_server::delegation_store::DelegationStore;
+use ackplane_server::design_materialization_store::MaterializationStore;
+use ackplane_server::design_store::DesignStore;
 use ackplane_server::fleet::{FleetStore, RepositoryFreshness};
 use ackplane_server::knowledge_store::KnowledgeStore;
 use ackplane_server::live_feed_store::LiveFeedStore;
@@ -194,6 +197,24 @@ async fn main() {
             return;
         }
     };
+    let design_store = match DesignStore::connect(config.database_url()).await {
+        Ok(design) => Arc::new(Mutex::new(design)),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane's Design domain: {error}");
+            return;
+        }
+    };
+    let design_materialization_store = match MaterializationStore::connect(config.database_url())
+        .await
+    {
+        Ok(materializations) => Arc::new(Mutex::new(materializations)),
+        Err(error) => {
+            eprintln!(
+                "ackplane-bridge: could not connect to Ackplane's Design materialization domain: {error}"
+            );
+            return;
+        }
+    };
     let tenant_id: Arc<str> = Arc::from(config.development_tenant_token.clone());
     let evidence_api_state =
         EvidenceApiState::new(evidence_store, fleet_store.clone(), tenant_id.clone());
@@ -213,6 +234,12 @@ async fn main() {
         AdministrationApiState::new(fleet_store.clone(), tenant_id.clone());
     let live_feed_api_state =
         LiveFeedApiState::new(live_feed_store, fleet_store.clone(), tenant_id.clone());
+    let design_api_state = DesignApiState::new(
+        design_store,
+        design_materialization_store,
+        fleet_store.clone(),
+        tenant_id.clone(),
+    );
     let state = AppState {
         fleet: fleet_store,
         knowledge: knowledge_store,
@@ -279,7 +306,8 @@ async fn main() {
         .merge(administration_routes(administration_api_state))
         .merge(supervisor_routes(supervisor_api_state))
         .merge(live_feed_routes(live_feed_api_state))
-        .merge(work_routes(work_api_state));
+        .merge(work_routes(work_api_state))
+        .merge(design_routes(design_api_state));
     let listener = match tokio::net::TcpListener::bind(config.listen).await {
         Ok(listener) => listener,
         Err(error) => {

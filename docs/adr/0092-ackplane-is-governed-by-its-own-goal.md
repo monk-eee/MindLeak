@@ -96,8 +96,10 @@ taxonomy fix, and the tempting one — narrowing evidence until the grade improv
    `link_goal_to_artifact` and the whole amendment lifecycle —
    `propose_amendment`, `draft_clause`, `amend_constitution`, `amendments` —
    were callable by name the entire time. An empty tool list is evidence about
-   the advertisement, never about the capability. Recorded in
-   [`gaps.d/the-constitution-verbs-were-reachable-all-along.md`](../../gaps.d/the-constitution-verbs-were-reachable-all-along.md).
+   the advertisement, never about the capability. The narrowed default
+   profile now states this in-band, in `initialize`'s own `instructions`
+   field, so a future agent reading its own `tools/list` cannot repeat this
+   mistake.
 
 6. **An Ackplane `needs_human` verdict meant ungoverned — until this was
    adopted.** While Ackplane had no goal of its own, that verdict was read as

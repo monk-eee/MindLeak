@@ -109,6 +109,29 @@ pub fn advertised() -> Vec<Value> {
     advertised_for(requested_profile())
 }
 
+/// A one-line `initialize` hint for a narrowed profile, so an agent reading
+/// `tools/list` does not conclude an absent specialist tool was never written
+/// (`gaps.d/new-mcp-tools-are-invisible-until-vs-code.md` — the same false
+/// premise ADR-0092 decision 5 records reaching an accepted ADR). `None`
+/// under the full profile, where the list already holds everything.
+pub fn narrowed_profile_note() -> Option<&'static str> {
+    narrowed_profile_note_for(requested_profile())
+}
+
+fn narrowed_profile_note_for(profile: Profile) -> Option<&'static str> {
+    match profile {
+        Profile::Default => Some(
+            "tools/list is narrowed to the common session path (ADR-0059). \
+             Specialist tools (constitution amendments, policy packs, waivers, \
+             ratchets and controls, the design board, goal\u{2194}code binding, \
+             database admin, and more) are not listed here but still exist and \
+             dispatch normally when called by name. Set LODESTAR_TOOL_PROFILE=full \
+             to see the complete list.",
+        ),
+        Profile::Full => None,
+    }
+}
+
 fn advertised_for(profile: Profile) -> Vec<Value> {
     let all = list();
     match profile {
@@ -2396,6 +2419,24 @@ mod tests {
     #[test]
     fn the_full_profile_advertises_every_tool() {
         assert_eq!(advertised_for(Profile::Full).len(), list().len());
+    }
+
+    /// `gaps.d/new-mcp-tools-are-invisible-until-vs-code.md` and ADR-0092
+    /// decision 5: a narrowed `tools/list` must not read as "this capability
+    /// does not exist" — the false premise that once reached an accepted
+    /// ADR. The default profile gets the disambiguating note; the full
+    /// profile, which already shows everything, does not need it.
+    #[test]
+    fn default_profile_gets_a_note_that_specialist_tools_still_dispatch() {
+        let note = narrowed_profile_note_for(Profile::Default).expect("default profile note");
+        assert!(note.contains("still exist and"));
+        assert!(note.contains("dispatch"));
+        assert!(note.contains("LODESTAR_TOOL_PROFILE=full"));
+    }
+
+    #[test]
+    fn full_profile_gets_no_narrowing_note() {
+        assert_eq!(narrowed_profile_note_for(Profile::Full), None);
     }
 
     /// The overlap read takes a session when offered and answers without one.
