@@ -461,6 +461,41 @@
       loadFleet();
     });
 
+async function loadTimelinePages(repositoryId) {
+      const events = [];
+      let before = null;
+      do {
+        const query = new URLSearchParams();
+        if (before !== null) query.set("before", before);
+        const suffix = query.size ? `?${query}` : "";
+        const response = await fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/timeline${suffix}`);
+        if (!response.ok) return null;
+        const page = await response.json();
+        events.push(...(page.events ?? []));
+        before = page.next_before ?? null;
+      } while (before !== null);
+      return { events };
+    }
+
+    async function loadKnowledgePages(repositoryId) {
+      const entries = [];
+      let cursor = null;
+      do {
+        const query = new URLSearchParams();
+        if (cursor) {
+          query.set("before_confirmed_at_micros", cursor.confirmed_at_micros);
+          query.set("before_knowledge_id", cursor.knowledge_id);
+        }
+        const suffix = query.size ? `?${query}` : "";
+        const response = await fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/knowledge${suffix}`);
+        if (!response.ok) return null;
+        const page = await response.json();
+        entries.push(...(page.entries ?? []));
+        cursor = page.next_before || null;
+      } while (cursor);
+      return { entries };
+    }
+
     async function loadClaimPages(repositoryId, collection) {
       const claims = [];
       let cursor = null;
@@ -484,11 +519,11 @@
       if (detailCache.has(repositoryId)) return detailCache.get(repositoryId);
       const promise = Promise.all([
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}`).then((r) => (r.ok ? r.json() : null)),
-        fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/timeline`).then((r) => (r.ok ? r.json() : null)),
+        loadTimelinePages(repositoryId),
         loadClaimPages(repositoryId,"claims"),
         loadClaimPages(repositoryId,"stranded-claims"),
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/signing-keys`).then((r) => (r.ok ? r.json() : null)),
-        fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/knowledge`).then((r) => (r.ok ? r.json() : null)),
+        loadKnowledgePages(repositoryId),
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/graph`).then((r) => (r.ok ? r.json() : null)),
         fetch(`/api/v1/repositories/${encodeURIComponent(repositoryId)}/constitution`).then((r) => (r.ok ? r.json() : null)),
       ]).then(([detail, timeline, claims, strandedClaims, signingKeys, knowledge, graph, constitution]) => ({ detail, timeline, claims, strandedClaims, signingKeys, knowledge, graph, constitution }));
