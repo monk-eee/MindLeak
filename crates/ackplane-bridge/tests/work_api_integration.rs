@@ -228,6 +228,21 @@ async fn work_list_and_board_doctor_report_a_real_task_and_an_orphan_claim() {
     assert_eq!(list["items"][0]["task_id"], serde_json::json!(task_id));
     assert_eq!(list["items"][0]["state"], serde_json::json!("open"));
     assert_eq!(
+        list["commands"],
+        serde_json::json!([
+            {"operation": "create_work", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
+            {"operation": "route_work", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
+            {"operation": "release_lease", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
+            {"operation": "answer_wait", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
+            {"operation": "submit_review", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
+            {"operation": "assign", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
+            {"operation": "steer", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
+            {"operation": "pause", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
+            {"operation": "resume", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
+            {"operation": "drain", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."}
+        ])
+    );
+    assert_eq!(
         list["publication"],
         serde_json::json!({
             "state": "current",
