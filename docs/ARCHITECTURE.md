@@ -380,6 +380,8 @@ Authenticated `NodeSync` streams now ingest `DirectiveReceipt` frames through th
 
 Authenticated `NodeSync` streams also accept the closed `WorkTaskCreate` frame for one native Industrial Work record. The frame carries only a node-scoped creation id and bounded task content; the completed connection challenge supplies tenant, repository, and publisher identity. Ackplane derives an opaque Work id from that authenticated identity and creation id, writes the current task projection and initial history event transactionally, and returns a typed `WorkTaskReceipt`. An exact retry returns the original Work id with `idempotent_replay`; changed content under the same creation id receives a non-retryable conflict. This is native Ackplane Work publication, not a Local Lodestar import: the Bridge remains a bounded read-only projection and exposes no Work mutation route.
 
+The Bridge Work read response also reports ADR-0125's closed Work-command vocabulary. Under the loopback developer profile, every command is `authorization_unavailable`: the tenant token is not a verified principal and no authorization verifier or policy basis exists. The Work page renders those named controls disabled with the same accessible reason. This is capability disclosure only; it adds no command route, authorization fallback, Work/Claim mutation, or supervisor delivery.
+
 `NodeEnrollmentService` persists pending requests, an append-only authority
 transition history, approved public-key bindings, single-use short-lived
 challenges, and immutable enrollment receipts. A node may submit a request, but
