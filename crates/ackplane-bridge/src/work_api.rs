@@ -29,6 +29,8 @@ const DEFAULT_PAGE_SIZE: i64 = 20;
 const MAX_PAGE_SIZE: i64 = 100;
 /// A wait unanswered longer than this is worth an operator's attention.
 const UNANSWERED_WAIT_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+const COMMAND_AUTHORIZATION_UNAVAILABLE_REASON: &str =
+    "The Bridge loopback developer profile has no verified principal or authorization verifier.";
 
 #[derive(Clone)]
 pub struct WorkApiState {
@@ -177,6 +179,36 @@ struct WorkListResponse {
     page: i64,
     page_size: i64,
     publication: WorkPublicationResponse,
+    commands: Vec<WorkCommandCapability>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct WorkCommandCapability {
+    operation: &'static str,
+    state: &'static str,
+    reason: &'static str,
+}
+
+fn command_capabilities() -> Vec<WorkCommandCapability> {
+    [
+        "create_work",
+        "route_work",
+        "release_lease",
+        "answer_wait",
+        "submit_review",
+        "assign",
+        "steer",
+        "pause",
+        "resume",
+        "drain",
+    ]
+    .into_iter()
+    .map(|operation| WorkCommandCapability {
+        operation,
+        state: "authorization_unavailable",
+        reason: COMMAND_AUTHORIZATION_UNAVAILABLE_REASON,
+    })
+    .collect()
 }
 
 #[derive(Serialize)]
@@ -274,6 +306,7 @@ async fn work_list(
         page,
         page_size,
         publication: WorkPublicationResponse::from(publication),
+        commands: command_capabilities(),
     }))
 }
 
