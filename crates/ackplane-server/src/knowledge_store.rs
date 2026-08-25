@@ -23,6 +23,7 @@ mod query;
 mod reach;
 mod reconfirmation;
 mod record;
+mod revalidation;
 mod supersession;
 
 pub use activation::KnowledgeActivation;
@@ -31,6 +32,10 @@ pub use evidence_reference::{
     RecordKnowledgeEvidenceReferenceRequest,
 };
 pub use reconfirmation::KnowledgeReconfirmation;
+pub use revalidation::{
+    KnowledgeRevalidationClassification, RevalidationQueueCursor, RevalidationQueueEntry,
+    RevalidationQueuePage,
+};
 pub use supersession::{KnowledgeSupersession, SupersedeKnowledgeRequest};
 
 #[derive(Debug, thiserror::Error)]

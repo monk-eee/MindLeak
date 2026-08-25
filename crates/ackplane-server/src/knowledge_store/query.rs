@@ -15,12 +15,12 @@ use super::{
 /// `mindleak-core::decay::effective_weight`'s own `if dt_hours <= 0.0 {
 /// return base; }` guard exactly. Without this branch, a negative elapsed
 /// time makes `power(2.0, positive exponent)` compute above 1.0.
-const EFFECTIVE_WEIGHT_SQL: &str = "CASE WHEN half_life_hours <= 0 THEN 1.0 \
+pub(super) const EFFECTIVE_WEIGHT_SQL: &str = "CASE WHEN half_life_hours <= 0 THEN 1.0 \
      WHEN now() <= confirmed_at THEN 1.0 \
      ELSE power(2.0, -(extract(epoch from (now() - confirmed_at)) / 3600.0) / half_life_hours) \
      END";
 
-const LATEST_RECONFIRMATION_JOIN: &str = "LEFT JOIN LATERAL ( \
+pub(super) const LATEST_RECONFIRMATION_JOIN: &str = "LEFT JOIN LATERAL ( \
         SELECT reconfirmed_at AS last_reconfirmed_at, \
                      reconfirmed_by AS last_reconfirmed_by, \
                      evidence_ref AS last_reconfirmation_evidence_ref \
