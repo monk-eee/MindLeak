@@ -5,7 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { isFragmentName, readFragments, render } from "./gaps.mjs";
+import {
+  ageDays,
+  hasTaskLink,
+  isFragmentName,
+  parseFirstAddedLog,
+  readFragments,
+  render,
+  renderTriage,
+  triageReport,
+} from "./gaps.mjs";
 
 /** A throwaway gaps.d, so no test can see the repository's real gaps. */
 const withDir = (files, run) => {
@@ -117,4 +126,128 @@ test("trailing whitespace is trimmed so joined output cannot drift", () => {
     const { gaps } = readFragments(dir);
     assert.equal(gaps[0].body, GAP);
   });
+});
+
+// --- Reliability scorecard: backlog age + task linkage ---------------------
+
+test("a task reference is recognized by its task:<12 hex> shape, case-insensitively", () => {
+  assert.equal(hasTaskLink("no reference here"), false);
+  assert.equal(hasTaskLink("tracked under task:5ec2bab72a0a already"), true);
+  assert.equal(
+    hasTaskLink("tracked under TASK:5EC2BAB72A0A already"),
+    true,
+    "case-insensitive",
+  );
+  assert.equal(
+    hasTaskLink("task:tooshort"),
+    false,
+    "must be exactly 12 hex digits",
+  );
+});
+
+test("parseFirstAddedLog keeps the FIRST commit that introduced each path", () => {
+  // --reverse means oldest first; a path re-added later (e.g. a revert) must
+  // not overwrite the original filing date recorded on its first sighting.
+  const log = [
+    "C:1000",
+    "gaps.d/first.md",
+    "C:2000",
+    "gaps.d/second.md",
+    "gaps.d/first.md", // re-added later; must not move first.md's date
+  ].join("\n");
+
+  assert.deepEqual(parseFirstAddedLog(log), {
+    "gaps.d/first.md": 1000,
+    "gaps.d/second.md": 2000,
+  });
+});
+
+test("parseFirstAddedLog ignores blank lines and content before the first commit marker", () => {
+  const log = ["", "gaps.d/orphan.md", "C:500", "", "gaps.d/real.md", ""].join(
+    "\n",
+  );
+  assert.deepEqual(parseFirstAddedLog(log), { "gaps.d/real.md": 500 });
+});
+
+test("ageDays floors partial days rather than rounding them up", () => {
+  const oneDayMs = 86_400_000;
+  assert.equal(ageDays(oneDayMs * 3, 0), 3);
+  assert.equal(
+    ageDays(oneDayMs * 3 - 1, 0),
+    2,
+    "23h59m59s999ms is still day 2, not 3",
+  );
+});
+
+test("triageReport sorts oldest-first, counts orphans, and reports median/oldest age", () => {
+  const gaps = [
+    {
+      name: "young.md",
+      body: "- **Recent — OPEN.** tracked by task:aaaaaaaaaaaa.",
+    },
+    { name: "old.md", body: "- **Ancient — OPEN.** no task yet." },
+    {
+      name: "middle.md",
+      body: "- **Mid-age — OPEN.** tracked by task:bbbbbbbbbbbb.",
+    },
+  ];
+  const nowMs = 10 * 86_400_000;
+  const firstSeen = {
+    "gaps.d/young.md": 9 * 86_400, // 1 day old
+    "gaps.d/old.md": 0, // 10 days old
+    "gaps.d/middle.md": 5 * 86_400, // 5 days old
+  };
+
+  const report = triageReport(gaps, firstSeen, nowMs);
+
+  assert.deepEqual(
+    report.rows.map((row) => row.name),
+    ["old.md", "middle.md", "young.md"],
+    "oldest first",
+  );
+  assert.equal(report.total, 3);
+  assert.equal(report.withTaskLink, 2);
+  assert.equal(report.orphaned, 1);
+  assert.equal(report.oldestAgeDays, 10);
+  assert.equal(report.medianAgeDays, 5);
+});
+
+test("triageReport reports a fragment with no known commit date as age null, not dropped", () => {
+  const gaps = [
+    { name: "uncommitted.md", body: "- **Fresh — OPEN.** just filed." },
+  ];
+  const report = triageReport(gaps, {}, Date.now());
+
+  assert.equal(report.total, 1);
+  assert.equal(report.rows[0].ageDays, null);
+  assert.equal(
+    report.oldestAgeDays,
+    null,
+    "an all-unknown backlog has no known oldest age",
+  );
+  assert.equal(report.medianAgeDays, null);
+});
+
+test("renderTriage prints every row plus the three summary numbers", () => {
+  const report = triageReport(
+    [
+      { name: "old.md", body: "- **Ancient — OPEN.** no task yet." },
+      {
+        name: "new.md",
+        body: "- **Recent — OPEN.** tracked by task:aaaaaaaaaaaa.",
+      },
+    ],
+    { "gaps.d/old.md": 0, "gaps.d/new.md": 86_400 },
+    2 * 86_400_000,
+  );
+
+  const text = renderTriage(report);
+
+  assert.match(text, /2d\s+task=no\s+old\.md/);
+  assert.match(text, /1d\s+task=yes\s+new\.md/);
+  assert.match(text, /total: 2 open fragment\(s\)/);
+  assert.match(text, /tracked by a task: 1 \(1 orphaned/);
+  // For an even-sized backlog the upper-middle observed age is reported
+  // (never an interpolated fraction of a day), so [1, 2] medians to 2.
+  assert.match(text, /oldest: 2 day\(s\); median: 2 day\(s\)/);
 });
