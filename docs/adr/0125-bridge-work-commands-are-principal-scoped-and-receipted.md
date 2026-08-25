@@ -1,8 +1,9 @@
 # ADR-0125: Bridge Work commands are principal-scoped and receipted
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-25
-- Deciders: Pending human acceptance
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-25 by the repository owner, authorized directly in session — attributed human adoption after review.
 - Depends on: [ADR-0095](0095-the-bridge-uses-an-authenticated-projection-api.md)
   (the Bridge's principal-scoped browser boundary),
   [ADR-0105](0105-bridge-is-the-server-version-of-the-vsix.md) (the Work
