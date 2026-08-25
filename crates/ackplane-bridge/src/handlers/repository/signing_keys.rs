@@ -62,3 +62,55 @@ pub async fn repository_signing_keys(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ackplane_server::signing_keys::KeyResolution;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn signing_key_status_summary_maps_every_field_and_a_present_expiry() {
+        let expires_at = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let summary = SigningKeyStatusSummary::from(SigningKeyStatus {
+            signing_key_id: "signing-key-1".to_string(),
+            node_id: "node-1".to_string(),
+            public_key_fingerprint: "fingerprint-1".to_string(),
+            status: KeyResolution::Expired,
+            expires_at: Some(expires_at),
+        });
+
+        assert_eq!(
+            serde_json::to_value(summary).expect("summary serializes"),
+            serde_json::json!({
+                "signing_key_id": "signing-key-1",
+                "node_id": "node-1",
+                "public_key_fingerprint": "fingerprint-1",
+                "status": "expired",
+                "expires_at_seconds": 1_800_000_000,
+            })
+        );
+    }
+
+    #[test]
+    fn signing_key_status_summary_omits_an_absent_expiry() {
+        let summary = SigningKeyStatusSummary::from(SigningKeyStatus {
+            signing_key_id: "signing-key-2".to_string(),
+            node_id: "node-2".to_string(),
+            public_key_fingerprint: "fingerprint-2".to_string(),
+            status: KeyResolution::Revoked,
+            expires_at: None,
+        });
+
+        assert_eq!(
+            serde_json::to_value(summary).expect("summary serializes"),
+            serde_json::json!({
+                "signing_key_id": "signing-key-2",
+                "node_id": "node-2",
+                "public_key_fingerprint": "fingerprint-2",
+                "status": "revoked",
+                "expires_at_seconds": null,
+            })
+        );
+    }
+}
