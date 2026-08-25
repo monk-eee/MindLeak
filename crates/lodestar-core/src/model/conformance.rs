@@ -343,3 +343,74 @@ pub struct ConformanceResult {
     pub verdict: Verdict,
     pub findings: Vec<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ledger_act_kind_as_str_matches_the_serialized_snake_case_tag() {
+        assert_eq!(
+            LedgerActKind::DesignRegistered.as_str(),
+            "design_registered"
+        );
+        assert_eq!(LedgerActKind::DesignDecided.as_str(), "design_decided");
+        assert_eq!(LedgerActKind::WaiverGranted.as_str(), "waiver_granted");
+        assert_eq!(
+            LedgerActKind::ConstitutionAmended.as_str(),
+            "constitution_amended"
+        );
+    }
+
+    #[test]
+    fn ledger_act_kind_parse_round_trips_every_as_str_output_and_refuses_an_unknown_tag() {
+        for kind in [
+            LedgerActKind::DesignRegistered,
+            LedgerActKind::DesignDecided,
+            LedgerActKind::WaiverGranted,
+            LedgerActKind::ConstitutionAmended,
+        ] {
+            assert_eq!(LedgerActKind::parse(kind.as_str()), Some(kind));
+        }
+        assert_eq!(LedgerActKind::parse("not_a_real_ledger_act"), None);
+    }
+
+    #[test]
+    fn advice_disposition_as_str_matches_the_serialized_snake_case_tag() {
+        assert_eq!(AdviceDisposition::Advise.as_str(), "advise");
+        assert_eq!(AdviceDisposition::Review.as_str(), "review");
+        assert_eq!(AdviceDisposition::Block.as_str(), "block");
+        assert_eq!(AdviceDisposition::NeedsHuman.as_str(), "needs_human");
+    }
+
+    #[test]
+    fn verdict_as_str_matches_the_serialized_snake_case_tag() {
+        assert_eq!(Verdict::Aligned.as_str(), "aligned");
+        assert_eq!(Verdict::Drift.as_str(), "drift");
+        assert_eq!(Verdict::Violation.as_str(), "violation");
+        assert_eq!(Verdict::NeedsHuman.as_str(), "needs_human");
+    }
+
+    #[test]
+    fn verdict_from_tag_round_trips_every_as_str_output_and_refuses_an_unknown_tag() {
+        for verdict in [
+            Verdict::Aligned,
+            Verdict::Drift,
+            Verdict::Violation,
+            Verdict::NeedsHuman,
+        ] {
+            assert_eq!(Verdict::from_tag(verdict.as_str()), Some(verdict));
+        }
+        assert_eq!(Verdict::from_tag("not_a_real_verdict"), None);
+    }
+
+    #[test]
+    fn certification_state_as_str_matches_the_serialized_snake_case_tag() {
+        assert_eq!(CertificationState::Certified.as_str(), "certified");
+        assert_eq!(CertificationState::NotCertified.as_str(), "not_certified");
+        assert_eq!(CertificationState::Waived.as_str(), "waived");
+        assert_eq!(CertificationState::NeedsHuman.as_str(), "needs_human");
+        assert_eq!(CertificationState::Uncertifiable.as_str(), "uncertifiable");
+        assert_eq!(CertificationState::Stale.as_str(), "stale");
+    }
+}
