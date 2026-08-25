@@ -273,6 +273,162 @@ mod tests {
     }
 
     #[test]
+    fn reject_records_a_refusal_with_its_reason() {
+        let engine = engine();
+        let id = register(&engine, "docs/adr/0090-rejected.md", "Rejected candidate");
+        let rejected = payload(
+            call(
+                &engine,
+                &json!({
+                    "name": "design_decide",
+                    "arguments": {
+                        "id": id,
+                        "decision": "reject",
+                        "human": "reviewer",
+                        "reason": "does not fit the roadmap"
+                    }
+                }),
+            )
+            .unwrap(),
+        );
+        assert_eq!(rejected["status"], "rejected");
+        assert_eq!(rejected["deferred"], Value::Null);
+        assert!(board(&engine).as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn retire_keeps_the_row_but_removes_it_from_the_working_board() {
+        let engine = engine();
+        let id = register(&engine, "docs/adr/0091-retired.md", "No longer live");
+        let retired = payload(
+            call(
+                &engine,
+                &json!({
+                    "name": "design_decide",
+                    "arguments": {
+                        "id": id,
+                        "decision": "retire",
+                        "human": "reviewer",
+                        "reason": "the ADR itself was withdrawn"
+                    }
+                }),
+            )
+            .unwrap(),
+        );
+        assert_eq!(retired["id"], id);
+        assert!(board(&engine).as_array().unwrap().is_empty());
+        let ledger = payload(
+            call(
+                &engine,
+                &json!({
+                    "name": "design_query",
+                    "arguments": { "view": "ledger", "include_retired": true }
+                }),
+            )
+            .unwrap(),
+        );
+        assert_eq!(ledger.as_array().unwrap().len(), 1);
+        assert_eq!(ledger[0]["id"], id);
+    }
+
+    #[test]
+    fn supersede_keeps_the_design_accepted_and_links_its_replacement() {
+        let engine = engine();
+        let original = register(&engine, "docs/adr/0060-original.md", "Original approach");
+        decide(&engine, &original, "accept", "reviewer").unwrap();
+        let replacement = register(&engine, "docs/adr/0061-replacement.md", "Better approach");
+
+        let superseded = payload(
+            call(
+                &engine,
+                &json!({
+                    "name": "design_decide",
+                    "arguments": {
+                        "id": original,
+                        "decision": "supersede",
+                        "superseded_by": replacement,
+                        "human": "reviewer"
+                    }
+                }),
+            )
+            .unwrap(),
+        );
+        assert_eq!(superseded["status"], "accepted");
+        assert_eq!(superseded["superseded"]["by_design"], replacement);
+        assert_eq!(superseded["superseded"]["by"], "reviewer");
+    }
+
+    #[test]
+    fn a_decider_name_one_edit_from_a_recorded_one_gets_an_advisory_not_a_refusal() {
+        let engine = engine();
+        let first = register(&engine, "docs/adr/0070-first.md", "First");
+        decide(&engine, &first, "accept", "reviewr").unwrap();
+
+        let second = register(&engine, "docs/adr/0071-second.md", "Second");
+        let accepted = payload(decide(&engine, &second, "accept", "reviewer").unwrap());
+        assert_eq!(accepted["status"], "accepted");
+        assert_eq!(accepted["attribution_warning"]["recorded"], "reviewer");
+        assert_eq!(
+            accepted["attribution_warning"]["resembles"],
+            json!(["reviewr"])
+        );
+    }
+
+    #[test]
+    fn design_promote_refuses_an_unknown_step() {
+        let engine = engine();
+        let id = register(&engine, "docs/adr/0080-promote.md", "Promote target");
+        let error = call(
+            &engine,
+            &json!({
+                "name": "design_promote",
+                "arguments": { "id": id, "step": "schedule" }
+            }),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("unknown step: schedule"),
+            "the refusal must name the bad value: {error}"
+        );
+        assert!(error.contains("plan, materialize, revise"), "{error}");
+    }
+
+    #[test]
+    fn design_query_refuses_an_unknown_view() {
+        let engine = engine();
+        let error = call(
+            &engine,
+            &json!({ "name": "design_query", "arguments": { "view": "timeline" } }),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("unknown view: timeline"),
+            "the refusal must name the bad value: {error}"
+        );
+        assert!(
+            error.contains("board, ledger, promotion, history, actions"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn design_query_ledger_refuses_an_unknown_status() {
+        let engine = engine();
+        let error = call(
+            &engine,
+            &json!({
+                "name": "design_query",
+                "arguments": { "view": "ledger", "status": "archived" }
+            }),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("unknown design status: archived"),
+            "the refusal must name the bad value: {error}"
+        );
+    }
+
+    #[test]
     fn defer_and_resume_support_one_attributed_batch_and_explicit_audit_visibility() {
         let engine = engine();
         let first = register(&engine, "docs/adr/0077-first.md", "First");

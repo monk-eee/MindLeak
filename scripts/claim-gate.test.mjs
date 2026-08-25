@@ -10,6 +10,7 @@ import {
   parseCallResult,
   publishVerdict,
   reconciliationOf,
+  withReconciliationCandidates,
 } from "./claim-gate.mjs";
 
 const NOW = 1_000_000;
@@ -200,6 +201,53 @@ test("a still-open task's branch is not reconcilable: claim it instead", () => {
     }),
     null,
   );
+});
+
+// Bug this closes: canonical-push's real board fetch is `include_terminal:
+// false` to stay small, so `delivered` (status "done") is never in it -- a
+// legitimately-delivered branch could never be recognized as a reconciliation
+// and always fell through to "no live Lodestar claim"
+// (gaps.d/task-query-board-has-no-response-size-bound.md).
+test("without merging in the branch-scoped fetch, a delivered branch is not found (the bug)", () => {
+  const nonTerminalOnly = []; // what include_terminal: false actually returns here
+  assert.equal(
+    reconciliationOf({
+      tasks: nonTerminalOnly,
+      branch: "feat/already-shipped",
+      newCommits: [merge],
+    }),
+    null,
+  );
+});
+
+test("merging in the branch-scoped fetch restores reconciliation (the fix)", () => {
+  const nonTerminalOnly = [];
+  const branchScoped = [delivered]; // task_query(view="board", branch=...)
+  const merged = withReconciliationCandidates(nonTerminalOnly, branchScoped);
+  const found = reconciliationOf({
+    tasks: merged,
+    branch: "feat/already-shipped",
+    newCommits: [merge],
+  });
+  assert.equal(found?.id, "task:delivered");
+});
+
+test("withReconciliationCandidates keeps the primary fetch's copy of a shared id", () => {
+  const primary = [claimed(COLLAPSED)]; // id "task:1", from the general fetch
+  const candidates = [{ ...claimed(COLLAPSED), status: "abandoned" }]; // stale duplicate
+  const merged = withReconciliationCandidates(primary, candidates);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].status, "claimed");
+});
+
+test("withReconciliationCandidates tolerates missing arrays", () => {
+  assert.deepEqual(withReconciliationCandidates(undefined, undefined), []);
+  assert.deepEqual(withReconciliationCandidates([delivered], undefined), [
+    delivered,
+  ]);
+  assert.deepEqual(withReconciliationCandidates(undefined, [delivered]), [
+    delivered,
+  ]);
 });
 
 // The incident this fragment records: a stale binary answered open_session in

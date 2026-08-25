@@ -180,6 +180,30 @@ export const reconciliationOf = ({ tasks, branch, newCommits }) => {
 };
 
 /**
+ * Restores what a board fetched with `include_terminal: false` cannot answer
+ * on its own: whether THIS branch was already delivered by a terminal task.
+ *
+ * The general board fetch below stays `include_terminal: false` deliberately
+ * (gaps.d/task-query-board-has-no-response-size-bound.md) — pulling in every
+ * terminal task the ledger has ever held just to find one row would defeat
+ * the whole point of asking narrowly. `board(view="board", branch)` answers
+ * the narrow question instead: any status, but only this one branch. Without
+ * this merge, `reconciliationOf` can never match anything, because the task
+ * it needs to find is a `done`/`abandoned` row that `include_terminal: false`
+ * excluded before `reconciliationOf` ever saw it — a bug this function closes,
+ * not a variant of the size-bound gap.
+ *
+ * `primary` wins any id collision (a live claim on this exact branch, for
+ * example) so nothing here can make `liveClaims` see a different picture of
+ * the same task than the general fetch already gave it.
+ */
+export const withReconciliationCandidates = (primary, candidates) => {
+  const seen = new Set((primary ?? []).map((task) => task.id));
+  const extra = (candidates ?? []).filter((task) => !seen.has(task.id));
+  return [...(primary ?? []), ...extra];
+};
+
+/**
  * Whether this publication may proceed.
  *
  * The checks are ordered so each refusal names its own cause, and the three

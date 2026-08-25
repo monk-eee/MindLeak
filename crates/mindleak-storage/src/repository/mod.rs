@@ -360,6 +360,61 @@ mod tests {
         assert_eq!(fallback.origin, DatabaseOrigin::Workspace);
     }
 
+    /// `resolve_database` (not the `_in` seam) still resolves an explicit path
+    /// and a non-Git workspace correctly without ever needing a real platform
+    /// state root, since both branches return before reaching it.
+    #[test]
+    fn resolve_database_honours_an_explicit_path_and_a_non_git_workspace() {
+        let sandbox = Sandbox::new("public-resolve");
+        let scratch = sandbox.root.join("scratch");
+        fs::create_dir_all(&scratch).unwrap();
+
+        let explicit =
+            resolve_database(&scratch, DatabaseKind::MindLeak, Some("custom/graph.db")).unwrap();
+        assert_eq!(explicit.path, PathBuf::from("custom/graph.db"));
+        assert_eq!(explicit.origin, DatabaseOrigin::Explicit);
+        assert_eq!(explicit.repository_id, None);
+        assert_eq!(explicit.legacy_path, None);
+
+        let fallback = resolve_database(&scratch, DatabaseKind::Lodestar, None).unwrap();
+        assert_eq!(fallback.path, scratch.join(".lodestar").join("spec.db"));
+        assert_eq!(fallback.origin, DatabaseOrigin::Workspace);
+        assert_eq!(fallback.repository_id, None);
+        assert_eq!(fallback.legacy_path, None);
+    }
+
+    /// Restores the prior `MINDLEAK_HOME` value on drop so this test cannot
+    /// leak process-global state into any test that runs after it, panic or not.
+    struct MindleakHomeGuard {
+        previous: Option<String>,
+    }
+
+    impl MindleakHomeGuard {
+        fn set(value: &Path) -> Self {
+            let previous = std::env::var("MINDLEAK_HOME").ok();
+            std::env::set_var("MINDLEAK_HOME", value);
+            Self { previous }
+        }
+    }
+
+    impl Drop for MindleakHomeGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var("MINDLEAK_HOME", value),
+                None => std::env::remove_var("MINDLEAK_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn platform_state_root_honours_an_explicit_override() {
+        let sandbox = Sandbox::new("state-root-override");
+        let configured = sandbox.root.join("configured-home");
+        let _guard = MindleakHomeGuard::set(&configured);
+
+        assert_eq!(platform_state_root().unwrap(), configured);
+    }
+
     #[test]
     fn workspace_hint_is_shared_and_relative_to_the_spawn_directory() {
         let current = Path::new("client");
