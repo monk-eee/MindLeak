@@ -22,6 +22,7 @@ import {
   publishVerdict,
   resolveServer,
   sameSession,
+  withReconciliationCandidates,
 } from "./claim-gate.mjs";
 import {
   completionOfferNotice,
@@ -228,20 +229,34 @@ if (server && /^[0-9a-f]{32}$/.test(sessionId)) {
     // declares its own context, or the "previously declared branch" would be
     // the declaration made microseconds earlier and the collision check would
     // compare a value with itself.
-    const [fleet, session, board, overlapResult] = callTools(server, repoRoot, [
-      { name: "fleet_view", arguments: {} },
-      {
-        name: "open_session",
-        arguments: { session_id: sessionId, ...context },
-      },
-      {
-        name: "task_query",
-        // Only status/owner/lease_expires_at/branch feed the claim gate below --
-        // scope/claim_window/receipt/acceptance would be fetched for nothing.
-        arguments: { view: "board", include_terminal: false, detail: false },
-      },
-      { name: "task_query", arguments: { view: "overlap", paths: changed } },
-    ]);
+    const [fleet, session, board, overlapResult, branchHistory] = callTools(
+      server,
+      repoRoot,
+      [
+        { name: "fleet_view", arguments: {} },
+        {
+          name: "open_session",
+          arguments: { session_id: sessionId, ...context },
+        },
+        {
+          name: "task_query",
+          // Only status/owner/lease_expires_at/branch feed the claim gate below --
+          // scope/claim_window/receipt/acceptance would be fetched for nothing.
+          arguments: { view: "board", include_terminal: false, detail: false },
+        },
+        { name: "task_query", arguments: { view: "overlap", paths: changed } },
+        {
+          name: "task_query",
+          // `reconciliationOf` needs to find an already-completed task on
+          // THIS branch, which the fetch above can never return (it excludes
+          // every terminal task on purpose). Asking by branch instead of
+          // widening include_terminal keeps this small regardless of how
+          // large the board's terminal history grows
+          // (gaps.d/task-query-board-has-no-response-size-bound.md).
+          arguments: { view: "board", branch, detail: false },
+        },
+      ],
+    );
     // The binary answered, so the ledger is reachable. Whether it identified
     // the session and whether the board could be read are separate facts with
     // separate remedies — a stale binary answers but cannot parse a board a
@@ -258,7 +273,9 @@ if (server && /^[0-9a-f]{32}$/.test(sessionId)) {
         sameSession(entry.agent_id, agent),
       )?.context?.branch ?? null;
     boardReadable = Array.isArray(board);
-    tasks = boardReadable ? board : [];
+    tasks = boardReadable
+      ? withReconciliationCandidates(board, branchHistory)
+      : [];
     overlaps = overlapResult ?? [];
   } catch {
     reachable = false;

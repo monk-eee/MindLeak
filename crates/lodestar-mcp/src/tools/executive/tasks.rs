@@ -129,13 +129,26 @@ pub(super) fn complete(engine: &Lodestar, task_id: &str, args: &Value) -> Result
 /// engine call) and the free-text `acceptance` field, without omitting any
 /// task: measured on this repository's own board, the full-detail form of a
 /// long-lived history reached megabyte scale in a single reply.
+///
+/// `branch`, when given, narrows the result to tasks recorded against that
+/// exact branch — any status, independent of `include_terminal`. A caller
+/// that needs to know whether ONE branch was already delivered (a delivered
+/// task is terminal) does not need every terminal task the ledger has ever
+/// held to answer that; asking for `include_terminal=true` unfiltered does
+/// (gaps.d/task-query-board-has-no-response-size-bound.md).
 pub(super) fn board(engine: &Lodestar, args: &Value) -> Result<Value, String> {
+    let branch_filter = opt_str(args, "branch");
     let tasks = engine
         .board(bool_arg(args, "include_terminal", true))
         .map_err(|e| e.to_string())?;
     let detail = bool_arg(args, "detail", true);
     let mut rows = Vec::with_capacity(tasks.len());
     for task in tasks {
+        if let Some(branch) = &branch_filter {
+            if task.branch.as_deref() != Some(branch.as_str()) {
+                continue;
+            }
+        }
         // Whether the claim is actually being held, beside the status
         // rather than inferred from a timestamp. `claimed` alone read as
         // work in progress: measured once at 36 claimed rows of which 4
