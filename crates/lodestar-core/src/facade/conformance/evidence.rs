@@ -137,3 +137,289 @@ impl Lodestar {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::facade::test_support::engine;
+    use crate::EvidenceProvenance;
+
+    fn valid_evidence(task_id: &str, agent: &str, now: i64) -> ConformanceEvidence {
+        ConformanceEvidence {
+            schema_version: 1,
+            task_id: Some(task_id.into()),
+            agent_id: agent.into(),
+            started_at: now - 5,
+            ended_at: now,
+            changed_node_ids: vec!["artifact:src/lib.rs".into()],
+            failed_node_ids: Vec::new(),
+            execution_ids: vec!["execution:proof".into()],
+            successful_execution_ids: vec!["execution:proof".into()],
+            commit_ids: Vec::new(),
+            ledger_act_ids: Vec::new(),
+            summary: "changed lib.rs".into(),
+            provenance: vec![
+                EvidenceProvenance {
+                    source_id: format!("agent:{agent}"),
+                    target_id: "execution:proof".into(),
+                    relation: "observed".into(),
+                },
+                EvidenceProvenance {
+                    source_id: "execution:proof".into(),
+                    target_id: "artifact:src/lib.rs".into(),
+                    relation: "modified".into(),
+                },
+            ],
+        }
+    }
+
+    /// A task that is claimed, live, and never inserted into the store — a
+    /// nonexistent task_id makes `authorising_window_start` return `Ok(None)`,
+    /// so `claim_started_at` alone governs the floor.
+    fn claimed_task(id: &str, agent: &str, now: i64) -> Task {
+        Task {
+            id: id.into(),
+            goal_id: "goal:test".into(),
+            parent_task_id: None,
+            title: "test task".into(),
+            acceptance: "test acceptance".into(),
+            status: TaskStatus::Claimed,
+            owner: Some(agent.into()),
+            claim_started_at: Some(now - 10),
+            lease_expires_at: Some(now + 300),
+            blocked_by: None,
+            branch: None,
+            parked_at: None,
+            resolved_by: None,
+            resolved_at: None,
+            resolved_conformance_id: None,
+            created_at: now - 100,
+            updated_at: now - 10,
+        }
+    }
+
+    #[test]
+    fn valid_evidence_against_a_live_claim_is_accepted() {
+        let e = engine();
+        let now = now_unix();
+        let task = claimed_task("task:real", "agent-a", now);
+        let evidence = valid_evidence(&task.id, "agent-a", now);
+        e.validate_claim_evidence(&task, "agent-a", &evidence, now)
+            .unwrap();
+    }
+
+    #[test]
+    fn unsupported_schema_version_is_rejected() {
+        let e = engine();
+        let mut evidence = valid_evidence("task:real", "agent-a", now_unix());
+        evidence.schema_version = 2;
+        let err = e.validate_evidence_shape(&evidence).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid: unsupported evidence schema version 2"
+        );
+    }
+
+    #[test]
+    fn reversed_evidence_window_is_rejected() {
+        let e = engine();
+        let mut evidence = valid_evidence("task:real", "agent-a", now_unix());
+        evidence.started_at = 10;
+        evidence.ended_at = 5;
+        let err = e.validate_evidence_shape(&evidence).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid: evidence start must not be after its end"
+        );
+    }
+
+    #[test]
+    fn empty_agent_id_is_rejected() {
+        let e = engine();
+        let mut evidence = valid_evidence("task:real", "agent-a", now_unix());
+        evidence.agent_id = "   ".into();
+        let err = e.validate_evidence_shape(&evidence).unwrap_err();
+        assert_eq!(err.to_string(), "invalid: evidence agent must not be empty");
+    }
+
+    #[test]
+    fn oversized_evidence_is_rejected() {
+        let e = engine();
+        let mut evidence = valid_evidence("task:real", "agent-a", now_unix());
+        evidence.execution_ids = (0..=MAX_EVIDENCE_EVENTS)
+            .map(|i| format!("execution:{i}"))
+            .collect();
+        let err = e.validate_evidence_shape(&evidence).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid: evidence exceeds the bounded ADR-0009 contract"
+        );
+    }
+
+    #[test]
+    fn successful_execution_absent_from_execution_ids_is_rejected() {
+        let e = engine();
+        let mut evidence = valid_evidence("task:real", "agent-a", now_unix());
+        evidence.successful_execution_ids = vec!["execution:never-attempted".into()];
+        let err = e.validate_evidence_shape(&evidence).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid: successful executions must be included in execution_ids"
+        );
+    }
+
+    #[test]
+    fn execution_missing_observed_provenance_is_rejected() {
+        let e = engine();
+        let mut evidence = valid_evidence("task:real", "agent-a", now_unix());
+        evidence
+            .provenance
+            .retain(|fact| fact.relation != "observed");
+        let err = e.validate_evidence_shape(&evidence).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid: event execution:proof lacks agent observation provenance"
+        );
+    }
+
+    #[test]
+    fn changed_node_missing_mutation_provenance_is_rejected() {
+        let e = engine();
+        let mut evidence = valid_evidence("task:real", "agent-a", now_unix());
+        // Matches target and relation, but its source is in neither
+        // execution_ids nor commit_ids -- still not mutation provenance.
+        evidence
+            .provenance
+            .retain(|fact| fact.relation != "modified");
+        evidence.provenance.push(EvidenceProvenance {
+            source_id: "execution:untracked".into(),
+            target_id: "artifact:src/lib.rs".into(),
+            relation: "modified".into(),
+        });
+        let err = e.validate_evidence_shape(&evidence).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid: changed node artifact:src/lib.rs lacks mutation provenance"
+        );
+    }
+
+    #[test]
+    fn failed_node_missing_failure_provenance_is_rejected() {
+        let e = engine();
+        let mut evidence = valid_evidence("task:real", "agent-a", now_unix());
+        evidence.failed_node_ids = vec!["execution:broken".into()];
+        // Matches target and relation, but its source is not an execution_id
+        // -- still not failure provenance.
+        evidence.provenance.push(EvidenceProvenance {
+            source_id: "commit:untracked".into(),
+            target_id: "execution:broken".into(),
+            relation: "failed_on".into(),
+        });
+        let err = e.validate_evidence_shape(&evidence).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid: failed node execution:broken lacks failure provenance"
+        );
+    }
+
+    #[test]
+    fn failed_node_with_real_failure_provenance_is_accepted() {
+        let e = engine();
+        let mut evidence = valid_evidence("task:real", "agent-a", now_unix());
+        evidence.failed_node_ids = vec!["execution:broken".into()];
+        evidence.provenance.push(EvidenceProvenance {
+            source_id: "execution:proof".into(),
+            target_id: "execution:broken".into(),
+            relation: "failed_on".into(),
+        });
+        e.validate_evidence_shape(&evidence).unwrap();
+    }
+
+    #[test]
+    fn evidence_task_id_mismatch_is_rejected() {
+        let e = engine();
+        let now = now_unix();
+        let task = claimed_task("task:real", "agent-a", now);
+        let evidence = valid_evidence("task:other", "agent-a", now);
+        let err = e
+            .validate_claim_evidence(&task, "agent-a", &evidence, now)
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid: evidence task_id does not identify the claimed task"
+        );
+    }
+
+    #[test]
+    fn evidence_agent_id_not_matching_the_caller_is_rejected() {
+        let e = engine();
+        let now = now_unix();
+        let task = claimed_task("task:real", "agent-a", now);
+        let evidence = valid_evidence(&task.id, "agent-b", now);
+        let err = e
+            .validate_claim_evidence(&task, "agent-a", &evidence, now)
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid: evidence agent does not own the task"
+        );
+    }
+
+    #[test]
+    fn task_owner_not_matching_the_caller_is_rejected() {
+        let e = engine();
+        let now = now_unix();
+        let mut task = claimed_task("task:real", "agent-a", now);
+        task.owner = Some("agent-b".into());
+        let evidence = valid_evidence(&task.id, "agent-a", now);
+        let err = e
+            .validate_claim_evidence(&task, "agent-a", &evidence, now)
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid: evidence agent does not own the task"
+        );
+    }
+
+    #[test]
+    fn task_with_no_lease_at_all_is_rejected() {
+        let e = engine();
+        let now = now_unix();
+        let mut task = claimed_task("task:real", "agent-a", now);
+        task.lease_expires_at = None;
+        let evidence = valid_evidence(&task.id, "agent-a", now);
+        let err = e
+            .validate_claim_evidence(&task, "agent-a", &evidence, now)
+            .unwrap_err();
+        assert_eq!(err.to_string(), "invalid: task does not have a live claim");
+    }
+
+    #[test]
+    fn task_not_in_the_claimed_status_is_rejected() {
+        let e = engine();
+        let now = now_unix();
+        let mut task = claimed_task("task:real", "agent-a", now);
+        task.status = TaskStatus::InReview;
+        let evidence = valid_evidence(&task.id, "agent-a", now);
+        let err = e
+            .validate_claim_evidence(&task, "agent-a", &evidence, now)
+            .unwrap_err();
+        assert_eq!(err.to_string(), "invalid: task does not have a live claim");
+    }
+
+    #[test]
+    fn claim_with_no_evidence_window_start_is_rejected() {
+        let e = engine();
+        let now = now_unix();
+        let mut task = claimed_task("task:real", "agent-a", now);
+        task.claim_started_at = None;
+        let evidence = valid_evidence(&task.id, "agent-a", now);
+        let err = e
+            .validate_claim_evidence(&task, "agent-a", &evidence, now)
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid: task claim has no evidence-window start"
+        );
+    }
+}

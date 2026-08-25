@@ -226,7 +226,9 @@ fn consolidation_lease_secs() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::collections::BTreeMap;
+    use std::rc::Rc;
 
     use super::*;
     use crate::{Consolidator, ModelCallSource};
@@ -327,6 +329,68 @@ mod tests {
     }
 
     #[test]
+    fn signal_consolidation_reports_a_real_outcome_when_a_candidate_is_ready() {
+        let (base_url, server) = json_endpoint("/v1", summary_response());
+        let policy = config::DecayPolicy {
+            half_life_overrides: BTreeMap::new(),
+            prune_threshold: 0.6,
+        };
+        let engine = MindLeak::open_in_memory()
+            .unwrap()
+            .with_decay_policy(policy)
+            .with_consolidator(Consolidator::new(base_url, "test"));
+        let now = now_unix();
+        for node in [
+            Node::new("intent:commit", NodeType::Intent, "commit", now),
+            Node::new("artifact:consumer", NodeType::Artifact, "consumer", now),
+            Node::new("artifact:target", NodeType::Artifact, "target", now),
+        ] {
+            engine.store().upsert_node(&node).unwrap();
+        }
+        engine
+            .store()
+            .upsert_edge(&Edge::new(
+                "intent:commit",
+                "artifact:target",
+                RelationType::Refactored,
+                now,
+            ))
+            .unwrap();
+        engine
+            .store()
+            .upsert_edge(&Edge::new(
+                "artifact:consumer",
+                "artifact:target",
+                RelationType::Imports,
+                now,
+            ))
+            .unwrap();
+        // Only Refactored/FailedOn edges are candidates -- the Imports edge
+        // above is not one, so exactly the Refactored edge qualifies.
+        let candidates_before = engine.store().expiring_signal_candidates(now).unwrap();
+        assert_eq!(candidates_before.len(), 1);
+
+        let outcome = engine.consolidate_signal(20).unwrap();
+        server.join().unwrap();
+
+        assert!(outcome.intent_id.starts_with("intent:"));
+        assert_eq!(outcome.candidates_consolidated, 1);
+        assert_eq!(outcome.edges_removed, 1);
+        // intent:commit's only edge was the consolidated one, so it is now a
+        // childless intent/execution node and gets swept as an orphan;
+        // artifact:target survives because artifact:consumer still imports it.
+        assert_eq!(outcome.nodes_removed, 1);
+        assert_eq!(outcome.model_call.source, ModelCallSource::Model);
+        assert_eq!(outcome.model_call.fallback_reason, None);
+        assert!(engine.store().get_node("intent:commit").unwrap().is_none());
+        assert!(engine
+            .store()
+            .expiring_signal_candidates(now)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
     fn cancelled_signal_consolidation_releases_its_lease() {
         let engine = MindLeak::open_in_memory().unwrap();
 
@@ -338,6 +402,198 @@ mod tests {
             engine.consolidate_signal(20),
             Err(MindLeakError::NotFound(_))
         ));
+    }
+
+    fn engine_with_one_ready_candidate() -> MindLeak {
+        let policy = config::DecayPolicy {
+            half_life_overrides: BTreeMap::new(),
+            prune_threshold: 0.6,
+        };
+        let engine = MindLeak::open_in_memory()
+            .unwrap()
+            .with_decay_policy(policy);
+        let now = now_unix();
+        for node in [
+            Node::new("intent:commit", NodeType::Intent, "commit", now),
+            Node::new("artifact:consumer", NodeType::Artifact, "consumer", now),
+            Node::new("artifact:target", NodeType::Artifact, "target", now),
+        ] {
+            engine.store().upsert_node(&node).unwrap();
+        }
+        engine
+            .store()
+            .upsert_edge(&Edge::new(
+                "intent:commit",
+                "artifact:target",
+                RelationType::Refactored,
+                now,
+            ))
+            .unwrap();
+        // A second, independent edge into the same target is what pushes the
+        // Refactored edge's signal_multiplier past 1.0 -- one reference alone
+        // is not corroborated/surprising enough to qualify.
+        engine
+            .store()
+            .upsert_edge(&Edge::new(
+                "artifact:consumer",
+                "artifact:target",
+                RelationType::Imports,
+                now,
+            ))
+            .unwrap();
+        assert_eq!(
+            engine
+                .store()
+                .expiring_signal_candidates(now)
+                .unwrap()
+                .len(),
+            1
+        );
+        engine
+    }
+
+    /// Returns false for the first `pass_count` calls, true after -- lets a
+    /// test reach a *specific* one of several sequential `should_cancel()`
+    /// checkpoints without the first one already aborting the call.
+    fn cancel_after(pass_count: usize) -> impl Fn() -> bool {
+        let calls = std::cell::Cell::new(0usize);
+        move || {
+            let seen = calls.get();
+            calls.set(seen + 1);
+            seen >= pass_count
+        }
+    }
+
+    #[test]
+    fn cancellation_after_candidates_are_gathered_still_releases_the_lease() {
+        let engine = engine_with_one_ready_candidate();
+
+        assert!(matches!(
+            engine.consolidate_signal_with_control(20, 60, cancel_after(1)),
+            Err(MindLeakError::Cancelled(_))
+        ));
+        // The lease was released, not left held -- a fresh attempt is not Busy.
+        assert!(matches!(
+            engine.consolidate_signal_with_control(20, 60, || true),
+            Err(MindLeakError::Cancelled(_))
+        ));
+    }
+
+    #[test]
+    fn cancellation_after_logs_are_built_still_releases_the_lease() {
+        let engine = engine_with_one_ready_candidate();
+
+        assert!(matches!(
+            engine.consolidate_signal_with_control(20, 60, cancel_after(2)),
+            Err(MindLeakError::Cancelled(_))
+        ));
+        assert!(matches!(
+            engine.consolidate_signal_with_control(20, 60, || true),
+            Err(MindLeakError::Cancelled(_))
+        ));
+    }
+
+    #[test]
+    fn cancellation_once_under_the_lease_still_releases_it() {
+        let engine = engine_with_one_ready_candidate();
+
+        assert!(matches!(
+            engine.consolidate_signal_with_control(20, 60, cancel_after(3)),
+            Err(MindLeakError::Cancelled(_))
+        ));
+        assert!(matches!(
+            engine.consolidate_signal_with_control(20, 60, || true),
+            Err(MindLeakError::Cancelled(_))
+        ));
+    }
+
+    #[test]
+    fn cancellation_after_the_model_call_still_releases_the_lease() {
+        // Empirically calibrate the exact should_cancel() call count a full,
+        // uncancelled run reaches, rather than hardcoding a guess against
+        // internal checkpoint counts (spread across consolidate_signal_with_control,
+        // consolidate_signal_under_lease, and post_json_with_cancel's own retry
+        // loop) that can silently shift with an unrelated refactor. The last
+        // counted call is the checkpoint immediately after the model call
+        // completes -- cancelling too early means the mock server below never
+        // receives a request, and server.join() then waits forever.
+        let (base_url, server) = json_endpoint("/v1", summary_response());
+        let engine = engine_with_one_ready_candidate()
+            .with_consolidator(Consolidator::new(base_url, "test"));
+        let calls = Rc::new(Cell::new(0usize));
+        let counting = {
+            let calls = Rc::clone(&calls);
+            move || {
+                calls.set(calls.get() + 1);
+                false
+            }
+        };
+        engine
+            .consolidate_signal_with_control(20, 60, counting)
+            .unwrap();
+        server.join().unwrap();
+        let last_checkpoint = calls.get();
+
+        let (base_url, server) = json_endpoint("/v1", summary_response());
+        let engine = engine_with_one_ready_candidate()
+            .with_consolidator(Consolidator::new(base_url, "test"));
+        assert!(matches!(
+            engine.consolidate_signal_with_control(20, 60, cancel_after(last_checkpoint - 1)),
+            Err(MindLeakError::Cancelled(_))
+        ));
+        server.join().unwrap();
+        assert!(matches!(
+            engine.consolidate_signal_with_control(20, 60, || true),
+            Err(MindLeakError::Cancelled(_))
+        ));
+    }
+
+    #[test]
+    fn a_failed_consolidation_call_still_releases_its_lease() {
+        let engine = engine_with_one_ready_candidate()
+            .with_consolidator(Consolidator::new("http://127.0.0.1:1/v1", "unreachable"));
+
+        let error = engine.consolidate_signal(20).unwrap_err();
+        assert!(!matches!(error, MindLeakError::Busy(_)));
+        // The lease was released, not left held by the failed attempt.
+        assert!(matches!(
+            engine.consolidate_signal_with_control(20, 60, || true),
+            Err(MindLeakError::Cancelled(_))
+        ));
+    }
+
+    #[test]
+    fn model_health_reports_not_configured_without_a_base_url_or_model() {
+        let engine = MindLeak::open_in_memory()
+            .unwrap()
+            .with_consolidator(Consolidator::new("", ""));
+
+        assert_eq!(
+            engine.model_health(),
+            ModelHealth {
+                configured: false,
+                reachable: false,
+                responds_json: false,
+                base_url: String::new(),
+                model: String::new(),
+                failure_reason: None,
+                detail: Some("model URL and model name must both be configured".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn promotion_candidates_groups_expiring_signal_by_relation_and_target() {
+        let engine = engine_with_one_ready_candidate();
+
+        let candidates = engine.promotion_candidates().unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].subject, "artifact:target");
+        assert_eq!(
+            candidates[0].evidence_node_ids,
+            vec!["intent:commit".to_string(), "artifact:target".to_string()]
+        );
     }
 
     #[test]

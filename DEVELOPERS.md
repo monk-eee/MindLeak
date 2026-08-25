@@ -97,28 +97,28 @@ crate, and `target/debug/mindleak-mcp` starts and prints
 
 ## Everyday commands
 
-| Task | `make` | Direct command |
-|---|---|---|
-| Build | `make build` | `cargo build` |
-| Test | `make test` | `cargo test --all` |
-| Coverage | `make coverage` | Rust LCOV + scoped Vitest coverage; both enforce an 80% floor |
-| Format | `make fmt` | `cargo fmt --all` |
-| Format check | `make fmt-check` | `cargo fmt --all -- --check` |
-| Lint (Rust) | `make clippy` | `cargo clippy --all-targets --all-features -- -D warnings` |
-| Lint (extension) | `make ext-lint` | `npm --prefix editors/vscode run lint` |
-| Test (extension) | `make ext-test` | `npm --prefix editors/vscode test` |
-| Compile extension | `make ext-compile` | `npm --prefix editors/vscode run compile` |
-| ADR safety | `make adr-guard` | `node scripts/adr-guard.mjs` — fails if any ADR is uncommitted or on no remote ref |
-| Merge audit | `make merge-audit` | `node scripts/merge-audit.mjs` — fails if a merged branch has commits that never reached `main` |
-| Delivery queue | `make queue` | `node scripts/delivery-queue.mjs` — show the queue and update the branch whose turn it is (ADR-0062). `make queue-watch` runs it as an agent |
-| Artefact hygiene | `make sweep` | `node scripts/artefact-sweep.mjs` — report reclaimable build output; `ARGS=--apply` acts. Diagnosis only: the sweep already runs from `make queue-watch` on a cadence, under a lock in the common Git directory |
-| Board health | `make board-health` | `node scripts/board-health.mjs` — separates parked work a human must decide from work nobody can resolve, and lists stranded claims (ADR-0058). Needs `LODESTAR_SESSION_ID` and a release `lodestar-mcp` |
-| Stranded report | `make stranded-report` | `node scripts/stranded-report.mjs` — for each lapsed claim, names the commit that most likely shipped it, with a confidence. An agent cannot close these (ADR-0048); this makes confirming them a judgement rather than an investigation |
-| Migration audit | `make migration-audit` | `node scripts/migration-audit.mjs` — reports a duplicate migration key, or a committed constant/file with no match. `--next` (or `ARGS=--next`) prints the safe next key, folding in whatever the shared dev Postgres already has applied so a concurrent branch's not-yet-committed number cannot collide with it |
-| Status | `make status` | `node scripts/status.mjs` — Lodestar board health, live claims and lease state, and MindLeak graph/telemetry health, read directly from each plane's compiled server binary. No agent session, MCP client, or LLM call required; `--json` prints the underlying data |
-| Design audit | `make design-audit` | `node scripts/design-audit.mjs` — reports drift between the ADR files and the design ledger. Local only: it reads the ledger through a release `lodestar-mcp`, which CI has no database for |
-| Changelog | `make changelog` | `node scripts/changelog.mjs` — show what the next release contains. A change adds `changelog.d/<section>-<slug>.md`; **do not edit `CHANGELOG.md` in a pull request** (ADR-0056) |
-| Everything CI runs | `make ci` | see [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
+| Task               | `make`                 | Direct command                                                                                                                                                                                                                                                       |
+| ------------------ | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Build              | `make build`           | `cargo build`                                                                                                                                                                                                                                                        |
+| Test               | `make test`            | `cargo test --all`                                                                                                                                                                                                                                                   |
+| Coverage           | `make coverage`        | Rust LCOV + scoped Vitest coverage; both enforce an 80% floor                                                                                                                                                                                                        |
+| Format             | `make fmt`             | `cargo fmt --all`                                                                                                                                                                                                                                                    |
+| Format check       | `make fmt-check`       | `cargo fmt --all -- --check`                                                                                                                                                                                                                                         |
+| Lint (Rust)        | `make clippy`          | `cargo clippy --all-targets --all-features -- -D warnings`                                                                                                                                                                                                           |
+| Lint (extension)   | `make ext-lint`        | `npm --prefix editors/vscode run lint`                                                                                                                                                                                                                               |
+| Test (extension)   | `make ext-test`        | `npm --prefix editors/vscode test`                                                                                                                                                                                                                                   |
+| Compile extension  | `make ext-compile`     | `npm --prefix editors/vscode run compile`                                                                                                                                                                                                                            |
+| ADR safety         | `make adr-guard`       | `node scripts/adr-guard.mjs` — fails if any ADR is uncommitted or on no remote ref                                                                                                                                                                                   |
+| Merge audit        | `make merge-audit`     | `node scripts/merge-audit.mjs` — fails if a merged branch has commits that never reached `main`                                                                                                                                                                      |
+| Delivery queue     | `make queue`           | `node scripts/delivery-queue.mjs` — show the queue and update the branch whose turn it is (ADR-0062). `make queue-watch` runs it as an agent                                                                                                                         |
+| Artefact hygiene   | `make sweep`           | `node scripts/artefact-sweep.mjs` — report reclaimable build output; `ARGS=--apply` acts. Diagnosis only: the sweep already runs from `make queue-watch` on a cadence, under a lock in the common Git directory                                                      |
+| Board health       | `make board-health`    | `node scripts/board-health.mjs` — separates parked work a human must decide from work nobody can resolve, and lists stranded claims (ADR-0058). Needs `LODESTAR_SESSION_ID` and a release `lodestar-mcp`                                                             |
+| Stranded report    | `make stranded-report` | `node scripts/stranded-report.mjs` — for each lapsed claim, names the commit that most likely shipped it, with a confidence. An agent cannot close these (ADR-0048); this makes confirming them a judgement rather than an investigation                             |
+| Migration audit    | `make migration-audit` | `node scripts/migration-audit.mjs` — reports a duplicate migration key, or a committed constant/file with no match. `--next` (or `ARGS=--next`) prints the safe next key, folding in whatever the shared dev Postgres already has applied so a concurrent branch's not-yet-committed number cannot collide with it |
+| Status             | `make status`          | `node scripts/status.mjs` — Lodestar board health, live claims and lease state, and MindLeak graph/telemetry health, read directly from each plane's compiled server binary. No agent session, MCP client, or LLM call required; `--json` prints the underlying data |
+| Design audit       | `make design-audit`    | `node scripts/design-audit.mjs` — reports drift between the ADR files and the design ledger. Local only: it reads the ledger through a release `lodestar-mcp`, which CI has no database for                                                                          |
+| Changelog          | `make changelog`       | `node scripts/changelog.mjs` — show what the next release contains. A change adds `changelog.d/<section>-<slug>.md`; **do not edit `CHANGELOG.md` in a pull request** (ADR-0056)                                                                                     |
+| Everything CI runs | `make ci`              | see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)                                                                                                                                                                                                           |
 
 > **`make` is optional.** Every target maps to the direct command in the
 > right-hand column — `cargo`, `npm`, and `git` are identical on Linux, macOS,
@@ -241,10 +241,10 @@ attests the ZIP/VSIX assets, and publishes `SHA256SUMS`. CI separately runs a
 live pinned VS Code 1.93.1 Extension Host smoke on Windows.
 
 1. Update `[workspace.package].version` in [`Cargo.toml`](Cargo.toml), the VS Code
-  package version, and the corresponding changelog/release notes.
+   package version, and the corresponding changelog/release notes.
 2. Assemble the changelog: `node scripts/changelog.mjs --release <version>` folds
-  the `changelog.d/` fragments, and anything under `## [Unreleased]`, into one
-  dated section (ADR-0056). Commit that; do not hand-edit `CHANGELOG.md`.
+   the `changelog.d/` fragments, and anything under `## [Unreleased]`, into one
+   dated section (ADR-0056). Commit that; do not hand-edit `CHANGELOG.md`.
 3. Merge the release commit to `main` and confirm CI is green.
 4. Create and push a matching tag:
 
@@ -303,25 +303,25 @@ auto-detects the workspace `target/debug` or `target/release` binary.
 
 ## Environment variables
 
-| Variable | Default | Used by |
-|---|---|---|
-| `MINDLEAK_WORKSPACE` | process working directory | worktree used for Git repository identity and project config |
-| `MINDLEAK_HOME` | platform-local non-roaming state directory | shared per-repository storage root |
-| `MINDLEAK_DB` | repository-id store, or workspace-local outside Git | explicit server graph override |
-| `MINDLEAK_AGENT` | *(empty)* | agent id for attribution (`observed` edges); empty = off |
-| `LODESTAR_SESSION_ID` | *(empty)* | 32-hex session id resolved to this agent's identity; **required to publish** (ADR-0049) |
-| `LODESTAR_AGENT` | `agent` | display name for this process's sessions in reports; not part of the agent id (ADR-0054) |
-| `LODESTAR_MCP_BIN` | `target/release`, then `target/debug` | Lodestar (Intent Plane) server the claim gate and publisher drive; set it when publishing from a worktree with no local build, or the ledger is unreachable and the push is refused as unattributable to a claim |
-| `MINDLEAK_MCP_BIN` | `target/release`, then `target/debug` | MindLeak (Memory Plane) server the publisher drives to record the published commit; set it when publishing from a worktree with no local build, or the commit is not recorded — the work does not certify and no completion offer is produced |
-| `MINDLEAK_CONFIG` | `<workspace>/.mindleak.toml` | per-project decay policy |
-| `MINDLEAK_WORKING_SET_SIZE` | `7` | hard cap for the current agent's derived working set (1-32) |
-| `MINDLEAK_AUTONOMOUS_CONSOLIDATION` | `false` | explicit opt-in to idle model-backed consolidation |
-| `MINDLEAK_CONSOLIDATE_IDLE_SECS` | `300` | idle trigger (30-86400) |
-| `MINDLEAK_CONSOLIDATE_MIN_INTERVAL_SECS` | `3600` | minimum attempt interval (60-86400) |
-| `MINDLEAK_CONSOLIDATE_MAX_NODES` | `20` | candidates per pass (1-200) |
-| `MINDLEAK_LLM_URL` | `http://localhost:11434/v1` | consolidation server (OpenAI-compatible) |
-| `MINDLEAK_MODEL` | `glm4:9b` | consolidation model |
-| `MINDLEAK_LLM_API_KEY` | *(empty)* | bearer token for hosted LLM servers (optional) |
+| Variable                                 | Default                                             | Used by                                                                                                                                                                                                                                       |
+| ---------------------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MINDLEAK_WORKSPACE`                     | process working directory                           | worktree used for Git repository identity and project config                                                                                                                                                                                  |
+| `MINDLEAK_HOME`                          | platform-local non-roaming state directory          | shared per-repository storage root                                                                                                                                                                                                            |
+| `MINDLEAK_DB`                            | repository-id store, or workspace-local outside Git | explicit server graph override                                                                                                                                                                                                                |
+| `MINDLEAK_AGENT`                         | _(empty)_                                           | agent id for attribution (`observed` edges); empty = off                                                                                                                                                                                      |
+| `LODESTAR_SESSION_ID`                    | _(empty)_                                           | 32-hex session id resolved to this agent's identity; **required to publish** (ADR-0049)                                                                                                                                                       |
+| `LODESTAR_AGENT`                         | `agent`                                             | display name for this process's sessions in reports; not part of the agent id (ADR-0054)                                                                                                                                                      |
+| `LODESTAR_MCP_BIN`                       | `target/release`, then `target/debug`               | Lodestar (Intent Plane) server the claim gate and publisher drive; set it when publishing from a worktree with no local build, or the ledger is unreachable and the push is refused as unattributable to a claim                              |
+| `MINDLEAK_MCP_BIN`                       | `target/release`, then `target/debug`               | MindLeak (Memory Plane) server the publisher drives to record the published commit; set it when publishing from a worktree with no local build, or the commit is not recorded — the work does not certify and no completion offer is produced |
+| `MINDLEAK_CONFIG`                        | `<workspace>/.mindleak.toml`                        | per-project decay policy                                                                                                                                                                                                                      |
+| `MINDLEAK_WORKING_SET_SIZE`              | `7`                                                 | hard cap for the current agent's derived working set (1-32)                                                                                                                                                                                   |
+| `MINDLEAK_AUTONOMOUS_CONSOLIDATION`      | `false`                                             | explicit opt-in to idle model-backed consolidation                                                                                                                                                                                            |
+| `MINDLEAK_CONSOLIDATE_IDLE_SECS`         | `300`                                               | idle trigger (30-86400)                                                                                                                                                                                                                       |
+| `MINDLEAK_CONSOLIDATE_MIN_INTERVAL_SECS` | `3600`                                              | minimum attempt interval (60-86400)                                                                                                                                                                                                           |
+| `MINDLEAK_CONSOLIDATE_MAX_NODES`         | `20`                                                | candidates per pass (1-200)                                                                                                                                                                                                                   |
+| `MINDLEAK_LLM_URL`                       | `http://localhost:11434/v1`                         | consolidation server (OpenAI-compatible)                                                                                                                                                                                                      |
+| `MINDLEAK_MODEL`                         | `glm4:9b`                                           | consolidation model                                                                                                                                                                                                                           |
+| `MINDLEAK_LLM_API_KEY`                   | _(empty)_                                           | bearer token for hosted LLM servers (optional)                                                                                                                                                                                                |
 
 ## Adding an MCP tool
 
@@ -351,7 +351,17 @@ the shared list, and the conflict, straight back.
 ```bash
 node scripts/gaps.mjs --list     # read every open gap
 node scripts/gaps.mjs --check    # validate fragments (runs in the hook)
+node scripts/gaps.mjs --triage   # reliability scorecard: backlog age + which gaps have a tracking task
 ```
+
+A fragment records that something is broken, not that anyone is fixing it — a
+gap can sit unaddressed indefinitely and look exactly as "handled" as one filed
+five minutes ago. `--triage` names the difference: it reports every open
+fragment's age and whether its own text names a Lodestar `task:` tracking its
+fix, plus the backlog totals (oldest age, median age, how many are orphaned —
+no task reference at all). An honest, most-of-the-time-uncomfortable number
+here is the point; do not read a shrinking `--list` as progress if `--triage`
+shows the same fragments just getting older.
 
 **Record a gap:** add `gaps.d/<slug>.md` opening with a `- **` bullet that names
 the gap, where it is (file plus symbol or test name), its impact, and whether it

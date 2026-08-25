@@ -10,7 +10,10 @@ mod telemetry;
 mod timeline;
 
 pub use claims::{repository_claims, repository_recover_claim, repository_stranded_claims};
-pub use constitution::{constitution_page, repository_constitution};
+pub use constitution::{
+    constitution_page, list_constitution_proposals, propose_constitution_clause,
+    repository_constitution, withdraw_constitution_proposal,
+};
 pub use graph::repository_graph;
 pub use knowledge::repository_knowledge;
 pub use signing_keys::repository_signing_keys;

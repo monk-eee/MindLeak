@@ -20,7 +20,9 @@
 // Platform-agnostic: node only. Usage:
 //   node scripts/gaps.mjs --check     validate fragments (hook/CI)
 //   node scripts/gaps.mjs --list      print every open gap, for reading
+//   node scripts/gaps.mjs --triage    reliability scorecard: backlog age + task linkage
 
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -79,6 +81,135 @@ export const readFragments = (dir = FRAGMENT_DIR) => {
 /** Every open gap, as one markdown list. */
 export const render = (gaps) => gaps.map((gap) => gap.body).join("\n\n");
 
+// --- Reliability scorecard: backlog age + task linkage --------------------
+//
+// A gap fragment records that something is broken. It does not, by itself,
+// record whether anyone is fixing it -- a fragment can sit in this directory
+// indefinitely and look exactly as "handled" as one filed five minutes ago.
+// `--triage` answers the two questions that distinguish them: how long has
+// this been open, and is a Lodestar task tracking its fix.
+
+/** A gap names the task tracking its own fix by including this reference. */
+export const TASK_REF_PATTERN = /task:[0-9a-f]{12}/i;
+
+export const hasTaskLink = (body) => TASK_REF_PATTERN.test(body);
+
+/**
+ * Parse `git log --reverse --diff-filter=A --name-only --format=C:%ct`
+ * output (oldest first) into `{ [path]: firstAddedUnixSeconds }`. Reverse
+ * order plus "first path wins" means a later re-add of the same path (a
+ * revert, a rename git didn't detect) never overwrites the fragment's true
+ * original filing date.
+ */
+export const parseFirstAddedLog = (log) => {
+  const firstSeen = {};
+  let currentEpoch = null;
+  for (const line of log.split("\n")) {
+    if (line.startsWith("C:")) {
+      currentEpoch = Number(line.slice(2));
+      continue;
+    }
+    if (!line.trim() || currentEpoch === null) continue;
+    if (!(line in firstSeen)) firstSeen[line] = currentEpoch;
+  }
+  return firstSeen;
+};
+
+export const ageDays = (nowMs, firstAddedSeconds) =>
+  Math.floor((nowMs - firstAddedSeconds * 1000) / 86_400_000);
+
+/**
+ * The scorecard itself: age and task-linkage per fragment, plus the three
+ * numbers that matter for "is this backlog actually moving" -- how many
+ * fragments have no task at all (orphaned, i.e. nobody has committed to
+ * fixing them), and the oldest/median age. A fragment `firstSeen` has no
+ * entry for (uncommitted, or git history unavailable) reports age `null`
+ * rather than being silently dropped from the count -- an unknown age is a
+ * fact worth seeing, not a reason to hide the row.
+ */
+export const triageReport = (gaps, firstSeen, nowMs) => {
+  const rows = gaps
+    .map((gap) => {
+      const seen = firstSeen[`${FRAGMENT_DIR}/${gap.name}`];
+      return {
+        name: gap.name,
+        ageDays: seen == null ? null : ageDays(nowMs, seen),
+        hasTaskLink: hasTaskLink(gap.body),
+      };
+    })
+    .sort((a, b) => (b.ageDays ?? -1) - (a.ageDays ?? -1));
+
+  const knownAges = rows
+    .map((row) => row.ageDays)
+    .filter((age) => age != null)
+    .sort((a, b) => a - b);
+  const withTaskLink = rows.filter((row) => row.hasTaskLink).length;
+
+  return {
+    rows,
+    total: rows.length,
+    withTaskLink,
+    orphaned: rows.length - withTaskLink,
+    oldestAgeDays: rows[0]?.ageDays ?? null,
+    medianAgeDays: knownAges.length
+      ? knownAges[Math.floor(knownAges.length / 2)]
+      : null,
+  };
+};
+
+export const renderTriage = (report) => {
+  const lines = [
+    "gaps -- reliability scorecard (backlog age + task linkage)",
+    "",
+  ];
+  for (const row of report.rows) {
+    const age =
+      row.ageDays == null ? "   ?" : `${String(row.ageDays).padStart(4)}d`;
+    lines.push(
+      `  ${age}  task=${row.hasTaskLink ? "yes" : "no "}  ${row.name}`,
+    );
+  }
+  lines.push("");
+  lines.push(`total: ${report.total} open fragment(s)`);
+  lines.push(
+    `tracked by a task: ${report.withTaskLink} (${report.orphaned} orphaned -- no task reference at all)`,
+  );
+  lines.push(
+    `oldest: ${report.oldestAgeDays ?? "unknown"} day(s); median: ${
+      report.medianAgeDays ?? "unknown"
+    } day(s)`,
+  );
+  return lines.join("\n");
+};
+
+/**
+ * The one impure step `--triage` needs: when each currently-tracked fragment
+ * was first added. Isolated here so `triageReport`/`renderTriage` stay pure
+ * and testable without a real git repository; returns `{}` (every age
+ * unknown, never a thrown error) if git itself is unavailable.
+ */
+export const firstAddedDates = (dir = FRAGMENT_DIR) => {
+  let log;
+  try {
+    log = execFileSync(
+      "git",
+      [
+        "log",
+        "--reverse",
+        "--diff-filter=A",
+        "--name-only",
+        "--format=C:%ct",
+        "--",
+        `${dir}/*.md`,
+      ],
+      { encoding: "utf8" },
+    );
+  } catch {
+    return {};
+  }
+  return parseFirstAddedLog(log);
+};
+
 const main = () => {
   const args = process.argv.slice(2);
   const { gaps, files, problems } = readFragments();
@@ -112,12 +243,20 @@ const main = () => {
     return;
   }
 
+  if (args.includes("--triage")) {
+    console.log(
+      renderTriage(triageReport(gaps, firstAddedDates(), Date.now())),
+    );
+    return;
+  }
+
   console.log(
     [
       "gaps -- known gaps are fragments, so recording one never conflicts",
       "",
       "  node scripts/gaps.mjs --check    validate fragments (hook/CI)",
       "  node scripts/gaps.mjs --list     print every open gap",
+      "  node scripts/gaps.mjs --triage   reliability scorecard: backlog age + task linkage",
       "",
       `Add a gap: write ${FRAGMENT_DIR}/<slug>.md opening with a "- **" bullet.`,
       "Close a gap: delete its fragment in the commit that fixes it.",

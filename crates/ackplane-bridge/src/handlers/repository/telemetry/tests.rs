@@ -126,11 +126,11 @@ async fn application(database_url: &str, tenant_id: &str) -> Router {
                 .await
                 .expect("connect Knowledge store"),
         ),
-        constitution: Arc::new(
+        constitution: Arc::new(Mutex::new(
             ConstitutionStore::connect(database_url)
                 .await
                 .expect("connect Constitution store"),
-        ),
+        )),
         claims: Arc::new(Mutex::new(
             ClaimStore::connect(database_url)
                 .await
