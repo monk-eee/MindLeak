@@ -13,6 +13,7 @@ const MIGRATION: &str = include_str!("../../migrations/0037_work_commands.sql");
 const WORK_MIGRATION: &str = include_str!("../../migrations/0028_work.sql");
 
 mod model;
+mod service;
 mod write;
 
 use model::{

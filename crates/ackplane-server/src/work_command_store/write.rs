@@ -16,7 +16,7 @@ use super::{
 
 impl WorkCommandStore {
     /// Persists an immutable command request or returns its exact prior retry.
-    pub async fn record_request(
+    pub(in crate::work_command_store) async fn record_request(
         &mut self,
         request: &NewWorkCommand,
         now: SystemTime,
@@ -87,7 +87,7 @@ impl WorkCommandStore {
     }
 
     /// Appends one immutable command receipt or returns its exact prior retry.
-    pub async fn record_receipt(
+    pub(in crate::work_command_store) async fn record_receipt(
         &mut self,
         receipt: &NewWorkCommandReceipt,
         now: SystemTime,

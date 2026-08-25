@@ -1,0 +1,1 @@
+- **Ackplane now has an internal Industrial Work command authorization service.** It evaluates loopback, principal, tenant/repository, operation, policy, and delegation constraints before writing only a pending-confirmation command receipt; it adds no HTTP route or Work/Claim mutation.
