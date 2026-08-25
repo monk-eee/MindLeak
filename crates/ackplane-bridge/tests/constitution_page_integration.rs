@@ -18,7 +18,7 @@ fn constitution_page_is_served_by_the_existing_tenant_scoped_handler_module() {
 }
 
 #[test]
-fn constitution_page_reads_only_the_existing_constitution_endpoint() {
+fn constitution_page_reads_the_existing_constitution_endpoint() {
     for required in [
         "fetch(endpoint())",
         "/api/v1/repositories/${encodeURIComponent(elements.repository.value.trim())}/constitution",
@@ -32,15 +32,39 @@ fn constitution_page_reads_only_the_existing_constitution_endpoint() {
             "constitution.html is missing {required}"
         );
     }
-    assert_eq!(
-        CONSTITUTION_PAGE.matches("fetch(").count(),
-        1,
-        "the Constitution page must use exactly one read endpoint"
+    assert!(
+        !CONSTITUTION_PAGE.contains("fetch(endpoint(), {"),
+        "the published constitution endpoint itself must stay read-only; ADR-0126's proposal \
+         ledger is a separate sub-resource, never a write to this one"
     );
-    for mutating_verb in ["\"POST\"", "\"PUT\"", "\"PATCH\"", "\"DELETE\""] {
+}
+
+/// ADR-0126: the page may now originate a proposal, but it must never reach
+/// the authoritative endpoint to do so. Every mutating request must target
+/// the `/constitution/proposals` sub-resource this ADR added, never the bare
+/// `/constitution` endpoint `endpoint()` builds -- that boundary is the whole
+/// point of the ADR (distribution is not activation).
+#[test]
+fn constitution_page_mutations_only_ever_target_the_proposals_sub_resource() {
+    assert!(
+        CONSTITUTION_PAGE.contains("proposalsEndpoint()"),
+        "constitution.html must build a distinct endpoint for the proposal ledger"
+    );
+    assert!(
+        CONSTITUTION_PAGE.contains("/constitution/proposals"),
+        "constitution.html must know the proposals sub-resource path"
+    );
+    assert!(
+        CONSTITUTION_PAGE.contains("method: \"POST\""),
+        "constitution.html must be able to submit a proposal"
+    );
+    for line in CONSTITUTION_PAGE.lines() {
+        if !line.contains("method: \"POST\"") {
+            continue;
+        }
         assert!(
-            !CONSTITUTION_PAGE.contains(mutating_verb),
-            "the Constitution page must not introduce a mutating request ({mutating_verb})"
+            line.contains("proposalsEndpoint()"),
+            "a POST request must target the proposals endpoint, not: {line}"
         );
     }
 }

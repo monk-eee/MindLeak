@@ -39,10 +39,11 @@ use tokio::sync::Mutex;
 mod handlers;
 
 use handlers::{
-    agents, constitution_page, fleet, readiness, repository_claims, repository_constitution,
-    repository_detail, repository_graph, repository_knowledge, repository_recover_claim,
-    repository_signing_keys, repository_stranded_claims, repository_telemetry, repository_timeline,
-    telemetry_page,
+    agents, constitution_page, fleet, list_constitution_proposals, propose_constitution_clause,
+    readiness, repository_claims, repository_constitution, repository_detail, repository_graph,
+    repository_knowledge, repository_recover_claim, repository_signing_keys,
+    repository_stranded_claims, repository_telemetry, repository_timeline, telemetry_page,
+    withdraw_constitution_proposal,
 };
 
 const FLEET_PAGE: &str = include_str!("../static/index.html");
@@ -52,7 +53,10 @@ const AGENTS_PAGE: &str = include_str!("../static/agents.html");
 struct AppState {
     fleet: Arc<FleetStore>,
     knowledge: Arc<KnowledgeStore>,
-    constitution: Arc<ConstitutionStore>,
+    // A plain read-only Arc until ADR-0126: propose_clause takes &mut self,
+    // so the same Mutex-per-mutable-store pattern claims/ClaimStore already
+    // uses applies here too.
+    constitution: Arc<Mutex<ConstitutionStore>>,
     claims: Arc<Mutex<ClaimStore>>,
     projector: Arc<Projector>,
     readiness: Arc<ReadinessStore>,
@@ -121,7 +125,7 @@ async fn main() {
         }
     };
     let constitution_store = match ConstitutionStore::connect(config.database_url()).await {
-        Ok(constitution) => Arc::new(constitution),
+        Ok(constitution) => Arc::new(Mutex::new(constitution)),
         Err(error) => {
             eprintln!(
                 "ackplane-bridge: could not connect to Ackplane constitution domain: {error}"
@@ -293,6 +297,14 @@ async fn main() {
         .route(
             "/api/v1/repositories/:repository_id/constitution",
             get(repository_constitution),
+        )
+        .route(
+            "/api/v1/repositories/:repository_id/constitution/proposals",
+            get(list_constitution_proposals).post(propose_constitution_clause),
+        )
+        .route(
+            "/api/v1/repositories/:repository_id/constitution/proposals/:proposal_id/withdraw",
+            post(withdraw_constitution_proposal),
         )
         .route(
             "/api/v1/repositories/:repository_id/telemetry",

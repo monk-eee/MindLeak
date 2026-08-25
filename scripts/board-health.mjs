@@ -40,6 +40,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
 
 import { resolveServer } from "./claim-gate.mjs";
+import { firstAddedDates, readFragments, triageReport } from "./gaps.mjs";
 
 const repoRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], {
   encoding: "utf8",
@@ -227,6 +228,39 @@ export function describe(report, entries) {
   return lines.join("\n");
 }
 
+/**
+ * A gap fragment records that something is broken, not that anyone is fixing
+ * it -- a fragment can sit in `gaps.d/` indefinitely and look exactly as
+ * "handled" as one filed five minutes ago. This is the same reliability blind
+ * spot `classify`/`describe` exist to close for the claimed-task board,
+ * applied to the OTHER place known bugs live. Reuses `gaps.mjs`'s own
+ * `triageReport` rather than re-deriving age/task-linkage here, so the two
+ * commands can never silently disagree.
+ *
+ * Says nothing when there are no open fragments at all -- an empty `gaps.d/`
+ * is not a finding.
+ */
+export function describeGapsTriage(triage) {
+  if (triage.total === 0) return null;
+  const lines = [
+    ``,
+    `gaps.d fragments with no tracking task : ${triage.orphaned} of ${triage.total}`,
+    `oldest open gap                        : ${triage.oldestAgeDays ?? "unknown"} day(s)`,
+    `median open gap age                    : ${triage.medianAgeDays ?? "unknown"} day(s)`,
+  ];
+  const orphaned = triage.rows.filter((row) => !row.hasTaskLink);
+  if (orphaned.length > 0) {
+    lines.push(
+      ``,
+      `orphaned (a bug found and never given a task to fix it -- \`node scripts/gaps.mjs --triage\` for the full list):`,
+    );
+    for (const row of orphaned.slice(0, 10)) {
+      lines.push(`  ${String(row.ageDays ?? "?").padStart(4)}d  ${row.name}`);
+    }
+  }
+  return lines.join("\n");
+}
+
 const client = (bin) => {
   const proc = spawn(bin, [], { stdio: ["pipe", "pipe", "pipe"] });
   const pending = new Map();
@@ -337,6 +371,10 @@ async function main() {
   console.log(
     describe(classify(entries, Math.floor(Date.now() / 1000), merged), entries),
   );
+  const gapsSection = describeGapsTriage(
+    triageReport(readFragments().gaps, firstAddedDates(), Date.now()),
+  );
+  if (gapsSection) console.log(gapsSection);
   proc.kill();
 }
 

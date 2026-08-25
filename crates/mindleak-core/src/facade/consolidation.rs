@@ -263,6 +263,7 @@ mod tests {
 
     #[test]
     fn signal_consolidation_interval_is_shared_across_facades() {
+        let _serialized = crate::db::serialize_db_test();
         let path =
             std::env::temp_dir().join(format!("mindleak-facade-lease-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
