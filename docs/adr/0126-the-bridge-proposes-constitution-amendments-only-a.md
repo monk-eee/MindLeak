@@ -1,8 +1,10 @@
 # ADR-0126: The Bridge proposes constitution amendments; only a repository activates them
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-25
-- Deciders: Pending human acceptance
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-25 by the repository owner, authorized directly in
+  session — attributed human adoption after review.
 - Refines: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md)
   decision 4 (policy distribution cannot become policy activation),
   [ADR-0121](0121-industrial-design-preserves-immutable-history.md) decision 2

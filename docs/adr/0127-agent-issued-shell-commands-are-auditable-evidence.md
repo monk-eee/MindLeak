@@ -1,8 +1,10 @@
 # ADR-0127: Agent-issued shell commands are auditable evidence, not just prose discipline
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-25
-- Deciders: Pending human acceptance
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-25 by the repository owner, authorized directly in
+  session — attributed human adoption after review.
 - Related: [ADR-0026](0026-constitutional-policy-over-mechanistic-ratchets.md)
   (constitutional policy over mechanistic ratchets),
   [ADR-0034](0034-typed-controls-and-enforcement-ceilings.md) (typed controls
