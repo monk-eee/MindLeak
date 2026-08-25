@@ -5,7 +5,8 @@ use std::{sync::Arc, time::SystemTime};
 use ackplane_server::{
     delegation_store::{
         DelegatedAction, DelegationEvent, DelegationEventKind, DelegationEventPayload,
-        DelegationProjection, DelegationProjectionStatus, DelegationStore, DelegationStoreError,
+        DelegationListCursor, DelegationProjection, DelegationProjectionStatus, DelegationStore,
+        DelegationStoreError,
     },
     fleet::FleetStore,
 };
@@ -60,12 +61,21 @@ pub fn delegation_routes(state: DelegationApiState) -> Router {
 #[derive(Deserialize)]
 struct DelegationQuery {
     limit: Option<i64>,
+    after_source_event_position: Option<u64>,
+    after_delegation_id: Option<String>,
 }
 
 #[derive(Serialize)]
 struct DelegationListResponse {
     entries: Vec<DelegationResponse>,
     effective_limit: i64,
+    next_after: Option<DelegationCursorResponse>,
+}
+
+#[derive(Serialize)]
+struct DelegationCursorResponse {
+    source_event_position: u64,
+    delegation_id: String,
 }
 
 #[derive(Serialize)]
@@ -119,18 +129,55 @@ async fn delegations(
 ) -> Result<Json<DelegationListResponse>, StatusCode> {
     ensure_repository_visible(&state, &repository_id).await?;
     let effective_limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-    let entries = state
+    let after = parse_delegation_cursor(query)?;
+    let page = state
         .delegations
-        .list(state.tenant_id.as_ref(), &repository_id, effective_limit)
+        .list_page(
+            state.tenant_id.as_ref(),
+            &repository_id,
+            after.as_ref(),
+            effective_limit,
+        )
         .await
-        .map_err(delegation_store_error)?
-        .into_iter()
-        .map(|projection| DelegationResponse::from_projection(projection, SystemTime::now()))
-        .collect();
+        .map_err(delegation_store_error)?;
     Ok(Json(DelegationListResponse {
-        entries,
+        entries: page
+            .entries
+            .into_iter()
+            .map(|projection| DelegationResponse::from_projection(projection, SystemTime::now()))
+            .collect(),
         effective_limit,
+        next_after: page.next_after.map(DelegationCursorResponse::from),
     }))
+}
+
+fn parse_delegation_cursor(
+    query: DelegationQuery,
+) -> Result<Option<DelegationListCursor>, StatusCode> {
+    match (query.after_source_event_position, query.after_delegation_id) {
+        (None, None) => Ok(None),
+        (Some(source_event_position), Some(delegation_id))
+            if source_event_position > 0
+                && i64::try_from(source_event_position).is_ok()
+                && !delegation_id.is_empty()
+                && delegation_id.len() <= 256 =>
+        {
+            Ok(Some(DelegationListCursor {
+                source_event_position,
+                delegation_id,
+            }))
+        }
+        _ => Err(StatusCode::BAD_REQUEST),
+    }
+}
+
+impl From<DelegationListCursor> for DelegationCursorResponse {
+    fn from(cursor: DelegationListCursor) -> Self {
+        Self {
+            source_event_position: cursor.source_event_position,
+            delegation_id: cursor.delegation_id,
+        }
+    }
 }
 
 async fn delegation_history(

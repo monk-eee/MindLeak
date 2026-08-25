@@ -421,6 +421,54 @@ the signed bytes, and its own `knowledge_authentication_nonces` table —
 mirrored, not shared with claims', so the two domains' replay protection and
 signed-byte encodings can never collide or drift into each other.
 
+A recorded statement's `lifecycle_state` (`KnowledgeLifecycleState`,
+`knowledge_store/activation.rs`) starts as `Candidate` and is never implicit
+or cosmetic (ADR-0113 decision 1): `recall`/`active_page` only ever return
+`Active` rows, so an unreviewed candidate is invisible to both the gRPC
+recall path and the Bridge's read-only page until a separate, authorized
+`activate` call promotes it. `activate` is a compare-and-swap (mirroring
+`DesignStore::record_decision`'s own CAS) guarded on `lifecycle_state =
+Candidate AND retired_at IS NULL`; a failed guard is diagnosed precisely
+(`UnknownKnowledge`, `AlreadyActive`, `Retired`) rather than reported as one
+generic conflict, and an empty `authorized_by` is refused before the CAS
+ever runs. Every accepted transition appends one immutable row to
+`knowledge_activations` (ADR-0113 decision 7) — the authorization basis, an
+optional reason, and when — never updated or deleted once written, the same
+append-only contract `knowledge_reconfirmations` already holds. `retire` and
+`reconfirm` are unchanged and still operate independently of
+`lifecycle_state` (a never-activated candidate remains retirable; a
+candidate remains reconfirmable, so corroboration gathered before review is
+not lost). Rows recorded before this decision landed backfill as `Active` on
+migration, so already-established guidance does not vanish. Wiring
+`activate` into an authenticated gRPC RPC or a Bridge review surface is
+deferred to a later decision, matching this repository's established
+read-model-first rollout order.
+
+An active statement can also be superseded (`KnowledgeStore::supersede`,
+ADR-0113 decisions 1 and 7): a third `lifecycle_state`, `Superseded`,
+distinct from retirement — the prior row is preserved exactly as it stood
+(`retired_at` stays `NULL`) and instead gains a `superseded_by` pointer to
+its replacement. `supersede` inserts the replacement directly as `Active`
+(the supersession's own authorization basis already satisfies decision 1's
+review gate) and marks the prior statement `Superseded`, both inside one
+`WITH` statement alongside an append-only `knowledge_supersessions` receipt
+naming who authorized the change and — required and non-empty, unlike
+`activate`'s optional reason — why the replacement won. The guard
+(`lifecycle_state = Active AND retired_at IS NULL`) refuses a still-
+`Candidate`, already-`Superseded`, or retired prior statement with the same
+precise-diagnosis pattern `activate` uses, plus a distinct
+`ConcurrentlyModified` outcome when a read taken after a failed guard still
+finds the row `Active` (a genuine race between the failed compare-and-swap
+and the diagnostic read, not a case the other outcomes correctly describe).
+Separately, `record_evidence_reference` (decision 3) attaches a bounded,
+append-only trail of outcome/evidence references — a task, context packet,
+validation run, or receipt — to a statement in any lifecycle state, each
+tagged with a `polarity` (`Corroborates`/`Contradicts`) recorded as its own
+fact rather than folded into one opaque confidence number; a later
+contradiction is a new reference, never an edit to an earlier corroborating
+one. `evidence_references` returns them recency-first, hard-bounded at 100
+rows regardless of the caller's requested limit.
+
 `ConstitutionService` (`constitution_store.rs`/`constitution_service.rs`) is a
 read-only projection of a repository's own authoritative local Lodestar
 constitution (ADR-0106 decision 3): `PublishConstitutionSnapshot` (called by
@@ -531,6 +579,8 @@ enrolled rather than leaking a distinguishable error:
 | `GET /api/v1/repositories/:repository_id/work` | One bounded page of native Industrial Work records plus a bounded claims-only publication summary. It reads Work and ClaimStore state only after tenant/repository visibility succeeds; it neither imports Local Lodestar tasks nor exposes a mutation. |
 | `GET /api/v1/repositories/:repository_id/work/doctor` | Bounded, read-only Work/claim consistency findings including claims without a native Work projection. |
 | `GET /api/v1/repositories/:repository_id/signing-keys` | Every enrolled signing key, judged as of now (`FleetStore::signing_keys`), reusing `signing_keys::judge` — the same rule an accepted envelope's own verification applies — rather than a second judgment invented for the health view. |
+| `GET /delegations` | A tenant-scoped, read-only human delegation authority view. It displays active, expired, and revoked delegation projections with their immutable grant/revocation history; it exposes no grant, revoke, approval, credential, idempotency, payload, or remote-execution control. |
+| `GET /api/v1/repositories/:repository_id/delegations` | One bounded page of delegation projections in durable `(source_event_position ASC, delegation_id ASC)` order. Optional `limit` is clamped to 1-100; `after_source_event_position` and `after_delegation_id` must be supplied together, and a nonterminal response returns the next boundary in `next_after`. Revoked authority remains visible in the projection rather than disappearing from an operator's review. |
 | `GET /api/v1/repositories/:repository_id/knowledge` | One fixed-size, 50-item keyset page of active recorded knowledge (`KnowledgeStore::active_page`), ordered by `(confirmed_at DESC, knowledge_id ASC)`. The optional `before_confirmed_at_micros` and `before_knowledge_id` cursor fields must be supplied together; a nonterminal response returns their next-page value in `next_before`, while a terminal page returns `next_before: null`. This deterministic Bridge listing remains distinct from gRPC semantic `recall` ranking. |
 | `GET /api/v1/repositories/:repository_id/graph` | A bounded Context Graph neighbourhood (`Projector::bounded_neighborhood`, ADR-0087), the same relevance-first traversal the projection worker already implements — wired to the Bridge for the first time rather than a new query. Optional `seeds` (comma-separated node ids; an absent value falls back to `Projector::sample_nodes`, the most recently touched nodes), `depth` (clamped 1-4), `max_nodes` (clamped 1-300), and `max_fanout` (clamped 1-30). Each edge's `effective_weight` is computed at response time from `base_weight`/`half_life_hours`/`updated_at`, mirroring `mindleak_core::decay::effective_weight` exactly — never stored. |
 | `GET /api/v1/repositories/:repository_id/constitution` | Its published constitution snapshot, if any (`ConstitutionStore::get_active`) with immutable publication source/digest metadata when that version was recorded — read-only; no adopt/tailor/reject/promote/waiver action is exposed here. |

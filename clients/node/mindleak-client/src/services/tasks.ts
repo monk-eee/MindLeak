@@ -41,8 +41,22 @@ export class TaskService {
     return this.client.callTool("task_transition", { ...args, to: "block" });
   }
 
-  board(args: { include_terminal?: boolean } = {}): Promise<LodestarTask[]> {
-    return this.client.callTool("task_query", { ...args, view: "board" });
+  /**
+   * The task board. A current server bounds this to the 200 most recently
+   * touched tasks by default and answers `{count, tasks, tasks_truncated}`;
+   * pass `limit: 0` for the full, unbounded history. Either response shape
+   * unwraps to a plain task array here, so this method's own return type
+   * never changes underneath callers.
+   */
+  async board(
+    args: { include_terminal?: boolean; detail?: boolean; limit?: number } = {}
+  ): Promise<LodestarTask[]> {
+    const result = await this.client.callTool("task_query", { ...args, view: "board" });
+    if (Array.isArray(result)) {
+      return result as LodestarTask[];
+    }
+    const tasks = (result as { tasks?: unknown } | null | undefined)?.tasks;
+    return Array.isArray(tasks) ? (tasks as LodestarTask[]) : [];
   }
 
   overlap(args: { paths?: string[]; symbols?: string[] }): Promise<unknown> {
