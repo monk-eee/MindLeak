@@ -421,6 +421,29 @@ the signed bytes, and its own `knowledge_authentication_nonces` table —
 mirrored, not shared with claims', so the two domains' replay protection and
 signed-byte encodings can never collide or drift into each other.
 
+A recorded statement's `lifecycle_state` (`KnowledgeLifecycleState`,
+`knowledge_store/activation.rs`) starts as `Candidate` and is never implicit
+or cosmetic (ADR-0113 decision 1): `recall`/`active_page` only ever return
+`Active` rows, so an unreviewed candidate is invisible to both the gRPC
+recall path and the Bridge's read-only page until a separate, authorized
+`activate` call promotes it. `activate` is a compare-and-swap (mirroring
+`DesignStore::record_decision`'s own CAS) guarded on `lifecycle_state =
+Candidate AND retired_at IS NULL`; a failed guard is diagnosed precisely
+(`UnknownKnowledge`, `AlreadyActive`, `Retired`) rather than reported as one
+generic conflict, and an empty `authorized_by` is refused before the CAS
+ever runs. Every accepted transition appends one immutable row to
+`knowledge_activations` (ADR-0113 decision 7) — the authorization basis, an
+optional reason, and when — never updated or deleted once written, the same
+append-only contract `knowledge_reconfirmations` already holds. `retire` and
+`reconfirm` are unchanged and still operate independently of
+`lifecycle_state` (a never-activated candidate remains retirable; a
+candidate remains reconfirmable, so corroboration gathered before review is
+not lost). Rows recorded before this decision landed backfill as `Active` on
+migration, so already-established guidance does not vanish. Wiring
+`activate` into an authenticated gRPC RPC or a Bridge review surface is
+deferred to a later decision, matching this repository's established
+read-model-first rollout order.
+
 `ConstitutionService` (`constitution_store.rs`/`constitution_service.rs`) is a
 read-only projection of a repository's own authoritative local Lodestar
 constitution (ADR-0106 decision 3): `PublishConstitutionSnapshot` (called by

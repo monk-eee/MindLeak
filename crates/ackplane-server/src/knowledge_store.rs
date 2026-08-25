@@ -16,12 +16,14 @@ use std::time::SystemTime;
 
 use tokio_postgres::Client;
 
+mod activation;
 mod connection;
 mod query;
 mod reach;
 mod reconfirmation;
 mod record;
 
+pub use activation::KnowledgeActivation;
 pub use reconfirmation::KnowledgeReconfirmation;
 
 #[derive(Debug, thiserror::Error)]
@@ -40,6 +42,39 @@ pub enum KnowledgeStoreError {
     DuplicateReachNode(String),
     #[error("reach goal must be a non-empty goal: identifier")]
     InvalidReachGoal,
+    #[error(
+        "activation requires a non-empty authorization basis (a human actor or an adopted policy id)"
+    )]
+    MissingAuthorizationBasis,
+    #[error("knowledge {knowledge_id} was not found")]
+    UnknownKnowledge { knowledge_id: String },
+    #[error("knowledge {knowledge_id} is already active")]
+    AlreadyActive { knowledge_id: String },
+    #[error("knowledge {knowledge_id} was retired and can no longer be activated")]
+    Retired { knowledge_id: String },
+    #[error("knowledge {knowledge_id} has an unrecognised lifecycle_state value: {value}")]
+    CorruptLifecycleState { knowledge_id: String, value: i16 },
+}
+
+/// The closed vocabulary `knowledge.lifecycle_state` holds (ADR-0113
+/// decision 1). `record` always inserts `Candidate`; `activate` is the only
+/// path to `Active`, and is refused without a satisfied authorization basis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KnowledgeLifecycleState {
+    Candidate = 1,
+    Active = 2,
+}
+
+impl TryFrom<i16> for KnowledgeLifecycleState {
+    type Error = ();
+
+    fn try_from(value: i16) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::Candidate),
+            2 => Ok(Self::Active),
+            _ => Err(()),
+        }
+    }
 }
 
 /// One learned-knowledge statement as `record`/`retire` return it.
@@ -55,6 +90,7 @@ pub struct Knowledge {
     pub reach_goal_id: Option<String>,
     pub half_life_hours: f64,
     pub confirmed_at: SystemTime,
+    pub lifecycle_state: KnowledgeLifecycleState,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -123,6 +159,7 @@ pub struct KnowledgeHistoryEntry {
     pub retired_at: Option<SystemTime>,
     pub retired_reason: Option<String>,
     pub retired_by: Option<String>,
+    pub lifecycle_state: KnowledgeLifecycleState,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -169,10 +206,10 @@ fn unique_knowledge_id() -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
-    fn unique_scope(label: &str) -> (String, String) {
+    pub(in crate::knowledge_store) fn unique_scope(label: &str) -> (String, String) {
         let mut bytes = [0u8; 8];
         getrandom::getrandom(&mut bytes).expect("the OS random source should be available");
         let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -182,7 +219,7 @@ mod tests {
         )
     }
 
-    async fn store() -> Option<KnowledgeStore> {
+    pub(in crate::knowledge_store) async fn store() -> Option<KnowledgeStore> {
         let database_url = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()?;
         Some(KnowledgeStore::connect(&database_url).await.unwrap())
     }
@@ -211,6 +248,17 @@ mod tests {
                 half_life_hours: 720.0,
                 embedding: None,
             })
+            .await
+            .unwrap();
+        store
+            .activate(
+                &tenant_id,
+                &repository_id,
+                &recorded.knowledge_id,
+                "human:reviewer-1",
+                None,
+                SystemTime::now(),
+            )
             .await
             .unwrap();
 
@@ -340,6 +388,19 @@ mod tests {
             })
             .await
             .unwrap();
+        for knowledge_id in [&fast.knowledge_id, &slow.knowledge_id] {
+            store
+                .activate(
+                    &tenant_id,
+                    &repository_id,
+                    knowledge_id,
+                    "human:reviewer-1",
+                    None,
+                    SystemTime::now(),
+                )
+                .await
+                .unwrap();
+        }
 
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
@@ -611,7 +672,7 @@ mod tests {
             })
             .await
             .unwrap();
-        store
+        let farthest = store
             .record(RecordKnowledgeRequest {
                 tenant_id: tenant_id.clone(),
                 repository_id: repository_id.clone(),
@@ -629,6 +690,19 @@ mod tests {
             })
             .await
             .unwrap();
+        for knowledge_id in [&closest.knowledge_id, &farthest.knowledge_id] {
+            store
+                .activate(
+                    &tenant_id,
+                    &repository_id,
+                    knowledge_id,
+                    "human:reviewer-1",
+                    None,
+                    SystemTime::now(),
+                )
+                .await
+                .unwrap();
+        }
 
         let recalled = store
             .recall(

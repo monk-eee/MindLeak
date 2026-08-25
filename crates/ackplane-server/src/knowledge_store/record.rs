@@ -2,7 +2,8 @@ use std::time::SystemTime;
 
 use super::reach::validate_reach;
 use super::{
-    unique_knowledge_id, Knowledge, KnowledgeStore, KnowledgeStoreError, RecordKnowledgeRequest,
+    unique_knowledge_id, Knowledge, KnowledgeLifecycleState, KnowledgeStore, KnowledgeStoreError,
+    RecordKnowledgeRequest,
 };
 
 impl KnowledgeStore {
@@ -22,8 +23,8 @@ impl KnowledgeStore {
         self.client
             .execute(
                 "INSERT INTO knowledge \
-                 (tenant_id, repository_id, knowledge_id, content, source_ref, recorded_by, reach_node_ids, reach_goal_id, half_life_hours, confirmed_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                 (tenant_id, repository_id, knowledge_id, content, source_ref, recorded_by, reach_node_ids, reach_goal_id, half_life_hours, confirmed_at, lifecycle_state) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
                 &[
                     &request.tenant_id,
                     &request.repository_id,
@@ -35,6 +36,7 @@ impl KnowledgeStore {
                     &request.reach_goal_id,
                     &request.half_life_hours,
                     &confirmed_at,
+                    &(KnowledgeLifecycleState::Candidate as i16),
                 ],
             )
             .await?;
@@ -65,6 +67,7 @@ impl KnowledgeStore {
             reach_goal_id: request.reach_goal_id,
             half_life_hours: request.half_life_hours,
             confirmed_at,
+            lifecycle_state: KnowledgeLifecycleState::Candidate,
         })
     }
 }

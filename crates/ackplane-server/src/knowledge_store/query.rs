@@ -2,7 +2,7 @@ use tokio_postgres::Row;
 
 use super::{
     ActiveKnowledge, ActiveKnowledgeCursor, ActiveKnowledgePage, KnowledgeHistoryEntry,
-    KnowledgeStore, KnowledgeStoreError, RecallResult,
+    KnowledgeLifecycleState, KnowledgeStore, KnowledgeStoreError, RecallResult,
 };
 
 /// The same decay expression as `mindleak-core::decay::effective_weight`,
@@ -61,8 +61,10 @@ impl KnowledgeStore {
                                   AND e.knowledge_id = k.knowledge_id AND e.model = $3 \
                              {LATEST_RECONFIRMATION_JOIN} \
                              WHERE k.tenant_id = $1 AND k.repository_id = $2 AND k.retired_at IS NULL \
+                               AND k.lifecycle_state = {active} \
                              ORDER BY e.embedding <=> $4 \
-                             LIMIT $5"
+                             LIMIT $5",
+                            active = KnowledgeLifecycleState::Active as i16,
                         ),
                         &[&tenant_id, &repository_id, &model, &query, &limit],
                     )
@@ -80,8 +82,10 @@ impl KnowledgeStore {
                              FROM knowledge k \
                              {LATEST_RECONFIRMATION_JOIN} \
                              WHERE k.tenant_id = $1 AND k.repository_id = $2 AND k.retired_at IS NULL \
+                               AND k.lifecycle_state = {active} \
                              ORDER BY effective_weight DESC \
-                             LIMIT $3"
+                             LIMIT $3",
+                            active = KnowledgeLifecycleState::Active as i16,
                         ),
                         &[&tenant_id, &repository_id, &limit],
                     )
@@ -122,11 +126,13 @@ impl KnowledgeStore {
                      FROM knowledge k \
                      {LATEST_RECONFIRMATION_JOIN} \
                      WHERE k.tenant_id = $1 AND k.repository_id = $2 AND k.retired_at IS NULL \
+                       AND k.lifecycle_state = {active} \
                        AND ($3::timestamptz IS NULL \
                             OR k.confirmed_at < $3 \
                             OR (k.confirmed_at = $3 AND k.knowledge_id > $4)) \
                      ORDER BY k.confirmed_at DESC, k.knowledge_id ASC \
-                     LIMIT $5"
+                     LIMIT $5",
+                    active = KnowledgeLifecycleState::Active as i16,
                 ),
                 &[
                     &tenant_id,
@@ -171,7 +177,7 @@ impl KnowledgeStore {
             .query(
                 &format!(
                     "SELECT k.knowledge_id, k.content, k.source_ref, k.recorded_by, k.reach_node_ids, k.reach_goal_id, k.confirmed_at, \
-                            k.retired_at, k.retired_reason, k.retired_by, \
+                            k.retired_at, k.retired_reason, k.retired_by, k.lifecycle_state, \
                             latest_reconfirmation.last_reconfirmed_at, \
                             latest_reconfirmation.last_reconfirmed_by, \
                             latest_reconfirmation.last_reconfirmation_evidence_ref \
@@ -186,20 +192,25 @@ impl KnowledgeStore {
             .await?;
         Ok(rows
             .into_iter()
-            .map(|row| KnowledgeHistoryEntry {
-                knowledge_id: row.get("knowledge_id"),
-                content: row.get("content"),
-                source_ref: row.get("source_ref"),
-                recorded_by: row.get("recorded_by"),
-                reach_node_ids: row.get("reach_node_ids"),
-                reach_goal_id: row.get("reach_goal_id"),
-                last_reconfirmed_at: row.get("last_reconfirmed_at"),
-                last_reconfirmed_by: row.get("last_reconfirmed_by"),
-                last_reconfirmation_evidence_ref: row.get("last_reconfirmation_evidence_ref"),
-                confirmed_at: row.get("confirmed_at"),
-                retired_at: row.get("retired_at"),
-                retired_reason: row.get("retired_reason"),
-                retired_by: row.get("retired_by"),
+            .map(|row| {
+                let lifecycle_state: i16 = row.get("lifecycle_state");
+                KnowledgeHistoryEntry {
+                    knowledge_id: row.get("knowledge_id"),
+                    content: row.get("content"),
+                    source_ref: row.get("source_ref"),
+                    recorded_by: row.get("recorded_by"),
+                    reach_node_ids: row.get("reach_node_ids"),
+                    reach_goal_id: row.get("reach_goal_id"),
+                    last_reconfirmed_at: row.get("last_reconfirmed_at"),
+                    last_reconfirmed_by: row.get("last_reconfirmed_by"),
+                    last_reconfirmation_evidence_ref: row.get("last_reconfirmation_evidence_ref"),
+                    confirmed_at: row.get("confirmed_at"),
+                    retired_at: row.get("retired_at"),
+                    retired_reason: row.get("retired_reason"),
+                    retired_by: row.get("retired_by"),
+                    lifecycle_state: KnowledgeLifecycleState::try_from(lifecycle_state)
+                        .unwrap_or(KnowledgeLifecycleState::Candidate),
+                }
             })
             .collect())
     }

@@ -205,7 +205,12 @@ fn knowledge_store_error(error: KnowledgeStoreError) -> StatusCode {
         | KnowledgeStoreError::EmptyReconfirmationEvidence
         | KnowledgeStoreError::InvalidReachNode(_)
         | KnowledgeStoreError::DuplicateReachNode(_)
-        | KnowledgeStoreError::InvalidReachGoal => StatusCode::INTERNAL_SERVER_ERROR,
+        | KnowledgeStoreError::InvalidReachGoal
+        | KnowledgeStoreError::MissingAuthorizationBasis
+        | KnowledgeStoreError::UnknownKnowledge { .. }
+        | KnowledgeStoreError::AlreadyActive { .. }
+        | KnowledgeStoreError::Retired { .. }
+        | KnowledgeStoreError::CorruptLifecycleState { .. } => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 

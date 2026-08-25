@@ -34,17 +34,21 @@ const KNOWLEDGE_STORE_RECORD_RS: &str =
     include_str!("../../ackplane-server/src/knowledge_store/record.rs");
 const KNOWLEDGE_STORE_RECONFIRMATION_RS: &str =
     include_str!("../../ackplane-server/src/knowledge_store/reconfirmation.rs");
+const KNOWLEDGE_STORE_ACTIVATION_RS: &str =
+    include_str!("../../ackplane-server/src/knowledge_store/activation.rs");
 /// `KnowledgeStore`'s methods are split (below the module-length ratchet)
 /// across `knowledge_store.rs`/`connection.rs`/`query.rs`/`record.rs`/
-/// `reconfirmation.rs`, each with its own `impl KnowledgeStore { ... }`
-/// block - this guard must scan all five, not just one. `reach.rs` has no
-/// `impl KnowledgeStore` block (free functions only), so it is not scanned.
+/// `reconfirmation.rs`/`activation.rs`, each with its own `impl
+/// KnowledgeStore { ... }` block - this guard must scan all six, not just
+/// one. `reach.rs` has no `impl KnowledgeStore` block (free functions
+/// only), so it is not scanned.
 const KNOWLEDGE_STORE_SOURCES: &[&str] = &[
     KNOWLEDGE_STORE_RS,
     KNOWLEDGE_STORE_CONNECTION_RS,
     KNOWLEDGE_STORE_QUERY_RS,
     KNOWLEDGE_STORE_RECORD_RS,
     KNOWLEDGE_STORE_RECONFIRMATION_RS,
+    KNOWLEDGE_STORE_ACTIVATION_RS,
 ];
 const CLAIM_STORE_MOD_RS: &str = include_str!("../../ackplane-server/src/claim_store/mod.rs");
 const CLAIM_STORE_LEASE_RS: &str = include_str!("../../ackplane-server/src/claim_store/lease.rs");
