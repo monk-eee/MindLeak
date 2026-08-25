@@ -157,7 +157,13 @@ async function main() {
       { name: "lodestar_stats" },
       { name: "task_query", arguments: { view: "doctor" } },
       // liveClaims below only reads id/title/status/owner/lease_expires_at.
-      { name: "task_query", arguments: { view: "board", detail: false } },
+      // limit:0 opts out of the default 200-task cap (bounded board fix):
+      // this must see every task, not just the 200 most recently touched, or
+      // an old-but-still-live claim could be missed.
+      {
+        name: "task_query",
+        arguments: { view: "board", detail: false, limit: 0 },
+      },
     ],
     // view=board returns every task this repository has ever created, done
     // or not; a mature board measures well past execFileSync's 1 MiB default.
@@ -176,7 +182,7 @@ async function main() {
 
   const now = Math.floor(Date.now() / 1000);
   const claims = liveClaims(
-    Array.isArray(board) ? board : Object.values(board),
+    Array.isArray(board) ? board : (board?.tasks ?? []),
     now,
   );
 

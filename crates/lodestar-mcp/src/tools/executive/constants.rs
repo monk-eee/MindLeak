@@ -15,6 +15,18 @@ pub(super) const CLAIM_STEPS: [&str; 4] = ["claim", "renew", "release", "recover
 /// list a caller reads is capped, at the size most likely to matter first.
 pub(super) const TASK_PREVIEW_LIMIT: usize = 20;
 
+/// `board`'s default cap, newest-first, when the caller does not pass an
+/// explicit `limit`.
+///
+/// `board` is not a preview like `existing_work` — several callers
+/// (`evaluate-pr-effectiveness.mjs`, `stranded-report.mjs`) read the whole
+/// history on purpose — so it needs headroom past `TASK_PREVIEW_LIMIT`
+/// rather than the same tiny number, while still bounding the common case.
+/// Measured on this repository's own board at 1,019 tasks (`detail=false`):
+/// ~396 bytes/row, ~403 KB unbounded. `limit=0` opts out of the cap entirely
+/// for a caller that has already decided it needs the complete history.
+pub(super) const BOARD_PREVIEW_LIMIT: usize = 200;
+
 pub(super) const TRANSITIONS: [&str; 9] = [
     "complete", "resolve", "block", "reopen", "abandon", "pause", "resume", "ask", "answer",
 ];

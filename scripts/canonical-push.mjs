@@ -242,7 +242,15 @@ if (server && /^[0-9a-f]{32}$/.test(sessionId)) {
           name: "task_query",
           // Only status/owner/lease_expires_at/branch feed the claim gate below --
           // scope/claim_window/receipt/acceptance would be fetched for nothing.
-          arguments: { view: "board", include_terminal: false, detail: false },
+          // limit:0 opts out of the default 200-task cap (bounded board fix):
+          // this gate must see every non-terminal task, not just the 200 most
+          // recently touched, or an old-but-still-live claim could be missed.
+          arguments: {
+            view: "board",
+            include_terminal: false,
+            detail: false,
+            limit: 0,
+          },
         },
         { name: "task_query", arguments: { view: "overlap", paths: changed } },
         {
@@ -251,8 +259,9 @@ if (server && /^[0-9a-f]{32}$/.test(sessionId)) {
           // THIS branch, which the fetch above can never return (it excludes
           // every terminal task on purpose). Asking by branch instead of
           // widening include_terminal keeps this small regardless of how
-          // large the board's terminal history grows
-          // (gaps.d/task-query-board-has-no-response-size-bound.md).
+          // large the board's terminal history grows -- and the branch
+          // filter runs before any truncation server-side, so a real match
+          // is never at risk of the 200-task cap either.
           arguments: { view: "board", branch, detail: false },
         },
       ],
@@ -272,9 +281,18 @@ if (server && /^[0-9a-f]{32}$/.test(sessionId)) {
       (fleet?.sessions ?? []).find((entry) =>
         sameSession(entry.agent_id, agent),
       )?.context?.branch ?? null;
-    boardReadable = Array.isArray(board);
+    // A current binary answers `{count, tasks, tasks_truncated}` (bounded
+    // board fix); one built before that shape shipped still answers a bare
+    // array. Either way the task array is what the claim gate below reads;
+    // anything else (a stale binary's "unknown argument" error text, parsed
+    // as a JS string) is neither, so boardReadable correctly stays false.
+    const boardTaskList = Array.isArray(board) ? board : board?.tasks;
+    const branchTaskList = Array.isArray(branchHistory)
+      ? branchHistory
+      : branchHistory?.tasks;
+    boardReadable = Array.isArray(boardTaskList);
     tasks = boardReadable
-      ? withReconciliationCandidates(board, branchHistory)
+      ? withReconciliationCandidates(boardTaskList, branchTaskList)
       : [];
     overlaps = overlapResult ?? [];
   } catch {
