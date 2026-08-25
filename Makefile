@@ -1,7 +1,7 @@
 # MindLeak developer commands. On Windows, run the underlying commands directly
 # (see DEVELOPERS.md) if `make` is unavailable.
 
-.PHONY: setup worktree-setup install-servers adr-index changelog design-audit merge-audit queue queue-watch sweep board-health control-coverage stranded-report status reingest tool-surface build test script-test ratchet coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
+.PHONY: setup worktree-setup install-servers adr-index changelog design-audit merge-audit queue queue-watch sweep board-health control-coverage stranded-report migration-audit status reingest tool-surface build test script-test ratchet coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
 
 setup: ## Install pre-commit hooks and extension deps
 	pip install pre-commit
@@ -70,6 +70,9 @@ control-coverage: ## Report normative clauses with no active control, or one wea
 
 stranded-report: ## Name the likely shipping commit for each lapsed claim (ADR-0048)
 	node scripts/stranded-report.mjs
+
+migration-audit: ## Report ackplane-server migration-key defects; add ARGS=--next for the safe next key
+	node scripts/migration-audit.mjs $(ARGS)
 
 status: ## Read live Lodestar/MindLeak state directly, no agent session needed
 	node scripts/status.mjs
