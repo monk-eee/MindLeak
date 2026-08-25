@@ -119,6 +119,42 @@ fn store_error(error: KnowledgeStoreError) -> Status {
         KnowledgeStoreError::InvalidReachGoal => {
             Status::invalid_argument("reach_goal_id must be a non-empty goal: identifier")
         }
+        KnowledgeStoreError::MissingAuthorizationBasis => {
+            Status::invalid_argument("activation requires a non-empty authorization basis")
+        }
+        KnowledgeStoreError::UnknownKnowledge { knowledge_id } => {
+            Status::not_found(format!("knowledge {knowledge_id} was not found"))
+        }
+        KnowledgeStoreError::AlreadyActive { knowledge_id } => {
+            Status::failed_precondition(format!("knowledge {knowledge_id} is already active"))
+        }
+        KnowledgeStoreError::Retired { knowledge_id } => Status::failed_precondition(format!(
+            "knowledge {knowledge_id} was retired and can no longer be activated"
+        )),
+        KnowledgeStoreError::CorruptLifecycleState {
+            knowledge_id,
+            value,
+        } => Status::internal(format!(
+            "knowledge {knowledge_id} has an unrecognised lifecycle_state value: {value}"
+        )),
+        KnowledgeStoreError::MissingSupersessionReason => Status::invalid_argument(
+            "supersession requires a non-empty reason recording why the replacement won",
+        ),
+        KnowledgeStoreError::NotActive { knowledge_id } => Status::failed_precondition(format!(
+            "knowledge {knowledge_id} is not active and cannot be superseded"
+        )),
+        KnowledgeStoreError::AlreadySuperseded { knowledge_id } => {
+            Status::failed_precondition(format!("knowledge {knowledge_id} was already superseded"))
+        }
+        KnowledgeStoreError::ConcurrentlyModified { knowledge_id } => Status::aborted(format!(
+            "knowledge {knowledge_id}'s lifecycle state changed concurrently; retry"
+        )),
+        KnowledgeStoreError::EmptyEvidenceReferenceRef => {
+            Status::invalid_argument("evidence reference_ref must not be empty")
+        }
+        KnowledgeStoreError::EmptyEvidenceReferenceRecordedBy => {
+            Status::invalid_argument("evidence reference recorded_by must not be empty")
+        }
         KnowledgeStoreError::Database(error) => Status::internal(error.to_string()),
     }
 }
