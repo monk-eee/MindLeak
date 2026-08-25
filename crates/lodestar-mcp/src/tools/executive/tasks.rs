@@ -137,10 +137,26 @@ pub(super) fn complete(engine: &Lodestar, task_id: &str, args: &Value) -> Result
 /// complete history (`evaluate-pr-effectiveness.mjs`, `stranded-report.mjs`)
 /// can tell it was cut and pass an explicit `limit=0` to opt out, rather than
 /// silently analysing a partial board as if it were whole.
+///
+/// `branch`, when given, narrows the result to tasks recorded against that
+/// exact branch — any status, independent of `include_terminal`. A caller
+/// that needs to know whether ONE branch was already delivered (a delivered
+/// task is terminal) does not need every terminal task the ledger has ever
+/// held to answer that; asking for `include_terminal=true` unfiltered does.
+/// The filter runs BEFORE `count`/`limit` are computed, not after: a
+/// branch-scoped caller's whole point is finding one specific task that may
+/// be arbitrarily old, so truncating the unfiltered board first could cut it
+/// before the filter ever saw it — exactly the bug this argument exists to
+/// fix. Filtering first also means `count`/`tasks_truncated` describe the
+/// branch's own matching set, not the whole board's.
 pub(super) fn board(engine: &Lodestar, args: &Value) -> Result<Value, String> {
-    let tasks = engine
+    let branch_filter = opt_str(args, "branch");
+    let mut tasks = engine
         .board(bool_arg(args, "include_terminal", true))
         .map_err(|e| e.to_string())?;
+    if let Some(branch) = &branch_filter {
+        tasks.retain(|task| task.branch.as_deref() == Some(branch.as_str()));
+    }
     let detail = bool_arg(args, "detail", true);
     let count = tasks.len();
     let limit = i64_arg(args, "limit", BOARD_PREVIEW_LIMIT as i64);

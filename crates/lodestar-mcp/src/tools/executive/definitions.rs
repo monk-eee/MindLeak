@@ -91,6 +91,7 @@ pub(in crate::tools) fn definitions() -> Vec<Value> {
                     "include_terminal": { "type": "boolean", "default": true, "description": "board: include terminal done/abandoned tasks (default true); false returns only the live/actionable set." },
                     "detail": { "type": "boolean", "default": true, "description": "board: also include each task's scope, claim_window, receipt, and acceptance text; false omits them for a lean scan, dropping no task." },
                     "limit": { "type": "integer", "default": 200, "description": "board: newest-first cap on `tasks`; `count`/`tasks_truncated` still describe the full total. 0 disables the cap for a caller that has already decided it needs the complete history." },
+                    "branch": { "type": "string", "description": "board: narrow to tasks recorded on exactly this branch, any status, independent of include_terminal. Applied before `limit`, so a match cannot be truncated away." },
                     "goal_id": { "type": "string", "description": "existing_work: work already serving this goal." },
                     "paths": { "type": "array", "items": { "type": "string" }, "default": [], "description": "existing_work and overlap: concrete workspace-relative paths. Declared claim scopes are the glob side of the comparison." },
                     "symbols": { "type": "array", "items": { "type": "string" }, "default": [], "description": "overlap: opaque MindLeak symbol ids." },
