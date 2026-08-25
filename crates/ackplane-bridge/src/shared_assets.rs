@@ -8,6 +8,7 @@ use axum::{http::header::CONTENT_TYPE, response::IntoResponse, routing::get, Rou
 const CHROME_CSS: &str = include_str!("../static/shared/chrome.css");
 const CHROME_JS: &str = include_str!("../static/shared/chrome.js");
 const REPO_PICKER_JS: &str = include_str!("../static/shared/repo-picker.js");
+const BRAND_MARK_PNG: &[u8] = include_bytes!("../static/shared/mark.png");
 
 async fn chrome_css() -> impl IntoResponse {
     ([(CONTENT_TYPE, "text/css; charset=utf-8")], CHROME_CSS)
@@ -27,6 +28,10 @@ async fn repo_picker_js() -> impl IntoResponse {
     )
 }
 
+async fn brand_mark_png() -> impl IntoResponse {
+    ([(CONTENT_TYPE, "image/png")], BRAND_MARK_PNG)
+}
+
 /// Mounted once in the application router; carries no tenant-scoped state,
 /// since it serves the same bytes to every caller.
 pub fn shared_asset_routes() -> Router {
@@ -34,6 +39,7 @@ pub fn shared_asset_routes() -> Router {
         .route("/static/shared/chrome.css", get(chrome_css))
         .route("/static/shared/chrome.js", get(chrome_js))
         .route("/static/shared/repo-picker.js", get(repo_picker_js))
+        .route("/static/shared/mark.png", get(brand_mark_png))
 }
 
 #[cfg(test)]
@@ -78,5 +84,17 @@ mod tests {
         assert!(String::from_utf8(body.to_vec())
             .unwrap()
             .contains("data-repo-datalist"));
+    }
+
+    #[tokio::test]
+    async fn brand_mark_png_is_served_as_a_real_png() {
+        let response = brand_mark_png().await.into_response();
+        assert_eq!(response.headers().get(CONTENT_TYPE).unwrap(), "image/png");
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            &body[..8],
+            b"\x89PNG\r\n\x1a\n",
+            "must be a real PNG file, not a placeholder"
+        );
     }
 }

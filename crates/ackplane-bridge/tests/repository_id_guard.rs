@@ -144,6 +144,7 @@ const ROUTE_HANDLERS_WITHOUT_A_STORE_QUERY: &[&str] = &[
     "chrome_css",
     "chrome_js",
     "repo_picker_js",
+    "brand_mark_png",
 ];
 
 /// Route handler bodies live wherever the crate split them across --
