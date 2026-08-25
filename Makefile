@@ -50,6 +50,9 @@ changelog: ## Show what the next release would contain, from changelog.d fragmen
 gaps: ## List every known gap, from gaps.d fragments
 	node scripts/gaps.mjs --list
 
+gaps-triage: ## Reliability scorecard: gap backlog age + which ones have a tracking task
+	node scripts/gaps.mjs --triage
+
 design-audit: ## Report drift between the ADR files and the design ledger (needs a release build)
 	node scripts/design-audit.mjs
 
