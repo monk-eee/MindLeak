@@ -631,8 +631,12 @@ const collect = async ({ root, limit }) => {
       // claimStartedAt() below only ever reads the base claim_started_at
       // field; scope/claim_window/receipt/acceptance are never used.
       detail: false,
+      // This analysis walks the FULL task history below (mapLimit), so it
+      // must opt out of the default 200-task cap (bounded board fix) rather
+      // than silently analyzing only the most recently touched slice.
+      limit: 0,
     });
-    const tasks = Array.isArray(board) ? board : Object.values(board ?? {});
+    const tasks = Array.isArray(board) ? board : (board?.tasks ?? []);
     const threadsByTask = {};
     const auditsByTask = {};
     await mapLimit(tasks, 8, async (task) => {
