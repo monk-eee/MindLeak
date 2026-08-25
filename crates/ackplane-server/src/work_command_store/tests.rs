@@ -13,7 +13,6 @@ fn request(tenant_id: &str, repository_id: &str, suffix: &str) -> NewWorkCommand
     NewWorkCommand {
         tenant_id: tenant_id.to_owned(),
         repository_id: repository_id.to_owned(),
-        command_id: format!("command-{suffix}"),
         kind: WorkCommandKind::CreateWork,
         schema_version: "v1".to_owned(),
         task_id: None,
@@ -92,7 +91,6 @@ async fn a_changed_request_under_one_idempotency_key_is_refused_without_overwrit
     let repository_id = format!("repository-{suffix}");
     let original = request(&tenant_id, &repository_id, &suffix);
     let mut changed = original.clone();
-    changed.command_id = format!("command-changed-{suffix}");
     changed.rationale = "Attempt to overwrite the original request.".to_owned();
     let now = SystemTime::now();
     let mut store = WorkCommandStore::connect(&database_url)
@@ -115,6 +113,38 @@ async fn a_changed_request_under_one_idempotency_key_is_refused_without_overwrit
     ));
     assert!(replay.idempotent_replay);
     assert_eq!(replay.command, created.command);
+}
+
+#[tokio::test]
+async fn distinct_idempotency_keys_receive_distinct_server_assigned_command_ids() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-assignment");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let first_request = request(&tenant_id, &repository_id, &suffix);
+    let mut second_request = first_request.clone();
+    second_request.idempotency_key = format!("idempotency-second-{suffix}");
+    let now = SystemTime::now();
+    let mut store = WorkCommandStore::connect(&database_url)
+        .await
+        .expect("the command store should connect");
+
+    let first = store
+        .record_request(&first_request, now)
+        .await
+        .expect("the first request should persist");
+    let second = store
+        .record_request(&second_request, now)
+        .await
+        .expect("the distinct request should persist");
+
+    assert!(!first.idempotent_replay);
+    assert!(!second.idempotent_replay);
+    assert!(first.command.command_id.starts_with("work-command:"));
+    assert_ne!(first.command.command_id, second.command.command_id);
 }
 
 #[tokio::test]
@@ -179,14 +209,14 @@ async fn an_identical_receipt_replays_but_changed_receipt_content_is_refused() {
     let mut store = WorkCommandStore::connect(&database_url)
         .await
         .expect("the command store should connect");
-    store
+    let created = store
         .record_request(&command, now)
         .await
         .expect("the command should persist before its receipt");
     let original = receipt(
         &tenant_id,
         &repository_id,
-        &command.command_id,
+        &created.command.command_id,
         &suffix,
         now,
     );
@@ -226,14 +256,14 @@ async fn a_receipt_cannot_target_a_command_in_another_tenant() {
     let mut store = WorkCommandStore::connect(&database_url)
         .await
         .expect("the command store should connect");
-    store
+    let created = store
         .record_request(&command, now)
         .await
         .expect("the command should persist");
     let cross_tenant = receipt(
         &format!("other-tenant-{suffix}"),
         &repository_id,
-        &command.command_id,
+        &created.command.command_id,
         &suffix,
         now,
     );

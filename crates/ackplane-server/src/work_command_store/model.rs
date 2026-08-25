@@ -101,13 +101,13 @@ impl WorkCommandOutcome {
     }
 }
 
-/// An immutable command request after the command service has allocated its
-/// id and canonical payload digest.
+/// An immutable command request after the command service has canonicalized
+/// its payload. Ackplane assigns the durable command id from its scoped
+/// idempotency identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewWorkCommand {
     pub tenant_id: String,
     pub repository_id: String,
-    pub command_id: String,
     pub kind: WorkCommandKind,
     pub schema_version: String,
     pub task_id: Option<String>,
@@ -232,7 +232,6 @@ pub(super) fn validate_request(
     for (field, value) in [
         ("tenant_id", request.tenant_id.as_str()),
         ("repository_id", request.repository_id.as_str()),
-        ("command_id", request.command_id.as_str()),
         ("schema_version", request.schema_version.as_str()),
         (
             "issuing_principal_id",
@@ -322,7 +321,6 @@ pub(super) fn request_digest(request: &NewWorkCommand) -> Result<Vec<u8>, WorkCo
     for value in [
         request.tenant_id.as_bytes(),
         request.repository_id.as_bytes(),
-        request.command_id.as_bytes(),
         request.schema_version.as_bytes(),
         request.issuing_principal_id.as_bytes(),
         request.rationale.as_bytes(),
@@ -345,6 +343,28 @@ pub(super) fn request_digest(request: &NewWorkCommand) -> Result<Vec<u8>, WorkCo
     append_timestamp(&mut hasher, request.expires_at)?;
     append_bytes(&mut hasher, &request.payload_digest);
     Ok(hasher.finalize().to_vec())
+}
+
+/// A lost response must replay the same command rather than create a second
+/// one, so Ackplane derives its opaque id from the scoped idempotency identity.
+/// Changed content under that identity still conflicts through `request_digest`.
+pub(super) fn assigned_command_id(request: &NewWorkCommand) -> String {
+    let mut hasher = Sha256::new();
+    append_bytes(&mut hasher, b"mindleak.ackplane.work-command.id.v1");
+    for value in [
+        request.tenant_id.as_bytes(),
+        request.repository_id.as_bytes(),
+        request.issuing_principal_id.as_bytes(),
+        request.idempotency_key.as_bytes(),
+    ] {
+        append_bytes(&mut hasher, value);
+    }
+    let hex = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("work-command:{hex}")
 }
 
 pub(super) fn receipt_digest(

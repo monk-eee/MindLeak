@@ -6,8 +6,8 @@ use tokio_postgres::Transaction;
 
 use super::{
     model::{
-        command_from_row, receipt_digest, receipt_from_row, request_digest, validate_receipt,
-        validate_request,
+        assigned_command_id, command_from_row, receipt_digest, receipt_from_row, request_digest,
+        validate_receipt, validate_request,
     },
     NewWorkCommand, NewWorkCommandReceipt, WorkCommand, WorkCommandReceipt,
     WorkCommandReceiptWriteOutcome, WorkCommandStore, WorkCommandStoreError,
@@ -22,10 +22,13 @@ impl WorkCommandStore {
         now: SystemTime,
     ) -> Result<WorkCommandWriteOutcome, WorkCommandStoreError> {
         validate_request(request, now)?;
+        let assigned_command_id = assigned_command_id(request);
         let digest = request_digest(request)?;
         let transaction = self.client.transaction().await?;
 
-        if let Some(command) = existing_by_command_id(&transaction, request).await? {
+        if let Some(command) =
+            existing_by_command_id(&transaction, request, &assigned_command_id).await?
+        {
             let outcome = replay_or_conflict(command, &digest)?;
             transaction.commit().await?;
             return Ok(outcome);
@@ -47,7 +50,7 @@ impl WorkCommandStore {
                 &[
                     &request.tenant_id,
                     &request.repository_id,
-                    &request.command_id,
+                    &assigned_command_id,
                     &request.kind.as_i16(),
                     &request.schema_version,
                     &request.task_id,
@@ -68,7 +71,7 @@ impl WorkCommandStore {
         let (command, idempotent_replay) = match inserted {
             Some(row) => (command_from_row(&row)?, false),
             None => {
-                let command = existing_by_command_id(&transaction, request)
+                let command = existing_by_command_id(&transaction, request, &assigned_command_id)
                     .await?
                     .or(existing_by_idempotency_key(&transaction, request).await?)
                     .ok_or(WorkCommandStoreError::IdempotencyConflict)?;
@@ -147,6 +150,7 @@ impl WorkCommandStore {
 async fn existing_by_command_id(
     transaction: &Transaction<'_>,
     request: &NewWorkCommand,
+    assigned_command_id: &str,
 ) -> Result<Option<WorkCommand>, WorkCommandStoreError> {
     transaction
         .query_opt(
@@ -155,7 +159,7 @@ async fn existing_by_command_id(
             &[
                 &request.tenant_id,
                 &request.repository_id,
-                &request.command_id,
+                &assigned_command_id,
             ],
         )
         .await?
