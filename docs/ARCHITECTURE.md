@@ -471,6 +471,37 @@ contradiction is a new reference, never an edit to an earlier corroborating
 one. `evidence_references` returns them recency-first, hard-bounded at 100
 rows regardless of the caller's requested limit.
 
+Stale or overdue-for-revalidation knowledge is surfaced through a fourth,
+read-only view (ADR-0113 decision 4): `revalidation_queue`/`revalidation_entry`
+(`knowledge_store/revalidation.rs`) classify every `Active` statement as
+`current`, `approaching_expiry`, `contradicted`, or
+`overdue_for_revalidation` from three signals computed at query time and
+never stored -- effective weight (the same decay expression above), whether
+any `knowledge_evidence_references` row for it carries `Contradicts`
+polarity, and whether an optional, nullable `revalidate_after_hours` policy
+column (migration `0036`, no authoring surface exists yet) has elapsed since
+`confirmed_at`. Precedence is fixed: a contradiction outranks an overdue
+policy rule, which outranks the generic half-life curve, because a
+contradiction is an evidence-backed refutation independent of elapsed time
+and an overdue rule is a human-authorized constraint more specific than decay
+alone; `effective_weight <= 0.5` is exactly one elapsed half-life. The
+classification is expressed twice by design -- a pure Rust function
+(`classify`, `#[cfg(test)]`-only, for direct DB-free testing of the
+precedence rule) and an equivalent Postgres `CASE` expression
+(`CLASSIFICATION_SQL`) that actually runs in `revalidation_queue`/
+`revalidation_entry`, the same intentional duplication `EFFECTIVE_WEIGHT_SQL`
+already establishes in this crate. `revalidation_queue` excludes `current`
+records, supports an allow-listed classification filter, and paginates via a
+stable `(confirmed_at, knowledge_id)` keyset cursor bounded at 100 rows per
+page; `revalidation_entry` looks up one record by id without excluding
+`current` (a detail view, not the review queue itself). Bridge exposes this
+at `GET /api/v1/repositories/:repository_id/knowledge/revalidation-queue`
+(`knowledge_api.rs`) with `classification`/`limit`/paired
+`after_confirmed_at_micros`+`after_knowledge_id` query parameters,
+tenant/repository-scoped like every other knowledge route; this task is
+deliberately read-only and adds no mutation route, no policy-authoring
+surface, and no automatic revalidation trigger.
+
 `ConstitutionService` (`constitution_store.rs`/`constitution_service.rs`) is a
 read-only projection of a repository's own authoritative local Lodestar
 constitution (ADR-0106 decision 3): `PublishConstitutionSnapshot` (called by
