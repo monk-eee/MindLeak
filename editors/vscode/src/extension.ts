@@ -23,6 +23,7 @@ import { TaskAllocationController } from "./taskAllocationController";
 import { TelemetryViewProvider } from "./telemetryViewProvider";
 import { TerminalCaptureConfig, TerminalSensor } from "./terminalSensor";
 import {
+  boardTasks,
   canRetireTask,
   configuredPathEnvironment,
   conformanceDiagnostic,
@@ -844,7 +845,7 @@ async function refreshBoard(): Promise<void> {
       view: "board",
       include_terminal: false,
     });
-    const list: LodestarTask[] = Array.isArray(tasks) ? tasks : [];
+    const list: LodestarTask[] = boardTasks(tasks);
     // Enrich claimed tasks with the clauses governing their scope so the board
     // shows what governs the work an agent picked up (ADR-0029). Best-effort:
     // a failed enrichment must never break the board.
@@ -905,7 +906,7 @@ async function refreshEvidence(): Promise<void> {
       include_terminal: true,
       detail: false,
     });
-    const list: LodestarTask[] = Array.isArray(tasks) ? tasks : [];
+    const list: LodestarTask[] = boardTasks(tasks);
     // Only completed/reviewed/blocked work carries conformance proof; skip the
     // rest so the board is one bounded pass, not a lookup per open task.
     const evidenced = list.filter((task) =>
