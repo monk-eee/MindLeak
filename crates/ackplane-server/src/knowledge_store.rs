@@ -18,13 +18,20 @@ use tokio_postgres::Client;
 
 mod activation;
 mod connection;
+mod evidence_reference;
 mod query;
 mod reach;
 mod reconfirmation;
 mod record;
+mod supersession;
 
 pub use activation::KnowledgeActivation;
+pub use evidence_reference::{
+    KnowledgeEvidencePolarity, KnowledgeEvidenceReference, KnowledgeEvidenceReferenceKind,
+    RecordKnowledgeEvidenceReferenceRequest,
+};
 pub use reconfirmation::KnowledgeReconfirmation;
+pub use supersession::{KnowledgeSupersession, SupersedeKnowledgeRequest};
 
 #[derive(Debug, thiserror::Error)]
 pub enum KnowledgeStoreError {
@@ -54,6 +61,18 @@ pub enum KnowledgeStoreError {
     Retired { knowledge_id: String },
     #[error("knowledge {knowledge_id} has an unrecognised lifecycle_state value: {value}")]
     CorruptLifecycleState { knowledge_id: String, value: i16 },
+    #[error("supersession requires a non-empty reason recording why the replacement won")]
+    MissingSupersessionReason,
+    #[error("knowledge {knowledge_id} is not active and cannot be superseded")]
+    NotActive { knowledge_id: String },
+    #[error("knowledge {knowledge_id} was already superseded")]
+    AlreadySuperseded { knowledge_id: String },
+    #[error("knowledge {knowledge_id}'s lifecycle state changed concurrently; retry")]
+    ConcurrentlyModified { knowledge_id: String },
+    #[error("evidence reference_ref must not be empty")]
+    EmptyEvidenceReferenceRef,
+    #[error("evidence reference recorded_by must not be empty")]
+    EmptyEvidenceReferenceRecordedBy,
 }
 
 /// The closed vocabulary `knowledge.lifecycle_state` holds (ADR-0113
@@ -63,6 +82,10 @@ pub enum KnowledgeStoreError {
 pub enum KnowledgeLifecycleState {
     Candidate = 1,
     Active = 2,
+    /// Replaced by a newly-recorded statement (ADR-0113 decision 1). Distinct
+    /// from retirement: the row is preserved as-is, `retired_at` stays NULL,
+    /// and `superseded_by` names the replacement.
+    Superseded = 3,
 }
 
 impl TryFrom<i16> for KnowledgeLifecycleState {
@@ -72,6 +95,7 @@ impl TryFrom<i16> for KnowledgeLifecycleState {
         match value {
             1 => Ok(Self::Candidate),
             2 => Ok(Self::Active),
+            3 => Ok(Self::Superseded),
             _ => Err(()),
         }
     }
@@ -91,6 +115,8 @@ pub struct Knowledge {
     pub half_life_hours: f64,
     pub confirmed_at: SystemTime,
     pub lifecycle_state: KnowledgeLifecycleState,
+    /// The replacement statement's id, once this one has been superseded.
+    pub superseded_by: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -160,6 +186,8 @@ pub struct KnowledgeHistoryEntry {
     pub retired_reason: Option<String>,
     pub retired_by: Option<String>,
     pub lifecycle_state: KnowledgeLifecycleState,
+    /// The replacement statement's id, once this one has been superseded.
+    pub superseded_by: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

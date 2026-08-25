@@ -444,6 +444,31 @@ migration, so already-established guidance does not vanish. Wiring
 deferred to a later decision, matching this repository's established
 read-model-first rollout order.
 
+An active statement can also be superseded (`KnowledgeStore::supersede`,
+ADR-0113 decisions 1 and 7): a third `lifecycle_state`, `Superseded`,
+distinct from retirement — the prior row is preserved exactly as it stood
+(`retired_at` stays `NULL`) and instead gains a `superseded_by` pointer to
+its replacement. `supersede` inserts the replacement directly as `Active`
+(the supersession's own authorization basis already satisfies decision 1's
+review gate) and marks the prior statement `Superseded`, both inside one
+`WITH` statement alongside an append-only `knowledge_supersessions` receipt
+naming who authorized the change and — required and non-empty, unlike
+`activate`'s optional reason — why the replacement won. The guard
+(`lifecycle_state = Active AND retired_at IS NULL`) refuses a still-
+`Candidate`, already-`Superseded`, or retired prior statement with the same
+precise-diagnosis pattern `activate` uses, plus a distinct
+`ConcurrentlyModified` outcome when a read taken after a failed guard still
+finds the row `Active` (a genuine race between the failed compare-and-swap
+and the diagnostic read, not a case the other outcomes correctly describe).
+Separately, `record_evidence_reference` (decision 3) attaches a bounded,
+append-only trail of outcome/evidence references — a task, context packet,
+validation run, or receipt — to a statement in any lifecycle state, each
+tagged with a `polarity` (`Corroborates`/`Contradicts`) recorded as its own
+fact rather than folded into one opaque confidence number; a later
+contradiction is a new reference, never an edit to an earlier corroborating
+one. `evidence_references` returns them recency-first, hard-bounded at 100
+rows regardless of the caller's requested limit.
+
 `ConstitutionService` (`constitution_store.rs`/`constitution_service.rs`) is a
 read-only projection of a repository's own authoritative local Lodestar
 constitution (ADR-0106 decision 3): `PublishConstitutionSnapshot` (called by
