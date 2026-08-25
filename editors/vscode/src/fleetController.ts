@@ -11,7 +11,7 @@ import {
 } from "./fleet";
 import { FleetViewProvider } from "./fleetViewProvider";
 import { McpClient } from "./mcpClient";
-import { LodestarTask } from "./util";
+import { boardTasks, LodestarTask } from "./util";
 
 /** Lease granted by a claim or renewal started from the pane. */
 const LEASE_SECONDS = 3600;
@@ -44,14 +44,16 @@ export class FleetController {
       this.read<FleetSnapshot>(this.lodestar, "fleet snapshot", () =>
         this.lodestar.callTool("fleet_view", {})
       ),
-      this.read<LodestarTask[]>(this.lodestar, "board", () =>
+      this.read<LodestarTask[]>(this.lodestar, "board", async () =>
         // fleetDashboard's FleetTaskRow mapping only reads id/title/status/
         // lease_expires_at -- never scope/claim_window/receipt/acceptance.
-        this.lodestar.callTool("task_query", {
-          view: "board",
-          include_terminal: false,
-          detail: false,
-        })
+        boardTasks(
+          await this.lodestar.callTool("task_query", {
+            view: "board",
+            include_terminal: false,
+            detail: false,
+          })
+        )
       ),
       this.read<StalledEntry[]>(this.lodestar, "stalled work", () =>
         this.lodestar.callTool("task_query", { view: "stalled" })
