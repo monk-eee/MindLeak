@@ -6,6 +6,7 @@ import {
   claimsUnderAnotherIdShape,
   commitBeforeClaimNotice,
   commitsBeforeClaim,
+  describeReachabilityFailure,
   missingClaimAdvice,
   parseCallResult,
   publishVerdict,
@@ -248,6 +249,25 @@ test("withReconciliationCandidates tolerates missing arrays", () => {
   assert.deepEqual(withReconciliationCandidates(undefined, [delivered]), [
     delivered,
   ]);
+});
+
+// The incident this closes: a stale binary's `board(view="board", branch=...)`
+// call answered with a shape `withReconciliationCandidates` could not filter,
+// and the bare `catch { reachable = false; }` around the whole batch reported
+// the same "unreachable" message a genuinely down server would -- with no way
+// to tell them apart short of instrumenting the catch block by hand.
+test("describeReachabilityFailure surfaces a real Error's own message", () => {
+  assert.equal(
+    describeReachabilityFailure(
+      new TypeError("(candidates ?? []).filter is not a function"),
+    ),
+    "(candidates ?? []).filter is not a function",
+  );
+});
+
+test("describeReachabilityFailure stringifies a non-Error throw", () => {
+  assert.equal(describeReachabilityFailure("boom"), "boom");
+  assert.equal(describeReachabilityFailure(undefined), "undefined");
 });
 
 // The incident this fragment records: a stale binary answered open_session in
