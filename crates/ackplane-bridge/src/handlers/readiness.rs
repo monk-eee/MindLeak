@@ -99,3 +99,80 @@ pub async fn readiness(
             StatusCode::INTERNAL_SERVER_ERROR
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ackplane_server::fleet::RepositoryFreshness;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn readiness_status_label_covers_every_variant() {
+        assert_eq!(readiness_status_label(ReadinessStatus::Ready), "ready");
+        assert_eq!(
+            readiness_status_label(ReadinessStatus::AttentionNeeded),
+            "attention_needed"
+        );
+        assert_eq!(
+            readiness_status_label(ReadinessStatus::NotReady),
+            "not_ready"
+        );
+    }
+
+    #[test]
+    fn repository_readiness_summary_maps_every_field_and_a_present_lease_expiry() {
+        let lease_expires_at = UNIX_EPOCH + Duration::from_secs(1_700_000_100);
+        let summary = RepositoryReadinessSummary::from(RepositoryReadiness {
+            repository_id: "repository-1".to_string(),
+            active_node_count: 3,
+            freshness: RepositoryFreshness::Lagging,
+            active_claim_count: 2,
+            soonest_lease_expires_at: Some(lease_expires_at),
+            signing_keys_resolved: 4,
+            signing_keys_needing_attention: 1,
+            status: ReadinessStatus::AttentionNeeded,
+        });
+
+        assert_eq!(
+            serde_json::to_value(summary).expect("summary serializes"),
+            serde_json::json!({
+                "repository_id": "repository-1",
+                "active_node_count": 3,
+                "freshness": "lagging",
+                "active_claim_count": 2,
+                "soonest_lease_expires_at_seconds": 1_700_000_100,
+                "signing_keys_resolved": 4,
+                "signing_keys_needing_attention": 1,
+                "status": "attention_needed",
+            })
+        );
+    }
+
+    #[test]
+    fn repository_readiness_summary_omits_a_lease_expiry_when_no_claim_is_active() {
+        let summary = RepositoryReadinessSummary::from(RepositoryReadiness {
+            repository_id: "repository-2".to_string(),
+            active_node_count: 0,
+            freshness: RepositoryFreshness::NeverProjected,
+            active_claim_count: 0,
+            soonest_lease_expires_at: None,
+            signing_keys_resolved: 0,
+            signing_keys_needing_attention: 0,
+            status: ReadinessStatus::NotReady,
+        });
+
+        assert_eq!(
+            serde_json::to_value(summary).expect("summary serializes"),
+            serde_json::json!({
+                "repository_id": "repository-2",
+                "active_node_count": 0,
+                "freshness": "never_projected",
+                "active_claim_count": 0,
+                "soonest_lease_expires_at_seconds": null,
+                "signing_keys_resolved": 0,
+                "signing_keys_needing_attention": 0,
+                "status": "not_ready",
+            })
+        );
+    }
+}
