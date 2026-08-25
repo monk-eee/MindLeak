@@ -445,9 +445,9 @@ mod tests {
 
         // The payload a caller already parses is unchanged, so an old call
         // keeps working rather than merely keeping answering.
-        let rows: Value =
+        let body: Value =
             serde_json::from_str(answered["content"][0]["text"].as_str().unwrap()).unwrap();
-        assert!(rows
+        assert!(body["tasks"]
             .as_array()
             .unwrap()
             .iter()
@@ -932,8 +932,9 @@ mod tests {
             }),
         )
         .unwrap();
-        let rows: Value =
+        let body: Value =
             serde_json::from_str(board["content"][0]["text"].as_str().unwrap()).unwrap();
+        let rows = &body["tasks"];
         assert_eq!(rows[0]["scope"]["paths"][0], "crates/mindleak-core/src/**");
         assert_eq!(
             rows[0]["scope"]["symbols"][0],
@@ -1552,11 +1553,13 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert!(all
+        assert!(all["tasks"]
             .as_array()
             .unwrap()
             .iter()
             .any(|task| task["id"] == retired.id));
+        assert_eq!(all["count"], all["tasks"].as_array().unwrap().len());
+        assert_eq!(all["tasks_truncated"], false);
 
         // Opt into the lean view: terminal tasks drop out, live work remains.
         let active: Value = serde_json::from_str(
@@ -1569,7 +1572,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        let ids: Vec<&str> = active
+        let ids: Vec<&str> = active["tasks"]
             .as_array()
             .unwrap()
             .iter()
@@ -1606,7 +1609,7 @@ mod tests {
         )
         .unwrap();
         let row = |id: &str| {
-            board
+            board["tasks"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -1641,7 +1644,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        let full_row = full
+        let full_row = full["tasks"]
             .as_array()
             .unwrap()
             .iter()
@@ -1662,10 +1665,10 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        let lean_rows = lean.as_array().unwrap();
+        let lean_rows = lean["tasks"].as_array().unwrap();
         assert_eq!(
             lean_rows.len(),
-            full.as_array().unwrap().len(),
+            full["tasks"].as_array().unwrap().len(),
             "no task is dropped: {lean_rows:?}"
         );
         let lean_row = lean_rows.iter().find(|row| row["id"] == task.id).unwrap();
@@ -1677,17 +1680,81 @@ mod tests {
         assert_eq!(lean_row["title"], "Has real acceptance text");
     }
 
+    /// `board` is not a preview like `existing_work`: some callers
+    /// (`evaluate-pr-effectiveness.mjs`, `stranded-report.mjs`) read the whole
+    /// history on purpose. `tasks` is capped, but `count` still names the full
+    /// total and `tasks_truncated` says the cap bit — a caller must be able to
+    /// tell a partial board from a complete one rather than silently treating
+    /// the capped set as everything there is.
+    #[test]
+    fn board_tool_caps_tasks_but_reports_the_true_count_and_truncation() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "do it", None)
+            .unwrap();
+        for n in 0..5 {
+            engine
+                .create_task(&goal.id, &format!("Task {n}"), "")
+                .unwrap();
+        }
+
+        let body: Value = serde_json::from_str(
+            call(
+                &engine,
+                &json!({ "name": "task_query", "arguments": { "view": "board", "limit": 3 } }),
+            )
+            .unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["count"], 5);
+        assert_eq!(body["tasks"].as_array().unwrap().len(), 3);
+        assert_eq!(body["tasks_truncated"], true);
+    }
+
+    /// `limit=0` is the caller's explicit opt-out — the complete history,
+    /// not the default cap, for the one case (a full analysis over every
+    /// task ever created) where a partial board is actively wrong to use.
+    #[test]
+    fn board_tool_limit_zero_disables_the_cap() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "do it", None)
+            .unwrap();
+        for n in 0..5 {
+            engine
+                .create_task(&goal.id, &format!("Task {n}"), "")
+                .unwrap();
+        }
+
+        let body: Value = serde_json::from_str(
+            call(
+                &engine,
+                &json!({ "name": "task_query", "arguments": { "view": "board", "limit": 0 } }),
+            )
+            .unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["count"], 5);
+        assert_eq!(body["tasks"].as_array().unwrap().len(), 5);
+        assert_eq!(body["tasks_truncated"], false);
+    }
+
     /// Bug: `canonical-push.mjs`'s claim gate asks `board` with
     /// `include_terminal: false` to stay small, which means `reconciliationOf`
     /// (which looks for an already-completed task on the pushed branch) can
     /// never find one — the terminal task it needs is excluded by
     /// construction, so a legitimately-delivered branch always falls through
     /// to "no live Lodestar claim" instead of being recognized as a
-    /// reconciliation (gaps.d/task-query-board-has-no-response-size-bound.md).
-    /// `branch` lets a caller ask a narrower question instead of widening
-    /// `include_terminal` back to the whole ledger: "is there a task, any
-    /// status, on exactly this branch" — independent of `include_terminal`,
-    /// and small regardless of how large the board's terminal history grows.
+    /// reconciliation. `branch` lets a caller ask a narrower question instead
+    /// of widening `include_terminal` back to the whole ledger: "is there a
+    /// task, any status, on exactly this branch" — independent of
+    /// `include_terminal`, and small regardless of how large the board's
+    /// terminal history grows, and applied before `limit` so a real match can
+    /// never be truncated away either.
     #[test]
     fn board_tool_branch_filter_finds_a_terminal_task_without_including_every_terminal_task() {
         use mindleak_session::SessionContext;
@@ -1744,7 +1811,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            non_terminal.as_array().unwrap().is_empty(),
+            non_terminal["tasks"].as_array().unwrap().is_empty(),
             "{non_terminal}"
         );
 
@@ -1761,7 +1828,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        let scoped_rows = scoped.as_array().unwrap();
+        let scoped_rows = scoped["tasks"].as_array().unwrap();
         assert_eq!(scoped_rows.len(), 1, "{scoped_rows:?}");
         assert_eq!(scoped_rows[0]["id"], delivered.id);
         let scoped_ids: Vec<&str> = scoped_rows
