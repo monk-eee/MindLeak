@@ -11,8 +11,10 @@
 //! immutable publication-history path (decision 1) lives in
 //! [`publication_history`].
 
+mod proposals;
 mod publication_history;
 
+pub use proposals::{ConstitutionProposal, ProposeConstitutionClauseRequest};
 pub use publication_history::{ConstitutionPublication, RecordConstitutionPublicationRequest};
 
 use std::time::SystemTime;
@@ -24,6 +26,7 @@ const NONCE_MIGRATION: &str =
     include_str!("../../migrations/0010_constitution_authentication_nonces.sql");
 const PUBLICATION_HISTORY_MIGRATION: &str =
     include_str!("../../migrations/0026_constitution_publication_history.sql");
+const PROPOSALS_MIGRATION: &str = include_str!("../../migrations/0038_constitution_proposals.sql");
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConstitutionStoreError {
@@ -41,6 +44,14 @@ pub enum ConstitutionStoreError {
     PublicationImmutabilityViolation { version_id: String },
     #[error("stored constitution publication payload for {version_id} is unreadable: {detail}")]
     CorruptPublicationPayload { version_id: String, detail: String },
+    #[error("proposal_id must not be empty")]
+    EmptyProposalId,
+    #[error("constitution proposal author must not be empty")]
+    EmptyAuthor,
+    #[error(
+        "constitution proposal {proposal_id} is already recorded with different content -- proposals are immutable"
+    )]
+    ProposalImmutabilityViolation { proposal_id: String },
 }
 
 /// One clause, as both `publish` accepts it and `get_active` returns it.
@@ -105,6 +116,12 @@ impl ConstitutionStore {
             &mut client,
             crate::migration_lock::key::CONSTITUTION_PUBLICATION_HISTORY,
             PUBLICATION_HISTORY_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::CONSTITUTION_PROPOSALS,
+            PROPOSALS_MIGRATION,
         )
         .await?;
         Ok(Self { client })

@@ -106,6 +106,14 @@ pub(crate) mod key {
     pub(crate) const KNOWLEDGE_SUPERSESSION_AND_EVIDENCE: i64 = 35;
     /// `migrations/0036_knowledge_revalidation_policy.sql`
     pub(crate) const KNOWLEDGE_REVALIDATION_POLICY: i64 = 36;
+    /// `migrations/0037_work_commands.sql`
+    pub(crate) const WORK_COMMANDS: i64 = 37;
+    /// `migrations/0038_constitution_proposals.sql`. 36 and 37 were live in
+    /// the shared development database and/or a concurrent unmerged branch
+    /// (`feat/work-command-ledger`, PR #733, `0037_work_commands.sql`) at
+    /// the time this was drafted -- checked via `migration-audit.mjs` and a
+    /// direct `gh pr view` before picking this number, not guessed.
+    pub(crate) const CONSTITUTION_PROPOSALS: i64 = 38;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and
