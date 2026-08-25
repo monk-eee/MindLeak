@@ -70,6 +70,21 @@ const CONTEXT_PACKET_STORE_RS: &str =
     include_str!("../../ackplane-server/src/context_packet_store.rs");
 const CONTEXT_PACKET_SUMMARY_RS: &str =
     include_str!("../../ackplane-server/src/context_packet_store/summary.rs");
+const ADMINISTRATION_RS: &str = include_str!("../src/administration.rs");
+const CONTEXT_API_RS: &str = include_str!("../src/context_api.rs");
+const DELEGATION_API_RS: &str = include_str!("../src/delegation_api.rs");
+const DESIGN_API_RS: &str = include_str!("../src/design_api.rs");
+const EVIDENCE_API_RS: &str = include_str!("../src/evidence_api.rs");
+const EVIDENCE_API_BOARD_RS: &str = include_str!("../src/evidence_api/board.rs");
+const EVIDENCE_API_DETAIL_RS: &str = include_str!("../src/evidence_api/detail.rs");
+const EVIDENCE_API_EXPORT_RS: &str = include_str!("../src/evidence_api/export.rs");
+const EVIDENCE_API_PAGE_RS: &str = include_str!("../src/evidence_api/page.rs");
+const KNOWLEDGE_API_RS: &str = include_str!("../src/knowledge_api.rs");
+const LIVE_FEED_RS: &str = include_str!("../src/live_feed.rs");
+const SUPERVISOR_API_RS: &str = include_str!("../src/supervisor_api.rs");
+const SUPERVISOR_API_DASHBOARD_RS: &str = include_str!("../src/supervisor_api/dashboard.rs");
+const WORK_API_RS: &str = include_str!("../src/work_api.rs");
+const SHARED_ASSETS_RS: &str = include_str!("../src/shared_assets.rs");
 
 /// `FleetStore::connect` is the connection constructor, not a query or
 /// mutation - it has no tenant to scope to yet.
@@ -95,12 +110,28 @@ const KNOWLEDGE_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &[
 ];
 
 /// `fleet_page`, `agents_page`, `telemetry_page`, and `constitution_page` serve a static asset
-/// and never touch the store - they have nothing to scope.
+/// and never touch the store - they have nothing to scope. The same reasoning
+/// covers every page/static-asset handler in the newer domain modules: each
+/// of these either takes no store argument at all, or returns a static asset
+/// without ever querying one.
 const ROUTE_HANDLERS_WITHOUT_A_STORE_QUERY: &[&str] = &[
     "fleet_page",
     "agents_page",
     "telemetry_page",
     "constitution_page",
+    "administration_page",
+    "context_page",
+    "delegations_page",
+    "design_page",
+    "evidence_page",
+    "knowledge_page",
+    "live_feed_page",
+    "supervisor_dashboard_page",
+    "work_page",
+    "board_doctor_page",
+    "chrome_css",
+    "chrome_js",
+    "repo_picker_js",
 ];
 
 /// Route handler bodies live wherever the crate split them across --
@@ -121,6 +152,43 @@ const HANDLER_SOURCES: &[&str] = &[
     REPOSITORY_GRAPH_RS,
     REPOSITORY_CONSTITUTION_RS,
     REPOSITORY_TELEMETRY_RS,
+    ADMINISTRATION_RS,
+    CONTEXT_API_RS,
+    DELEGATION_API_RS,
+    DESIGN_API_RS,
+    EVIDENCE_API_RS,
+    EVIDENCE_API_BOARD_RS,
+    EVIDENCE_API_DETAIL_RS,
+    EVIDENCE_API_EXPORT_RS,
+    EVIDENCE_API_PAGE_RS,
+    KNOWLEDGE_API_RS,
+    LIVE_FEED_RS,
+    SUPERVISOR_API_RS,
+    SUPERVISOR_API_DASHBOARD_RS,
+    WORK_API_RS,
+    SHARED_ASSETS_RS,
+];
+
+/// Every file whose own router-builder function registers `get(...)`/
+/// `post(...)` handlers directly. `main.rs` still wires the original
+/// inline routes; every newer domain module builds and merges in its own
+/// sub-router instead (`main.rs` only ever sees `.merge(<domain>_routes(...))`).
+/// `evidence_api`'s `board`/`detail`/`export`/`page` submodules define
+/// handler bodies but never register a route themselves -- `evidence_api.rs`'s
+/// own router does that -- so they belong in `HANDLER_SOURCES` only, not here.
+const ROUTE_SOURCES: &[&str] = &[
+    MAIN_RS,
+    ADMINISTRATION_RS,
+    CONTEXT_API_RS,
+    DELEGATION_API_RS,
+    DESIGN_API_RS,
+    EVIDENCE_API_RS,
+    KNOWLEDGE_API_RS,
+    LIVE_FEED_RS,
+    SUPERVISOR_API_RS,
+    SUPERVISOR_API_DASHBOARD_RS,
+    WORK_API_RS,
+    SHARED_ASSETS_RS,
 ];
 
 /// `connect` is the constructor, same exemption as every other store.
@@ -274,18 +342,23 @@ fn every_knowledge_store_query_requires_an_explicit_tenant_id() {
 
 #[test]
 fn every_bridge_route_handler_scopes_its_query_to_the_tenant() {
-    let handlers = extract_route_handlers(MAIN_RS);
+    let handlers = extract_route_handlers_from_any(ROUTE_SOURCES);
     assert!(
         !handlers.is_empty(),
         "expected to find at least one Bridge route - the parser may be broken"
     );
     for handler in handlers {
-        if ROUTE_HANDLERS_WITHOUT_A_STORE_QUERY.contains(&handler.as_str()) {
+        // A handler registered from a submodule (e.g. `page::evidence_page`)
+        // is declared under its bare name in that submodule's own source -
+        // the qualifier is only how the parent router refers to it.
+        let bare_name = handler.rsplit("::").next().unwrap_or(&handler);
+        if ROUTE_HANDLERS_WITHOUT_A_STORE_QUERY.contains(&bare_name) {
             continue;
         }
-        let body = extract_function_body_from_any(HANDLER_SOURCES, &handler).unwrap_or_else(|| {
-            panic!("could not find the body of handler `{handler}` registered on a route")
-        });
+        let body =
+            extract_function_body_from_any(HANDLER_SOURCES, bare_name).unwrap_or_else(|| {
+                panic!("could not find the body of handler `{handler}` registered on a route")
+            });
         assert!(
             body.contains("state.tenant_id"),
             "Bridge route handler `{handler}` never references state.tenant_id \
@@ -329,18 +402,61 @@ fn extract_impl_methods(source: &str, type_name: &str) -> Vec<(String, String)> 
     methods
 }
 
-/// Every handler name passed to `get(...)` on a registered route.
+/// Every handler name passed to `get(...)` or `post(...)` on a registered
+/// route. axum's `post()` builds a fresh `MethodRouter` the same way `get()`
+/// does, and `.post(...)` chains a second method onto an existing one; both
+/// read as the literal substring `post(` regardless of a preceding `.`.
+/// Content after `#[cfg(test)]` is never scanned, since a test module's own
+/// assertions (e.g. `headers().get("...")`) are not route registrations.
+/// A candidate is kept only when it looks like a bare identifier or a
+/// `module::function` path - this rejects a store method call like
+/// `state.delegations.get(state.tenant_id.as_ref(), ...)` or a header lookup
+/// like `headers.get("last-event-id")`, neither of which is a route handler.
 fn extract_route_handlers(source: &str) -> Vec<String> {
-    let marker = "get(";
+    let scoped = match source.find("#[cfg(test)]") {
+        Some(cut) => &source[..cut],
+        None => source,
+    };
     let mut handlers = Vec::new();
-    let mut cursor = 0;
-    while let Some(start) = source[cursor..].find(marker) {
-        let name_start = cursor + start + marker.len();
-        let name_end = source[name_start..].find(')').expect("get(...) is closed");
-        handlers.push(source[name_start..name_start + name_end].trim().to_string());
-        cursor = name_start + name_end;
+    for marker in ["get(", "post("] {
+        let mut cursor = 0;
+        while let Some(start) = scoped[cursor..].find(marker) {
+            let name_start = cursor + start + marker.len();
+            let name_end = scoped[name_start..]
+                .find(')')
+                .expect("get(...)/post(...) is closed");
+            let candidate = scoped[name_start..name_start + name_end].trim();
+            if looks_like_a_handler_name(candidate) {
+                handlers.push(candidate.to_string());
+            }
+            cursor = name_start + name_end;
+        }
     }
     handlers
+}
+
+/// `extract_route_handlers`, merged across every source with its own
+/// router-builder function - a domain's routes no longer have to be
+/// registered inline in `main.rs` once it is merged in as its own
+/// sub-router.
+fn extract_route_handlers_from_any(sources: &[&str]) -> Vec<String> {
+    sources
+        .iter()
+        .flat_map(|source| extract_route_handlers(source))
+        .collect()
+}
+
+/// A bare identifier, or `::`-qualified path of them - the shape of a real
+/// function reference, never a method-call chain (contains a bare `.`) or a
+/// string literal (contains `"`).
+fn looks_like_a_handler_name(candidate: &str) -> bool {
+    !candidate.is_empty()
+        && candidate.split("::").all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
 }
 
 /// The full brace-balanced body of `async fn NAME(...) ... { ... }`.
@@ -483,6 +599,85 @@ mod parser_tests {
         assert_eq!(
             extract_route_handlers(sample),
             vec!["page".to_string(), "thing_handler".to_string()]
+        );
+    }
+
+    /// A domain module registers a mutation route with the bare `post(...)`
+    /// constructor, or chains `.post(...)` onto an existing `get(...)`
+    /// route - both must be found, in the order they appear.
+    #[test]
+    fn extract_route_handlers_also_reads_post_handlers() {
+        let sample = "Router::new()\n\
+            .route(\"/things\", get(list_things).post(create_thing))\n\
+            .route(\"/things/:id/archive\", post(archive_thing))";
+
+        assert_eq!(
+            extract_route_handlers(sample),
+            vec![
+                "list_things".to_string(),
+                "create_thing".to_string(),
+                "archive_thing".to_string(),
+            ]
+        );
+    }
+
+    /// A handler registered from a submodule keeps its `module::` qualifier
+    /// - the caller strips it before looking up the function body.
+    #[test]
+    fn extract_route_handlers_keeps_a_submodule_qualifier() {
+        let sample = "Router::new().route(\"/x\", get(page::render))";
+
+        assert_eq!(
+            extract_route_handlers(sample),
+            vec!["page::render".to_string()]
+        );
+    }
+
+    /// Neither a store method call (`state.store.get(state.tenant_id.as_ref(),
+    /// ...)`) nor a header lookup (`headers.get("last-event-id")`) is a route
+    /// registration; both must be rejected rather than mistaken for a handler.
+    #[test]
+    fn extract_route_handlers_rejects_a_method_call_and_a_string_literal() {
+        let sample = "Router::new()\n\
+            .route(\"/x\", get(real_handler))\n\
+            async fn real_handler() {\n\
+            \x20   let _ = state.store.get(state.tenant_id.as_ref(), &id).await;\n\
+            \x20   let _ = headers.get(\"last-event-id\");\n\
+            }";
+
+        assert_eq!(
+            extract_route_handlers(sample),
+            vec!["real_handler".to_string()]
+        );
+    }
+
+    /// A test module's own assertions (e.g. asserting on a response header
+    /// via `.get(CONTENT_TYPE)`) are not route registrations and must never
+    /// be scanned as one.
+    #[test]
+    fn extract_route_handlers_ignores_everything_after_cfg_test() {
+        let sample = "Router::new().route(\"/x\", get(real_handler))\n\
+            #[cfg(test)]\n\
+            mod tests {\n\
+            \x20   fn probe() {\n\
+            \x20       let _ = response.headers().get(CONTENT_TYPE);\n\
+            \x20   }\n\
+            }";
+
+        assert_eq!(
+            extract_route_handlers(sample),
+            vec!["real_handler".to_string()]
+        );
+    }
+
+    #[test]
+    fn extract_route_handlers_from_any_merges_handlers_across_separate_sources() {
+        let main_rs = "Router::new().route(\"/\", get(page))";
+        let domain_rs = "Router::new().route(\"/api/v1/thing\", post(create_thing))";
+
+        assert_eq!(
+            extract_route_handlers_from_any(&[main_rs, domain_rs]),
+            vec!["page".to_string(), "create_thing".to_string()]
         );
     }
 
