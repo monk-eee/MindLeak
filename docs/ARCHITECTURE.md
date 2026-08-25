@@ -493,6 +493,19 @@ so a rejected republish never silently moves the active pointer. Ackplane
 still never originates a publication itself (decision 2) — it verifies the
 publisher and stores the resulting projection.
 
+A separate, append-only `constitution_proposals` table (ADR-0126, table
+`constitution_proposals` in `constitution_store/proposals.rs`) holds
+Bridge-originated suggestions for a constitution clause change —
+`ConstitutionStore::propose_clause` (idempotent on `(tenant_id,
+repository_id, proposal_id)`, refusing a mutated retry the same way
+`record_publication` does), `list_proposals`, and `withdraw_proposal`
+(gated to the proposal's own author). A proposal carries no authority of
+its own: it is never read by `get_active`/`publish`, and adoption is
+read-only pattern matching over this table and `constitution_publications`
+at Bridge read time, never a status this table's own writer sets — the
+same "distribution is not activation" boundary ADR-0082 decision 4 and
+ADR-0121 decision 2 already draw, extended to this lighter object.
+
 `DesignStore` (`design_store.rs`) is a separate Industrial-only authority
 (ADR-0121 decision 3), distinct from the Constitution projection above: an
 opaque `(tenant_id, repository_id, design_id)` design record carries bounded

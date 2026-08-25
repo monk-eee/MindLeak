@@ -121,6 +121,15 @@ fn store_error(error: ConstitutionStoreError) -> Status {
                 "stored publication {version_id} is unreadable: {detail}"
             ))
         }
+        ConstitutionStoreError::EmptyProposalId => {
+            Status::invalid_argument("proposal_id must not be empty")
+        }
+        ConstitutionStoreError::EmptyAuthor => Status::invalid_argument("author must not be empty"),
+        ConstitutionStoreError::ProposalImmutabilityViolation { proposal_id } => {
+            Status::failed_precondition(format!(
+                "proposal {proposal_id} is already recorded with different content"
+            ))
+        }
         ConstitutionStoreError::Database(error) => Status::internal(error.to_string()),
     }
 }
