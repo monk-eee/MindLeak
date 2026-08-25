@@ -1,0 +1,1 @@
+- **Bridge Work now exposes ADR-0125 command availability honestly.** The loopback developer profile lists every closed Work command as `authorization_unavailable` and renders disabled controls with the verified-principal requirement, without adding a mutation route or treating the tenant token as operator authorization.
