@@ -8,11 +8,13 @@ import { test } from "node:test";
 import {
   classify,
   describe,
+  describeGapsTriage,
   isLive,
   isStrandedClaim,
   mergedBranches,
   shippedButOpen,
 } from "./board-health.mjs";
+import { triageReport } from "./gaps.mjs";
 
 const NOW = 1_800_000_000;
 
@@ -308,4 +310,48 @@ test("a board with recorded branches reports a real count", () => {
   const text = describe(classify(entries, NOW, merged), entries);
 
   assert.match(text, /shipped, never closed  : 0/);
+});
+
+// --- Orphaned gaps: the same blind spot, for gaps.d instead of the board ----
+
+/// An empty gaps.d is not a finding -- the report should say nothing rather
+/// than announce "0 of 0 gaps are orphaned", which reads as a clean bill of
+/// health for a directory that was simply never populated.
+test("describeGapsTriage says nothing when there are no open gaps", () => {
+  const triage = triageReport([], {}, Date.now());
+  assert.equal(describeGapsTriage(triage), null);
+});
+
+/// The headline numbers, plus the orphaned rows themselves -- a person acting
+/// on this report needs the names, not just the count.
+test("describeGapsTriage reports the orphan count and names the orphans", () => {
+  const gaps = [
+    { name: "tracked.md", body: "- **Tracked.** fix is task:aaaaaaaaaaaa." },
+    { name: "orphan.md", body: "- **Orphan.** no task yet." },
+  ];
+  const nowMs = 10 * 86_400_000;
+  const firstSeen = {
+    "gaps.d/tracked.md": 9 * 86_400,
+    "gaps.d/orphan.md": 0,
+  };
+
+  const text = describeGapsTriage(triageReport(gaps, firstSeen, nowMs));
+
+  assert.match(text, /gaps\.d fragments with no tracking task : 1 of 2/);
+  assert.match(text, /oldest open gap {24}: 10 day\(s\)/);
+  assert.match(text, /orphaned \(/);
+  assert.match(text, /10d\s+orphan\.md/);
+  assert.doesNotMatch(text, /tracked\.md/, "a tracked gap is not an orphan");
+});
+
+/// Every gap tracked by a task is the healthy state this report exists to
+/// confirm, not just a silence to leave unexplained.
+test("describeGapsTriage still reports totals when nothing is orphaned", () => {
+  const gaps = [{ name: "tracked.md", body: "fix is task:aaaaaaaaaaaa." }];
+  const text = describeGapsTriage(
+    triageReport(gaps, { "gaps.d/tracked.md": 0 }, 86_400_000),
+  );
+
+  assert.match(text, /gaps\.d fragments with no tracking task : 0 of 1/);
+  assert.doesNotMatch(text, /orphaned \(/, "nothing to list");
 });
