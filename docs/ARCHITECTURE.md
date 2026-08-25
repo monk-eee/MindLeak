@@ -380,6 +380,12 @@ Authenticated `NodeSync` streams now ingest `DirectiveReceipt` frames through th
 
 Authenticated `NodeSync` streams also accept the closed `WorkTaskCreate` frame for one native Industrial Work record. The frame carries only a node-scoped creation id and bounded task content; the completed connection challenge supplies tenant, repository, and publisher identity. Ackplane derives an opaque Work id from that authenticated identity and creation id, writes the current task projection and initial history event transactionally, and returns a typed `WorkTaskReceipt`. An exact retry returns the original Work id with `idempotent_replay`; changed content under the same creation id receives a non-retryable conflict. This is native Ackplane Work publication, not a Local Lodestar import: the Bridge remains a bounded read-only projection and exposes no Work mutation route.
 
+`WorkCommandStore` (`work_command_store/`) is ADR-0125's durable Work command/receipt persistence primitive. Its future authoritative command-service caller must validate authorization first; the store records only the closed command vocabulary, schema version, tenant/repository and optional Work-task scope, principal/delegation/policy references, bounded rationale, expected task version, confirmation and expiry references, idempotency key, canonical payload digest, and immutable receipt outcomes. Exact command or receipt retries return their original record; reusing an identity with changed content is refused. It intentionally has no authorization evaluator, Bridge route, Work or Claim state mutation, supervisor dispatch, or claim of a completed device effect.
+
+`WorkCommandService` (`work_command_store/service.rs`) is the ledger's only production writer. It evaluates an authentication result before the first command lookup: the loopback developer profile returns `authorization_unavailable`, while missing, forged, tenant/repository-out-of-scope, command, policy, or delegation mismatches return typed refusals without disclosing a target. A verified in-scope request records only the immutable command and a `pending_confirmation` receipt. It still exposes no HTTP route, Work or Claim state transition, supervisor dispatch, or completed-effect claim.
+
+The Bridge Work read response also reports ADR-0125's closed Work-command vocabulary. Under the loopback developer profile, every command is `authorization_unavailable`: the tenant token is not a verified principal and no authorization verifier or policy basis exists. The Work page renders those named controls disabled with the same accessible reason. This is capability disclosure only; it adds no command route, authorization fallback, Work/Claim mutation, or supervisor delivery.
+
 `NodeEnrollmentService` persists pending requests, an append-only authority
 transition history, approved public-key bindings, single-use short-lived
 challenges, and immutable enrollment receipts. A node may submit a request, but
@@ -468,6 +474,37 @@ fact rather than folded into one opaque confidence number; a later
 contradiction is a new reference, never an edit to an earlier corroborating
 one. `evidence_references` returns them recency-first, hard-bounded at 100
 rows regardless of the caller's requested limit.
+
+Stale or overdue-for-revalidation knowledge is surfaced through a fourth,
+read-only view (ADR-0113 decision 4): `revalidation_queue`/`revalidation_entry`
+(`knowledge_store/revalidation.rs`) classify every `Active` statement as
+`current`, `approaching_expiry`, `contradicted`, or
+`overdue_for_revalidation` from three signals computed at query time and
+never stored -- effective weight (the same decay expression above), whether
+any `knowledge_evidence_references` row for it carries `Contradicts`
+polarity, and whether an optional, nullable `revalidate_after_hours` policy
+column (migration `0036`, no authoring surface exists yet) has elapsed since
+`confirmed_at`. Precedence is fixed: a contradiction outranks an overdue
+policy rule, which outranks the generic half-life curve, because a
+contradiction is an evidence-backed refutation independent of elapsed time
+and an overdue rule is a human-authorized constraint more specific than decay
+alone; `effective_weight <= 0.5` is exactly one elapsed half-life. The
+classification is expressed twice by design -- a pure Rust function
+(`classify`, `#[cfg(test)]`-only, for direct DB-free testing of the
+precedence rule) and an equivalent Postgres `CASE` expression
+(`CLASSIFICATION_SQL`) that actually runs in `revalidation_queue`/
+`revalidation_entry`, the same intentional duplication `EFFECTIVE_WEIGHT_SQL`
+already establishes in this crate. `revalidation_queue` excludes `current`
+records, supports an allow-listed classification filter, and paginates via a
+stable `(confirmed_at, knowledge_id)` keyset cursor bounded at 100 rows per
+page; `revalidation_entry` looks up one record by id without excluding
+`current` (a detail view, not the review queue itself). Bridge exposes this
+at `GET /api/v1/repositories/:repository_id/knowledge/revalidation-queue`
+(`knowledge_api.rs`) with `classification`/`limit`/paired
+`after_confirmed_at_micros`+`after_knowledge_id` query parameters,
+tenant/repository-scoped like every other knowledge route; this task is
+deliberately read-only and adds no mutation route, no policy-authoring
+surface, and no automatic revalidation trigger.
 
 `ConstitutionService` (`constitution_store.rs`/`constitution_service.rs`) is a
 read-only projection of a repository's own authoritative local Lodestar

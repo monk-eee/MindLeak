@@ -204,6 +204,20 @@ export const withReconciliationCandidates = (primary, candidates) => {
 };
 
 /**
+ * What actually threw inside the claim-gate `callTools` batch, distinct from
+ * the generic remedy `publishVerdict` reports for `reachable: false`.
+ *
+ * A genuinely unreachable server and a parse/shape defect elsewhere in that
+ * same batch (a stale binary answering with a string where an array was
+ * expected, for example) both collapsed to the same boolean with nothing
+ * logged, so either one sent the reader toward a rebuild that would not help
+ * the second case. This is the detail that tells them apart, computed once at
+ * the point of failure rather than rediscovered by hand each time.
+ */
+export const describeReachabilityFailure = (error) =>
+  error instanceof Error ? error.message : String(error);
+
+/**
  * Whether this publication may proceed.
  *
  * The checks are ordered so each refusal names its own cause, and the three

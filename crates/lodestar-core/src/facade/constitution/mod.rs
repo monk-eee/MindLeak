@@ -532,4 +532,208 @@ mod tests {
         assert!(md.contains("## Invariants"));
         assert!(md.contains("Decay is the point"));
     }
+
+    #[test]
+    fn policy_pack_proposals_reads_the_batch_for_an_explicit_constitution_version() {
+        let e = engine();
+        let proposal = e
+            .propose_constitution(&["README.md".to_string()], None)
+            .unwrap();
+
+        let read = e
+            .policy_pack_proposals("common-core", "1", Some(&proposal.version.id), true)
+            .unwrap();
+
+        assert_eq!(read.len(), 5);
+        assert!(read.iter().all(|p| p.disposition.is_none()));
+        assert!(read
+            .iter()
+            .all(|p| p.constitution_version.as_deref() == Some(proposal.version.id.as_str())));
+    }
+
+    #[test]
+    fn policy_pack_proposals_defaults_to_the_active_constitution_when_none_given() {
+        let e = engine();
+        let draft = reviewed_draft(&e);
+        e.activate_constitution(&draft, "monk-eee").unwrap();
+
+        let read = e
+            .policy_pack_proposals("common-core", "1", None, true)
+            .unwrap();
+        assert_eq!(read.len(), 5);
+        assert!(read
+            .iter()
+            .all(|p| p.disposition == Some(PackClauseDisposition::Adopted)));
+
+        // include_decided=false excludes every clause once all 5 are decided.
+        let undecided = e
+            .policy_pack_proposals("common-core", "1", None, false)
+            .unwrap();
+        assert!(undecided.is_empty(), "{undecided:?}");
+    }
+
+    #[test]
+    fn review_pack_clause_adopts_a_goal_but_rejecting_creates_none() {
+        let e = engine();
+        let proposal = e
+            .propose_constitution(&["README.md".to_string()], None)
+            .unwrap();
+        let clauses = &proposal.common_core.proposals;
+
+        let rejected = e
+            .review_pack_clause(
+                &clauses[0].id,
+                PackClauseDisposition::Rejected,
+                None,
+                "maintainer",
+                Some("does not fit this project"),
+            )
+            .unwrap();
+        assert_eq!(
+            rejected.proposal.disposition,
+            Some(PackClauseDisposition::Rejected)
+        );
+        assert!(rejected.goal.is_none(), "a rejected clause adopts no goal");
+
+        let adopted = e
+            .review_pack_clause(
+                &clauses[1].id,
+                PackClauseDisposition::Adopted,
+                None,
+                "maintainer",
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            adopted.proposal.disposition,
+            Some(PackClauseDisposition::Adopted)
+        );
+        let goal = adopted.goal.expect("an adopted clause materialises a goal");
+        assert_eq!(goal.kind, GoalKind::Principle);
+        assert_eq!(goal.title, clauses[1].clause.title);
+        assert_eq!(
+            goal.status,
+            GoalStatus::Draft,
+            "the goal inherits its still-draft constitution version's status"
+        );
+    }
+
+    #[test]
+    fn pack_clause_provenance_names_the_adopting_pack_and_is_absent_for_a_hand_authored_goal() {
+        let e = engine();
+        let proposal = e
+            .propose_constitution(&["README.md".to_string()], None)
+            .unwrap();
+        let clause = &proposal.common_core.proposals[0];
+        let outcome = e
+            .review_pack_clause(
+                &clause.id,
+                PackClauseDisposition::Adopted,
+                None,
+                "maintainer",
+                None,
+            )
+            .unwrap();
+        let goal_id = outcome.goal.unwrap().id;
+
+        let provenance = e
+            .pack_clause_provenance(&goal_id)
+            .unwrap()
+            .expect("an adopted pack clause has provenance");
+        assert_eq!(provenance.goal_id, goal_id);
+        assert_eq!(provenance.pack_id, "common-core");
+        assert_eq!(provenance.pack_version, "1");
+        assert_eq!(provenance.clause_key, clause.clause.key);
+
+        let hand_authored = e
+            .define_goal(
+                GoalKind::Invariant,
+                "Hand authored",
+                "no pack behind this",
+                None,
+            )
+            .unwrap();
+        assert!(
+            e.pack_clause_provenance(&hand_authored.id)
+                .unwrap()
+                .is_none(),
+            "a goal nobody's pack proposed has no provenance"
+        );
+    }
+
+    #[test]
+    fn complete_clause_contract_fills_in_the_enforcement_fields_for_a_draft_clause() {
+        let e = engine();
+        let proposal = e
+            .propose_constitution(&["README.md".to_string()], None)
+            .unwrap();
+        let clause = &proposal.common_core.proposals[0];
+        let outcome = e
+            .review_pack_clause(
+                &clause.id,
+                PackClauseDisposition::Adopted,
+                None,
+                "maintainer",
+                None,
+            )
+            .unwrap();
+        let goal_id = outcome.goal.unwrap().id;
+
+        let completed = e
+            .complete_clause_contract(
+                &goal_id,
+                "crates/lodestar-core/**",
+                "cargo test -p lodestar-core",
+                Some(Consequence::Block),
+                true,
+                Some("monk-eee"),
+            )
+            .unwrap();
+
+        assert_eq!(completed.scope.as_deref(), Some("crates/lodestar-core/**"));
+        assert_eq!(
+            completed.evidence_contract.as_deref(),
+            Some("cargo test -p lodestar-core")
+        );
+        assert_eq!(completed.consequence, Some(Consequence::Block));
+        assert!(completed.waivable);
+        assert_eq!(completed.waiver_authority.as_deref(), Some("monk-eee"));
+    }
+
+    #[test]
+    fn complete_clause_contract_refuses_a_nonexistent_clause() {
+        let e = engine();
+        let error = e
+            .complete_clause_contract(
+                "goal:does-not-exist",
+                "scope",
+                "evidence",
+                None,
+                false,
+                None,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("goal:does-not-exist"), "{error}");
+    }
+
+    #[test]
+    fn complete_clause_contract_refuses_once_the_clause_governs_as_active() {
+        let e = engine();
+        let draft = reviewed_draft(&e);
+        let activated = e.activate_constitution(&draft, "monk-eee").unwrap();
+        let active_clause = e
+            .get_constitution()
+            .unwrap()
+            .into_iter()
+            .find(|g| g.constitution_version.as_deref() == Some(activated.id.as_str()))
+            .expect("activation produced at least one active clause");
+
+        let error = e
+            .complete_clause_contract(&active_clause.id, "scope", "evidence", None, false, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("active"), "{error}");
+        assert!(error.contains("amendment"), "{error}");
+    }
 }

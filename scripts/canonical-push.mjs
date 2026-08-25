@@ -17,6 +17,7 @@ import {
   commitBeforeClaimNotice,
   commitsBeforeClaim,
   declaredContext,
+  describeReachabilityFailure,
   identityCollisionNotice,
   overlapNotice,
   publishVerdict,
@@ -295,8 +296,14 @@ if (server && /^[0-9a-f]{32}$/.test(sessionId)) {
       ? withReconciliationCandidates(boardTaskList, branchTaskList)
       : [];
     overlaps = overlapResult ?? [];
-  } catch {
+  } catch (error) {
     reachable = false;
+    // A parse/shape defect anywhere in this batch (withReconciliationCandidates
+    // choking on an unexpected shape from a stale binary, for example) must not
+    // read identically to a genuinely down server -- log what actually broke.
+    console.error(
+      `canonical-push: internal error inside the claim-gate batch (not necessarily a stale binary or a down server): ${describeReachabilityFailure(error)}`,
+    );
   }
 }
 

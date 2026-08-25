@@ -336,3 +336,149 @@ async fn knowledge_history_exposes_lifecycle_provenance_without_cross_tenant_dat
         .expect("serve foreign-history request");
     assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn revalidation_queue_classifies_active_records_and_stays_within_its_tenant() {
+    let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let unique = unique_id("knowledge-revalidation-api");
+    let tenant_id = format!("tenant-{unique}");
+    let repository_id = format!("repository-{unique}");
+    let foreign_tenant_id = format!("foreign-tenant-{unique}");
+    let foreign_repository_id = format!("foreign-repository-{unique}");
+    enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
+    enroll_repository(
+        &database_url,
+        &foreign_tenant_id,
+        &foreign_repository_id,
+        &format!("foreign-{unique}"),
+    )
+    .await;
+    let knowledge = KnowledgeStore::connect(&database_url)
+        .await
+        .expect("connect Knowledge store");
+
+    let current = knowledge
+        .record(record_request(&tenant_id, &repository_id, "still current"))
+        .await
+        .expect("record current knowledge");
+    knowledge
+        .activate(
+            &tenant_id,
+            &repository_id,
+            &current.knowledge_id,
+            "human:reviewer",
+            None,
+            SystemTime::now(),
+        )
+        .await
+        .expect("activate current knowledge");
+
+    let contradicted = knowledge
+        .record(record_request(&tenant_id, &repository_id, "later refuted"))
+        .await
+        .expect("record contradicted knowledge");
+    knowledge
+        .activate(
+            &tenant_id,
+            &repository_id,
+            &contradicted.knowledge_id,
+            "human:reviewer",
+            None,
+            SystemTime::now(),
+        )
+        .await
+        .expect("activate contradicted knowledge");
+    knowledge
+        .record_evidence_reference(
+            ackplane_server::knowledge_store::RecordKnowledgeEvidenceReferenceRequest {
+                tenant_id: tenant_id.clone(),
+                repository_id: repository_id.clone(),
+                knowledge_id: contradicted.knowledge_id.clone(),
+                kind: ackplane_server::knowledge_store::KnowledgeEvidenceReferenceKind::Validation,
+                reference_ref: "evidence:refuted-by-a-later-run".to_string(),
+                polarity: ackplane_server::knowledge_store::KnowledgeEvidencePolarity::Contradicts,
+                recorded_by: "human:reviewer".to_string(),
+            },
+            SystemTime::now(),
+        )
+        .await
+        .expect("record contradicting evidence");
+
+    let app = application(&database_url, &tenant_id).await;
+    let unfiltered = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/repositories/{repository_id}/knowledge/revalidation-queue?limit=10"
+                ))
+                .body(Body::empty())
+                .expect("build revalidation-queue request"),
+        )
+        .await
+        .expect("serve revalidation-queue request");
+    assert_eq!(unfiltered.status(), StatusCode::OK);
+    let unfiltered = body_json(unfiltered).await;
+    assert_eq!(unfiltered["classification_filter"], Value::Null);
+    let entries = unfiltered["entries"].as_array().expect("entries array");
+    assert_eq!(
+        entries.len(),
+        1,
+        "the still-current record must be excluded"
+    );
+    let entry = &entries[0];
+    assert_eq!(entry["knowledge_id"], json!(contradicted.knowledge_id));
+    assert_eq!(entry["classification"], json!("contradicted"));
+    assert_eq!(entry["content"], json!("later refuted"));
+    assert!(entry["effective_weight"].as_f64().unwrap() > 0.99);
+
+    let filtered_out = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/repositories/{repository_id}/knowledge/revalidation-queue?classification=overdue_for_revalidation"
+                ))
+                .body(Body::empty())
+                .expect("build filtered revalidation-queue request"),
+        )
+        .await
+        .expect("serve filtered revalidation-queue request");
+    assert_eq!(filtered_out.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(filtered_out).await["entries"]
+            .as_array()
+            .map(Vec::len),
+        Some(0)
+    );
+
+    let bad_classification = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/repositories/{repository_id}/knowledge/revalidation-queue?classification=unknown"
+                ))
+                .body(Body::empty())
+                .expect("build bad-classification request"),
+        )
+        .await
+        .expect("serve bad-classification request");
+    assert_eq!(bad_classification.status(), StatusCode::BAD_REQUEST);
+
+    let foreign = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/repositories/{foreign_repository_id}/knowledge/revalidation-queue"
+                ))
+                .body(Body::empty())
+                .expect("build foreign revalidation-queue request"),
+        )
+        .await
+        .expect("serve foreign revalidation-queue request");
+    assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+}
