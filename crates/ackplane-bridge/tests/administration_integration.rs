@@ -37,6 +37,25 @@ fn unique_suffix() -> String {
     format!("{timestamp}-{random_suffix}")
 }
 
+#[test]
+fn administration_page_follows_every_stranded_claims_cursor() {
+    let page = include_str!("../static/administration.html");
+
+    for required in [
+        "async function loadStrandedClaims(repositoryId)",
+        "while(cursor)",
+        "data.next_after",
+        "after_lease_expires_at_micros",
+        "after_task_id",
+        "appendStrandedClaims(data.claims||[])",
+    ] {
+        assert!(
+            page.contains(required),
+            "Administration stranded-claim recovery must consume every keyset page: missing {required}"
+        );
+    }
+}
+
 async fn enroll_repository(database_url: &str, tenant_id: &str, repository_id: &str, suffix: &str) {
     let signing_key = SigningKey::from_bytes(&[13; 32]);
     let public_key = signing_key.verifying_key().to_bytes();
