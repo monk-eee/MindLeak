@@ -14,6 +14,8 @@ const REACH_MIGRATION: &str = include_str!("../../migrations/0013_knowledge_reac
 const ACTIVE_PAGE_INDEX_MIGRATION: &str =
     include_str!("../../migrations/0033_knowledge_active_page_index.sql");
 const LIFECYCLE_MIGRATION: &str = include_str!("../../migrations/0034_knowledge_lifecycle.sql");
+const SUPERSESSION_AND_EVIDENCE_MIGRATION: &str =
+    include_str!("../../migrations/0035_knowledge_supersession_and_evidence.sql");
 
 impl KnowledgeStore {
     pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
@@ -63,6 +65,12 @@ impl KnowledgeStore {
             &mut client,
             crate::migration_lock::key::KNOWLEDGE_LIFECYCLE,
             LIFECYCLE_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::KNOWLEDGE_SUPERSESSION_AND_EVIDENCE,
+            SUPERSESSION_AND_EVIDENCE_MIGRATION,
         )
         .await?;
         Ok(Self { client })

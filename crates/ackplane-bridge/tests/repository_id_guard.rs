@@ -36,12 +36,16 @@ const KNOWLEDGE_STORE_RECONFIRMATION_RS: &str =
     include_str!("../../ackplane-server/src/knowledge_store/reconfirmation.rs");
 const KNOWLEDGE_STORE_ACTIVATION_RS: &str =
     include_str!("../../ackplane-server/src/knowledge_store/activation.rs");
+const KNOWLEDGE_STORE_SUPERSESSION_RS: &str =
+    include_str!("../../ackplane-server/src/knowledge_store/supersession.rs");
+const KNOWLEDGE_STORE_EVIDENCE_REFERENCE_RS: &str =
+    include_str!("../../ackplane-server/src/knowledge_store/evidence_reference.rs");
 /// `KnowledgeStore`'s methods are split (below the module-length ratchet)
 /// across `knowledge_store.rs`/`connection.rs`/`query.rs`/`record.rs`/
-/// `reconfirmation.rs`/`activation.rs`, each with its own `impl
-/// KnowledgeStore { ... }` block - this guard must scan all six, not just
-/// one. `reach.rs` has no `impl KnowledgeStore` block (free functions
-/// only), so it is not scanned.
+/// `reconfirmation.rs`/`activation.rs`/`supersession.rs`/
+/// `evidence_reference.rs`, each with its own `impl KnowledgeStore { ... }`
+/// block - this guard must scan all eight, not just one. `reach.rs` has no
+/// `impl KnowledgeStore` block (free functions only), so it is not scanned.
 const KNOWLEDGE_STORE_SOURCES: &[&str] = &[
     KNOWLEDGE_STORE_RS,
     KNOWLEDGE_STORE_CONNECTION_RS,
@@ -49,6 +53,8 @@ const KNOWLEDGE_STORE_SOURCES: &[&str] = &[
     KNOWLEDGE_STORE_RECORD_RS,
     KNOWLEDGE_STORE_RECONFIRMATION_RS,
     KNOWLEDGE_STORE_ACTIVATION_RS,
+    KNOWLEDGE_STORE_SUPERSESSION_RS,
+    KNOWLEDGE_STORE_EVIDENCE_REFERENCE_RS,
 ];
 const CLAIM_STORE_MOD_RS: &str = include_str!("../../ackplane-server/src/claim_store/mod.rs");
 const CLAIM_STORE_LEASE_RS: &str = include_str!("../../ackplane-server/src/claim_store/lease.rs");
@@ -111,6 +117,8 @@ const KNOWLEDGE_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &[
     "record",
     "resolve_signing_key",
     "consume_knowledge_nonce",
+    "supersede",
+    "record_evidence_reference",
 ];
 
 /// `fleet_page`, `agents_page`, `telemetry_page`, and `constitution_page` serve a static asset

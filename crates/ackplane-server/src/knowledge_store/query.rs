@@ -177,7 +177,7 @@ impl KnowledgeStore {
             .query(
                 &format!(
                     "SELECT k.knowledge_id, k.content, k.source_ref, k.recorded_by, k.reach_node_ids, k.reach_goal_id, k.confirmed_at, \
-                            k.retired_at, k.retired_reason, k.retired_by, k.lifecycle_state, \
+                            k.retired_at, k.retired_reason, k.retired_by, k.lifecycle_state, k.superseded_by, \
                             latest_reconfirmation.last_reconfirmed_at, \
                             latest_reconfirmation.last_reconfirmed_by, \
                             latest_reconfirmation.last_reconfirmation_evidence_ref \
@@ -210,6 +210,7 @@ impl KnowledgeStore {
                     retired_by: row.get("retired_by"),
                     lifecycle_state: KnowledgeLifecycleState::try_from(lifecycle_state)
                         .unwrap_or(KnowledgeLifecycleState::Candidate),
+                    superseded_by: row.get("superseded_by"),
                 }
             })
             .collect())

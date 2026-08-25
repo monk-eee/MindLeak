@@ -68,6 +68,7 @@ impl KnowledgeStore {
             half_life_hours: request.half_life_hours,
             confirmed_at,
             lifecycle_state: KnowledgeLifecycleState::Candidate,
+            superseded_by: None,
         })
     }
 }

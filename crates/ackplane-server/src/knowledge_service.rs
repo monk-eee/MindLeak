@@ -137,6 +137,24 @@ fn store_error(error: KnowledgeStoreError) -> Status {
         } => Status::internal(format!(
             "knowledge {knowledge_id} has an unrecognised lifecycle_state value: {value}"
         )),
+        KnowledgeStoreError::MissingSupersessionReason => Status::invalid_argument(
+            "supersession requires a non-empty reason recording why the replacement won",
+        ),
+        KnowledgeStoreError::NotActive { knowledge_id } => Status::failed_precondition(format!(
+            "knowledge {knowledge_id} is not active and cannot be superseded"
+        )),
+        KnowledgeStoreError::AlreadySuperseded { knowledge_id } => {
+            Status::failed_precondition(format!("knowledge {knowledge_id} was already superseded"))
+        }
+        KnowledgeStoreError::ConcurrentlyModified { knowledge_id } => Status::aborted(format!(
+            "knowledge {knowledge_id}'s lifecycle state changed concurrently; retry"
+        )),
+        KnowledgeStoreError::EmptyEvidenceReferenceRef => {
+            Status::invalid_argument("evidence reference_ref must not be empty")
+        }
+        KnowledgeStoreError::EmptyEvidenceReferenceRecordedBy => {
+            Status::invalid_argument("evidence reference recorded_by must not be empty")
+        }
         KnowledgeStoreError::Database(error) => Status::internal(error.to_string()),
     }
 }

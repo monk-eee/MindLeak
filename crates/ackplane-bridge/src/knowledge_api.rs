@@ -210,7 +210,15 @@ fn knowledge_store_error(error: KnowledgeStoreError) -> StatusCode {
         | KnowledgeStoreError::UnknownKnowledge { .. }
         | KnowledgeStoreError::AlreadyActive { .. }
         | KnowledgeStoreError::Retired { .. }
-        | KnowledgeStoreError::CorruptLifecycleState { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+        | KnowledgeStoreError::CorruptLifecycleState { .. }
+        | KnowledgeStoreError::MissingSupersessionReason
+        | KnowledgeStoreError::NotActive { .. }
+        | KnowledgeStoreError::AlreadySuperseded { .. }
+        | KnowledgeStoreError::ConcurrentlyModified { .. }
+        | KnowledgeStoreError::EmptyEvidenceReferenceRef
+        | KnowledgeStoreError::EmptyEvidenceReferenceRecordedBy => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     }
 }
 
