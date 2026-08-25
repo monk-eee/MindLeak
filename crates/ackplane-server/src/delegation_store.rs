@@ -50,6 +50,20 @@ pub struct DelegationStore {
     client: Client,
 }
 
+/// A durable boundary for one tenant/repository delegation projection page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DelegationListCursor {
+    pub source_event_position: u64,
+    pub delegation_id: String,
+}
+
+/// One bounded page of delegation projections in durable update order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DelegationListPage {
+    pub entries: Vec<DelegationProjection>,
+    pub next_after: Option<DelegationListCursor>,
+}
+
 impl DelegationStore {
     pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
         let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
