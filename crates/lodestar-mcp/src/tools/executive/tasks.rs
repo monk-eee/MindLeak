@@ -2,9 +2,9 @@
 //! completion, and the coordination board snapshot.
 
 use super::super::conformance::{delivered_completion_conformance, parse_evidence};
-use super::super::{bool_arg, ok, opt_str, str_array};
+use super::super::{bool_arg, i64_arg, ok, opt_str, str_array};
 use super::claim::attach_lease_warning;
-use super::constants::TASK_PREVIEW_LIMIT;
+use super::constants::{BOARD_PREVIEW_LIMIT, TASK_PREVIEW_LIMIT};
 use lodestar_core::{now_unix, ConformanceCheckReference, Lodestar, Task, TaskStatus};
 use serde_json::{json, Value};
 
@@ -129,11 +129,26 @@ pub(super) fn complete(engine: &Lodestar, task_id: &str, args: &Value) -> Result
 /// engine call) and the free-text `acceptance` field, without omitting any
 /// task: measured on this repository's own board, the full-detail form of a
 /// long-lived history reached megabyte scale in a single reply.
+///
+/// `detail=false` alone is not enough at scale: the same board, slimmed,
+/// still measured ~403 KB over 1,019 rows. `tasks` is newest-first and capped
+/// at `limit` (default `BOARD_PREVIEW_LIMIT`); `count` and `tasks_truncated`
+/// report the full total and whether the cap bit, so a caller that needs the
+/// complete history (`evaluate-pr-effectiveness.mjs`, `stranded-report.mjs`)
+/// can tell it was cut and pass an explicit `limit=0` to opt out, rather than
+/// silently analysing a partial board as if it were whole.
 pub(super) fn board(engine: &Lodestar, args: &Value) -> Result<Value, String> {
     let tasks = engine
         .board(bool_arg(args, "include_terminal", true))
         .map_err(|e| e.to_string())?;
     let detail = bool_arg(args, "detail", true);
+    let count = tasks.len();
+    let limit = i64_arg(args, "limit", BOARD_PREVIEW_LIMIT as i64);
+    let (tasks, tasks_truncated) = if limit > 0 {
+        bounded_by_recency(tasks, limit as usize)
+    } else {
+        (tasks, false)
+    };
     let mut rows = Vec::with_capacity(tasks.len());
     for task in tasks {
         // Whether the claim is actually being held, beside the status
@@ -186,5 +201,9 @@ pub(super) fn board(engine: &Lodestar, args: &Value) -> Result<Value, String> {
         }
         rows.push(row);
     }
-    ok(&rows)
+    ok(&json!({
+        "count": count,
+        "tasks": rows,
+        "tasks_truncated": tasks_truncated,
+    }))
 }

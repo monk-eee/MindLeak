@@ -208,9 +208,17 @@ async function main() {
   );
   await call("open_session", { session_id: session });
 
-  const board = await call("task_query", { view: "board" });
+  // include_terminal:false is a pure optimization (a stranded claim is never
+  // terminal); limit:0 opts out of the default 200-task cap (bounded board
+  // fix) so an old, long-forgotten lapsed claim is never hidden behind 200
+  // more-recently-touched tasks -- the whole point of this report.
+  const board = await call("task_query", {
+    view: "board",
+    include_terminal: false,
+    limit: 0,
+  });
   const now = Math.floor(Date.now() / 1000);
-  const stranded = (Array.isArray(board) ? board : Object.values(board)).filter(
+  const stranded = (Array.isArray(board) ? board : (board?.tasks ?? [])).filter(
     (t) => t.status === "claimed" && (t.lease_expires_at ?? 0) < now,
   );
 
