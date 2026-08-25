@@ -2,6 +2,10 @@
 
 use std::time::{Duration, SystemTime};
 
+use super::service::{
+    VerifiedWorkCommandPrincipal, WorkCommandAuthorization, WorkCommandRefusal, WorkCommandService,
+    WorkCommandServiceOutcome, AUTHORIZATION_UNAVAILABLE_REASON,
+};
 use super::{
     model::{WorkCommandKind, WorkCommandOutcome},
     *,
@@ -49,6 +53,21 @@ fn receipt(
 
 fn database_url() -> Option<String> {
     std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()
+}
+
+fn verified_authorization(
+    tenant_id: &str,
+    repository_id: &str,
+    suffix: &str,
+) -> WorkCommandAuthorization {
+    WorkCommandAuthorization::Verified(VerifiedWorkCommandPrincipal {
+        principal_id: format!("principal-{suffix}"),
+        tenant_id: tenant_id.to_owned(),
+        repository_ids: vec![repository_id.to_owned()],
+        allowed_commands: vec![WorkCommandKind::CreateWork],
+        policy_refs: vec![format!("policy-{suffix}")],
+        delegation_id: Some(format!("delegation-{suffix}")),
+    })
 }
 
 #[tokio::test]
@@ -280,4 +299,367 @@ async fn a_receipt_cannot_target_a_command_in_another_tenant() {
             && error_repository == cross_tenant.repository_id
             && error_command == cross_tenant.command_id
     ));
+}
+
+#[tokio::test]
+async fn the_loopback_profile_returns_authorization_unavailable_without_writing_a_command() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-loopback");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let command = request(&tenant_id, &repository_id, &suffix);
+    let now = SystemTime::now();
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+
+    let unavailable = service
+        .submit(
+            WorkCommandAuthorization::LoopbackDevelopment,
+            command.clone(),
+            now,
+        )
+        .await
+        .expect("the loopback profile should return a typed outcome");
+    let accepted = service
+        .submit(
+            verified_authorization(&tenant_id, &repository_id, &suffix),
+            command,
+            now,
+        )
+        .await
+        .expect("a later verified command should persist normally");
+
+    assert_eq!(
+        unavailable,
+        WorkCommandServiceOutcome::AuthorizationUnavailable {
+            reason: AUTHORIZATION_UNAVAILABLE_REASON,
+        }
+    );
+    assert!(matches!(
+        accepted,
+        WorkCommandServiceOutcome::PendingConfirmation {
+            idempotent_replay: false,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn a_missing_principal_is_refused_before_command_persistence() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-missing-principal");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+
+    let outcome = service
+        .submit(
+            WorkCommandAuthorization::MissingPrincipal,
+            request(&tenant_id, &repository_id, &suffix),
+            SystemTime::now(),
+        )
+        .await
+        .expect("a missing principal should be refused as data");
+
+    assert_eq!(
+        outcome,
+        WorkCommandServiceOutcome::Refused {
+            reason: WorkCommandRefusal::MissingPrincipal,
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_claimed_principal_that_differs_from_the_verified_principal_is_refused() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-forged-principal");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let mut authorization = verified_authorization(&tenant_id, &repository_id, &suffix);
+    let WorkCommandAuthorization::Verified(principal) = &mut authorization else {
+        panic!("the fixture must provide a verified principal");
+    };
+    principal.principal_id = format!("forged-principal-{suffix}");
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+
+    let outcome = service
+        .submit(
+            authorization,
+            request(&tenant_id, &repository_id, &suffix),
+            SystemTime::now(),
+        )
+        .await
+        .expect("a forged principal should be refused as data");
+
+    assert_eq!(
+        outcome,
+        WorkCommandServiceOutcome::Refused {
+            reason: WorkCommandRefusal::ForgedPrincipal,
+        }
+    );
+}
+
+#[tokio::test]
+async fn an_out_of_tenant_principal_is_refused_before_any_command_is_persisted() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-tenant-scope");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let command = request(&tenant_id, &repository_id, &suffix);
+    let now = SystemTime::now();
+    let mut authorization = verified_authorization(&tenant_id, &repository_id, &suffix);
+    let WorkCommandAuthorization::Verified(principal) = &mut authorization else {
+        panic!("the fixture must provide a verified principal");
+    };
+    principal.tenant_id = format!("other-tenant-{suffix}");
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+
+    let refused = service
+        .submit(authorization, command.clone(), now)
+        .await
+        .expect("a cross-tenant request should be refused as data");
+    let accepted = service
+        .submit(
+            verified_authorization(&tenant_id, &repository_id, &suffix),
+            command,
+            now,
+        )
+        .await
+        .expect("a later in-scope request should persist normally");
+
+    assert_eq!(
+        refused,
+        WorkCommandServiceOutcome::Refused {
+            reason: WorkCommandRefusal::TenantOutOfScope,
+        }
+    );
+    assert!(matches!(
+        accepted,
+        WorkCommandServiceOutcome::PendingConfirmation {
+            idempotent_replay: false,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn an_out_of_scope_repository_is_refused_before_command_persistence() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-repository-scope");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let mut authorization = verified_authorization(&tenant_id, &repository_id, &suffix);
+    let WorkCommandAuthorization::Verified(principal) = &mut authorization else {
+        panic!("the fixture must provide a verified principal");
+    };
+    principal.repository_ids = vec![format!("other-repository-{suffix}")];
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+
+    let outcome = service
+        .submit(
+            authorization,
+            request(&tenant_id, &repository_id, &suffix),
+            SystemTime::now(),
+        )
+        .await
+        .expect("an out-of-scope repository should be refused as data");
+
+    assert_eq!(
+        outcome,
+        WorkCommandServiceOutcome::Refused {
+            reason: WorkCommandRefusal::RepositoryOutOfScope,
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_verified_principal_without_operation_permission_is_refused() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-operation-permission");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let mut authorization = verified_authorization(&tenant_id, &repository_id, &suffix);
+    let WorkCommandAuthorization::Verified(principal) = &mut authorization else {
+        panic!("the fixture must provide a verified principal");
+    };
+    principal.allowed_commands.clear();
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+
+    let outcome = service
+        .submit(
+            authorization,
+            request(&tenant_id, &repository_id, &suffix),
+            SystemTime::now(),
+        )
+        .await
+        .expect("a command without operation permission should be refused as data");
+
+    assert_eq!(
+        outcome,
+        WorkCommandServiceOutcome::Refused {
+            reason: WorkCommandRefusal::CommandNotPermitted,
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_policy_reference_outside_the_verified_basis_is_refused() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-policy-basis");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let mut authorization = verified_authorization(&tenant_id, &repository_id, &suffix);
+    let WorkCommandAuthorization::Verified(principal) = &mut authorization else {
+        panic!("the fixture must provide a verified principal");
+    };
+    principal.policy_refs = vec![format!("other-policy-{suffix}")];
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+
+    let outcome = service
+        .submit(
+            authorization,
+            request(&tenant_id, &repository_id, &suffix),
+            SystemTime::now(),
+        )
+        .await
+        .expect("a command outside the verified policy basis should be refused as data");
+
+    assert_eq!(
+        outcome,
+        WorkCommandServiceOutcome::Refused {
+            reason: WorkCommandRefusal::PolicyNotPermitted,
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_delegation_outside_the_verified_basis_is_refused() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-delegation-basis");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let mut authorization = verified_authorization(&tenant_id, &repository_id, &suffix);
+    let WorkCommandAuthorization::Verified(principal) = &mut authorization else {
+        panic!("the fixture must provide a verified principal");
+    };
+    principal.delegation_id = Some(format!("other-delegation-{suffix}"));
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+
+    let outcome = service
+        .submit(
+            authorization,
+            request(&tenant_id, &repository_id, &suffix),
+            SystemTime::now(),
+        )
+        .await
+        .expect("a command outside the verified delegation basis should be refused as data");
+
+    assert_eq!(
+        outcome,
+        WorkCommandServiceOutcome::Refused {
+            reason: WorkCommandRefusal::DelegationNotPermitted,
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_verified_in_scope_principal_records_a_replayable_pending_confirmation() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-authorized");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let command = request(&tenant_id, &repository_id, &suffix);
+    let now = SystemTime::now();
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+
+    let first = service
+        .submit(
+            verified_authorization(&tenant_id, &repository_id, &suffix),
+            command.clone(),
+            now,
+        )
+        .await
+        .expect("an authorized command should record a preview");
+    let replay = service
+        .submit(
+            verified_authorization(&tenant_id, &repository_id, &suffix),
+            command,
+            now,
+        )
+        .await
+        .expect("an identical authorized command should replay");
+
+    let WorkCommandServiceOutcome::PendingConfirmation {
+        command: first_command,
+        receipt: first_receipt,
+        idempotent_replay: first_replay,
+    } = first
+    else {
+        panic!("an authorized command must enter pending confirmation");
+    };
+    let WorkCommandServiceOutcome::PendingConfirmation {
+        command: replay_command,
+        receipt: replay_receipt,
+        idempotent_replay: replayed,
+    } = replay
+    else {
+        panic!("an identical command must replay its pending confirmation");
+    };
+
+    assert!(!first_replay);
+    assert!(replayed);
+    assert_eq!(first_command, replay_command);
+    assert_eq!(first_receipt, replay_receipt);
+    assert_eq!(
+        first_receipt.outcome,
+        WorkCommandOutcome::PendingConfirmation
+    );
+    assert_eq!(
+        first_receipt.evidence_refs,
+        vec![format!("policy-{suffix}")]
+    );
 }
