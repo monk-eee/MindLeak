@@ -113,11 +113,19 @@ const AGENT = "session:v1:0123456789abcdef0123456789abcdef";
  * could only ever assert refusal. Standing one up keeps the publish path itself
  * under test rather than trading that coverage away for the new guard.
  */
-const stubLedger = (root, { claims = [], overlaps = [] } = {}) => {
+const stubLedger = (root, { claims = [], overlaps = [], boardShape = "array" } = {}) => {
   const path = join(root, "stub-ledger.mjs");
+  // "array" simulates a binary built before the board response was bounded;
+  // "object" simulates a current one answering `{count, tasks,
+  // tasks_truncated}` (the bounded-board fix). Both must be readable, since
+  // callers stay unaware of which binary they are actually talking to.
+  const board =
+    boardShape === "object"
+      ? { count: claims.length, tasks: claims, tasks_truncated: false }
+      : claims;
   const source = [
     'import { createInterface } from "node:readline";',
-    `const board = ${JSON.stringify(claims)};`,
+    `const board = ${JSON.stringify(board)};`,
     `const overlaps = ${JSON.stringify(overlaps)};`,
     "const reply = (id, value) =>",
     "  process.stdout.write(",
@@ -387,6 +395,29 @@ describe("canonical-push", () => {
       expect(git(root, ["--git-dir", remote, "rev-parse", "refs/heads/fleet/canonical"])).toBe(
         expected
       );
+    },
+    TIMEOUT_MS
+  );
+
+  it(
+    "publishes when the board answers with the bounded {count, tasks, tasks_truncated} shape",
+    () => {
+      const { root, remote, repo } = sandbox();
+      git(repo, ["checkout", "-b", "fleet/canonical-object-board"]);
+      commitFile(repo, "feature.txt", "feature\n", "fleet feature");
+      const expected = git(repo, ["rev-parse", "HEAD"]);
+
+      const result = runPublisher(
+        repo,
+        [],
+        claimEnv(root, { claims: [liveClaim], boardShape: "object" })
+      );
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toMatch(/published HEAD -> origin\/fleet\/canonical-object-board/);
+      expect(
+        git(root, ["--git-dir", remote, "rev-parse", "refs/heads/fleet/canonical-object-board"])
+      ).toBe(expected);
     },
     TIMEOUT_MS
   );

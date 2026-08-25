@@ -295,8 +295,15 @@ async function main() {
   );
   await call("open_session", { session_id: session });
 
-  const board = await call("task_query", { view: "board", detail: false });
-  const tasks = Array.isArray(board) ? board : Object.values(board);
+  // limit:0 opts out of the default 200-task cap (bounded board fix): this
+  // report exists to say what the FULL board cannot close, not just the 200
+  // most recently touched tasks.
+  const board = await call("task_query", {
+    view: "board",
+    detail: false,
+    limit: 0,
+  });
+  const tasks = Array.isArray(board) ? board : (board?.tasks ?? []);
   const entries = [];
   for (const task of tasks) {
     let audit;

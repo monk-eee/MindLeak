@@ -76,3 +76,53 @@ pub struct ClaimOverlapReport {
     pub requester_branch: Option<String>,
     pub claims: Vec<ClaimOverlap>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_reports_a_same_branch_collision_when_both_sides_declared_the_same_branch() {
+        assert_eq!(
+            OverlapSignal::classify(Some("main"), Some("main")),
+            OverlapSignal::SameBranchCollision
+        );
+    }
+
+    #[test]
+    fn classify_reports_a_cross_branch_merge_risk_when_both_sides_declared_different_branches() {
+        assert_eq!(
+            OverlapSignal::classify(Some("feature/a"), Some("feature/b")),
+            OverlapSignal::CrossBranchMergeRisk
+        );
+    }
+
+    #[test]
+    fn classify_reports_undeclared_when_either_side_named_no_branch() {
+        assert_eq!(
+            OverlapSignal::classify(None, Some("main")),
+            OverlapSignal::Undeclared
+        );
+        assert_eq!(
+            OverlapSignal::classify(Some("main"), None),
+            OverlapSignal::Undeclared
+        );
+        assert_eq!(
+            OverlapSignal::classify(None, None),
+            OverlapSignal::Undeclared
+        );
+    }
+
+    #[test]
+    fn overlap_signal_as_str_matches_the_serialized_snake_case_tag() {
+        assert_eq!(
+            OverlapSignal::SameBranchCollision.as_str(),
+            "same_branch_collision"
+        );
+        assert_eq!(
+            OverlapSignal::CrossBranchMergeRisk.as_str(),
+            "cross_branch_merge_risk"
+        );
+        assert_eq!(OverlapSignal::Undeclared.as_str(), "undeclared");
+    }
+}
