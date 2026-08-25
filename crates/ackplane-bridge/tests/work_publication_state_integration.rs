@@ -132,6 +132,21 @@ async fn body_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&body).expect("parse Bridge JSON response")
 }
 
+fn authorization_unavailable_commands() -> Value {
+    json!([
+        {"operation": "create_work", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
+        {"operation": "route_work", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
+        {"operation": "release_lease", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
+        {"operation": "answer_wait", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
+        {"operation": "submit_review", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
+        {"operation": "assign", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
+        {"operation": "steer", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
+        {"operation": "pause", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
+        {"operation": "resume", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
+        {"operation": "drain", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."}
+    ])
+}
+
 #[tokio::test]
 async fn work_list_distinguishes_claims_only_not_published_and_foreign_repositories() {
     let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
@@ -203,6 +218,7 @@ async fn work_list_distinguishes_claims_only_not_published_and_foreign_repositor
             "total": 0,
             "page": 1,
             "page_size": 20,
+            "commands": authorization_unavailable_commands(),
             "publication": {
                 "state": "claims_only",
                 "claims_only_total": 1,
@@ -242,18 +258,7 @@ async fn work_list_distinguishes_claims_only_not_published_and_foreign_repositor
             "total": 0,
             "page": 1,
             "page_size": 20,
-            "commands": [
-                {"operation": "create_work", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-                {"operation": "route_work", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-                {"operation": "release_lease", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-                {"operation": "answer_wait", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-                {"operation": "submit_review", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-                {"operation": "assign", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-                {"operation": "steer", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-                {"operation": "pause", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-                {"operation": "resume", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-                {"operation": "drain", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."}
-            ],
+            "commands": authorization_unavailable_commands(),
             "publication": {
                 "state": "not_published",
                 "claims_only_total": 0,
