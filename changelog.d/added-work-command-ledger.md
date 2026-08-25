@@ -1,0 +1,1 @@
+- **Ackplane now persists an immutable Industrial Work command ledger.** Closed command requests and receipt outcomes are idempotent and tenant/repository-scoped before any Bridge command route, authorization evaluator, Work/Claim mutation, or supervisor delivery is enabled.
