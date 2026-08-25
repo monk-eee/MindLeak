@@ -90,6 +90,7 @@ pub(in crate::tools) fn definitions() -> Vec<Value> {
                     "since": { "type": "integer", "default": 0, "description": "rework: unix second to measure from. 0 (default) is the whole ledger. Redundancy is always judged against the full history, so narrowing the window never makes a repeat of older work disappear." },
                     "include_terminal": { "type": "boolean", "default": true, "description": "board: include terminal done/abandoned tasks (default true); false returns only the live/actionable set." },
                     "detail": { "type": "boolean", "default": true, "description": "board: also include each task's scope, claim_window, receipt, and acceptance text; false omits them for a lean scan, dropping no task." },
+                    "branch": { "type": "string", "description": "board: narrow to tasks recorded on exactly this branch, any status, independent of include_terminal." },
                     "goal_id": { "type": "string", "description": "existing_work: work already serving this goal." },
                     "paths": { "type": "array", "items": { "type": "string" }, "default": [], "description": "existing_work and overlap: concrete workspace-relative paths. Declared claim scopes are the glob side of the comparison." },
                     "symbols": { "type": "array", "items": { "type": "string" }, "default": [], "description": "overlap: opaque MindLeak symbol ids." },
