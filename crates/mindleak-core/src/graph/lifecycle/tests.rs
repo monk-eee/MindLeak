@@ -6,6 +6,7 @@ use crate::model::{NodeType, RelationType};
 
 #[test]
 fn consolidation_lease_coordinates_processes_and_persists_attempt_interval() {
+    let _serialized = crate::db::serialize_db_test();
     let path = std::env::temp_dir().join(format!(
         "mindleak-consolidation-lease-{}-{}.db",
         std::process::id(),
@@ -97,6 +98,7 @@ fn export_graph_includes_all_nodes_and_only_active_edges() {
 
 #[test]
 fn backup_database_preserves_graph_state() {
+    let _serialized = crate::db::serialize_db_test();
     let graph = store();
     add_node(&graph, "artifact:a", NodeType::Artifact, "a", NOW);
     let path = std::env::temp_dir().join(format!(
@@ -158,6 +160,7 @@ fn reset_database_requires_exact_token_and_clears_memory_state() {
 // the second BEGIN IMMEDIATE would succeed, so this fails against the un-fixed code.
 #[test]
 fn write_txn_takes_the_write_lock_eagerly_so_concurrent_writers_serialise() {
+    let _serialized = crate::db::serialize_db_test();
     let path = std::env::temp_dir().join(format!(
         "mindleak-write-txn-immediate-{}-{}.db",
         std::process::id(),
