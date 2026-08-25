@@ -600,4 +600,403 @@ mod tests {
             "an unknown transition must name the valid ones: {error}"
         );
     }
+
+    #[test]
+    fn constitution_define_goal_creates_an_active_clause() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let result = call(
+            &engine,
+            &json!({
+                "name": "constitution_define",
+                "arguments": {
+                    "action": "goal",
+                    "kind": "constraint",
+                    "title": "Ship the thing",
+                    "statement": "Do it well"
+                }
+            }),
+        )
+        .unwrap();
+        let goal = result_json(&result);
+        assert_eq!(goal["kind"], "constraint");
+        assert_eq!(goal["title"], "Ship the thing");
+        assert_eq!(goal["statement"], "Do it well");
+        assert_eq!(goal["status"], "active");
+        assert!(goal["parent_id"].is_null());
+    }
+
+    #[test]
+    fn constitution_define_refuses_an_unknown_action() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let error = call(
+            &engine,
+            &json!({
+                "name": "constitution_define",
+                "arguments": { "action": "invent" }
+            }),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("goal, import, supersede, bind or unbind"),
+            "an unknown action must name the valid ones: {error}"
+        );
+    }
+
+    #[test]
+    fn constitution_define_import_records_an_external_goal() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let result = call(
+            &engine,
+            &json!({
+                "name": "constitution_define",
+                "arguments": {
+                    "action": "import",
+                    "source_system": "adr-index",
+                    "records": [{
+                        "external_id": "ADR-0001",
+                        "kind": "constraint",
+                        "title": "Do the right thing",
+                        "statement": "Prefer correctness over expedience",
+                        "status": "accepted",
+                        "source_ref": "docs/adr/0001.md",
+                        "source_digest": "abc123"
+                    }]
+                }
+            }),
+        )
+        .unwrap();
+        let outcome = result_json(&result);
+        assert_eq!(outcome["created"], 1);
+        assert_eq!(outcome["unchanged"], 0);
+        assert_eq!(outcome["skipped"], 0);
+        assert_eq!(outcome["conflicts"], 0);
+        assert_eq!(outcome["outcomes"][0]["external_id"], "ADR-0001");
+        assert_eq!(outcome["outcomes"][0]["disposition"], "created");
+    }
+
+    #[test]
+    fn constitution_define_import_refuses_when_records_is_missing() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let error = call(
+            &engine,
+            &json!({
+                "name": "constitution_define",
+                "arguments": { "action": "import", "source_system": "adr-index" }
+            }),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("records"),
+            "a missing records array must name the field: {error}"
+        );
+    }
+
+    #[test]
+    fn constitution_define_supersede_replaces_a_goal_with_a_new_version() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let original = engine
+            .define_goal(
+                GoalKind::Constraint,
+                "Original title",
+                "Original text",
+                None,
+            )
+            .unwrap();
+
+        let result = call(
+            &engine,
+            &json!({
+                "name": "constitution_define",
+                "arguments": {
+                    "action": "supersede",
+                    "goal_id": original.id,
+                    "new_statement": "Revised text",
+                    "reason": "the original was too narrow"
+                }
+            }),
+        )
+        .unwrap();
+        let replacement = result_json(&result);
+        assert_eq!(replacement["statement"], "Revised text");
+        assert_ne!(replacement["id"], original.id);
+
+        let bindings = engine
+            .governing_goals(&format!("artifact:{}", "some/path.rs"))
+            .unwrap();
+        assert!(
+            bindings.is_empty(),
+            "a supersede does not bind anything by itself"
+        );
+    }
+
+    #[test]
+    fn constitution_define_bind_and_unbind_round_trip_an_artifact_binding() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(
+                GoalKind::Objective,
+                "Cover the graph engine",
+                "Keep it correct",
+                None,
+            )
+            .unwrap();
+        let node = "artifact:crates/mindleak-core/src/graph/mod.rs";
+
+        let bound = call(
+            &engine,
+            &json!({
+                "name": "constitution_define",
+                "arguments": {
+                    "action": "bind",
+                    "goal_id": goal.id,
+                    "node_ids": [node]
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(result_json(&bound)["linked"], 1);
+        assert_eq!(engine.governing_goals(node).unwrap().len(), 1);
+
+        let unbound = call(
+            &engine,
+            &json!({
+                "name": "constitution_define",
+                "arguments": {
+                    "action": "unbind",
+                    "goal_id": goal.id,
+                    "node_ids": [node]
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(result_json(&unbound)["removed"], 1);
+        assert!(engine.governing_goals(node).unwrap().is_empty());
+    }
+
+    #[test]
+    fn constitution_query_active_lists_every_active_clause() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        engine
+            .define_goal(
+                GoalKind::Invariant,
+                "Never lose evidence",
+                "Keep the ledger append-only",
+                None,
+            )
+            .unwrap();
+
+        let result = call(
+            &engine,
+            &json!({ "name": "constitution_query", "arguments": { "action": "active" } }),
+        )
+        .unwrap();
+        let goals = result_json(&result);
+        let goals = goals.as_array().unwrap();
+        assert_eq!(goals.len(), 1);
+        assert_eq!(goals[0]["title"], "Never lose evidence");
+    }
+
+    #[test]
+    fn constitution_query_governing_reports_bindings_for_a_node() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(
+                GoalKind::Constraint,
+                "Bounded response size",
+                "Cap every reply",
+                None,
+            )
+            .unwrap();
+        let node = "artifact:crates/lodestar-mcp/src/tools/executive/tasks.rs";
+        engine
+            .link_goal_to_artifact(&goal.id, &[node.to_string()], ArtifactBindingMode::Governed)
+            .unwrap();
+
+        let result = call(
+            &engine,
+            &json!({ "name": "constitution_query", "arguments": { "action": "governing", "node_id": node } }),
+        )
+        .unwrap();
+        let bindings = result_json(&result);
+        let bindings = bindings.as_array().unwrap();
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0]["mode"], "governed");
+        assert_eq!(bindings[0]["goal"]["id"], goal.id);
+    }
+
+    #[test]
+    fn constitution_query_for_task_refuses_an_unknown_task() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let error = call(
+            &engine,
+            &json!({
+                "name": "constitution_query",
+                "arguments": { "action": "for_task", "task_id": "task:doesnotexist" }
+            }),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("task:doesnotexist"),
+            "an unknown task must be named in the refusal: {error}"
+        );
+    }
+
+    #[test]
+    fn constitution_query_export_renders_the_active_clause() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        engine
+            .define_goal(
+                GoalKind::Objective,
+                "Export me",
+                "So a PR can review it",
+                None,
+            )
+            .unwrap();
+
+        let result = call(
+            &engine,
+            &json!({ "name": "constitution_query", "arguments": { "action": "export" } }),
+        )
+        .unwrap();
+        let markdown = result["content"][0]["text"].as_str().unwrap();
+        assert!(markdown.contains("Export me"));
+    }
+
+    #[test]
+    fn constitution_query_refuses_an_unknown_action() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let error = call(
+            &engine,
+            &json!({ "name": "constitution_query", "arguments": { "action": "list" } }),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("active, status, governing, for_task or export"),
+            "an unknown action must name the valid ones: {error}"
+        );
+    }
+
+    #[test]
+    fn constitution_decide_propose_drafts_a_fresh_constitution() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let result = call(
+            &engine,
+            &json!({
+                "name": "constitution_decide",
+                "arguments": { "action": "propose", "version": "constitution:v1", "agent": "test-agent" }
+            }),
+        )
+        .unwrap();
+        let proposal = result_json(&result);
+        assert_eq!(proposal["version"]["id"], "constitution:v1");
+        assert_eq!(proposal["version"]["status"], "draft");
+        assert_eq!(
+            proposal["common_core"]["proposals"]
+                .as_array()
+                .unwrap()
+                .len(),
+            5
+        );
+
+        // A second proposal is refused: a draft already awaits review.
+        let error = call(
+            &engine,
+            &json!({
+                "name": "constitution_decide",
+                "arguments": { "action": "propose", "version": "constitution:v2", "agent": "test-agent" }
+            }),
+        )
+        .unwrap_err();
+        assert!(error.contains("constitution:v1"));
+    }
+
+    #[test]
+    fn define_goal_refuses_an_invalid_kind() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let error = call(
+            &engine,
+            &json!({
+                "name": "define_goal",
+                "arguments": { "kind": "wish", "title": "t", "statement": "s" }
+            }),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("invalid kind: wish"),
+            "an invalid kind must be named in the refusal: {error}"
+        );
+    }
+
+    #[test]
+    fn policy_pack_register_registers_and_proposes_the_common_core_pack() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let pack = serde_json::to_value(lodestar_core::common_core_pack()).unwrap();
+
+        let registered = call(
+            &engine,
+            &json!({
+                "name": "policy_pack_register",
+                "arguments": { "action": "register", "pack": pack }
+            }),
+        )
+        .unwrap();
+        assert_eq!(result_json(&registered)["id"], "common-core");
+
+        let proposed = call(
+            &engine,
+            &json!({
+                "name": "policy_pack_register",
+                "arguments": {
+                    "action": "propose",
+                    "pack_id": "common-core",
+                    "version": "1"
+                }
+            }),
+        )
+        .unwrap();
+        let batch: PackProposalBatch = serde_json::from_value(result_json(&proposed)).unwrap();
+        assert_eq!(batch.proposals.len(), 5);
+    }
+
+    #[test]
+    fn policy_pack_register_refuses_an_unknown_action() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let error = call(
+            &engine,
+            &json!({ "name": "policy_pack_register", "arguments": { "action": "install" } }),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("register, propose, common_core, or fleet_delivery"),
+            "an unknown action must name the valid ones: {error}"
+        );
+    }
+
+    #[test]
+    fn policy_pack_decide_refuses_an_unknown_action() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let error = call(
+            &engine,
+            &json!({ "name": "policy_pack_decide", "arguments": { "action": "ratify" } }),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("clause or contract"),
+            "an unknown action must name the valid ones: {error}"
+        );
+    }
+
+    #[test]
+    fn policy_pack_query_refuses_an_unknown_action() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let error = call(
+            &engine,
+            &json!({ "name": "policy_pack_query", "arguments": { "action": "history" } }),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("proposals or provenance"),
+            "an unknown action must name the valid ones: {error}"
+        );
+    }
 }
