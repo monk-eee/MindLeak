@@ -421,6 +421,54 @@ the signed bytes, and its own `knowledge_authentication_nonces` table —
 mirrored, not shared with claims', so the two domains' replay protection and
 signed-byte encodings can never collide or drift into each other.
 
+A recorded statement's `lifecycle_state` (`KnowledgeLifecycleState`,
+`knowledge_store/activation.rs`) starts as `Candidate` and is never implicit
+or cosmetic (ADR-0113 decision 1): `recall`/`active_page` only ever return
+`Active` rows, so an unreviewed candidate is invisible to both the gRPC
+recall path and the Bridge's read-only page until a separate, authorized
+`activate` call promotes it. `activate` is a compare-and-swap (mirroring
+`DesignStore::record_decision`'s own CAS) guarded on `lifecycle_state =
+Candidate AND retired_at IS NULL`; a failed guard is diagnosed precisely
+(`UnknownKnowledge`, `AlreadyActive`, `Retired`) rather than reported as one
+generic conflict, and an empty `authorized_by` is refused before the CAS
+ever runs. Every accepted transition appends one immutable row to
+`knowledge_activations` (ADR-0113 decision 7) — the authorization basis, an
+optional reason, and when — never updated or deleted once written, the same
+append-only contract `knowledge_reconfirmations` already holds. `retire` and
+`reconfirm` are unchanged and still operate independently of
+`lifecycle_state` (a never-activated candidate remains retirable; a
+candidate remains reconfirmable, so corroboration gathered before review is
+not lost). Rows recorded before this decision landed backfill as `Active` on
+migration, so already-established guidance does not vanish. Wiring
+`activate` into an authenticated gRPC RPC or a Bridge review surface is
+deferred to a later decision, matching this repository's established
+read-model-first rollout order.
+
+An active statement can also be superseded (`KnowledgeStore::supersede`,
+ADR-0113 decisions 1 and 7): a third `lifecycle_state`, `Superseded`,
+distinct from retirement — the prior row is preserved exactly as it stood
+(`retired_at` stays `NULL`) and instead gains a `superseded_by` pointer to
+its replacement. `supersede` inserts the replacement directly as `Active`
+(the supersession's own authorization basis already satisfies decision 1's
+review gate) and marks the prior statement `Superseded`, both inside one
+`WITH` statement alongside an append-only `knowledge_supersessions` receipt
+naming who authorized the change and — required and non-empty, unlike
+`activate`'s optional reason — why the replacement won. The guard
+(`lifecycle_state = Active AND retired_at IS NULL`) refuses a still-
+`Candidate`, already-`Superseded`, or retired prior statement with the same
+precise-diagnosis pattern `activate` uses, plus a distinct
+`ConcurrentlyModified` outcome when a read taken after a failed guard still
+finds the row `Active` (a genuine race between the failed compare-and-swap
+and the diagnostic read, not a case the other outcomes correctly describe).
+Separately, `record_evidence_reference` (decision 3) attaches a bounded,
+append-only trail of outcome/evidence references — a task, context packet,
+validation run, or receipt — to a statement in any lifecycle state, each
+tagged with a `polarity` (`Corroborates`/`Contradicts`) recorded as its own
+fact rather than folded into one opaque confidence number; a later
+contradiction is a new reference, never an edit to an earlier corroborating
+one. `evidence_references` returns them recency-first, hard-bounded at 100
+rows regardless of the caller's requested limit.
+
 `ConstitutionService` (`constitution_store.rs`/`constitution_service.rs`) is a
 read-only projection of a repository's own authoritative local Lodestar
 constitution (ADR-0106 decision 3): `PublishConstitutionSnapshot` (called by

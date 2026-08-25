@@ -352,6 +352,23 @@ export interface LodestarTask {
   scope?: TaskScope;
 }
 
+/**
+ * Unwrap a `task_query(view="board")` result into its task array.
+ *
+ * A current server answers `{count, tasks, tasks_truncated}` -- bounded so a
+ * mature board cannot reach the multi-megabyte payloads that used to bloat
+ * VS Code's own chat-session storage. A binary built before that shape
+ * shipped still answers a bare array. Both are read the same way here so the
+ * extension keeps working across either.
+ */
+export function boardTasks(response: unknown): LodestarTask[] {
+  if (Array.isArray(response)) {
+    return response as LodestarTask[];
+  }
+  const tasks = (response as { tasks?: unknown } | null | undefined)?.tasks;
+  return Array.isArray(tasks) ? (tasks as LodestarTask[]) : [];
+}
+
 /** One active clause governing a task's scope, from `advise` / `governing_for_task` (ADR-0029). */
 export interface GoverningClause {
   node_id: string;
