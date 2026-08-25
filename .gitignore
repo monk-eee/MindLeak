@@ -1,7 +1,10 @@
 # Rust
 /target
 **/*.rs.bk
-/coverage.lcov
+# cargo llvm-cov's --output-path is free-form (coverage.lcov, coverage-fresh.lcov,
+# scratch measurement runs, ...); ignore every root-level report, not just the
+# one default name, so an ad hoc coverage run never clutters git status.
+/*.lcov
 /dist
 
 # MindLeak graph database (regenerable)
