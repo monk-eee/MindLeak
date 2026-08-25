@@ -106,6 +106,8 @@ pub(crate) mod key {
     pub(crate) const KNOWLEDGE_SUPERSESSION_AND_EVIDENCE: i64 = 35;
     /// `migrations/0036_knowledge_revalidation_policy.sql`
     pub(crate) const KNOWLEDGE_REVALIDATION_POLICY: i64 = 36;
+    /// `migrations/0037_work_commands.sql`
+    pub(crate) const WORK_COMMANDS: i64 = 37;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and
