@@ -5,8 +5,8 @@ use std::time::{Duration, SystemTime};
 use ackplane_protocol::delegation::DelegatedAction;
 
 use super::super::{
-    DelegationGrantRequest, DelegationProjectionStatus, DelegationRevocationRequest,
-    DelegationStore,
+    DelegationGrantRequest, DelegationListCursor, DelegationListPage, DelegationProjectionStatus,
+    DelegationRevocationRequest, DelegationStore,
 };
 
 fn unique_scope(label: &str) -> (String, String) {
@@ -45,7 +45,7 @@ fn grant_request(tenant_id: String, repository_id: String, label: &str) -> Deleg
 }
 
 #[tokio::test]
-async fn list_returns_current_projections_in_durable_order_and_keeps_scopes_isolated() {
+async fn list_pages_current_projections_in_durable_order_and_keeps_scopes_isolated() {
     let Some(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok() else {
         println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
@@ -58,10 +58,13 @@ async fn list_returns_current_projections_in_durable_order_and_keeps_scopes_isol
 
     assert_eq!(
         store
-            .list(&tenant_id, &repository_id, 10)
+            .list_page(&tenant_id, &repository_id, None, 10)
             .await
             .expect("empty delegation list"),
-        Vec::new()
+        DelegationListPage {
+            entries: Vec::new(),
+            next_after: None,
+        }
     );
 
     let first = store
@@ -93,33 +96,55 @@ async fn list_returns_current_projections_in_durable_order_and_keeps_scopes_isol
         .await
         .expect("revoke first delegation");
 
+    let first_page = store
+        .list_page(&tenant_id, &repository_id, None, 1)
+        .await
+        .expect("read first delegation page");
     assert_eq!(
-        store
-            .list(&tenant_id, &repository_id, 10)
-            .await
-            .expect("list current delegation projections"),
-        vec![second.projection.clone(), revoked.projection]
+        first_page,
+        DelegationListPage {
+            entries: vec![second.projection.clone()],
+            next_after: Some(DelegationListCursor {
+                source_event_position: second.projection.source_event_position,
+                delegation_id: second.projection.delegation_id.clone(),
+            }),
+        }
+    );
+    let second_page = store
+        .list_page(
+            &tenant_id,
+            &repository_id,
+            first_page.next_after.as_ref(),
+            1,
+        )
+        .await
+        .expect("read second delegation page");
+    assert_eq!(
+        second_page,
+        DelegationListPage {
+            entries: vec![revoked.projection],
+            next_after: None,
+        }
     );
     assert_eq!(
         store
-            .list(&tenant_id, &repository_id, 1)
-            .await
-            .expect("limit delegation projections"),
-        vec![second.projection]
-    );
-    assert_eq!(
-        store
-            .list(&foreign_tenant_id, &repository_id, 10)
+            .list_page(&foreign_tenant_id, &repository_id, None, 10)
             .await
             .expect("foreign tenant list"),
-        Vec::new()
+        DelegationListPage {
+            entries: Vec::new(),
+            next_after: None,
+        }
     );
     assert_eq!(
         store
-            .list(&tenant_id, &foreign_repository_id, 10)
+            .list_page(&tenant_id, &foreign_repository_id, None, 10)
             .await
             .expect("foreign repository list"),
-        Vec::new()
+        DelegationListPage {
+            entries: Vec::new(),
+            next_after: None,
+        }
     );
     assert_eq!(
         store
