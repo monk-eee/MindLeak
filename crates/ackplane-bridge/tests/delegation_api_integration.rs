@@ -216,6 +216,21 @@ async fn delegation_view_projects_authority_and_history_without_cross_tenant_or_
     )
     .expect("delegation page is valid UTF-8");
     assert!(page.contains("Delegations"));
+    for required in [
+        "load-more",
+        "Load more authority",
+        "after_source_event_position",
+        "after_delegation_id",
+        "page.next_after",
+        "append?[...page.entries",
+        "has_loaded_more",
+        "!page.has_loaded_more",
+    ] {
+        assert!(
+            page.contains(required),
+            "Delegation page must retain its {required} pagination binding"
+        );
+    }
     assert!(!page.contains("idempotency_key"));
     assert!(!page.contains("POST"));
 
@@ -234,6 +249,7 @@ async fn delegation_view_projects_authority_and_history_without_cross_tenant_or_
     assert_eq!(listed.status(), StatusCode::OK);
     let listed = body_json(listed).await;
     assert_eq!(listed["effective_limit"], json!(10));
+    assert_eq!(listed["next_after"], Value::Null);
     let entries = listed["entries"]
         .as_array()
         .expect("delegation entries are an array");
@@ -262,6 +278,79 @@ async fn delegation_view_projects_authority_and_history_without_cross_tenant_or_
     );
     assert!(revoked_entry.get("idempotency_key").is_none());
     assert!(revoked_entry.get("policy_digest").is_none());
+
+    let first_page = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/repositories/{repository_id}/delegations?limit=1"
+                ))
+                .body(Body::empty())
+                .expect("build first delegation page request"),
+        )
+        .await
+        .expect("serve first delegation page route");
+    assert_eq!(first_page.status(), StatusCode::OK);
+    let first_page = body_json(first_page).await;
+    assert_eq!(first_page["effective_limit"], json!(1));
+    assert_eq!(first_page["entries"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        first_page["entries"][0]["delegation_id"],
+        json!(active.projection.delegation_id)
+    );
+    assert_eq!(
+        first_page["next_after"],
+        json!({
+            "source_event_position": active.projection.source_event_position,
+            "delegation_id": active.projection.delegation_id,
+        })
+    );
+
+    let second_page = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/repositories/{repository_id}/delegations?limit=1&after_source_event_position={}&after_delegation_id={}",
+                    active.projection.source_event_position,
+                    active.projection.delegation_id,
+                ))
+                .body(Body::empty())
+                .expect("build second delegation page request"),
+        )
+        .await
+        .expect("serve second delegation page route");
+    assert_eq!(second_page.status(), StatusCode::OK);
+    let second_page = body_json(second_page).await;
+    assert_eq!(second_page["entries"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        second_page["entries"][0]["delegation_id"],
+        json!(revoked.projection.delegation_id)
+    );
+    assert_eq!(second_page["next_after"], Value::Null);
+
+    for query in [
+        "after_source_event_position=2",
+        "after_delegation_id=delegation-cursor",
+        "after_source_event_position=0&after_delegation_id=delegation-cursor",
+        "after_source_event_position=2&after_delegation_id=",
+        "after_source_event_position=18446744073709551615&after_delegation_id=delegation-cursor",
+    ] {
+        let malformed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/v1/repositories/{repository_id}/delegations?{query}"
+                    ))
+                    .body(Body::empty())
+                    .expect("build malformed delegation cursor request"),
+            )
+            .await
+            .expect("serve malformed delegation cursor route");
+        assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+    }
 
     let history = app
         .clone()
