@@ -1677,6 +1677,101 @@ mod tests {
         assert_eq!(lean_row["title"], "Has real acceptance text");
     }
 
+    /// Bug: `canonical-push.mjs`'s claim gate asks `board` with
+    /// `include_terminal: false` to stay small, which means `reconciliationOf`
+    /// (which looks for an already-completed task on the pushed branch) can
+    /// never find one — the terminal task it needs is excluded by
+    /// construction, so a legitimately-delivered branch always falls through
+    /// to "no live Lodestar claim" instead of being recognized as a
+    /// reconciliation (gaps.d/task-query-board-has-no-response-size-bound.md).
+    /// `branch` lets a caller ask a narrower question instead of widening
+    /// `include_terminal` back to the whole ledger: "is there a task, any
+    /// status, on exactly this branch" — independent of `include_terminal`,
+    /// and small regardless of how large the board's terminal history grows.
+    #[test]
+    fn board_tool_branch_filter_finds_a_terminal_task_without_including_every_terminal_task() {
+        use mindleak_session::SessionContext;
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "do it", None)
+            .unwrap();
+        let delivered = engine
+            .create_task(&goal.id, "Delivered on its own branch", "done")
+            .unwrap();
+        let other_done = engine
+            .create_task(&goal.id, "Delivered on a different branch", "done")
+            .unwrap();
+        let live = engine
+            .create_task(&goal.id, "Still open, unrelated branch", "")
+            .unwrap();
+
+        engine
+            .declare_session_context(
+                "alice",
+                &SessionContext {
+                    branch: Some("feat/delivered".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(engine.claim_task(&delivered.id, "alice", 300).unwrap());
+        engine.release_task(&delivered.id, "alice").unwrap();
+        engine.abandon_task(&delivered.id, true).unwrap();
+
+        engine
+            .declare_session_context(
+                "bob",
+                &SessionContext {
+                    branch: Some("feat/other".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(engine.claim_task(&other_done.id, "bob", 300).unwrap());
+        engine.release_task(&other_done.id, "bob").unwrap();
+        engine.abandon_task(&other_done.id, true).unwrap();
+
+        // `include_terminal: false` (what the claim gate actually sends) never
+        // returns either delivered task, by design.
+        let non_terminal: Value = serde_json::from_str(
+            call(
+                &engine,
+                &json!({ "name": "task_query", "arguments": { "view": "board", "include_terminal": false, "branch": "feat/delivered" } }),
+            )
+            .unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            non_terminal.as_array().unwrap().is_empty(),
+            "{non_terminal}"
+        );
+
+        // `branch` alone (default `include_terminal: true`) finds exactly the
+        // one task on that branch, terminal or not, and nothing from another
+        // branch or another task entirely.
+        let scoped: Value = serde_json::from_str(
+            call(
+                &engine,
+                &json!({ "name": "task_query", "arguments": { "view": "board", "branch": "feat/delivered" } }),
+            )
+            .unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let scoped_rows = scoped.as_array().unwrap();
+        assert_eq!(scoped_rows.len(), 1, "{scoped_rows:?}");
+        assert_eq!(scoped_rows[0]["id"], delivered.id);
+        let scoped_ids: Vec<&str> = scoped_rows
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect();
+        assert!(!scoped_ids.contains(&other_done.id.as_str()));
+        assert!(!scoped_ids.contains(&live.id.as_str()));
+    }
+
     #[test]
     fn create_task_rejects_malformed_predecessor_and_preserves_legacy_calls() {
         let engine = Lodestar::open_in_memory().unwrap();

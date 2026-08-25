@@ -399,4 +399,57 @@ mod tests {
             "index.html's Agents section must link to the standalone /agents dashboard"
         );
     }
+
+    #[tokio::test]
+    async fn fleet_page_follows_every_timeline_and_knowledge_cursor_in_repository_detail() {
+        let response = fleet_page().await.into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("reading the fleet page body");
+        let body = String::from_utf8(body.to_vec()).expect("fleet page body is valid UTF-8");
+
+        for required in [
+            "async function loadTimelinePages(repositoryId)",
+            "query.set(\"before\", before)",
+            "page.next_before ?? null",
+            "loadTimelinePages(repositoryId)",
+            "async function loadKnowledgePages(repositoryId)",
+            "before_confirmed_at_micros",
+            "before_knowledge_id",
+            "loadKnowledgePages(repositoryId)",
+        ] {
+            assert!(
+                body.contains(required),
+                "index.html must consume every timeline and knowledge keyset page: missing {required}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn fleet_page_follows_every_claim_cursor_in_repository_detail() {
+        let response = fleet_page().await.into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("reading the fleet page body");
+        let body = String::from_utf8(body.to_vec()).expect("fleet page body is valid UTF-8");
+
+        for required in [
+            "async function loadClaimPages(repositoryId, collection)",
+            "while (cursor)",
+            "page.next_after || null",
+            "after_lease_expires_at_micros",
+            "after_task_id",
+            "loadClaimPages(repositoryId,\"claims\")",
+            "loadClaimPages(repositoryId,\"stranded-claims\")",
+        ] {
+            assert!(
+                body.contains(required),
+                "index.html must consume every claim keyset page: missing {required}"
+            );
+        }
+        assert!(
+            !body.contains("one past the first 50 shown"),
+            "Fleet detail must not tell an operator to manually supply a claim hidden by pagination"
+        );
+    }
 }
