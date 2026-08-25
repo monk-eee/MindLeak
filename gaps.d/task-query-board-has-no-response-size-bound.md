@@ -47,3 +47,25 @@
   `refreshEvidence` already fetched. `board()` also still returns a bare array
   rather than an object, so it has no room for a truncation/paging signal the
   way `active_knowledge` gained one; that reshape is unchanged by this fix.
+  **Found and fixed while investigating this fragment (2026-08-25)**: the
+  `include_terminal: false` this fragment's own earlier pass gave
+  `canonical-push.mjs`'s claim gate had a real cost nobody had traced through:
+  `reconciliationOf` (claim-gate.mjs) looks for an already-`done`/`abandoned`
+  task matching the pushed branch, but a task in that state can never appear
+  in a fetch that excludes every terminal task — so a legitimately-delivered
+  branch could never be recognized as a reconciliation and always fell
+  through to "no live Lodestar claim", silently. Existing unit tests for
+  `reconciliationOf` never caught it because they hand-construct `tasks`
+  directly, bypassing the real `include_terminal: false` fetch entirely.
+  Fixed by adding a `branch` filter to `board()` (independent of
+  `include_terminal`, narrows to tasks recorded on exactly that branch, any
+  status) and a new `withReconciliationCandidates(primary, candidates)` merge
+  helper in `claim-gate.mjs`; `canonical-push.mjs` now makes a second, small,
+  branch-scoped fetch specifically for this and merges it in. This is
+  additive progress on the general gap too: a caller that only needs "was
+  THIS branch already delivered" no longer has to choose between missing it
+  (`include_terminal: false`) or paying for the whole terminal history
+  (`include_terminal: true`).
+  Still open: the general reshape (`board()` returning an object with a
+  truncation signal, for the two `detail=true` callers named above) is
+  unchanged.
