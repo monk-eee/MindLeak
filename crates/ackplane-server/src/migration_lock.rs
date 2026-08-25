@@ -104,6 +104,9 @@ pub(crate) mod key {
     pub(crate) const KNOWLEDGE_LIFECYCLE: i64 = 34;
     /// `migrations/0035_knowledge_supersession_and_evidence.sql`
     pub(crate) const KNOWLEDGE_SUPERSESSION_AND_EVIDENCE: i64 = 35;
+    /// `migrations/0037_work_commands.sql`. Key 36 is already allocated by
+    /// the concurrent Knowledge revalidation policy migration.
+    pub(crate) const WORK_COMMANDS: i64 = 37;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and
