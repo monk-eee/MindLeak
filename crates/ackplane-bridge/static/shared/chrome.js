@@ -110,7 +110,7 @@
   function renderBrand(mount) {
     const subtitle = mount.dataset.subtitle || "";
     const subtitleMarkup = subtitle ? `<span class="brand-subtitle">${escapeHtml(subtitle)}</span>` : "";
-    mount.innerHTML = `<span class="mark" aria-hidden="true">ML</span><span class="brand-copy"><span class="brand-name">MindLeak Bridge</span>${subtitleMarkup}</span>`;
+    mount.innerHTML = `<img class="mark" src="/static/shared/mark.png" alt="" width="34" height="34"><span class="brand-copy"><span class="brand-name">MindLeak Bridge</span>${subtitleMarkup}</span>`;
   }
 
   function init() {
