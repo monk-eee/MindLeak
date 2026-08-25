@@ -94,3 +94,21 @@ pub struct ReworkReport {
     /// Worst first, so the reader sees the shape before the total.
     pub repeated_titles: Vec<RepeatedTitle>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn board_ailment_as_str_matches_the_serialized_snake_case_tag() {
+        assert_eq!(BoardAilment::DuplicateTitle.as_str(), "duplicate_title");
+        assert_eq!(
+            BoardAilment::SameTitleAcrossGoals.as_str(),
+            "same_title_across_goals"
+        );
+        assert_eq!(
+            BoardAilment::BlockedWithoutGate.as_str(),
+            "blocked_without_gate"
+        );
+    }
+}
