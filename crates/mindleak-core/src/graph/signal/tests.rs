@@ -783,6 +783,7 @@ fn unrelated_green_execution_does_not_award_consequence() {
 
 #[test]
 fn reopened_legacy_edge_uses_the_new_read_time_policy() {
+    let _serialized = crate::db::serialize_db_test();
     let path = std::env::temp_dir().join(format!(
         "mindleak-policy-reopen-{}-{}.db",
         std::process::id(),
