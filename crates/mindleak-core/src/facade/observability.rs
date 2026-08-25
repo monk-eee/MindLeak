@@ -81,4 +81,101 @@ mod tests {
         assert_eq!(snapshot.recent[0].kind, "maintenance");
         assert_eq!(snapshot.recent[0].outcome, "skipped");
     }
+
+    #[test]
+    fn record_tool_call_reports_ok_and_error_outcomes() {
+        let engine = MindLeak::open_in_memory().unwrap();
+
+        engine.record_tool_call("recall", true, 12, None, None);
+        engine.record_tool_call("recall", false, 7, None, None);
+
+        let snapshot = engine.telemetry_snapshot(2).unwrap();
+        assert_eq!(snapshot.recent[0].kind, "tool_call");
+        assert_eq!(snapshot.recent[0].outcome, "error");
+        assert_eq!(snapshot.recent[1].outcome, "ok");
+    }
+
+    #[test]
+    fn record_tool_call_with_no_agent_id_leaves_detail_untouched() {
+        let engine = MindLeak::open_in_memory().unwrap();
+
+        engine.record_tool_call(
+            "recall",
+            true,
+            5,
+            Some(serde_json::json!({ "query": "resolve_database" })),
+            None,
+        );
+
+        let snapshot = engine.telemetry_snapshot(1).unwrap();
+        assert_eq!(
+            snapshot.recent[0].detail,
+            Some(serde_json::json!({ "query": "resolve_database" }))
+        );
+    }
+
+    #[test]
+    fn record_tool_call_injects_agent_id_into_a_fresh_detail_object_when_none_was_given() {
+        let engine = MindLeak::open_in_memory().unwrap();
+
+        engine.record_tool_call("recall", true, 5, None, Some("agent:v1:abc"));
+
+        let snapshot = engine.telemetry_snapshot(1).unwrap();
+        assert_eq!(
+            snapshot.recent[0].detail,
+            Some(serde_json::json!({ "agent_id": "agent:v1:abc" }))
+        );
+    }
+
+    #[test]
+    fn record_tool_call_merges_agent_id_into_an_existing_detail_object() {
+        let engine = MindLeak::open_in_memory().unwrap();
+
+        engine.record_tool_call(
+            "recall",
+            true,
+            5,
+            Some(serde_json::json!({ "query": "resolve_database" })),
+            Some("agent:v1:abc"),
+        );
+
+        let snapshot = engine.telemetry_snapshot(1).unwrap();
+        assert_eq!(
+            snapshot.recent[0].detail,
+            Some(serde_json::json!({
+                "query": "resolve_database",
+                "agent_id": "agent:v1:abc"
+            }))
+        );
+    }
+
+    /// `record_tool_call`/`record_maintenance` are best-effort: a telemetry
+    /// write failure must be swallowed, never surfaced to the caller.
+    /// Pre-creating an incompatible `telemetry_events` table makes
+    /// `ensure_table`'s `CREATE TABLE IF NOT EXISTS` a no-op and the real
+    /// insert fail for real -- confirmed directly below, so the sabotage
+    /// itself is proven rather than assumed.
+    #[test]
+    fn a_telemetry_write_failure_is_swallowed_rather_than_propagated() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        engine
+            .store
+            .conn
+            .execute_batch("CREATE TABLE telemetry_events (only_column TEXT NOT NULL);")
+            .unwrap();
+
+        let raw_insert = engine.store.conn.execute(
+            "INSERT INTO telemetry_events (ts, kind, name, outcome, duration_ms, detail) \
+             VALUES (1, 'x', 'y', 'z', NULL, NULL)",
+            [],
+        );
+        assert!(
+            raw_insert.is_err(),
+            "the sabotaged schema must make the real insert shape fail"
+        );
+
+        // Both return () and must not panic despite that same failure.
+        engine.record_tool_call("recall", true, 5, None, None);
+        engine.record_maintenance("autonomous_prune", "ok", 1, None);
+    }
 }
