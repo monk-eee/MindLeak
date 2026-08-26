@@ -41,9 +41,12 @@ export function runNpmCi({
   attempts = DEFAULT_ATTEMPTS,
   delayMs = DEFAULT_DELAY_MS,
   run = (args) =>
-    spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", args, {
+    spawnSync("npm", args, {
       encoding: "utf8",
       maxBuffer: 4 * 1024 * 1024,
+      // Node does not directly execute .cmd shims on Windows. Let cmd.exe
+      // resolve npm there; POSIX continues to spawn npm directly.
+      shell: process.platform === "win32",
     }),
   wait = (milliseconds) =>
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds),
@@ -55,6 +58,13 @@ export function runNpmCi({
     const result = run([...npmArgs, "ci"]);
     write(process.stdout, result.stdout);
     write(process.stderr, result.stderr);
+    if (result.error) {
+      write(
+        process.stderr,
+        `npm-ci-retry: could not start npm: ${result.error.message}\n`,
+      );
+      return 1;
+    }
     if (result.status === 0) return 0;
 
     if (attempt === attempts || !isTransientNpmFailure(result)) {

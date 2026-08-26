@@ -67,6 +67,26 @@ test("fails immediately for a deterministic npm error", () => {
   assert.deepEqual(waits, []);
 });
 
+test("reports a process-launch error without retrying", () => {
+  const waits = [];
+  const output = [];
+  const exit = runNpmCi({
+    attempts: 2,
+    run: () => ({
+      status: null,
+      stdout: "",
+      stderr: "",
+      error: new Error("spawn npm ENOENT"),
+    }),
+    wait: (milliseconds) => waits.push(milliseconds),
+    write: (_stream, text) => output.push(text),
+  });
+
+  assert.equal(exit, 1);
+  assert.deepEqual(waits, []);
+  assert.match(output.join(""), /could not start npm: spawn npm ENOENT/);
+});
+
 test("stops after the configured number of transient failures", () => {
   const waits = [];
   const exit = runNpmCi({
