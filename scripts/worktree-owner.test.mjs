@@ -15,6 +15,8 @@ import { fileURLToPath } from "node:url";
 
 import {
   MARKER_NAME,
+  activeClaimRefusal,
+  checkActiveClaimOnBranch,
   checkExistingPullRequests,
   checkWorkingTreeDirty,
   dirtyWorkingTreeWarning,
@@ -376,4 +378,130 @@ test("adopting a worktree with uncommitted changes warns and names the files", (
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// ADR-0130: unlike the PR/dirty-tree checks above, a live Lodestar claim on
+// this exact branch, held by someone else, is treated as an unconditional
+// refusal, because it mirrors what task_claim's own compare-and-swap would
+// already refuse to hand over. `resolveServer`/`callTools` are injected so
+// these never spawn a real Lodestar server.
+
+test("no session identity skips the check entirely, without touching Lodestar", () => {
+  let resolveServerCalled = false;
+  const result = checkActiveClaimOnBranch({
+    branch: "feat/x",
+    session: "",
+    resolveServer: () => {
+      resolveServerCalled = true;
+      return "/fake/lodestar-mcp";
+    },
+  });
+  assert.deepEqual(result, { checked: false, claim: null });
+  assert.equal(
+    resolveServerCalled,
+    false,
+    "no session means nothing to compare an owner against",
+  );
+});
+
+test("no resolvable server degrades to unchecked, not a throw", () => {
+  const result = checkActiveClaimOnBranch({
+    branch: "feat/x",
+    session: "session:v1:adopter",
+    capture: () => "/repo",
+    resolveServer: () => null,
+  });
+  assert.deepEqual(result, { checked: false, claim: null });
+});
+
+test("git failing to resolve the repo root degrades to unchecked", () => {
+  const result = checkActiveClaimOnBranch({
+    branch: "feat/x",
+    session: "session:v1:adopter",
+    capture: () => {
+      throw new Error("not a git repository");
+    },
+  });
+  assert.deepEqual(result, { checked: false, claim: null });
+});
+
+test("the server failing to answer degrades to unchecked, not a throw", () => {
+  const result = checkActiveClaimOnBranch({
+    branch: "feat/x",
+    session: "session:v1:adopter",
+    capture: () => "/repo",
+    resolveServer: () => "/fake/lodestar-mcp",
+    callTools: () => {
+      throw new Error("ECONNRESET");
+    },
+  });
+  assert.deepEqual(result, { checked: false, claim: null });
+});
+
+test("a live claim on the branch, held by someone else, is surfaced", () => {
+  const result = checkActiveClaimOnBranch({
+    branch: "feat/x",
+    session: "session:v1:adopter",
+    now: 1_000_000,
+    capture: () => "/repo",
+    resolveServer: () => "/fake/lodestar-mcp",
+    callTools: () => [
+      {
+        count: 1,
+        tasks: [
+          {
+            id: "task:live",
+            status: "claimed",
+            owner: "session:v1:owner",
+            branch: "feat/x",
+            lease_expires_at: 1_000_600,
+          },
+        ],
+      },
+    ],
+  });
+  assert.equal(result.checked, true);
+  assert.equal(result.claim?.owner, "session:v1:owner");
+});
+
+test("no live claim on the branch reports checked with no claim", () => {
+  const result = checkActiveClaimOnBranch({
+    branch: "feat/x",
+    session: "session:v1:adopter",
+    now: 1_000_000,
+    capture: () => "/repo",
+    resolveServer: () => "/fake/lodestar-mcp",
+    callTools: () => [{ count: 0, tasks: [] }],
+  });
+  assert.deepEqual(result, { checked: true, claim: null });
+});
+
+test("no warning is raised when Lodestar is reachable and finds nothing", () => {
+  const warning = activeClaimRefusal({
+    branch: "feat/x",
+    checked: true,
+    claim: null,
+  });
+  assert.equal(warning, null);
+});
+
+test("a live claim held by another session names the owner, task, and override flag", () => {
+  const warning = activeClaimRefusal({
+    branch: "feat/x",
+    checked: true,
+    claim: { id: "task:live", owner: "session:v1:owner" },
+  });
+  assert.match(warning, /feat\/x/);
+  assert.match(warning, /session:v1:owner/);
+  assert.match(warning, /task:live/);
+  assert.match(warning, /--override-active-claim/);
+});
+
+test("an unchecked result still warns, naming the fallback", () => {
+  const warning = activeClaimRefusal({
+    branch: "feat/x",
+    checked: false,
+    claim: null,
+  });
+  assert.match(warning, /could not check Lodestar/);
 });
