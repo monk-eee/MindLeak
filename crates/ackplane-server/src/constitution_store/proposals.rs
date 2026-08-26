@@ -51,9 +51,16 @@ pub struct ConstitutionProposal {
 impl ConstitutionStore {
     /// Decisions 1/3: record a suggested clause change. A byte-identical
     /// retry for the same `(tenant_id, repository_id, proposal_id)`
-    /// succeeds idempotently; any other content under the same identity is
-    /// refused rather than silently overwritten -- the same immutability
-    /// contract `record_publication` already holds, one layer lighter.
+    /// succeeds idempotently -- but only while that identity is still
+    /// `proposed`; any other content under the same identity is refused
+    /// rather than silently overwritten, the same immutability contract
+    /// `record_publication` already holds, one layer lighter. Once a
+    /// proposal has been withdrawn (decision 3's own only mutation), that
+    /// identity is terminal: `withdraw_proposal` is the sole writer of
+    /// `status`, and nothing here reverses it, byte-identical or not --
+    /// `Ok(())` from this method is therefore always a true guarantee that
+    /// the durable status is `proposed`, so a caller never has to re-read to
+    /// know it.
     pub async fn propose_clause(
         &mut self,
         request: ProposeConstitutionClauseRequest,
@@ -68,7 +75,7 @@ impl ConstitutionStore {
         let transaction = self.client.transaction().await?;
         let existing = transaction
             .query_opt(
-                "SELECT kind, slug, title, statement, consequence, scope, rationale, author \
+                "SELECT kind, slug, title, statement, consequence, scope, rationale, author, status \
                  FROM constitution_proposals \
                  WHERE tenant_id = $1 AND repository_id = $2 AND proposal_id = $3",
                 &[
@@ -79,6 +86,13 @@ impl ConstitutionStore {
             )
             .await?;
         if let Some(row) = existing {
+            let status: String = row.get(8);
+            if status != "proposed" {
+                transaction.commit().await?;
+                return Err(ConstitutionStoreError::ProposalWithdrawn {
+                    proposal_id: request.proposal_id.clone(),
+                });
+            }
             let matches = row.get::<_, String>(0) == request.kind
                 && row.get::<_, String>(1) == request.slug
                 && row.get::<_, String>(2) == request.title
@@ -356,6 +370,48 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(proposals[0].status, "withdrawn");
+    }
+
+    /// Regression for the confirmed defect: replaying a withdrawn proposal
+    /// used to succeed with `Ok(())` (the request still byte-matched the
+    /// stored content) even though `status` durably stayed `withdrawn` --
+    /// the Bridge handler then reported `status: "proposed"` from that
+    /// `Ok(())` alone, contradicting `list_proposals`. `propose_clause` must
+    /// now refuse the replay outright: withdrawal is this identity's one
+    /// terminal mutation (decision 3), so re-proposing under the same id is
+    /// rejected rather than silently reviving it, and the durable status
+    /// must stay `withdrawn`.
+    #[tokio::test]
+    async fn replaying_a_withdrawn_proposal_is_refused_and_status_stays_withdrawn() {
+        let Some(mut store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, repository_id) = unique_scope("proposal-replay-withdrawn");
+        let request = proposal_request(&tenant_id, &repository_id, "proposal-1", "bridge-ui");
+        store.propose_clause(request.clone()).await.unwrap();
+        assert!(store
+            .withdraw_proposal(&tenant_id, &repository_id, "proposal-1", "bridge-ui")
+            .await
+            .unwrap());
+
+        let error = store
+            .propose_clause(request)
+            .await
+            .expect_err("a withdrawn proposal must refuse re-proposal under the same identity");
+        assert!(matches!(
+            error,
+            ConstitutionStoreError::ProposalWithdrawn { proposal_id } if proposal_id == "proposal-1"
+        ));
+
+        let proposals = store
+            .list_proposals(&tenant_id, &repository_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            proposals[0].status, "withdrawn",
+            "the refused replay must not resurrect the proposal"
+        );
     }
 
     #[tokio::test]

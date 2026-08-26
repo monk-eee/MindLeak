@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
 
+import type { SessionContext } from "./mcpClient";
+import { belongsToWorktree } from "./repositoryWorktrees";
 import type { SensorClient } from "./terminalSensor";
 import { repoRelativePath } from "./util";
 
@@ -17,10 +19,26 @@ interface GitChange {
   uri: vscode.Uri;
 }
 
+interface GitUpstream {
+  remote: string;
+  name: string;
+}
+
+interface GitBranch {
+  commit?: string;
+  name?: string;
+  upstream?: GitUpstream;
+  behind?: number;
+}
+
 interface GitRepository {
   rootUri: vscode.Uri;
   state: {
-    HEAD?: { commit?: string; name?: string };
+    HEAD?: GitBranch;
+    workingTreeChanges?: GitChange[];
+    indexChanges?: GitChange[];
+    mergeChanges?: GitChange[];
+    untrackedChanges?: GitChange[];
     onDidChange: vscode.Event<void>;
   };
   onDidCommit: vscode.Event<void>;
@@ -45,6 +63,91 @@ interface ObservedHead {
   branch?: string;
 }
 
+/** Activate VS Code's built-in Git extension and return its API, or `undefined` when the extension is missing or disabled — shared by commit capture and context declaration so neither guesses at a fallback. */
+async function activateGitApi(): Promise<GitApi | undefined> {
+  const extension = vscode.extensions.getExtension<GitExtension>("vscode.git");
+  if (!extension) {
+    return undefined;
+  }
+  const git = await extension.activate();
+  if (!git.enabled) {
+    return undefined;
+  }
+  return git.getAPI(1);
+}
+
+/**
+ * The repository that owns `workspace`, preferring the most specific root so
+ * a multi-root workspace picks the repository actually containing it rather
+ * than an unrelated sibling repository the same API call also reports.
+ */
+function repositoryFor(
+  repositories: readonly GitRepository[],
+  workspace: string
+): GitRepository | undefined {
+  let best: GitRepository | undefined;
+  let bestRootLength = -1;
+  for (const repository of repositories) {
+    const root = repository.rootUri.fsPath;
+    if (belongsToWorktree(workspace, [root]) && root.length > bestRootLength) {
+      best = repository;
+      bestRootLength = root.length;
+    }
+  }
+  return best;
+}
+
+function isDirty(state: GitRepository["state"]): boolean {
+  return (
+    (state.workingTreeChanges?.length ?? 0) > 0 ||
+    (state.indexChanges?.length ?? 0) > 0 ||
+    (state.mergeChanges?.length ?? 0) > 0 ||
+    (state.untrackedChanges?.length ?? 0) > 0
+  );
+}
+
+function contextFromRepository(repository: GitRepository): SessionContext | undefined {
+  const head = repository.state.HEAD;
+  if (!head?.commit) {
+    // No commit yet (an empty repository) leaves nothing reliable to declare.
+    return undefined;
+  }
+  const context: SessionContext = {
+    head_sha: head.commit,
+    dirty: isDirty(repository.state),
+  };
+  if (head.name) {
+    context.branch = head.name;
+  }
+  // `base`/`behind` are only ever set from a tracked upstream VS Code itself
+  // resolved; without one, guessing a base would violate ADR-0044.
+  if (head.upstream) {
+    context.base = `${head.upstream.remote}/${head.upstream.name}`;
+    if (typeof head.behind === "number") {
+      context.behind = head.behind;
+    }
+  }
+  return context;
+}
+
+/**
+ * Read the current branch/head/dirty/base/behind for the Git repository that
+ * owns `workspace`, straight from VS Code's built-in Git extension. Stateless
+ * and safe to call at any time (initial `open_session` declaration and every
+ * later refresh): it always reports live state rather than a cached one.
+ * Returns `undefined` when the extension is unavailable, disabled, or no
+ * repository owns the workspace — the caller then declares no context rather
+ * than a guessed one.
+ */
+export async function currentGitContext(workspace: string): Promise<SessionContext | undefined> {
+  const api = await activateGitApi();
+  if (!api) {
+    return undefined;
+  }
+  const repository = repositoryFor(api.repositories, workspace);
+  return repository ? contextFromRepository(repository) : undefined;
+}
+
 /** Ingests commits reported by VS Code's built-in Git extension. */
 export class GitSensor implements vscode.Disposable {
   private readonly subscriptions: vscode.Disposable[] = [];
@@ -57,7 +160,8 @@ export class GitSensor implements vscode.Disposable {
     private readonly client: SensorClient,
     private readonly enabled: () => boolean,
     private readonly log: (message: string) => void,
-    private readonly health: (status: string) => void
+    private readonly health: (status: string) => void,
+    private readonly onContextChange?: () => void
   ) {}
 
   async start(): Promise<void> {
@@ -110,10 +214,20 @@ export class GitSensor implements vscode.Disposable {
     }
     this.repositories.set(key, [
       repository.onDidCommit(() => void this.captureHead(repository, true)),
-      repository.onDidCheckout(() => this.rememberHead(repository)),
-      repository.state.onDidChange(() => void this.captureHead(repository, false)),
+      repository.onDidCheckout(() => {
+        this.rememberHead(repository);
+        this.onContextChange?.();
+      }),
+      repository.state.onDidChange(() => {
+        void this.captureHead(repository, false);
+        this.onContextChange?.();
+      }),
     ]);
     this.updateHealth();
+    // The repository's branch/HEAD/dirty state is newly available (or a
+    // previously attached one changed shape); declare it once immediately
+    // rather than waiting for the next state event.
+    this.onContextChange?.();
   }
 
   private detach(repository: GitRepository): void {

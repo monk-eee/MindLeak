@@ -683,6 +683,112 @@ pub(super) mod tests {
         assert_eq!(entry.last_reconfirmed_by.as_deref(), Some("node:reviewer"));
     }
 
+    /// Regression for the confirmed defect where `reconfirm`'s atomic
+    /// `UPDATE` guarded only on `retired_at IS NULL`: `Superseded` leaves
+    /// `retired_at` NULL by design (ADR-0113 decision 1), so a statement that
+    /// had already been explicitly replaced could still silently acquire a
+    /// fresh `confirmed_at` and an audit row. record -> activate -> supersede
+    /// -> reconfirm must now return `None` and leave both the clock and the
+    /// audit chain untouched.
+    #[tokio::test]
+    async fn reconfirm_refuses_a_superseded_statement_and_leaves_its_clock_and_audit_chain_untouched(
+    ) {
+        let Some(store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, repository_id) = unique_scope("reconfirm-superseded");
+        let recorded = store
+            .record(RecordKnowledgeRequest {
+                tenant_id: tenant_id.clone(),
+                repository_id: repository_id.clone(),
+                content: "the guidance about to be replaced".to_string(),
+                source_ref: None,
+                recorded_by: None,
+                reach_node_ids: Vec::new(),
+                reach_goal_id: None,
+                half_life_hours: 24.0,
+                embedding: None,
+            })
+            .await
+            .unwrap();
+        store
+            .activate(
+                &tenant_id,
+                &repository_id,
+                &recorded.knowledge_id,
+                "human:reviewer-1",
+                None,
+                SystemTime::now(),
+            )
+            .await
+            .unwrap();
+        let confirmed_at_before_supersede = store
+            .history(&tenant_id, &repository_id, 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.knowledge_id == recorded.knowledge_id)
+            .unwrap()
+            .confirmed_at;
+
+        store
+            .supersede(
+                SupersedeKnowledgeRequest {
+                    tenant_id: tenant_id.clone(),
+                    repository_id: repository_id.clone(),
+                    knowledge_id: recorded.knowledge_id.clone(),
+                    new_content: "the corrected guidance".to_string(),
+                    new_source_ref: None,
+                    new_recorded_by: None,
+                    new_reach_node_ids: Vec::new(),
+                    new_reach_goal_id: None,
+                    new_half_life_hours: 24.0,
+                    authorized_by: "human:reviewer-1".to_string(),
+                    reason: "the replacement corrects stale guidance".to_string(),
+                },
+                SystemTime::now(),
+            )
+            .await
+            .unwrap();
+
+        let attempt = store
+            .reconfirm(
+                &tenant_id,
+                &repository_id,
+                &recorded.knowledge_id,
+                "evidence:seen-again",
+                "node:reviewer",
+                SystemTime::now(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            attempt, None,
+            "a superseded statement must not be reconfirmable"
+        );
+
+        let history = store.history(&tenant_id, &repository_id, 10).await.unwrap();
+        let superseded_entry = history
+            .iter()
+            .find(|entry| entry.knowledge_id == recorded.knowledge_id)
+            .unwrap();
+        assert_eq!(
+            superseded_entry.lifecycle_state,
+            KnowledgeLifecycleState::Superseded
+        );
+        assert_eq!(
+            superseded_entry.confirmed_at, confirmed_at_before_supersede,
+            "the refused reconfirmation must not refresh confirmed_at"
+        );
+        assert_eq!(
+            superseded_entry.last_reconfirmed_at, None,
+            "the refused reconfirmation must not leave an audit row"
+        );
+        assert_eq!(superseded_entry.last_reconfirmed_by, None);
+        assert_eq!(superseded_entry.last_reconfirmation_evidence_ref, None);
+    }
+
     #[tokio::test]
     async fn recall_ranks_by_pgvector_similarity_when_an_embedding_is_supplied() {
         let Some(store) = store().await else {

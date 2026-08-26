@@ -103,6 +103,28 @@ export const liveClaims = (tasks, agent, now) =>
   );
 
 /**
+ * Find a live claim on `branch` held by a session other than `agent`, or
+ * `null` if none exists (ADR-0130).
+ *
+ * The mirror image of `liveClaims`: that answers "is my own claim still
+ * alive", this answers "does someone else's claim already cover this
+ * branch". `task_claim`'s own compare-and-swap already treats exactly this
+ * condition — claimed, unexpired, a different owner — as an unconditional
+ * loss; this exists so a git-layer operation (adopting a worktree) can
+ * refuse to silently hand over what the Lodestar-layer operation would
+ * already have refused to hand over through the front door.
+ */
+export const liveClaimHeldByAnother = (tasks, branch, agent, now) =>
+  (tasks ?? []).find(
+    (task) =>
+      task.branch === branch &&
+      task.status === "claimed" &&
+      typeof task.lease_expires_at === "number" &&
+      task.lease_expires_at > now &&
+      !sameSession(task.owner, agent),
+  ) ?? null;
+
+/**
  * Commits that landed before any held claim could possibly cover them
  * (gaps.d/commit-then-claim-puts-evidence-before-its-claim.md).
  *
