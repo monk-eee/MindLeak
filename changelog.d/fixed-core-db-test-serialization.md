@@ -1,0 +1,1 @@
+- `mindleak-core`'s file-backed database tests now serialize against each other, removing the disk contention that intermittently failed five of them at once in CI with `Busy("migrating the schema was still locked...")`.
