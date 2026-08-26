@@ -11,8 +11,12 @@ use crate::migration_lock;
 
 const MIGRATION: &str = include_str!("../../migrations/0037_work_commands.sql");
 const WORK_MIGRATION: &str = include_str!("../../migrations/0028_work.sql");
+const EXECUTION_MIGRATION: &str =
+    include_str!("../../migrations/0039_work_task_command_execution.sql");
 
+mod execute;
 mod model;
+mod payload;
 mod service;
 mod write;
 
@@ -38,6 +42,12 @@ impl WorkCommandStore {
             .await?;
         migration_lock::migrate_locked(&mut client, migration_lock::key::WORK_COMMANDS, MIGRATION)
             .await?;
+        migration_lock::migrate_locked(
+            &mut client,
+            migration_lock::key::WORK_TASK_COMMAND_EXECUTION,
+            EXECUTION_MIGRATION,
+        )
+        .await?;
         Ok(Self { client })
     }
 }

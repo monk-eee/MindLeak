@@ -136,6 +136,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0126](0126-the-bridge-proposes-constitution-amendments-only-a.md) | The Bridge proposes constitution amendments; only a repository activates them | Accepted |
 | [0127](0127-agent-issued-shell-commands-are-auditable-evidence.md) | Agent-issued shell commands are auditable evidence, not just prose discipline | Accepted |
 | [0130](0130-adopt-worktree-consults-a-live-claim.md) | Adopting a worktree refuses a claim it would not be handed | Accepted |
+| [0132](0132-a-bind-address-is-not-a-reachable-interface.md) | A bind address is not a reachable interface | Accepted |
 
 ## Writing a new ADR
 

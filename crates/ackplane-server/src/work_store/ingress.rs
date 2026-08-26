@@ -33,8 +33,8 @@ impl WorkStore {
             .query_opt(
                 "INSERT INTO work_tasks (tenant_id, repository_id, task_id, title, acceptance, \
                     goal_id, state, declared_paths, declared_symbols, source_digest, \
-                    published_by, created_at, updated_at) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12) \
+                    published_by, version, created_at, updated_at) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12,$12) \
                  ON CONFLICT (tenant_id, repository_id, task_id) DO NOTHING \
                  RETURNING *",
                 &[

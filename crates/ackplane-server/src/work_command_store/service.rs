@@ -12,6 +12,7 @@ use super::{
         NewWorkCommand, NewWorkCommandReceipt, WorkCommand, WorkCommandKind, WorkCommandOutcome,
         WorkCommandReceipt, WorkCommandStoreError,
     },
+    payload::WorkCommandPayload,
     WorkCommandStore,
 };
 
@@ -63,6 +64,16 @@ pub(super) enum WorkCommandServiceOutcome {
         receipt: Box<WorkCommandReceipt>,
         idempotent_replay: bool,
     },
+    /// The confirm step ran (ADR-0125 decision 8); `receipt.outcome` carries
+    /// the actual result -- `Applied`, `Conflicted`, or `Refused` -- and
+    /// `idempotent_replay` is set when this exact confirmation already ran.
+    Executed {
+        command: Box<WorkCommand>,
+        receipt: Box<WorkCommandReceipt>,
+        idempotent_replay: bool,
+    },
+    /// No command with this id exists in this tenant and repository.
+    CommandNotFound,
 }
 
 #[derive(Debug, Error)]
@@ -132,6 +143,58 @@ impl WorkCommandService {
             command: Box::new(command.command),
             receipt: Box::new(receipt.receipt),
             idempotent_replay: command.idempotent_replay && receipt.idempotent_replay,
+        })
+    }
+
+    /// Confirms and executes an already-recorded command's server-owned
+    /// effect (ADR-0125 decision 8). The confirming principal must be the
+    /// same one that issued the command; the payload must be the exact
+    /// content the command's digest was fixed against at submission.
+    pub(super) async fn confirm(
+        &mut self,
+        authorization: WorkCommandAuthorization,
+        tenant_id: &str,
+        repository_id: &str,
+        command_id: &str,
+        payload: WorkCommandPayload,
+        now: SystemTime,
+    ) -> Result<WorkCommandServiceOutcome, WorkCommandServiceError> {
+        let principal = match authorization {
+            WorkCommandAuthorization::LoopbackDevelopment => {
+                return Ok(WorkCommandServiceOutcome::AuthorizationUnavailable {
+                    reason: AUTHORIZATION_UNAVAILABLE_REASON,
+                });
+            }
+            WorkCommandAuthorization::MissingPrincipal => {
+                return Ok(WorkCommandServiceOutcome::Refused {
+                    reason: WorkCommandRefusal::MissingPrincipal,
+                });
+            }
+            WorkCommandAuthorization::Verified(principal) => principal,
+        };
+        let Some(command) = self
+            .store
+            .find_command(tenant_id, repository_id, command_id)
+            .await?
+        else {
+            return Ok(WorkCommandServiceOutcome::CommandNotFound);
+        };
+        if principal.principal_id != command.issuing_principal_id
+            || principal.tenant_id != command.tenant_id
+            || !principal.repository_ids.contains(&command.repository_id)
+        {
+            return Ok(WorkCommandServiceOutcome::Refused {
+                reason: WorkCommandRefusal::ForgedPrincipal,
+            });
+        }
+        let outcome = self
+            .store
+            .execute_confirmed(&command, &payload, now)
+            .await?;
+        Ok(WorkCommandServiceOutcome::Executed {
+            command: Box::new(command),
+            receipt: Box::new(outcome.receipt),
+            idempotent_replay: outcome.idempotent_replay,
         })
     }
 }
