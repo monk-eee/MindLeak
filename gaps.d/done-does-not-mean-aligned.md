@@ -34,3 +34,15 @@
   shipped, not that conformance affirmed it, and a human can still resolve a
   non-aligned receipt for a good reason. Dashboards and agents should read
   `done_verdicts` rather than treating `done_tasks` as a proxy for correctness.
+
+  RE-MEASURED 2026-08-26 via `lodestar_stats` directly (no manual audit
+  needed, confirming the 2026-08-19 tooling fix still holds): of 803 `done`
+  tasks, 485 `aligned` (60.4%), 240 `needs_human` (29.9%), 78 `drift` (9.7%) —
+  up from 47.6% `aligned` on 2026-08-01 across roughly 2.4x as many done
+  tasks. The ratio has moved in the direction this fragment asks dashboards to
+  watch for, not away from it. This is not automated affirmation and does not
+  change the underlying fact the fragment records: a human resolving a
+  non-aligned receipt is still an auditable decision, never a claim that
+  conformance aligned, and no code change accompanies this entry — it is a
+  data point, recorded so the next reader does not have to re-run the query
+  to know whether the trend is improving or eroding.

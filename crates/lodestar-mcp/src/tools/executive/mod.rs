@@ -16,7 +16,7 @@ mod tasks;
 
 use super::{
     bool_arg, i64_arg, ok, one_of, opt_str, optional_string_arg, renamed, rendered, req_str,
-    required_for, str_array, text, Renamed,
+    required_for, str_array, text, Renamed, DEFAULT_LEASE_SECS,
 };
 pub(super) use claim::attach_owner_attention;
 use claim::claim;
@@ -156,7 +156,11 @@ pub(super) fn dispatch(
                 "renew" => {
                     let agent = opt_str(args, "agent").unwrap_or_default();
                     let renewed = engine
-                        .renew_lease(task_id, agent.as_str(), i64_arg(args, "lease_secs", 300))
+                        .renew_lease(
+                            task_id,
+                            agent.as_str(),
+                            i64_arg(args, "lease_secs", DEFAULT_LEASE_SECS),
+                        )
                         .map_err(|e| e.to_string())?;
                     let mut response = json!({ "renewed": renewed });
                     // Reconnection asks about the SAME live claim renew just
@@ -199,7 +203,7 @@ pub(super) fn dispatch(
                             ),
                             &required_for(args, "reason", "recover", "why ownership moved.")?,
                             opt_str(args, "human").as_deref(),
-                            i64_arg(args, "lease_secs", 300),
+                            i64_arg(args, "lease_secs", DEFAULT_LEASE_SECS),
                         )
                         .map_err(|e| e.to_string())?;
                     ok(&json!({ "recovered": recovered }))
@@ -359,7 +363,7 @@ pub(super) fn dispatch(
                         .resume_task(
                             task_id,
                             opt_str(args, "agent").unwrap_or_default().as_str(),
-                            i64_arg(args, "lease_secs", 300),
+                            i64_arg(args, "lease_secs", DEFAULT_LEASE_SECS),
                         )
                         .map_err(|e| e.to_string())?;
                     ok(&json!({ "resumed": resumed }))
@@ -388,7 +392,7 @@ pub(super) fn dispatch(
                             opt_str(args, "author")
                                 .unwrap_or_else(|| "human".to_string())
                                 .as_str(),
-                            i64_arg(args, "lease_secs", 300),
+                            i64_arg(args, "lease_secs", DEFAULT_LEASE_SECS),
                         )
                         .map_err(|e| e.to_string())?;
                     ok(&json!({ "answered": answered }))
@@ -2143,6 +2147,62 @@ mod tests {
             serde_json::from_str(lost["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(lost_body["won"], false);
         assert!(lost_body.get("claim_started_at").is_none());
+    }
+
+    /// BUG: a claim taken with no explicit `lease_secs` lapsed after 300
+    /// seconds, and the ADR-0052 heartbeat only renews on five narrow
+    /// Lodestar-side calls (task_query view=scope, ask/answer, conformance
+    /// checks) — none of which fire while an agent edits files or runs a
+    /// build between them. A realistic edit/build/test cycle routinely
+    /// outran the old default with no heartbeat in sight, which is exactly
+    /// the shape measured in AGENTS.md (27 lapses across 24 tasks) and in
+    /// gaps.d/rescuing-a-lapsed-lease-can-duplicate-a-published-pr.md, where
+    /// a lapsed-but-finished task's already-published PR was duplicated by a
+    /// rescuer reading the lapse as abandonment.
+    ///
+    /// Impact: a claim silently expiring mid-task, inviting a second agent to
+    /// treat live work as abandoned and duplicate it.
+    ///
+    /// Fix (ADR-0052 amendment, 2026-08-26): `DEFAULT_LEASE_SECS` moved from
+    /// 300 to 1800, applied to every default in `task_claim`. This asserts
+    /// the omitted-`lease_secs` claim opens a window that survives 25 minutes
+    /// (1500s) of silent work with no renewal — which fails against the old
+    /// 300-second default and passes against the fix.
+    #[test]
+    fn an_unspecified_lease_survives_a_realistic_silent_work_window() {
+        let engine = Lodestar::open_in_memory().unwrap();
+        let goal = engine
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = engine.create_task(&goal.id, "Work", "done").unwrap();
+
+        let claimed = call(
+            &engine,
+            &json!({
+                "name": "task_claim",
+                "arguments": { "task_id": task.id, "step": "claim", "agent": "agent-a" }
+            }),
+        )
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(claimed["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["won"], true);
+
+        let started = body["claim_started_at"].as_i64().unwrap();
+        let expires = body["lease_expires_at"].as_i64().unwrap();
+        assert_eq!(
+            expires - started,
+            1800,
+            "the default lease must outlast a realistic edit/build/test cycle, \
+             not the 300s an activity-only heartbeat could not keep up with"
+        );
+
+        const SILENT_WORK_SECS: i64 = 25 * 60;
+        assert!(
+            expires > started + SILENT_WORK_SECS,
+            "25 minutes of editing/building/testing with no Lodestar call in \
+             between must not lapse the lease agent-a is still working under"
+        );
     }
 
     // ADR-0046: an addressed question is a durable row a peer must ask for, so

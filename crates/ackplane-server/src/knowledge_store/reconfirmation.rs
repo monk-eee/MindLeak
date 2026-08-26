@@ -1,6 +1,6 @@
 use std::time::SystemTime;
 
-use super::{KnowledgeStore, KnowledgeStoreError};
+use super::{KnowledgeLifecycleState, KnowledgeStore, KnowledgeStoreError};
 
 /// One durable corroboration that refreshed a knowledge statement's decay
 /// clock. The latest entry is exposed on recall/history; this record keeps the
@@ -14,10 +14,15 @@ pub struct KnowledgeReconfirmation {
 }
 
 impl KnowledgeStore {
-    /// Reconfirms an active statement with fresh corroborating evidence. The
-    /// `WITH` statement updates its clock and inserts the audit event as one
-    /// atomic operation, so a retired or missing statement cannot acquire a
-    /// reconfirmation record through an interleaving write.
+    /// Reconfirms a still-authoritative statement (`Candidate` or `Active`,
+    /// per ADR-0113 decision 1's closed lifecycle vocabulary) with fresh
+    /// corroborating evidence. The `WITH` statement updates its clock and
+    /// inserts the audit event as one atomic operation, so a retired,
+    /// superseded, or missing statement cannot acquire a reconfirmation
+    /// record through an interleaving write. The state predicate deliberately
+    /// enumerates `Candidate` and `Active`: `Superseded` leaves `retired_at`
+    /// NULL, but has been explicitly replaced and cannot pass the authority
+    /// guard.
     pub async fn reconfirm(
         &self,
         tenant_id: &str,
@@ -39,7 +44,7 @@ impl KnowledgeStore {
                     UPDATE knowledge \
                        SET confirmed_at = $6 \
                      WHERE tenant_id = $1 AND repository_id = $2 AND knowledge_id = $3 \
-                       AND retired_at IS NULL \
+                       AND retired_at IS NULL AND lifecycle_state IN ($8, $9) \
                  RETURNING knowledge_id \
                  ) \
                  INSERT INTO knowledge_reconfirmations \
@@ -54,6 +59,8 @@ impl KnowledgeStore {
                     &evidence_ref,
                     &now,
                     &reconfirmed_by,
+                    &(KnowledgeLifecycleState::Candidate as i16),
+                    &(KnowledgeLifecycleState::Active as i16),
                 ],
             )
             .await?;

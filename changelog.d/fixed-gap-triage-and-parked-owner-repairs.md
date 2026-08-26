@@ -1,0 +1,2 @@
+- **Gap triage now counts only explicit, nonterminal Lodestar tracking tasks.** A historical `task:` id in incident prose no longer hides an unowned gap; `Tracking: task:<12-hex>` metadata is verified against the live task board.
+- **Session-identity repair no longer rewrites the owner of paused or needs-input tasks.** A parked task remains resumable by the owner that created its evidence window.
