@@ -92,59 +92,90 @@ impl WorkCommandStore {
         receipt: &NewWorkCommandReceipt,
         now: SystemTime,
     ) -> Result<WorkCommandReceiptWriteOutcome, WorkCommandStoreError> {
-        validate_receipt(receipt, now)?;
-        let digest = receipt_digest(receipt)?;
         let transaction = self.client.transaction().await?;
-        ensure_command_exists(&transaction, receipt).await?;
-
-        if let Some(existing) = existing_by_receipt_id(&transaction, receipt).await? {
-            let outcome = replay_receipt_or_conflict(existing, &digest)?;
-            transaction.commit().await?;
-            return Ok(outcome);
-        }
-        if let Some(existing) = existing_by_receipt_digest(&transaction, receipt, &digest).await? {
-            let outcome = replay_receipt_or_conflict(existing, &digest)?;
-            transaction.commit().await?;
-            return Ok(outcome);
-        }
-
-        let inserted = transaction
-            .query_opt(
-                "INSERT INTO work_command_receipts (tenant_id, repository_id, command_id, receipt_id, \
-                     outcome, reason, evidence_refs, receipt_digest, occurred_at, recorded_at) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) \
-                 ON CONFLICT DO NOTHING RETURNING *",
-                &[
-                    &receipt.tenant_id,
-                    &receipt.repository_id,
-                    &receipt.command_id,
-                    &receipt.receipt_id,
-                    &receipt.outcome.as_i16(),
-                    &receipt.reason,
-                    &receipt.evidence_refs,
-                    &digest,
-                    &receipt.occurred_at,
-                    &now,
-                ],
-            )
-            .await?;
-        let (receipt, idempotent_replay) = match inserted {
-            Some(row) => (receipt_from_row(&row)?, false),
-            None => {
-                let receipt = existing_by_receipt_id(&transaction, receipt)
-                    .await?
-                    .or(existing_by_receipt_digest(&transaction, receipt, &digest).await?)
-                    .ok_or(WorkCommandStoreError::ReceiptConflict)?;
-                let outcome = replay_receipt_or_conflict(receipt, &digest)?;
-                (outcome.receipt, true)
-            }
-        };
+        let outcome = append_receipt_in_transaction(&transaction, receipt, now).await?;
         transaction.commit().await?;
-        Ok(WorkCommandReceiptWriteOutcome {
-            receipt,
-            idempotent_replay,
-        })
+        Ok(outcome)
     }
+
+    /// Looks up an already-recorded command by its assigned id, for the
+    /// confirm step (ADR-0125 decision 8): the command's own immutable
+    /// `payload_digest`/`expires_at`/`expected_task_version` ARE the preview
+    /// being confirmed, so nothing is re-derived here.
+    pub(in crate::work_command_store) async fn find_command(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        command_id: &str,
+    ) -> Result<Option<WorkCommand>, WorkCommandStoreError> {
+        self.client
+            .query_opt(
+                "SELECT * FROM work_commands WHERE tenant_id = $1 AND repository_id = $2 \
+                 AND command_id = $3",
+                &[&tenant_id, &repository_id, &command_id],
+            )
+            .await?
+            .map(|row| command_from_row(&row))
+            .transpose()
+    }
+}
+
+/// The guts of [`WorkCommandStore::record_receipt`], scoped to an
+/// already-open transaction rather than opening/committing its own. A
+/// server-owned command effect (`work_command_store::execute`) appends its
+/// receipt through this exact path so the domain mutation and the receipt
+/// commit or roll back together (ADR-0125 decisions 5-6's "one transaction").
+pub(in crate::work_command_store) async fn append_receipt_in_transaction(
+    transaction: &Transaction<'_>,
+    receipt: &NewWorkCommandReceipt,
+    now: SystemTime,
+) -> Result<WorkCommandReceiptWriteOutcome, WorkCommandStoreError> {
+    validate_receipt(receipt, now)?;
+    let digest = receipt_digest(receipt)?;
+    ensure_command_exists(transaction, receipt).await?;
+
+    if let Some(existing) = existing_by_receipt_id(transaction, receipt).await? {
+        return replay_receipt_or_conflict(existing, &digest);
+    }
+    if let Some(existing) = existing_by_receipt_digest(transaction, receipt, &digest).await? {
+        return replay_receipt_or_conflict(existing, &digest);
+    }
+
+    let inserted = transaction
+        .query_opt(
+            "INSERT INTO work_command_receipts (tenant_id, repository_id, command_id, receipt_id, \
+                 outcome, reason, evidence_refs, receipt_digest, occurred_at, recorded_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) \
+             ON CONFLICT DO NOTHING RETURNING *",
+            &[
+                &receipt.tenant_id,
+                &receipt.repository_id,
+                &receipt.command_id,
+                &receipt.receipt_id,
+                &receipt.outcome.as_i16(),
+                &receipt.reason,
+                &receipt.evidence_refs,
+                &digest,
+                &receipt.occurred_at,
+                &now,
+            ],
+        )
+        .await?;
+    let (receipt, idempotent_replay) = match inserted {
+        Some(row) => (receipt_from_row(&row)?, false),
+        None => {
+            let existing = existing_by_receipt_id(transaction, receipt)
+                .await?
+                .or(existing_by_receipt_digest(transaction, receipt, &digest).await?)
+                .ok_or(WorkCommandStoreError::ReceiptConflict)?;
+            let outcome = replay_receipt_or_conflict(existing, &digest)?;
+            (outcome.receipt, true)
+        }
+    };
+    Ok(WorkCommandReceiptWriteOutcome {
+        receipt,
+        idempotent_replay,
+    })
 }
 
 async fn existing_by_command_id(
