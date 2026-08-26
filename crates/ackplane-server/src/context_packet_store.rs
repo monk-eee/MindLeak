@@ -549,6 +549,11 @@ mod tests {
         store.store_packet(&packet).await.unwrap();
 
         packet.compiler_version = "v2-mutated".to_string();
+        // Re-seal valid changed content so storage, rather than packet validation,
+        // rejects the attempted overwrite.
+        let packet = packet
+            .seal()
+            .expect("the deliberately changed packet remains structurally valid");
         let error = store.store_packet(&packet).await.unwrap_err();
         assert!(matches!(
             error,
