@@ -22,6 +22,8 @@ use tokio_postgres::Client;
 
 const WORK_MIGRATION: &str = include_str!("../../migrations/0028_work.sql");
 const CLAIM_MIGRATION: &str = include_str!("../../migrations/0005_claim_delegation.sql");
+const WORK_TASK_COMMAND_EXECUTION_MIGRATION: &str =
+    include_str!("../../migrations/0039_work_task_command_execution.sql");
 
 /// ADR-0120 decision 3's eight lifecycle states, in the order the decision
 /// text lists them.
@@ -214,6 +216,15 @@ impl WorkStore {
             &mut client,
             crate::migration_lock::key::WORK,
             WORK_MIGRATION,
+        )
+        .await?;
+        // Every WorkStore query now materializes the versioned task projection.
+        // Apply the same schema evolution as WorkCommandStore before a Bridge
+        // read or Node creation reaches `work_tasks.version`.
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::WORK_TASK_COMMAND_EXECUTION,
+            WORK_TASK_COMMAND_EXECUTION_MIGRATION,
         )
         .await?;
         Ok(Self { client })
@@ -497,6 +508,10 @@ mod tests {
         assert_eq!(page.items[0].title, "Ship the thing");
         assert_eq!(page.items[0].state, WorkTaskState::Open);
         assert_eq!(page.items[0].owner_id, None);
+        assert_eq!(
+            page.items[0].version, 1,
+            "WorkStore::connect must apply the version-column migration before creation"
+        );
     }
 
     #[tokio::test]
