@@ -504,7 +504,11 @@ page; `revalidation_entry` looks up one record by id without excluding
 at `GET /api/v1/repositories/:repository_id/knowledge/revalidation-queue`
 (`knowledge_api.rs`) with `classification`/`limit`/paired
 `after_confirmed_at_micros`+`after_knowledge_id` query parameters,
-tenant/repository-scoped like every other knowledge route; this task is
+tenant/repository-scoped like every other knowledge route. Both this and the
+history route carry a record's reach as a bounded `reach_node_ids` preview
+beside `reach_count` and a `reach_truncated` flag — the count keeps describing
+the whole set, only the array is capped — so the Knowledge page can open a
+lesson's reach in the Context Graph rather than only counting it; this task is
 deliberately read-only and adds no mutation route, no policy-authoring
 surface, and no automatic revalidation trigger.
 

@@ -253,7 +253,13 @@ async fn knowledge_history_exposes_lifecycle_provenance_without_cross_tenant_dat
         json!("evidence:corroborated")
     );
     assert!(active_entry["last_reconfirmed_at_seconds"].is_number());
-    assert_eq!(active_entry.get("reach_node_ids"), None);
+    // Reach is provenance, so it is named rather than only counted -- bounded,
+    // and still read-only. `reach_count` keeps describing the whole set.
+    assert_eq!(
+        active_entry["reach_node_ids"],
+        json!(["artifact:crates/ackplane-server/src/knowledge_store.rs"])
+    );
+    assert_eq!(active_entry["reach_truncated"], json!(false));
     let retired_entry = entries
         .iter()
         .find(|entry| entry["knowledge_id"] == retired.knowledge_id)

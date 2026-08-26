@@ -28,6 +28,20 @@ const DEFAULT_HISTORY_LIMIT: i64 = 30;
 const MAX_HISTORY_LIMIT: i64 = 100;
 const DEFAULT_REVALIDATION_QUEUE_LIMIT: i64 = 30;
 const MAX_REVALIDATION_QUEUE_LIMIT: i64 = 100;
+/// How many of a record's reach nodes each entry carries. `reach_count` keeps
+/// describing the whole set, so a bounded preview never becomes the number a
+/// reader reasons about.
+const REACH_PREVIEW_LIMIT: usize = 20;
+
+/// Splits a record's reach into the true total, a bounded preview, and whether
+/// the preview left anything out.
+fn reach_preview(reach_node_ids: Vec<String>) -> (usize, Vec<String>, bool) {
+    let count = reach_node_ids.len();
+    let truncated = count > REACH_PREVIEW_LIMIT;
+    let mut preview = reach_node_ids;
+    preview.truncate(REACH_PREVIEW_LIMIT);
+    (count, preview, truncated)
+}
 
 #[derive(Clone)]
 pub struct KnowledgeApiState {
@@ -86,6 +100,8 @@ struct KnowledgeHistoryResponseEntry {
     recorded_by: Option<String>,
     reach_goal_id: Option<String>,
     reach_count: usize,
+    reach_node_ids: Vec<String>,
+    reach_truncated: bool,
     confirmed_at_seconds: Option<u64>,
     last_reconfirmed_at_seconds: Option<u64>,
     last_reconfirmed_by: Option<String>,
@@ -170,13 +186,16 @@ impl From<KnowledgeHistoryEntry> for KnowledgeHistoryResponseEntry {
         } else {
             "active"
         };
+        let (reach_count, reach_node_ids, reach_truncated) = reach_preview(entry.reach_node_ids);
         Self {
             knowledge_id: entry.knowledge_id,
             content: entry.content,
             source_ref: entry.source_ref,
             recorded_by: entry.recorded_by,
             reach_goal_id: entry.reach_goal_id,
-            reach_count: entry.reach_node_ids.len(),
+            reach_count,
+            reach_node_ids,
+            reach_truncated,
             confirmed_at_seconds: unix_seconds(entry.confirmed_at),
             last_reconfirmed_at_seconds: entry.last_reconfirmed_at.and_then(unix_seconds),
             last_reconfirmed_by: entry.last_reconfirmed_by,
@@ -219,6 +238,8 @@ struct RevalidationQueueResponseEntry {
     recorded_by: Option<String>,
     reach_goal_id: Option<String>,
     reach_count: usize,
+    reach_node_ids: Vec<String>,
+    reach_truncated: bool,
     confirmed_at_seconds: Option<u64>,
     half_life_hours: f64,
     revalidate_after_hours: Option<f64>,
@@ -231,13 +252,16 @@ struct RevalidationQueueResponseEntry {
 
 impl From<RevalidationQueueEntry> for RevalidationQueueResponseEntry {
     fn from(entry: RevalidationQueueEntry) -> Self {
+        let (reach_count, reach_node_ids, reach_truncated) = reach_preview(entry.reach_node_ids);
         Self {
             knowledge_id: entry.knowledge_id,
             content: entry.content,
             source_ref: entry.source_ref,
             recorded_by: entry.recorded_by,
             reach_goal_id: entry.reach_goal_id,
-            reach_count: entry.reach_node_ids.len(),
+            reach_count,
+            reach_node_ids,
+            reach_truncated,
             confirmed_at_seconds: unix_seconds(entry.confirmed_at),
             half_life_hours: entry.half_life_hours,
             revalidate_after_hours: entry.revalidate_after_hours,
@@ -416,6 +440,45 @@ fn unix_seconds(timestamp: SystemTime) -> Option<u64> {
 mod tests {
     use super::*;
 
+    /// The preview is a display bound, not a correction: a reader who is told
+    /// "42 nodes" and shown twenty must still be told forty-two.
+    #[test]
+    fn a_bounded_reach_preview_still_reports_the_true_count() {
+        let ids: Vec<String> = (0..REACH_PREVIEW_LIMIT + 22)
+            .map(|index| format!("artifact:crates/example/src/file{index}.rs"))
+            .collect();
+
+        let (count, preview, truncated) = reach_preview(ids.clone());
+
+        assert_eq!(count, ids.len(), "count must describe the whole reach");
+        assert_eq!(preview.len(), REACH_PREVIEW_LIMIT);
+        assert_eq!(preview[0], ids[0], "the preview keeps the original order");
+        assert!(truncated);
+    }
+
+    #[test]
+    fn a_reach_within_the_bound_is_reported_whole_and_untruncated() {
+        let ids = vec![
+            "artifact:crates/example/src/lib.rs".to_string(),
+            "symbol:crates/example/src/lib.rs:run".to_string(),
+        ];
+
+        let (count, preview, truncated) = reach_preview(ids.clone());
+
+        assert_eq!(count, 2);
+        assert_eq!(preview, ids);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn a_record_that_reaches_nothing_previews_nothing() {
+        let (count, preview, truncated) = reach_preview(Vec::new());
+
+        assert_eq!(count, 0);
+        assert!(preview.is_empty());
+        assert!(!truncated);
+    }
+
     #[test]
     fn lifecycle_filter_accepts_only_the_declared_history_states() {
         assert_eq!(LifecycleFilter::parse(None).unwrap().label(), "all");
@@ -544,6 +607,28 @@ mod tests {
             assert!(
                 body.contains(required),
                 "Knowledge page must retain its {required} revalidation-queue binding"
+            );
+        }
+    }
+
+    /// A recorded lesson names the nodes it reaches, so the page must let a
+    /// reader see them against the code rather than only counting them. A
+    /// record that reaches nothing must offer no link, since seeding a
+    /// traversal from an empty set asks the graph a question with no subject.
+    #[tokio::test]
+    async fn knowledge_page_opens_a_records_reach_in_the_context_graph() {
+        let Html(body) = knowledge_page().await;
+
+        for required in [
+            "entry.reach_node_ids",
+            "entry.reach_truncated",
+            "/graph?",
+            "open in graph",
+            "if(ids.length===0)return field(\"Reach\",summary)",
+        ] {
+            assert!(
+                body.contains(required),
+                "Knowledge page must retain its {required} reach binding"
             );
         }
     }
