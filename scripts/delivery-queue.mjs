@@ -27,6 +27,8 @@
 // so nothing new has to be remembered or labelled.
 
 import { execFileSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** The sweep script beside this one, whatever checkout this is. */
@@ -450,6 +452,121 @@ export function actualMergeTree(branch) {
   return refTreeHash(`origin/${branch}`);
 }
 
+// --- is anybody watching? ---------------------------------------------------
+//
+// "Armed means finished" (ADR-0045, ADR-0062) rests on something taking the
+// turns, and nothing verified that anything was. `make queue-watch` exists and
+// is documented, but a watcher nobody started looks exactly like a watcher with
+// nothing to do: silence. Measured over two days on this board, armed pull
+// requests repeatedly sat BEHIND for hours and were advanced only when somebody
+// happened to run the one-shot by hand.
+//
+// The whole mechanism is one timestamp: watch mode writes it every tick, and a
+// one-shot run reads it. No process enumeration -- that would be per-platform,
+// and AGENTS.md's toolchain rule is that everything runs identically on Linux,
+// macOS, and Windows.
+
+/** A heartbeat older than this is not a running watcher. */
+export const WATCHER_STALE_MS = 5 * 60 * 1000;
+
+const HEARTBEAT_FILE = "delivery-queue-watcher.json";
+
+/**
+ * Where the heartbeat lives: the common Git directory, not `target/`.
+ *
+ * It has to be somewhere both sides can see. The watcher runs in one checkout
+ * and the one-shot is run from whichever worktree an agent happens to be in --
+ * and `target/` is per-worktree, so a heartbeat written there would be invisible
+ * to every other worktree and the note would fire constantly against a watcher
+ * that is running fine. The common Git directory is the one location every
+ * worktree of a clone resolves through, which is exactly why the artefact sweep
+ * keeps its own fleet-wide state and lock there. It is also outside the working
+ * tree, so nothing needs gitignoring.
+ *
+ * `null` when this is not a repository at all, which means say nothing rather
+ * than guess.
+ */
+function commonGitDir() {
+  try {
+    return execFileSync("git", ["rev-parse", "--git-common-dir"], {
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/** The last beat's Unix milliseconds, or `null` for absent or unreadable. */
+export function readWatcherHeartbeat(commonDir) {
+  try {
+    const beat = JSON.parse(
+      readFileSync(join(commonDir, HEARTBEAT_FILE), "utf8"),
+    );
+    return typeof beat.at === "number" && !Number.isNaN(beat.at)
+      ? beat.at
+      : null;
+  } catch {
+    // Absent or corrupt reads as "no watcher", which is the safe direction: a
+    // note nobody needed costs one line, a missing one costs a stalled queue.
+    return null;
+  }
+}
+
+export function writeWatcherHeartbeat(commonDir, now) {
+  try {
+    writeFileSync(
+      join(commonDir, HEARTBEAT_FILE),
+      `${JSON.stringify({ at: now }, null, 2)}\n`,
+      "utf8",
+    );
+  } catch {
+    // A heartbeat that cannot be written is a lost diagnostic, not a lost
+    // queue. The watcher keeps taking turns either way.
+  }
+}
+
+/**
+ * Whether a heartbeat proves a watcher is running now. Pure.
+ *
+ * A beat from the future counts: a clock that reads ahead is a clock problem,
+ * not evidence that nothing is running.
+ */
+export function watcherIsRunning(at, now, staleMs = WATCHER_STALE_MS) {
+  if (typeof at !== "number" || Number.isNaN(at)) return false;
+  return now - at < staleMs;
+}
+
+/**
+ * What to say when armed work is waiting and nothing is advancing it, or `null`
+ * for nothing worth saying. Pure.
+ *
+ * Silent when a watcher is beating, and silent when nothing is armed -- an
+ * empty queue needs no watcher, and a note that appears when it is not
+ * actionable is a note that stops being read. It distinguishes a watcher that
+ * stopped from one that was never started, because those need different things
+ * done about them.
+ */
+export function unattendedQueueNote(
+  action,
+  heartbeatAt,
+  now,
+  staleMs = WATCHER_STALE_MS,
+) {
+  const armed = action.queued?.length ?? 0;
+  if (armed === 0) return null;
+  if (watcherIsRunning(heartbeatAt, now, staleMs)) return null;
+  const since =
+    typeof heartbeatAt === "number" && !Number.isNaN(heartbeatAt)
+      ? `last beat ${Math.max(0, Math.round((now - heartbeatAt) / 60_000))}m ago`
+      : "none has ever beaten here";
+  return (
+    `no delivery-queue watcher is running (${since}), and ` +
+    `${armed} armed pull request${armed === 1 ? " is" : "s are"} waiting for ` +
+    `turns nobody is taking. Start one with \`make queue-watch\`.`
+  );
+}
+
 const USAGE = `delivery-queue -- take branch-update turns in order (ADR-0062)
 
   node scripts/delivery-queue.mjs [--watch] [--dry-run]
@@ -482,7 +599,8 @@ It reports and steps over, rather than waiting on:
   a wedged check    stops being waited on after 45 minutes
 
 Nothing depends on it running: an unattended queue just means branches go stale
-the way they did before.`;
+the way they did before. A one-shot run says so when it notices, because
+"unattended" and "nothing to do" otherwise look identical from outside.`;
 
 function main() {
   if (process.argv.includes("--help") || process.argv.includes("-h")) {
@@ -524,10 +642,10 @@ function main() {
       verifyDirty: verifyDirtyWithGit,
     });
     console.log(describe(action));
-    if (action.kind !== "update") return action.kind;
+    if (action.kind !== "update") return action;
     if (!apply) {
       console.log("(dry run: no branch was updated)");
-      return action.kind;
+      return action;
     }
     const branch = action.pr.headRefName;
     const expectedTree = expectedMergeTree(branch);
@@ -557,12 +675,21 @@ function main() {
         .pop();
       console.log(`could not update #${action.pr.number}: ${detail}`);
     }
-    return action.kind;
+    return action;
   };
+
+  const commonDir = commonGitDir();
 
   if (!watch) {
     sweepNow();
-    tick();
+    const action = tick();
+    // Read after the tick, never before: this run has just done by hand exactly
+    // what a watcher would have done, so the question the note answers is "is
+    // anything going to do that again without me?".
+    const note =
+      commonDir &&
+      unattendedQueueNote(action, readWatcherHeartbeat(commonDir), Date.now());
+    if (note) console.log(`\n${note}`);
     return;
   }
   // Watch mode is the agent: one tick, wait, tick again. The interval is longer
@@ -579,12 +706,16 @@ function main() {
     `delivery queue watching every ${intervalMs / 1000}s -- Ctrl-C to stop\n`,
   );
   let timer;
+  const beat = () => {
+    if (commonDir) writeWatcherHeartbeat(commonDir, Date.now());
+  };
   const schedule = (delay) => {
     timer = setTimeout(() => {
       console.log(`\n--- ${new Date().toISOString()} ---`);
+      beat();
       let kind = "idle";
       try {
-        kind = tick();
+        kind = tick().kind;
       } catch (error) {
         // A transient API failure must not kill the agent; the next tick retries.
         console.log(
@@ -595,6 +726,7 @@ function main() {
       schedule(kind === "settling" ? settlingMs : intervalMs);
     }, delay);
   };
+  beat();
   tick();
   schedule(intervalMs);
   process.on("SIGINT", () => {
