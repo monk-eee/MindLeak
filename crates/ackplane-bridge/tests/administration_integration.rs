@@ -245,7 +245,7 @@ async fn returns_an_honest_status_for_the_tenant_and_hides_it_from_another_tenan
                 {"operation":"export","state":"refused","reason":"A verified principal now exists (ADR-0128); export itself is not implemented yet."},
                 {"operation":"claim_recovery","state":"available","reason":"Only an expired claim can be recovered; the next owner and a reason are recorded, and live claims refuse."},
                 {"operation":"recovery_inspection","state":"unavailable","reason":"An identified backup artifact and recovery evidence are required."},
-                {"operation":"lifecycle_purge","state":"refused","reason":"A verified principal now exists (ADR-0128); lifecycle purge itself is not implemented yet."},
+                {"operation":"lifecycle_purge","state":"refused","reason":"No adopted policy authorizes a Lifecycle purge yet; adopt one via POST /api/v1/administration/policies (ADR-0119 decision 2)."},
             ],
         })
     );

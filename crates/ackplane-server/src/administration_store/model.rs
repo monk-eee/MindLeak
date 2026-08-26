@@ -239,7 +239,7 @@ pub enum AdministrationStoreError {
     InconsistentScope,
     #[error("unknown administration operation: {value}")]
     UnknownOperation { value: i16 },
-    #[error("unknown snapshot outcome: {value}")]
+    #[error("unknown outcome: {value}")]
     UnknownOutcome { value: i16 },
     #[error("the idempotency key was already used for a different policy request")]
     PolicyIdempotencyConflict,
@@ -253,13 +253,22 @@ pub enum AdministrationStoreError {
     UnknownPolicy { policy_id: String },
     #[error("unknown snapshot request: {request_id}")]
     UnknownRequest { request_id: String },
+    #[error("the confirmation window must be positive")]
+    InvalidConfirmationWindow,
+    #[error("unknown purge data category: {value}")]
+    UnknownDataCategory { value: i16 },
+    #[error("unknown purge request: {request_id}")]
+    UnknownPurgeRequest { request_id: String },
 }
 
 fn is_identifier(value: &str) -> bool {
     !value.is_empty() && value.len() <= MAX_IDENTIFIER_BYTES
 }
 
-fn require_identifier(field: &'static str, value: &str) -> Result<(), AdministrationStoreError> {
+pub(super) fn require_identifier(
+    field: &'static str,
+    value: &str,
+) -> Result<(), AdministrationStoreError> {
     if is_identifier(value) {
         Ok(())
     } else {
@@ -469,7 +478,7 @@ pub(super) fn snapshot_receipt_from_row(
     })
 }
 
-fn hex_id(prefix: &str, hasher: Sha256) -> String {
+pub(super) fn hex_id(prefix: &str, hasher: Sha256) -> String {
     let hex = hasher
         .finalize()
         .iter()
@@ -478,7 +487,7 @@ fn hex_id(prefix: &str, hasher: Sha256) -> String {
     format!("{prefix}:{hex}")
 }
 
-fn append_bytes(hasher: &mut Sha256, value: &[u8]) {
+pub(super) fn append_bytes(hasher: &mut Sha256, value: &[u8]) {
     hasher.update((value.len() as u64).to_be_bytes());
     hasher.update(value);
 }
@@ -493,7 +502,7 @@ fn append_optional_bytes(hasher: &mut Sha256, value: Option<&str>) {
     }
 }
 
-fn append_timestamp(
+pub(super) fn append_timestamp(
     hasher: &mut Sha256,
     timestamp: SystemTime,
 ) -> Result<(), AdministrationStoreError> {

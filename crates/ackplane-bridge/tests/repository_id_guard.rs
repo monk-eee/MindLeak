@@ -84,7 +84,8 @@ const CONTEXT_PACKET_STORE_RS: &str =
     include_str!("../../ackplane-server/src/context_packet_store.rs");
 const CONTEXT_PACKET_SUMMARY_RS: &str =
     include_str!("../../ackplane-server/src/context_packet_store/summary.rs");
-const ADMINISTRATION_RS: &str = include_str!("../src/administration.rs");
+const ADMINISTRATION_RS: &str = include_str!("../src/administration/mod.rs");
+const ADMINISTRATION_PURGE_RS: &str = include_str!("../src/administration/purge.rs");
 const CONTEXT_API_RS: &str = include_str!("../src/context_api.rs");
 const DELEGATION_API_RS: &str = include_str!("../src/delegation_api.rs");
 const DESIGN_API_RS: &str = include_str!("../src/design_api.rs");
@@ -170,6 +171,7 @@ const HANDLER_SOURCES: &[&str] = &[
     REPOSITORY_CONSTITUTION_RS,
     REPOSITORY_TELEMETRY_RS,
     ADMINISTRATION_RS,
+    ADMINISTRATION_PURGE_RS,
     CONTEXT_API_RS,
     DELEGATION_API_RS,
     DESIGN_API_RS,

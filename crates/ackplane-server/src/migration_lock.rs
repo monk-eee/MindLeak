@@ -119,6 +119,8 @@ pub(crate) mod key {
     /// concurrent work nobody had committed yet -- `migration-audit.mjs`
     /// checked before picking 41, not guessed.
     pub(crate) const ADMINISTRATION: i64 = 41;
+    /// `migrations/0042_administration_purge.sql`.
+    pub(crate) const ADMINISTRATION_PURGE: i64 = 42;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

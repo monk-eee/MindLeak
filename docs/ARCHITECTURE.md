@@ -635,9 +635,21 @@ rather than guessing a location when that variable is unset. It is
 deliberately platform-scoped only today: Ackplane's schema is multi-tenant at
 the row level, so a `pg_dump` of the whole database is never a valid
 tenant-scoped artifact, and a true tenant-scoped export is separate, tracked
-follow-on work, not this provider relabeled. Export, recovery execution, and
-lifecycle purge remain unimplemented and report so honestly. ADR-0111's claim
-recovery is unchanged.
+follow-on work, not this provider relabeled. Lifecycle purge is the second
+implemented privileged operation: a two-phase preview/confirm workflow
+(`administration/purge.rs`) against one closed data category today
+(`telemetry_events`), tenant- and repository-scoped, requiring its own
+adopted `LifecyclePurge` policy. A preview computes and durably records an
+impact count and a bounded confirmation window without deleting anything;
+only a separate confirm call against that exact request id executes a single
+scoped `DELETE ... WHERE tenant_id = $1 AND repository_id = $2 AND
+occurred_at < $3` -- never `TRUNCATE`, `DROP DATABASE`, or a schema-wide
+statement (ADR-0119 decision 7). Confirming after the window expires, or
+after the authorizing policy was revoked, still returns a receipt
+(`expired`/`refused`) rather than deleting anything; the receipt itself never
+retains the purged rows, only the redacted request/outcome metadata. Export
+and recovery execution remain unimplemented and report so honestly. ADR-0111's
+claim recovery is unchanged.
 
 | Route | Serves |
 |---|---|
@@ -667,6 +679,9 @@ recovery is unchanged.
 | `POST /api/v1/administration/policies` | ADR-0119 decision 2 / ADR-0128: adopts a new `AdministrationPolicy` naming its operation, platform-or-tenant scope, data classification, retention basis, and bounded lifetime, attributed to the loopback developer profile's own salted token (`administration_store::AdministrationStore::adopt_policy`). An identical resubmission under the same idempotency key replays the original record; a changed one conflicts (`409`). |
 | `POST /api/v1/administration/snapshots` | Requests, then synchronously executes, a platform Snapshot under an already-adopted, still-active policy (`administration_store::request_snapshot` + `snapshot_provider::create_platform_snapshot`): refuses (`409`) before any request row exists if no active policy authorizes it, otherwise runs `pg_dump --format=custom`, encrypts the artifact, and records an immutable receipt (outcome, reason, artifact path, manifest digest, encryption key id, size, and verified flag) that a retried request replays rather than re-executes. |
 | `GET /api/v1/administration/snapshots/:request_id` | The receipt recorded for one prior Snapshot request, if any. |
+| `POST /api/v1/repositories/:repository_id/administration/purges` | ADR-0119 decisions 7/9: previews a Lifecycle purge -- refuses (`409`, no request row created) without an active tenant-scoped `LifecyclePurge` policy, otherwise counts matching `telemetry_events` rows and records a bounded, expiring, idempotent preview naming the exact cutoff and confirmation window. |
+| `POST /api/v1/repositories/:repository_id/administration/purges/:request_id/confirm` | Executes (or refuses/expires) a previously previewed purge. A confirmation past its window, or against a since-revoked policy, still returns a receipt (`expired`/`refused`) rather than deleting anything; only a fresh preview restarts the clock. Idempotent: re-confirming an already-receipted request replays it rather than deleting a second time. Tenant- and repository-scoped: only the principal and repository that made the request may confirm or read it. |
+| `GET /api/v1/repositories/:repository_id/administration/purges/:request_id` | The receipt recorded for one prior purge request, if any, under the same ownership rule as confirm. |
 | `GET /static/shared/chrome.css` / `GET /static/shared/chrome.js` | The one shared brand-mark and grouped-nav asset every static page loads (ADR-0124), served by `shared_assets.rs` with the correct `Content-Type`. `chrome.js`'s `NAV_ITEMS` is the single declared list of every ADR-0105 decision 5 capability; `chrome.css` styles it through six neutral `--chrome-*` custom properties that each page bridges onto its own palette. A page's entire brand/nav footprint is two mount points (`[data-bridge-brand]`, `[data-bridge-nav]`) plus these two tags — never its own copy of the nav's markup, CSS, or disclosure script. |
 
 ### `editors/vscode` (extension)

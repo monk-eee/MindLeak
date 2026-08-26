@@ -10,7 +10,9 @@
 //! `Snapshot` is the first privileged operation with a real execution path
 //! (platform-scoped only -- see `ackplane_server::snapshot_provider`'s own
 //! doc comment for why tenant-scoped export needs its own separate
-//! implementation). Export, recovery execution, and lifecycle purge remain
+//! implementation). `LifecyclePurge` is the second: a two-phase preview/
+//! confirm workflow (`purge` submodule) against one closed data category
+//! (telemetry events) today. Export and recovery execution remain
 //! unimplemented and report so honestly.
 
 use std::{
@@ -35,7 +37,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-const ADMINISTRATION_PAGE: &str = include_str!("../static/administration.html");
+const ADMINISTRATION_PAGE: &str = include_str!("../../static/administration.html");
 /// ADR-0119 decision 2 bounds a policy's lifetime; this bounds how long a
 /// caller may request one for in a single call, so a single adoption cannot
 /// silently grant authority for years.
@@ -90,8 +92,22 @@ pub fn administration_routes(state: AdministrationApiState) -> Router {
             "/api/v1/administration/snapshots/:request_id",
             get(platform_snapshot_receipt),
         )
+        .route(
+            "/api/v1/repositories/:repository_id/administration/purges",
+            post(purge::preview_lifecycle_purge),
+        )
+        .route(
+            "/api/v1/repositories/:repository_id/administration/purges/:request_id/confirm",
+            post(purge::confirm_lifecycle_purge),
+        )
+        .route(
+            "/api/v1/repositories/:repository_id/administration/purges/:request_id",
+            get(purge::lifecycle_purge_status),
+        )
         .with_state(state)
 }
+
+mod purge;
 
 #[derive(Serialize)]
 struct AdministrationStatusResponse {
@@ -196,6 +212,36 @@ async fn capabilities(state: &AdministrationApiState) -> Vec<AdministrationCapab
             }
         }
     };
+    let lifecycle_purge = {
+        let mut administration = state.administration.lock().await;
+        let active = administration
+            .active_policy(
+                AdministrationOperation::LifecyclePurge,
+                &AdministrationScope::Tenant(state.tenant_id.to_string()),
+                SystemTime::now(),
+            )
+            .await;
+        match active {
+            Ok(Some(_)) => AdministrationCapability {
+                operation: "lifecycle_purge",
+                state: "available",
+                reason: "A verified principal (ADR-0128) and an adopted tenant policy authorize a preview; confirmation still needs its own unexpired window (ADR-0119 decision 9).".to_string(),
+            },
+            Ok(None) => AdministrationCapability {
+                operation: "lifecycle_purge",
+                state: "refused",
+                reason: "No adopted policy authorizes a Lifecycle purge yet; adopt one via POST /api/v1/administration/policies (ADR-0119 decision 2).".to_string(),
+            },
+            Err(error) => {
+                tracing::error!(%error, "Bridge Administration policy lookup failed");
+                AdministrationCapability {
+                    operation: "lifecycle_purge",
+                    state: "unavailable",
+                    reason: "The adopted-policy store could not be read.".to_string(),
+                }
+            }
+        }
+    };
     vec![
         AdministrationCapability {
             operation: "status_inspection",
@@ -218,11 +264,7 @@ async fn capabilities(state: &AdministrationApiState) -> Vec<AdministrationCapab
             state: "unavailable",
             reason: "An identified backup artifact and recovery evidence are required.".to_string(),
         },
-        AdministrationCapability {
-            operation: "lifecycle_purge",
-            state: "refused",
-            reason: "A verified principal now exists (ADR-0128); lifecycle purge itself is not implemented yet.".to_string(),
-        },
+        lifecycle_purge,
     ]
 }
 
@@ -539,12 +581,15 @@ fn administration_error_status(error: AdministrationStoreError) -> StatusCode {
         | AdministrationStoreError::InvalidManifestDigest
         | AdministrationStoreError::InvalidReceiptTime
         | AdministrationStoreError::InvalidTimestamp
+        | AdministrationStoreError::InvalidConfirmationWindow
         | AdministrationStoreError::InconsistentScope => StatusCode::BAD_REQUEST,
         AdministrationStoreError::UnknownPolicy { .. }
-        | AdministrationStoreError::UnknownRequest { .. } => StatusCode::NOT_FOUND,
+        | AdministrationStoreError::UnknownRequest { .. }
+        | AdministrationStoreError::UnknownPurgeRequest { .. } => StatusCode::NOT_FOUND,
         error @ (AdministrationStoreError::Database(_)
         | AdministrationStoreError::UnknownOperation { .. }
-        | AdministrationStoreError::UnknownOutcome { .. }) => {
+        | AdministrationStoreError::UnknownOutcome { .. }
+        | AdministrationStoreError::UnknownDataCategory { .. }) => {
             tracing::error!(%error, "Bridge Administration store error");
             StatusCode::INTERNAL_SERVER_ERROR
         }
