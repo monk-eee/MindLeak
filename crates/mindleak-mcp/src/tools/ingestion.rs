@@ -2,6 +2,7 @@
 use super::{opt_i64, opt_str, req_str, str_array, text_result};
 use mindleak_core::ingest::execution::ExecutionRecord;
 use mindleak_core::ingest::git::CommitRecord;
+use mindleak_core::ingest::tool_invocation::ToolInvocationRecord;
 use mindleak_core::{now_unix, MindLeak};
 use serde_json::{json, Value};
 
@@ -47,6 +48,19 @@ pub(super) fn definitions() -> Vec<Value> {
                     "timestamp": { "type": "integer" }
                 },
                 "required": ["message"]
+            }
+        }),
+        json!({
+            "name": "ingest_tool_invocation",
+            "description": "Deterministically ingest one agent tool call as passive evidence (ADR-0127): creates a tool_invocation node and classifies the argument excerpt against a committed shell-hygiene pattern list (a piped PowerShell cmdlet around a native command, $LASTEXITCODE). Never self-reported as a claim -- the caller records what actually ran, not an assertion about it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "tool_name": { "type": "string" },
+                    "argument_excerpt": { "type": "string", "description": "For a terminal-executing tool, the command string itself." },
+                    "timestamp": { "type": "integer", "description": "Unix seconds; defaults to now." }
+                },
+                "required": ["tool_name", "argument_excerpt"]
             }
         }),
         json!({
@@ -143,6 +157,18 @@ pub(super) fn dispatch(
             };
             let outcome = engine
                 .ingest_commit_for_agent(&agent, &rec)
+                .map_err(|e| e.to_string())?;
+            Ok(text_result(&json!(outcome)))
+        })()),
+        "ingest_tool_invocation" => Some((|| {
+            let agent = req_str(args, "agent")?;
+            let rec = ToolInvocationRecord {
+                tool_name: req_str(args, "tool_name")?,
+                argument_excerpt: req_str(args, "argument_excerpt")?,
+                timestamp: opt_i64(args, "timestamp", now_unix()),
+            };
+            let outcome = engine
+                .ingest_tool_invocation_for_agent(&agent, &rec)
                 .map_err(|e| e.to_string())?;
             Ok(text_result(&json!(outcome)))
         })()),

@@ -310,6 +310,9 @@ fn kind_prior(kind: Option<NodeType>) -> f32 {
         Some(NodeType::Artifact) => 0.92,
         Some(NodeType::Symbol) => 0.85,
         Some(NodeType::Execution) => 0.85,
+        // Raw agent tool-call evidence: same tier as Execution -- transient,
+        // not a distilled conclusion.
+        Some(NodeType::ToolInvocation) => 0.85,
         Some(NodeType::Package) => 0.80,
         // Attribution, not knowledge; it answers no question a caller asks.
         Some(NodeType::Agent) => 0.70,
