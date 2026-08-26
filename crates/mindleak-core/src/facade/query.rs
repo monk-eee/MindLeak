@@ -8,8 +8,34 @@ use crate::{
     WriteOutcome,
 };
 
-/// Nodes embedded per `/v1/embeddings` request during the offline index pass.
-const EMBED_BATCH: usize = 64;
+/// Nodes embedded per `/v1/embeddings` request during the offline index pass
+/// when `MINDLEAK_EMBED_BATCH` is unset.
+///
+/// Sized for the 768-dimension models this shipped against; see
+/// [`parse_embed_batch`] for why the right value is a property of the model
+/// rather than of this code.
+const DEFAULT_EMBED_BATCH: usize = 64;
+
+/// Resolve the index batch size, falling back to [`DEFAULT_EMBED_BATCH`] for an
+/// absent, unparseable, or zero setting.
+///
+/// A batch response carries `batch * dimensions` floats and `net` caps an
+/// optional HTTP response at 4 MiB, so the largest safe batch is a property of
+/// the embedding model, not of this code. Measured 2026-08-27 against LM Studio:
+/// 768-dimension `nomic-embed-text` costs ~23 KB per vector, so 64 fits in
+/// ~1.5 MiB; 2560-dimension `qwen3-embedding-4b` costs ~78 KB per vector, so the
+/// same 64 lands at ~4.75 MiB and *every* index pass fails on the cap. Without
+/// this setting a higher-dimension model is not slow, it is unusable.
+fn parse_embed_batch(configured: Option<&str>) -> usize {
+    configured
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|size| *size > 0)
+        .unwrap_or(DEFAULT_EMBED_BATCH)
+}
+
+fn embed_batch_size() -> usize {
+    parse_embed_batch(std::env::var("MINDLEAK_EMBED_BATCH").ok().as_deref())
+}
 
 /// Most-relevant impact nodes a pre-flight will carry.
 ///
@@ -81,14 +107,15 @@ impl MindLeak {
 
     /// Populate the semantic embedding index for nodes missing a current vector
     /// (off the zero-token hot path). Embeds in batches so the pass costs one
-    /// round trip per `EMBED_BATCH` nodes instead of one per node. Returns how
-    /// many nodes were indexed.
+    /// round trip per batch instead of one per node; the batch size follows
+    /// [`parse_embed_batch`], since a fixed one is only safe for a fixed
+    /// embedding dimension. Returns how many nodes were indexed.
     pub fn index_nodes(&self, limit: usize) -> Result<usize> {
         let now = now_unix();
         let pending =
             embed::nodes_missing_embeddings(&self.store.conn, self.embedder.model(), limit)?;
         let mut indexed = 0;
-        for chunk in pending.chunks(EMBED_BATCH) {
+        for chunk in pending.chunks(embed_batch_size()) {
             let texts: Vec<String> = chunk.iter().map(|(_, text)| text.clone()).collect();
             let vectors = self.embedder.embed_batch(&texts)?;
             for ((id, _), vector) in chunk.iter().zip(vectors) {
@@ -313,4 +340,40 @@ fn bound_impact(impact: Subgraph) -> (Vec<PreflightNode>, Vec<WeightedEdge>, usi
         .collect();
 
     (nodes, edges, impact_total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_embed_batch, DEFAULT_EMBED_BATCH};
+
+    #[test]
+    fn an_absent_setting_keeps_the_shipped_default() {
+        assert_eq!(parse_embed_batch(None), DEFAULT_EMBED_BATCH);
+    }
+
+    /// The reason this setting exists: a 2560-dimension model costs ~78 KB per
+    /// vector, so the default 64 exceeds the 4 MiB response cap and every index
+    /// pass fails. 32 is the operator's remedy and must be honoured exactly.
+    #[test]
+    fn a_smaller_batch_is_honoured_so_a_high_dimension_model_stays_usable() {
+        assert_eq!(parse_embed_batch(Some("32")), 32);
+    }
+
+    #[test]
+    fn surrounding_whitespace_does_not_defeat_the_setting() {
+        assert_eq!(parse_embed_batch(Some(" 16 ")), 16);
+    }
+
+    /// Zero would make `chunks` panic, and a typo should not silently disable
+    /// indexing -- both fall back rather than failing at the call site.
+    #[test]
+    fn zero_and_unparseable_values_fall_back_instead_of_breaking_the_pass() {
+        for raw in ["0", "-8", "sixty-four", ""] {
+            assert_eq!(
+                parse_embed_batch(Some(raw)),
+                DEFAULT_EMBED_BATCH,
+                "{raw:?} should fall back"
+            );
+        }
+    }
 }
