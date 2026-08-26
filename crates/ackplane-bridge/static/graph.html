@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MindLeak Bridge Context Graph</title>
+  <link rel="stylesheet" href="/static/shared/chrome.css">
+  <style>
+    :root { color-scheme: light; --bg:#faf6f3; --surface:#fff; --soft:#f6f1ee; --line:#e9dfd9; --ink:#1f2542; --muted:#62677f; --quiet:#9094aa; --teal:#169c99; --amber:#d4881e; --rose:#e8578f; --danger:#c03d58; --focus:0 0 0 3px rgba(232,87,143,.28); --chrome-surface:var(--surface); --chrome-line:var(--line); --chrome-ink:var(--ink); --chrome-muted:var(--muted); --chrome-accent:var(--teal); --chrome-focus:var(--focus); --n-artifact:#169c99; --n-symbol:#d4881e; --n-execution:#e8578f; --n-intent:#7a5cf0; --n-agent:#2f7fd4; --n-package:#3f9d54; --n-tool_invocation:#6b7394; --n-digest:#a8763f; }
+    @media (prefers-color-scheme: dark) { :root { color-scheme:dark; --bg:#151827; --surface:#1d2135; --soft:#252a42; --line:#353b59; --ink:#f1f2fd; --muted:#afb3cd; --quiet:#8187a8; --teal:#56d4ce; --amber:#f2ba65; --rose:#ff8bb5; --danger:#ff8eaa; --focus:0 0 0 3px rgba(255,139,181,.36); --n-artifact:#56d4ce; --n-symbol:#f2ba65; --n-execution:#ff8bb5; --n-intent:#a893ff; --n-agent:#74b4f0; --n-package:#73c98a; --n-tool_invocation:#9aa2c4; --n-digest:#d0a273; } }
+    * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font-family:"Segoe UI Variable", Aptos, system-ui, sans-serif; }
+    button,input,select { font:inherit; } button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible { outline:none; box-shadow:var(--focus); }
+    header { position:sticky; top:0; z-index:3; background:color-mix(in srgb,var(--bg) 94%,transparent); backdrop-filter:blur(14px); border-bottom:1px solid var(--line); }
+    .shell { width:min(1160px,calc(100% - 36px)); margin:0 auto; } .masthead { min-height:72px; display:flex; align-items:center; justify-content:space-between; gap:18px; }
+    main { padding:28px 0 56px; } .heading { display:flex; justify-content:space-between; gap:18px; flex-wrap:wrap; align-items:end; margin-bottom:18px; } .eyebrow { margin:0 0 5px; color:var(--quiet); font-size:.72rem; letter-spacing:.09em; text-transform:uppercase; } h2 { margin:0; font-size:1.5rem; letter-spacing:-.01em; } #scope { margin:6px 0 0; color:var(--muted); font-size:.85rem; }
+    .toolbar,.panel { min-width:0; border:1px solid var(--line); border-radius:8px; background:var(--surface); } .toolbar { display:grid; grid-template-columns:minmax(0,1.6fr) minmax(0,1.4fr) 92px 96px 104px auto; gap:10px; align-items:end; padding:13px 15px; } .field { display:grid; gap:5px; min-width:0; } .field label { color:var(--quiet); font-size:.7rem; letter-spacing:.07em; text-transform:uppercase; } .field input,.field select { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:var(--soft); color:var(--ink); } .toolbar button { padding:9px 17px; border:1px solid transparent; border-radius:6px; background:var(--teal); color:#fff; font-weight:600; cursor:pointer; } .toolbar button:hover { filter:brightness(1.05); }
+    .status { display:flex; flex-wrap:wrap; gap:8px 20px; margin:12px 2px 0; color:var(--muted); font-size:.78rem; } .status b { color:var(--ink); font-weight:600; } .status .stale { color:var(--amber); }
+    .message { min-height:22px; margin:10px 2px; color:var(--muted); font-size:.82rem; } .message.error { color:var(--danger); }
+    .layout { display:grid; grid-template-columns:minmax(0,1.7fr) minmax(250px,.85fr); gap:16px; align-items:start; }
+    .canvas { position:relative; overflow:hidden; height:min(64vh,620px); border:1px solid var(--line); border-radius:8px; background:var(--surface); } .canvas svg { display:block; width:100%; height:100%; cursor:grab; touch-action:none; } .canvas svg.dragging { cursor:grabbing; } .empty-note { position:absolute; inset:0; display:grid; place-content:center; text-align:center; padding:24px; color:var(--quiet); font-size:.85rem; }
+    .zoom { position:absolute; right:10px; bottom:10px; display:flex; gap:6px; } .zoom button { width:30px; height:30px; border:1px solid var(--line); border-radius:6px; background:var(--surface); color:var(--ink); cursor:pointer; line-height:1; }
+    .node { cursor:pointer; } .node circle { stroke:var(--surface); stroke-width:1.5; } .node.selected circle { stroke:var(--ink); stroke-width:2.5; } .node text { font-size:9px; fill:var(--muted); pointer-events:none; }
+    .detail { padding:15px; display:grid; gap:13px; } .detail.empty { color:var(--quiet); min-height:200px; align-content:center; text-align:center; } .detail h3 { margin:0; font-size:.95rem; word-break:break-all; } .facts { display:grid; gap:9px; } .fact { display:grid; gap:2px; } .fact span { color:var(--quiet); font-size:.68rem; letter-spacing:.07em; text-transform:uppercase; } .fact b { font-weight:600; font-size:.82rem; word-break:break-all; } .detail button { padding:8px 14px; border:1px solid var(--line); border-radius:6px; background:var(--soft); color:var(--ink); font-weight:600; cursor:pointer; }
+    .neighbours { display:grid; gap:6px; max-height:210px; overflow:auto; } .neighbour { display:flex; justify-content:space-between; gap:10px; padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:var(--soft); font-size:.76rem; cursor:pointer; } .neighbour span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .neighbour b { color:var(--muted); font-weight:600; font-variant-numeric:tabular-nums; }
+    .legend { display:flex; flex-wrap:wrap; gap:8px 16px; margin:14px 2px 0; color:var(--muted); font-size:.76rem; } .legend span { display:inline-flex; align-items:center; gap:6px; } .legend i { width:10px; height:10px; border-radius:50%; display:inline-block; }
+    .hidden { display:none !important; } @media (max-width:900px) { .layout { grid-template-columns:1fr; } .toolbar { grid-template-columns:1fr 1fr; } .toolbar button { grid-column:1 / -1; } }
+  </style>
+</head>
+<body>
+  <header><div class="shell masthead"><a class="brand" href="/" aria-label="MindLeak Bridge Fleet" data-bridge-brand data-subtitle="Industrial context inspection">MindLeak Bridge</a><nav class="nav" aria-label="Industrial surfaces" data-bridge-nav data-current="graph"></nav></div></header>
+  <script src="/static/shared/chrome.js" defer></script>
+  <script src="/static/shared/repo-picker.js" defer></script>
+  <main class="shell">
+    <div class="heading"><div><p class="eyebrow">Memory plane</p><h2>Context Graph</h2><p id="scope">Select an enrolled repository to render its projected neighbourhood.</p></div></div>
+    <form id="controls" class="toolbar">
+      <div class="field"><label for="repository">Repository</label><input id="repository" name="repository" list="repos" placeholder="repository id" required><datalist id="repos" data-repo-datalist></datalist></div>
+      <div class="field"><label for="seeds">Seeds (optional)</label><input id="seeds" name="seeds" placeholder="comma-separated node ids"></div>
+      <div class="field"><label for="depth">Depth</label><input id="depth" name="depth" type="number" min="1" max="4" value="2"></div>
+      <div class="field"><label for="max_nodes">Max nodes</label><input id="max_nodes" name="max_nodes" type="number" min="1" max="300" value="75"></div>
+      <div class="field"><label for="max_fanout">Max fanout</label><input id="max_fanout" name="max_fanout" type="number" min="1" max="30" value="12"></div>
+      <button type="submit">Render</button>
+    </form>
+    <div class="status" id="projection"></div>
+    <p class="message" id="message"></p>
+    <div class="layout">
+      <div class="canvas"><svg id="stage" role="img" aria-label="Projected context graph"><g id="scene"><g id="edges"></g><g id="nodes"></g></g></svg><p class="empty-note" id="empty">Nothing rendered yet.</p><div class="zoom"><button type="button" id="zoom-in" aria-label="Zoom in">+</button><button type="button" id="zoom-out" aria-label="Zoom out">&minus;</button><button type="button" id="zoom-fit" aria-label="Fit to view">&#9633;</button></div></div>
+      <div class="panel detail empty" id="detail">Select a node to inspect it.</div>
+    </div>
+    <div class="legend" id="legend"></div>
+  </main>
+  <script>
+    const els={form:document.getElementById("controls"),repo:document.getElementById("repository"),seeds:document.getElementById("seeds"),depth:document.getElementById("depth"),maxNodes:document.getElementById("max_nodes"),maxFanout:document.getElementById("max_fanout"),message:document.getElementById("message"),projection:document.getElementById("projection"),stage:document.getElementById("stage"),scene:document.getElementById("scene"),edgeLayer:document.getElementById("edges"),nodeLayer:document.getElementById("nodes"),detail:document.getElementById("detail"),empty:document.getElementById("empty"),legend:document.getElementById("legend")};
+    const SVG="http://www.w3.org/2000/svg";
+    const KINDS=["artifact","symbol","execution","intent","agent","package","tool_invocation","digest"];
+    const params=new URLSearchParams(location.search);
+    els.repo.value=params.get("repository")||params.get("repository_id")||"";
+    if(params.get("seeds"))els.seeds.value=params.get("seeds");
+    let view={nodes:[],edges:[]},selected=null,frame=null,settled=0,camera={x:0,y:0,k:1},drag=null;
+
+    const escape=value=>String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
+    const when=seconds=>Number.isFinite(seconds)?new Date(seconds*1000).toLocaleString():"unknown";
+    const kindOf=type=>KINDS.includes(type)?type:"artifact";
+    const colour=type=>`var(--n-${kindOf(type)})`;
+    const shortLabel=node=>{const raw=node.label||node.node_id||"";const tail=raw.split(/[\\/]/).pop()||raw;return tail.length>26?tail.slice(0,25)+"\u2026":tail};
+    const message=(text,isError=false)=>{els.message.textContent=text;els.message.classList.toggle("error",isError)};
+    const endpoint=()=>`/api/v1/repositories/${encodeURIComponent(els.repo.value.trim())}/graph`;
+
+    els.legend.innerHTML=KINDS.map(kind=>`<span><i style="background:${colour(kind)}"></i>${escape(kind.replace("_"," "))}</span>`).join("")+`<span><i style="background:var(--muted);height:2px;border-radius:0;width:16px"></i>edge opacity and width follow effective weight, so decay is visible</span>`;
+
+    // The endpoint returns the projection's own ledger position and rebuild time
+    // precisely so a stale projection is legible rather than silently old.
+    function drawProjection(data){
+      const position=data.projection_stream_position,at=data.projected_at_seconds;
+      if(position===null||position===undefined){els.projection.innerHTML=`<span class="stale">This repository has no projection yet &mdash; nothing has been rebuilt from its ledger.</span>`;return}
+      const ageHours=Number.isFinite(at)?(Date.now()/1000-at)/3600:null;
+      const stale=ageHours!==null&&ageHours>24;
+      els.projection.innerHTML=`<span>Ledger position <b>${escape(position)}</b></span><span${stale?' class="stale"':""}>Projected <b>${escape(when(at))}</b>${stale?" &mdash; over a day old":""}</span><span>Showing <b>${view.nodes.length}</b> nodes, <b>${view.edges.length}</b> edges</span>`;
+    }
+
+    async function load(seedOverride){
+      if(!els.form.reportValidity())return;
+      const seeds=seedOverride!==undefined?seedOverride:els.seeds.value.trim();
+      const query=new URLSearchParams({depth:els.depth.value,max_nodes:els.maxNodes.value,max_fanout:els.maxFanout.value});
+      if(seeds)query.set("seeds",seeds);
+      message("Loading neighbourhood\u2026");
+      try{
+        const response=await fetch(`${endpoint()}?${query}`);
+        if(!response.ok){message(response.status===404?"That repository is not enrolled here.":`The Bridge refused the graph query (HTTP ${response.status}).`,true);return}
+        const data=await response.json();
+        view={nodes:(data.nodes||[]).map(node=>({...node,x:0,y:0,vx:0,vy:0})),edges:data.edges||[]};
+        selected=null;renderDetail();
+        seedLayout();build();drawProjection(data);
+        for(let i=0;i<320;i+=1)step();
+        fit();start();
+        els.empty.classList.toggle("hidden",view.nodes.length>0);
+        if(!view.nodes.length){message("The projection holds no nodes for this repository yet.");return}
+        message(seeds?`Seeded from ${seeds.split(",").length} node(s).`:"Seeded from the most recently touched nodes.");
+      }catch(error){message(`Could not reach the Bridge: ${error}`,true)}
+    }
+
+    // Depth rings give the simulation a sane starting shape: seeds at the
+    // centre, each traversal hop further out, so it settles fast instead of
+    // untangling from a random cloud. Several seeds share a small ring rather
+    // than one point -- coincident nodes would start with an unbounded
+    // repulsive impulse between them.
+    function seedLayout(){
+      const byDepth=new Map();
+      view.nodes.forEach(node=>{const list=byDepth.get(node.depth)||[];list.push(node);byDepth.set(node.depth,list)});
+      byDepth.forEach((list,depth)=>{const radius=depth===0?(list.length>1?46:0):depth*130;list.forEach((node,index)=>{const angle=(index/Math.max(list.length,1))*Math.PI*2;node.x=radius*Math.cos(angle);node.y=radius*Math.sin(angle);node.vx=0;node.vy=0})});
+    }
+
+    function step(){
+      const nodes=view.nodes,index=new Map(nodes.map(node=>[node.node_id,node]));
+      for(let a=0;a<nodes.length;a+=1){for(let b=a+1;b<nodes.length;b+=1){
+        const first=nodes[a],second=nodes[b];let dx=second.x-first.x,dy=second.y-first.y;
+        const distance=Math.max(Math.hypot(dx,dy),1);
+        if(distance>420)continue;
+        // Bounded: an inverse-square law alone sends near-coincident nodes to
+        // infinity in one tick, and the layout never recovers.
+        const push=Math.min(2600/(distance*distance),40);
+        dx/=distance;dy/=distance;
+        first.vx-=dx*push;first.vy-=dy*push;second.vx+=dx*push;second.vy+=dy*push;
+      }}
+      view.edges.forEach(edge=>{
+        const source=index.get(edge.source_id),target=index.get(edge.target_id);
+        if(!source||!target)return;
+        let dx=target.x-source.x,dy=target.y-source.y;const distance=Math.hypot(dx,dy)||0.01;
+        const rest=90,pull=(distance-rest)*0.012*(0.35+weight(edge));dx/=distance;dy/=distance;
+        source.vx+=dx*pull;source.vy+=dy*pull;target.vx-=dx*pull;target.vy-=dy*pull;
+      });
+      let energy=0;
+      nodes.forEach(node=>{
+        node.vx-=node.x*0.004;node.vy-=node.y*0.004;
+        node.vx*=0.82;node.vy*=0.82;
+        if(node===drag?.node)return;
+        node.x+=node.vx;node.y+=node.vy;energy+=Math.abs(node.vx)+Math.abs(node.vy);
+      });
+      return energy/Math.max(nodes.length,1);
+    }
+
+    const weight=edge=>Math.max(0,Math.min(1,Number(edge.effective_weight)||0));
+
+    function build(){
+      els.edgeLayer.innerHTML="";els.nodeLayer.innerHTML="";
+      const ordered=[...view.edges].sort((a,b)=>weight(a)-weight(b));
+      ordered.forEach(edge=>{
+        const line=document.createElementNS(SVG,"line");const w=weight(edge);
+        line.setAttribute("stroke","var(--muted)");
+        line.setAttribute("stroke-width",(0.6+w*2.4).toFixed(2));
+        line.setAttribute("stroke-opacity",(0.14+w*0.66).toFixed(3));
+        line.dataset.source=edge.source_id;line.dataset.target=edge.target_id;
+        const title=document.createElementNS(SVG,"title");title.textContent=`${edge.source_id} --${edge.relation}--> ${edge.target_id} (effective weight ${w.toFixed(3)})`;
+        line.appendChild(title);els.edgeLayer.appendChild(line);edge.element=line;
+      });
+      const showAll=view.nodes.length<=40;
+      view.nodes.forEach(node=>{
+        const group=document.createElementNS(SVG,"g");group.setAttribute("class","node");group.dataset.id=node.node_id;
+        const circle=document.createElementNS(SVG,"circle");
+        circle.setAttribute("r",String(node.depth===0?9:Math.max(4,7-node.depth)));
+        circle.setAttribute("fill",colour(node.node_type));
+        const title=document.createElementNS(SVG,"title");title.textContent=`${node.node_id}\n${node.node_type} \u00b7 depth ${node.depth}`;
+        circle.appendChild(title);group.appendChild(circle);
+        if(showAll||node.depth===0){const text=document.createElementNS(SVG,"text");text.setAttribute("x","11");text.setAttribute("y","3");text.textContent=shortLabel(node);group.appendChild(text)}
+        els.nodeLayer.appendChild(group);node.element=group;
+      });
+    }
+
+    function paint(){
+      const index=new Map(view.nodes.map(node=>[node.node_id,node]));
+      view.edges.forEach(edge=>{
+        const source=index.get(edge.source_id),target=index.get(edge.target_id);
+        if(!edge.element||!source||!target)return;
+        edge.element.setAttribute("x1",source.x.toFixed(1));edge.element.setAttribute("y1",source.y.toFixed(1));
+        edge.element.setAttribute("x2",target.x.toFixed(1));edge.element.setAttribute("y2",target.y.toFixed(1));
+      });
+      view.nodes.forEach(node=>{if(node.element)node.element.setAttribute("transform",`translate(${node.x.toFixed(1)},${node.y.toFixed(1)})`)});
+      els.scene.setAttribute("transform",`translate(${camera.x.toFixed(1)},${camera.y.toFixed(1)}) scale(${camera.k.toFixed(3)})`);
+    }
+
+    function start(){settled=0;if(frame)cancelAnimationFrame(frame);const loop=()=>{
+      // A hidden tab must not burn CPU on a simulation nobody is watching.
+      if(document.visibilityState!=="visible"){frame=null;return}
+      const energy=step();paint();
+      if(energy<0.05)settled+=1;else settled=0;
+      frame=settled>18?null:requestAnimationFrame(loop);
+    };frame=requestAnimationFrame(loop)}
+
+    // Fits the CURRENT layout. Fitting a layout that is still moving pins the
+    // camera to coordinates the simulation is about to leave behind, which
+    // parks the whole graph off-screen -- so settle first, then fit.
+    function fit(){
+      if(!view.nodes.length){camera={x:els.stage.clientWidth/2,y:els.stage.clientHeight/2,k:1};paint();return}
+      const xs=view.nodes.map(node=>node.x),ys=view.nodes.map(node=>node.y);
+      const minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys);
+      const width=els.stage.clientWidth||760,height=els.stage.clientHeight||520,pad=54;
+      camera.k=Math.max(0.25,Math.min(2,Math.min((width-pad*2)/Math.max(maxX-minX,1),(height-pad*2)/Math.max(maxY-minY,1))));
+      camera.x=width/2-((minX+maxX)/2)*camera.k;camera.y=height/2-((minY+maxY)/2)*camera.k;
+      paint();
+    }
+
+    function renderDetail(){
+      if(!selected){els.detail.className="panel detail empty";els.detail.textContent="Select a node to inspect it.";return}
+      const links=view.edges.filter(edge=>edge.source_id===selected.node_id||edge.target_id===selected.node_id).sort((a,b)=>weight(b)-weight(a));
+      els.detail.className="panel detail";
+      els.detail.innerHTML=`<h3>${escape(selected.label||selected.node_id)}</h3>`
+        +`<div class="facts"><div class="fact"><span>Node id</span><b>${escape(selected.node_id)}</b></div>`
+        +`<div class="fact"><span>Type</span><b>${escape(selected.node_type)}</b></div>`
+        +`<div class="fact"><span>Depth from seed</span><b>${escape(selected.depth)}</b></div>`
+        +`<div class="fact"><span>Edges in view</span><b>${links.length}</b></div></div>`
+        +`<button type="button" id="reseed">Re-seed traversal from here</button>`
+        +(links.length?`<div class="neighbours">${links.slice(0,40).map(edge=>{const other=edge.source_id===selected.node_id?edge.target_id:edge.source_id;const arrow=edge.source_id===selected.node_id?"\u2192":"\u2190";return `<div class="neighbour" data-id="${escape(other)}"><span>${arrow} ${escape(edge.relation)} \u00b7 ${escape(other)}</span><b>${weight(edge).toFixed(3)}</b></div>`}).join("")}</div>`:"");
+      const reseed=document.getElementById("reseed");
+      if(reseed)reseed.addEventListener("click",()=>{els.seeds.value=selected.node_id;load(selected.node_id)});
+      els.detail.querySelectorAll(".neighbour").forEach(row=>row.addEventListener("click",()=>select(row.dataset.id)));
+    }
+
+    function select(nodeId){
+      selected=view.nodes.find(node=>node.node_id===nodeId)||null;
+      view.nodes.forEach(node=>node.element&&node.element.classList.toggle("selected",node===selected));
+      renderDetail();
+    }
+
+    function pointerPosition(event){const box=els.stage.getBoundingClientRect();return{x:event.clientX-box.left,y:event.clientY-box.top}}
+
+    els.stage.addEventListener("pointerdown",event=>{
+      const target=event.target.closest(".node");const at=pointerPosition(event);
+      els.stage.setPointerCapture(event.pointerId);els.stage.classList.add("dragging");
+      drag=target?{node:view.nodes.find(node=>node.node_id===target.dataset.id),moved:false}:{pan:true,x:at.x,y:at.y,moved:false};
+      if(target)select(target.dataset.id);
+    });
+    els.stage.addEventListener("pointermove",event=>{
+      if(!drag)return;const at=pointerPosition(event);drag.moved=true;
+      if(drag.pan){camera.x+=at.x-drag.x;camera.y+=at.y-drag.y;drag.x=at.x;drag.y=at.y;paint();return}
+      if(!drag.node)return;
+      drag.node.x=(at.x-camera.x)/camera.k;drag.node.y=(at.y-camera.y)/camera.k;drag.node.vx=0;drag.node.vy=0;
+      if(!frame)start();else paint();
+    });
+    const endDrag=()=>{if(drag&&drag.node&&!frame)start();drag=null;els.stage.classList.remove("dragging")};
+    els.stage.addEventListener("pointerup",endDrag);els.stage.addEventListener("pointercancel",endDrag);
+    els.stage.addEventListener("wheel",event=>{event.preventDefault();const at=pointerPosition(event);const factor=event.deltaY<0?1.12:1/1.12;const next=Math.max(0.2,Math.min(3.5,camera.k*factor));camera.x=at.x-(at.x-camera.x)*(next/camera.k);camera.y=at.y-(at.y-camera.y)*(next/camera.k);camera.k=next;paint()},{passive:false});
+    document.getElementById("zoom-in").addEventListener("click",()=>{camera.k=Math.min(3.5,camera.k*1.2);paint()});
+    document.getElementById("zoom-out").addEventListener("click",()=>{camera.k=Math.max(0.2,camera.k/1.2);paint()});
+    document.getElementById("zoom-fit").addEventListener("click",fit);
+    document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&!frame&&view.nodes.length)start()});
+    els.form.addEventListener("submit",event=>{event.preventDefault();load()});
+    if(els.repo.value)load();
+  </script>
+</body>
+</html>

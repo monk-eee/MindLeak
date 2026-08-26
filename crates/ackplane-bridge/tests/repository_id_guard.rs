@@ -133,6 +133,7 @@ const KNOWLEDGE_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &[
 const ROUTE_HANDLERS_WITHOUT_A_STORE_QUERY: &[&str] = &[
     "fleet_page",
     "agents_page",
+    "graph_page",
     "telemetry_page",
     "constitution_page",
     "administration_page",

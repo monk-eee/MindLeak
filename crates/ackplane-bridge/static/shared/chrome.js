@@ -11,6 +11,7 @@
     shield: '<path d="M8 1.5l5.5 2v4.2c0 3.4-2.3 5.9-5.5 6.8-3.2-.9-5.5-3.4-5.5-6.8V3.5z"/><path d="M5.6 8l1.7 1.7L10.6 6"/>',
     key: '<circle cx="5" cy="5" r="3"/><path d="M7.2 7.2L14 14M11 11l1.4 1.4M13 9l1.4 1.4"/>',
     pulse: '<path d="M1 8h3l1.5-4.5L8 12.5 9.5 5 11 8h4"/>',
+    graph: '<path d="M4.4 5.3l3.1 6M11.5 4.6L8.8 11M5.2 3.7l5.4-.5"/><circle cx="3.2" cy="3.9" r="1.9"/><circle cx="12.6" cy="3.2" r="1.9"/><circle cx="8" cy="12.6" r="1.9"/>',
   };
 
   // The complete, canonical capability set (ADR-0105 decision 5). `id` is the
@@ -19,6 +20,7 @@
   // placeholder: a capability with no page behind it yet.
   const NAV_ITEMS = [
     { id: "index", label: "Fleet", href: "/", icon: "grid" },
+    { id: "graph", label: "Graph", href: "/graph", icon: "graph" },
     {
       id: "work-group",
       label: "Work",
