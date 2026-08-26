@@ -84,7 +84,12 @@ const CONTEXT_PACKET_STORE_RS: &str =
     include_str!("../../ackplane-server/src/context_packet_store.rs");
 const CONTEXT_PACKET_SUMMARY_RS: &str =
     include_str!("../../ackplane-server/src/context_packet_store/summary.rs");
-const ADMINISTRATION_RS: &str = include_str!("../src/administration.rs");
+const ADMINISTRATION_RS: &str = include_str!("../src/administration/mod.rs");
+const ADMINISTRATION_PURGE_RS: &str = include_str!("../src/administration/purge.rs");
+const ADMINISTRATION_RECOVERY_RS: &str = include_str!("../src/administration/recovery.rs");
+const ADMINISTRATION_EXPORT_RS: &str = include_str!("../src/administration/export.rs");
+const ADMINISTRATION_POLICY_RS: &str = include_str!("../src/administration/policy.rs");
+const ADMINISTRATION_SNAPSHOT_RS: &str = include_str!("../src/administration/snapshot.rs");
 const CONTEXT_API_RS: &str = include_str!("../src/context_api.rs");
 const DELEGATION_API_RS: &str = include_str!("../src/delegation_api.rs");
 const DESIGN_API_RS: &str = include_str!("../src/design_api.rs");
@@ -133,6 +138,7 @@ const KNOWLEDGE_STORE_METHODS_WITHOUT_A_TENANT: &[&str] = &[
 const ROUTE_HANDLERS_WITHOUT_A_STORE_QUERY: &[&str] = &[
     "fleet_page",
     "agents_page",
+    "graph_page",
     "telemetry_page",
     "constitution_page",
     "administration_page",
@@ -170,6 +176,11 @@ const HANDLER_SOURCES: &[&str] = &[
     REPOSITORY_CONSTITUTION_RS,
     REPOSITORY_TELEMETRY_RS,
     ADMINISTRATION_RS,
+    ADMINISTRATION_PURGE_RS,
+    ADMINISTRATION_RECOVERY_RS,
+    ADMINISTRATION_EXPORT_RS,
+    ADMINISTRATION_POLICY_RS,
+    ADMINISTRATION_SNAPSHOT_RS,
     CONTEXT_API_RS,
     DELEGATION_API_RS,
     DESIGN_API_RS,

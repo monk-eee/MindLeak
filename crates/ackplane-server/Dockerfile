@@ -33,7 +33,10 @@ FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639
 # clause 4 still holds: minimal, not zero). Compose's healthcheck needs
 # something that can prove the gRPC port accepts connections; netcat-openbsd is
 # the smallest tool that does a bare TCP connect without pulling in curl's TLS
-# stack or a shell the entrypoint does not otherwise need. openssl is here so
+# stack or a shell the entrypoint does not otherwise need. `pg_dump`
+# (ADR-0119 decision 4 / ADR-0128's platform Snapshot) is shelled out to by
+# the Bridge process, not this one -- see `crates/ackplane-bridge`'s own
+# packaging when it gets a Dockerfile, not this image. openssl is here so
 # the same image can generate the development certificate the Compose topology
 # serves (ADR-0132), rather than introducing a second base image whose
 # provenance would have to be audited separately.

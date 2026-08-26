@@ -617,6 +617,63 @@ claim lifecycle, and ledger records remain behind Ackplane's typed service
 boundaries. Current routes, each 404 on a repository the tenant has not
 enrolled rather than leaking a distinguishable error:
 
+`administration.rs` is the ADR-0105 decision 6 "Backup / export / reset" parity
+row, scoped by ADR-0119's accepted policy rather than a mechanical copy of the
+VSIX's `mindleak.backup`/`mindleak.export`/`mindleak.resetMemory` commands.
+ADR-0128 recognizes the hardened loopback developer profile itself as the
+verified principal ADR-0119 decision 2 requires, so Snapshot is now a real,
+receipted capability rather than a permanent refusal -- but only once an
+`administration_store::AdministrationPolicy` naming the operation, scope,
+classification, retention basis, and lifetime has actually been adopted
+(`POST /api/v1/administration/policies`); decision 2's *policy* half was never
+removed. `snapshot_provider` (`ackplane-server`) is the one place that shells
+out to `pg_dump` and encrypts the result with a locally-generated key
+(`ACKPLANE_SNAPSHOT_KEY_PATH`, generated the same way
+`ackplane_bridge::load_or_generate_salt` generates its salt) before writing it
+under `ACKPLANE_SNAPSHOT_DIR`; the Snapshot capability reports `unavailable`
+rather than guessing a location when that variable is unset. It is
+deliberately platform-scoped only today: Ackplane's schema is multi-tenant at
+the row level, so a `pg_dump` of the whole database is never a valid
+tenant-scoped artifact, and a true tenant-scoped export is separate, tracked
+follow-on work, not this provider relabeled. Lifecycle purge is the second
+implemented privileged operation: a two-phase preview/confirm workflow
+(`administration/purge.rs`) against one closed data category today
+(`telemetry_events`), tenant- and repository-scoped, requiring its own
+adopted `LifecyclePurge` policy. A preview computes and durably records an
+impact count and a bounded confirmation window without deleting anything;
+only a separate confirm call against that exact request id executes a single
+scoped `DELETE ... WHERE tenant_id = $1 AND repository_id = $2 AND
+occurred_at < $3` -- never `TRUNCATE`, `DROP DATABASE`, or a schema-wide
+statement (ADR-0119 decision 7). Confirming after the window expires, or
+after the authorizing policy was revoked, still returns a receipt
+(`expired`/`refused`) rather than deleting anything; the receipt itself never
+retains the purged rows, only the redacted request/outcome metadata.
+Recovery inspection (`administration/recovery.rs`) is the third: ADR-0119
+decision 2 never lists it among the privileged classes, so it needs no
+adopted policy, only an existing `succeeded` Snapshot receipt to inspect. It
+never touches `ACKPLANE_DATABASE_URL`: `snapshot_provider::inspect_snapshot_artifact`
+reads the artifact file, recomputes and compares its digest, decrypts
+in-process with the installation's own key, and runs `pg_restore --list`
+against the decrypted archive purely to confirm it is well-formed -- a
+tampered, undecryptable, or corrupt artifact is a reported finding
+(`integrity_verified`/`decryption_verified`/`archive_valid`, each independently
+false), never an error. Export (`administration/export.rs`) is the fourth and
+last privileged class this ADR names: a single request-then-receipt flow
+(unlike Purge's two-phase preview/confirm) producing a bounded, redacted
+representation of the same `telemetry_events` category for a named purpose,
+requiring its own adopted, tenant-scoped `Export` policy.
+`export_provider::create_telemetry_export` queries at most the caller's
+requested record count, strips every internal identifier
+(`telemetry_id`/`node_id`/`agent_session_id`) the same way a `TelemetryEvents`
+purge scopes its `DELETE`, and writes a schema-versioned JSON document --
+unencrypted, unlike a Snapshot artifact, because the whole point is that it
+is already bounded and redacted rather than a second copy of production
+state needing the same custody controls as a full-database backup.
+Administration policy adoption (`administration/policy.rs`) and the platform
+Snapshot request/receipt flow (`administration/snapshot.rs`) are their own
+files for the same module-length reason Purge/Recovery/Export already are.
+ADR-0111's claim recovery is unchanged.
+
 | Route | Serves |
 |---|---|
 | `GET /` | The Fleet page (static HTML/JS). |
@@ -634,12 +691,25 @@ enrolled rather than leaking a distinguishable error:
 | `GET /delegations` | A tenant-scoped, read-only human delegation authority view. It displays active, expired, and revoked delegation projections with their immutable grant/revocation history; it exposes no grant, revoke, approval, credential, idempotency, payload, or remote-execution control. |
 | `GET /api/v1/repositories/:repository_id/delegations` | One bounded page of delegation projections in durable `(source_event_position ASC, delegation_id ASC)` order. Optional `limit` is clamped to 1-100; `after_source_event_position` and `after_delegation_id` must be supplied together, and a nonterminal response returns the next boundary in `next_after`. Revoked authority remains visible in the projection rather than disappearing from an operator's review. |
 | `GET /api/v1/repositories/:repository_id/knowledge` | One fixed-size, 50-item keyset page of active recorded knowledge (`KnowledgeStore::active_page`), ordered by `(confirmed_at DESC, knowledge_id ASC)`. The optional `before_confirmed_at_micros` and `before_knowledge_id` cursor fields must be supplied together; a nonterminal response returns their next-page value in `next_before`, while a terminal page returns `next_before: null`. This deterministic Bridge listing remains distinct from gRPC semantic `recall` ranking. |
+| `GET /graph` | The Context Graph page (static HTML/JS): the Memory Plane's projected neighbourhood, rendered as a dependency-free SVG force layout. Edge stroke width and opacity are both derived from `effective_weight`, so decay is something an operator sees rather than a number they have to look up, and the projection's ledger position and rebuild time are shown alongside the graph so a stale projection is legible. Selecting a node lists its edges by weight and can re-seed the traversal from it. Read-only: the graph is derived from the ledger, so a mutation here could only contradict its own source. |
 | `GET /api/v1/repositories/:repository_id/graph` | A bounded Context Graph neighbourhood (`Projector::bounded_neighborhood`, ADR-0087), the same relevance-first traversal the projection worker already implements — wired to the Bridge for the first time rather than a new query. Optional `seeds` (comma-separated node ids; an absent value falls back to `Projector::sample_nodes`, the most recently touched nodes), `depth` (clamped 1-4), `max_nodes` (clamped 1-300), and `max_fanout` (clamped 1-30). Each edge's `effective_weight` is computed at response time from `base_weight`/`half_life_hours`/`updated_at`, mirroring `mindleak_core::decay::effective_weight` exactly — never stored. |
 | `GET /api/v1/repositories/:repository_id/constitution` | Its published constitution snapshot, if any (`ConstitutionStore::get_active`) with immutable publication source/digest metadata when that version was recorded — read-only; no adopt/tailor/reject/promote/waiver action is exposed here. |
 | `GET`/`POST /api/v1/repositories/:repository_id/constitution/proposals`, `POST .../proposals/:proposal_id/withdraw` | ADR-0126: list, submit, and withdraw a Bridge-originated proposed clause change (`ConstitutionStore::list_proposals`/`propose_clause`/`withdraw_proposal`). The only write path this domain exposes, and it only ever touches `constitution_proposals` — never `constitution_publications`, the table only a repository's own local `amend_constitution` writes. Withdrawal is gated to the proposal's own author. |
 | `GET /constitution` | A static, visible-refresh-only tenant Constitution page. It renders the selected repository's published version, source/digest provenance, and bounded clauses through the existing constitution endpoint, plus (ADR-0126) a propose-a-clause form and a rendered pending/withdrawn proposal list; it does not inspect local Lodestar storage, and every mutation it can make targets the proposals sub-resource above, never the published constitution endpoint itself. |
 | `GET /api/v1/repositories/:repository_id/telemetry` | Its per-name current health (`TelemetryStore::read`, ADR-0105 decision 6) — lifetime `calls`/`errors` alongside `currently_failing`, derived from the most recent success/error rather than the lifetime count, so a resolved past error stops reading as an active fault once a later call succeeds. Rendered as tenant-scoped health cards, grouped by kind, at `GET /telemetry` (static HTML/JS), including bounded bucketed sparkline history and a newest-first diagnostic sample of at most 50 recent accepted telemetry events from the same authoritative store. |
 | `POST /api/v1/repositories/:repository_id/tasks/:task_id/recover` | Bridge's first claim **mutation** (ADR-0111): recovers a stranded claim by calling `ClaimStore::recover` directly, tenant-scoped and reason-required. `delegate`, `release`, and `renew` remain node-signed-only and are not exposed here. The handler resolves `expected_owner` itself via the new `FleetStore::claim_owner` (unlike `active_work`, this does not filter out an already-expired lease), rather than trusting a caller-supplied value. |
+| `GET /administration` | The Administration page (static HTML/JS): tenant-scoped status, the operation-capability list, and — only when `claim_recovery` reports `available` — the stranded-claim recovery workflow above, reusing the same `/stranded-claims` and `/recover` routes rather than a second implementation. |
+| `GET /api/v1/repositories/:repository_id/administration/status` | ADR-0119's status/inspection class: projection freshness and ledger position (`FleetStore::repository`), an honestly `not_reported` durability report, and the fixed six-operation capability list (`status_inspection`, `snapshot`, `export`, `claim_recovery`, `recovery_inspection`, `lifecycle_purge`) naming which are available, refused, or unavailable and why under the current loopback profile. |
+| `POST /api/v1/administration/policies` | ADR-0119 decision 2 / ADR-0128: adopts a new `AdministrationPolicy` naming its operation, platform-or-tenant scope, data classification, retention basis, and bounded lifetime, attributed to the loopback developer profile's own salted token (`administration_store::AdministrationStore::adopt_policy`). An identical resubmission under the same idempotency key replays the original record; a changed one conflicts (`409`). |
+| `POST /api/v1/administration/snapshots` | Requests, then synchronously executes, a platform Snapshot under an already-adopted, still-active policy (`administration_store::request_snapshot` + `snapshot_provider::create_platform_snapshot`): refuses (`409`) before any request row exists if no active policy authorizes it, otherwise runs `pg_dump --format=custom`, encrypts the artifact, and records an immutable receipt (outcome, reason, artifact path, manifest digest, encryption key id, size, and verified flag) that a retried request replays rather than re-executes. |
+| `GET /api/v1/administration/snapshots/:request_id` | The receipt recorded for one prior Snapshot request, if any. |
+| `POST /api/v1/repositories/:repository_id/administration/purges` | ADR-0119 decisions 7/9: previews a Lifecycle purge -- refuses (`409`, no request row created) without an active tenant-scoped `LifecyclePurge` policy, otherwise counts matching `telemetry_events` rows and records a bounded, expiring, idempotent preview naming the exact cutoff and confirmation window. |
+| `POST /api/v1/repositories/:repository_id/administration/purges/:request_id/confirm` | Executes (or refuses/expires) a previously previewed purge. A confirmation past its window, or against a since-revoked policy, still returns a receipt (`expired`/`refused`) rather than deleting anything; only a fresh preview restarts the clock. Idempotent: re-confirming an already-receipted request replays it rather than deleting a second time. Tenant- and repository-scoped: only the principal and repository that made the request may confirm or read it. |
+| `GET /api/v1/repositories/:repository_id/administration/purges/:request_id` | The receipt recorded for one prior purge request, if any, under the same ownership rule as confirm. |
+| `POST /api/v1/administration/snapshots/:request_id/inspect` | ADR-0119 decision 6: inspects the Snapshot artifact recorded for `request_id` -- digest integrity, decryptability with the installation's own key, and `pg_restore --list` archive validity -- and durably records a new report. Refuses (`409`) when the request has no `succeeded` receipt to inspect. Needs no adopted policy: inspection is read-only and never touches production authority. |
+| `GET /api/v1/administration/snapshots/:request_id/inspect` | The most recently recorded inspection report for a Snapshot request, if any, tenant-scoped like every other Snapshot/purge read. |
+| `POST /api/v1/repositories/:repository_id/administration/exports` | ADR-0119 decision 5: requests, then synchronously executes, a bounded/redacted Export of `telemetry_events` -- refuses (`409`, no request row created) without an active tenant-scoped `Export` policy, otherwise queries at most `max_records` rows, redacts every internal identifier, and records a `succeeded`/`failed` receipt naming its schema version, record count, and exactly which fields were redacted. Idempotent like Snapshot: a replayed request returns the original receipt rather than re-running the query. |
+| `GET /api/v1/repositories/:repository_id/administration/exports/:request_id` | The receipt recorded for one prior Export request, if any, tenant- and repository-scoped like every other Snapshot/purge/export read. |
 | `GET /static/shared/chrome.css` / `GET /static/shared/chrome.js` | The one shared brand-mark and grouped-nav asset every static page loads (ADR-0124), served by `shared_assets.rs` with the correct `Content-Type`. `chrome.js`'s `NAV_ITEMS` is the single declared list of every ADR-0105 decision 5 capability; `chrome.css` styles it through six neutral `--chrome-*` custom properties that each page bridges onto its own palette. A page's entire brand/nav footprint is two mount points (`[data-bridge-brand]`, `[data-bridge-nav]`) plus these two tags — never its own copy of the nav's markup, CSS, or disclosure script. |
 
 ### `editors/vscode` (extension)

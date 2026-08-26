@@ -15,17 +15,20 @@ use ackplane_bridge::shared_assets::shared_asset_routes;
 use ackplane_bridge::supervisor_api::{supervisor_routes, SupervisorApiState};
 use ackplane_bridge::work_api::{work_routes, WorkApiState};
 use ackplane_bridge::BridgeConfig;
+use ackplane_server::administration_store::AdministrationStore;
 use ackplane_server::claim_store::ClaimStore;
 use ackplane_server::constitution_store::ConstitutionStore;
 use ackplane_server::context_packet_store::ContextPacketStore;
 use ackplane_server::delegation_store::DelegationStore;
 use ackplane_server::design_materialization_store::MaterializationStore;
 use ackplane_server::design_store::DesignStore;
+use ackplane_server::export_provider::ExportProviderConfig;
 use ackplane_server::fleet::{FleetStore, RepositoryFreshness};
 use ackplane_server::knowledge_store::KnowledgeStore;
 use ackplane_server::live_feed_store::LiveFeedStore;
 use ackplane_server::projection::Projector;
 use ackplane_server::readiness::ReadinessStore;
+use ackplane_server::snapshot_provider::SnapshotProviderConfig;
 use ackplane_server::supervisor_store::SupervisorStore;
 use ackplane_server::telemetry_store::TelemetryStore;
 use ackplane_server::work_store::WorkStore;
@@ -48,6 +51,7 @@ use handlers::{
 
 const FLEET_PAGE: &str = include_str!("../static/index.html");
 const AGENTS_PAGE: &str = include_str!("../static/agents.html");
+const GRAPH_PAGE: &str = include_str!("../static/graph.html");
 
 #[derive(Clone)]
 struct AppState {
@@ -221,6 +225,30 @@ async fn main() {
             return;
         }
     };
+    let administration_store = match AdministrationStore::connect(config.database_url()).await {
+        Ok(administration) => Arc::new(Mutex::new(administration)),
+        Err(error) => {
+            eprintln!(
+                "ackplane-bridge: could not connect to Ackplane's Administration domain: {error}"
+            );
+            return;
+        }
+    };
+    // `None` (Snapshot reports `unavailable`) unless an operator has opted in
+    // by setting `ACKPLANE_SNAPSHOT_DIR` -- resolved, never guessed, the same
+    // rule `BridgeConfig::resolve` already applies to its own settings.
+    let snapshot_config = SnapshotProviderConfig::resolve(
+        |key| std::env::var(key).ok(),
+        config.database_url().to_string(),
+    )
+    .map(Arc::new);
+    // Same "refuse, never guess" rule as Snapshot: `None` unless an operator
+    // has set `ACKPLANE_EXPORT_DIR`.
+    let export_config = ExportProviderConfig::resolve(
+        |key| std::env::var(key).ok(),
+        config.database_url().to_string(),
+    )
+    .map(Arc::new);
     let tenant_id: Arc<str> = Arc::from(config.development_tenant_token.clone());
     let evidence_api_state =
         EvidenceApiState::new(evidence_store, fleet_store.clone(), tenant_id.clone());
@@ -237,8 +265,13 @@ async fn main() {
         DelegationApiState::new(delegation_store, fleet_store.clone(), tenant_id.clone());
     let work_api_state =
         WorkApiState::new(work_store.clone(), fleet_store.clone(), tenant_id.clone());
-    let administration_api_state =
-        AdministrationApiState::new(fleet_store.clone(), tenant_id.clone());
+    let administration_api_state = AdministrationApiState::new(
+        fleet_store.clone(),
+        tenant_id.clone(),
+        administration_store,
+        snapshot_config,
+        export_config,
+    );
     let live_feed_api_state =
         LiveFeedApiState::new(live_feed_store, fleet_store.clone(), tenant_id.clone());
     let design_api_state = DesignApiState::new(
@@ -261,6 +294,7 @@ async fn main() {
     let application = Router::new()
         .route("/", get(fleet_page))
         .route("/agents", get(agents_page))
+        .route("/graph", get(graph_page))
         .route("/telemetry", get(telemetry_page))
         .route("/constitution", get(constitution_page))
         .route("/api/v1/fleet", get(fleet))
@@ -352,6 +386,10 @@ async fn agents_page() -> impl IntoResponse {
     Html(AGENTS_PAGE)
 }
 
+async fn graph_page() -> impl IntoResponse {
+    Html(GRAPH_PAGE)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,6 +433,109 @@ mod tests {
             "/api/v1/agents?",
         ] {
             assert!(body.contains(required), "agents.html is missing {required}");
+        }
+    }
+
+    async fn graph_page_body() -> String {
+        let response = graph_page().await.into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("reading the graph page body");
+        String::from_utf8(body.to_vec()).expect("graph page body is valid UTF-8")
+    }
+
+    /// The controls must not offer a range wider than `repository_graph`
+    /// itself accepts: it clamps depth/max_nodes/max_fanout server-side, so a
+    /// control promising more would silently return a smaller answer than the
+    /// operator asked for.
+    #[tokio::test]
+    async fn graph_page_reads_the_projection_within_the_endpoints_own_bounds() {
+        let body = graph_page_body().await;
+
+        assert!(
+            body.contains("/graph`"),
+            "graph.html must query the repository graph endpoint"
+        );
+        for (control, bound) in [
+            ("depth", "max=\"4\""),
+            ("max_nodes", "max=\"300\""),
+            ("max_fanout", "max=\"30\""),
+        ] {
+            assert!(
+                body.contains(bound),
+                "graph.html's {control} control must stop at the endpoint's own limit ({bound})"
+            );
+        }
+    }
+
+    /// Decay is the point (MindLeak invariant 2), so effective weight has to
+    /// reach what the operator actually sees. A page that computed it and
+    /// showed it only in a tooltip would render every edge identically and
+    /// hide the one property the graph exists to express.
+    #[tokio::test]
+    async fn graph_page_draws_decay_rather_than_only_reporting_it() {
+        let body = graph_page_body().await;
+
+        for derived in [
+            "stroke-width\",(0.6+w*2.4)",
+            "stroke-opacity\",(0.14+w*0.66)",
+        ] {
+            assert!(
+                body.contains(derived),
+                "graph.html must derive {derived} from an edge's effective weight"
+            );
+        }
+    }
+
+    /// `repository_graph` returns the projection's ledger position and rebuild
+    /// time for one reason: a stale projection must be legible rather than
+    /// quietly old. "Never projected" and "projected at position 0" are
+    /// different answers and the page must not collapse them.
+    #[tokio::test]
+    async fn graph_page_makes_an_absent_or_stale_projection_legible() {
+        let body = graph_page_body().await;
+
+        for required in [
+            "data.projection_stream_position",
+            "data.projected_at_seconds",
+            "no projection yet",
+            "over a day old",
+        ] {
+            assert!(body.contains(required), "graph.html is missing {required}");
+        }
+    }
+
+    /// The memory plane is observed here, never edited: the graph is derived
+    /// from the ledger, so a mutation from this page could only ever
+    /// contradict its own source.
+    #[tokio::test]
+    async fn graph_page_only_ever_reads() {
+        let body = graph_page_body().await;
+
+        assert_eq!(
+            body.matches("fetch(").count(),
+            1,
+            "graph.html should make exactly one request - the graph read"
+        );
+        for verb in ["\"POST\"", "\"PUT\"", "\"PATCH\"", "\"DELETE\""] {
+            assert!(
+                !body.contains(verb),
+                "graph.html must not carry the mutating verb {verb}"
+            );
+        }
+    }
+
+    /// A force simulation left running in a hidden tab burns a core for
+    /// nobody, the same discipline the fleet page's polling already follows.
+    #[tokio::test]
+    async fn graph_page_stops_simulating_while_hidden() {
+        let body = graph_page_body().await;
+
+        for required in [
+            "document.visibilityState!==\"visible\"",
+            "document.addEventListener(\"visibilitychange\"",
+        ] {
+            assert!(body.contains(required), "graph.html is missing {required}");
         }
     }
 
