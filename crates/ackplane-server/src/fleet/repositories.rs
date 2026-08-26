@@ -18,7 +18,7 @@ impl FleetStore {
         let query = format!(
             "SELECT request.repository_id, count(*)::BIGINT, max(receipt.activated_at), \
                     COALESCE(head.position, 0), state.stream_position, state.projected_at, \
-                    COUNT(*) OVER()::BIGINT \
+                    COUNT(*) OVER()::BIGINT, COALESCE(projected_head.position, 0) \
              FROM enrollment_requests AS request \
              INNER JOIN enrollment_receipts AS receipt \
                 ON receipt.tenant_id = request.tenant_id \
@@ -30,21 +30,23 @@ impl FleetStore {
              LEFT JOIN stream_heads AS head \
                 ON head.tenant_id = request.tenant_id \
                AND head.repository_id = request.repository_id \
+             {projected_head_join} \
              WHERE request.tenant_id = $1 \
                AND ($2::text IS NULL OR request.repository_id ILIKE '%' || $2 || '%' ESCAPE '\\') \
-             GROUP BY request.repository_id, head.position, \
+             GROUP BY request.repository_id, head.position, projected_head.position, \
                       state.stream_position, state.projected_at \
              HAVING ($3::text IS NULL \
                      OR ($3 = 'never_projected' AND state.stream_position IS NULL) \
                      OR ($3 = 'lagging' AND state.stream_position IS NOT NULL \
-                         AND state.stream_position < COALESCE(head.position, 0)) \
+                         AND state.stream_position < COALESCE(projected_head.position, 0)) \
                      OR ($3 = 'fresh' AND state.stream_position IS NOT NULL \
-                         AND state.stream_position >= COALESCE(head.position, 0))) \
+                         AND state.stream_position >= COALESCE(projected_head.position, 0))) \
                  AND ($4::text IS NULL \
                       OR ($4 = 'active' AND count(*) > 0) \
                       OR ($4 = 'none' AND count(*) = 0)) \
              {order_by} \
              LIMIT $5 OFFSET $6",
+            projected_head_join = projected_stream_head_join("request"),
             order_by = sort.order_by_clause(),
         );
         let rows = self
@@ -68,13 +70,14 @@ impl FleetStore {
             .map(|row| {
                 let ledger_stream_position: i64 = row.get(3);
                 let projection_stream_position: Option<i64> = row.get(4);
+                let projected_stream_head: i64 = row.get(7);
                 FleetRepository {
                     repository_id: row.get(0),
                     active_node_count: row.get(1),
                     last_activated_at: row.get(2),
                     ledger_stream_position,
                     freshness: classify_freshness(
-                        ledger_stream_position,
+                        projected_stream_head,
                         projection_stream_position,
                     ),
                     projection_stream_position,
@@ -102,9 +105,11 @@ impl FleetStore {
         let row = self
             .client
             .query_opt(
-                "SELECT request.repository_id, count(*)::BIGINT, max(receipt.activated_at), \
+                &format!(
+                    "SELECT request.repository_id, count(*)::BIGINT, max(receipt.activated_at), \
                         COALESCE(head.position, 0), \
-                        state.stream_position, state.projected_at \
+                        state.stream_position, state.projected_at, \
+                        COALESCE(projected_head.position, 0) \
                  FROM enrollment_requests AS request \
                  INNER JOIN enrollment_receipts AS receipt \
                     ON receipt.tenant_id = request.tenant_id \
@@ -116,9 +121,12 @@ impl FleetStore {
                  LEFT JOIN stream_heads AS head \
                     ON head.tenant_id = request.tenant_id \
                    AND head.repository_id = request.repository_id \
+                 {projected_head_join} \
                  WHERE request.tenant_id = $1 AND request.repository_id = $2 \
-                 GROUP BY request.repository_id, head.position, \
+                 GROUP BY request.repository_id, head.position, projected_head.position, \
                           state.stream_position, state.projected_at",
+                    projected_head_join = projected_stream_head_join("request"),
+                ),
                 &[&tenant_id, &repository_id],
             )
             .await?;
@@ -129,7 +137,8 @@ impl FleetStore {
 
         let ledger_stream_position: i64 = row.get(3);
         let projection_stream_position: Option<i64> = row.get(4);
-        let freshness = classify_freshness(ledger_stream_position, projection_stream_position);
+        let projected_stream_head: i64 = row.get(6);
+        let freshness = classify_freshness(projected_stream_head, projection_stream_position);
 
         Ok(Some(RepositoryDetail {
             repository_id: row.get(0),
@@ -533,6 +542,147 @@ mod tests {
         assert_eq!(detail.ledger_stream_position, 1);
         assert_eq!(detail.projection_stream_position, Some(1));
         assert_eq!(detail.freshness, RepositoryFreshness::Fresh);
+    }
+
+    /// Regression: a fully-projected repository read `Lagging` forever as soon
+    /// as any non-`structural_fact` record landed after its last structural
+    /// fact.
+    ///
+    /// Fleet classified freshness by comparing the projection checkpoint
+    /// against `stream_heads.position`, the head of *every* record in the
+    /// stream, while a projection only consumes structural facts and
+    /// checkpoints at the last one it projected. `Projector::stale_projections`
+    /// filters to that same payload type, so the worker saw nothing to rebuild
+    /// and the gap could never close. Evidence, knowledge, claim, directive,
+    /// and delegation records all share this ledger, so this was the normal
+    /// operating case — including for the server-side `freshness` filter, which
+    /// used the same comparison and so would have reported nearly every healthy
+    /// repository as lagging.
+    ///
+    /// Note the two positions deliberately disagree here: `ledger_stream_position`
+    /// stays the honest whole-ledger head (2) while the projection is correctly
+    /// `Fresh` at 1, because record 2 is not something a projection consumes.
+    #[tokio::test]
+    async fn a_non_structural_record_after_a_rebuild_does_not_make_a_repository_lag() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let (tenant_id, repository_id) =
+            enroll_and_activate(&database_url, &unique_id.to_string()).await;
+
+        let mut ledger = LedgerStore::connect(&database_url)
+            .await
+            .expect("connect ledger store");
+        let fact = StructuralFact {
+            node_id: format!("artifact:fleet-{unique_id}.rs"),
+            node_type: "artifact".to_string(),
+            label: format!("fleet-{unique_id}.rs"),
+            edges: Vec::new(),
+        };
+        let mut envelope = EventEnvelope {
+            key: DedupKey {
+                tenant_id: tenant_id.clone(),
+                repository_id: repository_id.clone(),
+                producer_id: format!("fleet-producer-{unique_id}"),
+                producer_sequence: 1,
+            },
+            payload: serde_json::to_vec(&fact).expect("encode structural fact"),
+            payload_digest: vec![4, 5, 6],
+            schema_version: "v1".to_string(),
+            occurred_at: SystemTime::now(),
+            payload_type: "structural_fact".to_string(),
+            previous_envelope_digest: None,
+            signing_key_id: None,
+            signature: None,
+            provenance: ProvenanceClass::EnrolledNode,
+        };
+        ledger.append(&envelope).await.expect("append envelope");
+
+        let mut projector = Projector::connect(&database_url)
+            .await
+            .expect("connect projector");
+        projector
+            .rebuild(&tenant_id, &repository_id)
+            .await
+            .expect("rebuild projection");
+
+        // Something the projection never consumes lands afterwards. No rebuild
+        // can advance the checkpoint past it, so it must not read as lagging.
+        envelope.key.producer_sequence = 2;
+        envelope.payload = b"not a structural fact".to_vec();
+        envelope.payload_type = "evidence_record".to_string();
+        ledger
+            .append(&envelope)
+            .await
+            .expect("append non-structural record");
+
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+
+        let detail = fleet
+            .repository(&tenant_id, &repository_id)
+            .await
+            .expect("query repository detail")
+            .expect("repository is enrolled");
+        assert_eq!(
+            detail.ledger_stream_position, 2,
+            "the whole-ledger head is still reported honestly"
+        );
+        assert_eq!(detail.projection_stream_position, Some(1));
+        assert_eq!(detail.freshness, RepositoryFreshness::Fresh);
+
+        let listed = fleet
+            .repositories(
+                &tenant_id,
+                FleetFilter::default(),
+                FleetSort::default_order(),
+                1,
+                10,
+            )
+            .await
+            .expect("query fleet repositories");
+        assert_eq!(listed.repositories.len(), 1);
+        assert_eq!(listed.repositories[0].freshness, RepositoryFreshness::Fresh);
+        assert_eq!(listed.repositories[0].ledger_stream_position, 2);
+
+        // The server-side filter must agree with the classification, not
+        // re-derive it from the whole-ledger head.
+        let lagging = fleet
+            .repositories(
+                &tenant_id,
+                FleetFilter {
+                    freshness: Some("lagging"),
+                    ..Default::default()
+                },
+                FleetSort::default_order(),
+                1,
+                10,
+            )
+            .await
+            .expect("query lagging-only");
+        assert_eq!(
+            lagging.total, 0,
+            "a caught-up repository must not be returned by the lagging filter"
+        );
+
+        let fresh = fleet
+            .repositories(
+                &tenant_id,
+                FleetFilter {
+                    freshness: Some("fresh"),
+                    ..Default::default()
+                },
+                FleetSort::default_order(),
+                1,
+                10,
+            )
+            .await
+            .expect("query fresh-only");
+        assert_eq!(fresh.total, 1);
+        assert_eq!(fresh.repositories[0].repository_id, repository_id);
     }
 
     #[tokio::test]

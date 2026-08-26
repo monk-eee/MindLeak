@@ -10,6 +10,7 @@ use std::time::SystemTime;
 
 use tokio_postgres::{Client, NoTls};
 
+use crate::projection::STRUCTURAL_FACT_PAYLOAD_TYPE;
 use crate::signing_keys::{self, EnvelopeBinding, KeyResolution, SigningKeyError};
 
 const ENROLLMENT_MIGRATION: &str = include_str!("../../migrations/0003_enrollment.sql");
@@ -49,20 +50,54 @@ pub enum RepositoryFreshness {
     Fresh,
 }
 
-/// Classify a projection's currency against the ledger head (ADR-0095
-/// decision 6), shared by every read that reports freshness so the Fleet
-/// list and a single repository's detail can never disagree about what
-/// "lagging" means. `pub(crate)` so the Readiness rollup classifies the
-/// exact same way rather than inventing a second judgment.
+/// Classify a projection's currency against the head of the stream it
+/// actually consumes (ADR-0095 decision 6), shared by every read that reports
+/// freshness so the Fleet list and a single repository's detail can never
+/// disagree about what "lagging" means. `pub(crate)` so the Readiness rollup
+/// classifies the exact same way rather than inventing a second judgment.
+///
+/// `projected_stream_head` must come from [`projected_stream_head_join`], not
+/// from `stream_heads.position` — see that function for why the distinction
+/// is load-bearing rather than cosmetic.
 pub(crate) fn classify_freshness(
-    ledger_stream_position: i64,
+    projected_stream_head: i64,
     projection_stream_position: Option<i64>,
 ) -> RepositoryFreshness {
     match projection_stream_position {
         None => RepositoryFreshness::NeverProjected,
-        Some(projected) if projected < ledger_stream_position => RepositoryFreshness::Lagging,
+        Some(projected) if projected < projected_stream_head => RepositoryFreshness::Lagging,
         Some(_) => RepositoryFreshness::Fresh,
     }
+}
+
+/// Join the head of the stream a graph projection can actually reach, exposed
+/// as `projected_head.position`.
+///
+/// `stream_heads.position` is the head of *every* record in a repository's
+/// ledger, but a projection only ever consumes [`STRUCTURAL_FACT_PAYLOAD_TYPE`]
+/// records and checkpoints itself at the last one it projected. Classifying
+/// freshness against the whole-ledger head therefore reported a repository as
+/// `Lagging` for a gap no rebuild could ever close: `Projector`'s own staleness
+/// query filters to this same payload type, so it saw nothing to do and the
+/// warning never cleared. Evidence, knowledge, claim, directive, and delegation
+/// records share this ledger, so that was the normal case rather than an edge
+/// case. Every read that classifies freshness joins this, which is what makes
+/// Fleet, Readiness, and the worker agree on "caught up" by construction.
+///
+/// The whole-ledger head is still worth reporting — it is the honest answer to
+/// "how many records has this repository published" — so callers keep selecting
+/// `stream_heads.position` for display and use this only for the comparison.
+pub(crate) fn projected_stream_head_join(request_alias: &str) -> String {
+    format!(
+        "LEFT JOIN ( \
+             SELECT tenant_id, repository_id, max(stream_position) AS position \
+             FROM ledger_records \
+             WHERE payload_type = '{STRUCTURAL_FACT_PAYLOAD_TYPE}' \
+             GROUP BY tenant_id, repository_id \
+         ) AS projected_head \
+            ON projected_head.tenant_id = {request_alias}.tenant_id \
+           AND projected_head.repository_id = {request_alias}.repository_id"
+    )
 }
 
 /// One repository's coordination, ledger, and projection state (ADR-0095
