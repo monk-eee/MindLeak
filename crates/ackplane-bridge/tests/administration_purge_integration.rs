@@ -315,7 +315,7 @@ async fn previewing_then_confirming_a_purge_deletes_only_the_previewed_scope() {
     let (foreign_status, foreign_body) = post_json(
         &foreign_router,
         &format!("/api/v1/repositories/{repository_id}/administration/purges/{request_id}/confirm"),
-        json!({}),
+        json!({ "confirming_label": "a-distinct-reviewer" }),
     )
     .await;
     assert_eq!(
@@ -327,12 +327,16 @@ async fn previewing_then_confirming_a_purge_deletes_only_the_previewed_scope() {
     let (confirm_status, confirm_body) = post_json(
         &router,
         &format!("/api/v1/repositories/{repository_id}/administration/purges/{request_id}/confirm"),
-        json!({}),
+        json!({ "confirming_label": "a-distinct-reviewer" }),
     )
     .await;
     assert_eq!(confirm_status, StatusCode::OK, "body was {confirm_body:?}");
     assert_eq!(confirm_body["outcome"], json!("succeeded"));
     assert_eq!(confirm_body["rows_deleted"], json!(1));
+    assert_eq!(
+        confirm_body["confirming_label"],
+        json!("a-distinct-reviewer")
+    );
 
     let (status_status, status_body) = get_json(
         &router,
@@ -341,4 +345,212 @@ async fn previewing_then_confirming_a_purge_deletes_only_the_previewed_scope() {
     .await;
     assert_eq!(status_status, StatusCode::OK, "body was {status_body:?}");
     assert_eq!(status_body["receipt_id"], confirm_body["receipt_id"]);
+}
+
+#[tokio::test]
+async fn confirming_with_the_requesting_tenants_own_label_is_refused_and_retryable() {
+    let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let suffix = unique_suffix();
+    let tenant_id = format!("tenant-administration-purge-self-confirm-{suffix}");
+    let repository_id = format!("repository-administration-purge-self-confirm-{suffix}");
+    enroll_repository(&database_url, &tenant_id, &repository_id, &suffix).await;
+
+    let now = SystemTime::now();
+    let cutoff = now - Duration::from_secs(3600);
+    insert_telemetry_event(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &format!("old-{suffix}"),
+        cutoff - Duration::from_secs(60),
+    )
+    .await;
+
+    let fleet = Arc::new(
+        FleetStore::connect(&database_url)
+            .await
+            .expect("the test database should accept Fleet connections"),
+    );
+    let administration = AdministrationStore::connect(&database_url)
+        .await
+        .expect("the test database should accept Administration store connections");
+    let state = AdministrationApiState::new(
+        fleet,
+        Arc::from(tenant_id.clone()),
+        Arc::new(Mutex::new(administration)),
+        None,
+        None,
+    );
+    let router = administration_routes(state);
+
+    let (policy_status, policy_body) = post_json(
+        &router,
+        "/api/v1/administration/policies",
+        json!({
+            "operation": "lifecycle_purge",
+            "scope": "tenant",
+            "tenant_id": tenant_id,
+            "data_classification": "diagnostic-telemetry",
+            "retention_basis": "operator-defined retention window, ADR-0119 decision 7",
+            "idempotency_key": format!("purge-policy-self-confirm-{suffix}"),
+            "lifetime_seconds": 3600,
+        }),
+    )
+    .await;
+    assert_eq!(policy_status, StatusCode::OK, "body was {policy_body:?}");
+    let policy_id = policy_body["policy_id"]
+        .as_str()
+        .expect("the response should carry a policy_id")
+        .to_string();
+
+    let (preview_status, preview_body) = post_json(
+        &router,
+        &format!("/api/v1/repositories/{repository_id}/administration/purges"),
+        json!({
+            "policy_id": policy_id,
+            "data_category": "telemetry_events",
+            "older_than_seconds": cutoff.duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            "confirmation_window_seconds": 900,
+            "idempotency_key": format!("purge-request-self-confirm-{suffix}"),
+        }),
+    )
+    .await;
+    assert_eq!(preview_status, StatusCode::OK, "body was {preview_body:?}");
+    let request_id = preview_body["request_id"]
+        .as_str()
+        .expect("the response should carry a request_id")
+        .to_string();
+
+    // The tenant token that submitted the preview cannot also confirm it
+    // (ADR-0119 decision 7): the Bridge's only caller identity here is the
+    // loopback tenant token, so a same-label confirm is exactly a same-
+    // principal self-approval.
+    let (self_confirm_status, self_confirm_body) = post_json(
+        &router,
+        &format!("/api/v1/repositories/{repository_id}/administration/purges/{request_id}/confirm"),
+        json!({ "confirming_label": tenant_id }),
+    )
+    .await;
+    assert_eq!(
+        self_confirm_status,
+        StatusCode::BAD_REQUEST,
+        "body was {self_confirm_body:?}"
+    );
+
+    // The refused attempt must not have consumed the one-shot receipt: a
+    // distinct label still succeeds afterwards.
+    let (confirm_status, confirm_body) = post_json(
+        &router,
+        &format!("/api/v1/repositories/{repository_id}/administration/purges/{request_id}/confirm"),
+        json!({ "confirming_label": "a-distinct-reviewer" }),
+    )
+    .await;
+    assert_eq!(confirm_status, StatusCode::OK, "body was {confirm_body:?}");
+    assert_eq!(confirm_body["outcome"], json!("succeeded"));
+    assert_eq!(
+        confirm_body["confirming_label"],
+        json!("a-distinct-reviewer")
+    );
+}
+
+#[tokio::test]
+async fn confirming_with_an_empty_label_is_refused_and_retryable() {
+    let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let suffix = unique_suffix();
+    let tenant_id = format!("tenant-administration-purge-empty-confirm-{suffix}");
+    let repository_id = format!("repository-administration-purge-empty-confirm-{suffix}");
+    enroll_repository(&database_url, &tenant_id, &repository_id, &suffix).await;
+
+    let now = SystemTime::now();
+    let cutoff = now - Duration::from_secs(3600);
+    insert_telemetry_event(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &format!("old-{suffix}"),
+        cutoff - Duration::from_secs(60),
+    )
+    .await;
+
+    let fleet = Arc::new(
+        FleetStore::connect(&database_url)
+            .await
+            .expect("the test database should accept Fleet connections"),
+    );
+    let administration = AdministrationStore::connect(&database_url)
+        .await
+        .expect("the test database should accept Administration store connections");
+    let state = AdministrationApiState::new(
+        fleet,
+        Arc::from(tenant_id.clone()),
+        Arc::new(Mutex::new(administration)),
+        None,
+        None,
+    );
+    let router = administration_routes(state);
+
+    let (policy_status, policy_body) = post_json(
+        &router,
+        "/api/v1/administration/policies",
+        json!({
+            "operation": "lifecycle_purge",
+            "scope": "tenant",
+            "tenant_id": tenant_id,
+            "data_classification": "diagnostic-telemetry",
+            "retention_basis": "operator-defined retention window, ADR-0119 decision 7",
+            "idempotency_key": format!("purge-policy-empty-confirm-{suffix}"),
+            "lifetime_seconds": 3600,
+        }),
+    )
+    .await;
+    assert_eq!(policy_status, StatusCode::OK, "body was {policy_body:?}");
+    let policy_id = policy_body["policy_id"]
+        .as_str()
+        .expect("the response should carry a policy_id")
+        .to_string();
+
+    let (preview_status, preview_body) = post_json(
+        &router,
+        &format!("/api/v1/repositories/{repository_id}/administration/purges"),
+        json!({
+            "policy_id": policy_id,
+            "data_category": "telemetry_events",
+            "older_than_seconds": cutoff.duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            "confirmation_window_seconds": 900,
+            "idempotency_key": format!("purge-request-empty-confirm-{suffix}"),
+        }),
+    )
+    .await;
+    assert_eq!(preview_status, StatusCode::OK, "body was {preview_body:?}");
+    let request_id = preview_body["request_id"]
+        .as_str()
+        .expect("the response should carry a request_id")
+        .to_string();
+
+    let (empty_status, empty_body) = post_json(
+        &router,
+        &format!("/api/v1/repositories/{repository_id}/administration/purges/{request_id}/confirm"),
+        json!({ "confirming_label": "   " }),
+    )
+    .await;
+    assert_eq!(
+        empty_status,
+        StatusCode::BAD_REQUEST,
+        "body was {empty_body:?}"
+    );
+
+    let (confirm_status, confirm_body) = post_json(
+        &router,
+        &format!("/api/v1/repositories/{repository_id}/administration/purges/{request_id}/confirm"),
+        json!({ "confirming_label": "a-distinct-reviewer" }),
+    )
+    .await;
+    assert_eq!(confirm_status, StatusCode::OK, "body was {confirm_body:?}");
+    assert_eq!(confirm_body["outcome"], json!("succeeded"));
 }

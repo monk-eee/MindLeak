@@ -137,6 +137,11 @@ pub(crate) mod key {
     /// `ackplane_schema_migrations` (only 46 applied above 42 at the time
     /// this was drafted) before picking 47.
     pub(crate) const ADMINISTRATION_EXPORT: i64 = 47;
+    /// `migrations/0049_administration_purge_confirming_label.sql`. Key 48
+    /// was already reached by the shared development database from
+    /// concurrent, then-unmerged work (this session's own ADR-0131 branch) --
+    /// checked via `migration-audit.mjs --next` before picking 49.
+    pub(crate) const ADMINISTRATION_PURGE_CONFIRMING_LABEL: i64 = 49;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

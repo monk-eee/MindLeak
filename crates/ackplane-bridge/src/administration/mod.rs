@@ -350,7 +350,8 @@ fn administration_error_status(error: AdministrationStoreError) -> StatusCode {
         | AdministrationStoreError::InvalidPurpose
         | AdministrationStoreError::InvalidMaxRecords
         | AdministrationStoreError::InvalidSchemaVersion
-        | AdministrationStoreError::InconsistentScope => StatusCode::BAD_REQUEST,
+        | AdministrationStoreError::InconsistentScope
+        | AdministrationStoreError::SelfConfirmationRefused => StatusCode::BAD_REQUEST,
         AdministrationStoreError::UnknownPolicy { .. }
         | AdministrationStoreError::UnknownRequest { .. }
         | AdministrationStoreError::UnknownPurgeRequest { .. }
