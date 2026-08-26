@@ -18,6 +18,12 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import {
+  callTools,
+  liveClaimHeldByAnother,
+  resolveServer,
+} from "./claim-gate.mjs";
+
 export const MARKER_NAME = "lodestar-owner";
 
 /// Decide what to do given the recorded owner and the acting session. Pure, so
@@ -201,6 +207,75 @@ export function dirtyWorkingTreeWarning({ checked, paths }) {
   );
 }
 
+// ADR-0130: unlike the dirty-tree and PR checks above, a live Lodestar claim
+// on this exact branch, held by someone else, is not an ambiguous signal --
+// `task_claim`'s own compare-and-swap already treats it as an unconditional
+// loss. Reuses the exact resolveServer/callTools plumbing
+// scripts/canonical-push.mjs already drives Lodestar through, rather than
+// inventing a second way to reach the same server.
+export function checkActiveClaimOnBranch({
+  branch,
+  session,
+  cwd = process.cwd(),
+  now = Date.now() / 1000,
+  capture: gitCall = capture,
+  resolveServer: resolve = resolveServer,
+  callTools: call = callTools,
+} = {}) {
+  if (!session) return { checked: false, claim: null };
+  let repoRoot;
+  try {
+    repoRoot = gitCall(["rev-parse", "--show-toplevel"], cwd);
+  } catch {
+    return { checked: false, claim: null };
+  }
+  const server = resolve(repoRoot, "lodestar");
+  if (!server) return { checked: false, claim: null };
+  let board;
+  try {
+    [board] = call(server, cwd, [
+      {
+        name: "task_query",
+        arguments: {
+          view: "board",
+          include_terminal: false,
+          branch,
+          detail: false,
+        },
+      },
+    ]);
+  } catch {
+    return { checked: false, claim: null };
+  }
+  const tasks = Array.isArray(board) ? board : (board?.tasks ?? []);
+  return {
+    checked: true,
+    claim: liveClaimHeldByAnother(tasks, branch, session, now),
+  };
+}
+
+/// Render the active-claim pre-flight as a message for the rescuer, or
+/// `null` when there is nothing to say. Refusal, not a warning: this is the
+/// one adopt-path signal ADR-0130 treats as unconditional rather than
+/// advisory, because it mirrors what `task_claim` itself would already
+/// refuse to hand over.
+export function activeClaimRefusal({ branch, checked, claim }) {
+  if (!checked) {
+    return (
+      `worktree-owner: could not check Lodestar for a live claim on '${branch}'\n` +
+      "  (no server binary resolved, or the ledger is unreachable) -- adopting anyway.\n" +
+      "  Verify by hand before committing: ask whoever might be working on this branch."
+    );
+  }
+  if (!claim) return null;
+  return (
+    `worktree-owner: '${branch}' is claimed by another session and its lease has not\n` +
+    `  expired (owner ${claim.owner}, task ${claim.id}). Adopting this worktree would take\n` +
+    "  over exactly what task_claim itself would refuse to hand over (ADR-0130).\n" +
+    "  If this is a genuine, deliberate handover, re-run with --override-active-claim."
+  );
+}
+
 /// Resolve the verdict for a working tree, recording ownership when it is
 /// unclaimed. Returns the verdict so callers decide how loudly to fail.
 export function checkWorktreeOwnership({
@@ -240,6 +315,7 @@ if (
 ) {
   const isPostCheckout = process.argv.includes("--stage=post-checkout");
   const adopt = process.argv.includes("--adopt-worktree");
+  const overrideActiveClaim = process.argv.includes("--override-active-claim");
   const verdict = checkWorktreeOwnership({ adopt });
   if (adopt) {
     const branch = capture(["branch", "--show-current"], process.cwd());
@@ -250,6 +326,26 @@ if (
     if (prWarning) console.error(prWarning);
     const dirtyWarning = dirtyWorkingTreeWarning(checkWorkingTreeDirty());
     if (dirtyWarning) console.error(dirtyWarning);
+    // ADR-0130: refusal, not a warning -- the one adopt-path signal treated
+    // as unconditional, because it mirrors what task_claim itself would
+    // already refuse to hand over. Checked last so the PR/dirty warnings
+    // above still print even when this refuses.
+    const activeClaim = checkActiveClaimOnBranch({
+      branch,
+      session: verdict.session,
+    });
+    const claimRefusal = activeClaimRefusal(activeClaim);
+    if (claimRefusal) {
+      if (activeClaim.claim && !overrideActiveClaim) {
+        console.error(claimRefusal);
+        process.exit(4);
+      }
+      console.error(
+        activeClaim.claim
+          ? `${claimRefusal}\n  Proceeding anyway: --override-active-claim was given.`
+          : claimRefusal,
+      );
+    }
   }
   if (verdict.action === "refuse") {
     if (isPostCheckout) {
