@@ -17,6 +17,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 pub use ackplane_protocol::claim_auth::ClaimOperation;
+pub use ackplane_protocol::purge_confirmation_auth::LifecyclePurgeOperation;
 pub use ackplane_protocol::v1::ClaimAuthentication;
 
 /// A repository node's capability to prove its identity for a claim request.
@@ -167,17 +168,7 @@ pub fn authenticate(
     owner_id: &str,
     operation: &ClaimOperation,
 ) -> ClaimAuthentication {
-    let mut nonce = [0u8; 16];
-    getrandom::getrandom(&mut nonce).expect("the OS random source should be available");
-    let mut authentication = ClaimAuthentication {
-        signing_key_id: signer.signing_key_id().to_string(),
-        node_id: signer.node_id().to_string(),
-        signed_at: OffsetDateTime::now_utc()
-            .format(&Rfc3339)
-            .unwrap_or_default(),
-        nonce: nonce.to_vec(),
-        signature: Vec::new(),
-    };
+    let mut authentication = unsigned_authentication(signer);
     let bytes = ackplane_protocol::claim_auth::claim_signing_bytes(
         tenant_id,
         repository_id,
@@ -190,8 +181,44 @@ pub fn authenticate(
     authentication
 }
 
+/// Build and sign an enrolled-key authentication for one Lifecycle-purge
+/// operation. The Bridge verifies these bytes before it creates a preview or
+/// executes a confirmation.
+pub fn authenticate_lifecycle_purge(
+    signer: &dyn ClaimSigner,
+    tenant_id: &str,
+    repository_id: &str,
+    operation: &LifecyclePurgeOperation,
+) -> ClaimAuthentication {
+    let mut authentication = unsigned_authentication(signer);
+    let bytes = ackplane_protocol::purge_confirmation_auth::lifecycle_purge_signing_bytes(
+        tenant_id,
+        repository_id,
+        operation,
+        &authentication,
+    );
+    authentication.signature = signer.sign(&bytes);
+    authentication
+}
+
+fn unsigned_authentication(signer: &dyn ClaimSigner) -> ClaimAuthentication {
+    let mut nonce = [0u8; 16];
+    getrandom::getrandom(&mut nonce).expect("the OS random source should be available");
+    ClaimAuthentication {
+        signing_key_id: signer.signing_key_id().to_string(),
+        node_id: signer.node_id().to_string(),
+        signed_at: OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_default(),
+        nonce: nonce.to_vec(),
+        signature: Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use ed25519_dalek::{Signature, Verifier};
+
     use super::*;
 
     #[test]
@@ -209,6 +236,46 @@ mod tests {
     #[test]
     fn a_non_hex_character_does_not_decode() {
         assert_eq!(decode_seed(&"zz".repeat(32)), None);
+    }
+
+    #[test]
+    fn lifecycle_purge_authentication_verifies_only_for_its_exact_operation() {
+        let seed = [31u8; 32];
+        let signer = SeedSigner::new("key-a", "node-a", &seed);
+        let operation = LifecyclePurgeOperation::Confirm {
+            request_id: "purge-request-a",
+        };
+        let authentication =
+            authenticate_lifecycle_purge(&signer, "tenant-a", "repository-a", &operation);
+        let bytes = ackplane_protocol::purge_confirmation_auth::lifecycle_purge_signing_bytes(
+            "tenant-a",
+            "repository-a",
+            &operation,
+            &authentication,
+        );
+        let signature = Signature::from_slice(&authentication.signature)
+            .expect("the client helper should produce an Ed25519 signature");
+        SigningKey::from_bytes(&seed)
+            .verifying_key()
+            .verify(&bytes, &signature)
+            .expect("the signature should verify for the exact purge operation");
+        let changed = LifecyclePurgeOperation::Confirm {
+            request_id: "purge-request-b",
+        };
+        let changed_bytes =
+            ackplane_protocol::purge_confirmation_auth::lifecycle_purge_signing_bytes(
+                "tenant-a",
+                "repository-a",
+                &changed,
+                &authentication,
+            );
+        assert!(
+            SigningKey::from_bytes(&seed)
+                .verifying_key()
+                .verify(&changed_bytes, &signature)
+                .is_err(),
+            "a confirmation signature must not authorize another purge request"
+        );
     }
 
     /// A unique account per test run: the OS credential facility is process-

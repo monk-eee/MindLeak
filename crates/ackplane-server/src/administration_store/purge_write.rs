@@ -13,11 +13,14 @@ use tokio_postgres::Transaction;
 
 use super::purge_model::{
     assigned_receipt_id, assigned_request_id, preview_request_digest, receipt_digest,
-    receipt_from_row, request_from_row, validate_confirming_label, validate_preview_request,
-    validate_receipt, NewPurgeReceipt, PurgeDataCategory, PurgeOutcome, PurgePreviewRequest,
-    PurgeReceipt, PurgeRequest, PurgeRequestOutcome,
+    receipt_from_row, request_from_row, validate_preview_request, validate_receipt,
+    NewPurgeReceipt, PurgeDataCategory, PurgeOutcome, PurgePreviewRequest, PurgeReceipt,
+    PurgeRequest, PurgeRequestOutcome,
 };
-use super::{AdministrationOperation, AdministrationStore, AdministrationStoreError};
+use super::{
+    model::require_identifier, AdministrationOperation, AdministrationStore,
+    AdministrationStoreError,
+};
 
 impl AdministrationStore {
     /// Computes and durably records a purge impact preview, refusing
@@ -38,6 +41,21 @@ impl AdministrationStore {
             let outcome = replay_or_conflict(existing, &digest)?;
             transaction.commit().await?;
             return Ok(outcome);
+        }
+
+        async fn existing_request_by_id_for_update(
+            transaction: &Transaction<'_>,
+            request_id: &str,
+        ) -> Result<Option<PurgeRequest>, AdministrationStoreError> {
+            transaction
+                .query_opt(
+                    "SELECT * FROM administration_purge_requests WHERE request_id = $1 FOR UPDATE",
+                    &[&request_id],
+                )
+                .await?
+                .as_ref()
+                .map(request_from_row)
+                .transpose()
         }
 
         let policy_row = transaction
@@ -72,17 +90,20 @@ impl AdministrationStore {
         let inserted = transaction
             .query_opt(
                 "INSERT INTO administration_purge_requests (request_id, policy_id, \
-                     requested_by, tenant_id, repository_id, data_category, older_than, \
-                     preview_row_count, confirmation_expires_at, idempotency_key, requested_at) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) \
+                     requested_by, requesting_node_id, tenant_id, repository_id, data_category, \
+                     requesting_public_key_fingerprint, older_than, preview_row_count, \
+                     confirmation_expires_at, idempotency_key, requested_at) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) \
                  ON CONFLICT DO NOTHING RETURNING *",
                 &[
                     &assigned_id,
                     &request.policy_id,
                     &request.requested_by,
+                    &request.requesting_node_id,
                     &request.tenant_id,
                     &request.repository_id,
                     &request.data_category.as_i16(),
+                    &request.requesting_public_key_fingerprint,
                     &request.older_than,
                     &preview_row_count,
                     &confirmation_expires_at,
@@ -110,20 +131,19 @@ impl AdministrationStore {
 
     /// Executes (or refuses) a previously previewed purge. Idempotent: a
     /// request that already has a receipt returns it unchanged rather than
-    /// deleting a second time. `confirming_label` must be non-empty and
-    /// differ from the request's `requested_by` (ADR-0119 decision 7): a
-    /// same-label or empty-label attempt is refused before any receipt is
-    /// written, since `administration_purge_receipts` allows only one
-    /// receipt per request ever and a caller must be able to retry with a
-    /// correct label inside the same confirmation window.
+    /// deleting a second time. The confirmer is a verified enrolled
+    /// signing-key principal and must differ from the key that created the
+    /// preview; caller-provided labels never authorize a purge.
     pub async fn confirm_purge(
         &mut self,
         request_id: &str,
-        confirming_label: &str,
+        confirming_signing_key_id: &str,
+        confirming_node_id: &str,
+        confirming_public_key_fingerprint: &str,
         now: SystemTime,
     ) -> Result<PurgeReceipt, AdministrationStoreError> {
         let transaction = self.client.transaction().await?;
-        let request = existing_request_by_id(&transaction, request_id)
+        let request = existing_request_by_id_for_update(&transaction, request_id)
             .await?
             .ok_or_else(|| AdministrationStoreError::UnknownPurgeRequest {
                 request_id: request_id.to_string(),
@@ -132,17 +152,33 @@ impl AdministrationStore {
             transaction.commit().await?;
             return Ok(existing);
         }
+        if request.requesting_node_id.is_none() {
+            return Err(AdministrationStoreError::LegacyPurgeRequestUnauthenticated);
+        }
+        require_identifier("confirming_signing_key_id", confirming_signing_key_id)?;
+        require_identifier("confirming_node_id", confirming_node_id)?;
+        require_identifier(
+            "confirming_public_key_fingerprint",
+            confirming_public_key_fingerprint,
+        )?;
+        let requesting_fingerprint = request
+            .requesting_public_key_fingerprint
+            .as_deref()
+            .ok_or(AdministrationStoreError::LegacyPurgeRequestUnauthenticated)?;
+        if requesting_fingerprint == confirming_public_key_fingerprint {
+            return Err(AdministrationStoreError::SelfConfirmationRefused);
+        }
 
         let outcome = if request.confirmation_expires_at <= now {
             (
                 PurgeOutcome::Expired,
                 "The confirmation window elapsed; request a fresh preview.".to_string(),
                 None,
-                None,
+                Some(confirming_signing_key_id.to_string()),
+                Some(confirming_node_id.to_string()),
+                Some(confirming_public_key_fingerprint.to_string()),
             )
         } else {
-            let confirming_label =
-                validate_confirming_label(confirming_label, &request.requested_by)?;
             let policy_still_active = transaction
                 .query_opt(
                     "SELECT 1 FROM administration_policies \
@@ -156,7 +192,9 @@ impl AdministrationStore {
                     PurgeOutcome::Refused,
                     "The authorizing policy was revoked or expired since the preview.".to_string(),
                     None,
-                    Some(confirming_label),
+                    Some(confirming_signing_key_id.to_string()),
+                    Some(confirming_node_id.to_string()),
+                    Some(confirming_public_key_fingerprint.to_string()),
                 )
             } else {
                 let deleted = delete_purge_candidates(
@@ -171,7 +209,9 @@ impl AdministrationStore {
                     PurgeOutcome::Succeeded,
                     format!("Deleted {deleted} row(s) matching the previewed scope and cutoff."),
                     Some(deleted),
-                    Some(confirming_label),
+                    Some(confirming_signing_key_id.to_string()),
+                    Some(confirming_node_id.to_string()),
+                    Some(confirming_public_key_fingerprint.to_string()),
                 )
             }
         };
@@ -182,7 +222,9 @@ impl AdministrationStore {
             reason: outcome.1,
             rows_deleted: outcome.2,
             occurred_at: now,
-            confirming_label: outcome.3,
+            confirming_signing_key_id: outcome.3,
+            confirming_node_id: outcome.4,
+            confirming_public_key_fingerprint: outcome.5,
         };
         validate_receipt(&new_receipt, now)?;
         let digest = receipt_digest(&new_receipt)?;
@@ -190,8 +232,10 @@ impl AdministrationStore {
         let inserted = transaction
             .query_opt(
                 "INSERT INTO administration_purge_receipts (receipt_id, request_id, outcome, \
-                     reason, rows_deleted, occurred_at, recorded_at, confirming_label) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) \
+                     reason, rows_deleted, occurred_at, recorded_at, \
+                     confirming_signing_key_id, confirming_node_id, \
+                     confirming_public_key_fingerprint) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) \
                  ON CONFLICT DO NOTHING RETURNING *",
                 &[
                     &assigned_id,
@@ -201,7 +245,9 @@ impl AdministrationStore {
                     &new_receipt.rows_deleted,
                     &new_receipt.occurred_at,
                     &now,
-                    &new_receipt.confirming_label,
+                    &new_receipt.confirming_signing_key_id,
+                    &new_receipt.confirming_node_id,
+                    &new_receipt.confirming_public_key_fingerprint,
                 ],
             )
             .await?;
@@ -217,7 +263,11 @@ impl AdministrationStore {
                     reason: existing.reason.clone(),
                     rows_deleted: existing.rows_deleted,
                     occurred_at: existing.occurred_at,
-                    confirming_label: existing.confirming_label.clone(),
+                    confirming_signing_key_id: existing.confirming_signing_key_id.clone(),
+                    confirming_node_id: existing.confirming_node_id.clone(),
+                    confirming_public_key_fingerprint: existing
+                        .confirming_public_key_fingerprint
+                        .clone(),
                 })? != digest
                 {
                     return Err(AdministrationStoreError::ReceiptConflict);
@@ -273,6 +323,21 @@ async fn existing_request_by_id(
         .transpose()
 }
 
+async fn existing_request_by_id_for_update(
+    transaction: &Transaction<'_>,
+    request_id: &str,
+) -> Result<Option<PurgeRequest>, AdministrationStoreError> {
+    transaction
+        .query_opt(
+            "SELECT * FROM administration_purge_requests WHERE request_id = $1 FOR UPDATE",
+            &[&request_id],
+        )
+        .await?
+        .as_ref()
+        .map(request_from_row)
+        .transpose()
+}
+
 fn replay_or_conflict(
     request: PurgeRequest,
     digest: &[u8],
@@ -280,6 +345,11 @@ fn replay_or_conflict(
     let recomputed = preview_request_digest(&PurgePreviewRequest {
         policy_id: request.policy_id.clone(),
         requested_by: request.requested_by.clone(),
+        requesting_node_id: request.requesting_node_id.clone().unwrap_or_default(),
+        requesting_public_key_fingerprint: request
+            .requesting_public_key_fingerprint
+            .clone()
+            .unwrap_or_default(),
         tenant_id: request.tenant_id.clone(),
         repository_id: request.repository_id.clone(),
         data_category: request.data_category,

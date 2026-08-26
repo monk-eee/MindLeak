@@ -112,6 +112,26 @@ pub fn verify(
     let Some(authentication) = authentication else {
         return Err(ClaimAuthRefusal::Unsigned);
     };
+    let bytes = claim_signing_bytes(
+        tenant_id,
+        repository_id,
+        task_id,
+        owner_id,
+        operation,
+        authentication,
+    );
+    verify_signed_bytes(authentication, resolution, &bytes, now)
+}
+
+/// Verify one operation's already-domain-separated signed bytes against an
+/// enrolled key. The caller owns the operation-specific byte contract; this
+/// shared boundary owns key lifecycle, timestamp, and Ed25519 checks.
+pub fn verify_signed_bytes(
+    authentication: &v1::ClaimAuthentication,
+    resolution: &KeyResolution,
+    signed_bytes: &[u8],
+    now: SystemTime,
+) -> Result<(), ClaimAuthRefusal> {
     if authentication.signing_key_id.trim().is_empty() {
         return Err(ClaimAuthRefusal::Unidentified);
     }
@@ -136,16 +156,8 @@ pub fn verify(
         .ok_or(ClaimAuthRefusal::BadSignature)?;
     let signature = Signature::from_slice(&authentication.signature)
         .map_err(|_| ClaimAuthRefusal::BadSignature)?;
-    let bytes = claim_signing_bytes(
-        tenant_id,
-        repository_id,
-        task_id,
-        owner_id,
-        operation,
-        authentication,
-    );
 
-    key.verify(&bytes, &signature)
+    key.verify(signed_bytes, &signature)
         .map_err(|_| ClaimAuthRefusal::BadSignature)
 }
 

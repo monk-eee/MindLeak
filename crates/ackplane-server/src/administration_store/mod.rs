@@ -25,6 +25,10 @@ const RECOVERY_INSPECTION_MIGRATION: &str =
 const EXPORT_MIGRATION: &str = include_str!("../../migrations/0047_administration_export.sql");
 const PURGE_CONFIRMING_LABEL_MIGRATION: &str =
     include_str!("../../migrations/0050_administration_purge_confirming_label.sql");
+const PURGE_CONFIRMATION_AUTHENTICATION_MIGRATION: &str =
+    include_str!("../../migrations/0051_administration_purge_confirmation_authentication.sql");
+const PURGE_CONFIRMATION_FINGERPRINT_MIGRATION: &str =
+    include_str!("../../migrations/0052_administration_purge_confirmation_fingerprint.sql");
 
 mod export_model;
 mod export_write;
@@ -92,6 +96,18 @@ impl AdministrationStore {
             PURGE_CONFIRMING_LABEL_MIGRATION,
         )
         .await?;
+        migration_lock::migrate_locked(
+            &mut client,
+            migration_lock::key::ADMINISTRATION_PURGE_CONFIRMATION_AUTHENTICATION,
+            PURGE_CONFIRMATION_AUTHENTICATION_MIGRATION,
+        )
+        .await?;
+        migration_lock::migrate_locked(
+            &mut client,
+            migration_lock::key::ADMINISTRATION_PURGE_CONFIRMATION_FINGERPRINT,
+            PURGE_CONFIRMATION_FINGERPRINT_MIGRATION,
+        )
+        .await?;
         Ok(Self { client })
     }
 }
@@ -104,3 +120,24 @@ mod purge_tests;
 mod recovery_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod migration_tests {
+    use super::{
+        PURGE_CONFIRMATION_AUTHENTICATION_MIGRATION, PURGE_CONFIRMATION_FINGERPRINT_MIGRATION,
+    };
+
+    // Regression: installations that already recorded key 51 never rerun its
+    // SQL, so fingerprint columns must remain in a later immutable migration.
+    #[test]
+    fn fingerprint_upgrade_does_not_rewrite_the_consumed_authentication_migration() {
+        assert!(
+            !PURGE_CONFIRMATION_AUTHENTICATION_MIGRATION.contains("public_key_fingerprint"),
+            "key 51 may already be applied and must stay immutable"
+        );
+        assert!(
+            PURGE_CONFIRMATION_FINGERPRINT_MIGRATION.contains("public_key_fingerprint"),
+            "key 52 must carry the fingerprint upgrade"
+        );
+    }
+}

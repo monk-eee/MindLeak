@@ -21,6 +21,7 @@ pub mod delegation;
 pub mod enrollment_status_auth;
 pub mod evidence_auth;
 pub mod knowledge_auth;
+pub mod purge_confirmation_auth;
 mod signing_bytes;
 pub mod supervisor;
 pub mod telemetry_auth;

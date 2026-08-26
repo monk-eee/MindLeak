@@ -146,6 +146,10 @@ pub(crate) mod key {
     /// is already allocated to delegation-use receipts on main, so
     /// `migration-audit --next` selected 50 for this recovered purge fix.
     pub(crate) const ADMINISTRATION_PURGE_CONFIRMING_LABEL: i64 = 50;
+    /// `migrations/0051_administration_purge_confirmation_authentication.sql`.
+    pub(crate) const ADMINISTRATION_PURGE_CONFIRMATION_AUTHENTICATION: i64 = 51;
+    /// `migrations/0052_administration_purge_confirmation_fingerprint.sql`.
+    pub(crate) const ADMINISTRATION_PURGE_CONFIRMATION_FINGERPRINT: i64 = 52;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

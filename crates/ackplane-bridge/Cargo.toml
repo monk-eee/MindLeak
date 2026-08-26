@@ -8,6 +8,7 @@ rust-version.workspace = true
 description = "The optional Ackplane browser assurance interface (ADR-0094 and ADR-0095)."
 
 [dependencies]
+ackplane-protocol = { path = "../ackplane-protocol" }
 ackplane-server = { path = "../ackplane-server" }
 async-stream = "0.3"
 axum = "0.7"
@@ -21,7 +22,7 @@ tokio-postgres = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-ackplane-protocol = { path = "../ackplane-protocol" }
+ackplane-client = { path = "../ackplane-client" }
 ed25519-dalek = "2.1"
 http-body-util = "0.1"
 serde_json = { workspace = true }
