@@ -620,15 +620,24 @@ enrolled rather than leaking a distinguishable error:
 `administration.rs` is the ADR-0105 decision 6 "Backup / export / reset" parity
 row, scoped by ADR-0119's accepted policy rather than a mechanical copy of the
 VSIX's `mindleak.backup`/`mindleak.export`/`mindleak.resetMemory` commands.
-Status/inspection (projection freshness, ledger position, and a durability
-report that stays `not_reported` rather than inferring health from a missing
-published record) and ADR-0111's claim recovery are the only capabilities the
-loopback developer profile can authorize today; snapshot, export, recovery
-execution, and lifecycle purge are reported `refused`/`unavailable` with the
-missing authorization named, because ADR-0119 requires a verified principal
-and an adopted policy before any of those privileged classes may run, and the
-current profile has neither. Reaching that policy basis, not this route
-table, is what unblocks them.
+ADR-0128 recognizes the hardened loopback developer profile itself as the
+verified principal ADR-0119 decision 2 requires, so Snapshot is now a real,
+receipted capability rather than a permanent refusal -- but only once an
+`administration_store::AdministrationPolicy` naming the operation, scope,
+classification, retention basis, and lifetime has actually been adopted
+(`POST /api/v1/administration/policies`); decision 2's *policy* half was never
+removed. `snapshot_provider` (`ackplane-server`) is the one place that shells
+out to `pg_dump` and encrypts the result with a locally-generated key
+(`ACKPLANE_SNAPSHOT_KEY_PATH`, generated the same way
+`ackplane_bridge::load_or_generate_salt` generates its salt) before writing it
+under `ACKPLANE_SNAPSHOT_DIR`; the Snapshot capability reports `unavailable`
+rather than guessing a location when that variable is unset. It is
+deliberately platform-scoped only today: Ackplane's schema is multi-tenant at
+the row level, so a `pg_dump` of the whole database is never a valid
+tenant-scoped artifact, and a true tenant-scoped export is separate, tracked
+follow-on work, not this provider relabeled. Export, recovery execution, and
+lifecycle purge remain unimplemented and report so honestly. ADR-0111's claim
+recovery is unchanged.
 
 | Route | Serves |
 |---|---|
@@ -655,6 +664,9 @@ table, is what unblocks them.
 | `POST /api/v1/repositories/:repository_id/tasks/:task_id/recover` | Bridge's first claim **mutation** (ADR-0111): recovers a stranded claim by calling `ClaimStore::recover` directly, tenant-scoped and reason-required. `delegate`, `release`, and `renew` remain node-signed-only and are not exposed here. The handler resolves `expected_owner` itself via the new `FleetStore::claim_owner` (unlike `active_work`, this does not filter out an already-expired lease), rather than trusting a caller-supplied value. |
 | `GET /administration` | The Administration page (static HTML/JS): tenant-scoped status, the operation-capability list, and — only when `claim_recovery` reports `available` — the stranded-claim recovery workflow above, reusing the same `/stranded-claims` and `/recover` routes rather than a second implementation. |
 | `GET /api/v1/repositories/:repository_id/administration/status` | ADR-0119's status/inspection class: projection freshness and ledger position (`FleetStore::repository`), an honestly `not_reported` durability report, and the fixed six-operation capability list (`status_inspection`, `snapshot`, `export`, `claim_recovery`, `recovery_inspection`, `lifecycle_purge`) naming which are available, refused, or unavailable and why under the current loopback profile. |
+| `POST /api/v1/administration/policies` | ADR-0119 decision 2 / ADR-0128: adopts a new `AdministrationPolicy` naming its operation, platform-or-tenant scope, data classification, retention basis, and bounded lifetime, attributed to the loopback developer profile's own salted token (`administration_store::AdministrationStore::adopt_policy`). An identical resubmission under the same idempotency key replays the original record; a changed one conflicts (`409`). |
+| `POST /api/v1/administration/snapshots` | Requests, then synchronously executes, a platform Snapshot under an already-adopted, still-active policy (`administration_store::request_snapshot` + `snapshot_provider::create_platform_snapshot`): refuses (`409`) before any request row exists if no active policy authorizes it, otherwise runs `pg_dump --format=custom`, encrypts the artifact, and records an immutable receipt (outcome, reason, artifact path, manifest digest, encryption key id, size, and verified flag) that a retried request replays rather than re-executes. |
+| `GET /api/v1/administration/snapshots/:request_id` | The receipt recorded for one prior Snapshot request, if any. |
 | `GET /static/shared/chrome.css` / `GET /static/shared/chrome.js` | The one shared brand-mark and grouped-nav asset every static page loads (ADR-0124), served by `shared_assets.rs` with the correct `Content-Type`. `chrome.js`'s `NAV_ITEMS` is the single declared list of every ADR-0105 decision 5 capability; `chrome.css` styles it through six neutral `--chrome-*` custom properties that each page bridges onto its own palette. A page's entire brand/nav footprint is two mount points (`[data-bridge-brand]`, `[data-bridge-nav]`) plus these two tags — never its own copy of the nav's markup, CSS, or disclosure script. |
 
 ### `editors/vscode` (extension)

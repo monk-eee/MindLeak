@@ -25,6 +25,7 @@
 
 use std::{fmt, net::SocketAddr};
 
+pub mod administration_store;
 pub mod claim_service;
 pub mod claim_signature;
 pub mod claim_store;
@@ -56,6 +57,7 @@ pub mod projection;
 pub mod readiness;
 pub mod service;
 pub mod signing_keys;
+pub mod snapshot_provider;
 pub mod supervisor_store;
 pub mod sync;
 pub mod telemetry_service;
