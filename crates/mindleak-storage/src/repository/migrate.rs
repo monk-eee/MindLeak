@@ -33,6 +33,26 @@ pub(crate) fn acquire_migration_lock(
                 }
                 thread::sleep(RETRY_DELAY);
             }
+            // Windows only: a concurrent holder's `remove_file` (this lock's own
+            // `Drop`) does not remove the directory entry atomically the way
+            // Unix `unlink` does. NTFS marks the file for pending delete first,
+            // during which a racing `create_new` can observe `PermissionDenied`
+            // instead of the clean `AlreadyExists`/success this loop already
+            // handles -- observed flaking
+            // `migration_lock_retries_until_a_concurrent_holder_releases_it` in
+            // a full workspace run while passing every time in isolation, the
+            // signature of a timing race rather than a real assertion failure
+            // (gaps.d/windows-migration-lock-retry-test-can-flake-with-permission-denied.md).
+            // Retrying is bounded by the same `MIGRATION_ATTEMPTS` loop as the
+            // `AlreadyExists` arm, so a genuinely unwritable directory still
+            // surfaces as `MigrationBusy` rather than hanging -- it is a less
+            // specific error, not a silent one. Scoped to Windows because the
+            // race this exists for cannot occur on Unix, where the same retry
+            // would only slow down reporting a real permission failure.
+            #[cfg(windows)]
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                thread::sleep(RETRY_DELAY);
+            }
             Err(error) => return Err(error.into()),
         }
     }
