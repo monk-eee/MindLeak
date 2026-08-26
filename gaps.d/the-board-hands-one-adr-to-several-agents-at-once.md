@@ -56,3 +56,32 @@
   same-goal `task_create` be refused rather than merely flagged?) from the one
   ADR-0092 answered (which goal does a subsystem's work belong to?), and it
   remains unaddressed.
+  **Fresh instance, 2026-08-26: reconciliation still does not happen on its
+  own, and this time nobody automated it away.** Two sessions independently
+  built complete, incompatible implementations of ADR-0119 (Industrial
+  administration) at the same time on different branches
+  (`agents/reclaim-task-functionality`, which shipped Snapshot/Purge/Recovery/
+  Export against real providers as PR #769; `agents/check-mindleak-installation`,
+  which built a parallel `administration_store`/`administration_policy_store`
+  plus two newly-authored ADRs, 0129 and 0131, layering more decisions onto a
+  store that would never merge). `check_overlap` correctly reported the other
+  session's live footprint on the overlapping Bridge files throughout, and the
+  losing branch deliberately worked in separate files specifically to avoid a
+  collision -- the overlap tool did its job. What it cannot do is tell either
+  session that the *other one would win the merge*, because that is decided
+  later, by whichever branch's PR clears CI and the merge queue first, not by
+  who claimed or who wrote more. The losing branch's five Lodestar tasks were
+  each completed correctly, with real evidence, and are still (correctly)
+  `status: done` -- the work happened and was proven at the time. Nothing then
+  told that session its branch had lost the race; that was only discovered
+  because a later, unrelated question ("what's next") happened to prompt a
+  check of the board and PR list. Concretely fixed this round: the losing
+  branch's real remaining value -- a genuine self-approval defect the winning
+  PR introduced (Lifecycle purge's confirm route accepted the same
+  requesting principal as its own confirmer, contradicting ADR-0119 decision
+  7 -- turned into a targeted fix (PR #779) landed directly against the
+  winning branch's real code, and the losing branch's now-dead commits and
+  ADRs were recorded as durable knowledge and abandoned rather than merged,
+  rebased, or resurrected. Still open: nothing surfaces "a branch you have
+  commits on just lost a merge race" on its own; an agent (or its user) has to
+  think to go check.
