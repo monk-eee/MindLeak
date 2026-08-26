@@ -46,6 +46,44 @@ assemble it correctly is indistinguishable from work that was never done.**
 Meanwhile the actual proof was sitting in plain view: a merged pull request with
 green checks, referenced by the branch the task was claimed on.
 
+## What testing established
+
+The Context above reads as though the structural problem was what blocked
+closure. It was not, and the record should say so rather than leave this
+decision resting on a justification that testing had already narrowed.
+
+With `changed_files` named correctly, a commit ingested inside the claim window
+produced exactly what conformance wanted:
+
+```
+ingest_commit -> { "nodes_created": 1, "edges_created": 1 }
+evidence: commits=1; changed=1
+verdict: needs_human — evidence does not touch code bound to the task goal
+```
+
+The "no provenance-bearing mutation" failure was gone, and the verdict that
+replaced it is a *correct* one about that probe task's goal binding. **The
+silent argument drop was the whole disease.** Tasks could close again the moment
+the Memory Plane started refusing an argument it does not declare.
+
+So the value of the decision below is not unblocking closure. It is proving work
+whose commits were never ingested at the time — and that limitation is
+structural rather than incidental:
+
+- `evidence_for` selects an agent's events by the intent node's `created_at`
+  (`crates/mindleak-core/src/graph/evidence.rs`);
+- `upsert_node_on` updates `label`, `content` and `last_accessed_at` on
+  conflict, and deliberately never `created_at`
+  (`crates/mindleak-core/src/graph/writes.rs`).
+
+Re-ingesting a commit the graph already knows therefore cannot pull it into a
+later window. That is [ADR-0048](0048-a-lapsed-lease-holes-the-window-it-does-not-move-it.md)'s
+anti-backdating property working exactly as intended — and it is precisely why a
+merge reference is worth consuming. A merge stays verifiable from git long after
+the moment of work, when the episodic record no longer is. Thirteen claims were
+already in that position when this was written, and no amount of re-ingestion
+could have rescued them.
+
 ## Decision
 
 **A merge is evidence, and the ledger should be able to consume it.**
