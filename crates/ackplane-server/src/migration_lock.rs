@@ -118,6 +118,25 @@ pub(crate) mod key {
     /// recorded as applied in the shared development database by
     /// concurrent, then-not-yet-committed work at the time this was drafted.
     pub(crate) const WORK_TASK_COMMAND_EXECUTION: i64 = 39;
+    /// `migrations/0041_administration.sql`. 39 and 40 (like 19 before them)
+    /// were already reached by the shared development database from
+    /// concurrent work nobody had committed yet -- `migration-audit.mjs`
+    /// checked before picking 41, not guessed.
+    pub(crate) const ADMINISTRATION: i64 = 41;
+    /// `migrations/0042_administration_purge.sql`.
+    pub(crate) const ADMINISTRATION_PURGE: i64 = 42;
+    /// `migrations/0046_administration_recovery_inspection.sql`. 43, 44, and
+    /// 45 were each reached by the shared development database from
+    /// concurrent work nobody had committed yet -- checked directly against
+    /// `ackplane_schema_migrations` (44 collided with a different session's
+    /// migration under the *same* key, which `migration-audit.mjs` cannot
+    /// see because this branch's own source already accounts for that key)
+    /// before picking 46.
+    pub(crate) const ADMINISTRATION_RECOVERY_INSPECTION: i64 = 46;
+    /// `migrations/0047_administration_export.sql`. Checked directly against
+    /// `ackplane_schema_migrations` (only 46 applied above 42 at the time
+    /// this was drafted) before picking 47.
+    pub(crate) const ADMINISTRATION_EXPORT: i64 = 47;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

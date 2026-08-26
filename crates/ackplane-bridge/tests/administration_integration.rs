@@ -7,12 +7,14 @@ use std::{
 
 use ackplane_bridge::administration::{administration_routes, AdministrationApiState};
 use ackplane_server::{
+    administration_store::AdministrationStore,
     enrollment::{activation_challenge_bytes, public_key_fingerprint},
     enrollment_store::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
         EnrollmentSubmission,
     },
     fleet::FleetStore,
+    snapshot_provider::SnapshotProviderConfig,
 };
 use axum::{
     body::{to_bytes, Body},
@@ -21,7 +23,25 @@ use axum::{
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use tokio::sync::Mutex;
 use tower::ServiceExt;
+
+async fn administration_state(
+    database_url: &str,
+    fleet: Arc<FleetStore>,
+    tenant_id: &str,
+) -> AdministrationApiState {
+    let administration = AdministrationStore::connect(database_url)
+        .await
+        .expect("the test database should accept Administration store connections");
+    AdministrationApiState::new(
+        fleet,
+        Arc::from(tenant_id.to_string()),
+        Arc::new(Mutex::new(administration)),
+        None,
+        None,
+    )
+}
 
 fn unique_suffix() -> String {
     let timestamp = SystemTime::now()
@@ -141,10 +161,8 @@ async fn returns_an_honest_status_for_the_tenant_and_hides_it_from_another_tenan
             .await
             .expect("the test database should accept Fleet connections"),
     );
-    let authorized = administration_routes(AdministrationApiState::new(
-        fleet.clone(),
-        Arc::from(tenant_id.clone()),
-    ));
+    let authorized =
+        administration_routes(administration_state(&database_url, fleet.clone(), &tenant_id).await);
     let page_response = authorized
         .clone()
         .oneshot(
@@ -224,19 +242,18 @@ async fn returns_an_honest_status_for_the_tenant_and_hides_it_from_another_tenan
             },
             "capabilities": [
                 {"operation":"status_inspection","state":"available","reason":"Tenant-scoped projection and capability status are readable."},
-                {"operation":"snapshot","state":"refused","reason":"A verified principal and adopted policy are required."},
-                {"operation":"export","state":"refused","reason":"A verified principal, purpose, and redaction policy are required."},
+                {"operation":"snapshot","state":"unavailable","reason":"ACKPLANE_SNAPSHOT_DIR is not configured for this deployment."},
+                {"operation":"export","state":"unavailable","reason":"ACKPLANE_EXPORT_DIR is not configured for this deployment."},
                 {"operation":"claim_recovery","state":"available","reason":"Only an expired claim can be recovered; the next owner and a reason are recorded, and live claims refuse."},
-                {"operation":"recovery_inspection","state":"unavailable","reason":"An identified backup artifact and recovery evidence are required."},
-                {"operation":"lifecycle_purge","state":"refused","reason":"A verified principal, retention basis, and impact plan are required."},
+                {"operation":"recovery_inspection","state":"unavailable","reason":"ACKPLANE_SNAPSHOT_DIR is not configured for this deployment, so no Snapshot artifact can exist to inspect."},
+                {"operation":"lifecycle_purge","state":"refused","reason":"No adopted policy authorizes a Lifecycle purge yet; adopt one via POST /api/v1/administration/policies (ADR-0119 decision 2)."},
             ],
         })
     );
 
-    let foreign = administration_routes(AdministrationApiState::new(
-        fleet,
-        Arc::from(format!("foreign-{tenant_id}")),
-    ));
+    let foreign = administration_routes(
+        administration_state(&database_url, fleet, &format!("foreign-{tenant_id}")).await,
+    );
     let foreign_response = foreign
         .oneshot(
             Request::builder()
@@ -249,4 +266,301 @@ async fn returns_an_honest_status_for_the_tenant_and_hides_it_from_another_tenan
         .await
         .expect("the foreign request should receive a response");
     assert_eq!(foreign_response.status(), StatusCode::NOT_FOUND);
+}
+
+async fn post_json(
+    router: &axum::Router,
+    uri: &str,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .expect("the request should build"),
+        )
+        .await
+        .expect("the request should receive a response");
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("the response body should be bounded");
+    let json = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).expect("a non-empty response body should be JSON")
+    };
+    (status, json)
+}
+
+#[tokio::test]
+async fn a_snapshot_request_with_no_adopted_policy_is_refused_with_a_named_reason() {
+    let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let suffix = unique_suffix();
+    let tenant_id = format!("tenant-administration-snapshot-refusal-{suffix}");
+    let fleet = Arc::new(
+        FleetStore::connect(&database_url)
+            .await
+            .expect("the test database should accept Fleet connections"),
+    );
+    let administration = AdministrationStore::connect(&database_url)
+        .await
+        .expect("the test database should accept Administration store connections");
+    let dir = std::env::temp_dir().join(format!("ackplane-snapshot-refusal-{suffix}"));
+    let state = AdministrationApiState::new(
+        fleet,
+        Arc::from(tenant_id.clone()),
+        Arc::new(Mutex::new(administration)),
+        Some(Arc::new(SnapshotProviderConfig {
+            database_url: database_url.clone(),
+            snapshot_dir: dir.clone(),
+            key_path: dir.join("key.bin"),
+            pg_dump_path: "pg_dump".to_string(),
+            pg_restore_path: "pg_restore".to_string(),
+        })),
+        None,
+    );
+    let router = administration_routes(state);
+
+    let (status, body) = post_json(
+        &router,
+        "/api/v1/administration/snapshots",
+        json!({
+            "policy_id": format!("administration-policy:does-not-exist-{suffix}"),
+            "idempotency_key": format!("snapshot-{suffix}"),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body was {body:?}");
+}
+
+#[tokio::test]
+async fn adopting_a_policy_then_requesting_a_platform_snapshot_succeeds_and_replays() {
+    let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    if tokio::process::Command::new("pg_dump")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .is_err()
+    {
+        println!("skipped: pg_dump is not available on PATH");
+        return;
+    }
+    let suffix = unique_suffix();
+    let tenant_id = format!("tenant-administration-snapshot-{suffix}");
+    let fleet = Arc::new(
+        FleetStore::connect(&database_url)
+            .await
+            .expect("the test database should accept Fleet connections"),
+    );
+    let administration = AdministrationStore::connect(&database_url)
+        .await
+        .expect("the test database should accept Administration store connections");
+    let dir = std::env::temp_dir().join(format!("ackplane-snapshot-integration-{suffix}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let state = AdministrationApiState::new(
+        fleet,
+        Arc::from(tenant_id.clone()),
+        Arc::new(Mutex::new(administration)),
+        Some(Arc::new(SnapshotProviderConfig {
+            database_url: database_url.clone(),
+            snapshot_dir: dir.clone(),
+            key_path: dir.join("key.bin"),
+            pg_dump_path: "pg_dump".to_string(),
+            pg_restore_path: "pg_restore".to_string(),
+        })),
+        None,
+    );
+    let router = administration_routes(state);
+
+    let (policy_status, policy_body) = post_json(
+        &router,
+        "/api/v1/administration/policies",
+        json!({
+            "operation": "snapshot",
+            "scope": "platform",
+            "data_classification": "operational-metadata",
+            "retention_basis": "self-hosted operator retention, ADR-0119 decision 2",
+            "idempotency_key": format!("policy-{suffix}"),
+            "lifetime_seconds": 3600,
+        }),
+    )
+    .await;
+    assert_eq!(policy_status, StatusCode::OK, "body was {policy_body:?}");
+    let policy_id = policy_body["policy_id"]
+        .as_str()
+        .expect("the response should carry a policy_id")
+        .to_string();
+    assert_eq!(policy_body["adopted_by"], json!(tenant_id));
+
+    let (snapshot_status, snapshot_body) = post_json(
+        &router,
+        "/api/v1/administration/snapshots",
+        json!({
+            "policy_id": policy_id,
+            "idempotency_key": format!("snapshot-{suffix}"),
+        }),
+    )
+    .await;
+    assert_eq!(
+        snapshot_status,
+        StatusCode::OK,
+        "body was {snapshot_body:?}"
+    );
+    assert_eq!(snapshot_body["receipt"]["outcome"], json!("succeeded"));
+    assert_eq!(snapshot_body["receipt"]["verified"], json!(true));
+    assert!(snapshot_body["receipt"]["manifest_digest_hex"]
+        .as_str()
+        .is_some_and(|digest| digest.len() == 64));
+    let request_id = snapshot_body["request_id"]
+        .as_str()
+        .expect("the response should carry a request_id")
+        .to_string();
+
+    // A replay of the exact same request must not run `pg_dump` a second
+    // time; it returns the original receipt and says so.
+    let (replay_status, replay_body) = post_json(
+        &router,
+        "/api/v1/administration/snapshots",
+        json!({
+            "policy_id": policy_id,
+            "idempotency_key": format!("snapshot-{suffix}"),
+        }),
+    )
+    .await;
+    assert_eq!(replay_status, StatusCode::OK, "body was {replay_body:?}");
+    assert_eq!(replay_body["idempotent_replay"], json!(true));
+    assert_eq!(
+        replay_body["receipt"]["receipt_id"],
+        snapshot_body["receipt"]["receipt_id"]
+    );
+
+    let receipt_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/administration/snapshots/{request_id}"))
+                .body(Body::empty())
+                .expect("the receipt request should build"),
+        )
+        .await
+        .expect("the receipt request should receive a response");
+    assert_eq!(receipt_response.status(), StatusCode::OK);
+
+    // A different tenant token must not read this receipt back merely by
+    // knowing (or guessing) the request id.
+    let foreign_administration = AdministrationStore::connect(&database_url)
+        .await
+        .expect("the test database should accept Administration store connections");
+    let foreign_router = administration_routes(AdministrationApiState::new(
+        Arc::new(
+            FleetStore::connect(&database_url)
+                .await
+                .expect("the test database should accept Fleet connections"),
+        ),
+        Arc::from(format!("foreign-{tenant_id}")),
+        Arc::new(Mutex::new(foreign_administration)),
+        None,
+        None,
+    ));
+    let foreign_receipt_response = foreign_router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/administration/snapshots/{request_id}"))
+                .body(Body::empty())
+                .expect("the foreign receipt request should build"),
+        )
+        .await
+        .expect("the foreign receipt request should receive a response");
+    assert_eq!(foreign_receipt_response.status(), StatusCode::NOT_FOUND);
+
+    // Recovery inspection (ADR-0119 decision 6) needs no adopted policy --
+    // it is read-only against the artifact this Snapshot already produced.
+    if tokio::process::Command::new("pg_restore")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .is_ok()
+    {
+        let inspect_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/v1/administration/snapshots/{request_id}/inspect"
+                    ))
+                    .body(Body::empty())
+                    .expect("the inspection request should build"),
+            )
+            .await
+            .expect("the inspection request should receive a response");
+        assert_eq!(inspect_response.status(), StatusCode::OK);
+        let inspect_body: serde_json::Value = serde_json::from_slice(
+            &to_bytes(inspect_response.into_body(), usize::MAX)
+                .await
+                .expect("the inspection response body should be bounded"),
+        )
+        .expect("the inspection response should be JSON");
+        assert_eq!(inspect_body["integrity_verified"], json!(true));
+        assert_eq!(inspect_body["decryption_verified"], json!(true));
+        assert_eq!(inspect_body["archive_valid"], json!(true));
+        assert!(inspect_body["archive_entry_count"]
+            .as_i64()
+            .is_some_and(|count| count > 0));
+
+        let latest_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/v1/administration/snapshots/{request_id}/inspect"
+                    ))
+                    .body(Body::empty())
+                    .expect("the latest-inspection request should build"),
+            )
+            .await
+            .expect("the latest-inspection request should receive a response");
+        assert_eq!(latest_response.status(), StatusCode::OK);
+        let latest_body: serde_json::Value = serde_json::from_slice(
+            &to_bytes(latest_response.into_body(), usize::MAX)
+                .await
+                .expect("the latest-inspection response body should be bounded"),
+        )
+        .expect("the latest-inspection response should be JSON");
+        assert_eq!(latest_body["inspection_id"], inspect_body["inspection_id"]);
+
+        // A different tenant must not read this inspection either.
+        let foreign_latest_response = foreign_router
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/v1/administration/snapshots/{request_id}/inspect"
+                    ))
+                    .body(Body::empty())
+                    .expect("the foreign latest-inspection request should build"),
+            )
+            .await
+            .expect("the foreign latest-inspection request should receive a response");
+        assert_eq!(foreign_latest_response.status(), StatusCode::NOT_FOUND);
+    } else {
+        println!("skipping the inspection half: pg_restore is not available on PATH");
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
