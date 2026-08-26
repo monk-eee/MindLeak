@@ -74,6 +74,21 @@
   found nothing left to fix. Expect this to drift again the next time a file
   is added or a module is split; re-run `node scripts/binding-audit.mjs`
   before trusting either number, exactly as this fragment keeps saying.
+  **2026-08-26, fourth confirmation, pattern repeats exactly as predicted.**
+  `binding-audit.mjs` reported 0 unbound but 8 stale bindings, all naming a
+  deleted `ackplane-server/src/work_command_store/{execute,model}/*.rs` split
+  that has since been re-consolidated back into flat `mod.rs`/`write.rs`/
+  `service.rs`/`model.rs` files. Confirmed via `constitution_query(governing,
+  ...)` on each of those four real files before touching anything: all four
+  already carry `goal:ackplane-federation-service@constitution:v4`, the same
+  goal the 8 stale rows named, so this was pure dangling-reference cleanup
+  again, never a coverage gap. Removed with one `unbind` call, no `bind`
+  needed since nothing was actually unbound this time. `binding-audit.mjs`
+  again reports **0 unbound, 0 stale, 0 stranded**. Four occurrences in one
+  gap fragment is itself the data point: this is not a one-time cleanup, it
+  is a standing tax on every module split *and* every re-consolidation, and
+  the fix that would end the recurrence — binding following a file
+  automatically when it moves — remains unbuilt.
   **Still true, and re-verified 09:29Z: `scripts/conformance-gate.mjs` cannot
   run.** It reads the manifest exported by `export_conformance_manifest`, and
   `.gitignore` still excludes `/.lodestar/*` with a single exception for
