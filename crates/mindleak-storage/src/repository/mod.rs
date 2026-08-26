@@ -620,6 +620,50 @@ mod tests {
         drop(lock);
     }
 
+    /// Regression for
+    /// gaps.d/windows-migration-lock-retry-test-can-flake-with-permission-denied.md:
+    /// a full workspace `cargo test --all` run flaked
+    /// `migration_lock_retries_until_a_concurrent_holder_releases_it` with
+    /// `PermissionDenied` instead of the release racing cleanly, while the
+    /// isolated test passed every time -- the signature of a timing-sensitive
+    /// window, not a deterministic assertion failure. On Windows, a concurrent
+    /// `remove_file` does not clear the directory entry atomically the way
+    /// Unix `unlink` does, so a racing `create_new` can observe
+    /// `PermissionDenied` during the pending-delete window instead of the
+    /// `AlreadyExists`/success the retry loop already handled. Single-shot
+    /// repro is inherently timing-luck-dependent (the same reason the
+    /// original flake needed a full workspace run under load to surface), so
+    /// this repeats the exact race many times in a tight loop rather than
+    /// once, the same trade-off the test above already makes for its own
+    /// race. Fails without the `PermissionDenied` retry arm in
+    /// `acquire_migration_lock`; passes with it.
+    #[test]
+    fn migration_lock_retry_survives_a_tight_release_race_repeatedly() {
+        let sandbox = Sandbox::new("migration-lock-retry-stress");
+        for i in 0..50 {
+            let lock_path = sandbox.root.join(format!("migration-{i}.lock"));
+            let destination = sandbox.root.join(format!("graph-{i}.db"));
+            fs::write(&lock_path, "99999\n").unwrap();
+
+            let release_path = lock_path.clone();
+            let releaser = thread::spawn(move || {
+                // No sleep: race the create_new attempt as tightly as possible
+                // against the release, rather than the 30ms gap the single-shot
+                // test above uses, to maximise the chance of landing inside the
+                // Windows pending-delete window this test exists to catch.
+                fs::remove_file(&release_path).unwrap();
+            });
+
+            let lock = acquire_migration_lock(&lock_path, &destination)
+                .unwrap_or_else(|error| {
+                    panic!("iteration {i}: retry loop must absorb the release race, not propagate it: {error}")
+                })
+                .expect("the lock must be acquired once the holder releases it");
+            releaser.join().unwrap();
+            drop(lock);
+        }
+    }
+
     #[test]
     fn migration_lock_drop_removes_the_lock_file() {
         let sandbox = Sandbox::new("migration-lock-drop");
