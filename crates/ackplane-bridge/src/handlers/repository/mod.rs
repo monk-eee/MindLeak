@@ -109,3 +109,336 @@ pub(super) async fn enrolled_or_not_found(
         }
     }
 }
+
+#[cfg(test)]
+pub(super) mod tests {
+    use std::{
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc,
+        },
+        time::SystemTime,
+    };
+
+    use ackplane_server::{
+        claim_store::ClaimStore,
+        constitution_store::ConstitutionStore,
+        enrollment::{activation_challenge_bytes, public_key_fingerprint},
+        enrollment_store::{
+            ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
+            EnrollmentSubmission,
+        },
+        fleet::FleetStore,
+        knowledge_store::KnowledgeStore,
+        ledger::{DedupKey, EventEnvelope, LedgerStore, ProvenanceClass},
+        projection::Projector,
+        readiness::ReadinessStore,
+        signing_keys::{KeyResolution, SigningKeyRecord},
+        telemetry_store::TelemetryStore,
+        work_store::WorkStore,
+    };
+    use ed25519_dalek::{Signer, SigningKey};
+    use sha2::{Digest, Sha256};
+    use tokio::sync::Mutex;
+
+    use super::*;
+
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) fn unique_id(prefix: &str) -> String {
+        let counter = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("the system clock must be after the Unix epoch")
+            .as_nanos();
+        format!("{prefix}-{nanos}-{counter}")
+    }
+
+    /// Mirrors `tests/knowledge_api_integration.rs`'s own `enroll_repository`
+    /// exactly -- `ackplane_server::test_support::enroll_and_activate` is
+    /// `pub(crate)` and unreachable from this crate.
+    pub(super) async fn enroll_repository(
+        database_url: &str,
+        tenant_id: &str,
+        repository_id: &str,
+        unique: &str,
+    ) {
+        let seed: [u8; 32] = Sha256::digest(format!("key-{unique}").as_bytes()).into();
+        let signing_key = SigningKey::from_bytes(&seed);
+        let public_key = signing_key.verifying_key().to_bytes();
+        let request_id = format!("request-{unique}");
+        let node_id = format!("node-{unique}");
+        let fingerprint = public_key_fingerprint(&public_key);
+        let submission = EnrollmentSubmission {
+            request_id: request_id.clone(),
+            tenant_id: tenant_id.to_string(),
+            repository_id: repository_id.to_string(),
+            proposed_node_id: node_id.clone(),
+            display_name: "Repository handler coverage node".to_string(),
+            public_key: public_key.to_vec(),
+            public_key_fingerprint: fingerprint.clone(),
+            requested_capabilities: vec!["synchronize".to_string()],
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            expires_at: "2030-01-01T00:00:00Z".to_string(),
+        };
+        let request = ActivationChallengeRequest {
+            request_id,
+            tenant_id: tenant_id.to_string(),
+            repository_id: repository_id.to_string(),
+            proposed_node_id: node_id,
+            public_key_fingerprint: fingerprint.clone(),
+        };
+        let mut enrollment = EnrollmentStore::connect(database_url)
+            .await
+            .expect("connect enrollment store");
+        enrollment
+            .submit(&submission)
+            .await
+            .expect("submit enrollment");
+        enrollment
+            .approve(&EnrollmentApproval {
+                request_id: submission.request_id.clone(),
+                tenant_id: tenant_id.to_string(),
+                repository_id: repository_id.to_string(),
+                public_key_fingerprint: fingerprint.clone(),
+                approved_capabilities: submission.requested_capabilities.clone(),
+                approved_by: "repository-handler-coverage-administrator".to_string(),
+            })
+            .await
+            .expect("approve enrollment");
+        let nonce: [u8; 32] = Sha256::digest(format!("nonce-{unique}").as_bytes()).into();
+        let challenge = enrollment
+            .issue_challenge(&request, &nonce, SystemTime::now())
+            .await
+            .expect("issue enrollment challenge");
+        let signature = signing_key.sign(&activation_challenge_bytes(
+            &challenge.nonce,
+            &request.request_id,
+            &request.tenant_id,
+            &request.repository_id,
+            &request.proposed_node_id,
+            &request.public_key_fingerprint,
+        ));
+        enrollment
+            .activate(
+                &EnrollmentActivation {
+                    request,
+                    nonce: challenge.nonce,
+                    signature: signature.to_bytes().to_vec(),
+                },
+                &format!("receipt-{unique}"),
+                &format!("signing-key-{unique}"),
+                SystemTime::now(),
+            )
+            .await
+            .expect("activate enrollment");
+    }
+
+    /// A real ledger event this handler family's tests can read back through
+    /// `repository_detail`/`repository_timeline` -- mirrors
+    /// `fleet::repositories`'s own test recipe exactly.
+    pub(super) async fn append_timeline_event(
+        database_url: &str,
+        tenant_id: &str,
+        repository_id: &str,
+        unique: &str,
+    ) {
+        let mut ledger = LedgerStore::connect(database_url)
+            .await
+            .expect("connect ledger store");
+        let envelope = EventEnvelope {
+            key: DedupKey {
+                tenant_id: tenant_id.to_string(),
+                repository_id: repository_id.to_string(),
+                producer_id: format!("producer-{unique}"),
+                producer_sequence: 1,
+            },
+            payload: b"{}".to_vec(),
+            payload_digest: vec![1, 2, 3],
+            schema_version: "v1".to_string(),
+            occurred_at: SystemTime::now(),
+            payload_type: "structural_fact".to_string(),
+            previous_envelope_digest: None,
+            signing_key_id: None,
+            signature: None,
+            provenance: ProvenanceClass::EnrolledNode,
+        };
+        ledger.append(&envelope).await.expect("append envelope");
+    }
+
+    /// Every store `AppState` needs, connected against the same real
+    /// Postgres -- the only way to exercise this handler family's real
+    /// behavior, since `AppState`/`handlers` are private to the binary
+    /// crate and no external `tests/*.rs` integration file can reach them.
+    pub(super) async fn test_app_state(database_url: &str, tenant_id: &str) -> AppState {
+        AppState {
+            fleet: Arc::new(
+                FleetStore::connect(database_url)
+                    .await
+                    .expect("connect Fleet store"),
+            ),
+            knowledge: Arc::new(
+                KnowledgeStore::connect(database_url)
+                    .await
+                    .expect("connect Knowledge store"),
+            ),
+            constitution: Arc::new(Mutex::new(
+                ConstitutionStore::connect(database_url)
+                    .await
+                    .expect("connect Constitution store"),
+            )),
+            claims: Arc::new(Mutex::new(
+                ClaimStore::connect(database_url)
+                    .await
+                    .expect("connect Claim store"),
+            )),
+            projector: Arc::new(
+                Projector::connect(database_url)
+                    .await
+                    .expect("connect Projector"),
+            ),
+            readiness: Arc::new(
+                ReadinessStore::connect(database_url)
+                    .await
+                    .expect("connect Readiness store"),
+            ),
+            telemetry: Arc::new(
+                TelemetryStore::connect(database_url)
+                    .await
+                    .expect("connect Telemetry store"),
+            ),
+            work: Arc::new(
+                WorkStore::connect(database_url)
+                    .await
+                    .expect("connect Work store"),
+            ),
+            tenant_id: Arc::from(tenant_id.to_string()),
+        }
+    }
+
+    fn signing_key_record(unique: &str) -> SigningKeyRecord {
+        SigningKeyRecord {
+            signing_key_id: format!("signing-key-{unique}"),
+            tenant_id: format!("tenant-{unique}"),
+            repository_id: format!("repository-{unique}"),
+            node_id: format!("node-{unique}"),
+            public_key: vec![0; 32],
+            public_key_fingerprint: format!("fingerprint-{unique}"),
+            activated_at: SystemTime::now(),
+            expires_at: None,
+        }
+    }
+
+    #[test]
+    fn key_resolution_label_names_every_variant() {
+        assert_eq!(
+            key_resolution_label(&KeyResolution::Resolved(signing_key_record("a"))),
+            "resolved"
+        );
+        assert_eq!(key_resolution_label(&KeyResolution::Unknown), "unknown");
+        assert_eq!(
+            key_resolution_label(&KeyResolution::BindingMismatch),
+            "binding_mismatch"
+        );
+        assert_eq!(
+            key_resolution_label(&KeyResolution::NotYetActive),
+            "not_yet_active"
+        );
+        assert_eq!(key_resolution_label(&KeyResolution::Expired), "expired");
+        assert_eq!(key_resolution_label(&KeyResolution::Revoked), "revoked");
+        assert_eq!(key_resolution_label(&KeyResolution::Retired), "retired");
+    }
+
+    #[tokio::test]
+    async fn enrolled_or_not_found_finds_a_real_enrolled_repository() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let unique = unique_id("enrolled-or-not-found");
+        let tenant_id = format!("tenant-{unique}");
+        let repository_id = format!("repository-{unique}");
+        enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
+        let state = test_app_state(&database_url, &tenant_id).await;
+
+        assert!(enrolled_or_not_found(&state, &repository_id, "test")
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn enrolled_or_not_found_is_404_for_a_never_enrolled_repository() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let unique = unique_id("never-enrolled");
+        let tenant_id = format!("tenant-{unique}");
+        let state = test_app_state(&database_url, &tenant_id).await;
+
+        let result = enrolled_or_not_found(&state, "no-such-repository", "test").await;
+        assert_eq!(result, Err(StatusCode::NOT_FOUND));
+    }
+
+    #[tokio::test]
+    async fn enrolled_or_not_found_is_404_across_tenants() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let unique = unique_id("cross-tenant");
+        let real_tenant_id = format!("tenant-{unique}");
+        let repository_id = format!("repository-{unique}");
+        enroll_repository(&database_url, &real_tenant_id, &repository_id, &unique).await;
+        let foreign_tenant_id = format!("foreign-tenant-{unique}");
+        let state = test_app_state(&database_url, &foreign_tenant_id).await;
+
+        let result = enrolled_or_not_found(&state, &repository_id, "test").await;
+        assert_eq!(result, Err(StatusCode::NOT_FOUND));
+    }
+
+    #[tokio::test]
+    async fn repository_detail_reports_real_fields_for_an_enrolled_repository() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let unique = unique_id("repository-detail");
+        let tenant_id = format!("tenant-{unique}");
+        let repository_id = format!("repository-{unique}");
+        enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
+        append_timeline_event(&database_url, &tenant_id, &repository_id, &unique).await;
+        let state = test_app_state(&database_url, &tenant_id).await;
+
+        let response = repository_detail(
+            axum::extract::State(state),
+            axum::extract::Path(repository_id.clone()),
+        )
+        .await
+        .expect("an enrolled repository returns its detail");
+
+        assert_eq!(response.repository_id, repository_id);
+        assert_eq!(response.active_node_count, 1);
+        assert_eq!(response.ledger_stream_position, 1);
+        assert_eq!(response.freshness, "never_projected");
+    }
+
+    #[tokio::test]
+    async fn repository_detail_is_404_for_an_unenrolled_repository() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let unique = unique_id("repository-detail-missing");
+        let tenant_id = format!("tenant-{unique}");
+        let state = test_app_state(&database_url, &tenant_id).await;
+
+        let result = repository_detail(
+            axum::extract::State(state),
+            axum::extract::Path("no-such-repository".to_string()),
+        )
+        .await;
+
+        assert_eq!(result.err(), Some(StatusCode::NOT_FOUND));
+    }
+}
