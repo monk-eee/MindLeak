@@ -197,7 +197,8 @@ mod tests {
                    AND table_name IN (\
                      'delegation_stream_heads', \
                      'delegation_events', \
-                     'delegation_projections'\
+                     'delegation_projections', \
+                     'delegation_use_receipts'\
                    ) \
                  ORDER BY table_name",
                 &[],
@@ -214,6 +215,7 @@ mod tests {
                 "delegation_events".to_string(),
                 "delegation_projections".to_string(),
                 "delegation_stream_heads".to_string(),
+                "delegation_use_receipts".to_string(),
             ]
         );
         let payload_columns = client
