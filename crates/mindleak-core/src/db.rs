@@ -19,6 +19,31 @@ const WAL_RETRY_DELAY: Duration = Duration::from_millis(25);
 const OPEN_BUSY_BUDGET: Duration = Duration::from_secs(15);
 const DEFAULT_BUSY_TIMEOUT_MS: i64 = 15_000;
 
+/// Serializes the crate's file-backed database tests against each other.
+///
+/// Each such test already writes to its own uniquely-named file, so they never
+/// contend for the same database -- but Rust's default parallel test runner
+/// still runs them (and every other test in this binary) at once, and on a
+/// loaded CI runner that shared disk contention alone was enough to push a
+/// normally sub-second `open` past [`OPEN_BUSY_BUDGET`], failing with
+/// `Busy("migrating the schema was still locked...")`. Measured 2026-08-25 on
+/// windows-latest job 97726490361: five of them failed together with that one
+/// error.
+///
+/// Widening the budget is deliberately *not* the fix here -- that lever was
+/// already pulled once (5s -> 15s, see above) and the same failure returned at
+/// the higher ceiling, because per-test file isolation was never the broken
+/// part. Serializing only these tests removes the contention itself and leaves
+/// every in-memory test fully parallel. Mirrors the same fix already proven in
+/// `mindleak-mcp`'s `maintenance::runtime` tests.
+#[cfg(test)]
+pub(crate) fn serialize_db_test() -> std::sync::MutexGuard<'static, ()> {
+    static DB_OPENING_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    DB_OPENING_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
 /// Open (or create) a MindLeak database at `path`, apply the schema, and register
 /// the `effective_weight` scalar SQL function used by graph queries.
 pub fn open(path: &str) -> Result<Connection> {
@@ -581,6 +606,7 @@ mod tests {
 
     #[test]
     fn concurrent_opens_serialize_legacy_migration() {
+        let _serialized = serialize_db_test();
         let path = temp_db("concurrent-migration");
         create_legacy_database(&path);
         let barrier = Arc::new(Barrier::new(3));
@@ -613,6 +639,7 @@ mod tests {
 
     #[test]
     fn held_lock_does_not_multiply_wal_retry_timeout() {
+        let _serialized = serialize_db_test();
         let path = temp_db("bounded-wal-retry");
         create_legacy_database(&path);
         let holder = Connection::open(&path).unwrap();
