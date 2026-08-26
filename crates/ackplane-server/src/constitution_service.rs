@@ -130,6 +130,9 @@ fn store_error(error: ConstitutionStoreError) -> Status {
                 "proposal {proposal_id} is already recorded with different content"
             ))
         }
+        ConstitutionStoreError::ProposalWithdrawn { proposal_id } => Status::failed_precondition(
+            format!("proposal {proposal_id} has been withdrawn and cannot be re-proposed"),
+        ),
         ConstitutionStoreError::Database(error) => Status::internal(error.to_string()),
     }
 }
