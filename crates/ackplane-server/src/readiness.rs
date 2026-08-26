@@ -10,7 +10,7 @@ use std::time::SystemTime;
 use thiserror::Error;
 use tokio_postgres::Client;
 
-use crate::fleet::{classify_freshness, RepositoryFreshness};
+use crate::fleet::{classify_freshness, projected_stream_head_join, RepositoryFreshness};
 use crate::signing_keys::{self, EnvelopeBinding, KeyResolution, SigningKeyError};
 
 const ENROLLMENT_MIGRATION: &str = include_str!("../migrations/0003_enrollment.sql");
@@ -141,8 +141,9 @@ impl ReadinessStore {
         let repo_rows = self
             .client
             .query(
-                "SELECT request.repository_id, count(*)::BIGINT, \
-                        COALESCE(head.position, 0), state.stream_position, \
+                &format!(
+                    "SELECT request.repository_id, count(*)::BIGINT, \
+                        COALESCE(projected_head.position, 0), state.stream_position, \
                         COUNT(*) OVER()::BIGINT \
                  FROM enrollment_requests AS request \
                  INNER JOIN enrollment_receipts AS receipt \
@@ -152,13 +153,13 @@ impl ReadinessStore {
                  LEFT JOIN projection_state AS state \
                     ON state.tenant_id = request.tenant_id \
                    AND state.repository_id = request.repository_id \
-                 LEFT JOIN stream_heads AS head \
-                    ON head.tenant_id = request.tenant_id \
-                   AND head.repository_id = request.repository_id \
+                 {projected_head_join} \
                  WHERE request.tenant_id = $1 \
-                 GROUP BY request.repository_id, head.position, state.stream_position \
+                 GROUP BY request.repository_id, projected_head.position, state.stream_position \
                  ORDER BY request.repository_id ASC \
                  LIMIT $2 OFFSET $3",
+                    projected_head_join = projected_stream_head_join("request"),
+                ),
                 &[&tenant_id, &page_size, &offset],
             )
             .await?;
@@ -194,9 +195,9 @@ impl ReadinessStore {
         for row in repo_rows {
             let repository_id: String = row.get(0);
             let active_node_count: i64 = row.get(1);
-            let ledger_stream_position: i64 = row.get(2);
+            let projected_stream_head: i64 = row.get(2);
             let projection_stream_position: Option<i64> = row.get(3);
-            let freshness = classify_freshness(ledger_stream_position, projection_stream_position);
+            let freshness = classify_freshness(projected_stream_head, projection_stream_position);
 
             let (active_claim_count, soonest_lease_expires_at) = claims_by_repo
                 .get(&repository_id)
@@ -258,7 +259,7 @@ mod tests {
     use crate::{
         claim_store::{ClaimLeaseRequest, ClaimStore},
         ledger::{DedupKey, EventEnvelope, LedgerStore, ProvenanceClass},
-        projection::{Projector, StructuralFact},
+        projection::{Projector, StructuralFact, STRUCTURAL_FACT_PAYLOAD_TYPE},
         test_support::{enroll_and_activate, enroll_and_activate_in, uuid_ish},
     };
 
@@ -272,17 +273,18 @@ mod tests {
         .expect("encode structural fact")
     }
 
-    async fn append_structural_fact(
+    async fn append_record(
         database_url: &str,
         tenant_id: &str,
         repository_id: &str,
         producer_sequence: i64,
         node_id: &str,
+        payload_type: &str,
+        payload: Vec<u8>,
     ) {
         let mut ledger = LedgerStore::connect(database_url)
             .await
             .expect("connect ledger store");
-        let payload = structural_fact_payload(node_id);
         ledger
             .append(&EventEnvelope {
                 key: DedupKey {
@@ -295,14 +297,34 @@ mod tests {
                 payload,
                 schema_version: "v1".to_string(),
                 occurred_at: SystemTime::now(),
-                payload_type: "structural_fact".to_string(),
+                payload_type: payload_type.to_string(),
                 previous_envelope_digest: None,
                 signing_key_id: None,
                 signature: None,
                 provenance: ProvenanceClass::EnrolledNode,
             })
             .await
-            .expect("append structural fact");
+            .expect("append ledger record");
+    }
+
+    async fn append_structural_fact(
+        database_url: &str,
+        tenant_id: &str,
+        repository_id: &str,
+        producer_sequence: i64,
+        node_id: &str,
+    ) {
+        let payload = structural_fact_payload(node_id);
+        append_record(
+            database_url,
+            tenant_id,
+            repository_id,
+            producer_sequence,
+            node_id,
+            STRUCTURAL_FACT_PAYLOAD_TYPE,
+            payload,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -353,6 +375,70 @@ mod tests {
             .rebuild(&tenant_id, &repository_id)
             .await
             .expect("rebuild projection");
+
+        let readiness = ReadinessStore::connect(&database_url)
+            .await
+            .expect("connect readiness store");
+        let page = readiness
+            .readiness(&tenant_id, 1, 10, SystemTime::now())
+            .await
+            .expect("query readiness");
+
+        assert_eq!(page.items[0].freshness, RepositoryFreshness::Fresh);
+        assert_eq!(page.items[0].status, ReadinessStatus::Ready);
+    }
+
+    /// Regression: a caught-up repository reported `Lagging`/`AttentionNeeded`
+    /// forever as soon as any non-`structural_fact` record landed after its
+    /// last structural fact.
+    ///
+    /// Readiness classified freshness by comparing the projection checkpoint
+    /// against `stream_heads.position` — the head of *every* record in the
+    /// stream. A projection only consumes structural facts and checkpoints at
+    /// the last one it projected, and the worker's own staleness query filters
+    /// to the same payload type, so it saw nothing to rebuild. The gap could
+    /// never close and nothing ever cleared the warning. Evidence, knowledge,
+    /// claim, directive, and delegation records all land in this same ledger,
+    /// so this was the normal operating case, not an edge case — a permanent
+    /// false amber that teaches operators to ignore the readiness signal.
+    ///
+    /// The fix compares the checkpoint against the head of the stream the
+    /// projection actually consumes, so Readiness, Fleet, and the worker agree
+    /// on "caught up" by construction. This test is also deterministic under a
+    /// live projection worker: appending a non-structural record leaves
+    /// nothing for the worker to rebuild, so there is no race to lose.
+    #[tokio::test]
+    async fn readiness_stays_ready_when_a_later_record_is_not_a_structural_fact() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let (tenant_id, repository_id) =
+            enroll_and_activate(&database_url, &unique_id.to_string()).await;
+        append_structural_fact(&database_url, &tenant_id, &repository_id, 1, "n1").await;
+
+        let mut projector = Projector::connect(&database_url)
+            .await
+            .expect("connect projector");
+        projector
+            .rebuild(&tenant_id, &repository_id)
+            .await
+            .expect("rebuild projection");
+
+        // Something that is not a structural fact lands afterwards, so the
+        // whole-ledger head now leads the projection checkpoint. No rebuild
+        // can ever close that gap, so it must not read as lagging.
+        append_record(
+            &database_url,
+            &tenant_id,
+            &repository_id,
+            2,
+            "n1",
+            "evidence_record",
+            b"not a structural fact".to_vec(),
+        )
+        .await;
 
         let readiness = ReadinessStore::connect(&database_url)
             .await
