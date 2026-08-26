@@ -2,8 +2,9 @@
 // transiently. npm's fetch retry loop helps individual requests, but a proxy
 // outage can outlast it and leave the whole installation half-written.
 //
-// Platform-agnostic: Node invokes npm.cmd on Windows and npm elsewhere.
+// Platform-agnostic: resolve npm's JavaScript CLI from Node's own installation.
 import { spawnSync } from "node:child_process";
+import { dirname, join } from "node:path";
 
 export const DEFAULT_ATTEMPTS = 2;
 export const DEFAULT_DELAY_MS = 30_000;
@@ -36,17 +37,26 @@ export function npmExitCode(result) {
   return typeof result.status === "number" ? result.status : 1;
 }
 
+export function npmCliPath(nodeExecutable = process.execPath) {
+  return join(
+    dirname(nodeExecutable),
+    "node_modules",
+    "npm",
+    "bin",
+    "npm-cli.js",
+  );
+}
+
 export function runNpmCi({
   npmArgs = [],
   attempts = DEFAULT_ATTEMPTS,
   delayMs = DEFAULT_DELAY_MS,
   run = (args) =>
-    spawnSync("npm", args, {
+    spawnSync(process.execPath, [npmCliPath(), ...args], {
       encoding: "utf8",
       maxBuffer: 4 * 1024 * 1024,
-      // Node does not directly execute .cmd shims on Windows. Let cmd.exe
-      // resolve npm there; POSIX continues to spawn npm directly.
-      shell: process.platform === "win32",
+      // Calling npm's JavaScript entrypoint avoids Windows .cmd shim behavior
+      // and keeps stdout/stderr available for retry classification.
     }),
   wait = (milliseconds) =>
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds),

@@ -5,6 +5,7 @@ import {
   configuredAttempts,
   configuredDelayMs,
   isTransientNpmFailure,
+  npmCliPath,
   runNpmCi,
 } from "./npm-ci-retry.mjs";
 
@@ -21,6 +22,13 @@ test("recognizes only known transient npm network failures", () => {
     false,
   );
   assert.equal(isTransientNpmFailure(result(0, "npm error code E503")), false);
+});
+
+test("resolves npm's JavaScript CLI beside the Node executable", () => {
+  assert.match(
+    npmCliPath("C:/tool/node.exe").replace(/\\/g, "/"),
+    /C:\/tool\/node_modules\/npm\/bin\/npm-cli\.js$/,
+  );
 });
 
 test("restarts npm ci once after a transient registry failure", () => {
