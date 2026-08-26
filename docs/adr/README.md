@@ -135,6 +135,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0125](0125-bridge-work-commands-are-principal-scoped-and-receipted.md) | Bridge Work commands are principal-scoped and receipted | Accepted |
 | [0126](0126-the-bridge-proposes-constitution-amendments-only-a.md) | The Bridge proposes constitution amendments; only a repository activates them | Accepted |
 | [0127](0127-agent-issued-shell-commands-are-auditable-evidence.md) | Agent-issued shell commands are auditable evidence, not just prose discipline | Accepted |
+| [0128](0128-the-hardened-loopback-profile-is-the-verified-principal-for-self-hosted-administration.md) | The hardened loopback profile is the verified principal for self-hosted Industrial administration | Accepted |
 
 ## Writing a new ADR
 
