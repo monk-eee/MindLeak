@@ -351,21 +351,26 @@ the shared list, and the conflict, straight back.
 ```bash
 node scripts/gaps.mjs --list     # read every open gap
 node scripts/gaps.mjs --check    # validate fragments (runs in the hook)
-node scripts/gaps.mjs --triage   # reliability scorecard: backlog age + which gaps have a tracking task
+node scripts/gaps.mjs --triage   # reliability scorecard: backlog age + verified live tracking tasks
 ```
 
 A fragment records that something is broken, not that anyone is fixing it — a
 gap can sit unaddressed indefinitely and look exactly as "handled" as one filed
 five minutes ago. `--triage` names the difference: it reports every open
-fragment's age and whether its own text names a Lodestar `task:` tracking its
-fix, plus the backlog totals (oldest age, median age, how many are orphaned —
-no task reference at all). An honest, most-of-the-time-uncomfortable number
+fragment's age and whether it names a live Lodestar task in explicit
+`Tracking: task:<12-hex>` metadata, plus the backlog totals (oldest age, median
+age, how many are orphaned — no live tracking task). Historical incident prose
+does not count as a repair commitment. When a fragment declares tracking,
+`--triage` reads the Lodestar board and refuses to claim it is tracked if the
+task is missing or terminal. An honest, most-of-the-time-uncomfortable number
 here is the point; do not read a shrinking `--list` as progress if `--triage`
 shows the same fragments just getting older.
 
 **Record a gap:** add `gaps.d/<slug>.md` opening with a `- **` bullet that names
 the gap, where it is (file plus symbol or test name), its impact, and whether it
-was fixed this run or left for later.
+was fixed this run or left for later. **Track a repair:** add
+`Tracking: task:<12-hex>` on its own line; do not use an incidental historical
+task id as tracking metadata.
 
 **Close a gap:** delete its fragment in the commit that fixes it, so the fix and
 the retraction are one reviewable change rather than two that can drift apart.

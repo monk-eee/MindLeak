@@ -18,6 +18,31 @@ export interface McpSessionIdentity {
   agent_id: string;
 }
 
+/**
+ * Working context an `open_session` call may declare (ADR-0035): branch,
+ * head commit, dirty tree, and — only when a tracked upstream makes them
+ * knowable rather than guessed — base and how far behind it. Any field left
+ * out stays `unknown` to the server rather than being invented here.
+ */
+export interface SessionContext {
+  branch?: string;
+  head_sha?: string;
+  base?: string;
+  dirty?: boolean;
+  behind?: number;
+}
+
+/**
+ * Supplies the session context to declare, called fresh at every declaration
+ * (initial `open_session` and each {@link McpClient.refreshContext} call) so
+ * it always reports the current state rather than a snapshot from
+ * construction time. Returns `undefined` when no context is available (no
+ * workspace Git repository, extension disabled, etc.) — the client then
+ * declares none, which the server already treats as `unknown`.
+ */
+export type SessionContextProvider = () =>
+  SessionContext | undefined | Promise<SessionContext | undefined>;
+
 /** Whether the server is answering, coming back, or gone until a reload. */
 export type McpConnectionState = "connected" | "reconnecting" | "disconnected";
 
@@ -49,7 +74,8 @@ export class McpClient {
     private readonly env: NodeJS.ProcessEnv,
     private readonly sessionId: string,
     private readonly log: (message: string) => void,
-    private readonly requestTimeoutMs = 30_000
+    private readonly requestTimeoutMs = 30_000,
+    private readonly contextProvider: SessionContextProvider = () => undefined
   ) {}
 
   /**
@@ -108,7 +134,7 @@ export class McpClient {
     this.notify("notifications/initialized", {});
     const sessionResult = await this.request("tools/call", {
       name: "open_session",
-      arguments: { session_id: this.sessionId },
+      arguments: { session_id: this.sessionId, ...(await this.declaredContext()) },
     });
     const session = parseToolResult(sessionResult) as McpSessionIdentity;
     if (typeof session?.agent_id !== "string" || !session.agent_id) {
@@ -160,6 +186,64 @@ export class McpClient {
 
   agentIdentity(): string | undefined {
     return this.sessionIdentity?.agent_id;
+  }
+
+  /**
+   * Re-declare this session's Git context after it changes (a branch switch,
+   * a new commit, the working tree turning dirty or clean). `open_session`
+   * upserts by session id (ADR-0035), so calling it again refreshes the
+   * fleet's declared context in place rather than minting a new session. A
+   * no-op before the session is ready, or when the context provider currently
+   * has nothing to declare (no workspace repository, Git extension disabled).
+   */
+  async refreshContext(): Promise<void> {
+    if (!this.ready) {
+      return;
+    }
+    const context = await this.declaredContext();
+    if (Object.keys(context).length === 0) {
+      return;
+    }
+    try {
+      await this.callTool("open_session", context);
+    } catch (err) {
+      this.log(`context refresh error: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Build the `open_session` arguments for whatever context is currently
+   * available, dropping any field the provider left undeclared rather than
+   * guessing a value for it (ADR-0044).
+   */
+  private async declaredContext(): Promise<Record<string, unknown>> {
+    let context: SessionContext | undefined;
+    try {
+      context = await this.contextProvider();
+    } catch (err) {
+      this.log(`session context unavailable: ${(err as Error).message}`);
+      return {};
+    }
+    if (!context) {
+      return {};
+    }
+    const args: Record<string, unknown> = {};
+    if (context.branch !== undefined) {
+      args.branch = context.branch;
+    }
+    if (context.head_sha !== undefined) {
+      args.head_sha = context.head_sha;
+    }
+    if (context.base !== undefined) {
+      args.base = context.base;
+    }
+    if (context.dirty !== undefined) {
+      args.dirty = context.dirty;
+    }
+    if (context.behind !== undefined) {
+      args.behind = context.behind;
+    }
+    return args;
   }
 
   private onLine(line: string): void {

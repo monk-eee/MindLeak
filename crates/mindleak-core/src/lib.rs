@@ -78,6 +78,14 @@ pub struct MindLeak {
     /// one. Absent, the behaviour is exactly what it was before - a miss is a
     /// refusal.
     worktree_refresh: Option<Box<dyn Fn() -> Vec<String> + Send + Sync>>,
+    /// How to ask whether a commit id names a real commit in this checkout.
+    ///
+    /// Injected for the same reason the refresh above is: the core does not
+    /// spawn git, and a test must be able to answer for a commit that does not
+    /// exist without creating one. Absent - and when a resolver answers `None`
+    /// because git could not be reached - the behaviour is exactly what it was
+    /// before: the shape check alone decides.
+    commit_resolver: Option<Box<CommitResolver<'static>>>,
     /// When the roots were last re-resolved, so a genuinely foreign path cannot
     /// make every refusal pay for a git subprocess.
     last_refresh: Mutex<Option<Instant>>,
@@ -95,6 +103,16 @@ const WORKTREE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 fn borrowed(roots: &[String]) -> Vec<&str> {
     roots.iter().map(String::as_str).collect()
 }
+
+/// How the engine asks whether a commit id names a real commit in this checkout.
+///
+/// `Some(false)` is git answering "no". `None` is git failing to answer at all,
+/// which must never be read as "no" - see `MindLeak::with_commit_resolver`.
+///
+/// Lifetime-generic so a caller can pass a resolver that borrows: the engine
+/// stores a `'static` one, but a test asserting what the resolver was asked
+/// needs to capture a local.
+pub type CommitResolver<'a> = dyn Fn(&str) -> Option<bool> + Send + Sync + 'a;
 
 // The async maintenance worker (`mindleak-mcp`) moves a `MindLeak` into
 // `std::thread::spawn`, so `MindLeak` must stay `Send`. This fails to compile if
@@ -117,6 +135,7 @@ impl MindLeak {
             workspace_root: None,
             worktree_roots: RwLock::new(Vec::new()),
             worktree_refresh: None,
+            commit_resolver: None,
             last_refresh: Mutex::new(None),
         })
     }
@@ -132,6 +151,7 @@ impl MindLeak {
             workspace_root: None,
             worktree_roots: RwLock::new(Vec::new()),
             worktree_refresh: None,
+            commit_resolver: None,
             last_refresh: Mutex::new(None),
         })
     }
@@ -189,6 +209,35 @@ impl MindLeak {
     ) -> Self {
         self.worktree_refresh = Some(Box::new(refresh));
         self
+    }
+
+    /// How to ask whether a commit id names a real commit in this checkout.
+    ///
+    /// A fabricated sha is the worst thing that can enter this graph: afterwards
+    /// it is indistinguishable from a real one, and no verb removes a node. It
+    /// has already happened here - an agent holding an abbreviation composed the
+    /// remaining characters, and the phantom intent node it created carries real
+    /// edges to real files until it decays.
+    ///
+    /// Checking the shape cannot catch that, because the invention was a
+    /// perfectly well-formed forty-character hex string. Only git can tell a
+    /// plausible object name from a real one - and the core does not spawn git,
+    /// so the capability is injected exactly as the worktree refresh is.
+    ///
+    /// The resolver answers `None` when git could not be reached. That is
+    /// "unknown", never "no": an unreachable git must not be able to refuse a
+    /// commit that is perfectly real.
+    pub fn with_commit_resolver(
+        mut self,
+        resolver: impl Fn(&str) -> Option<bool> + Send + Sync + 'static,
+    ) -> Self {
+        self.commit_resolver = Some(Box::new(resolver));
+        self
+    }
+
+    /// Borrow the injected commit resolver for the ingest path.
+    pub(crate) fn commit_resolver(&self) -> Option<&CommitResolver<'static>> {
+        self.commit_resolver.as_deref()
     }
 
     /// Every root a caller-supplied path may be made relative against: this

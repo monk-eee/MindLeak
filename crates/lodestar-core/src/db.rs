@@ -277,10 +277,11 @@ mod tests {
     /// window and orphaned the commit it had already made. A task provable by
     /// nobody is the one outcome the ledger exists to prevent.
     ///
-    /// Fix, both halves: ownership of a *live* claim is never rewritten, and the
-    /// collapse is recorded in `schema_migrations` so it cannot fire twice.
+    /// Fix, both halves: ownership of a live or deliberately parked claim is
+    /// never rewritten, and the collapse is recorded in `schema_migrations` so
+    /// it cannot fire twice.
     #[test]
-    fn the_identity_collapse_never_re_owns_a_live_claim_and_cannot_fire_twice() {
+    fn the_identity_collapse_preserves_live_and_parked_owners_and_cannot_fire_twice() {
         let path = temporary_database("live-claim-ownership");
         let fingerprint = "b4baf2807ebecbd3f43821b330426544";
         let labelled = format!("session:v1:copilot:{fingerprint}");
@@ -294,16 +295,19 @@ mod tests {
                      VALUES ('goal:g', 'ship', 'objective', 'Ship', 'Ship it', 'active', 1);",
                 )
                 .unwrap();
-            // One claim still held, one whose lease has long since lapsed.
-            for (task, lease) in [
-                ("task:live", Some(live_until)),
-                ("task:lapsed", Some(1_i64)),
+            // A live claim and both deliberately parked states retain their
+            // owner; an expired claim is safe to normalize.
+            for (task, status, lease) in [
+                ("task:live", "claimed", Some(live_until)),
+                ("task:lapsed", "claimed", Some(1_i64)),
+                ("task:paused", "paused", None),
+                ("task:needs-input", "needs_input", None),
             ] {
                 connection
                     .execute(
                         "INSERT INTO tasks (id, goal_id, title, acceptance, status, owner, lease_expires_at, created_at, updated_at)
-                         VALUES (?1, 'goal:g', 'T', 'A', 'claimed', ?2, ?3, 1, 1)",
-                        rusqlite::params![task, labelled, lease],
+                         VALUES (?1, 'goal:g', 'T', 'A', ?2, ?3, ?4, 1, 1)",
+                        rusqlite::params![task, status, labelled, lease],
                     )
                     .unwrap();
             }
@@ -338,6 +342,24 @@ mod tests {
             collapsed,
             "a claim nobody is holding is safe to tidy"
         );
+        assert_eq!(
+            owner(&connection, "task:paused"),
+            labelled,
+            "a paused task keeps the owner required to resume it"
+        );
+        assert_eq!(
+            owner(&connection, "task:needs-input"),
+            labelled,
+            "a parked question keeps the owner and evidence window intact"
+        );
+        let applied: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM schema_migrations WHERE name = 'collapse_session_identities'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied, 1, "recorded once, by name");
         drop(connection);
 
         // The legacy writer takes a fresh claim under its labelled id, exactly
@@ -360,15 +382,13 @@ mod tests {
             labelled,
             "the collapse is recorded as done and cannot fire a second time"
         );
-
-        let applied: i64 = connection
-            .query_row(
-                "SELECT count(*) FROM schema_migrations WHERE name = 'collapse_session_identities'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(applied, 1, "recorded once, by name");
+        let store = LodestarStore::new(connection);
+        assert!(
+            store
+                .resume_task("task:paused", &labelled, 60, crate::now_unix())
+                .unwrap(),
+            "the legacy owner can resume a task parked before the repair ran"
+        );
     }
 
     #[test]

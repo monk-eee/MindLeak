@@ -13,6 +13,7 @@ use crate::backup_database;
 use self::fs::{create_private_directory, sibling_path};
 use self::migrate::acquire_migration_lock;
 
+mod commit;
 mod fs;
 mod identity;
 mod migrate;
@@ -20,6 +21,7 @@ mod platform;
 mod resolve;
 mod worktree;
 
+pub use commit::commit_exists;
 pub use identity::read_local_git_config;
 pub use resolve::{
     platform_state_root, resolve_database, resolve_database_in, resolve_workspace_path,
