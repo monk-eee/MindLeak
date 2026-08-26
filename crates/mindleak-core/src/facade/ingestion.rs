@@ -5,6 +5,7 @@ use crate::graph::STRUCTURE_EXTRACTOR_VERSION;
 use crate::ingest::execution::ExecutionRecord;
 use crate::ingest::git::CommitRecord;
 use crate::ingest::structure::{HierarchyRelation, ImportTarget};
+use crate::ingest::tool_invocation::ToolInvocationRecord;
 use crate::{
     ingest, now_unix, ArtifactStub, Edge, ForgetOutcome, MindLeak, MindLeakError, Node, NodeType,
     ReconcileOutcome, RelationType, Result, WriteOutcome,
@@ -32,7 +33,7 @@ impl MindLeak {
             // cannot reap the spent execution until ~9 days out. Cap execution
             // attribution to the execution decay tier so both fade together and
             // the orphaned execution is reaped promptly (ADR-0021 / ADR-0003).
-            if id.starts_with("execution:") {
+            if id.starts_with("execution:") || id.starts_with("tool_invocation:") {
                 edge.half_life_hours = RelationType::Modified.default_half_life_hours();
             }
             self.store.upsert_edge(&edge)?;
@@ -71,6 +72,21 @@ impl MindLeak {
         let now = now_unix();
         let roots = self.roots();
         let outcome = ingest::git::ingest_commit(&self.store, rec, now, &crate::borrowed(&roots))?;
+        self.observe(agent, &outcome.node_ids, now)?;
+        Ok(outcome)
+    }
+
+    pub fn ingest_tool_invocation(&self, rec: &ToolInvocationRecord) -> Result<WriteOutcome> {
+        ingest::tool_invocation::ingest_tool_invocation(&self.store, rec)
+    }
+
+    pub fn ingest_tool_invocation_for_agent(
+        &self,
+        agent: &str,
+        rec: &ToolInvocationRecord,
+    ) -> Result<WriteOutcome> {
+        let now = now_unix();
+        let outcome = ingest::tool_invocation::ingest_tool_invocation(&self.store, rec)?;
         self.observe(agent, &outcome.node_ids, now)?;
         Ok(outcome)
     }
