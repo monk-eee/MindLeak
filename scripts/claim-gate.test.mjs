@@ -7,6 +7,7 @@ import {
   commitBeforeClaimNotice,
   commitsBeforeClaim,
   describeReachabilityFailure,
+  liveClaimHeldByAnother,
   missingClaimAdvice,
   parseCallResult,
   publishVerdict,
@@ -65,6 +66,84 @@ test("another session's claim is not mistaken for this one under any id shape", 
   assert.equal(
     claimsUnderAnotherIdShape([claimed(other)], LABELLED, NOW).length,
     0,
+  );
+});
+
+// --- liveClaimHeldByAnother (ADR-0130) --------------------------------------
+
+const claimedOn = (branch, owner, over = {}) => ({
+  id: "task:live-claim",
+  status: "claimed",
+  owner,
+  branch,
+  lease_expires_at: NOW + 600,
+  ...over,
+});
+
+test("a live claim on the branch held by someone else is found", () => {
+  const found = liveClaimHeldByAnother(
+    [claimedOn("feat/x", "session:v1:owner")],
+    "feat/x",
+    "session:v1:adopter",
+    NOW,
+  );
+  assert.equal(found?.owner, "session:v1:owner");
+});
+
+test("a claim held by the caller's own session is not a collision with itself", () => {
+  const found = liveClaimHeldByAnother(
+    [claimedOn("feat/x", "session:v1:me")],
+    "feat/x",
+    "session:v1:me",
+    NOW,
+  );
+  assert.equal(found, null);
+});
+
+test("a lapsed lease is not a live claim, whoever it was held by", () => {
+  const found = liveClaimHeldByAnother(
+    [claimedOn("feat/x", "session:v1:owner", { lease_expires_at: NOW - 1 })],
+    "feat/x",
+    "session:v1:adopter",
+    NOW,
+  );
+  assert.equal(
+    found,
+    null,
+    "a lapsed lease is the genuine rescue case this must not block",
+  );
+});
+
+test("a claim on a different branch never blocks this one", () => {
+  const found = liveClaimHeldByAnother(
+    [claimedOn("feat/other", "session:v1:owner")],
+    "feat/x",
+    "session:v1:adopter",
+    NOW,
+  );
+  assert.equal(found, null);
+});
+
+test("a non-claimed task on the same branch (open, blocked, done) is not a collision", () => {
+  for (const status of ["open", "blocked", "in_review", "done", "abandoned"]) {
+    const found = liveClaimHeldByAnother(
+      [claimedOn("feat/x", "session:v1:owner", { status })],
+      "feat/x",
+      "session:v1:adopter",
+      NOW,
+    );
+    assert.equal(found, null, `status=${status} must not read as a collision`);
+  }
+});
+
+test("an empty or missing task list finds nothing rather than throwing", () => {
+  assert.equal(
+    liveClaimHeldByAnother([], "feat/x", "session:v1:adopter", NOW),
+    null,
+  );
+  assert.equal(
+    liveClaimHeldByAnother(undefined, "feat/x", "session:v1:adopter", NOW),
+    null,
   );
 });
 

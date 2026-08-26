@@ -111,6 +111,10 @@ mod tests {
     use super::*;
     use std::time::SystemTime;
 
+    use super::super::tests::{
+        append_timeline_event, enroll_repository, test_app_state, unique_id,
+    };
+
     fn timeline_event(stream_position: i64) -> TimelineEvent {
         TimelineEvent {
             stream_position,
@@ -137,5 +141,54 @@ mod tests {
     #[test]
     fn next_timeline_cursor_is_none_for_an_empty_page() {
         assert_eq!(next_timeline_cursor(&[], 3), None);
+    }
+
+    #[tokio::test]
+    async fn repository_timeline_returns_the_real_recorded_event() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let unique = unique_id("repository-timeline");
+        let tenant_id = format!("tenant-{unique}");
+        let repository_id = format!("repository-{unique}");
+        enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
+        append_timeline_event(&database_url, &tenant_id, &repository_id, &unique).await;
+        let state = test_app_state(&database_url, &tenant_id).await;
+
+        let response = repository_timeline(
+            axum::extract::State(state),
+            axum::extract::Path(repository_id),
+            axum::extract::Query(TimelineQuery { before: None }),
+        )
+        .await
+        .expect("an enrolled repository returns its timeline")
+        .0;
+
+        assert_eq!(response.events.len(), 1);
+        assert_eq!(response.events[0].stream_position, 1);
+        assert_eq!(response.events[0].payload_type, "structural_fact");
+        assert_eq!(response.events[0].producer_id, format!("producer-{unique}"));
+        assert_eq!(response.next_before, None);
+    }
+
+    #[tokio::test]
+    async fn repository_timeline_is_404_for_an_unenrolled_repository() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let unique = unique_id("repository-timeline-missing");
+        let tenant_id = format!("tenant-{unique}");
+        let state = test_app_state(&database_url, &tenant_id).await;
+
+        let result = repository_timeline(
+            axum::extract::State(state),
+            axum::extract::Path("no-such-repository".to_string()),
+            axum::extract::Query(TimelineQuery { before: None }),
+        )
+        .await;
+
+        assert_eq!(result.err(), Some(StatusCode::NOT_FOUND));
     }
 }
