@@ -114,6 +114,10 @@ pub(crate) mod key {
     /// the time this was drafted -- checked via `migration-audit.mjs` and a
     /// direct `gh pr view` before picking this number, not guessed.
     pub(crate) const CONSTITUTION_PROPOSALS: i64 = 38;
+    /// `migrations/0039_work_task_command_execution.sql`. Key 38 was already
+    /// recorded as applied in the shared development database by
+    /// concurrent, then-not-yet-committed work at the time this was drafted.
+    pub(crate) const WORK_TASK_COMMAND_EXECUTION: i64 = 39;
     /// `migrations/0041_administration.sql`. 39 and 40 (like 19 before them)
     /// were already reached by the shared development database from
     /// concurrent work nobody had committed yet -- `migration-audit.mjs`

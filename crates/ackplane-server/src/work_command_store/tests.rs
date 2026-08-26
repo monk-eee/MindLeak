@@ -2,6 +2,10 @@
 
 use std::time::{Duration, SystemTime};
 
+use super::payload::{
+    AnswerWaitPayload, CreateWorkPayload, ReleaseLeasePayload, ReviewDisposition, RouteWorkPayload,
+    SubmitReviewPayload, WorkCommandPayload,
+};
 use super::service::{
     VerifiedWorkCommandPrincipal, WorkCommandAuthorization, WorkCommandRefusal, WorkCommandService,
     WorkCommandServiceOutcome, AUTHORIZATION_UNAVAILABLE_REASON,
@@ -11,6 +15,109 @@ use super::{
     *,
 };
 use crate::test_support::unique_id;
+use crate::work_store::{NewWorkTask, WorkStore, WorkTaskState};
+
+/// A command targeting an existing task's server-owned effect: real
+/// task_id/expected_task_version (unlike `request()`'s bare `CreateWork`
+/// preview), and a `payload_digest` computed from the exact payload the
+/// test intends to confirm with -- the confirm step refuses anything else
+/// as a mismatch (ADR-0125 decision 8).
+fn command_targeting(
+    tenant_id: &str,
+    repository_id: &str,
+    suffix: &str,
+    task_id: Option<String>,
+    expected_task_version: Option<i64>,
+    payload: &WorkCommandPayload,
+    expires_at: SystemTime,
+) -> NewWorkCommand {
+    NewWorkCommand {
+        tenant_id: tenant_id.to_owned(),
+        repository_id: repository_id.to_owned(),
+        kind: payload.kind(),
+        schema_version: "v1".to_owned(),
+        task_id,
+        issuing_principal_id: format!("principal-{suffix}"),
+        delegation_id: Some(format!("delegation-{suffix}")),
+        policy_refs: vec![format!("policy-{suffix}")],
+        rationale: "Execute a Work command's server-owned effect through a receipted command."
+            .to_owned(),
+        expected_task_version,
+        confirmation_id: None,
+        expires_at,
+        idempotency_key: format!("idempotency-{suffix}"),
+        payload_digest: super::payload::payload_digest(payload)
+            .expect("a payload digest should always compute"),
+    }
+}
+
+/// A verified principal authorized for exactly the kinds it names --
+/// `submit` refuses any command outside `allowed_commands`, and `confirm`
+/// only re-checks identity/tenant/repository scope (decision 8), so this is
+/// the one place a caller needs to state which kinds it intends to submit.
+fn verified_authorization_for(
+    tenant_id: &str,
+    repository_id: &str,
+    suffix: &str,
+    allowed_commands: Vec<WorkCommandKind>,
+) -> WorkCommandAuthorization {
+    WorkCommandAuthorization::Verified(VerifiedWorkCommandPrincipal {
+        principal_id: format!("principal-{suffix}"),
+        tenant_id: tenant_id.to_owned(),
+        repository_ids: vec![repository_id.to_owned()],
+        allowed_commands,
+        policy_refs: vec![format!("policy-{suffix}")],
+        delegation_id: Some(format!("delegation-{suffix}")),
+    })
+}
+
+/// A raw, unmanaged connection for seeding rows no store's own public API
+/// covers (a `delegated_claims` grant, an unanswered `work_task_waits` row) --
+/// mirrors `WorkStore::connect`'s own connect-and-spawn shape.
+async fn raw_client(database_url: &str) -> tokio_postgres::Client {
+    let (client, connection) = tokio_postgres::connect(database_url, tokio_postgres::NoTls)
+        .await
+        .expect("a raw seeding connection should succeed");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    client
+}
+
+/// Seeds one `work_tasks` row (via the real `WorkStore`, so its own
+/// migrations apply) and returns the store still connected for later
+/// `task_detail` reads.
+async fn seed_task(
+    database_url: &str,
+    tenant_id: &str,
+    repository_id: &str,
+    task_id: &str,
+    suffix: &str,
+    now: SystemTime,
+) -> WorkStore {
+    let mut work_store = WorkStore::connect(database_url)
+        .await
+        .expect("the work store should connect");
+    work_store
+        .create_task(
+            &NewWorkTask {
+                tenant_id: tenant_id.to_owned(),
+                repository_id: repository_id.to_owned(),
+                task_id: task_id.to_owned(),
+                title: format!("Task {suffix}"),
+                acceptance: "The task is done when its command effects are verified.".to_owned(),
+                goal_id: None,
+                declared_paths: Vec::new(),
+                declared_symbols: Vec::new(),
+                published_by: format!("publisher-{suffix}"),
+            },
+            &format!("event-{suffix}"),
+            now,
+        )
+        .await
+        .expect("seeding the task should succeed");
+    work_store
+}
 
 fn request(tenant_id: &str, repository_id: &str, suffix: &str) -> NewWorkCommand {
     let now = SystemTime::now();
@@ -662,4 +769,1177 @@ async fn a_verified_in_scope_principal_records_a_replayable_pending_confirmation
         first_receipt.evidence_refs,
         vec![format!("policy-{suffix}")]
     );
+}
+
+/// Seeds one `delegated_claims` row via a raw connection (no store exposes
+/// claim creation to this crate yet) and returns the `lease_expires_at`
+/// Postgres actually stored -- `TIMESTAMPTZ` truncates to microseconds, so a
+/// test asserting `ReleaseLease` matches must compare against this
+/// round-tripped value, never the untruncated in-memory `SystemTime` it was
+/// seeded from.
+async fn seed_claim(
+    database_url: &str,
+    tenant_id: &str,
+    repository_id: &str,
+    task_id: &str,
+    owner_id: &str,
+    now: SystemTime,
+) -> SystemTime {
+    let client = raw_client(database_url).await;
+    let row = client
+        .query_one(
+            "INSERT INTO delegated_claims (tenant_id, repository_id, task_id, owner_id, branch, \
+                 claim_started_at, lease_expires_at, claim_lapses, paths, symbols) \
+             VALUES ($1,$2,$3,$4,'main',$5,$5,0,ARRAY[]::text[],ARRAY[]::text[]) \
+             RETURNING lease_expires_at",
+            &[&tenant_id, &repository_id, &task_id, &owner_id, &now],
+        )
+        .await
+        .expect("seeding a claim should succeed");
+    row.get("lease_expires_at")
+}
+
+async fn set_task_claimed(
+    database_url: &str,
+    tenant_id: &str,
+    repository_id: &str,
+    task_id: &str,
+    owner_id: &str,
+    now: SystemTime,
+) {
+    const CLAIMED: i16 = 2;
+    let client = raw_client(database_url).await;
+    client
+        .execute(
+            "UPDATE work_tasks SET state = $4, owner_id = $5, lease_expires_at = $6 \
+             WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3",
+            &[
+                &tenant_id,
+                &repository_id,
+                &task_id,
+                &CLAIMED,
+                &owner_id,
+                &now,
+            ],
+        )
+        .await
+        .expect("marking the task claimed should succeed");
+}
+
+async fn seed_wait(
+    database_url: &str,
+    tenant_id: &str,
+    repository_id: &str,
+    task_id: &str,
+    wait_id: &str,
+    suffix: &str,
+    already_answered: bool,
+) {
+    let client = raw_client(database_url).await;
+    if already_answered {
+        client
+            .execute(
+                "INSERT INTO work_task_waits (tenant_id, repository_id, wait_id, task_id, \
+                     question, asked_by, answered_by, answer, answered_at) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$6,'already answered',now())",
+                &[
+                    &tenant_id,
+                    &repository_id,
+                    &wait_id,
+                    &task_id,
+                    &format!("Question {suffix}"),
+                    &format!("asker-{suffix}"),
+                ],
+            )
+            .await
+            .expect("seeding an already-answered wait should succeed");
+    } else {
+        client
+            .execute(
+                "INSERT INTO work_task_waits (tenant_id, repository_id, wait_id, task_id, \
+                     question, asked_by) VALUES ($1,$2,$3,$4,$5,$6)",
+                &[
+                    &tenant_id,
+                    &repository_id,
+                    &wait_id,
+                    &task_id,
+                    &format!("Question {suffix}"),
+                    &format!("asker-{suffix}"),
+                ],
+            )
+            .await
+            .expect("seeding a wait should succeed");
+    }
+}
+
+#[tokio::test]
+async fn confirming_create_work_applies_and_creates_the_task() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-execute-create");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let task_id = format!("task-{suffix}");
+    let now = SystemTime::now();
+    let payload = WorkCommandPayload::CreateWork(CreateWorkPayload {
+        task_id: task_id.clone(),
+        title: format!("Title {suffix}"),
+        acceptance: "The task is done when its command effects are verified.".to_owned(),
+        goal_id: None,
+    });
+    let command = command_targeting(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        None,
+        None,
+        &payload,
+        now + Duration::from_secs(600),
+    );
+    let authorization = verified_authorization_for(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        vec![WorkCommandKind::CreateWork],
+    );
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+    let submitted = service
+        .submit(authorization.clone(), command, now)
+        .await
+        .expect("submission should record a pending confirmation");
+    let WorkCommandServiceOutcome::PendingConfirmation { command, .. } = submitted else {
+        panic!("submission must enter pending confirmation");
+    };
+
+    let executed = service
+        .confirm(
+            authorization,
+            &tenant_id,
+            &repository_id,
+            &command.command_id,
+            payload,
+            now,
+        )
+        .await
+        .expect("confirming an unexpired command should execute");
+    let WorkCommandServiceOutcome::Executed {
+        receipt,
+        idempotent_replay,
+        ..
+    } = executed
+    else {
+        panic!("confirming a recorded command must execute");
+    };
+    assert!(!idempotent_replay);
+    assert_eq!(receipt.outcome, WorkCommandOutcome::Applied);
+
+    let work_store = WorkStore::connect(&database_url)
+        .await
+        .expect("the work store should connect");
+    let detail = work_store
+        .task_detail(&tenant_id, &repository_id, &task_id)
+        .await
+        .expect("reading the task back should succeed")
+        .expect("the confirmed CreateWork command should have created the task");
+    assert_eq!(detail.task.version, 1);
+    assert_eq!(detail.task.state, WorkTaskState::Open);
+}
+
+#[tokio::test]
+async fn confirming_create_work_against_an_existing_task_id_conflicts() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-execute-create-conflict");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let task_id = format!("task-{suffix}");
+    let now = SystemTime::now();
+    seed_task(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &task_id,
+        &suffix,
+        now,
+    )
+    .await;
+    let payload = WorkCommandPayload::CreateWork(CreateWorkPayload {
+        task_id: task_id.clone(),
+        title: format!("Title {suffix}"),
+        acceptance: "The task is done when its command effects are verified.".to_owned(),
+        goal_id: None,
+    });
+    let command = command_targeting(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        None,
+        None,
+        &payload,
+        now + Duration::from_secs(600),
+    );
+    let authorization = verified_authorization_for(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        vec![WorkCommandKind::CreateWork],
+    );
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+    let submitted = service
+        .submit(authorization.clone(), command, now)
+        .await
+        .expect("submission should record a pending confirmation");
+    let WorkCommandServiceOutcome::PendingConfirmation { command, .. } = submitted else {
+        panic!("submission must enter pending confirmation");
+    };
+
+    let executed = service
+        .confirm(
+            authorization,
+            &tenant_id,
+            &repository_id,
+            &command.command_id,
+            payload,
+            now,
+        )
+        .await
+        .expect("confirming should execute even when the effect conflicts");
+    let WorkCommandServiceOutcome::Executed { receipt, .. } = executed else {
+        panic!("confirming a recorded command must execute");
+    };
+
+    assert_eq!(receipt.outcome, WorkCommandOutcome::Conflicted);
+}
+
+#[tokio::test]
+async fn confirming_route_work_applies_and_bumps_the_task_version() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-execute-route");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let task_id = format!("task-{suffix}");
+    let now = SystemTime::now();
+    let work_store = seed_task(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &task_id,
+        &suffix,
+        now,
+    )
+    .await;
+    let payload = WorkCommandPayload::RouteWork(RouteWorkPayload {
+        route_reference: format!("route-{suffix}"),
+    });
+    let command = command_targeting(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        Some(task_id.clone()),
+        Some(1),
+        &payload,
+        now + Duration::from_secs(600),
+    );
+    let authorization = verified_authorization_for(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        vec![WorkCommandKind::RouteWork],
+    );
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+    let submitted = service
+        .submit(authorization.clone(), command, now)
+        .await
+        .expect("submission should record a pending confirmation");
+    let WorkCommandServiceOutcome::PendingConfirmation { command, .. } = submitted else {
+        panic!("submission must enter pending confirmation");
+    };
+
+    let executed = service
+        .confirm(
+            authorization,
+            &tenant_id,
+            &repository_id,
+            &command.command_id,
+            payload,
+            now,
+        )
+        .await
+        .expect("confirming should execute the routing effect");
+    let WorkCommandServiceOutcome::Executed { receipt, .. } = executed else {
+        panic!("confirming a recorded command must execute");
+    };
+    assert_eq!(receipt.outcome, WorkCommandOutcome::Applied);
+
+    let detail = work_store
+        .task_detail(&tenant_id, &repository_id, &task_id)
+        .await
+        .expect("reading the task back should succeed")
+        .expect("the task should still exist");
+    assert_eq!(detail.task.version, 2);
+    assert_eq!(detail.task.route_reference, Some(format!("route-{suffix}")));
+}
+
+#[tokio::test]
+async fn confirming_route_work_against_a_stale_version_conflicts() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-execute-route-conflict");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let task_id = format!("task-{suffix}");
+    let now = SystemTime::now();
+    seed_task(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &task_id,
+        &suffix,
+        now,
+    )
+    .await;
+    let payload = WorkCommandPayload::RouteWork(RouteWorkPayload {
+        route_reference: format!("route-{suffix}"),
+    });
+    // The task is seeded at version 1; declaring 2 as the expected version
+    // is already stale at confirm time.
+    let command = command_targeting(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        Some(task_id.clone()),
+        Some(2),
+        &payload,
+        now + Duration::from_secs(600),
+    );
+    let authorization = verified_authorization_for(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        vec![WorkCommandKind::RouteWork],
+    );
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+    let submitted = service
+        .submit(authorization.clone(), command, now)
+        .await
+        .expect("submission should record a pending confirmation");
+    let WorkCommandServiceOutcome::PendingConfirmation { command, .. } = submitted else {
+        panic!("submission must enter pending confirmation");
+    };
+
+    let executed = service
+        .confirm(
+            authorization,
+            &tenant_id,
+            &repository_id,
+            &command.command_id,
+            payload,
+            now,
+        )
+        .await
+        .expect("confirming should execute even when the version is stale");
+    let WorkCommandServiceOutcome::Executed { receipt, .. } = executed else {
+        panic!("confirming a recorded command must execute");
+    };
+
+    assert_eq!(receipt.outcome, WorkCommandOutcome::Conflicted);
+}
+
+#[tokio::test]
+async fn confirming_release_lease_applies_and_reopens_a_claimed_task() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-execute-release");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let task_id = format!("task-{suffix}");
+    let owner_id = format!("owner-{suffix}");
+    let now = SystemTime::now();
+    let work_store = seed_task(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &task_id,
+        &suffix,
+        now,
+    )
+    .await;
+    set_task_claimed(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &task_id,
+        &owner_id,
+        now,
+    )
+    .await;
+    let lease_expires_at = seed_claim(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &task_id,
+        &owner_id,
+        now,
+    )
+    .await;
+    let payload = WorkCommandPayload::ReleaseLease(ReleaseLeasePayload {
+        expected_owner_id: owner_id.clone(),
+        expected_lease_expires_at: lease_expires_at,
+    });
+    let command = command_targeting(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        Some(task_id.clone()),
+        Some(1),
+        &payload,
+        now + Duration::from_secs(600),
+    );
+    let authorization = verified_authorization_for(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        vec![WorkCommandKind::ReleaseLease],
+    );
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+    let submitted = service
+        .submit(authorization.clone(), command, now)
+        .await
+        .expect("submission should record a pending confirmation");
+    let WorkCommandServiceOutcome::PendingConfirmation { command, .. } = submitted else {
+        panic!("submission must enter pending confirmation");
+    };
+
+    let executed = service
+        .confirm(
+            authorization,
+            &tenant_id,
+            &repository_id,
+            &command.command_id,
+            payload,
+            now,
+        )
+        .await
+        .expect("confirming should execute the release effect");
+    let WorkCommandServiceOutcome::Executed { receipt, .. } = executed else {
+        panic!("confirming a recorded command must execute");
+    };
+    assert_eq!(receipt.outcome, WorkCommandOutcome::Applied);
+
+    let detail = work_store
+        .task_detail(&tenant_id, &repository_id, &task_id)
+        .await
+        .expect("reading the task back should succeed")
+        .expect("the task should still exist");
+    assert_eq!(detail.task.state, WorkTaskState::Open);
+    assert_eq!(detail.task.owner_id, None);
+    assert_eq!(detail.task.version, 2);
+}
+
+#[tokio::test]
+async fn confirming_release_lease_without_a_claim_is_refused() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-execute-release-missing");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let task_id = format!("task-{suffix}");
+    let owner_id = format!("owner-{suffix}");
+    let now = SystemTime::now();
+    seed_task(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &task_id,
+        &suffix,
+        now,
+    )
+    .await;
+    let payload = WorkCommandPayload::ReleaseLease(ReleaseLeasePayload {
+        expected_owner_id: owner_id,
+        expected_lease_expires_at: now,
+    });
+    let command = command_targeting(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        Some(task_id.clone()),
+        Some(1),
+        &payload,
+        now + Duration::from_secs(600),
+    );
+    let authorization = verified_authorization_for(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        vec![WorkCommandKind::ReleaseLease],
+    );
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+    let submitted = service
+        .submit(authorization.clone(), command, now)
+        .await
+        .expect("submission should record a pending confirmation");
+    let WorkCommandServiceOutcome::PendingConfirmation { command, .. } = submitted else {
+        panic!("submission must enter pending confirmation");
+    };
+
+    let executed = service
+        .confirm(
+            authorization,
+            &tenant_id,
+            &repository_id,
+            &command.command_id,
+            payload,
+            now,
+        )
+        .await
+        .expect("confirming should execute even when no claim exists");
+    let WorkCommandServiceOutcome::Executed { receipt, .. } = executed else {
+        panic!("confirming a recorded command must execute");
+    };
+
+    assert_eq!(receipt.outcome, WorkCommandOutcome::Refused);
+}
+
+#[tokio::test]
+async fn confirming_release_lease_against_a_changed_owner_conflicts() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-execute-release-owner");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let task_id = format!("task-{suffix}");
+    let real_owner_id = format!("owner-{suffix}");
+    let now = SystemTime::now();
+    seed_task(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &task_id,
+        &suffix,
+        now,
+    )
+    .await;
+    set_task_claimed(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &task_id,
+        &real_owner_id,
+        now,
+    )
+    .await;
+    let lease_expires_at = seed_claim(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &task_id,
+        &real_owner_id,
+        now,
+    )
+    .await;
+    let payload = WorkCommandPayload::ReleaseLease(ReleaseLeasePayload {
+        expected_owner_id: format!("a-different-owner-{suffix}"),
+        expected_lease_expires_at: lease_expires_at,
+    });
+    let command = command_targeting(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        Some(task_id.clone()),
+        Some(1),
+        &payload,
+        now + Duration::from_secs(600),
+    );
+    let authorization = verified_authorization_for(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        vec![WorkCommandKind::ReleaseLease],
+    );
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+    let submitted = service
+        .submit(authorization.clone(), command, now)
+        .await
+        .expect("submission should record a pending confirmation");
+    let WorkCommandServiceOutcome::PendingConfirmation { command, .. } = submitted else {
+        panic!("submission must enter pending confirmation");
+    };
+
+    let executed = service
+        .confirm(
+            authorization,
+            &tenant_id,
+            &repository_id,
+            &command.command_id,
+            payload,
+            now,
+        )
+        .await
+        .expect("confirming should execute even when the owner changed");
+    let WorkCommandServiceOutcome::Executed { receipt, .. } = executed else {
+        panic!("confirming a recorded command must execute");
+    };
+
+    assert_eq!(receipt.outcome, WorkCommandOutcome::Conflicted);
+}
+
+#[tokio::test]
+async fn confirming_answer_wait_applies_and_records_the_answer() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-execute-answer");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let task_id = format!("task-{suffix}");
+    let wait_id = format!("wait-{suffix}");
+    let now = SystemTime::now();
+    let work_store = seed_task(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &task_id,
+        &suffix,
+        now,
+    )
+    .await;
+    seed_wait(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &task_id,
+        &wait_id,
+        &suffix,
+        false,
+    )
+    .await;
+    let payload = WorkCommandPayload::AnswerWait(AnswerWaitPayload {
+        wait_id: wait_id.clone(),
+        answer: format!("Answer {suffix}"),
+    });
+    let command = command_targeting(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        Some(task_id.clone()),
+        Some(1),
+        &payload,
+        now + Duration::from_secs(600),
+    );
+    let authorization = verified_authorization_for(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        vec![WorkCommandKind::AnswerWait],
+    );
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+    let submitted = service
+        .submit(authorization.clone(), command, now)
+        .await
+        .expect("submission should record a pending confirmation");
+    let WorkCommandServiceOutcome::PendingConfirmation { command, .. } = submitted else {
+        panic!("submission must enter pending confirmation");
+    };
+
+    let executed = service
+        .confirm(
+            authorization,
+            &tenant_id,
+            &repository_id,
+            &command.command_id,
+            payload,
+            now,
+        )
+        .await
+        .expect("confirming should execute the answer effect");
+    let WorkCommandServiceOutcome::Executed { receipt, .. } = executed else {
+        panic!("confirming a recorded command must execute");
+    };
+    assert_eq!(receipt.outcome, WorkCommandOutcome::Applied);
+
+    let detail = work_store
+        .task_detail(&tenant_id, &repository_id, &task_id)
+        .await
+        .expect("reading the task back should succeed")
+        .expect("the task should still exist");
+    let wait = detail
+        .waits
+        .iter()
+        .find(|wait| wait.wait_id == wait_id)
+        .expect("the seeded wait should still exist");
+    assert_eq!(wait.answer, Some(format!("Answer {suffix}")));
+    assert!(wait.answered_by.is_some());
+    assert!(wait.answered_at.is_some());
+}
+
+#[tokio::test]
+async fn confirming_answer_wait_against_an_already_answered_wait_conflicts() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-execute-answer-conflict");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let task_id = format!("task-{suffix}");
+    let wait_id = format!("wait-{suffix}");
+    let now = SystemTime::now();
+    seed_task(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &task_id,
+        &suffix,
+        now,
+    )
+    .await;
+    seed_wait(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &task_id,
+        &wait_id,
+        &suffix,
+        true,
+    )
+    .await;
+    let payload = WorkCommandPayload::AnswerWait(AnswerWaitPayload {
+        wait_id: wait_id.clone(),
+        answer: format!("Second answer {suffix}"),
+    });
+    let command = command_targeting(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        Some(task_id.clone()),
+        Some(1),
+        &payload,
+        now + Duration::from_secs(600),
+    );
+    let authorization = verified_authorization_for(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        vec![WorkCommandKind::AnswerWait],
+    );
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+    let submitted = service
+        .submit(authorization.clone(), command, now)
+        .await
+        .expect("submission should record a pending confirmation");
+    let WorkCommandServiceOutcome::PendingConfirmation { command, .. } = submitted else {
+        panic!("submission must enter pending confirmation");
+    };
+
+    let executed = service
+        .confirm(
+            authorization,
+            &tenant_id,
+            &repository_id,
+            &command.command_id,
+            payload,
+            now,
+        )
+        .await
+        .expect("confirming should execute even when the wait is already answered");
+    let WorkCommandServiceOutcome::Executed { receipt, .. } = executed else {
+        panic!("confirming a recorded command must execute");
+    };
+
+    assert_eq!(receipt.outcome, WorkCommandOutcome::Conflicted);
+}
+
+#[tokio::test]
+async fn confirming_submit_review_applies_and_moves_the_task_to_in_review() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-execute-review");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let task_id = format!("task-{suffix}");
+    let now = SystemTime::now();
+    let work_store = seed_task(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &task_id,
+        &suffix,
+        now,
+    )
+    .await;
+    let payload = WorkCommandPayload::SubmitReview(SubmitReviewPayload {
+        disposition: ReviewDisposition::Accept,
+        rationale: "The acceptance criteria are all satisfied.".to_owned(),
+    });
+    let command = command_targeting(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        Some(task_id.clone()),
+        Some(1),
+        &payload,
+        now + Duration::from_secs(600),
+    );
+    let authorization = verified_authorization_for(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        vec![WorkCommandKind::SubmitReview],
+    );
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+    let submitted = service
+        .submit(authorization.clone(), command, now)
+        .await
+        .expect("submission should record a pending confirmation");
+    let WorkCommandServiceOutcome::PendingConfirmation { command, .. } = submitted else {
+        panic!("submission must enter pending confirmation");
+    };
+
+    let executed = service
+        .confirm(
+            authorization,
+            &tenant_id,
+            &repository_id,
+            &command.command_id,
+            payload,
+            now,
+        )
+        .await
+        .expect("confirming should execute the review effect");
+    let WorkCommandServiceOutcome::Executed { receipt, .. } = executed else {
+        panic!("confirming a recorded command must execute");
+    };
+    assert_eq!(receipt.outcome, WorkCommandOutcome::Applied);
+
+    let detail = work_store
+        .task_detail(&tenant_id, &repository_id, &task_id)
+        .await
+        .expect("reading the task back should succeed")
+        .expect("the task should still exist");
+    assert_eq!(detail.task.state, WorkTaskState::InReview);
+}
+
+#[tokio::test]
+async fn confirming_the_same_command_twice_replays_without_re_applying_the_effect() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-execute-replay");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let task_id = format!("task-{suffix}");
+    let now = SystemTime::now();
+    let work_store = seed_task(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &task_id,
+        &suffix,
+        now,
+    )
+    .await;
+    let payload = WorkCommandPayload::RouteWork(RouteWorkPayload {
+        route_reference: format!("route-{suffix}"),
+    });
+    let command = command_targeting(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        Some(task_id.clone()),
+        Some(1),
+        &payload,
+        now + Duration::from_secs(600),
+    );
+    let authorization = verified_authorization_for(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        vec![WorkCommandKind::RouteWork],
+    );
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+    let submitted = service
+        .submit(authorization.clone(), command, now)
+        .await
+        .expect("submission should record a pending confirmation");
+    let WorkCommandServiceOutcome::PendingConfirmation { command, .. } = submitted else {
+        panic!("submission must enter pending confirmation");
+    };
+
+    let first = service
+        .confirm(
+            authorization.clone(),
+            &tenant_id,
+            &repository_id,
+            &command.command_id,
+            payload.clone(),
+            now,
+        )
+        .await
+        .expect("the first confirmation should execute");
+    let second = service
+        .confirm(
+            authorization,
+            &tenant_id,
+            &repository_id,
+            &command.command_id,
+            payload,
+            now,
+        )
+        .await
+        .expect("a replayed confirmation should not re-apply the effect");
+    let WorkCommandServiceOutcome::Executed {
+        idempotent_replay: first_replay,
+        ..
+    } = first
+    else {
+        panic!("the first confirmation must execute");
+    };
+    let WorkCommandServiceOutcome::Executed {
+        receipt: second_receipt,
+        idempotent_replay: second_replay,
+        ..
+    } = second
+    else {
+        panic!("the replayed confirmation must execute");
+    };
+    assert!(!first_replay);
+    assert!(second_replay);
+    assert_eq!(second_receipt.outcome, WorkCommandOutcome::Applied);
+
+    let detail = work_store
+        .task_detail(&tenant_id, &repository_id, &task_id)
+        .await
+        .expect("reading the task back should succeed")
+        .expect("the task should still exist");
+    assert_eq!(detail.task.version, 2);
+}
+
+#[tokio::test]
+async fn confirming_an_expired_command_reports_expired_without_applying_the_effect() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-execute-expired");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let task_id = format!("task-{suffix}");
+    let now = SystemTime::now();
+    let work_store = seed_task(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &task_id,
+        &suffix,
+        now,
+    )
+    .await;
+    let payload = WorkCommandPayload::RouteWork(RouteWorkPayload {
+        route_reference: format!("route-{suffix}"),
+    });
+    let command = command_targeting(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        Some(task_id.clone()),
+        Some(1),
+        &payload,
+        now + Duration::from_secs(1),
+    );
+    let authorization = verified_authorization_for(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        vec![WorkCommandKind::RouteWork],
+    );
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+    let submitted = service
+        .submit(authorization.clone(), command, now)
+        .await
+        .expect("submission should record a pending confirmation");
+    let WorkCommandServiceOutcome::PendingConfirmation { command, .. } = submitted else {
+        panic!("submission must enter pending confirmation");
+    };
+
+    let executed = service
+        .confirm(
+            authorization,
+            &tenant_id,
+            &repository_id,
+            &command.command_id,
+            payload,
+            now + Duration::from_secs(2),
+        )
+        .await
+        .expect("confirming after expiry should still execute, reporting Expired");
+    let WorkCommandServiceOutcome::Executed { receipt, .. } = executed else {
+        panic!("confirming a recorded command must execute");
+    };
+    assert_eq!(receipt.outcome, WorkCommandOutcome::Expired);
+
+    let detail = work_store
+        .task_detail(&tenant_id, &repository_id, &task_id)
+        .await
+        .expect("reading the task back should succeed")
+        .expect("the task should still exist");
+    assert_eq!(detail.task.version, 1);
+}
+
+#[tokio::test]
+async fn confirming_a_changed_payload_is_refused_as_a_digest_mismatch() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-execute-mismatch");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let task_id = format!("task-{suffix}");
+    let now = SystemTime::now();
+    let work_store = seed_task(
+        &database_url,
+        &tenant_id,
+        &repository_id,
+        &task_id,
+        &suffix,
+        now,
+    )
+    .await;
+    let submitted_payload = WorkCommandPayload::RouteWork(RouteWorkPayload {
+        route_reference: format!("route-{suffix}"),
+    });
+    let changed_payload = WorkCommandPayload::RouteWork(RouteWorkPayload {
+        route_reference: format!("a-different-route-{suffix}"),
+    });
+    let command = command_targeting(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        Some(task_id.clone()),
+        Some(1),
+        &submitted_payload,
+        now + Duration::from_secs(600),
+    );
+    let authorization = verified_authorization_for(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        vec![WorkCommandKind::RouteWork],
+    );
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+    let submitted = service
+        .submit(authorization.clone(), command, now)
+        .await
+        .expect("submission should record a pending confirmation");
+    let WorkCommandServiceOutcome::PendingConfirmation { command, .. } = submitted else {
+        panic!("submission must enter pending confirmation");
+    };
+
+    let executed = service
+        .confirm(
+            authorization,
+            &tenant_id,
+            &repository_id,
+            &command.command_id,
+            changed_payload,
+            now,
+        )
+        .await
+        .expect("confirming a changed payload should still execute, reporting Refused");
+    let WorkCommandServiceOutcome::Executed { receipt, .. } = executed else {
+        panic!("confirming a recorded command must execute");
+    };
+    assert_eq!(receipt.outcome, WorkCommandOutcome::Refused);
+
+    let detail = work_store
+        .task_detail(&tenant_id, &repository_id, &task_id)
+        .await
+        .expect("reading the task back should succeed")
+        .expect("the task should still exist");
+    assert_eq!(detail.task.version, 1);
+}
+
+#[tokio::test]
+async fn confirming_an_unknown_command_id_reports_command_not_found() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-execute-not-found");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let now = SystemTime::now();
+    let payload = WorkCommandPayload::SubmitReview(SubmitReviewPayload {
+        disposition: ReviewDisposition::RequestChanges,
+        rationale: "Placeholder rationale for a command that was never recorded.".to_owned(),
+    });
+    let authorization = verified_authorization_for(
+        &tenant_id,
+        &repository_id,
+        &suffix,
+        vec![WorkCommandKind::SubmitReview],
+    );
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+
+    let outcome = service
+        .confirm(
+            authorization,
+            &tenant_id,
+            &repository_id,
+            &format!("work-command:{suffix}"),
+            payload,
+            now,
+        )
+        .await
+        .expect("confirming an unrecorded command id should report data, not error");
+
+    assert_eq!(outcome, WorkCommandServiceOutcome::CommandNotFound);
 }

@@ -53,6 +53,47 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # Generates the development TLS material the `ackplane` service serves, into
+  # a named volume, then exits (clause 5). Runs from the same pinned image as
+  # the server so there is one provenance to audit, not two.
+  #
+  # This exists so the default documented topology satisfies ADR-0083 clause 8
+  # honestly rather than leaning on ADR-0132's confinement acknowledgement: a
+  # container must bind 0.0.0.0 to be reachable through a published port at
+  # all, and "it is only published to loopback" is a claim the server cannot
+  # verify from inside. Serving a real certificate needs no such claim.
+  #
+  # Idempotent: regenerates only when the material is missing, so restarting
+  # the stack does not silently rotate the certificate under a client that
+  # pinned it. Runs as root because a fresh named volume is root-owned; the
+  # key is handed to the server's unprivileged uid and nobody else.
+  tls-init:
+    build:
+      context: .
+      dockerfile: crates/ackplane-server/Dockerfile
+      args:
+        ACKPLANE_VERSION: ${ACKPLANE_VERSION:-dev}
+        ACKPLANE_COMMIT: ${ACKPLANE_COMMIT:-unknown}
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-euc"]
+    command:
+      - |
+        if [ -s /tls/server.crt ] && [ -s /tls/server.key ]; then
+          echo "tls-init: development certificate already present, keeping it"
+        else
+          echo "tls-init: generating a self-signed development certificate"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+            -subj "/CN=ackplane" \
+            -addext "subjectAltName=DNS:ackplane,DNS:localhost,IP:127.0.0.1" \
+            -keyout /tls/server.key -out /tls/server.crt
+        fi
+        chown 10001:10001 /tls/server.crt /tls/server.key
+        chmod 644 /tls/server.crt
+        chmod 600 /tls/server.key
+    volumes:
+      - ackplane-tls:/tls
+    restart: "no"
+
   # Bound to loopback only by default (clause 6): the container listens on
   # every interface internally (ACKPLANE_LISTEN=0.0.0.0), but the published
   # port below is what actually decides reachability from the host, and that
@@ -75,10 +116,18 @@ services:
       ACKPLANE_DATABASE_URL: postgresql://ackplane:ackplane-development-only-not-for-production@postgres:5432/ackplane
       ACKPLANE_LISTEN: 0.0.0.0:8443
       ACKPLANE_DURABILITY: single_node
+      # Development material from `tls-init` above, not a production answer
+      # (clause 6). Its presence is what makes the 0.0.0.0 bind legitimate.
+      ACKPLANE_TLS_CERTIFICATE_PATH: /tls/server.crt
+      ACKPLANE_TLS_KEY_PATH: /tls/server.key
+    volumes:
+      - ackplane-tls:/tls:ro
     ports:
       - "127.0.0.1:${ACKPLANE_PORT:-8443}:8443"
     depends_on:
       migrate:
+        condition: service_completed_successfully
+      tls-init:
         condition: service_completed_successfully
     healthcheck:
       # A bare TCP connect, not a real gRPC health check (the service does not
@@ -96,3 +145,6 @@ volumes:
   # as a side effect. Lifecycle commands (backup, restore, reset) are
   # documented and scripted in scripts/ackplane-compose.mjs.
   ackplane-postgres-data:
+  # The development certificate, kept across restarts so the endpoint's
+  # identity is stable for anything that pinned it.
+  ackplane-tls:

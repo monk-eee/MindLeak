@@ -22,6 +22,8 @@ use tokio_postgres::Client;
 
 const WORK_MIGRATION: &str = include_str!("../../migrations/0028_work.sql");
 const CLAIM_MIGRATION: &str = include_str!("../../migrations/0005_claim_delegation.sql");
+const WORK_TASK_COMMAND_EXECUTION_MIGRATION: &str =
+    include_str!("../../migrations/0039_work_task_command_execution.sql");
 
 /// ADR-0120 decision 3's eight lifecycle states, in the order the decision
 /// text lists them.
@@ -87,6 +89,13 @@ pub struct WorkTask {
     pub declared_paths: Vec<String>,
     pub declared_symbols: Vec<String>,
     pub published_by: String,
+    /// Optimistic-concurrency version (ADR-0120 decision 3 / ADR-0125
+    /// decision 5). Starts at 1 and increments once per applied Work-command
+    /// effect; never decreases, never resets.
+    pub version: i64,
+    /// The bounded route or assignment reference `RouteWork` last recorded
+    /// (ADR-0125 decision 1). `None` until routed.
+    pub route_reference: Option<String>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -209,6 +218,15 @@ impl WorkStore {
             WORK_MIGRATION,
         )
         .await?;
+        // Every WorkStore query now materializes the versioned task projection.
+        // Apply the same schema evolution as WorkCommandStore before a Bridge
+        // read or Node creation reaches `work_tasks.version`.
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::WORK_TASK_COMMAND_EXECUTION,
+            WORK_TASK_COMMAND_EXECUTION_MIGRATION,
+        )
+        .await?;
         Ok(Self { client })
     }
 
@@ -226,8 +244,8 @@ impl WorkStore {
             .execute(
                 "INSERT INTO work_tasks (tenant_id, repository_id, task_id, title, acceptance, \
                     goal_id, state, declared_paths, declared_symbols, source_digest, \
-                    published_by, created_at, updated_at) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12) \
+                    published_by, version, created_at, updated_at) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12,$12) \
                  ON CONFLICT (tenant_id, repository_id, task_id) DO NOTHING",
                 &[
                     &task.tenant_id,
@@ -284,12 +302,14 @@ impl WorkStore {
             declared_paths: task.declared_paths.clone(),
             declared_symbols: task.declared_symbols.clone(),
             published_by: task.published_by.clone(),
+            version: 1,
+            route_reference: None,
             created_at: now,
             updated_at: now,
         })
     }
 
-    fn row_to_task(row: &tokio_postgres::Row) -> Result<WorkTask, WorkStoreError> {
+    pub(crate) fn row_to_task(row: &tokio_postgres::Row) -> Result<WorkTask, WorkStoreError> {
         Ok(WorkTask {
             tenant_id: row.get("tenant_id"),
             repository_id: row.get("repository_id"),
@@ -304,6 +324,8 @@ impl WorkStore {
             declared_paths: row.get("declared_paths"),
             declared_symbols: row.get("declared_symbols"),
             published_by: row.get("published_by"),
+            version: row.get("version"),
+            route_reference: row.get("route_reference"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         })
@@ -486,6 +508,10 @@ mod tests {
         assert_eq!(page.items[0].title, "Ship the thing");
         assert_eq!(page.items[0].state, WorkTaskState::Open);
         assert_eq!(page.items[0].owner_id, None);
+        assert_eq!(
+            page.items[0].version, 1,
+            "WorkStore::connect must apply the version-column migration before creation"
+        );
     }
 
     #[tokio::test]
