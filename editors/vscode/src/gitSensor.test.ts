@@ -9,11 +9,15 @@ const gitMock = vi.hoisted(() => {
     return { dispose: vi.fn() };
   };
   const state = {
-    HEAD: { commit: "old-sha", name: "main" },
+    HEAD: { commit: "old-sha", name: "main" } as Record<string, any>,
+    workingTreeChanges: [] as unknown[],
+    indexChanges: [] as unknown[],
+    mergeChanges: [] as unknown[],
+    untrackedChanges: [] as unknown[],
     onDidChange: event(repositoryHandlers, "change"),
   };
   const repository = {
-    rootUri: { toString: () => "file:///workspace" },
+    rootUri: { toString: () => "file:///workspace", fsPath: "/workspace" },
     state,
     onDidCommit: event(repositoryHandlers, "commit"),
     onDidCheckout: event(repositoryHandlers, "checkout"),
@@ -30,14 +34,15 @@ const gitMock = vi.hoisted(() => {
     onDidOpenRepository: event(apiHandlers, "open"),
     onDidCloseRepository: event(apiHandlers, "close"),
   };
-  return { api, apiHandlers, repository, repositoryHandlers, state };
+  const getExtension = vi.fn(() => ({
+    activate: async () => ({ enabled: true, getAPI: () => gitMock.api }),
+  }));
+  return { api, apiHandlers, repository, repositoryHandlers, state, getExtension };
 });
 
 vi.mock("vscode", () => ({
   extensions: {
-    getExtension: () => ({
-      activate: async () => ({ enabled: true, getAPI: () => gitMock.api }),
-    }),
+    getExtension: gitMock.getExtension,
   },
   workspace: {
     asRelativePath: (uri: { fsPath: string }) => uri.fsPath.replace("/workspace/", ""),
@@ -46,12 +51,20 @@ vi.mock("vscode", () => ({
   },
 }));
 
-import { GitSensor } from "./gitSensor";
+import { currentGitContext, GitSensor } from "./gitSensor";
 
 describe("GitSensor", () => {
   beforeEach(() => {
-    gitMock.state.HEAD.commit = "old-sha";
-    gitMock.state.HEAD.name = "main";
+    gitMock.getExtension.mockReset();
+    gitMock.getExtension.mockImplementation(() => ({
+      activate: async () => ({ enabled: true, getAPI: () => gitMock.api }),
+    }));
+    gitMock.api.repositories = [gitMock.repository];
+    gitMock.state.HEAD = { commit: "old-sha", name: "main" };
+    gitMock.state.workingTreeChanges = [];
+    gitMock.state.indexChanges = [];
+    gitMock.state.mergeChanges = [];
+    gitMock.state.untrackedChanges = [];
     gitMock.repository.getCommit.mockReset();
     gitMock.repository.getCommit.mockImplementation(async (ref: string) => ({
       hash: ref,
@@ -345,5 +358,157 @@ describe("GitSensor", () => {
     gitMock.repositoryHandlers.change();
     await vi.waitFor(() => expect(callTool).toHaveBeenCalledTimes(2));
     sensor.dispose();
+  });
+
+  // Regression: `open_session` never learned when a repository's branch/HEAD/
+  // dirty state changed, so the fleet kept declaring stale context until the
+  // next unrelated event. GitSensor now tells its owner to re-declare on
+  // attach, checkout, and every state refresh.
+  describe("onContextChange", () => {
+    it("fires once a repository is attached, and again on checkout and state change", async () => {
+      const callTool = vi.fn().mockResolvedValue({});
+      const onContextChange = vi.fn();
+      const sensor = new GitSensor(
+        { isReady: () => true, callTool },
+        () => true,
+        vi.fn(),
+        vi.fn(),
+        onContextChange
+      );
+      await sensor.start();
+
+      expect(onContextChange).toHaveBeenCalledTimes(1);
+
+      gitMock.repositoryHandlers.checkout();
+      expect(onContextChange).toHaveBeenCalledTimes(2);
+
+      gitMock.repositoryHandlers.change();
+      expect(onContextChange).toHaveBeenCalledTimes(3);
+      sensor.dispose();
+    });
+
+    it("never fires when no callback was supplied", async () => {
+      // The 5th constructor argument is optional; omitting it must not throw
+      // when a repository attaches or changes.
+      const callTool = vi.fn().mockResolvedValue({});
+      const sensor = new GitSensor({ isReady: () => true, callTool }, () => true, vi.fn(), vi.fn());
+      await sensor.start();
+
+      expect(() => gitMock.repositoryHandlers.checkout()).not.toThrow();
+      expect(() => gitMock.repositoryHandlers.change()).not.toThrow();
+      sensor.dispose();
+    });
+  });
+});
+
+// Regression: `open_session` only ever declared `session_id` for an
+// extension-originated session, so the fleet fell back to server-side
+// guessing about which branch or commit the session was working from
+// (ADR-0044). `currentGitContext` reads the same built-in Git extension
+// GitSensor already observes and reports exactly what it reliably knows.
+describe("currentGitContext", () => {
+  beforeEach(() => {
+    gitMock.getExtension.mockReset();
+    gitMock.getExtension.mockImplementation(() => ({
+      activate: async () => ({ enabled: true, getAPI: () => gitMock.api }),
+    }));
+    gitMock.api.repositories = [gitMock.repository];
+    gitMock.state.HEAD = { commit: "head-sha", name: "main" };
+    gitMock.state.workingTreeChanges = [];
+    gitMock.state.indexChanges = [];
+    gitMock.state.mergeChanges = [];
+    gitMock.state.untrackedChanges = [];
+  });
+
+  it("declares branch, head sha, and a clean tree", async () => {
+    await expect(currentGitContext("/workspace")).resolves.toEqual({
+      branch: "main",
+      head_sha: "head-sha",
+      dirty: false,
+    });
+  });
+
+  it("declares dirty when the tree has pending changes of any kind", async () => {
+    gitMock.state.untrackedChanges = [{ uri: { fsPath: "/workspace/new.ts" } }];
+
+    await expect(currentGitContext("/workspace")).resolves.toEqual(
+      expect.objectContaining({ dirty: true })
+    );
+  });
+
+  it("derives base and behind only from a tracked upstream, never guessing them", async () => {
+    gitMock.state.HEAD = {
+      commit: "head-sha",
+      name: "main",
+      upstream: { remote: "origin", name: "main" },
+      behind: 3,
+    };
+
+    const context = await currentGitContext("/workspace");
+
+    expect(context).toEqual({
+      branch: "main",
+      head_sha: "head-sha",
+      dirty: false,
+      base: "origin/main",
+      behind: 3,
+    });
+  });
+
+  it("omits base and behind when there is no tracked upstream", async () => {
+    const context = await currentGitContext("/workspace");
+
+    expect(context).not.toHaveProperty("base");
+    expect(context).not.toHaveProperty("behind");
+  });
+
+  it("picks the repository that actually owns a multi-root workspace over an unrelated sibling", async () => {
+    const otherRepository = {
+      ...gitMock.repository,
+      rootUri: { toString: () => "file:///other-repo", fsPath: "/other-repo" },
+      state: {
+        ...gitMock.state,
+        HEAD: { commit: "other-sha", name: "unrelated" },
+      },
+    };
+    gitMock.api.repositories = [otherRepository, gitMock.repository];
+
+    await expect(currentGitContext("/workspace")).resolves.toEqual(
+      expect.objectContaining({ branch: "main", head_sha: "head-sha" })
+    );
+  });
+
+  it("returns undefined when no repository owns the workspace", async () => {
+    await expect(currentGitContext("/somewhere/unrelated")).resolves.toBeUndefined();
+  });
+
+  it("returns undefined when the built-in Git extension is unavailable", async () => {
+    gitMock.getExtension.mockReturnValueOnce(undefined);
+
+    await expect(currentGitContext("/workspace")).resolves.toBeUndefined();
+  });
+
+  it("returns undefined when the built-in Git extension is disabled", async () => {
+    gitMock.getExtension.mockReturnValueOnce({
+      activate: async () => ({ enabled: false, getAPI: () => gitMock.api }),
+    });
+
+    await expect(currentGitContext("/workspace")).resolves.toBeUndefined();
+  });
+
+  it("surfaces Git extension activation failures to the caller", async () => {
+    gitMock.getExtension.mockReturnValueOnce({
+      activate: async () => {
+        throw new Error("extension host busy");
+      },
+    });
+
+    await expect(currentGitContext("/workspace")).rejects.toThrow("extension host busy");
+  });
+
+  it("returns undefined for a repository with no commit yet", async () => {
+    gitMock.state.HEAD = {};
+
+    await expect(currentGitContext("/workspace")).resolves.toBeUndefined();
   });
 });

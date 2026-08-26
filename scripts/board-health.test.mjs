@@ -326,7 +326,10 @@ test("describeGapsTriage says nothing when there are no open gaps", () => {
 /// on this report needs the names, not just the count.
 test("describeGapsTriage reports the orphan count and names the orphans", () => {
   const gaps = [
-    { name: "tracked.md", body: "- **Tracked.** fix is task:aaaaaaaaaaaa." },
+    {
+      name: "tracked.md",
+      body: "- **Tracked.**\n\nTracking: task:aaaaaaaaaaaa",
+    },
     { name: "orphan.md", body: "- **Orphan.** no task yet." },
   ];
   const nowMs = 10 * 86_400_000;
@@ -335,9 +338,16 @@ test("describeGapsTriage reports the orphan count and names the orphans", () => 
     "gaps.d/orphan.md": 0,
   };
 
-  const text = describeGapsTriage(triageReport(gaps, firstSeen, nowMs));
+  const text = describeGapsTriage(
+    triageReport(
+      gaps,
+      firstSeen,
+      nowMs,
+      new Map([["task:aaaaaaaaaaaa", "claimed"]]),
+    ),
+  );
 
-  assert.match(text, /gaps\.d fragments with no tracking task : 1 of 2/);
+  assert.match(text, /gaps\.d fragments with no live tracking task : 1 of 2/);
   assert.match(text, /oldest open gap {24}: 10 day\(s\)/);
   assert.match(text, /orphaned \(/);
   assert.match(text, /10d\s+orphan\.md/);
@@ -347,11 +357,16 @@ test("describeGapsTriage reports the orphan count and names the orphans", () => 
 /// Every gap tracked by a task is the healthy state this report exists to
 /// confirm, not just a silence to leave unexplained.
 test("describeGapsTriage still reports totals when nothing is orphaned", () => {
-  const gaps = [{ name: "tracked.md", body: "fix is task:aaaaaaaaaaaa." }];
+  const gaps = [{ name: "tracked.md", body: "Tracking: task:aaaaaaaaaaaa" }];
   const text = describeGapsTriage(
-    triageReport(gaps, { "gaps.d/tracked.md": 0 }, 86_400_000),
+    triageReport(
+      gaps,
+      { "gaps.d/tracked.md": 0 },
+      86_400_000,
+      new Map([["task:aaaaaaaaaaaa", "in_review"]]),
+    ),
   );
 
-  assert.match(text, /gaps\.d fragments with no tracking task : 0 of 1/);
+  assert.match(text, /gaps\.d fragments with no live tracking task : 0 of 1/);
   assert.doesNotMatch(text, /orphaned \(/, "nothing to list");
 });
