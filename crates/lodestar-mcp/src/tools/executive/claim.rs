@@ -1,7 +1,7 @@
 //! Claim lifecycle: the compare-and-swap claim itself, why a claim was lost,
 //! and the lease/attention nudges attached to responses.
 
-use super::{i64_arg, ok, opt_str, str_array};
+use super::{i64_arg, ok, opt_str, str_array, DEFAULT_LEASE_SECS};
 use lodestar_core::{now_unix, Lodestar, TaskStatus};
 use serde_json::{json, Value};
 
@@ -14,7 +14,7 @@ pub(super) fn claim(engine: &Lodestar, task_id: &str, args: &Value) -> Result<Va
         .claim_task_with_partial_scope(
             task_id,
             agent.as_str(),
-            i64_arg(args, "lease_secs", 300),
+            i64_arg(args, "lease_secs", DEFAULT_LEASE_SECS),
             paths.as_deref(),
             symbols.as_deref(),
         )

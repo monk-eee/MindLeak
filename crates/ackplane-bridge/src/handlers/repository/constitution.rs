@@ -268,6 +268,7 @@ pub async fn propose_constitution_clause(
         Err(ConstitutionStoreError::ProposalImmutabilityViolation { .. }) => {
             Err(StatusCode::CONFLICT)
         }
+        Err(ConstitutionStoreError::ProposalWithdrawn { .. }) => Err(StatusCode::GONE),
         Err(error) => {
             tracing::error!(%error, "Bridge constitution proposal write failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -476,6 +477,98 @@ mod page_tests {
                 "status": "withdrawn",
                 "created_at_seconds": 1_200,
             })
+        );
+    }
+}
+
+/// Handler-level coverage against a real Postgres store, mirroring
+/// `timeline.rs`'s own `super::super::tests` pattern -- `AppState`/handlers
+/// are private to this binary crate, so this is the only way to exercise the
+/// real `propose_constitution_clause`/`withdraw_constitution_proposal`
+/// request/response contract rather than the store alone.
+#[cfg(test)]
+mod handler_tests {
+    use super::super::tests::{enroll_repository, test_app_state, unique_id};
+    use super::*;
+
+    fn propose_request(proposal_id: &str, author: &str) -> ProposeClauseRequest {
+        ProposeClauseRequest {
+            proposal_id: proposal_id.to_string(),
+            kind: "constraint".to_string(),
+            slug: "suggested-slug".to_string(),
+            title: "Suggested title".to_string(),
+            statement: "Suggested statement.".to_string(),
+            consequence: Some("review".to_string()),
+            scope: None,
+            rationale: Some("Because the Bridge operator noticed a gap.".to_string()),
+            author: author.to_string(),
+        }
+    }
+
+    /// Regression for the confirmed defect: replaying a withdrawn proposal
+    /// used to return `Json(ProposeClauseResponse { status: "proposed", .. })`
+    /// -- a hard-coded success claim contradicting the durable row, which
+    /// `list_constitution_proposals` still reported as `withdrawn`. The
+    /// handler must now surface the store's refusal (`StatusCode::GONE`,
+    /// ADR-0126 decision 3: withdrawal is this identity's one terminal
+    /// mutation) instead of claiming a status that was never persisted.
+    #[tokio::test]
+    async fn replaying_a_withdrawn_proposal_is_gone_not_a_false_proposed_claim() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let unique = unique_id("constitution-proposal-replay-withdrawn");
+        let tenant_id = format!("tenant-{unique}");
+        let repository_id = format!("repository-{unique}");
+        enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
+        let state = test_app_state(&database_url, &tenant_id).await;
+
+        let request = propose_request("proposal-1", "bridge-ui");
+        let _ = propose_constitution_clause(
+            axum::extract::State(state.clone()),
+            axum::extract::Path(repository_id.clone()),
+            Json(request),
+        )
+        .await
+        .expect("the first proposal must succeed");
+
+        let withdrawal = withdraw_constitution_proposal(
+            axum::extract::State(state.clone()),
+            axum::extract::Path((repository_id.clone(), "proposal-1".to_string())),
+            Json(WithdrawProposalRequest {
+                author: "bridge-ui".to_string(),
+            }),
+        )
+        .await
+        .expect("withdrawal must succeed")
+        .0;
+        assert!(withdrawal.withdrawn);
+
+        let replay_request = propose_request("proposal-1", "bridge-ui");
+        let replay_result = propose_constitution_clause(
+            axum::extract::State(state.clone()),
+            axum::extract::Path(repository_id.clone()),
+            Json(replay_request),
+        )
+        .await;
+        assert_eq!(
+            replay_result.err(),
+            Some(StatusCode::GONE),
+            "replaying a withdrawn proposal must not claim status \"proposed\""
+        );
+
+        let proposals = list_constitution_proposals(
+            axum::extract::State(state),
+            axum::extract::Path(repository_id),
+        )
+        .await
+        .expect("listing proposals must succeed")
+        .0
+        .proposals;
+        assert_eq!(
+            proposals[0].status, "withdrawn",
+            "the refused replay must not resurrect the proposal"
         );
     }
 }

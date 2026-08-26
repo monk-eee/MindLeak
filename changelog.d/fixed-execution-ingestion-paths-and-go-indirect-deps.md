@@ -1,0 +1,2 @@
+- **Execution ingestion now canonicalizes traceback and changed-file paths before creating artifact nodes.** Paths inside known worktrees share the repository-relative identity used by file ingestion, while unplaceable absolute paths are excluded rather than fragmenting failure evidence.
+- **Go manifest ingestion now excludes `// indirect` requirements from direct dependency edges.** Dependency impact queries no longer report Go's transitively promoted modules as direct project dependencies.
