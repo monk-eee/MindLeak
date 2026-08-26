@@ -59,6 +59,7 @@ fn current_id(file_name: &str) -> String {
 /// disabled placeholders (`href: null`) until their own page lands.
 const CAPABILITY_IDS: &[&str] = &[
     "index",
+    "graph",
     "agents",
     "evidence",
     "telemetry",
