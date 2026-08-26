@@ -52,6 +52,10 @@ pub enum ConstitutionStoreError {
         "constitution proposal {proposal_id} is already recorded with different content -- proposals are immutable"
     )]
     ProposalImmutabilityViolation { proposal_id: String },
+    #[error(
+        "constitution proposal {proposal_id} was withdrawn and cannot be re-proposed under the same identity -- withdrawal is terminal"
+    )]
+    ProposalWithdrawn { proposal_id: String },
 }
 
 /// One clause, as both `publish` accepts it and `get_active` returns it.

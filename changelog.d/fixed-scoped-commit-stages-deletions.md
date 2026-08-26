@@ -1,0 +1,1 @@
+- **`scoped-commit` now stages declared deletions correctly.** Its explicit path scope remains intact while `git add -A -- <paths>` allows a repaired gap fragment or removed source file to be included in the guarded commit.

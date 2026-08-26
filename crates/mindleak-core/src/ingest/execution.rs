@@ -11,7 +11,9 @@ use regex::Regex;
 
 use crate::error::Result;
 use crate::graph::GraphStore;
-use crate::ingest::{clamp, is_ignored_path, normalize_path, repo_relative, short_hash};
+use crate::ingest::{
+    clamp, is_absolute_path, is_ignored_path, normalize_path, repo_relative, short_hash,
+};
 use crate::model::{Edge, Node, NodeType, RelationType};
 
 /// A captured command run from the terminal/telemetry stream.
@@ -58,7 +60,7 @@ pub fn parse_error_locations(output: &str) -> Vec<(String, u32)> {
 fn file_line_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"([A-Za-z0-9_./\\-]+\.[A-Za-z]{1,6}):(\d+)")
+        Regex::new(r"((?:[A-Za-z]:)?[A-Za-z0-9_./\\-]+\.[A-Za-z]{1,6}):(\d+)")
             .expect("file:line pattern is a compile-time constant, covered by unit tests")
     })
 }
@@ -108,7 +110,7 @@ pub fn ingest_execution(
     changed_files.sort();
     changed_files.dedup();
     for path in changed_files {
-        if is_ignored_path(&path) {
+        if is_ignored_path(&path) || is_absolute_path(&path) {
             continue;
         }
         let art_id = format!("artifact:{path}");
@@ -125,7 +127,16 @@ pub fn ingest_execution(
     // failed_on edges when the command errored
     if rec.exit_code != 0 {
         for (path, _line) in parse_error_locations(&rec.output) {
-            if is_ignored_path(&path) {
+            // Canonicalize the same way `changed_files` and file ingest do:
+            // an absolute path under a known worktree root becomes
+            // repo-relative so it lands on the same artifact id every
+            // worktree writes (ADR-0038). A path that is still absolute
+            // afterwards belongs to a checkout this server does not know
+            // about; minting an id from it would split the real file across
+            // a second, worktree-local identity, so it is dropped rather
+            // than ingested under its raw absolute spelling.
+            let path = repo_relative(&path, roots);
+            if is_ignored_path(&path) || is_absolute_path(&path) {
                 continue;
             }
             let art_id = format!("artifact:{path}");
@@ -159,10 +170,132 @@ mod tests {
 
     #[test]
     fn parses_generic_and_python_locations() {
-        let out = "error at src/auth.ts:42\n  File \"app/main.py\", line 7";
+        let out =
+            "error at src/auth.ts:42\nC:\\work\\src\\win.rs:8\n  File \"app/main.py\", line 7";
         let locs = parse_error_locations(out);
         assert!(locs.contains(&("src/auth.ts".to_string(), 42)));
+        assert!(locs.contains(&("C:/work/src/win.rs".to_string(), 8)));
         assert!(locs.contains(&("app/main.py".to_string(), 7)));
+    }
+
+    /// Regression: `failed_on` edges must obey the same repo-relative
+    /// identity invariant as `modified` edges and file ingest. An absolute
+    /// Python traceback location under a known worktree root has to become
+    /// the canonical relative id, not a second, worktree-local identity for
+    /// the same file (ADR-0038).
+    #[test]
+    fn failed_on_edges_canonicalize_an_absolute_python_traceback_under_a_known_root() {
+        let store = GraphStore::new(crate::db::open_in_memory().unwrap());
+        let roots = ["C:/Users/lyndonswan/Repos/MindLeak"];
+        let record = ExecutionRecord {
+            command: "pytest".to_string(),
+            exit_code: 1,
+            output: "File \"C:/Users/lyndonswan/Repos/MindLeak/src/lib.rs\", line 42".to_string(),
+            cwd: None,
+            changed_files: vec![],
+            timestamp: 1,
+        };
+        ingest_execution(&store, &record, 999, &roots).unwrap();
+
+        assert!(store.get_node("artifact:src/lib.rs").unwrap().is_some());
+        assert!(store
+            .get_node("artifact:C:/Users/lyndonswan/Repos/MindLeak/src/lib.rs")
+            .unwrap()
+            .is_none());
+    }
+
+    /// Same invariant, compiler-style `path:line` output (Rust/JS/Go-shaped)
+    /// rather than a Python traceback. A Windows drive is part of the captured
+    /// path, not mistaken for the line-number separator.
+    #[test]
+    fn failed_on_edges_canonicalize_an_absolute_compiler_location_under_a_known_root() {
+        let store = GraphStore::new(crate::db::open_in_memory().unwrap());
+        let roots = ["C:/Users/lyndonswan/Repos/MindLeak"];
+        let record = ExecutionRecord {
+            command: "cargo build".to_string(),
+            exit_code: 1,
+            output: "error: C:\\Users\\lyndonswan\\Repos\\MindLeak\\src\\graph.rs:120: boom"
+                .to_string(),
+            cwd: None,
+            changed_files: vec![],
+            timestamp: 1,
+        };
+        ingest_execution(&store, &record, 999, &roots).unwrap();
+
+        assert!(store.get_node("artifact:src/graph.rs").unwrap().is_some());
+        assert!(store
+            .get_node("artifact:C:/Users/lyndonswan/Repos/MindLeak/src/graph.rs")
+            .unwrap()
+            .is_none());
+    }
+
+    /// A location that is still absolute after `repo_relative` (it names a
+    /// checkout this server does not know about) must not mint an artifact id
+    /// at all -- the facade refuses this outright for file ingest, and
+    /// `failed_on` must not create the split identity through a side door.
+    #[test]
+    fn failed_on_edges_do_not_mint_an_id_for_a_location_that_is_still_absolute() {
+        let store = GraphStore::new(crate::db::open_in_memory().unwrap());
+        let roots = ["C:/Users/lyndonswan/Repos/MindLeak"];
+        let record = ExecutionRecord {
+            command: "cargo build".to_string(),
+            exit_code: 1,
+            output: "/home/agent/Repos/OtherRepo/src/lib.rs:42: error".to_string(),
+            cwd: None,
+            changed_files: vec![],
+            timestamp: 1,
+        };
+        let outcome = ingest_execution(&store, &record, 999, &roots).unwrap();
+
+        // Only the execution node was created -- no artifact node at all for
+        // the unplaceable absolute path.
+        assert_eq!(outcome.nodes_created, 1);
+        assert!(store
+            .get_node("artifact:/home/agent/Repos/OtherRepo/src/lib.rs")
+            .unwrap()
+            .is_none());
+    }
+
+    /// The already-correct relative case keeps working: no roots configured,
+    /// a plain relative location still creates its canonical artifact.
+    #[test]
+    fn failed_on_edges_still_work_for_relative_locations() {
+        let store = GraphStore::new(crate::db::open_in_memory().unwrap());
+        let record = ExecutionRecord {
+            command: "cargo test".to_string(),
+            exit_code: 101,
+            output: "thread panicked at src/graph.rs:120: boom".to_string(),
+            cwd: None,
+            changed_files: vec![],
+            timestamp: 1,
+        };
+        ingest_execution(&store, &record, 999, &[]).unwrap();
+
+        assert!(store.get_node("artifact:src/graph.rs").unwrap().is_some());
+    }
+
+    /// Execution `modified` edges share the same node-identity invariant as
+    /// `failed_on`: a path outside every known repository root must not enter the
+    /// graph under its raw absolute spelling.
+    #[test]
+    fn modified_edges_do_not_mint_an_id_for_a_path_that_is_still_absolute() {
+        let store = GraphStore::new(crate::db::open_in_memory().unwrap());
+        let roots = ["C:/Users/lyndonswan/Repos/MindLeak"];
+        let record = ExecutionRecord {
+            command: "cargo build".to_string(),
+            exit_code: 0,
+            output: String::new(),
+            cwd: None,
+            changed_files: vec!["/home/agent/Repos/OtherRepo/src/lib.rs".to_string()],
+            timestamp: 1,
+        };
+        let outcome = ingest_execution(&store, &record, 999, &roots).unwrap();
+
+        assert_eq!(outcome.nodes_created, 1);
+        assert!(store
+            .get_node("artifact:/home/agent/Repos/OtherRepo/src/lib.rs")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
