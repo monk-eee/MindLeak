@@ -1,7 +1,7 @@
 //! Facade surface for typed controls (ADR-0034).
 
 use crate::controls::{
-    resolve_observation, Control, ControlObservation, ControlResolution, Ratchet,
+    resolve_observation, Control, ControlObservation, ControlResolution, ObservationStatus, Ratchet,
 };
 use crate::error::LodestarError;
 use crate::{now_unix, Lodestar, Result};
@@ -84,6 +84,43 @@ impl Lodestar {
             .ratchet(control_id)?
             .ok_or_else(|| LodestarError::NotFound(control_id.to_string()))?;
         let observation = ratchet.observe(measured, scope, evidence_refs, now_unix())?;
+        self.resolve_control_observations(&[observation])?
+            .pop()
+            .ok_or_else(|| LodestarError::Invalid("no resolution produced".to_string()))
+    }
+
+    /// Report one observation to any registered control and resolve it.
+    ///
+    /// The generic counterpart to `observe_ratchet`: a ratchet reads its own
+    /// baseline from the store, but a plain check-kind control (ADR-0034) has
+    /// no baseline to read -- the caller's own deterministic classification
+    /// (pass/fail/unknown) is the whole observation. Refuses an unregistered
+    /// control by the same rule `resolve_control_observations` already applies
+    /// to an orphan: it would resolve, but never escalate, which would be a
+    /// misleading way to answer "was this control even registered."
+    pub fn observe_control(
+        &self,
+        control_id: &str,
+        status: ObservationStatus,
+        scope: &str,
+        evidence_refs: Vec<String>,
+        measurements: Option<String>,
+    ) -> Result<ControlResolution> {
+        let control = self
+            .store
+            .control(control_id)?
+            .ok_or_else(|| LodestarError::NotFound(control_id.to_string()))?;
+        let observation = ControlObservation {
+            control_id: control.id.clone(),
+            clause_id: control.clause_id.clone(),
+            control_version: control.version,
+            scope: scope.to_string(),
+            status,
+            measurements,
+            baseline: None,
+            evidence_refs,
+            evaluated_at: now_unix(),
+        };
         self.resolve_control_observations(&[observation])?
             .pop()
             .ok_or_else(|| LodestarError::Invalid("no resolution produced".to_string()))
@@ -208,6 +245,68 @@ mod tests {
         assert_eq!(resolved[0].status, ObservationStatus::Unknown);
         assert_eq!(resolved[0].effective, Consequence::Advise);
         assert_eq!(e.clause_controls(&clause.id).unwrap().len(), 1);
+    }
+
+    // ---- generic control observation (ADR-0127) -----------------------------
+
+    #[test]
+    fn observe_control_resolves_a_registered_check_control_through_its_clause() {
+        let e = engine();
+        let clause = e
+            .define_goal(
+                GoalKind::Constraint,
+                "Agent shell commands avoid shell-specific plumbing",
+                "An agent-issued shell command does not pipe a PowerShell-native cmdlet around a native command, and does not read $LASTEXITCODE.",
+                None,
+            )
+            .unwrap();
+        e.register_control(&Control {
+            id: "control:agent-command-hygiene".into(),
+            clause_id: clause.id.clone(),
+            kind: ControlKind::Check,
+            power: EnforcementPower::Observed,
+            version: 1,
+            configuration: None,
+            status: ControlStatus::Active,
+            retired_by: None,
+            retired_at: None,
+        })
+        .unwrap();
+
+        let resolved = e
+            .observe_control(
+                "control:agent-command-hygiene",
+                ObservationStatus::Fail,
+                "tool_invocation:abc123",
+                vec!["tool_invocation:abc123".to_string()],
+                Some("piped_powershell_cmdlet".to_string()),
+            )
+            .unwrap();
+
+        assert_eq!(resolved.control_id, "control:agent-command-hygiene");
+        assert_eq!(resolved.clause_id, clause.id);
+        assert_eq!(resolved.status, ObservationStatus::Fail);
+        // Observed power caps at review even though the observation failed --
+        // an after-the-fact classification never earns block (ADR-0034).
+        assert_eq!(resolved.effective, Consequence::Review);
+    }
+
+    #[test]
+    fn observe_control_refuses_an_unregistered_control_id() {
+        let e = engine();
+        let error = e
+            .observe_control(
+                "control:never-registered",
+                ObservationStatus::Fail,
+                "tool_invocation:abc123",
+                Vec::new(),
+                None,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, LodestarError::NotFound(ref id) if id == "control:never-registered"),
+            "{error:?}"
+        );
     }
 
     // ---- reviewed ratchets --------------------------------------------------

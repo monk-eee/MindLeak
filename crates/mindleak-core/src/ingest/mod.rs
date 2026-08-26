@@ -8,6 +8,7 @@ pub(crate) mod javascript;
 pub mod manifest;
 pub(crate) mod source_mask;
 pub mod structure;
+pub mod tool_invocation;
 
 use sha2::{Digest, Sha256};
 
