@@ -465,8 +465,18 @@ export function actualMergeTree(branch) {
 // one-shot run reads it. No process enumeration -- that would be per-platform,
 // and AGENTS.md's toolchain rule is that everything runs identically on Linux,
 // macOS, and Windows.
+//
+// WHAT IT CANNOT SEE, AND THE NOTE SAYS SO: a watcher too old to write a beat.
+// A heartbeat only ever proves the liveness of a watcher new enough to keep
+// one, so a process started before this shipped is indistinguishable from no
+// process at all -- which is every watcher in the fleet at the moment it lands.
+// Measured while this was still in flight: two `--watch` processes were
+// genuinely running, no heartbeat file existed, and an earlier draft of the
+// note flatly asserted that none was running. Hence "has checked in" rather
+// than "is running", and hence the restart remedy beside the start one: a note
+// that is wrong on its first real outing is a note nobody reads twice.
 
-/** A heartbeat older than this is not a running watcher. */
+/** A heartbeat older than this is not a watcher that has checked in. */
 export const WATCHER_STALE_MS = 5 * 60 * 1000;
 
 const HEARTBEAT_FILE = "delivery-queue-watcher.json";
@@ -507,8 +517,9 @@ export function readWatcherHeartbeat(commonDir) {
       ? beat.at
       : null;
   } catch {
-    // Absent or corrupt reads as "no watcher", which is the safe direction: a
-    // note nobody needed costs one line, a missing one costs a stalled queue.
+    // Absent or corrupt reads as "nothing has checked in", which is the safe
+    // direction: a note nobody needed costs one line, a missing one costs a
+    // stalled queue.
     return null;
   }
 }
@@ -527,25 +538,28 @@ export function writeWatcherHeartbeat(commonDir, now) {
 }
 
 /**
- * Whether a heartbeat proves a watcher is running now. Pure.
+ * Whether a watcher has checked in recently enough to count. Pure.
  *
- * A beat from the future counts: a clock that reads ahead is a clock problem,
+ * Deliberately not called "is running": a false answer here is silence from a
+ * watcher that cannot write a beat, which is not the same fact as no watcher.
+ * A beat from the future counts -- a clock that reads ahead is a clock problem,
  * not evidence that nothing is running.
  */
-export function watcherIsRunning(at, now, staleMs = WATCHER_STALE_MS) {
+export function watcherCheckedIn(at, now, staleMs = WATCHER_STALE_MS) {
   if (typeof at !== "number" || Number.isNaN(at)) return false;
   return now - at < staleMs;
 }
 
 /**
- * What to say when armed work is waiting and nothing is advancing it, or `null`
- * for nothing worth saying. Pure.
+ * What to say when armed work is waiting and nothing has checked in to advance
+ * it, or `null` for nothing worth saying. Pure.
  *
  * Silent when a watcher is beating, and silent when nothing is armed -- an
  * empty queue needs no watcher, and a note that appears when it is not
  * actionable is a note that stops being read. It distinguishes a watcher that
- * stopped from one that was never started, because those need different things
- * done about them.
+ * stopped from one that never checked in here, because those need different
+ * things done about them, and it names restarting as well as starting: silence
+ * here is equally consistent with a watcher too old to keep a heartbeat.
  */
 export function unattendedQueueNote(
   action,
@@ -555,15 +569,17 @@ export function unattendedQueueNote(
 ) {
   const armed = action.queued?.length ?? 0;
   if (armed === 0) return null;
-  if (watcherIsRunning(heartbeatAt, now, staleMs)) return null;
+  if (watcherCheckedIn(heartbeatAt, now, staleMs)) return null;
   const since =
     typeof heartbeatAt === "number" && !Number.isNaN(heartbeatAt)
-      ? `last beat ${Math.max(0, Math.round((now - heartbeatAt) / 60_000))}m ago`
-      : "none has ever beaten here";
+      ? `last check-in ${Math.max(0, Math.round((now - heartbeatAt) / 60_000))}m ago`
+      : "nothing has ever checked in here";
   return (
-    `no delivery-queue watcher is running (${since}), and ` +
+    `no delivery-queue watcher has checked in (${since}), and ` +
     `${armed} armed pull request${armed === 1 ? " is" : "s are"} waiting for ` +
-    `turns nobody is taking. Start one with \`make queue-watch\`.`
+    `turns nobody is taking. Start one with \`make queue-watch\` -- or restart ` +
+    `the one you have, since a watcher older than this heartbeat cannot be ` +
+    `seen from here.`
   );
 }
 

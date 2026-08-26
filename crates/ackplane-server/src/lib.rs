@@ -31,6 +31,7 @@ pub mod claim_store;
 pub mod constitution_service;
 pub mod constitution_signature;
 pub mod constitution_store;
+pub mod context_packet_compiler;
 pub mod context_packet_store;
 pub mod delegation_store;
 pub mod design_materialization_store;
