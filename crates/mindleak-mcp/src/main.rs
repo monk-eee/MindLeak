@@ -99,6 +99,14 @@ fn main() -> anyhow::Result<()> {
             let workspace = workspace.clone();
             move || mindleak_storage::worktree_roots(&workspace)
         })
+        // Only git can tell a fabricated commit id from a real one, and the
+        // engine does not spawn git, so the capability is supplied from here.
+        // A hash that names nothing becomes a phantom intent node with real
+        // edges to real files, and nothing removes a node once it is written.
+        .with_commit_resolver({
+            let workspace = workspace.clone();
+            move |sha| mindleak_storage::commit_exists(&workspace, sha)
+        })
         .with_recall_floor(mindleak_core::config::load_recall_floor())
         .with_consolidation_min_interval(maintenance_config.min_interval.as_secs());
     // Collapse any absolute node ids this checkout wrote before paths were made

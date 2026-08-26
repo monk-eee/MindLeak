@@ -26,6 +26,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { callTools, resolveServer } from "./claim-gate.mjs";
+
 export const FRAGMENT_DIR = "gaps.d";
 
 /** A fragment name is the gap's slug: lowercase, kebab, `.md`. */
@@ -89,10 +91,71 @@ export const render = (gaps) => gaps.map((gap) => gap.body).join("\n\n");
 // `--triage` answers the two questions that distinguish them: how long has
 // this been open, and is a Lodestar task tracking its fix.
 
-/** A gap names the task tracking its own fix by including this reference. */
-export const TASK_REF_PATTERN = /task:[0-9a-f]{12}/i;
+/**
+ * A tracking link is metadata, not any historical task id mentioned in prose.
+ * Keeping it on its own line makes the task a deliberate current commitment
+ * rather than an incident reference that happened to look like one.
+ */
+export const TRACKING_TASK_PATTERN = /^Tracking:\s*(task:[0-9a-f]{12})\s*$/im;
 
-export const hasTaskLink = (body) => TASK_REF_PATTERN.test(body);
+export const trackingTaskId = (body) =>
+  TRACKING_TASK_PATTERN.exec(body)?.[1].toLowerCase() ?? null;
+
+export const trackingTaskIds = (gaps) => [
+  ...new Set(gaps.map((gap) => trackingTaskId(gap.body)).filter(Boolean)),
+];
+
+const LIVE_TASK_STATUSES = new Set([
+  "open",
+  "claimed",
+  "needs_input",
+  "paused",
+  "in_review",
+  "blocked",
+]);
+
+/** Pick statuses for declared tracking ids from a bounded Lodestar board read. */
+export const trackingStatusesFromBoard = (trackingIds, board) => {
+  const tasks = Array.isArray(board) ? board : board?.tasks;
+  if (!Array.isArray(tasks)) {
+    throw new Error("Lodestar returned an unreadable task board");
+  }
+  const requested = new Set(trackingIds);
+  return new Map(
+    tasks
+      .filter(
+        (task) => requested.has(task.id) && typeof task.status === "string",
+      )
+      .map((task) => [task.id, task.status]),
+  );
+};
+
+const trackingStatusesFromLodestar = (gaps) => {
+  const ids = trackingTaskIds(gaps);
+  if (ids.length === 0) return new Map();
+
+  const repoRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+    encoding: "utf8",
+  }).trim();
+  const server = resolveServer(repoRoot, "lodestar");
+  if (!server) {
+    throw new Error(
+      "cannot verify declared tracking tasks: build lodestar-mcp or set LODESTAR_MCP_BIN",
+    );
+  }
+  const [board] = callTools(
+    server,
+    repoRoot,
+    [
+      {
+        name: "task_query",
+        arguments: { view: "board", detail: false, limit: 0 },
+      },
+    ],
+    8 * 1024 * 1024,
+  );
+  return trackingStatusesFromBoard(ids, board);
+};
 
 /**
  * Parse `git log --reverse --diff-filter=A --name-only --format=C:%ct`
@@ -127,14 +190,24 @@ export const ageDays = (nowMs, firstAddedSeconds) =>
  * rather than being silently dropped from the count -- an unknown age is a
  * fact worth seeing, not a reason to hide the row.
  */
-export const triageReport = (gaps, firstSeen, nowMs) => {
+export const triageReport = (
+  gaps,
+  firstSeen,
+  nowMs,
+  taskStatuses = new Map(),
+) => {
   const rows = gaps
     .map((gap) => {
       const seen = firstSeen[`${FRAGMENT_DIR}/${gap.name}`];
+      const taskId = trackingTaskId(gap.body);
+      const taskStatus = taskId === null ? null : taskStatuses.get(taskId);
       return {
         name: gap.name,
         ageDays: seen == null ? null : ageDays(nowMs, seen),
-        hasTaskLink: hasTaskLink(gap.body),
+        taskId,
+        taskStatus,
+        hasLiveTracking:
+          taskStatus !== undefined && LIVE_TASK_STATUSES.has(taskStatus),
       };
     })
     .sort((a, b) => (b.ageDays ?? -1) - (a.ageDays ?? -1));
@@ -143,13 +216,13 @@ export const triageReport = (gaps, firstSeen, nowMs) => {
     .map((row) => row.ageDays)
     .filter((age) => age != null)
     .sort((a, b) => a - b);
-  const withTaskLink = rows.filter((row) => row.hasTaskLink).length;
+  const withLiveTracking = rows.filter((row) => row.hasLiveTracking).length;
 
   return {
     rows,
     total: rows.length,
-    withTaskLink,
-    orphaned: rows.length - withTaskLink,
+    withLiveTracking,
+    orphaned: rows.length - withLiveTracking,
     oldestAgeDays: rows[0]?.ageDays ?? null,
     medianAgeDays: knownAges.length
       ? knownAges[Math.floor(knownAges.length / 2)]
@@ -165,14 +238,18 @@ export const renderTriage = (report) => {
   for (const row of report.rows) {
     const age =
       row.ageDays == null ? "   ?" : `${String(row.ageDays).padStart(4)}d`;
-    lines.push(
-      `  ${age}  task=${row.hasTaskLink ? "yes" : "no "}  ${row.name}`,
-    );
+    const tracking =
+      row.taskId === null
+        ? "none"
+        : row.hasLiveTracking
+          ? "live"
+          : (row.taskStatus ?? "missing");
+    lines.push(`  ${age}  task=${tracking.padEnd(7)}  ${row.name}`);
   }
   lines.push("");
   lines.push(`total: ${report.total} open fragment(s)`);
   lines.push(
-    `tracked by a task: ${report.withTaskLink} (${report.orphaned} orphaned -- no task reference at all)`,
+    `tracked by a live task: ${report.withLiveTracking} (${report.orphaned} orphaned -- no live tracking task)`,
   );
   lines.push(
     `oldest: ${report.oldestAgeDays ?? "unknown"} day(s); median: ${
@@ -244,9 +321,17 @@ const main = () => {
   }
 
   if (args.includes("--triage")) {
-    console.log(
-      renderTriage(triageReport(gaps, firstAddedDates(), Date.now())),
-    );
+    try {
+      const taskStatuses = trackingStatusesFromLodestar(gaps);
+      console.log(
+        renderTriage(
+          triageReport(gaps, firstAddedDates(), Date.now(), taskStatuses),
+        ),
+      );
+    } catch (error) {
+      console.error(`gaps: ${error.message}`);
+      process.exitCode = 2;
+    }
     return;
   }
 
@@ -259,6 +344,7 @@ const main = () => {
       "  node scripts/gaps.mjs --triage   reliability scorecard: backlog age + task linkage",
       "",
       `Add a gap: write ${FRAGMENT_DIR}/<slug>.md opening with a "- **" bullet.`,
+      "Track a fix: add `Tracking: task:<12-hex>` on its own line; --triage verifies it is live.",
       "Close a gap: delete its fragment in the commit that fixes it.",
     ].join("\n"),
   );

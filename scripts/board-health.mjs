@@ -234,7 +234,7 @@ export function describe(report, entries) {
  * "handled" as one filed five minutes ago. This is the same reliability blind
  * spot `classify`/`describe` exist to close for the claimed-task board,
  * applied to the OTHER place known bugs live. Reuses `gaps.mjs`'s own
- * `triageReport` rather than re-deriving age/task-linkage here, so the two
+ * `triageReport` rather than re-deriving age/tracking-state here, so the two
  * commands can never silently disagree.
  *
  * Says nothing when there are no open fragments at all -- an empty `gaps.d/`
@@ -244,11 +244,11 @@ export function describeGapsTriage(triage) {
   if (triage.total === 0) return null;
   const lines = [
     ``,
-    `gaps.d fragments with no tracking task : ${triage.orphaned} of ${triage.total}`,
+    `gaps.d fragments with no live tracking task : ${triage.orphaned} of ${triage.total}`,
     `oldest open gap                        : ${triage.oldestAgeDays ?? "unknown"} day(s)`,
     `median open gap age                    : ${triage.medianAgeDays ?? "unknown"} day(s)`,
   ];
-  const orphaned = triage.rows.filter((row) => !row.hasTaskLink);
+  const orphaned = triage.rows.filter((row) => !row.hasLiveTracking);
   if (orphaned.length > 0) {
     lines.push(
       ``,
@@ -371,8 +371,17 @@ async function main() {
   console.log(
     describe(classify(entries, Math.floor(Date.now() / 1000), merged), entries),
   );
+  const gaps = readFragments().gaps;
+  const taskStatuses = new Map(
+    tasks
+      .filter(
+        (task) =>
+          typeof task.id === "string" && typeof task.status === "string",
+      )
+      .map((task) => [task.id, task.status]),
+  );
   const gapsSection = describeGapsTriage(
-    triageReport(readFragments().gaps, firstAddedDates(), Date.now()),
+    triageReport(gaps, firstAddedDates(), Date.now(), taskStatuses),
   );
   if (gapsSection) console.log(gapsSection);
   proc.kill();

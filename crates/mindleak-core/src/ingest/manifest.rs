@@ -183,6 +183,7 @@ fn go_mod_dependencies(path: &str, content: &str) -> Result<Vec<Dependency>> {
     let mut names = BTreeSet::new();
     let mut in_require_block = false;
     for raw_line in content.lines() {
+        let indirect = is_go_mod_indirect(raw_line);
         let line = raw_line.split("//").next().unwrap_or("").trim();
         if line.is_empty() {
             continue;
@@ -198,7 +199,9 @@ fn go_mod_dependencies(path: &str, content: &str) -> Result<Vec<Dependency>> {
                     "invalid {path}: malformed require block"
                 )));
             }
-            names.insert(name.to_string());
+            if !indirect {
+                names.insert(name.to_string());
+            }
             continue;
         }
         let Some(rest) = line.strip_prefix("require ") else {
@@ -215,7 +218,9 @@ fn go_mod_dependencies(path: &str, content: &str) -> Result<Vec<Dependency>> {
                 "invalid {path}: malformed require directive"
             )));
         }
-        names.insert(name.to_string());
+        if !indirect {
+            names.insert(name.to_string());
+        }
     }
     if in_require_block {
         return Err(MindLeakError::Other(format!(
@@ -223,6 +228,24 @@ fn go_mod_dependencies(path: &str, content: &str) -> Result<Vec<Dependency>> {
         )));
     }
     Ok(to_dependencies(names))
+}
+
+/// True when a `go.mod` require line carries Go's `// indirect` marker: the
+/// module tool added this requirement transitively, the module author never
+/// declared it directly. Go's own convention for the marker is the line
+/// comment consisting of exactly the word `indirect`
+/// (<https://go.dev/ref/mod#go-mod-file-require>); any other text after `//`
+/// is an ordinary comment, not a signal to exclude the requirement.
+///
+/// Callers must check this against the *raw* line before comment-stripping —
+/// stripping `//` first (as the direct-dependency parsing below does, to
+/// tolerate trailing comments on a version) throws the marker away before it
+/// can be seen, which is what let an indirect requirement mint a `depends_on`
+/// edge as if the project required it directly.
+fn is_go_mod_indirect(raw_line: &str) -> bool {
+    raw_line
+        .split_once("//")
+        .is_some_and(|(_, comment)| comment.trim() == "indirect")
 }
 
 fn requirements_txt_dependencies(path: &str, content: &str) -> Result<Vec<Dependency>> {
@@ -318,6 +341,32 @@ mod tests {
                 name: "public_api".to_string(),
                 root_path: "crates/shared/api.rs".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn go_mod_indirect_requirements_do_not_become_direct_dependencies() {
+        // Regression: `// indirect` was stripped as a comment before the
+        // marker check ran, so a transitive Go module was inserted exactly
+        // like a direct `require`. Both the single-line and the block form of
+        // `require` must honour the marker, while a direct requirement with
+        // no marker still comes through.
+        let found = go_mod_dependencies(
+            "go.mod",
+            "module example.com/app\n\n\
+             require example.com/direct v1.2.3\n\
+             require golang.org/x/tools v0.1.0 // indirect\n\
+             require (\n\
+             \tgithub.com/stretchr/testify v1.10.0\n\
+             \tgolang.org/x/sync v0.12.0 // indirect\n\
+             )\n",
+        )
+        .unwrap();
+
+        let names: Vec<&str> = found.iter().map(|dep| dep.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["example.com/direct", "github.com/stretchr/testify"]
         );
     }
 

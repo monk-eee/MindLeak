@@ -12,7 +12,7 @@ import { EvidenceBoardViewProvider, EvidenceNode } from "./evidenceBoardViewProv
 import { doctorGroups } from "./fleet";
 import { FleetController } from "./fleetController";
 import { FleetViewProvider } from "./fleetViewProvider";
-import { GitSensor } from "./gitSensor";
+import { currentGitContext, GitSensor } from "./gitSensor";
 import { GraphViewProvider } from "./graphViewProvider";
 import { McpClient } from "./mcpClient";
 import { ReadinessSnapshot, sessionAgentIdentity } from "./readiness";
@@ -192,7 +192,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     },
     sessionId,
     (m) => output.appendLine(m),
-    requestTimeoutMs
+    requestTimeoutMs,
+    () => currentGitContext(workspace)
   );
   followConnection("memory", client);
 
@@ -273,7 +274,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     },
     sessionId,
     (m) => output.appendLine(m),
-    requestTimeoutMs
+    requestTimeoutMs,
+    () => currentGitContext(workspace)
   );
   followConnection("intent", lodestar);
   readinessController = new ReadinessController(
@@ -380,7 +382,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     mindleakClient,
     () => vscode.workspace.getConfiguration("mindleak").get<boolean>("captureCommits", true),
     (message) => output.appendLine(message),
-    (status) => setHealth("git", status)
+    (status) => setHealth("git", status),
+    () => {
+      // The Git extension's own view of branch/HEAD/dirty just changed;
+      // re-declare it on both planes rather than waiting for the next
+      // unrelated open_session call to pick up stale context.
+      void client?.refreshContext();
+      void lodestar?.refreshContext();
+    }
   );
   context.subscriptions.push(changeDetector, terminalSensor, gitSensor);
   void gitSensor.start().catch((err) => {
@@ -621,8 +630,18 @@ function artifactId(doc: vscode.TextDocument): string | null {
   return rel === null ? null : toArtifactId(rel);
 }
 
-async function onFocus(doc: vscode.TextDocument): Promise<void> {
-  if (!client?.isReady() || doc.uri.scheme !== "file") {
+export async function onFocus(
+  doc: vscode.TextDocument,
+  activeClient: McpClient | undefined = client,
+  worktrees: RepositoryWorktrees | undefined = repositoryWorktrees
+): Promise<void> {
+  if (!activeClient?.isReady() || doc.uri.scheme !== "file") {
+    return;
+  }
+  if (!(await worktrees?.contains(doc.uri.fsPath))) {
+    // Not inside the tracked repository worktree: a multi-root folder's file
+    // may share a folder-relative path with the tracked repo's artifact id,
+    // so boosting without this guard would attribute focus to the wrong node.
     return;
   }
   const id = artifactId(doc);
@@ -631,7 +650,7 @@ async function onFocus(doc: vscode.TextDocument): Promise<void> {
     return;
   }
   try {
-    await client.callTool("boost_entity", { id });
+    await activeClient.callTool("boost_entity", { id });
     await refresh(id);
   } catch (err) {
     output.appendLine(`focus error: ${(err as Error).message}`);

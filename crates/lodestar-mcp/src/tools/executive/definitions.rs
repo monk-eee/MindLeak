@@ -3,6 +3,8 @@
 
 use serde_json::{json, Value};
 
+use crate::tools::DEFAULT_LEASE_SECS;
+
 pub(in crate::tools) fn definitions() -> Vec<Value> {
     vec![
         json!({
@@ -33,7 +35,7 @@ pub(in crate::tools) fn definitions() -> Vec<Value> {
                     "task_id": { "type": "string" },
                     "step": { "type": "string", "enum": ["claim", "renew", "release", "recover"], "description": "Which ownership act. Each names the further arguments it needs." },
                     "agent": { "type": "string", "description": "Optional when LODESTAR_AGENT is configured." },
-                    "lease_secs": { "type": "integer", "default": 300, "description": "Lease length for claim, renew and recover." },
+                    "lease_secs": { "type": "integer", "default": DEFAULT_LEASE_SECS, "description": "Lease length for claim, renew and recover." },
                     "paths": { "type": "array", "items": { "type": "string" }, "description": "claim: workspace-relative path globs this work expects to touch. Omit to preserve existing paths on re-claim; pass [] to clear them." },
                     "symbols": { "type": "array", "items": { "type": "string" }, "description": "claim: opaque MindLeak symbol ids this work expects to touch. Omit to preserve existing symbols on re-claim; pass [] to clear them." },
                     "also_serves": { "type": "array", "items": { "type": "string" }, "default": [], "description": "claim: further goal ids this work serves, for what advise reported over the files you are actually touching. Unions with what was declared at creation, so naming only what you just learned never drops what you knew. Refused once conformance has judged this task." },
@@ -69,7 +71,7 @@ pub(in crate::tools) fn definitions() -> Vec<Value> {
                     "audience": { "type": "string", "description": "ask: agent id to address the question to. Omit to ask a human." },
                     "answer": { "type": "string", "description": "answer: the durable answer." },
                     "author": { "type": "string", "default": "human", "description": "answer: who answered." },
-                    "lease_secs": { "type": "integer", "default": 300, "description": "resume and answer: length of the fresh lease." },
+                    "lease_secs": { "type": "integer", "default": DEFAULT_LEASE_SECS, "description": "resume and answer: length of the fresh lease." },
                     "acknowledge_branch": { "type": "boolean", "default": false, "description": "abandon: confirm no branch the task's history ever recorded (not only its current one) carries an open or merged pull request. Required whenever any such branch exists, since abandon is a one-way door and the ledger cannot see a pull request from here." }
                 },
                 "required": ["task_id", "to"]
