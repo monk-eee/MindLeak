@@ -487,9 +487,9 @@ mod tests {
         }
     }
 
-    /// `repository_graph` returns the projection's ledger position and rebuild
-    /// time for one reason: a stale projection must be legible rather than
-    /// quietly old. "Never projected" and "projected at position 0" are
+    /// `repository_graph` returns the projection's own stream position and
+    /// rebuild time for one reason: a stale projection must be legible rather
+    /// than quietly old. "Never projected" and "projected at position 0" are
     /// different answers and the page must not collapse them.
     #[tokio::test]
     async fn graph_page_makes_an_absent_or_stale_projection_legible() {
@@ -500,9 +500,37 @@ mod tests {
             "projected_at_seconds",
             "no projection yet",
             "over a day old",
+            // A one-node graph read "Showing 1 nodes, 0 edges" before this.
+            "plural(",
         ] {
             assert!(body.contains(required), "graph.html is missing {required}");
         }
+    }
+
+    /// Regression: the header rendered `projection_stream_position` under the
+    /// label "Ledger position". Those are different quantities — the projection
+    /// checkpoint is the last structural fact it consumed, while the ledger head
+    /// counts every record — so for a repository at ledger 2 / projection 1 the
+    /// page displayed "Ledger position 1", naming a number it was not showing.
+    ///
+    /// This was unfalsifiable until projection freshness stopped conflating the
+    /// two, which is why the wrong wording is banned outright rather than merely
+    /// asserting the right one: a test that only checks the replacement passes
+    /// happily beside a reintroduced falsehood.
+    #[tokio::test]
+    async fn graph_page_names_the_projection_position_rather_than_the_ledger() {
+        let body = graph_page_body().await;
+
+        assert!(
+            body.contains("Projection position"),
+            "graph.html must label the value it actually renders"
+        );
+        assert!(
+            !body.contains("Ledger position"),
+            "graph.html renders the projection checkpoint, not the ledger head; \
+             `index.html` and `administration.html` own that label because they \
+             genuinely read `ledger_stream_position`"
+        );
     }
 
     /// The memory plane is observed here, never edited: the graph is derived

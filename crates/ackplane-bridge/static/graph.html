@@ -75,6 +75,7 @@
 
     const escape=value=>String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
     const when=seconds=>Number.isFinite(seconds)?new Date(seconds*1000).toLocaleString():"unknown";
+    const plural=(count,word)=>count===1?word:`${word}s`;
     const kindOf=type=>KINDS.includes(type)?type:"artifact";
     const colour=type=>`var(--n-${kindOf(type)})`;
     const shortLabel=node=>{const raw=node.label||node.node_id||"";const tail=raw.split(/[\\/]/).pop()||raw;return tail.length>26?tail.slice(0,25)+"\u2026":tail};
@@ -103,8 +104,12 @@
       drawLegend();build();paint();drawCounts();
     });
 
-    // The endpoint returns the projection's own ledger position and rebuild time
-    // precisely so a stale projection is legible rather than silently old.
+    // The endpoint returns the projection's own stream position and rebuild time
+    // precisely so a stale projection is legible rather than silently old. That
+    // position is the last structural fact the projection consumed, NOT the
+    // repository's whole-ledger head -- the two legitimately differ whenever a
+    // later record is one the projection never consumes, so the label must not
+    // claim to be the ledger position.
     function drawProjection(data){
       if(data)projection=data;
       if(!projection)return;
@@ -114,7 +119,7 @@
       const stale=ageHours!==null&&ageHours>24;
       const nodes=view.nodes.filter(visibleNode).length,edges=visibleEdges(visibleIds()).length;
       const filtered=nodes!==view.nodes.length||edges!==view.edges.length;
-      els.projection.innerHTML=`<span>Ledger position <b>${escape(position)}</b></span><span${stale?' class="stale"':""}>Projected <b>${escape(when(at))}</b>${stale?" &mdash; over a day old":""}</span><span>Showing <b>${nodes}</b> nodes, <b>${edges}</b> edges${filtered?` of ${view.nodes.length}/${view.edges.length}`:""}</span>`;
+      els.projection.innerHTML=`<span>Projection position <b>${escape(position)}</b></span><span${stale?' class="stale"':""}>Projected <b>${escape(when(at))}</b>${stale?" &mdash; over a day old":""}</span><span>Showing <b>${nodes}</b> ${plural(nodes,"node")}, <b>${edges}</b> ${plural(edges,"edge")}${filtered?` of ${view.nodes.length}/${view.edges.length}`:""}</span>`;
     }
     const drawCounts=()=>drawProjection();
 
