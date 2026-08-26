@@ -114,6 +114,10 @@ pub(crate) mod key {
     /// the time this was drafted -- checked via `migration-audit.mjs` and a
     /// direct `gh pr view` before picking this number, not guessed.
     pub(crate) const CONSTITUTION_PROPOSALS: i64 = 38;
+    /// `migrations/0039_work_task_command_execution.sql`. Key 38 was already
+    /// recorded as applied in the shared development database by
+    /// concurrent, then-not-yet-committed work at the time this was drafted.
+    pub(crate) const WORK_TASK_COMMAND_EXECUTION: i64 = 39;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

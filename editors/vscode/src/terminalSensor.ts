@@ -102,9 +102,10 @@ export class TerminalSensor implements vscode.Disposable {
     if (!this.client.isReady()) {
       return;
     }
+    const command = commandLine.value || running.command;
     try {
       await this.client.callTool("ingest_execution", {
-        command: commandLine.value || running.command,
+        command,
         exit_code: event.exitCode,
         output: running.config.captureOutput
           ? redactTerminalOutput(rawOutput, running.config.maxOutputChars)
@@ -119,6 +120,38 @@ export class TerminalSensor implements vscode.Disposable {
       });
     } catch (error) {
       this.health("terminal capture degraded: ingestion failed");
+      this.log(`terminal capture error: ${(error as Error).message}`);
+    }
+    await this.reportToolInvocation(command, running.timestamp);
+  }
+
+  /// ADR-0127: passive tool-call evidence, distinct from the execution record
+  /// above -- classified deterministically at ingest time, never self-reported.
+  /// Failure here never affects execution ingestion; each is independent.
+  private async reportToolInvocation(command: string, timestamp: number): Promise<void> {
+    try {
+      const result = (await this.client.callTool("ingest_tool_invocation", {
+        tool_name: "run_in_terminal",
+        argument_excerpt: command,
+        timestamp,
+      })) as { node_ids?: string[]; violation?: string } | undefined;
+      const violation = result?.violation;
+      if (!violation) {
+        return;
+      }
+      const scope = result?.node_ids?.find((id) => id.startsWith("tool_invocation:"));
+      if (!scope) {
+        return;
+      }
+      await this.client.callTool("observe_control", {
+        control_id: "control:agent-command-hygiene",
+        status: "fail",
+        scope,
+        evidence_refs: [scope],
+        measurements: violation,
+      });
+    } catch (error) {
+      this.health("terminal capture degraded: shell-hygiene report failed");
       this.log(`terminal capture error: ${(error as Error).message}`);
     }
   }

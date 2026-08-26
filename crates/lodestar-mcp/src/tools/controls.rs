@@ -2,7 +2,8 @@
 
 use super::{f64_arg, i64_arg, ok, opt_str, req_str, str_array};
 use lodestar_core::controls::{
-    Control, ControlKind, ControlStatus, EnforcementPower, Ratchet, RatchetDirection,
+    Control, ControlKind, ControlStatus, EnforcementPower, ObservationStatus, Ratchet,
+    RatchetDirection,
 };
 use lodestar_core::Lodestar;
 use serde_json::{json, Value};
@@ -92,6 +93,21 @@ pub(super) fn definitions() -> Vec<Value> {
                 "required": ["control_id"]
             }
         }),
+        json!({
+            "name": "observe_control",
+            "description": "Report one pass/fail/unknown observation to any registered control and resolve it through its clause (ADR-0034 ceiling applies). The generic counterpart to observe_ratchet: use this for a plain check/threshold/procedure/judgment control that has no baseline to read -- the caller's own deterministic classification is the whole observation. An unregistered control_id is refused outright rather than silently resolved as an orphan, so a typo in control_id fails loudly instead of quietly reporting nothing.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "control_id": { "type": "string" },
+                    "status": { "type": "string", "enum": ["pass", "fail", "unknown"] },
+                    "scope": { "type": "string", "description": "What was checked, e.g. a tool_invocation: node id." },
+                    "evidence_refs": { "type": "array", "items": { "type": "string" }, "default": [] },
+                    "measurements": { "type": "string", "description": "Optional free-form detail about what was found." }
+                },
+                "required": ["control_id", "status", "scope"]
+            }
+        }),
     ]
 }
 
@@ -107,6 +123,7 @@ pub(super) fn dispatch(
         "clause_controls" => Some(clause_controls(engine, args)),
         "register_control" => Some(register_control(engine, args)),
         "retire_control" => Some(retire_control(engine, args)),
+        "observe_control" => Some(observe_control(engine, args)),
         _ => None,
     }
 }
@@ -160,6 +177,31 @@ fn retire_control(engine: &Lodestar, args: &Value) -> Result<Value, String> {
         "control_id": control_id,
         "status": "retired",
         "retired_by": retired_by
+    }))
+}
+
+fn observe_control(engine: &Lodestar, args: &Value) -> Result<Value, String> {
+    let status = match req_str(args, "status")? {
+        "pass" => ObservationStatus::Pass,
+        "fail" => ObservationStatus::Fail,
+        "unknown" => ObservationStatus::Unknown,
+        other => return Err(format!("unknown observation status: {other}")),
+    };
+    let resolution = engine
+        .observe_control(
+            req_str(args, "control_id")?,
+            status,
+            req_str(args, "scope")?,
+            str_array(args, "evidence_refs"),
+            opt_str(args, "measurements"),
+        )
+        .map_err(|e| e.to_string())?;
+    ok(&json!({
+        "control_id": resolution.control_id,
+        "clause_id": resolution.clause_id,
+        "status": resolution.status,
+        "effective": resolution.effective.as_str(),
+        "finding": resolution.finding,
     }))
 }
 

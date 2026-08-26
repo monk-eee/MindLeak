@@ -128,6 +128,11 @@ pub struct WriteOutcome {
     /// "findable" are not the same claim.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub embedded: bool,
+    /// Set when this write's own deterministic classifier found a match
+    /// (ADR-0127) -- e.g. `tool_invocation` ingestion against the shell-hygiene
+    /// pattern list. `None` for every ingest path that does not classify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub violation: Option<String>,
 }
 
 /// Counts removed when forgetting a deleted file: its artifact node, the symbols
