@@ -93,6 +93,26 @@ fn effective_weight(
     base_weight * 2.0_f64.powf(-elapsed_hours / half_life_hours)
 }
 
+/// Parses the `seeds` query parameter into trimmed, non-empty node ids.
+/// `None` (an absent parameter, or one that is entirely whitespace) is the
+/// caller's signal to fall back to `Projector::sample_nodes` -- distinct
+/// from `Some` with an empty `Vec`, which is what an explicit but entirely
+/// blank value (e.g. `",,,"`) parses to: the caller asked for nothing, not
+/// for the default sample.
+fn parse_graph_seeds(raw: Option<&str>) -> Option<Vec<String>> {
+    let raw = raw?;
+    if raw.trim().is_empty() {
+        return None;
+    }
+    Some(
+        raw.split(',')
+            .map(str::trim)
+            .filter(|seed| !seed.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
 pub async fn repository_graph(
     State(state): State<AppState>,
     Path(repository_id): Path<String>,
@@ -113,14 +133,9 @@ pub async fn repository_graph(
         .unwrap_or(DEFAULT_GRAPH_MAX_FANOUT)
         .clamp(1, MAX_GRAPH_MAX_FANOUT);
 
-    let seeds: Vec<String> = match query.seeds.as_deref() {
-        Some(raw) if !raw.trim().is_empty() => raw
-            .split(',')
-            .map(str::trim)
-            .filter(|seed| !seed.is_empty())
-            .map(str::to_string)
-            .collect(),
-        _ => {
+    let seeds: Vec<String> = match parse_graph_seeds(query.seeds.as_deref()) {
+        Some(seeds) => seeds,
+        None => {
             match state
                 .projector
                 .sample_nodes(&state.tenant_id, &repository_id, DEFAULT_SEED_SAMPLE)
@@ -214,5 +229,73 @@ mod tests {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
         let updated_at = now + Duration::from_secs(60);
         assert_eq!(effective_weight(1.0, 168.0, updated_at, now), 1.0);
+    }
+
+    #[test]
+    fn parse_graph_seeds_falls_back_to_sampling_when_absent() {
+        assert_eq!(parse_graph_seeds(None), None);
+    }
+
+    #[test]
+    fn parse_graph_seeds_falls_back_to_sampling_when_whitespace_only() {
+        assert_eq!(parse_graph_seeds(Some("   ")), None);
+    }
+
+    #[test]
+    fn parse_graph_seeds_returns_a_single_trimmed_seed() {
+        assert_eq!(
+            parse_graph_seeds(Some(" artifact:foo.rs ")),
+            Some(vec!["artifact:foo.rs".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_graph_seeds_splits_and_trims_multiple_seeds() {
+        assert_eq!(
+            parse_graph_seeds(Some("artifact:a.rs , artifact:b.rs")),
+            Some(vec![
+                "artifact:a.rs".to_string(),
+                "artifact:b.rs".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_graph_seeds_drops_empty_entries_between_commas() {
+        assert_eq!(
+            parse_graph_seeds(Some("artifact:a.rs,,artifact:b.rs")),
+            Some(vec![
+                "artifact:a.rs".to_string(),
+                "artifact:b.rs".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_graph_seeds_returns_an_empty_list_for_an_explicit_but_entirely_blank_value() {
+        // Distinct from `None`: the caller supplied a `seeds` value, so this
+        // must NOT fall back to Projector::sample_nodes -- it asked for
+        // nothing, and nothing is the honest answer.
+        assert_eq!(parse_graph_seeds(Some(",,,")), Some(Vec::new()));
+    }
+
+    #[test]
+    fn graph_node_summary_from_projected_node_maps_every_field() {
+        let summary = GraphNodeSummary::from(ProjectedNode {
+            node_id: "artifact:foo.rs".to_string(),
+            node_type: "artifact".to_string(),
+            label: "foo.rs".to_string(),
+            depth: 2,
+        });
+
+        assert_eq!(
+            serde_json::to_value(summary).expect("summary serializes"),
+            serde_json::json!({
+                "node_id": "artifact:foo.rs",
+                "node_type": "artifact",
+                "label": "foo.rs",
+                "depth": 2,
+            })
+        );
     }
 }
