@@ -13,9 +13,9 @@ use tokio_postgres::Transaction;
 
 use super::purge_model::{
     assigned_receipt_id, assigned_request_id, preview_request_digest, receipt_digest,
-    receipt_from_row, request_from_row, validate_preview_request, validate_receipt,
-    NewPurgeReceipt, PurgeDataCategory, PurgeOutcome, PurgePreviewRequest, PurgeReceipt,
-    PurgeRequest, PurgeRequestOutcome,
+    receipt_from_row, request_from_row, validate_confirming_label, validate_preview_request,
+    validate_receipt, NewPurgeReceipt, PurgeDataCategory, PurgeOutcome, PurgePreviewRequest,
+    PurgeReceipt, PurgeRequest, PurgeRequestOutcome,
 };
 use super::{AdministrationOperation, AdministrationStore, AdministrationStoreError};
 
@@ -110,10 +110,16 @@ impl AdministrationStore {
 
     /// Executes (or refuses) a previously previewed purge. Idempotent: a
     /// request that already has a receipt returns it unchanged rather than
-    /// deleting a second time.
+    /// deleting a second time. `confirming_label` must be non-empty and
+    /// differ from the request's `requested_by` (ADR-0119 decision 7): a
+    /// same-label or empty-label attempt is refused before any receipt is
+    /// written, since `administration_purge_receipts` allows only one
+    /// receipt per request ever and a caller must be able to retry with a
+    /// correct label inside the same confirmation window.
     pub async fn confirm_purge(
         &mut self,
         request_id: &str,
+        confirming_label: &str,
         now: SystemTime,
     ) -> Result<PurgeReceipt, AdministrationStoreError> {
         let transaction = self.client.transaction().await?;
@@ -132,8 +138,11 @@ impl AdministrationStore {
                 PurgeOutcome::Expired,
                 "The confirmation window elapsed; request a fresh preview.".to_string(),
                 None,
+                None,
             )
         } else {
+            let confirming_label =
+                validate_confirming_label(confirming_label, &request.requested_by)?;
             let policy_still_active = transaction
                 .query_opt(
                     "SELECT 1 FROM administration_policies \
@@ -147,6 +156,7 @@ impl AdministrationStore {
                     PurgeOutcome::Refused,
                     "The authorizing policy was revoked or expired since the preview.".to_string(),
                     None,
+                    Some(confirming_label),
                 )
             } else {
                 let deleted = delete_purge_candidates(
@@ -161,6 +171,7 @@ impl AdministrationStore {
                     PurgeOutcome::Succeeded,
                     format!("Deleted {deleted} row(s) matching the previewed scope and cutoff."),
                     Some(deleted),
+                    Some(confirming_label),
                 )
             }
         };
@@ -171,6 +182,7 @@ impl AdministrationStore {
             reason: outcome.1,
             rows_deleted: outcome.2,
             occurred_at: now,
+            confirming_label: outcome.3,
         };
         validate_receipt(&new_receipt, now)?;
         let digest = receipt_digest(&new_receipt)?;
@@ -178,8 +190,8 @@ impl AdministrationStore {
         let inserted = transaction
             .query_opt(
                 "INSERT INTO administration_purge_receipts (receipt_id, request_id, outcome, \
-                     reason, rows_deleted, occurred_at, recorded_at) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7) \
+                     reason, rows_deleted, occurred_at, recorded_at, confirming_label) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) \
                  ON CONFLICT DO NOTHING RETURNING *",
                 &[
                     &assigned_id,
@@ -189,6 +201,7 @@ impl AdministrationStore {
                     &new_receipt.rows_deleted,
                     &new_receipt.occurred_at,
                     &now,
+                    &new_receipt.confirming_label,
                 ],
             )
             .await?;
@@ -204,6 +217,7 @@ impl AdministrationStore {
                     reason: existing.reason.clone(),
                     rows_deleted: existing.rows_deleted,
                     occurred_at: existing.occurred_at,
+                    confirming_label: existing.confirming_label.clone(),
                 })? != digest
                 {
                     return Err(AdministrationStoreError::ReceiptConflict);

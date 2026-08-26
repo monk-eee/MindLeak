@@ -116,6 +116,10 @@ pub struct NewPurgeReceipt {
     pub reason: String,
     pub rows_deleted: Option<i64>,
     pub occurred_at: SystemTime,
+    /// The distinct, attributed label that confirmed this request (ADR-0119
+    /// decision 7). Absent only for an `Expired` receipt: nothing was
+    /// validly confirmed before the window lapsed.
+    pub confirming_label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +131,7 @@ pub struct PurgeReceipt {
     pub rows_deleted: Option<i64>,
     pub occurred_at: SystemTime,
     pub recorded_at: SystemTime,
+    pub confirming_label: Option<String>,
 }
 
 pub(super) fn validate_preview_request(
@@ -155,6 +160,24 @@ pub(super) fn validate_receipt(
         return Err(AdministrationStoreError::InvalidReceiptTime);
     }
     Ok(())
+}
+
+/// ADR-0119 decision 7: "An agent or model cannot approve its own purge."
+/// Trims the caller-supplied label and requires it to be non-empty and
+/// distinct from `requested_by` -- the same same-string self-review guard
+/// `resolve_task` already applies (ADR-0071), attributed rather than
+/// authenticated since this deployment has no separate identity provider.
+/// Returns the trimmed label on success so callers persist exactly what was
+/// validated, not the raw (possibly padded) input.
+pub(super) fn validate_confirming_label(
+    confirming_label: &str,
+    requested_by: &str,
+) -> Result<String, AdministrationStoreError> {
+    let trimmed = confirming_label.trim();
+    if trimmed.is_empty() || trimmed == requested_by {
+        return Err(AdministrationStoreError::SelfConfirmationRefused);
+    }
+    Ok(trimmed.to_string())
 }
 
 pub(super) fn assigned_request_id(request: &PurgePreviewRequest) -> String {
@@ -214,6 +237,13 @@ pub(super) fn receipt_digest(
         }
         None => hasher.update([0]),
     }
+    match &receipt.confirming_label {
+        Some(label) => {
+            hasher.update([1]);
+            append_bytes(&mut hasher, label.as_bytes());
+        }
+        None => hasher.update([0]),
+    }
     append_timestamp(&mut hasher, receipt.occurred_at)?;
     Ok(hasher.finalize().to_vec())
 }
@@ -243,5 +273,6 @@ pub(super) fn receipt_from_row(row: &Row) -> Result<PurgeReceipt, Administration
         rows_deleted: row.get("rows_deleted"),
         occurred_at: row.get("occurred_at"),
         recorded_at: row.get("recorded_at"),
+        confirming_label: row.get("confirming_label"),
     })
 }

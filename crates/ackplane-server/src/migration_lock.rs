@@ -142,6 +142,10 @@ pub(crate) mod key {
     /// database when this unmerged slice was recovered; `migration-audit --next`
     /// selected 49 rather than reusing an ambiguous key.
     pub(crate) const DELEGATION_USE_RECEIPTS: i64 = 49;
+    /// `migrations/0050_administration_purge_confirming_label.sql`. Key 49
+    /// is already allocated to delegation-use receipts on main, so
+    /// `migration-audit --next` selected 50 for this recovered purge fix.
+    pub(crate) const ADMINISTRATION_PURGE_CONFIRMING_LABEL: i64 = 50;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and
