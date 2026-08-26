@@ -147,7 +147,7 @@ impl ContextPacketStore {
         let row = self
             .client
             .query_opt(
-                "SELECT payload FROM context_packets \
+                "SELECT payload, payload_digest FROM context_packets \
                  WHERE tenant_id = $1 AND repository_id = $2 AND packet_id = $3",
                 &[&tenant_id, &repository_id, &packet_id],
             )
@@ -156,12 +156,34 @@ impl ContextPacketStore {
             return Ok(None);
         };
         let payload: Vec<u8> = row.get(0);
+        let stored_payload_digest: Vec<u8> = row.get(1);
+        if Sha256::digest(&payload).as_slice() != stored_payload_digest.as_slice() {
+            return Err(ContextPacketStoreError::CorruptPayload {
+                packet_id: packet_id.to_string(),
+                detail: "payload digest does not match stored bytes".to_string(),
+            });
+        }
         let packet: ContextPacket = serde_json::from_slice(&payload).map_err(|error| {
             ContextPacketStoreError::CorruptPayload {
                 packet_id: packet_id.to_string(),
                 detail: error.to_string(),
             }
         })?;
+        packet
+            .validate()
+            .map_err(|error| ContextPacketStoreError::CorruptPayload {
+                packet_id: packet_id.to_string(),
+                detail: error.to_string(),
+            })?;
+        if packet.scope.tenant_id != tenant_id
+            || packet.scope.repository_id != repository_id
+            || packet.packet_id != packet_id
+        {
+            return Err(ContextPacketStoreError::CorruptPayload {
+                packet_id: packet_id.to_string(),
+                detail: "payload identity does not match its storage key".to_string(),
+            });
+        }
         Ok(Some(packet))
     }
 
@@ -320,7 +342,13 @@ mod tests {
     use std::time::SystemTime;
 
     use ackplane_protocol::context_packet::{
-        ContextPacketScope, ContextPacketSource, ContextTokenBudget,
+        ContextFreshness, ContextItemKind, ContextItemScope, ContextPacketScope,
+        ContextPacketSource, ContextProvenance, ContextSelectionReason,
+        CONTEXT_PACKET_PROTOCOL_VERSION,
+    };
+
+    use crate::context_packet_compiler::{
+        compile_context_packet, ContextPacketCandidate, ContextPacketCompilationRequest,
     };
 
     use super::*;
@@ -344,9 +372,82 @@ mod tests {
         issued_at: i64,
         expires_at: i64,
     ) -> ContextPacket {
-        ContextPacket {
+        let required =
+            |item_id: &str, item_kind: ContextItemKind, reason: ContextSelectionReason| {
+                ContextPacketCandidate {
+                    item_id: item_id.to_string(),
+                    item_kind,
+                    source_reference: format!("source:{item_id}"),
+                    source_scope: ContextItemScope {
+                        tenant_id: scope.tenant_id.clone(),
+                        repository_id: scope.repository_id.clone(),
+                        project_id: None,
+                        task_id: Some(scope.task_id.clone()),
+                        goal_id: Some(scope.goal_id.clone()),
+                    },
+                    provenance: ContextProvenance {
+                        recorded_by: "context-packet-store-test".to_string(),
+                        recorded_at: issued_at,
+                        evidence_reference: Some(format!("ledger:{item_id}")),
+                    },
+                    freshness: ContextFreshness {
+                        observed_at: issued_at,
+                        expires_at: Some(expires_at),
+                    },
+                    source_version: "v2".to_string(),
+                    rendered: format!("bounded rendering for {item_id}"),
+                    reason,
+                    estimated_tokens: 1,
+                    relevance: 0,
+                }
+            };
+        let mandatory = vec![
+            required(
+                "identity",
+                ContextItemKind::TargetIdentity,
+                ContextSelectionReason::RequiredTargetIdentity,
+            ),
+            required(
+                "task-lease",
+                ContextItemKind::TaskLease,
+                ContextSelectionReason::RequiredTaskLease,
+            ),
+            required(
+                "objective",
+                ContextItemKind::Objective,
+                ContextSelectionReason::RequiredObjective,
+            ),
+            required(
+                "acceptance",
+                ContextItemKind::Acceptance,
+                ContextSelectionReason::RequiredAcceptance,
+            ),
+            required(
+                "constitution",
+                ContextItemKind::Constitution,
+                ContextSelectionReason::RequiredConstitution,
+            ),
+            required(
+                "policy",
+                ContextItemKind::Policy,
+                ContextSelectionReason::RequiredPolicy,
+            ),
+            required(
+                "safety",
+                ContextItemKind::SafetyControl,
+                ContextSelectionReason::RequiredSafetyControl,
+            ),
+            required(
+                "evidence-condition",
+                ContextItemKind::EvidenceCondition,
+                ContextSelectionReason::RequiredEvidenceCondition,
+            ),
+        ];
+        compile_context_packet(ContextPacketCompilationRequest {
             packet_id: format!("packet-{label}-{}", scope.agent_session_id),
+            protocol_version: CONTEXT_PACKET_PROTOCOL_VERSION.to_string(),
             scope,
+            project_id: None,
             compiler_version: "v1".to_string(),
             issued_at,
             expires_at,
@@ -354,13 +455,12 @@ mod tests {
                 ledger_position: 42,
                 projection_position: 41,
             },
-            token_budget: ContextTokenBudget {
-                requested: 4000,
-                used: 1200,
-            },
-            selected: vec![],
-            excluded: vec![],
-        }
+            token_budget: 4000,
+            mandatory,
+            optional: vec![],
+            rejected: vec![],
+        })
+        .expect("store test fixture must compile")
     }
 
     fn packet(label: &str) -> ContextPacket {
