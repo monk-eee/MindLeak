@@ -22,7 +22,7 @@ import {
   sweepArgs,
   unattendedQueueNote,
   updateBranchMismatch,
-  watcherIsRunning,
+  watcherCheckedIn,
   WATCHER_STALE_MS,
   writeWatcherHeartbeat,
 } from "./delivery-queue.mjs";
@@ -484,20 +484,34 @@ const armedQueue = () => nextAction([pr(1), pr(2)], NOW);
 /// a watcher with nothing to do: silence. Measured over two days on this board,
 /// armed pull requests sat BEHIND for hours because `make queue-watch` was
 /// simply not running and nothing anywhere said so.
-test("armed work waiting with no heartbeat at all says so, and says nothing has ever beaten here", () => {
+test("armed work waiting with no heartbeat at all says so, and says nothing has ever checked in", () => {
   const note = unattendedQueueNote(armedQueue(), null, NOW);
-  assert.match(note, /no delivery-queue watcher is running/);
-  assert.match(note, /none has ever beaten here/);
+  assert.match(note, /no delivery-queue watcher has checked in/);
+  assert.match(note, /nothing has ever checked in here/);
   assert.match(note, /2 armed pull requests are waiting/);
   assert.match(note, /make queue-watch/);
 });
 
-/// A watcher that stopped and one that was never started need different things
-/// done about them, so the note must not collapse them into one sentence.
-test("a stale heartbeat says how long ago the watcher stopped", () => {
+/// The note must not claim a watcher is not RUNNING, because it cannot know
+/// that: a watcher too old to write a beat is silent in exactly the same way as
+/// no watcher at all. Measured while this shipped -- two `--watch` processes
+/// were genuinely running with no heartbeat file in existence, and an earlier
+/// draft asserted flatly that none was running. So the note has to survive being
+/// read by somebody who already has a watcher up, which means naming the restart
+/// remedy beside the start one.
+test("the note claims only that nothing checked in, and offers restarting as well as starting", () => {
+  const note = unattendedQueueNote(armedQueue(), null, NOW);
+  assert.doesNotMatch(note, /watcher is running/);
+  assert.match(note, /restart/);
+  assert.match(note, /older than this heartbeat cannot be seen/);
+});
+
+/// A watcher that stopped and one that never checked in here need different
+/// things done about them, so the note must not collapse them into one sentence.
+test("a stale heartbeat says how long ago the watcher last checked in", () => {
   const note = unattendedQueueNote(armedQueue(), NOW - 90 * 60_000, NOW);
-  assert.match(note, /no delivery-queue watcher is running/);
-  assert.match(note, /last beat 90m ago/);
+  assert.match(note, /no delivery-queue watcher has checked in/);
+  assert.match(note, /last check-in 90m ago/);
 });
 
 /// The note has to be silent in the ordinary case or it stops being read.
@@ -514,14 +528,14 @@ test("nothing armed means nothing to say, however long the watcher has been down
   assert.equal(unattendedQueueNote(idle, NOW - 10 * 60 * 60_000, NOW), null);
 });
 
-test("a heartbeat counts as running right up to the stale threshold, and not past it", () => {
-  assert.equal(watcherIsRunning(NOW - WATCHER_STALE_MS + 1, NOW), true);
-  assert.equal(watcherIsRunning(NOW - WATCHER_STALE_MS, NOW), false);
+test("a heartbeat counts as checked in right up to the stale threshold, and not past it", () => {
+  assert.equal(watcherCheckedIn(NOW - WATCHER_STALE_MS + 1, NOW), true);
+  assert.equal(watcherCheckedIn(NOW - WATCHER_STALE_MS, NOW), false);
   // A clock that reads ahead is a clock problem, not evidence that nothing is
   // running -- a beat from the future must not report the watcher as stopped.
-  assert.equal(watcherIsRunning(NOW + 60_000, NOW), true);
-  assert.equal(watcherIsRunning(null, NOW), false);
-  assert.equal(watcherIsRunning("1787700000000", NOW), false);
+  assert.equal(watcherCheckedIn(NOW + 60_000, NOW), true);
+  assert.equal(watcherCheckedIn(null, NOW), false);
+  assert.equal(watcherCheckedIn("1787700000000", NOW), false);
 });
 
 /// The one seam every pure test above assumes and none of them exercises: the
@@ -537,8 +551,9 @@ test("a heartbeat the watcher wrote is a heartbeat the one-shot can read", () =>
       null,
     );
 
-    // Absent and corrupt both read as "no watcher": the safe direction, since a
-    // note nobody needed costs one line and a missing one costs a stalled queue.
+    // Absent and corrupt both read as "nothing has checked in": the safe
+    // direction, since a note nobody needed costs one line and a missing one
+    // costs a stalled queue.
     assert.equal(readWatcherHeartbeat(join(dir, "nowhere")), null);
     writeFileSync(
       join(dir, "delivery-queue-watcher.json"),
