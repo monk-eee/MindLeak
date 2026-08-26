@@ -1,0 +1,1 @@
+- **Ackplane now deterministically compiles Context Packets.** Mandatory governance, task, and evidence context is reserved under a token budget, while optional candidates are stably ranked and recorded as whole-item selections or budget exclusions; this pure compiler adds no persistence, authentication, transport, model call, or action authority.
