@@ -84,6 +84,10 @@ const MAX_BATCH_BYTES_ENV: &str = "ACKPLANE_MAX_BATCH_BYTES";
 const TLS_CERTIFICATE_PATH_ENV: &str = "ACKPLANE_TLS_CERTIFICATE_PATH";
 /// PEM private key for network-reachable gRPC listeners.
 const TLS_KEY_PATH_ENV: &str = "ACKPLANE_TLS_KEY_PATH";
+/// What confines a plaintext listener that is not bound to loopback
+/// (ADR-0132). Free text, and deliberately not a boolean: an operator who
+/// cannot name the mechanism does not have one.
+const LISTEN_CONFINED_BY_ENV: &str = "ACKPLANE_LISTEN_CONFINED_BY";
 /// How often the projection worker polls for stale repositories (ADR-0086
 /// clause 9).
 const PROJECTION_INTERVAL_SECS_ENV: &str = "ACKPLANE_PROJECTION_INTERVAL_SECS";
@@ -159,6 +163,11 @@ pub struct ServerConfig {
     pub max_batch_bytes: u32,
     pub projection_interval_secs: u32,
     pub tls: Option<TlsPaths>,
+    /// Set only when a plaintext listener outside loopback was permitted
+    /// because the operator named what confines it (ADR-0132). `None` on every
+    /// other path, including a TLS listener, so its presence always means
+    /// "this endpoint is serving plaintext deliberately".
+    pub confined_by: Option<String>,
 }
 
 impl fmt::Debug for ServerConfig {
@@ -171,6 +180,7 @@ impl fmt::Debug for ServerConfig {
             .field("max_batch_bytes", &self.max_batch_bytes)
             .field("projection_interval_secs", &self.projection_interval_secs)
             .field("tls", &self.tls)
+            .field("confined_by", &self.confined_by)
             .finish()
     }
 }
@@ -198,10 +208,26 @@ impl ServerConfig {
 
         let certificate = value(TLS_CERTIFICATE_PATH_ENV);
         let key = value(TLS_KEY_PATH_ENV);
+        // Set only by the one arm below that actually authorises plaintext, so
+        // it cannot drift into meaning "an operator once set this variable".
+        let mut confined_by = None;
         let tls = match (certificate, key) {
             (Some(certificate), Some(key)) => Some(TlsPaths { certificate, key }),
             (None, None) if listen.ip().is_loopback() => None,
-            (None, None) => return Err(ConfigError::NonLoopbackWithoutTls),
+            // ADR-0083 clause 8 requires TLS "outside loopback", which is a
+            // statement about reachability; `is_loopback()` above tests the
+            // bind address. Inside a container those differ by construction:
+            // a published port forwards to the container's bridge address, so
+            // a process bound to the container's own loopback is reachable
+            // from nowhere at all. ADR-0132 lets the deployment close that gap
+            // by naming what confines the listener instead.
+            (None, None) => match value(LISTEN_CONFINED_BY_ENV) {
+                Some(confinement) => {
+                    confined_by = Some(confinement);
+                    None
+                }
+                None => return Err(ConfigError::NonLoopbackWithoutTls),
+            },
             (certificate, _) => {
                 return Err(ConfigError::IncompleteTlsMaterial {
                     missing: if certificate.is_none() {
@@ -258,6 +284,7 @@ impl ServerConfig {
             max_batch_bytes,
             projection_interval_secs,
             tls,
+            confined_by,
         })
     }
 
@@ -266,12 +293,21 @@ impl ServerConfig {
     /// names the durability claim and the address, and deliberately never the
     /// database URL, which carries a password.
     pub fn banner(&self) -> String {
-        format!(
+        let mut banner = format!(
             "ackplane-server {} listening on {}; durability {}",
             env!("CARGO_PKG_VERSION"),
             self.listen,
             self.durability
-        )
+        );
+        // A plaintext endpoint outside loopback must never be a quiet one: the
+        // whole basis for permitting it is a claim about the environment, and
+        // a claim nobody can read is indistinguishable from a misconfiguration.
+        if let Some(confinement) = &self.confined_by {
+            banner.push_str(&format!(
+                "; serving PLAINTEXT outside loopback, confined by {confinement}"
+            ));
+        }
+        banner
     }
 
     /// The connection string the ledger is reached through. Never logged or
@@ -307,7 +343,9 @@ pub enum ConfigError {
     InvalidListen(String),
     #[error(
         "{LISTEN_ENV} is not loopback but neither {TLS_CERTIFICATE_PATH_ENV} nor {TLS_KEY_PATH_ENV} is set; \
-         TLS is required outside loopback"
+         TLS is required outside loopback. If something else already confines this listener - a \
+         container's published port, a service mesh, a host firewall - name it in \
+         {LISTEN_CONFINED_BY_ENV} to say so deliberately (ADR-0132)"
     )]
     NonLoopbackWithoutTls,
     #[error(
@@ -396,6 +434,92 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error, ConfigError::NonLoopbackWithoutTls);
+    }
+
+    /// ADR-0132: a bind address is not a reachable interface. A container must
+    /// bind `0.0.0.0` to be reachable through a published port at all, so the
+    /// deployment may say what confines the listener instead of presenting a
+    /// certificate. Naming it is the whole price of admission.
+    #[test]
+    fn a_named_confinement_permits_a_plaintext_listener_outside_loopback() {
+        let config = ServerConfig::resolve(env(&[
+            (DATABASE_URL_ENV, "postgres://dev@localhost/ackplane"),
+            (LISTEN_ENV, "0.0.0.0:8443"),
+            (
+                LISTEN_CONFINED_BY_ENV,
+                "docker published port 127.0.0.1:8443",
+            ),
+        ]))
+        .unwrap();
+
+        assert_eq!(config.tls, None);
+        assert_eq!(
+            config.confined_by.as_deref(),
+            Some("docker published port 127.0.0.1:8443")
+        );
+    }
+
+    /// An empty value is not an answer. `value()` already discards blanks, and
+    /// this pins that behaviour here: `ACKPLANE_LISTEN_CONFINED_BY=""` must not
+    /// become a way to wave plaintext through without saying anything.
+    #[test]
+    fn a_blank_confinement_is_not_a_confinement() {
+        let error = ServerConfig::resolve(env(&[
+            (DATABASE_URL_ENV, "postgres://dev@localhost/ackplane"),
+            (LISTEN_ENV, "0.0.0.0:8443"),
+            (LISTEN_CONFINED_BY_ENV, "   "),
+        ]))
+        .unwrap_err();
+
+        assert_eq!(error, ConfigError::NonLoopbackWithoutTls);
+    }
+
+    /// The field means "this endpoint serves plaintext deliberately", so a TLS
+    /// listener must leave it unset even when the variable is present -
+    /// otherwise the banner would announce plaintext for an encrypted endpoint.
+    #[test]
+    fn tls_material_wins_over_a_named_confinement() {
+        let config = ServerConfig::resolve(env(&[
+            (DATABASE_URL_ENV, "postgres://dev@localhost/ackplane"),
+            (LISTEN_ENV, "0.0.0.0:8443"),
+            (TLS_CERTIFICATE_PATH_ENV, "cert.pem"),
+            (TLS_KEY_PATH_ENV, "key.pem"),
+            (LISTEN_CONFINED_BY_ENV, "a service mesh"),
+        ]))
+        .unwrap();
+
+        assert!(config.tls.is_some());
+        assert_eq!(config.confined_by, None);
+    }
+
+    /// A loopback listener needs no confinement claim, so setting one must not
+    /// make it announce plaintext it was always entitled to serve.
+    #[test]
+    fn a_loopback_listener_records_no_confinement() {
+        let config = ServerConfig::resolve(env(&[
+            (DATABASE_URL_ENV, "postgres://dev@localhost/ackplane"),
+            (LISTEN_CONFINED_BY_ENV, "a service mesh"),
+        ]))
+        .unwrap();
+
+        assert_eq!(config.confined_by, None);
+        assert!(!config.banner().contains("PLAINTEXT"));
+    }
+
+    /// The basis for permitting plaintext is a claim about the environment, and
+    /// a claim nobody can read is indistinguishable from a misconfiguration.
+    #[test]
+    fn the_banner_names_a_plaintext_listener_and_what_confines_it() {
+        let config = ServerConfig::resolve(env(&[
+            (DATABASE_URL_ENV, "postgres://dev@localhost/ackplane"),
+            (LISTEN_ENV, "0.0.0.0:8443"),
+            (LISTEN_CONFINED_BY_ENV, "docker published port"),
+        ]))
+        .unwrap();
+
+        let banner = config.banner();
+        assert!(banner.contains("PLAINTEXT"), "{banner}");
+        assert!(banner.contains("docker published port"), "{banner}");
     }
 
     #[test]
