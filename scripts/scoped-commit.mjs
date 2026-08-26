@@ -1,6 +1,8 @@
 // Commit-scope guard (ADR-0018). Stages and commits ONLY the paths you declare,
-// via `git add -- <paths>` + `git commit -- <paths>` (pathspec) — never
-// `git add -A` / `commit -a`. Worktree isolation prevents cross-agent staging;
+// via `git add -A -- <paths>` + `git commit -- <paths>` (pathspec) — never
+// unscoped `git add -A` / `commit -a`. The explicit pathspec stages deletions
+// without reaching outside the declared scope. Worktree isolation prevents
+// cross-agent staging;
 // this guard separately guarantees the current worktree cannot sweep unrelated
 // staged paths into the wrong task or attribution. Any pre-existing staged path
 // outside the declared set is reported and left uncommitted.
@@ -127,8 +129,23 @@ if (ownership.action === "refuse") {
   process.exit(4);
 }
 
-// Stage only the declared paths.
-run(["add", "--", ...paths]);
+// Stage only the declared paths, including deletions. Plain `git add -- <path>`
+// refuses a path that no longer exists even when that deletion is exactly what
+// this scoped commit must preserve. `git add -A` handles a fresh deletion, but
+// it also refuses an individual deleted path that the caller already staged, so
+// leave only those index entries untouched.
+const stagedDeletions = new Set(
+  capture(["diff", "--cached", "--name-only", "--diff-filter=D"])
+    .split("\n")
+    .map((path) => path.trim())
+    .filter(Boolean),
+);
+const pathsToStage = paths.filter(
+  (path) => !stagedDeletions.has(path.replace(/\\/g, "/")),
+);
+if (pathsToStage.length) {
+  run(["add", "-A", "--", ...pathsToStage]);
+}
 
 // A staged rename (e.g. `git mv old new`, or a delete+add git's -M heuristic
 // recognizes as similar enough) whose NEW side is declared needs its OLD side
