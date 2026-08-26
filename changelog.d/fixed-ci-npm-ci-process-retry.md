@@ -1,0 +1,1 @@
+- **CI now restarts npm ci once after a recognized transient registry failure.** The portable retry wrapper preserves fail-fast behavior for deterministic npm errors while giving short-lived package-proxy 503s a fresh installation attempt.
