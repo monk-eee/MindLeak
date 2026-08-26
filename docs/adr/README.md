@@ -138,6 +138,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0128](0128-the-hardened-loopback-profile-is-the-verified-principal-for-self-hosted-administration.md) | The hardened loopback profile is the verified principal for self-hosted Industrial administration | Accepted |
 | [0130](0130-adopt-worktree-consults-a-live-claim.md) | Adopting a worktree refuses a claim it would not be handed | Accepted |
 | [0132](0132-a-bind-address-is-not-a-reachable-interface.md) | A bind address is not a reachable interface | Accepted |
+| [0133](0133-a-shared-test-database-is-not-a-test-database.md) | A shared test database is not a test database | Accepted |
 
 ## Writing a new ADR
 

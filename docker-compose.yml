@@ -53,6 +53,54 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # ADR-0133: creates an empty `ackplane_test` database, separate from the
+  # `ackplane` database the long-running service below actually operates
+  # against, so a local `cargo test` run never shares mutable state with a
+  # live projection worker. Idempotent (checked via `psql`'s own database
+  # listing, since Postgres has no `CREATE DATABASE IF NOT EXISTS`) and run
+  # from the same pinned image as `postgres` itself -- one image's
+  # provenance to audit for this step, not a second base image, the same
+  # reasoning `tls-init` below gives for reusing the server's own image.
+  test-db-init:
+    image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+    entrypoint: ["/bin/sh", "-euc"]
+    command:
+      - |
+        export PGPASSWORD="$$POSTGRES_PASSWORD"
+        if psql -h postgres -U "$$POSTGRES_USER" -lqt | cut -d '|' -f1 | grep -qw ackplane_test; then
+          echo "test-db-init: ackplane_test already exists, leaving it alone"
+        else
+          echo "test-db-init: creating ackplane_test"
+          createdb -h postgres -U "$$POSTGRES_USER" ackplane_test
+        fi
+    environment:
+      POSTGRES_USER: ackplane
+      POSTGRES_PASSWORD: ackplane-development-only-not-for-production
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # ADR-0133: migrates `ackplane_test`, mirroring `migrate` above exactly
+  # except for the database name. Nothing else in this file ever points at
+  # `ackplane_test` -- that is what keeps a local test run isolated from the
+  # `ackplane` service's own projection worker, not merely a separate
+  # database name by convention.
+  migrate-test:
+    build:
+      context: .
+      dockerfile: crates/ackplane-server/Dockerfile
+      args:
+        ACKPLANE_VERSION: ${ACKPLANE_VERSION:-dev}
+        ACKPLANE_COMMIT: ${ACKPLANE_COMMIT:-unknown}
+    entrypoint: ["/usr/local/bin/ackplane-migrate"]
+    environment:
+      ACKPLANE_DATABASE_URL: postgresql://ackplane:ackplane-development-only-not-for-production@postgres:5432/ackplane_test
+    depends_on:
+      test-db-init:
+        condition: service_completed_successfully
+    restart: "no"
+
   # Generates the development TLS material the `ackplane` service serves, into
   # a named volume, then exits (clause 5). Runs from the same pinned image as
   # the server so there is one provenance to audit, not two.
