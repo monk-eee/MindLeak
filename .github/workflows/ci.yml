@@ -136,7 +136,7 @@ jobs:
           cache: npm
           cache-dependency-path: editors/vscode/package-lock.json
       - name: Install extension dependencies
-        run: npm --prefix editors/vscode ci
+        run: node scripts/npm-ci-retry.mjs --prefix editors/vscode
       - name: Build local planes offline
         run: cargo build --locked --offline
         env:
@@ -180,7 +180,7 @@ jobs:
           cache: npm
           cache-dependency-path: editors/vscode/package-lock.json
       - name: Install
-        run: npm ci
+        run: node ../../scripts/npm-ci-retry.mjs
       - name: Lint
         run: npm run lint
       - name: Format check
@@ -223,7 +223,7 @@ jobs:
           cache: npm
           cache-dependency-path: clients/node/mindleak-client/package-lock.json
       - name: Install reference client dependencies
-        run: npm ci
+        run: node ../../../scripts/npm-ci-retry.mjs
         working-directory: clients/node/mindleak-client
       - name: Build reference client
         run: npm run build
@@ -249,7 +249,7 @@ jobs:
           cache: npm
           cache-dependency-path: editors/vscode/package-lock.json
       - name: Install extension dependencies
-        run: npm --prefix editors/vscode ci
+        run: node scripts/npm-ci-retry.mjs --prefix editors/vscode
       - name: Run live Extension Host smoke
         run: npm --prefix editors/vscode run test:extension-host
 
@@ -291,7 +291,7 @@ jobs:
           cache: npm
           cache-dependency-path: editors/vscode/package-lock.json
       - name: Install extension dependencies
-        run: npm --prefix editors/vscode ci
+        run: node scripts/npm-ci-retry.mjs --prefix editors/vscode
       - name: Run tests with coverage
         env:
           ACKPLANE_TEST_DATABASE_URL: postgres://ackplane:ackplane-development-only-not-for-production@localhost:5432/ackplane
