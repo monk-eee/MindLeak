@@ -108,6 +108,10 @@ pub(crate) mod key {
     pub(crate) const KNOWLEDGE_REVALIDATION_POLICY: i64 = 36;
     /// `migrations/0037_work_commands.sql`
     pub(crate) const WORK_COMMANDS: i64 = 37;
+    /// `migrations/0038_work_task_command_execution.sql`. Key 38 was already
+    /// recorded as applied in the shared development database by
+    /// concurrent, then-not-yet-committed work at the time this was drafted.
+    pub(crate) const WORK_TASK_COMMAND_EXECUTION: i64 = 39;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

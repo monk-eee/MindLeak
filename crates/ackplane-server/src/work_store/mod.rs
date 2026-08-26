@@ -87,6 +87,13 @@ pub struct WorkTask {
     pub declared_paths: Vec<String>,
     pub declared_symbols: Vec<String>,
     pub published_by: String,
+    /// Optimistic-concurrency version (ADR-0120 decision 3 / ADR-0125
+    /// decision 5). Starts at 1 and increments once per applied Work-command
+    /// effect; never decreases, never resets.
+    pub version: i64,
+    /// The bounded route or assignment reference `RouteWork` last recorded
+    /// (ADR-0125 decision 1). `None` until routed.
+    pub route_reference: Option<String>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -226,8 +233,8 @@ impl WorkStore {
             .execute(
                 "INSERT INTO work_tasks (tenant_id, repository_id, task_id, title, acceptance, \
                     goal_id, state, declared_paths, declared_symbols, source_digest, \
-                    published_by, created_at, updated_at) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12) \
+                    published_by, version, created_at, updated_at) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12,$12) \
                  ON CONFLICT (tenant_id, repository_id, task_id) DO NOTHING",
                 &[
                     &task.tenant_id,
@@ -284,12 +291,14 @@ impl WorkStore {
             declared_paths: task.declared_paths.clone(),
             declared_symbols: task.declared_symbols.clone(),
             published_by: task.published_by.clone(),
+            version: 1,
+            route_reference: None,
             created_at: now,
             updated_at: now,
         })
     }
 
-    fn row_to_task(row: &tokio_postgres::Row) -> Result<WorkTask, WorkStoreError> {
+    pub(crate) fn row_to_task(row: &tokio_postgres::Row) -> Result<WorkTask, WorkStoreError> {
         Ok(WorkTask {
             tenant_id: row.get("tenant_id"),
             repository_id: row.get("repository_id"),
@@ -304,6 +313,8 @@ impl WorkStore {
             declared_paths: row.get("declared_paths"),
             declared_symbols: row.get("declared_symbols"),
             published_by: row.get("published_by"),
+            version: row.get("version"),
+            route_reference: row.get("route_reference"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         })
