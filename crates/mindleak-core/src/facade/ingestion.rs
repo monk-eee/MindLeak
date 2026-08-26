@@ -62,16 +62,23 @@ impl MindLeak {
         Ok(outcome)
     }
 
-    pub fn ingest_commit(&self, rec: &CommitRecord) -> Result<WriteOutcome> {
+    /// One ingest path for both entry points, reporting the `now` it used so
+    /// attribution cannot drift from the edges it is attributing.
+    fn ingest_commit_at(&self, rec: &CommitRecord) -> Result<(WriteOutcome, i64)> {
         let now = now_unix();
         let roots = self.roots();
-        ingest::git::ingest_commit(&self.store, rec, now, &crate::borrowed(&roots))
+        let roots = crate::borrowed(&roots);
+        let outcome =
+            ingest::git::ingest_commit(&self.store, rec, now, &roots, self.commit_resolver())?;
+        Ok((outcome, now))
+    }
+
+    pub fn ingest_commit(&self, rec: &CommitRecord) -> Result<WriteOutcome> {
+        Ok(self.ingest_commit_at(rec)?.0)
     }
 
     pub fn ingest_commit_for_agent(&self, agent: &str, rec: &CommitRecord) -> Result<WriteOutcome> {
-        let now = now_unix();
-        let roots = self.roots();
-        let outcome = ingest::git::ingest_commit(&self.store, rec, now, &crate::borrowed(&roots))?;
+        let (outcome, now) = self.ingest_commit_at(rec)?;
         self.observe(agent, &outcome.node_ids, now)?;
         Ok(outcome)
     }

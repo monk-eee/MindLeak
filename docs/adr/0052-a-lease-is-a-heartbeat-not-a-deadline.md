@@ -95,3 +95,50 @@ remember.**
 Nothing here is built. The three tasks above were closed out honestly rather
 than by working around the lease, and this ADR records what should change so the
 next session does not rediscover it from the same symptoms.
+
+## Amendment (2026-08-26): the short default did not survive contact with real work
+
+- Decider: MindLeak maintainer
+
+The Decision above shipped: `touch_named_task` (`crates/lodestar-mcp/src/tools/mod.rs`)
+renews on `task_query view=scope`, `task_transition to=ask`, `task_transition
+to=answer`, `conformance_history`, and `check_conformance`, with `advise`
+deliberately excluded per the reasoning already recorded in this ADR. Decision
+item 3 — keep the default lease short, and let renewal-on-activity carry the
+load — did not.
+
+**Measured since:** `HEARTBEAT_ACTS` only covers five specific Lodestar-side
+calls. The dominant shape of real work — editing files, running a build or
+test suite, `git commit` — never calls Lodestar at all, so nothing renews the
+lease during exactly the interval this ADR was written to protect. AGENTS.md
+now records 27 measured lapses across 24 tasks and roughly 100 hours of work
+sitting under a dead lease. The concrete failure mode this produces is worse
+than the one Decision item 3 was protecting against:
+`gaps.d/rescuing-a-lapsed-lease-can-duplicate-a-published-pr.md` records a
+task whose owner had already pushed a validated fix and opened a PR two
+minutes before its 300-second lease lapsed; a second agent, reading the lapse
+as abandonment, rescued it and published a byte-identical duplicate PR
+fourteen minutes later.
+
+**Revised decision.** The default lease (`DEFAULT_LEASE_SECS`, previously
+`300`) is now **1800 seconds (30 minutes)** — long enough to comfortably
+outlast one realistic edit/build/test cycle between Lodestar touches, applied
+uniformly to `claim`, `renew`, `recover`, `resume`, and `answer`. The
+heartbeat mechanism from the original Decision is unchanged and still fires
+on top of this; it stops being the *only* thing standing between routine work
+and a false lapse.
+
+This does trade away part of what Decision item 3 bought: a genuinely
+vanished agent's work now takes up to 30 minutes to free instead of 5. That
+cost is accepted because the mitigation for it already exists and does not
+depend on lease length — `check_overlap`/`stalled` already surface a
+wedged-but-chatty claim to a human (this ADR's own Consequences section named
+that case as a cost accepted under the *original* decision too), and a human
+can `abandon_task` it regardless of how long the lease runs. What the short
+default bought — fast reclaim of dead work — was real but smaller than what
+it cost: certified work relabelled as a duplicate-PR incident.
+
+Nothing here loosens what a claim covers. `claim_started_at` is still
+untouched by renewal (Decision item 4), and a lapsed lease still requires a
+deliberate re-claim (Decision item 5) — only the length of the window before
+a live claim can lapse in the first place has changed.
