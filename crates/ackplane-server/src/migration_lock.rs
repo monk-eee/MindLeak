@@ -137,6 +137,11 @@ pub(crate) mod key {
     /// `ackplane_schema_migrations` (only 46 applied above 42 at the time
     /// this was drafted) before picking 47.
     pub(crate) const ADMINISTRATION_EXPORT: i64 = 47;
+    /// `migrations/0049_delegation_use_receipts.sql`. Keys 43, 44, and 48
+    /// were already applied by concurrent work in the shared development
+    /// database when this unmerged slice was recovered; `migration-audit --next`
+    /// selected 49 rather than reusing an ambiguous key.
+    pub(crate) const DELEGATION_USE_RECEIPTS: i64 = 49;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and
