@@ -87,6 +87,14 @@ pub(super) async fn preview_lifecycle_purge(
     }))
 }
 
+#[derive(Deserialize)]
+pub(super) struct ConfirmPurgeRequest {
+    /// Must be non-empty and differ from the requesting principal
+    /// (ADR-0119 decision 7): the same credential cannot both request and
+    /// confirm its own purge.
+    confirming_label: String,
+}
+
 #[derive(Serialize)]
 pub(super) struct PurgeReceiptResponse {
     receipt_id: String,
@@ -94,6 +102,7 @@ pub(super) struct PurgeReceiptResponse {
     reason: String,
     rows_deleted: Option<i64>,
     occurred_at_seconds: Option<u64>,
+    confirming_label: Option<String>,
 }
 
 impl From<PurgeReceipt> for PurgeReceiptResponse {
@@ -104,6 +113,7 @@ impl From<PurgeReceipt> for PurgeReceiptResponse {
             reason: receipt.reason,
             rows_deleted: receipt.rows_deleted,
             occurred_at_seconds: unix_seconds(receipt.occurred_at),
+            confirming_label: receipt.confirming_label,
         }
     }
 }
@@ -111,6 +121,7 @@ impl From<PurgeReceipt> for PurgeReceiptResponse {
 pub(super) async fn confirm_lifecycle_purge(
     State(state): State<AdministrationApiState>,
     Path((repository_id, request_id)): Path<(String, String)>,
+    Json(body): Json<ConfirmPurgeRequest>,
 ) -> Result<Json<PurgeReceiptResponse>, StatusCode> {
     ensure_repository_visible(&state, &repository_id).await?;
     let now = SystemTime::now();
@@ -127,7 +138,7 @@ pub(super) async fn confirm_lifecycle_purge(
         return Err(StatusCode::NOT_FOUND);
     }
     let receipt = administration
-        .confirm_purge(&request.request_id, now)
+        .confirm_purge(&request.request_id, &body.confirming_label, now)
         .await
         .map_err(administration_error_status)?;
     Ok(Json(receipt.into()))

@@ -651,7 +651,19 @@ occurred_at < $3` -- never `TRUNCATE`, `DROP DATABASE`, or a schema-wide
 statement (ADR-0119 decision 7). Confirming after the window expires, or
 after the authorizing policy was revoked, still returns a receipt
 (`expired`/`refused`) rather than deleting anything; the receipt itself never
-retains the purged rows, only the redacted request/outcome metadata.
+retains the purged rows, only the redacted request/outcome metadata. A
+confirm call also requires a `confirming_label` distinct from the request's
+own `requested_by` principal (ADR-0119 decision 7: "an agent or model cannot
+approve its own purge"), the same same-string self-review guard
+`resolve_task` already applies (ADR-0071) -- attributed, not authenticated,
+since this deployment has no separate identity provider. Because
+`administration_purge_receipts` allows only one receipt per request ever, a
+same-label or empty-label confirm attempt is refused as a plain validation
+error that writes no receipt, so a caller can retry with a correct label
+inside the same confirmation window; only a request that clears the label
+check reaches the expiry/policy/execution branches above, and the confirming
+label is retained on the one receipt a request ever gets (never on an
+`expired` receipt, since nothing was validly confirmed in time).
 Recovery inspection (`administration/recovery.rs`) is the third: ADR-0119
 decision 2 never lists it among the privileged classes, so it needs no
 adopted policy, only an existing `succeeded` Snapshot receipt to inspect. It

@@ -269,6 +269,19 @@ pub enum AdministrationStoreError {
     InvalidSchemaVersion,
     #[error("unknown export request: {request_id}")]
     UnknownExportRequest { request_id: String },
+    /// ADR-0119 decision 7: "An agent or model cannot approve its own
+    /// purge." The confirming label must be non-empty and differ from the
+    /// request's `requested_by`, mirroring `resolve_task`'s reviewer-label
+    /// guard (ADR-0071) -- attributed, not authenticated, since this
+    /// deployment has no separate identity provider. Deliberately not
+    /// persisted as a receipt: `administration_purge_receipts` allows only
+    /// one receipt per request ever, and a caller must be able to retry
+    /// with a correct label within the same confirmation window.
+    #[error(
+        "the confirming label must be non-empty and differ from the requesting principal; the \
+         same credential cannot both request and confirm a purge (ADR-0119 decision 7)"
+    )]
+    SelfConfirmationRefused,
 }
 
 fn is_identifier(value: &str) -> bool {

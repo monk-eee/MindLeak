@@ -23,6 +23,8 @@ const PURGE_MIGRATION: &str = include_str!("../../migrations/0042_administration
 const RECOVERY_INSPECTION_MIGRATION: &str =
     include_str!("../../migrations/0046_administration_recovery_inspection.sql");
 const EXPORT_MIGRATION: &str = include_str!("../../migrations/0047_administration_export.sql");
+const PURGE_CONFIRMING_LABEL_MIGRATION: &str =
+    include_str!("../../migrations/0050_administration_purge_confirming_label.sql");
 
 mod export_model;
 mod export_write;
@@ -82,6 +84,12 @@ impl AdministrationStore {
             &mut client,
             migration_lock::key::ADMINISTRATION_EXPORT,
             EXPORT_MIGRATION,
+        )
+        .await?;
+        migration_lock::migrate_locked(
+            &mut client,
+            migration_lock::key::ADMINISTRATION_PURGE_CONFIRMING_LABEL,
+            PURGE_CONFIRMING_LABEL_MIGRATION,
         )
         .await?;
         Ok(Self { client })
