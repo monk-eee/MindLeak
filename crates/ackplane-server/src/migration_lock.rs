@@ -121,6 +121,14 @@ pub(crate) mod key {
     pub(crate) const ADMINISTRATION: i64 = 41;
     /// `migrations/0042_administration_purge.sql`.
     pub(crate) const ADMINISTRATION_PURGE: i64 = 42;
+    /// `migrations/0046_administration_recovery_inspection.sql`. 43, 44, and
+    /// 45 were each reached by the shared development database from
+    /// concurrent work nobody had committed yet -- checked directly against
+    /// `ackplane_schema_migrations` (44 collided with a different session's
+    /// migration under the *same* key, which `migration-audit.mjs` cannot
+    /// see because this branch's own source already accounts for that key)
+    /// before picking 46.
+    pub(crate) const ADMINISTRATION_RECOVERY_INSPECTION: i64 = 46;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

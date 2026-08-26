@@ -244,7 +244,7 @@ async fn returns_an_honest_status_for_the_tenant_and_hides_it_from_another_tenan
                 {"operation":"snapshot","state":"unavailable","reason":"ACKPLANE_SNAPSHOT_DIR is not configured for this deployment."},
                 {"operation":"export","state":"refused","reason":"A verified principal now exists (ADR-0128); export itself is not implemented yet."},
                 {"operation":"claim_recovery","state":"available","reason":"Only an expired claim can be recovered; the next owner and a reason are recorded, and live claims refuse."},
-                {"operation":"recovery_inspection","state":"unavailable","reason":"An identified backup artifact and recovery evidence are required."},
+                {"operation":"recovery_inspection","state":"unavailable","reason":"ACKPLANE_SNAPSHOT_DIR is not configured for this deployment, so no Snapshot artifact can exist to inspect."},
                 {"operation":"lifecycle_purge","state":"refused","reason":"No adopted policy authorizes a Lifecycle purge yet; adopt one via POST /api/v1/administration/policies (ADR-0119 decision 2)."},
             ],
         })
@@ -322,6 +322,7 @@ async fn a_snapshot_request_with_no_adopted_policy_is_refused_with_a_named_reaso
             snapshot_dir: dir.clone(),
             key_path: dir.join("key.bin"),
             pg_dump_path: "pg_dump".to_string(),
+            pg_restore_path: "pg_restore".to_string(),
         })),
     );
     let router = administration_routes(state);
@@ -376,6 +377,7 @@ async fn adopting_a_policy_then_requesting_a_platform_snapshot_succeeds_and_repl
             snapshot_dir: dir.clone(),
             key_path: dir.join("key.bin"),
             pg_dump_path: "pg_dump".to_string(),
+            pg_restore_path: "pg_restore".to_string(),
         })),
     );
     let router = administration_routes(state);
@@ -443,6 +445,7 @@ async fn adopting_a_policy_then_requesting_a_platform_snapshot_succeeds_and_repl
     );
 
     let receipt_response = router
+        .clone()
         .oneshot(
             Request::builder()
                 .uri(format!("/api/v1/administration/snapshots/{request_id}"))
@@ -469,6 +472,7 @@ async fn adopting_a_policy_then_requesting_a_platform_snapshot_succeeds_and_repl
         None,
     ));
     let foreign_receipt_response = foreign_router
+        .clone()
         .oneshot(
             Request::builder()
                 .uri(format!("/api/v1/administration/snapshots/{request_id}"))
@@ -478,6 +482,81 @@ async fn adopting_a_policy_then_requesting_a_platform_snapshot_succeeds_and_repl
         .await
         .expect("the foreign receipt request should receive a response");
     assert_eq!(foreign_receipt_response.status(), StatusCode::NOT_FOUND);
+
+    // Recovery inspection (ADR-0119 decision 6) needs no adopted policy --
+    // it is read-only against the artifact this Snapshot already produced.
+    if tokio::process::Command::new("pg_restore")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .is_ok()
+    {
+        let inspect_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/v1/administration/snapshots/{request_id}/inspect"
+                    ))
+                    .body(Body::empty())
+                    .expect("the inspection request should build"),
+            )
+            .await
+            .expect("the inspection request should receive a response");
+        assert_eq!(inspect_response.status(), StatusCode::OK);
+        let inspect_body: serde_json::Value = serde_json::from_slice(
+            &to_bytes(inspect_response.into_body(), usize::MAX)
+                .await
+                .expect("the inspection response body should be bounded"),
+        )
+        .expect("the inspection response should be JSON");
+        assert_eq!(inspect_body["integrity_verified"], json!(true));
+        assert_eq!(inspect_body["decryption_verified"], json!(true));
+        assert_eq!(inspect_body["archive_valid"], json!(true));
+        assert!(inspect_body["archive_entry_count"]
+            .as_i64()
+            .is_some_and(|count| count > 0));
+
+        let latest_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/v1/administration/snapshots/{request_id}/inspect"
+                    ))
+                    .body(Body::empty())
+                    .expect("the latest-inspection request should build"),
+            )
+            .await
+            .expect("the latest-inspection request should receive a response");
+        assert_eq!(latest_response.status(), StatusCode::OK);
+        let latest_body: serde_json::Value = serde_json::from_slice(
+            &to_bytes(latest_response.into_body(), usize::MAX)
+                .await
+                .expect("the latest-inspection response body should be bounded"),
+        )
+        .expect("the latest-inspection response should be JSON");
+        assert_eq!(latest_body["inspection_id"], inspect_body["inspection_id"]);
+
+        // A different tenant must not read this inspection either.
+        let foreign_latest_response = foreign_router
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/v1/administration/snapshots/{request_id}/inspect"
+                    ))
+                    .body(Body::empty())
+                    .expect("the foreign latest-inspection request should build"),
+            )
+            .await
+            .expect("the foreign latest-inspection request should receive a response");
+        assert_eq!(foreign_latest_response.status(), StatusCode::NOT_FOUND);
+    } else {
+        println!("skipping the inspection half: pg_restore is not available on PATH");
+    }
 
     let _ = std::fs::remove_dir_all(&dir);
 }

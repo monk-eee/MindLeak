@@ -19,10 +19,14 @@ use crate::migration_lock;
 
 const MIGRATION: &str = include_str!("../../migrations/0041_administration.sql");
 const PURGE_MIGRATION: &str = include_str!("../../migrations/0042_administration_purge.sql");
+const RECOVERY_INSPECTION_MIGRATION: &str =
+    include_str!("../../migrations/0046_administration_recovery_inspection.sql");
 
 mod model;
 mod purge_model;
 mod purge_write;
+mod recovery_model;
+mod recovery_write;
 mod write;
 
 pub use model::{
@@ -34,9 +38,12 @@ pub use purge_model::{
     NewPurgeReceipt, PurgeDataCategory, PurgeOutcome, PurgePreviewRequest, PurgeReceipt,
     PurgeRequest, PurgeRequestOutcome, MAX_CONFIRMATION_WINDOW,
 };
+pub use recovery_model::NewRecoveryInspection;
+pub use recovery_write::RecoveryInspection;
 
 /// PostgreSQL persistence for adopted administration policies, Snapshot
-/// requests/receipts, and Lifecycle-purge previews/receipts.
+/// requests/receipts, Lifecycle-purge previews/receipts, and Recovery
+/// inspection reports.
 pub struct AdministrationStore {
     pub(crate) client: Client,
 }
@@ -57,11 +64,19 @@ impl AdministrationStore {
             PURGE_MIGRATION,
         )
         .await?;
+        migration_lock::migrate_locked(
+            &mut client,
+            migration_lock::key::ADMINISTRATION_RECOVERY_INSPECTION,
+            RECOVERY_INSPECTION_MIGRATION,
+        )
+        .await?;
         Ok(Self { client })
     }
 }
 
 #[cfg(test)]
 mod purge_tests;
+#[cfg(test)]
+mod recovery_tests;
 #[cfg(test)]
 mod tests;

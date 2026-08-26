@@ -19,7 +19,7 @@ use std::{
 
 use chacha20poly1305::{
     aead::{Aead, KeyInit, OsRng},
-    AeadCore, XChaCha20Poly1305,
+    AeadCore, XChaCha20Poly1305, XNonce,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -32,6 +32,9 @@ use tokio::{fs, io::AsyncWriteExt, process::Command};
 /// need a new id, because the id names the scheme, not the instance.
 const ENCRYPTION_KEY_ID: &str = "ackplane-snapshot-key-v1";
 const KEY_BYTES: usize = 32;
+/// `XChaCha20Poly1305`'s extended nonce length -- the prefix
+/// `create_platform_snapshot` writes ahead of the ciphertext.
+const NONCE_BYTES: usize = 24;
 
 /// Where a platform Snapshot is written and what encrypts it. Resolved once
 /// from environment at Bridge/service startup, mirroring
@@ -41,13 +44,16 @@ pub struct SnapshotProviderConfig {
     pub snapshot_dir: PathBuf,
     pub key_path: PathBuf,
     pub pg_dump_path: String,
+    pub pg_restore_path: String,
 }
 
 impl SnapshotProviderConfig {
     pub const SNAPSHOT_DIR_ENV: &'static str = "ACKPLANE_SNAPSHOT_DIR";
     pub const KEY_PATH_ENV: &'static str = "ACKPLANE_SNAPSHOT_KEY_PATH";
     pub const PG_DUMP_PATH_ENV: &'static str = "ACKPLANE_PG_DUMP_PATH";
+    pub const PG_RESTORE_PATH_ENV: &'static str = "ACKPLANE_PG_RESTORE_PATH";
     const DEFAULT_PG_DUMP_PATH: &'static str = "pg_dump";
+    const DEFAULT_PG_RESTORE_PATH: &'static str = "pg_restore";
 
     /// `None` when `ACKPLANE_SNAPSHOT_DIR` is unset -- the Snapshot
     /// capability is then unavailable rather than falling back to a guessed
@@ -65,11 +71,14 @@ impl SnapshotProviderConfig {
             .unwrap_or_else(|| snapshot_dir.join("snapshot-key.bin"));
         let pg_dump_path =
             value(Self::PG_DUMP_PATH_ENV).unwrap_or_else(|| Self::DEFAULT_PG_DUMP_PATH.to_string());
+        let pg_restore_path = value(Self::PG_RESTORE_PATH_ENV)
+            .unwrap_or_else(|| Self::DEFAULT_PG_RESTORE_PATH.to_string());
         Some(Self {
             database_url,
             snapshot_dir,
             key_path,
             pg_dump_path,
+            pg_restore_path,
         })
     }
 }
@@ -84,6 +93,19 @@ pub struct SnapshotArtifact {
     pub size_bytes: i64,
 }
 
+/// ADR-0119 decision 6: a read-only report against one identified Snapshot
+/// artifact. Every check that failed is named in `reason`; none of them ever
+/// touches the authoritative production database -- decryption happens
+/// in-process and `pg_restore --list` only reads the decrypted archive file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InspectionReport {
+    pub integrity_verified: bool,
+    pub decryption_verified: bool,
+    pub archive_valid: bool,
+    pub archive_entry_count: Option<i64>,
+    pub reason: String,
+}
+
 #[derive(Debug, Error)]
 pub enum SnapshotProviderError {
     #[error("could not prepare the snapshot directory or key: {0}")]
@@ -94,6 +116,8 @@ pub enum SnapshotProviderError {
     PgDumpFailed { stderr: String },
     #[error("could not encrypt the snapshot artifact")]
     Encryption,
+    #[error("could not start pg_restore ({path}): {source}")]
+    RestoreSpawn { path: String, source: io::Error },
 }
 
 impl From<io::Error> for SnapshotProviderError {
@@ -137,6 +161,112 @@ pub async fn create_platform_snapshot(
         encryption_key_id: ENCRYPTION_KEY_ID.to_string(),
         size_bytes: i64::try_from(sealed.len()).unwrap_or(i64::MAX),
     })
+}
+
+/// ADR-0119 decision 6: inspects one identified Snapshot artifact -- digest
+/// integrity, decryptability with the installation's own key, and archive
+/// validity via `pg_restore --list` -- without ever touching the
+/// authoritative production database. Every failure is a reported finding,
+/// not an error: a tampered, undecryptable, or corrupt artifact is exactly
+/// what this exists to detect.
+pub async fn inspect_snapshot_artifact(
+    config: &SnapshotProviderConfig,
+    artifact_path: &str,
+    expected_digest: &[u8],
+) -> Result<InspectionReport, SnapshotProviderError> {
+    let sealed = fs::read(artifact_path).await?;
+    let actual_digest = Sha256::digest(&sealed).to_vec();
+    if actual_digest != expected_digest {
+        return Ok(InspectionReport {
+            integrity_verified: false,
+            decryption_verified: false,
+            archive_valid: false,
+            archive_entry_count: None,
+            reason: "The artifact's digest no longer matches its recorded manifest digest."
+                .to_string(),
+        });
+    }
+    if sealed.len() <= NONCE_BYTES {
+        return Ok(InspectionReport {
+            integrity_verified: true,
+            decryption_verified: false,
+            archive_valid: false,
+            archive_entry_count: None,
+            reason: "The artifact is too short to contain a nonce and any ciphertext.".to_string(),
+        });
+    }
+
+    let (nonce_bytes, ciphertext) = sealed.split_at(NONCE_BYTES);
+    let key = load_or_generate_key(&config.key_path).await?;
+    let cipher = XChaCha20Poly1305::new((&key).into());
+    let plaintext = match cipher.decrypt(XNonce::from_slice(nonce_bytes), ciphertext) {
+        Ok(plaintext) => plaintext,
+        Err(_) => {
+            return Ok(InspectionReport {
+                integrity_verified: true,
+                decryption_verified: false,
+                archive_valid: false,
+                archive_entry_count: None,
+                reason:
+                    "The artifact could not be decrypted with this installation's snapshot key."
+                        .to_string(),
+            })
+        }
+    };
+
+    let temp_path = std::env::temp_dir().join(format!(
+        "ackplane-snapshot-inspect-{}-{}.pgdump",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::write(&temp_path, &plaintext).await?;
+    let output = Command::new(&config.pg_restore_path)
+        .arg("--list")
+        .arg(&temp_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await;
+    let _ = fs::remove_file(&temp_path).await;
+    let output = output.map_err(|source| SnapshotProviderError::RestoreSpawn {
+        path: config.pg_restore_path.clone(),
+        source,
+    })?;
+
+    if output.status.success() {
+        let entry_count = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| {
+                let line = line.trim();
+                !line.is_empty() && !line.starts_with(';')
+            })
+            .count();
+        Ok(InspectionReport {
+            integrity_verified: true,
+            decryption_verified: true,
+            archive_valid: true,
+            archive_entry_count: Some(i64::try_from(entry_count).unwrap_or(i64::MAX)),
+            reason: format!("pg_restore --list reported {entry_count} archive entries."),
+        })
+    } else {
+        Ok(InspectionReport {
+            integrity_verified: true,
+            decryption_verified: true,
+            archive_valid: false,
+            archive_entry_count: None,
+            reason: format!(
+                "pg_restore --list failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        })
+    }
+}
+
+fn unique_suffix() -> String {
+    let mut bytes = [0_u8; 8];
+    let _ = getrandom::getrandom(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 async fn run_pg_dump(
@@ -271,6 +401,7 @@ mod tests {
             snapshot_dir: dir.clone(),
             key_path: dir.join("snapshot-key.bin"),
             pg_dump_path: "pg_dump".to_string(),
+            pg_restore_path: "pg_restore".to_string(),
         };
 
         let artifact = create_platform_snapshot(&config, "test-request")
@@ -284,6 +415,65 @@ mod tests {
             .await
             .expect("the encrypted artifact file should exist");
         assert_eq!(Sha256::digest(&sealed).to_vec(), artifact.manifest_digest);
+
+        if Command::new("pg_restore")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .is_ok()
+        {
+            let report = inspect_snapshot_artifact(
+                &config,
+                &artifact.artifact_path,
+                &artifact.manifest_digest,
+            )
+            .await
+            .expect("inspecting a freshly created artifact should succeed");
+            assert!(report.integrity_verified);
+            assert!(report.decryption_verified);
+            assert!(report.archive_valid, "reason was: {}", report.reason);
+            assert!(report.archive_entry_count.unwrap_or_default() > 0);
+        } else {
+            eprintln!("skipping the inspection half: pg_restore is not available on PATH");
+        }
+
+        let _ = fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn inspecting_a_tampered_artifact_reports_a_digest_mismatch() {
+        let dir = temp_dir("ackplane-snapshot-inspect-tamper-test");
+        let _ = fs::remove_dir_all(&dir).await;
+        fs::create_dir_all(&dir)
+            .await
+            .expect("creating the test directory should succeed");
+        let artifact_path = dir.join("tampered.pgdump.enc");
+        fs::write(
+            &artifact_path,
+            b"not the bytes the digest was computed over",
+        )
+        .await
+        .expect("writing the tampered fixture should succeed");
+        let config = SnapshotProviderConfig {
+            database_url: "postgresql://unused".to_string(),
+            snapshot_dir: dir.clone(),
+            key_path: dir.join("snapshot-key.bin"),
+            pg_dump_path: "pg_dump".to_string(),
+            pg_restore_path: "pg_restore".to_string(),
+        };
+
+        let report = inspect_snapshot_artifact(
+            &config,
+            artifact_path.to_str().expect("a valid UTF-8 path"),
+            &[0_u8; 32],
+        )
+        .await
+        .expect("inspection itself never errors; a mismatch is a reported finding");
+        assert!(!report.integrity_verified);
+        assert!(!report.decryption_verified);
+        assert!(!report.archive_valid);
 
         let _ = fs::remove_dir_all(&dir).await;
     }

@@ -12,8 +12,11 @@
 //! doc comment for why tenant-scoped export needs its own separate
 //! implementation). `LifecyclePurge` is the second: a two-phase preview/
 //! confirm workflow (`purge` submodule) against one closed data category
-//! (telemetry events) today. Export and recovery execution remain
-//! unimplemented and report so honestly.
+//! (telemetry events) today. `recovery_inspection` (`recovery` submodule) is
+//! read-only against one identified Snapshot artifact -- ADR-0119 decision 2
+//! never lists it among the privileged classes, so it needs no adopted
+//! policy, only an existing succeeded Snapshot to inspect. Export and
+//! recovery execution remain unimplemented and report so honestly.
 
 use std::{
     sync::Arc,
@@ -104,10 +107,15 @@ pub fn administration_routes(state: AdministrationApiState) -> Router {
             "/api/v1/repositories/:repository_id/administration/purges/:request_id",
             get(purge::lifecycle_purge_status),
         )
+        .route(
+            "/api/v1/administration/snapshots/:request_id/inspect",
+            post(recovery::inspect_snapshot).get(recovery::latest_snapshot_inspection),
+        )
         .with_state(state)
 }
 
 mod purge;
+mod recovery;
 
 #[derive(Serialize)]
 struct AdministrationStatusResponse {
@@ -261,8 +269,16 @@ async fn capabilities(state: &AdministrationApiState) -> Vec<AdministrationCapab
         },
         AdministrationCapability {
             operation: "recovery_inspection",
-            state: "unavailable",
-            reason: "An identified backup artifact and recovery evidence are required.".to_string(),
+            state: if state.snapshot.is_some() {
+                "available"
+            } else {
+                "unavailable"
+            },
+            reason: if state.snapshot.is_some() {
+                "Inspects one identified Snapshot's artifact (integrity, decryption, archive validity); no adopted policy is required (ADR-0119 decision 2 does not list inspection as privileged). Refuses per-request if that Snapshot has no succeeded receipt to inspect.".to_string()
+            } else {
+                "ACKPLANE_SNAPSHOT_DIR is not configured for this deployment, so no Snapshot artifact can exist to inspect.".to_string()
+            },
         },
         lifecycle_purge,
     ]
@@ -512,6 +528,9 @@ fn snapshot_error_reason(error: &SnapshotProviderError) -> String {
         }
         SnapshotProviderError::Spawn { .. } => {
             "pg_dump could not be started on this deployment.".to_string()
+        }
+        SnapshotProviderError::RestoreSpawn { .. } => {
+            "pg_restore could not be started on this deployment.".to_string()
         }
         SnapshotProviderError::Io(_) => {
             "the snapshot directory or key could not be prepared.".to_string()
