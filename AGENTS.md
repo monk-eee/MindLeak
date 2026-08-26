@@ -144,16 +144,22 @@ style nit.
   violation in review or blocked. The point is to catch it *before* you do the
   work, not after.
 - **Hold the claim you took — a lease is a heartbeat, not a deadline
-  (ADR-0048).** A claim expires while you are still working; the default lease
-  is minutes and real work is longer. Call `task_claim(task_id, step="renew", session_id)`
-  whenever you finish a step and are about to start another — after a build,
-  between files, before a long test run. Measured on this board: **27 lapses
-  across 24 tasks, and roughly 100 hours of work sitting under a dead lease.**
-  A lapsed claim is not a lost cause: a same-owner re-claim keeps your evidence
-  window and the lapse is recorded in the task log rather than hidden, so
-  `claim_window` reports the count and the size of the gap. But it *does* free
-  the task for anyone else mid-flight, which is how two agents end up on one
-  task. Renewing costs one call; lapsing costs a collision.
+  (ADR-0048).** A claim expires while you are still working. Measured on this
+  board with the original 300-second default: **27 lapses across 24 tasks,
+  and roughly 100 hours of work sitting under a dead lease** — the activity
+  heartbeat (ADR-0052) only fires on five narrow Lodestar-side calls, none of
+  which cover editing files, running a build or test suite, or committing, so
+  routine work outran it constantly. The 2026-08-26 amendment to ADR-0052
+  raised the default to 1800 seconds (30 minutes) for exactly that reason, but
+  the discipline still matters for anything longer: call
+  `task_claim(task_id, step="renew", session_id)` whenever you finish a step
+  and are about to start another — after a build, between files, before a
+  long test run. A lapsed claim is not a lost cause: a same-owner re-claim
+  keeps your evidence window and the lapse is recorded in the task log rather
+  than hidden, so `claim_window` reports the count and the size of the gap.
+  But it *does* free the task for anyone else mid-flight, which is how two
+  agents end up on one task. Renewing costs one call; lapsing costs a
+  collision.
 
 ### Test-driven workflow (NON-NEGOTIABLE)
 - **Tests are the only way we ship.** Every new tool, parser, or facade method
