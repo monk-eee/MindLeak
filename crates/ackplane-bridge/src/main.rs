@@ -464,8 +464,8 @@ mod tests {
         let body = graph_page_body().await;
 
         for required in [
-            "data.projection_stream_position",
-            "data.projected_at_seconds",
+            "projection_stream_position",
+            "projected_at_seconds",
             "no projection yet",
             "over a day old",
         ] {
@@ -505,6 +505,60 @@ mod tests {
         ] {
             assert!(body.contains(required), "graph.html is missing {required}");
         }
+    }
+
+    /// The legend doubles as the node-type filter, so every type a reader can
+    /// see named is one they can switch off. It has to be built from real
+    /// buttons carrying `aria-pressed`: a filter made of styled `div`s is
+    /// unreachable by keyboard and silent to assistive tech, and the counts
+    /// must follow the filter or the page reports more than it draws.
+    #[tokio::test]
+    async fn graph_page_filters_node_types_accessibly() {
+        let body = graph_page_body().await;
+
+        for required in [
+            "aria-pressed=",
+            "hiddenKinds",
+            "role=\"group\" aria-label=\"Filter node types\"",
+            "view.nodes.filter(visibleNode)",
+        ] {
+            assert!(body.contains(required), "graph.html is missing {required}");
+        }
+    }
+
+    /// Every control that selects a node must be a real control. These began
+    /// as `div`s with click handlers, which no keyboard can reach.
+    #[tokio::test]
+    async fn graph_page_selection_controls_are_focusable() {
+        let body = graph_page_body().await;
+
+        assert!(
+            body.contains("<button type=\"button\" class=\"neighbour\""),
+            "graph.html's neighbour rows must be buttons, not clickable divs"
+        );
+        assert!(
+            !body.contains("<div class=\"neighbour\""),
+            "graph.html must not reintroduce a non-focusable neighbour row"
+        );
+    }
+
+    /// A deep link may carry some bounds and omit others. `Number(null)` is
+    /// `0` rather than `NaN`, so a guard that coerces before checking presence
+    /// reads an absent bound as zero and clamps that control to its minimum --
+    /// which silently renders a one-node graph. Presence must be decided on
+    /// the raw string.
+    #[tokio::test]
+    async fn graph_page_ignores_an_absent_bound_instead_of_reading_it_as_zero() {
+        let body = graph_page_body().await;
+
+        assert!(
+            body.contains("const raw=params.get(name)") && body.contains("raw===null"),
+            "graph.html must test the raw query parameter for presence before coercing it"
+        );
+        assert!(
+            !body.contains("const raw=Number(params.get(name))"),
+            "graph.html must not coerce a query parameter before checking it is present"
+        );
     }
 
     #[tokio::test]
