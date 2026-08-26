@@ -199,14 +199,19 @@ pub(super) fn collapse_session_identities(connection: &Connection) -> Result<()>
     // explain, and reads as a different owner on re-claim — which opens a fresh
     // evidence window and orphans everything it had already committed.
     //
-    // A claim that is over is safe to tidy; a claim that is live is not ours to
-    // touch. Ownership only changes by claim, release, or an audited transfer.
+    // A claim that is over is safe to tidy; a claim that is live or deliberately
+    // parked is not ours to touch. A parked task retains both its owner and
+    // evidence window specifically so that owner can resume it. Ownership only
+    // changes by claim, release, or an audited transfer.
     if super::migrations::column_exists(connection, "tasks", "owner")? {
         connection.execute(
             "UPDATE tasks
              SET owner = 'session:v1:' || substr(owner, -32)
              WHERE owner GLOB 'session:v1:*:*'
-               AND NOT (status = 'claimed' AND COALESCE(lease_expires_at, 0) >= ?1)",
+               AND NOT (
+                   (status = 'claimed' AND COALESCE(lease_expires_at, 0) >= ?1)
+                   OR status IN ('needs_input', 'paused')
+               )",
             [crate::now_unix()],
         )?;
     }

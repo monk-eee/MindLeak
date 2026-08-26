@@ -5,7 +5,7 @@ import { PassThrough } from "stream";
 import { spawn } from "child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { McpClient } from "./mcpClient";
+import { McpClient, SessionContextProvider } from "./mcpClient";
 
 vi.mock("child_process", () => ({ spawn: vi.fn() }));
 
@@ -322,12 +322,190 @@ describe("McpClient supervision", () => {
   });
 });
 
+// Regression: `open_session` only ever declared `session_id`, so the fleet
+// never knew which branch, commit, or dirty state an editor-originated
+// session was working from — every task_claim/advise had to fall back to
+// server-side guessing (ADR-0044). The client now asks an injected context
+// provider for whatever Git state is reliably known and declares exactly
+// that, refreshing it on demand rather than only once at startup.
+describe("McpClient session context", () => {
+  function openSessionCalls(fake: ReturnType<typeof fakeProcess>) {
+    return fake.requests.filter(
+      (request) => request.method === "tools/call" && request.params?.name === "open_session"
+    );
+  }
+
+  it("declares available git context on the initial open_session call", async () => {
+    const fake = fakeProcess({ exitOnEnd: true });
+    mockedSpawn.mockReturnValue(fake.process);
+    const client = testClient(
+      () => undefined,
+      30_000,
+      "mindleak-mcp",
+      () => ({
+        branch: "main",
+        head_sha: "abc123",
+        dirty: true,
+        base: "origin/main",
+        behind: 2,
+      })
+    );
+
+    await client.start();
+
+    const calls = openSessionCalls(fake);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].params.arguments).toEqual({
+      session_id: SESSION_ID,
+      branch: "main",
+      head_sha: "abc123",
+      dirty: true,
+      base: "origin/main",
+      behind: 2,
+    });
+    await client.dispose(100);
+  });
+
+  it("omits fields the context provider leaves undeclared instead of guessing them", async () => {
+    const fake = fakeProcess({ exitOnEnd: true });
+    mockedSpawn.mockReturnValue(fake.process);
+    // No tracked upstream: base/behind are not reliably known, so they must
+    // not appear at all — not as null, not as a guessed value.
+    const client = testClient(
+      () => undefined,
+      30_000,
+      "mindleak-mcp",
+      () => ({
+        branch: "main",
+        head_sha: "abc123",
+        dirty: false,
+      })
+    );
+
+    await client.start();
+
+    const args = openSessionCalls(fake)[0].params.arguments;
+    expect(args).toEqual({
+      session_id: SESSION_ID,
+      branch: "main",
+      head_sha: "abc123",
+      dirty: false,
+    });
+    expect(args).not.toHaveProperty("base");
+    expect(args).not.toHaveProperty("behind");
+    await client.dispose(100);
+  });
+
+  it("declares no context fields when the provider has nothing available", async () => {
+    const fake = fakeProcess({ exitOnEnd: true });
+    mockedSpawn.mockReturnValue(fake.process);
+    const client = testClient(); // default contextProvider returns undefined
+
+    await client.start();
+
+    expect(openSessionCalls(fake)[0].params.arguments).toEqual({ session_id: SESSION_ID });
+    await client.dispose(100);
+  });
+
+  it("logs a context-provider failure and keeps the session connected", async () => {
+    const fake = fakeProcess({ exitOnEnd: true });
+    mockedSpawn.mockReturnValue(fake.process);
+    const log = vi.fn();
+    const client = testClient(log, 30_000, "mindleak-mcp", async () => {
+      throw new Error("Git extension is still activating");
+    });
+
+    await client.start();
+
+    expect(openSessionCalls(fake)[0].params.arguments).toEqual({ session_id: SESSION_ID });
+    expect(log).toHaveBeenCalledWith(
+      "session context unavailable: Git extension is still activating"
+    );
+    expect(client.isReady()).toBe(true);
+    await client.dispose(100);
+  });
+
+  it("supports an async context provider", async () => {
+    const fake = fakeProcess({ exitOnEnd: true });
+    mockedSpawn.mockReturnValue(fake.process);
+    const client = testClient(
+      () => undefined,
+      30_000,
+      "mindleak-mcp",
+      async () => ({
+        branch: "feature/x",
+      })
+    );
+
+    await client.start();
+
+    expect(openSessionCalls(fake)[0].params.arguments).toEqual({
+      session_id: SESSION_ID,
+      branch: "feature/x",
+    });
+    await client.dispose(100);
+  });
+
+  it("refreshContext re-declares open_session with the provider's current state", async () => {
+    const fake = fakeProcess({ exitOnEnd: true });
+    mockedSpawn.mockReturnValue(fake.process);
+    let dirty = false;
+    const client = testClient(
+      () => undefined,
+      30_000,
+      "mindleak-mcp",
+      () => ({
+        branch: "main",
+        head_sha: "abc123",
+        dirty,
+      })
+    );
+    await client.start();
+    dirty = true;
+
+    await client.refreshContext();
+
+    const calls = openSessionCalls(fake);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].params.arguments).toEqual({
+      session_id: SESSION_ID,
+      branch: "main",
+      head_sha: "abc123",
+      dirty: true,
+    });
+    await client.dispose(100);
+  });
+
+  it("refreshContext is a no-op before the client has started", async () => {
+    const provider = vi.fn(() => ({ branch: "main" }));
+    const client = testClient(() => undefined, 30_000, "mindleak-mcp", provider);
+
+    await client.refreshContext();
+
+    expect(provider).not.toHaveBeenCalled();
+    expect(mockedSpawn).not.toHaveBeenCalled();
+  });
+
+  it("refreshContext is a no-op when the provider currently has no context", async () => {
+    const fake = fakeProcess({ exitOnEnd: true });
+    mockedSpawn.mockReturnValue(fake.process);
+    const client = testClient(); // default contextProvider returns undefined
+    await client.start();
+
+    await client.refreshContext();
+
+    expect(openSessionCalls(fake)).toHaveLength(1);
+    await client.dispose(100);
+  });
+});
+
 function testClient(
   log: (message: string) => void = () => undefined,
   timeout = 30_000,
-  command = "mindleak-mcp"
+  command = "mindleak-mcp",
+  contextProvider: SessionContextProvider = () => undefined
 ): McpClient {
-  return new McpClient(command, "/workspace", {}, SESSION_ID, log, timeout);
+  return new McpClient(command, "/workspace", {}, SESSION_ID, log, timeout, contextProvider);
 }
 
 function fakeProcess(options: {

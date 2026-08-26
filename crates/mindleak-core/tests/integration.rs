@@ -374,6 +374,64 @@ fn failed_execution_links_failed_on_edges_from_stack_trace() {
 }
 
 #[test]
+fn failed_on_edges_use_the_repo_relative_artifact_id_for_an_absolute_traceback() {
+    // Regression: `failed_on` edges took `parse_error_locations` output
+    // straight into an `artifact:` id without canonicalizing it against a
+    // known worktree root first, unlike `modified` edges and file ingest. An
+    // absolute Python traceback under this workspace's root must land on the
+    // same canonical id file ingestion would use, not a worktree-local
+    // duplicate.
+    let engine = MindLeak::open_in_memory()
+        .unwrap()
+        .with_workspace_root("C:/Users/lyndonswan/Repos/MindLeak");
+    engine
+        .ingest_execution(&exec(
+            "pytest",
+            1,
+            "File \"C:/Users/lyndonswan/Repos/MindLeak/src/lib.rs\", line 42",
+            &[],
+        ))
+        .unwrap();
+
+    assert!(engine
+        .store()
+        .get_node("artifact:src/lib.rs")
+        .unwrap()
+        .is_some());
+    assert!(engine
+        .store()
+        .get_node("artifact:C:/Users/lyndonswan/Repos/MindLeak/src/lib.rs")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn failed_on_edges_drop_a_location_that_remains_absolute() {
+    // A location outside every known root belongs to a checkout this server
+    // cannot place; it must not mint an artifact id under its raw absolute
+    // spelling, since that would split the real file across a second
+    // worktree-local identity (ADR-0038).
+    let engine = MindLeak::open_in_memory()
+        .unwrap()
+        .with_workspace_root("C:/Users/lyndonswan/Repos/MindLeak");
+    let outcome = engine
+        .ingest_execution(&exec(
+            "cargo build",
+            1,
+            "/home/agent/Repos/OtherRepo/src/lib.rs:42: error",
+            &[],
+        ))
+        .unwrap();
+
+    assert_eq!(outcome.nodes_created, 1); // execution node only
+    assert!(engine
+        .store()
+        .get_node("artifact:/home/agent/Repos/OtherRepo/src/lib.rs")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
 fn multi_hop_query_reaches_symbols_two_hops_out() {
     let engine = MindLeak::open_in_memory().unwrap();
     // file -> contains -> symbol
@@ -1344,6 +1402,7 @@ fn go_mod_requirements_ignore_replace_directives() {
 go 1.24
 
 require example.com/direct v1.2.3
+require golang.org/x/tools v0.1.0 // indirect
 require (
     github.com/stretchr/testify v1.10.0
     golang.org/x/sync v0.12.0 // indirect
@@ -1356,11 +1415,7 @@ exclude example.com/excluded v1.0.0
         .unwrap();
 
     let manifest = engine.multi_hop_query("artifact:go.mod", 1, 0.0).unwrap();
-    for package in [
-        "example.com/direct",
-        "github.com/stretchr/testify",
-        "golang.org/x/sync",
-    ] {
+    for package in ["example.com/direct", "github.com/stretchr/testify"] {
         assert!(manifest.edges.iter().any(|edge| {
             edge.relation == mindleak_core::RelationType::DependsOn
                 && edge.target_id == format!("package:{package}")
@@ -1369,6 +1424,23 @@ exclude example.com/excluded v1.0.0
     assert!(engine
         .store()
         .get_node("package:example.com/excluded")
+        .unwrap()
+        .is_none());
+    // Regression: `// indirect` marks a requirement Go added transitively, not
+    // one the module author declared. Treating it as direct (as the unfixed
+    // parser did, because it strips `//` comments before checking for the
+    // marker) contradicts the direct-only dependency contract and reports a
+    // transitive Go module as a direct project dependency.
+    assert!(engine
+        .store()
+        .get_node("package:golang.org/x/sync")
+        .unwrap()
+        .is_none());
+    // Same marker, single-line `require` form (outside the `require ( ... )`
+    // block) must be excluded too.
+    assert!(engine
+        .store()
+        .get_node("package:golang.org/x/tools")
         .unwrap()
         .is_none());
 }

@@ -75,6 +75,61 @@ describe("scoped-commit", () => {
     expect(result.stderr).toMatch(/staged paths are not yours/);
   }, 30_000);
 
+  it("commits a declared deletion without widening the staged scope", () => {
+    const repo = mkdtempSync(join(tmpdir(), "mindleak-scoped-commit-delete-"));
+    temporaryDirectories.push(repo);
+    git(repo, ["init", "-b", "main"]);
+    git(repo, ["config", "user.name", "Scoped Commit Delete Test"]);
+    git(repo, ["config", "user.email", "scoped-commit-delete@example.invalid"]);
+    writeFileSync(join(repo, "obsolete.txt"), "remove me\n");
+    writeFileSync(join(repo, "foreign.txt"), "another agent\n");
+    git(repo, ["add", "obsolete.txt", "foreign.txt"]);
+    git(repo, ["commit", "-m", "base"]);
+
+    rmSync(join(repo, "obsolete.txt"));
+    writeFileSync(join(repo, "foreign.txt"), "another agent's staged update\n");
+    git(repo, ["add", "foreign.txt"]);
+
+    const result = spawnSync(
+      process.execPath,
+      [scopedCommit, "-m", "remove obsolete file", "--", "obsolete.txt"],
+      { cwd: repo, encoding: "utf8", env: isolatedGitEnvironment() }
+    );
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(git(repo, ["show", "--name-status", "--format=", "HEAD"])).toContain("D\tobsolete.txt");
+    const removed = spawnSync("git", ["cat-file", "-e", "HEAD:obsolete.txt"], {
+      cwd: repo,
+      encoding: "utf8",
+      env: isolatedGitEnvironment(),
+    });
+    expect(removed.status).not.toBe(0);
+    expect(git(repo, ["diff", "--cached", "--name-only"])).toBe("foreign.txt");
+  }, 30_000);
+
+  it("accepts a declared deletion that was already staged before invocation", () => {
+    const repo = mkdtempSync(join(tmpdir(), "mindleak-scoped-commit-staged-delete-"));
+    temporaryDirectories.push(repo);
+    git(repo, ["init", "-b", "main"]);
+    git(repo, ["config", "user.name", "Scoped Commit Staged Delete Test"]);
+    git(repo, ["config", "user.email", "scoped-commit-staged-delete@example.invalid"]);
+    writeFileSync(join(repo, "obsolete.txt"), "remove me\n");
+    git(repo, ["add", "obsolete.txt"]);
+    git(repo, ["commit", "-m", "base"]);
+
+    rmSync(join(repo, "obsolete.txt"));
+    git(repo, ["add", "-A", "--", "obsolete.txt"]);
+
+    const result = spawnSync(
+      process.execPath,
+      [scopedCommit, "-m", "remove staged file", "--", "obsolete.txt"],
+      { cwd: repo, encoding: "utf8", env: isolatedGitEnvironment() }
+    );
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(git(repo, ["show", "--name-status", "--format=", "HEAD"])).toContain("D\tobsolete.txt");
+  }, 30_000);
+
   // gaps.d/scoped-commit-cannot-express-a-rename-whose-old-path.md: a staged
   // rename whose old side isn't in the declared path list. `git commit --
   // <pathspec>` reconstructs its tree from HEAD content for any path NOT
