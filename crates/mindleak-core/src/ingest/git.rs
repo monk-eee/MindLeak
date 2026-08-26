@@ -5,6 +5,7 @@ use crate::error::{MindLeakError, Result};
 use crate::graph::GraphStore;
 use crate::ingest::{clamp, is_ignored_path, repo_relative, short_hash};
 use crate::model::{Edge, Node, NodeType, RelationType};
+use crate::CommitResolver;
 
 /// A commit captured from git telemetry.
 #[derive(Debug, Clone)]
@@ -55,11 +56,18 @@ fn is_full_commit_sha(sha: &str) -> bool {
 /// `intent:007835a` and `intent:007835a1c979...` are two nodes competing to
 /// represent one event, and nothing downstream can tell they are the same
 /// commit. Case is normalised for the same reason.
+///
+/// `commit_exists` answers whether a hash names a real commit here. It is passed
+/// in rather than reached for: this module never shells out to git (invariant 1),
+/// and the shape check alone cannot catch a fabricated hash, because a fabricated
+/// hash is well formed by construction. `None` - no resolver, or a resolver that
+/// could not reach git - leaves the previous behaviour untouched.
 pub fn ingest_commit(
     store: &GraphStore,
     rec: &CommitRecord,
     now: i64,
     roots: &[&str],
+    commit_exists: Option<&CommitResolver<'_>>,
 ) -> Result<crate::graph::WriteOutcome> {
     let key = match rec.sha.as_deref() {
         Some(sha) => {
@@ -72,7 +80,16 @@ pub fn ingest_commit(
                      full hash"
                 )));
             }
-            sha.to_ascii_lowercase()
+            let sha = sha.to_ascii_lowercase();
+            if commit_exists.and_then(|resolves| resolves(&sha)) == Some(false) {
+                return Err(MindLeakError::InvalidArgument(format!(
+                    "sha {sha:?} is well formed but names no commit in this \
+                     checkout; provenance must cite a commit that exists, so \
+                     pass the exact output of `git rev-parse <ref>` rather than \
+                     a hash composed or recalled"
+                )));
+            }
+            sha
         }
         None => short_hash(&format!("{}|{}", rec.message, rec.timestamp)),
     };
@@ -142,7 +159,7 @@ mod tests {
             changed_files: vec!["src/lib.rs".to_string()],
             timestamp: 123,
         };
-        ingest_commit(&store, &record, 999, &[]).unwrap();
+        ingest_commit(&store, &record, 999, &[], None).unwrap();
 
         let graph = store
             .traverse(
@@ -180,13 +197,13 @@ mod tests {
             changed_files: vec!["src/lib.rs".to_string()],
             timestamp: 100,
         };
-        ingest_commit(&store, &full, 100, &[]).unwrap();
+        ingest_commit(&store, &full, 100, &[], None).unwrap();
 
         let abbreviated = CommitRecord {
             sha: Some(FULL_SHA[..7].to_string()),
             ..full.clone()
         };
-        let error = ingest_commit(&store, &abbreviated, 100, &[])
+        let error = ingest_commit(&store, &abbreviated, 100, &[], None)
             .expect_err("an abbreviated sha must be refused, not silently forked");
 
         assert!(
@@ -222,13 +239,13 @@ mod tests {
             changed_files: vec!["src/lib.rs".to_string()],
             timestamp: 100,
         };
-        ingest_commit(&store, &lower, 100, &[]).unwrap();
+        ingest_commit(&store, &lower, 100, &[], None).unwrap();
 
         let upper = CommitRecord {
             sha: Some(FULL_SHA.to_ascii_uppercase()),
             ..lower.clone()
         };
-        ingest_commit(&store, &upper, 100, &[]).unwrap();
+        ingest_commit(&store, &upper, 100, &[], None).unwrap();
 
         assert!(store
             .get_node(&format!("intent:{}", FULL_SHA.to_ascii_uppercase()))
@@ -251,7 +268,101 @@ mod tests {
             changed_files: vec!["src/lib.rs".to_string()],
             timestamp: 100,
         };
-        let outcome = ingest_commit(&store, &record, 100, &[]).unwrap();
+        let outcome = ingest_commit(&store, &record, 100, &[], None).unwrap();
         assert!(outcome.node_ids.iter().any(|id| id.starts_with("intent:")));
+    }
+
+    // Regression: a fabricated commit hash became a permanent phantom node.
+    //
+    // What went wrong: the shape check above passes any forty hex digits, and a
+    // fabricated hash is well formed by construction. On 2026-07-29 an agent
+    // holding the abbreviation `7b17243` composed the remaining thirty-three
+    // characters; the resulting intent node carried real `refactored` edges to
+    // real files and named a commit that has never existed.
+    //
+    // Impact: provenance that cannot be resolved back to anything, in a store
+    // with no verb that removes a node - the phantom stands until it decays.
+    //
+    // The fix: when a resolver is available, a well-formed hash that names no
+    // commit here is refused. Only git can draw that line, so the answer is
+    // injected rather than computed - this module still never spawns git.
+    #[test]
+    fn a_well_formed_sha_naming_no_commit_is_refused() {
+        let store = GraphStore::new(crate::db::open_in_memory().unwrap());
+        let record = CommitRecord {
+            sha: Some(FULL_SHA.to_string()),
+            message: "fix: cites a commit that does not exist".to_string(),
+            changed_files: vec!["src/lib.rs".to_string()],
+            timestamp: 100,
+        };
+        let knows_nothing = |_: &str| Some(false);
+
+        let error = ingest_commit(&store, &record, 100, &[], Some(&knows_nothing))
+            .expect_err("a hash naming no commit must be refused");
+
+        assert!(
+            matches!(error, MindLeakError::InvalidArgument(_)),
+            "expected a typed invalid-argument error, got {error:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("git rev-parse"),
+            "the error must name the command that produces a real value: {message}"
+        );
+        assert!(
+            store
+                .get_node(&format!("intent:{FULL_SHA}"))
+                .unwrap()
+                .is_none(),
+            "the phantom node must not have been written"
+        );
+    }
+
+    // Unknown is not "no". An absent git, or a workspace that is not a
+    // repository, must not be able to refuse a commit that is perfectly real -
+    // that would turn a missing tool into a total ingestion outage.
+    #[test]
+    fn a_resolver_that_cannot_answer_does_not_refuse() {
+        let store = GraphStore::new(crate::db::open_in_memory().unwrap());
+        let record = CommitRecord {
+            sha: Some(FULL_SHA.to_string()),
+            message: "fix: real work, unreachable git".to_string(),
+            changed_files: vec!["src/lib.rs".to_string()],
+            timestamp: 100,
+        };
+        let cannot_answer = |_: &str| None;
+
+        ingest_commit(&store, &record, 100, &[], Some(&cannot_answer))
+            .expect("an unanswerable check must degrade to the previous behaviour");
+
+        assert!(store
+            .get_node(&format!("intent:{FULL_SHA}"))
+            .unwrap()
+            .is_some());
+    }
+
+    // The resolver is asked about the same hash the node id is built from. Were
+    // it asked about the raw input instead, an upper-case hash would be looked
+    // up in a form git never prints, and the guard would refuse real commits.
+    #[test]
+    fn the_resolver_is_asked_about_the_normalised_hash() {
+        use std::sync::Mutex;
+
+        let store = GraphStore::new(crate::db::open_in_memory().unwrap());
+        let record = CommitRecord {
+            sha: Some(FULL_SHA.to_ascii_uppercase()),
+            message: "fix: upper case hash".to_string(),
+            changed_files: vec!["src/lib.rs".to_string()],
+            timestamp: 100,
+        };
+        let asked: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        let record_question = |sha: &str| {
+            asked.lock().unwrap().push(sha.to_string());
+            Some(true)
+        };
+
+        ingest_commit(&store, &record, 100, &[], Some(&record_question)).unwrap();
+
+        assert_eq!(asked.into_inner().unwrap(), vec![FULL_SHA.to_string()]);
     }
 }

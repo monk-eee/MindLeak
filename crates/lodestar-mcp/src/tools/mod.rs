@@ -624,12 +624,34 @@ const HEARTBEAT_ACTS: [ToolAct; 5] = [
 // should renew, that is an amendment to ADR-0029 with its own reasoning — not a
 // line added back to this array.
 
-/// Seconds a heartbeat extends a lease to. Deliberately the same as the default
-/// claim, so activity keeps a claim alive exactly as long as claiming it would —
-/// the short default is what frees a vanished agent's work quickly, and
-/// renewal-on-activity keeps that property instead of trading it away by raising
-/// the default.
-const HEARTBEAT_LEASE_SECS: i64 = 300;
+/// Default lease length, in seconds, for `claim`/`renew`/`recover`/`resume`/
+/// `answer` when a caller does not name `lease_secs` explicitly.
+///
+/// ADR-0052 (2026-07-27) kept this at 300s on the theory that renewal-on-
+/// activity would keep a working claim alive without needing a longer timer.
+/// Measured afterwards (ADR-0052 amendment, 2026-08-26): the heartbeat only
+/// fires on five specific Lodestar-side calls (`HEARTBEAT_ACTS`) — reading a
+/// task's scope, asking/answering a parked question, or checking conformance.
+/// None of those cover the dominant shape of real work: editing files,
+/// running a build or test suite, committing. Those never touch Lodestar at
+/// all, so the lease still lapses mid-task with no heartbeat in sight. That
+/// produced 27 measured lapses across 24 tasks and ~100 hours of work sitting
+/// under a dead lease (AGENTS.md), including the incident in
+/// gaps.d/rescuing-a-lapsed-lease-can-duplicate-a-published-pr.md, where a
+/// lapsed-but-finished task was rescued by a second agent and its already-
+/// published PR was duplicated.
+///
+/// 1800s (30 minutes) is chosen to comfortably outlast one realistic
+/// edit/build/test cycle between Lodestar touches, while `stalled`/
+/// `check_overlap` remain the mitigation for a genuinely wedged agent — a
+/// human can already see and abandon a stuck claim regardless of lease
+/// length, which is why raising this no longer trades away real safety.
+pub(super) const DEFAULT_LEASE_SECS: i64 = 1800;
+
+/// Seconds a heartbeat extends a lease to. Deliberately the same as the
+/// default claim (see `DEFAULT_LEASE_SECS`), so activity keeps a claim alive
+/// exactly as long as claiming it would.
+const HEARTBEAT_LEASE_SECS: i64 = DEFAULT_LEASE_SECS;
 
 /// Renew the lease on the task a call names, if the caller owns it (ADR-0052).
 ///
