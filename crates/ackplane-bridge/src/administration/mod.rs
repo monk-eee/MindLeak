@@ -29,6 +29,7 @@ use std::{
 use ackplane_server::administration_store::{
     AdministrationOperation, AdministrationScope, AdministrationStore, AdministrationStoreError,
 };
+use ackplane_server::claim_store::ClaimStore;
 use ackplane_server::export_provider::ExportProviderConfig;
 use ackplane_server::fleet::{FleetStore, RepositoryFreshness};
 use ackplane_server::snapshot_provider::SnapshotProviderConfig;
@@ -51,6 +52,9 @@ pub struct AdministrationApiState {
     pub fleet: Arc<FleetStore>,
     pub tenant_id: Arc<str>,
     pub administration: Arc<Mutex<AdministrationStore>>,
+    /// Enrolled-key verification and nonce consumption for destructive Lifecycle
+    /// purge transitions. Absent test states fail closed for signed mutations.
+    pub claims: Option<Arc<Mutex<ClaimStore>>>,
     /// `None` when `ACKPLANE_SNAPSHOT_DIR` is not configured -- Snapshot then
     /// reports `unavailable` rather than attempting to run `pg_dump` against
     /// a location nobody chose.
@@ -72,6 +76,25 @@ impl AdministrationApiState {
             fleet,
             tenant_id,
             administration,
+            claims: None,
+            snapshot,
+            export,
+        }
+    }
+
+    pub fn with_claims(
+        fleet: Arc<FleetStore>,
+        tenant_id: Arc<str>,
+        administration: Arc<Mutex<AdministrationStore>>,
+        claims: Arc<Mutex<ClaimStore>>,
+        snapshot: Option<Arc<SnapshotProviderConfig>>,
+        export: Option<Arc<ExportProviderConfig>>,
+    ) -> Self {
+        Self {
+            fleet,
+            tenant_id,
+            administration,
+            claims: Some(claims),
             snapshot,
             export,
         }
@@ -351,7 +374,9 @@ fn administration_error_status(error: AdministrationStoreError) -> StatusCode {
         | AdministrationStoreError::InvalidMaxRecords
         | AdministrationStoreError::InvalidSchemaVersion
         | AdministrationStoreError::InconsistentScope
-        | AdministrationStoreError::SelfConfirmationRefused => StatusCode::BAD_REQUEST,
+        | AdministrationStoreError::IncompleteConfirmationPrincipal => StatusCode::BAD_REQUEST,
+        AdministrationStoreError::SelfConfirmationRefused => StatusCode::FORBIDDEN,
+        AdministrationStoreError::LegacyPurgeRequestUnauthenticated => StatusCode::CONFLICT,
         AdministrationStoreError::UnknownPolicy { .. }
         | AdministrationStoreError::UnknownRequest { .. }
         | AdministrationStoreError::UnknownPurgeRequest { .. }

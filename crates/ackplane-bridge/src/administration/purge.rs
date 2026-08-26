@@ -7,9 +7,15 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use ackplane_protocol::{
+    purge_confirmation_auth::{lifecycle_purge_signing_bytes, LifecyclePurgeOperation},
+    v1,
+};
 use ackplane_server::administration_store::{
     PurgeDataCategory, PurgeOutcome, PurgePreviewRequest, PurgeReceipt, MAX_CONFIRMATION_WINDOW,
 };
+use ackplane_server::claim_signature::{self, ClaimAuthRefusal};
+use ackplane_server::signing_keys::{EnvelopeBinding, KeyResolution};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -32,6 +38,7 @@ pub(super) struct PreviewPurgeRequest {
     older_than_seconds: u64,
     confirmation_window_seconds: u64,
     idempotency_key: String,
+    authentication: SignedPurgeAuthentication,
 }
 
 #[derive(Serialize)]
@@ -51,25 +58,48 @@ pub(super) async fn preview_lifecycle_purge(
     Json(request): Json<PreviewPurgeRequest>,
 ) -> Result<Json<PurgePreviewResponse>, StatusCode> {
     ensure_repository_visible(&state, &repository_id).await?;
-    let data_category =
-        parse_data_category(&request.data_category).ok_or(StatusCode::BAD_REQUEST)?;
+    let PreviewPurgeRequest {
+        policy_id,
+        data_category,
+        older_than_seconds,
+        confirmation_window_seconds,
+        idempotency_key,
+        authentication,
+    } = request;
+    let data_category = parse_data_category(&data_category).ok_or(StatusCode::BAD_REQUEST)?;
     let older_than =
-        unix_seconds_to_system_time(request.older_than_seconds).ok_or(StatusCode::BAD_REQUEST)?;
-    let confirmation_window = Duration::from_secs(request.confirmation_window_seconds);
+        unix_seconds_to_system_time(older_than_seconds).ok_or(StatusCode::BAD_REQUEST)?;
+    let confirmation_window = Duration::from_secs(confirmation_window_seconds);
     if confirmation_window.is_zero() || confirmation_window > MAX_CONFIRMATION_WINDOW {
         return Err(StatusCode::BAD_REQUEST);
     }
 
     let now = SystemTime::now();
+    let principal = authenticate_purge_operation(
+        &state,
+        &repository_id,
+        &LifecyclePurgeOperation::Preview {
+            policy_id: &policy_id,
+            data_category: data_category_label(data_category),
+            older_than_seconds,
+            confirmation_window_seconds,
+            idempotency_key: &idempotency_key,
+        },
+        authentication,
+        now,
+    )
+    .await?;
     let preview_request = PurgePreviewRequest {
-        policy_id: request.policy_id,
-        requested_by: state.tenant_id.to_string(),
+        policy_id,
+        requested_by: principal.signing_key_id,
+        requesting_node_id: principal.node_id,
+        requesting_public_key_fingerprint: principal.public_key_fingerprint,
         tenant_id: state.tenant_id.to_string(),
         repository_id,
         data_category,
         older_than,
         confirmation_window,
-        idempotency_key: request.idempotency_key,
+        idempotency_key,
     };
     let mut administration = state.administration.lock().await;
     let outcome = administration
@@ -89,10 +119,35 @@ pub(super) async fn preview_lifecycle_purge(
 
 #[derive(Deserialize)]
 pub(super) struct ConfirmPurgeRequest {
-    /// Must be non-empty and differ from the requesting principal
-    /// (ADR-0119 decision 7): the same credential cannot both request and
-    /// confirm its own purge.
-    confirming_label: String,
+    authentication: SignedPurgeAuthentication,
+}
+
+/// An enrolled node's operation-bound proof for one Lifecycle-purge request.
+#[derive(Deserialize)]
+pub(super) struct SignedPurgeAuthentication {
+    signing_key_id: String,
+    node_id: String,
+    signed_at: String,
+    nonce: Vec<u8>,
+    signature: Vec<u8>,
+}
+
+impl SignedPurgeAuthentication {
+    fn into_claim_authentication(self) -> v1::ClaimAuthentication {
+        v1::ClaimAuthentication {
+            signing_key_id: self.signing_key_id,
+            node_id: self.node_id,
+            signed_at: self.signed_at,
+            nonce: self.nonce,
+            signature: self.signature,
+        }
+    }
+}
+
+struct PurgePrincipal {
+    signing_key_id: String,
+    node_id: String,
+    public_key_fingerprint: String,
 }
 
 #[derive(Serialize)]
@@ -102,7 +157,9 @@ pub(super) struct PurgeReceiptResponse {
     reason: String,
     rows_deleted: Option<i64>,
     occurred_at_seconds: Option<u64>,
-    confirming_label: Option<String>,
+    confirming_signing_key_id: Option<String>,
+    confirming_node_id: Option<String>,
+    confirming_public_key_fingerprint: Option<String>,
 }
 
 impl From<PurgeReceipt> for PurgeReceiptResponse {
@@ -113,7 +170,9 @@ impl From<PurgeReceipt> for PurgeReceiptResponse {
             reason: receipt.reason,
             rows_deleted: receipt.rows_deleted,
             occurred_at_seconds: unix_seconds(receipt.occurred_at),
-            confirming_label: receipt.confirming_label,
+            confirming_signing_key_id: receipt.confirming_signing_key_id,
+            confirming_node_id: receipt.confirming_node_id,
+            confirming_public_key_fingerprint: receipt.confirming_public_key_fingerprint,
         }
     }
 }
@@ -126,19 +185,34 @@ pub(super) async fn confirm_lifecycle_purge(
     ensure_repository_visible(&state, &repository_id).await?;
     let now = SystemTime::now();
     let mut administration = state.administration.lock().await;
-    // The request itself names its `requested_by` principal and
-    // `repository_id`; only the exact tenant and repository that made it may
-    // confirm it, mirroring `platform_snapshot_receipt`'s same rule.
     let request = administration
         .purge_request(&request_id)
         .await
         .map_err(administration_error_status)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    if request.requested_by != state.tenant_id.as_ref() || request.repository_id != repository_id {
+    if request.tenant_id != state.tenant_id.as_ref() || request.repository_id != repository_id {
         return Err(StatusCode::NOT_FOUND);
     }
+    drop(administration);
+    let principal = authenticate_purge_operation(
+        &state,
+        &repository_id,
+        &LifecyclePurgeOperation::Confirm {
+            request_id: &request_id,
+        },
+        body.authentication,
+        now,
+    )
+    .await?;
+    let mut administration = state.administration.lock().await;
     let receipt = administration
-        .confirm_purge(&request.request_id, &body.confirming_label, now)
+        .confirm_purge(
+            &request_id,
+            &principal.signing_key_id,
+            &principal.node_id,
+            &principal.public_key_fingerprint,
+            now,
+        )
         .await
         .map_err(administration_error_status)?;
     Ok(Json(receipt.into()))
@@ -150,22 +224,87 @@ pub(super) async fn lifecycle_purge_status(
 ) -> Result<Json<PurgeReceiptResponse>, StatusCode> {
     ensure_repository_visible(&state, &repository_id).await?;
     let mut administration = state.administration.lock().await;
-    // Same ownership rule as `confirm_lifecycle_purge` above: a request or
-    // receipt is only disclosed to the tenant/repository that made it.
+    // Receipt visibility stays tenant/repository-scoped. The requester identity
+    // is an enrolled key rather than the loopback tenant profile.
     let request = administration
         .purge_request(&request_id)
         .await
         .map_err(administration_error_status)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    if request.requested_by != state.tenant_id.as_ref() || request.repository_id != repository_id {
+    if request.tenant_id != state.tenant_id.as_ref() || request.repository_id != repository_id {
         return Err(StatusCode::NOT_FOUND);
     }
+
     let receipt = administration
         .purge_receipt_for_request(&request_id)
         .await
         .map_err(administration_error_status)?
         .ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(receipt.into()))
+}
+
+async fn authenticate_purge_operation(
+    state: &AdministrationApiState,
+    repository_id: &str,
+    operation: &LifecyclePurgeOperation<'_>,
+    authentication: SignedPurgeAuthentication,
+    now: SystemTime,
+) -> Result<PurgePrincipal, StatusCode> {
+    let authentication = authentication.into_claim_authentication();
+    let claims = state
+        .claims
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let binding = EnvelopeBinding {
+        signing_key_id: &authentication.signing_key_id,
+        tenant_id: state.tenant_id.as_ref(),
+        repository_id,
+        producer_id: &authentication.node_id,
+        accepted_at: now,
+    };
+    let bytes = lifecycle_purge_signing_bytes(
+        state.tenant_id.as_ref(),
+        repository_id,
+        operation,
+        &authentication,
+    );
+    let mut claims = claims.lock().await;
+    let resolution = claims
+        .resolve_signing_key(&binding)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "Bridge Lifecycle purge signing-key lookup failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let public_key_fingerprint = match &resolution {
+        KeyResolution::Resolved(record) => record.public_key_fingerprint.clone(),
+        _ => String::new(),
+    };
+    claim_signature::verify_signed_bytes(&authentication, &resolution, &bytes, now)
+        .map_err(purge_authentication_status)?;
+    let consumed = claims
+        .consume_claim_nonce(&authentication.signing_key_id, &authentication.nonce, now)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "Bridge Lifecycle purge nonce write failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if !consumed {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    Ok(PurgePrincipal {
+        signing_key_id: authentication.signing_key_id,
+        node_id: authentication.node_id,
+        public_key_fingerprint,
+    })
+}
+
+fn purge_authentication_status(refusal: ClaimAuthRefusal) -> StatusCode {
+    if refusal.is_authenticated_but_not_authorized() {
+        StatusCode::FORBIDDEN
+    } else {
+        StatusCode::UNAUTHORIZED
+    }
 }
 
 async fn ensure_repository_visible(
