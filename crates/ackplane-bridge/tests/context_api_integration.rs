@@ -11,11 +11,14 @@ use std::{
 
 use ackplane_bridge::context_api::{context_routes, ContextApiState};
 use ackplane_protocol::context_packet::{
-    ContextItemKind, ContextPacket, ContextPacketScope, ContextPacketSource,
-    ContextPacketUseReceipt, ContextPacketUseStatus, ContextSelection, ContextSelectionReason,
-    ContextTokenBudget,
+    ContextFreshness, ContextItemKind, ContextItemScope, ContextPacket, ContextPacketScope,
+    ContextPacketSource, ContextPacketUseReceipt, ContextPacketUseStatus, ContextProvenance,
+    ContextSelectionReason, CONTEXT_PACKET_PROTOCOL_VERSION,
 };
 use ackplane_server::{
+    context_packet_compiler::{
+        compile_context_packet, ContextPacketCandidate, ContextPacketCompilationRequest,
+    },
     context_packet_store::ContextPacketStore,
     enrollment::{activation_challenge_bytes, public_key_fingerprint},
     enrollment_store::{
@@ -148,37 +151,128 @@ fn packet(
     issued_at: i64,
     expires_at: i64,
 ) -> ContextPacket {
-    ContextPacket {
-        packet_id: format!("packet:{label}"),
-        scope: ContextPacketScope {
-            tenant_id: tenant_id.to_string(),
-            repository_id: repository_id.to_string(),
-            task_id: format!("task:{label}"),
-            goal_id: "goal:context-inspection".to_string(),
-            agent_session_id: format!("session:{label}"),
+    let scope = ContextPacketScope {
+        tenant_id: tenant_id.to_string(),
+        repository_id: repository_id.to_string(),
+        task_id: format!("task:{label}"),
+        goal_id: "goal:context-inspection".to_string(),
+        agent_session_id: format!("session:{label}"),
+    };
+    let required = |item_id: &str, item_kind: ContextItemKind, reason: ContextSelectionReason| {
+        ContextPacketCandidate {
+            item_id: item_id.to_string(),
+            item_kind,
+            source_reference: format!("source:{item_id}"),
+            source_scope: ContextItemScope {
+                tenant_id: scope.tenant_id.clone(),
+                repository_id: scope.repository_id.clone(),
+                project_id: Some("project:context-inspection".to_string()),
+                task_id: Some(scope.task_id.clone()),
+                goal_id: Some(scope.goal_id.clone()),
+            },
+            provenance: ContextProvenance {
+                recorded_by: "context-api-integration".to_string(),
+                recorded_at: issued_at,
+                evidence_reference: Some(format!("evidence:{item_id}")),
+            },
+            freshness: ContextFreshness {
+                observed_at: issued_at,
+                expires_at: Some(expires_at),
+            },
+            source_version: "v2".to_string(),
+            rendered: format!("bounded rendering for {item_id}"),
+            reason,
+            estimated_tokens: 1,
+            relevance: 0,
+        }
+    };
+    let private_knowledge = ContextPacketCandidate {
+        item_id: "knowledge:private".to_string(),
+        item_kind: ContextItemKind::Knowledge,
+        source_reference: "source:private-context-material".to_string(),
+        source_scope: ContextItemScope {
+            tenant_id: scope.tenant_id.clone(),
+            repository_id: scope.repository_id.clone(),
+            project_id: Some("project:context-inspection".to_string()),
+            task_id: Some(scope.task_id.clone()),
+            goal_id: Some(scope.goal_id.clone()),
         },
-        compiler_version: "context-compiler:v1".to_string(),
+        provenance: ContextProvenance {
+            recorded_by: "context-api-integration".to_string(),
+            recorded_at: issued_at,
+            evidence_reference: Some("evidence:private-context-material".to_string()),
+        },
+        freshness: ContextFreshness {
+            observed_at: issued_at,
+            expires_at: Some(expires_at),
+        },
+        source_version: "v2".to_string(),
+        rendered: "private context material must not reach the browser".to_string(),
+        reason: ContextSelectionReason::SemanticSimilarity,
+        estimated_tokens: 600,
+        relevance: 80,
+    };
+    let mandatory = vec![
+        required(
+            "identity",
+            ContextItemKind::TargetIdentity,
+            ContextSelectionReason::RequiredTargetIdentity,
+        ),
+        required(
+            "task-lease",
+            ContextItemKind::TaskLease,
+            ContextSelectionReason::RequiredTaskLease,
+        ),
+        required(
+            "objective",
+            ContextItemKind::Objective,
+            ContextSelectionReason::RequiredObjective,
+        ),
+        required(
+            "acceptance",
+            ContextItemKind::Acceptance,
+            ContextSelectionReason::RequiredAcceptance,
+        ),
+        required(
+            "constitution",
+            ContextItemKind::Constitution,
+            ContextSelectionReason::RequiredConstitution,
+        ),
+        required(
+            "policy",
+            ContextItemKind::Policy,
+            ContextSelectionReason::RequiredPolicy,
+        ),
+        required(
+            "safety",
+            ContextItemKind::SafetyControl,
+            ContextSelectionReason::RequiredSafetyControl,
+        ),
+        required(
+            "evidence-condition",
+            ContextItemKind::EvidenceCondition,
+            ContextSelectionReason::RequiredEvidenceCondition,
+        ),
+    ];
+
+    compile_context_packet(ContextPacketCompilationRequest {
+        packet_id: format!("packet:{label}"),
+        protocol_version: CONTEXT_PACKET_PROTOCOL_VERSION.to_string(),
+        scope,
+        project_id: Some("project:context-inspection".to_string()),
+        compiler_version: "context-compiler:v2".to_string(),
         issued_at,
         expires_at,
         source: ContextPacketSource {
             ledger_position: 42,
             projection_position: 41,
         },
-        token_budget: ContextTokenBudget {
-            requested: 1_000,
-            used: 600,
-        },
-        selected: vec![ContextSelection {
-            item_id: "knowledge:private".to_string(),
-            item_kind: ContextItemKind::Knowledge,
-            source_reference: "source:private-context-material".to_string(),
-            source_version: "v1".to_string(),
-            reason: ContextSelectionReason::SemanticSimilarity,
-            estimated_tokens: 20,
-            mandatory: false,
-        }],
-        excluded: vec![],
-    }
+        token_budget: 1_000,
+        mandatory,
+        optional: vec![private_knowledge],
+        rejected: vec![],
+    })
+    .expect("Bridge test fixture must compile")
 }
 
 #[tokio::test]
