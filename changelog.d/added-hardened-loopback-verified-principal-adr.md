@@ -1,0 +1,3 @@
+### Added
+
+- Added proposed ADR-0128, refining ADR-0119 decision 2: for a self-hosted, single-tenant Ackplane deployment, the existing hardened loopback developer profile (ADR-0098's salt-derived tenant token) satisfies the "verified principal" requirement for privileged Industrial administration classes (snapshot, export, recovery execution, lifecycle purge), unblocking their implementation without waiting on OIDC. Multi-tenant Ackplane is unaffected and still requires ADR-0098 decision 4's OIDC before enabling them. Also documented the Administration Bridge route in `docs/ARCHITECTURE.md`, which had shipped undocumented.

@@ -15,17 +15,20 @@ use ackplane_bridge::shared_assets::shared_asset_routes;
 use ackplane_bridge::supervisor_api::{supervisor_routes, SupervisorApiState};
 use ackplane_bridge::work_api::{work_routes, WorkApiState};
 use ackplane_bridge::BridgeConfig;
+use ackplane_server::administration_store::AdministrationStore;
 use ackplane_server::claim_store::ClaimStore;
 use ackplane_server::constitution_store::ConstitutionStore;
 use ackplane_server::context_packet_store::ContextPacketStore;
 use ackplane_server::delegation_store::DelegationStore;
 use ackplane_server::design_materialization_store::MaterializationStore;
 use ackplane_server::design_store::DesignStore;
+use ackplane_server::export_provider::ExportProviderConfig;
 use ackplane_server::fleet::{FleetStore, RepositoryFreshness};
 use ackplane_server::knowledge_store::KnowledgeStore;
 use ackplane_server::live_feed_store::LiveFeedStore;
 use ackplane_server::projection::Projector;
 use ackplane_server::readiness::ReadinessStore;
+use ackplane_server::snapshot_provider::SnapshotProviderConfig;
 use ackplane_server::supervisor_store::SupervisorStore;
 use ackplane_server::telemetry_store::TelemetryStore;
 use ackplane_server::work_store::WorkStore;
@@ -221,6 +224,30 @@ async fn main() {
             return;
         }
     };
+    let administration_store = match AdministrationStore::connect(config.database_url()).await {
+        Ok(administration) => Arc::new(Mutex::new(administration)),
+        Err(error) => {
+            eprintln!(
+                "ackplane-bridge: could not connect to Ackplane's Administration domain: {error}"
+            );
+            return;
+        }
+    };
+    // `None` (Snapshot reports `unavailable`) unless an operator has opted in
+    // by setting `ACKPLANE_SNAPSHOT_DIR` -- resolved, never guessed, the same
+    // rule `BridgeConfig::resolve` already applies to its own settings.
+    let snapshot_config = SnapshotProviderConfig::resolve(
+        |key| std::env::var(key).ok(),
+        config.database_url().to_string(),
+    )
+    .map(Arc::new);
+    // Same "refuse, never guess" rule as Snapshot: `None` unless an operator
+    // has set `ACKPLANE_EXPORT_DIR`.
+    let export_config = ExportProviderConfig::resolve(
+        |key| std::env::var(key).ok(),
+        config.database_url().to_string(),
+    )
+    .map(Arc::new);
     let tenant_id: Arc<str> = Arc::from(config.development_tenant_token.clone());
     let evidence_api_state =
         EvidenceApiState::new(evidence_store, fleet_store.clone(), tenant_id.clone());
@@ -237,8 +264,13 @@ async fn main() {
         DelegationApiState::new(delegation_store, fleet_store.clone(), tenant_id.clone());
     let work_api_state =
         WorkApiState::new(work_store.clone(), fleet_store.clone(), tenant_id.clone());
-    let administration_api_state =
-        AdministrationApiState::new(fleet_store.clone(), tenant_id.clone());
+    let administration_api_state = AdministrationApiState::new(
+        fleet_store.clone(),
+        tenant_id.clone(),
+        administration_store,
+        snapshot_config,
+        export_config,
+    );
     let live_feed_api_state =
         LiveFeedApiState::new(live_feed_store, fleet_store.clone(), tenant_id.clone());
     let design_api_state = DesignApiState::new(
