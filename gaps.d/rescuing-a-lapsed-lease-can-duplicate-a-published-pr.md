@@ -31,3 +31,35 @@
   so a rescuer who ignores the printed warning can still reproduce this exact
   incident. Remains open whether it should escalate further (e.g. refusing
   without an explicit override) once this advisory has been observed in use.
+
+  NARROWED 2026-08-26 — the guard's coverage boundary is ADOPTION, and the
+  rescuer is not always someone else. Same incident shape, reached by a path
+  the guard cannot see: one agent resumed its OWN worktree, on its OWN branch,
+  after a context compaction. Its lease had lapsed, and its own PR (#748) was
+  already pushed with auto-merge armed. Nothing was adopted, so
+  `--adopt-worktree` never ran and its `gh pr list` check never fired. The
+  agent then ran `git log --all -S <symbol> -- <file>`, which returned nothing
+  for a symbol that branch's own pushed commit adds; combined with `git status`
+  showing the files as modified, that read as "this was never committed", and
+  a duplicate changelog fragment was committed onto the armed PR. Caught before
+  the push and reverted with `git reset --mixed HEAD~1`, so the cost was one
+  commit rather than a restarted check run on an armed branch.
+
+  So the duplicate does not require two agents, only two contexts — and a
+  compaction reliably supplies the second. The three signals that made the
+  first incident visible (a different owner, an unfamiliar worktree, an
+  adoption step to hang a check on) are all absent here.
+
+  OPEN, and the residual is detection rather than enforcement. The two checks
+  that do settle it are cheap and need no adoption step: `gh pr list --head
+  <branch> --state all`, and the network-free `git log --oneline
+  origin/main..origin/<branch>`. Neither is wired into any gate — `scoped-
+  commit.mjs` is deliberately git-only and network-free, so adding a `gh` call
+  to every commit is not obviously the right trade, and "this branch has an
+  open PR" is far too common to warn on unconditionally. A narrower trigger
+  worth considering is an ARMED pull request specifically, since "armed means
+  finished" (ADR-0045) makes a new commit there rare and genuinely worth
+  questioning. Recording the boundary rather than guessing the mechanism.
+  What is settled: `git status` plus a pickaxe miss is not evidence that work
+  is unpublished — those answer whether the tree differs from HEAD, not
+  whether the branch already shipped it.
