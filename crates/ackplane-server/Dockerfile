@@ -11,9 +11,13 @@
 #     -t ackplane-server .
 
 # Pinned by tag and digest (ADR-0088 clause 4). Matches the workspace's
-# declared `rust-version = "1.85"` floor in the root Cargo.toml, which is the
-# first stable release that parses Edition 2024 dependency manifests.
-FROM rust:1.85-slim-bookworm@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36 AS builder
+# declared `rust-version` floor in the root Cargo.toml. That floor is 1.88
+# because the locked dependency graph requires it - `time` and `time-core`
+# both declare `rust-version = "1.88"` - not because this crate uses anything
+# newer than Edition 2024. Raise both together: this image is the only place
+# the declared floor is actually compiled against, since CI installs
+# `dtolnay/rust-toolchain@stable`.
+FROM rust:1.88-slim-bookworm@sha256:38bc5a86d998772d4aec2348656ed21438d20fcdce2795b56ca434cf21430d89 AS builder
 
 WORKDIR /build
 COPY . .

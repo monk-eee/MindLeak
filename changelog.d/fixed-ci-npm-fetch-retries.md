@@ -1,0 +1,1 @@
+- **CI now retries transient npm package-fetch failures before failing dependency installation.** Bounded fetch retry settings apply consistently across the extension, Local Planes, Coverage, and reference-consumer jobs, preventing short-lived registry 503s from blocking unrelated pull requests.

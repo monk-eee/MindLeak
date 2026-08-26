@@ -22,7 +22,10 @@ version = "0.1.7-alpha"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/monk-eee/MindLeak"
-rust-version = "1.85"
+# Set by the locked dependency graph, not by this workspace's own syntax:
+# `time`/`time-core` declare 1.88. Raise this and the Dockerfile's pinned base
+# together, or the container build breaks while CI stays green on stable.
+rust-version = "1.88"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

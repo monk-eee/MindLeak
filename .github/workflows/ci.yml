@@ -16,6 +16,12 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # The hosted npm proxy can return short-lived 503s during `npm ci`. Keep
+  # retries bounded and platform-neutral so a transient fetch outage does not
+  # fail an otherwise unrelated Windows or Linux verification job.
+  NPM_CONFIG_FETCH_RETRIES: "5"
+  NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "10000"
+  NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "60000"
 
 jobs:
   # The backstop for silently stranded work. A merged pull request whose commits
@@ -144,6 +150,20 @@ jobs:
         env:
           HTTP_PROXY: http://127.0.0.1:9
           HTTPS_PROXY: http://127.0.0.1:9
+
+  ackplane-image:
+    name: Ackplane server image (the standalone deployment path)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The only job that compiles against the workspace's declared
+      # `rust-version` floor. Every other job installs
+      # `dtolnay/rust-toolchain@stable`, so a dependency raising its own MSRV
+      # breaks the standalone deployment while CI stays entirely green — which
+      # is exactly how the pinned 1.85 base became unbuildable without anyone
+      # noticing. Building the image is the only thing that catches it.
+      - name: Build the server image
+        run: docker build -f crates/ackplane-server/Dockerfile -t ackplane-server:ci .
 
   extension:
     name: VS Code extension (lint · compile)
