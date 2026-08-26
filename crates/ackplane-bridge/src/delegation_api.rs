@@ -6,7 +6,8 @@ use ackplane_server::{
     delegation_store::{
         DelegatedAction, DelegationEvent, DelegationEventKind, DelegationEventPayload,
         DelegationListCursor, DelegationProjection, DelegationProjectionStatus, DelegationStore,
-        DelegationStoreError,
+        DelegationStoreError, DelegationUseError, DelegationUseReceipt, DelegationUseReceiptCursor,
+        DelegationUseRefusal, DelegationUseStatus,
     },
     fleet::FleetStore,
 };
@@ -54,6 +55,10 @@ pub fn delegation_routes(state: DelegationApiState) -> Router {
         .route(
             "/api/v1/repositories/:repository_id/delegations/:delegation_id/history",
             get(delegation_history),
+        )
+        .route(
+            "/api/v1/repositories/:repository_id/delegations/:delegation_id/use-receipts",
+            get(delegation_use_receipts),
         )
         .with_state(state)
 }
@@ -116,6 +121,38 @@ struct DelegationEventResponse {
     resulting_version: u32,
     recorded_at_seconds: Option<u64>,
     reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct DelegationUseReceiptQuery {
+    limit: Option<i64>,
+    after_receipt_id: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct DelegationUseReceiptListResponse {
+    entries: Vec<DelegationUseReceiptResponse>,
+    effective_limit: i64,
+    next_after_receipt_id: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct DelegationUseReceiptResponse {
+    receipt_id: u64,
+    delegation_id: String,
+    issuer_principal_id: String,
+    delegatee_session_id: String,
+    project_id: Option<String>,
+    task_id: Option<String>,
+    goal_id: String,
+    policy_version: String,
+    constitution_version: String,
+    action: &'static str,
+    reserved_token_budget: u32,
+    delegation_version: u32,
+    status: &'static str,
+    refusal_reason: Option<&'static str>,
+    recorded_at_seconds: Option<u64>,
 }
 
 async fn delegations_page() -> Html<&'static str> {
@@ -205,6 +242,48 @@ async fn delegation_history(
     }))
 }
 
+async fn delegation_use_receipts(
+    State(state): State<DelegationApiState>,
+    Path((repository_id, delegation_id)): Path<(String, String)>,
+    Query(query): Query<DelegationUseReceiptQuery>,
+) -> Result<Json<DelegationUseReceiptListResponse>, StatusCode> {
+    ensure_repository_visible(&state, &repository_id).await?;
+    state
+        .delegations
+        .get(state.tenant_id.as_ref(), &repository_id, &delegation_id)
+        .await
+        .map_err(delegation_store_error)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let effective_limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    let after = match query.after_receipt_id {
+        None => None,
+        Some(receipt_id) if receipt_id > 0 && i64::try_from(receipt_id).is_ok() => {
+            Some(DelegationUseReceiptCursor { receipt_id })
+        }
+        Some(_) => return Err(StatusCode::BAD_REQUEST),
+    };
+    let page = state
+        .delegations
+        .list_use_receipts(
+            state.tenant_id.as_ref(),
+            &repository_id,
+            &delegation_id,
+            after.as_ref(),
+            effective_limit,
+        )
+        .await
+        .map_err(delegation_use_error)?;
+    Ok(Json(DelegationUseReceiptListResponse {
+        entries: page
+            .entries
+            .into_iter()
+            .map(DelegationUseReceiptResponse::from)
+            .collect(),
+        effective_limit: page.effective_limit,
+        next_after_receipt_id: page.next_after.map(|cursor| cursor.receipt_id),
+    }))
+}
+
 impl DelegationResponse {
     fn from_projection(projection: DelegationProjection, now: SystemTime) -> Self {
         let state = projection_state(&projection, now);
@@ -254,6 +333,28 @@ impl From<DelegationEvent> for DelegationEventResponse {
     }
 }
 
+impl From<DelegationUseReceipt> for DelegationUseReceiptResponse {
+    fn from(receipt: DelegationUseReceipt) -> Self {
+        Self {
+            receipt_id: receipt.receipt_id,
+            delegation_id: receipt.delegation_id,
+            issuer_principal_id: receipt.issuer_principal_id,
+            delegatee_session_id: receipt.delegatee_session_id,
+            project_id: receipt.project_id,
+            task_id: receipt.task_id,
+            goal_id: receipt.goal_id,
+            policy_version: receipt.policy_version,
+            constitution_version: receipt.constitution_version,
+            action: action_label(receipt.action),
+            reserved_token_budget: receipt.reserved_token_budget,
+            delegation_version: receipt.delegation_version,
+            status: use_status_label(receipt.status),
+            refusal_reason: receipt.refusal_reason.map(use_refusal_label),
+            recorded_at_seconds: unix_seconds(receipt.recorded_at),
+        }
+    }
+}
+
 async fn ensure_repository_visible(
     state: &DelegationApiState,
     repository_id: &str,
@@ -274,6 +375,11 @@ async fn ensure_repository_visible(
 
 fn delegation_store_error(error: DelegationStoreError) -> StatusCode {
     tracing::error!(%error, "Bridge delegation query failed");
+    StatusCode::INTERNAL_SERVER_ERROR
+}
+
+fn delegation_use_error(error: DelegationUseError) -> StatusCode {
+    tracing::error!(%error, "Bridge delegation-use query failed");
     StatusCode::INTERNAL_SERVER_ERROR
 }
 
@@ -301,6 +407,28 @@ fn event_kind_label(kind: DelegationEventKind) -> &'static str {
     match kind {
         DelegationEventKind::Granted => "granted",
         DelegationEventKind::Revoked => "revoked",
+    }
+}
+
+fn use_status_label(status: DelegationUseStatus) -> &'static str {
+    match status {
+        DelegationUseStatus::Authorized => "authorized",
+        DelegationUseStatus::Refused => "refused",
+    }
+}
+
+fn use_refusal_label(refusal: DelegationUseRefusal) -> &'static str {
+    match refusal {
+        DelegationUseRefusal::DelegateeSessionMismatch => "delegatee_session_mismatch",
+        DelegationUseRefusal::ScopeMismatch => "scope_mismatch",
+        DelegationUseRefusal::PolicyBasisMismatch => "policy_basis_mismatch",
+        DelegationUseRefusal::ConstitutionBasisMismatch => "constitution_basis_mismatch",
+        DelegationUseRefusal::NotYetEffective => "not_yet_effective",
+        DelegationUseRefusal::Expired => "expired",
+        DelegationUseRefusal::Revoked => "revoked",
+        DelegationUseRefusal::ActionNotAllowed => "action_not_allowed",
+        DelegationUseRefusal::ActionLimitExceeded => "action_limit_exceeded",
+        DelegationUseRefusal::TokenBudgetExceeded => "token_budget_exceeded",
     }
 }
 

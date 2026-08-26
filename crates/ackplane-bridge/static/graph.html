@@ -21,8 +21,8 @@
     .zoom { position:absolute; right:10px; bottom:10px; display:flex; gap:6px; } .zoom button { width:30px; height:30px; border:1px solid var(--line); border-radius:6px; background:var(--surface); color:var(--ink); cursor:pointer; line-height:1; }
     .node { cursor:pointer; } .node circle { stroke:var(--surface); stroke-width:1.5; } .node.selected circle { stroke:var(--ink); stroke-width:2.5; } .node text { font-size:9px; fill:var(--muted); pointer-events:none; }
     .detail { padding:15px; display:grid; gap:13px; } .detail.empty { color:var(--quiet); min-height:200px; align-content:center; text-align:center; } .detail h3 { margin:0; font-size:.95rem; word-break:break-all; } .facts { display:grid; gap:9px; } .fact { display:grid; gap:2px; } .fact span { color:var(--quiet); font-size:.68rem; letter-spacing:.07em; text-transform:uppercase; } .fact b { font-weight:600; font-size:.82rem; word-break:break-all; } .detail button { padding:8px 14px; border:1px solid var(--line); border-radius:6px; background:var(--soft); color:var(--ink); font-weight:600; cursor:pointer; }
-    .neighbours { display:grid; gap:6px; max-height:210px; overflow:auto; } .neighbour { display:flex; justify-content:space-between; gap:10px; padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:var(--soft); font-size:.76rem; cursor:pointer; } .neighbour span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .neighbour b { color:var(--muted); font-weight:600; font-variant-numeric:tabular-nums; }
-    .legend { display:flex; flex-wrap:wrap; gap:8px 16px; margin:14px 2px 0; color:var(--muted); font-size:.76rem; } .legend span { display:inline-flex; align-items:center; gap:6px; } .legend i { width:10px; height:10px; border-radius:50%; display:inline-block; }
+    .neighbours { display:grid; gap:6px; max-height:210px; overflow:auto; } .neighbour { display:flex; justify-content:space-between; align-items:center; gap:10px; width:100%; text-align:left; padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:var(--soft); color:var(--ink); font-size:.76rem; cursor:pointer; } .neighbour span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .neighbour b { color:var(--muted); font-weight:600; font-variant-numeric:tabular-nums; flex:none; }
+    .legend { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:14px 2px 0; color:var(--muted); font-size:.76rem; } .legend button { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border:1px solid var(--line); border-radius:999px; background:var(--surface); color:var(--ink); font-size:.74rem; cursor:pointer; } .legend button[aria-pressed="false"] { opacity:.42; text-decoration:line-through; } .legend i { width:10px; height:10px; border-radius:50%; display:inline-block; flex:none; } .legend b { font-variant-numeric:tabular-nums; font-weight:600; color:var(--muted); } .legend .note { display:inline-flex; align-items:center; gap:6px; }
     .hidden { display:none !important; } @media (max-width:900px) { .layout { grid-template-columns:1fr; } .toolbar { grid-template-columns:1fr 1fr; } .toolbar button { grid-column:1 / -1; } }
   </style>
 </head>
@@ -46,7 +46,7 @@
       <div class="canvas"><svg id="stage" role="img" aria-label="Projected context graph"><g id="scene"><g id="edges"></g><g id="nodes"></g></g></svg><p class="empty-note" id="empty">Nothing rendered yet.</p><div class="zoom"><button type="button" id="zoom-in" aria-label="Zoom in">+</button><button type="button" id="zoom-out" aria-label="Zoom out">&minus;</button><button type="button" id="zoom-fit" aria-label="Fit to view">&#9633;</button></div></div>
       <div class="panel detail empty" id="detail">Select a node to inspect it.</div>
     </div>
-    <div class="legend" id="legend"></div>
+    <div class="legend" id="legend" role="group" aria-label="Filter node types"></div>
   </main>
   <script>
     const els={form:document.getElementById("controls"),repo:document.getElementById("repository"),seeds:document.getElementById("seeds"),depth:document.getElementById("depth"),maxNodes:document.getElementById("max_nodes"),maxFanout:document.getElementById("max_fanout"),message:document.getElementById("message"),projection:document.getElementById("projection"),stage:document.getElementById("stage"),scene:document.getElementById("scene"),edgeLayer:document.getElementById("edges"),nodeLayer:document.getElementById("nodes"),detail:document.getElementById("detail"),empty:document.getElementById("empty"),legend:document.getElementById("legend")};
@@ -55,7 +55,23 @@
     const params=new URLSearchParams(location.search);
     els.repo.value=params.get("repository")||params.get("repository_id")||"";
     if(params.get("seeds"))els.seeds.value=params.get("seeds");
-    let view={nodes:[],edges:[]},selected=null,frame=null,settled=0,camera={x:0,y:0,k:1},drag=null;
+    // A deep link carries its own bounds, so a caller can hand over a focused
+    // view rather than whatever this page happened to default to.
+    [["depth",els.depth],["max_nodes",els.maxNodes],["max_fanout",els.maxFanout]].forEach(([name,input])=>{
+      // Presence is checked on the raw string: Number(null) is 0, not NaN, so
+      // coercing first would read an ABSENT bound as zero and clamp the
+      // control to its minimum instead of leaving its default alone.
+      const raw=params.get(name);
+      if(raw===null||raw.trim()==="")return;
+      const value=Number(raw);
+      if(!Number.isFinite(value))return;
+      input.value=String(Math.min(Number(input.max),Math.max(Number(input.min),Math.trunc(value))));
+    });
+    let view={nodes:[],edges:[]},selected=null,frame=null,settled=0,camera={x:0,y:0,k:1},drag=null,projection=null;
+    const hiddenKinds=new Set();
+    const visibleNode=node=>!hiddenKinds.has(kindOf(node.node_type));
+    const visibleIds=()=>new Set(view.nodes.filter(visibleNode).map(node=>node.node_id));
+    const visibleEdges=shown=>view.edges.filter(edge=>shown.has(edge.source_id)&&shown.has(edge.target_id));
 
     const escape=value=>String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
     const when=seconds=>Number.isFinite(seconds)?new Date(seconds*1000).toLocaleString():"unknown";
@@ -65,17 +81,42 @@
     const message=(text,isError=false)=>{els.message.textContent=text;els.message.classList.toggle("error",isError)};
     const endpoint=()=>`/api/v1/repositories/${encodeURIComponent(els.repo.value.trim())}/graph`;
 
-    els.legend.innerHTML=KINDS.map(kind=>`<span><i style="background:${colour(kind)}"></i>${escape(kind.replace("_"," "))}</span>`).join("")+`<span><i style="background:var(--muted);height:2px;border-radius:0;width:16px"></i>edge opacity and width follow effective weight, so decay is visible</span>`;
+    // The legend doubles as the filter: a type you can see named is a type you
+    // can switch off, and the counts come from the rendered view rather than
+    // the vocabulary, so an absent type never offers a control that does
+    // nothing.
+    function drawLegend(){
+      const counts=new Map();
+      view.nodes.forEach(node=>{const kind=kindOf(node.node_type);counts.set(kind,(counts.get(kind)||0)+1)});
+      const present=KINDS.filter(kind=>counts.has(kind));
+      els.legend.innerHTML=(present.length?present:KINDS).map(kind=>{
+        const shown=!hiddenKinds.has(kind);
+        return `<button type="button" data-kind="${escape(kind)}" aria-pressed="${shown}"><i style="background:${colour(kind)}"></i>${escape(kind.replace("_"," "))}<b>${counts.get(kind)||0}</b></button>`;
+      }).join("")+`<span class="note"><i style="background:var(--muted);height:2px;border-radius:0;width:16px"></i>edge opacity and width follow effective weight, so decay is visible</span>`;
+    }
+    els.legend.addEventListener("click",event=>{
+      const button=event.target.closest("button[data-kind]");
+      if(!button)return;
+      const kind=button.dataset.kind;
+      if(hiddenKinds.has(kind))hiddenKinds.delete(kind);else hiddenKinds.add(kind);
+      if(selected&&hiddenKinds.has(kindOf(selected.node_type))){selected=null;renderDetail()}
+      drawLegend();build();paint();drawCounts();
+    });
 
     // The endpoint returns the projection's own ledger position and rebuild time
     // precisely so a stale projection is legible rather than silently old.
     function drawProjection(data){
-      const position=data.projection_stream_position,at=data.projected_at_seconds;
+      if(data)projection=data;
+      if(!projection)return;
+      const position=projection.projection_stream_position,at=projection.projected_at_seconds;
       if(position===null||position===undefined){els.projection.innerHTML=`<span class="stale">This repository has no projection yet &mdash; nothing has been rebuilt from its ledger.</span>`;return}
       const ageHours=Number.isFinite(at)?(Date.now()/1000-at)/3600:null;
       const stale=ageHours!==null&&ageHours>24;
-      els.projection.innerHTML=`<span>Ledger position <b>${escape(position)}</b></span><span${stale?' class="stale"':""}>Projected <b>${escape(when(at))}</b>${stale?" &mdash; over a day old":""}</span><span>Showing <b>${view.nodes.length}</b> nodes, <b>${view.edges.length}</b> edges</span>`;
+      const nodes=view.nodes.filter(visibleNode).length,edges=visibleEdges(visibleIds()).length;
+      const filtered=nodes!==view.nodes.length||edges!==view.edges.length;
+      els.projection.innerHTML=`<span>Ledger position <b>${escape(position)}</b></span><span${stale?' class="stale"':""}>Projected <b>${escape(when(at))}</b>${stale?" &mdash; over a day old":""}</span><span>Showing <b>${nodes}</b> nodes, <b>${edges}</b> edges${filtered?` of ${view.nodes.length}/${view.edges.length}`:""}</span>`;
     }
+    const drawCounts=()=>drawProjection();
 
     async function load(seedOverride){
       if(!els.form.reportValidity())return;
@@ -89,9 +130,9 @@
         const data=await response.json();
         view={nodes:(data.nodes||[]).map(node=>({...node,x:0,y:0,vx:0,vy:0})),edges:data.edges||[]};
         selected=null;renderDetail();
-        seedLayout();build();drawProjection(data);
+        seedLayout();drawLegend();build();
         for(let i=0;i<320;i+=1)step();
-        fit();start();
+        fit();drawProjection(data);start();
         els.empty.classList.toggle("hidden",view.nodes.length>0);
         if(!view.nodes.length){message("The projection holds no nodes for this repository yet.");return}
         message(seeds?`Seeded from ${seeds.split(",").length} node(s).`:"Seeded from the most recently touched nodes.");
@@ -142,7 +183,12 @@
 
     function build(){
       els.edgeLayer.innerHTML="";els.nodeLayer.innerHTML="";
-      const ordered=[...view.edges].sort((a,b)=>weight(a)-weight(b));
+      // A filtered-out node keeps its simulated position but loses its element,
+      // so paint() must never hold a reference into a previous build.
+      view.nodes.forEach(node=>{node.element=null});
+      view.edges.forEach(edge=>{edge.element=null});
+      const shown=visibleIds();
+      const ordered=visibleEdges(shown).sort((a,b)=>weight(a)-weight(b));
       ordered.forEach(edge=>{
         const line=document.createElementNS(SVG,"line");const w=weight(edge);
         line.setAttribute("stroke","var(--muted)");
@@ -152,8 +198,9 @@
         const title=document.createElementNS(SVG,"title");title.textContent=`${edge.source_id} --${edge.relation}--> ${edge.target_id} (effective weight ${w.toFixed(3)})`;
         line.appendChild(title);els.edgeLayer.appendChild(line);edge.element=line;
       });
-      const showAll=view.nodes.length<=40;
-      view.nodes.forEach(node=>{
+      const drawn=view.nodes.filter(visibleNode);
+      const showAll=drawn.length<=40;
+      drawn.forEach(node=>{
         const group=document.createElementNS(SVG,"g");group.setAttribute("class","node");group.dataset.id=node.node_id;
         const circle=document.createElementNS(SVG,"circle");
         circle.setAttribute("r",String(node.depth===0?9:Math.max(4,7-node.depth)));
@@ -189,8 +236,9 @@
     // camera to coordinates the simulation is about to leave behind, which
     // parks the whole graph off-screen -- so settle first, then fit.
     function fit(){
-      if(!view.nodes.length){camera={x:els.stage.clientWidth/2,y:els.stage.clientHeight/2,k:1};paint();return}
-      const xs=view.nodes.map(node=>node.x),ys=view.nodes.map(node=>node.y);
+      const drawn=view.nodes.filter(visibleNode);
+      if(!drawn.length){camera={x:els.stage.clientWidth/2,y:els.stage.clientHeight/2,k:1};paint();return}
+      const xs=drawn.map(node=>node.x),ys=drawn.map(node=>node.y);
       const minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys);
       const width=els.stage.clientWidth||760,height=els.stage.clientHeight||520,pad=54;
       camera.k=Math.max(0.25,Math.min(2,Math.min((width-pad*2)/Math.max(maxX-minX,1),(height-pad*2)/Math.max(maxY-minY,1))));
@@ -208,7 +256,7 @@
         +`<div class="fact"><span>Depth from seed</span><b>${escape(selected.depth)}</b></div>`
         +`<div class="fact"><span>Edges in view</span><b>${links.length}</b></div></div>`
         +`<button type="button" id="reseed">Re-seed traversal from here</button>`
-        +(links.length?`<div class="neighbours">${links.slice(0,40).map(edge=>{const other=edge.source_id===selected.node_id?edge.target_id:edge.source_id;const arrow=edge.source_id===selected.node_id?"\u2192":"\u2190";return `<div class="neighbour" data-id="${escape(other)}"><span>${arrow} ${escape(edge.relation)} \u00b7 ${escape(other)}</span><b>${weight(edge).toFixed(3)}</b></div>`}).join("")}</div>`:"");
+        +(links.length?`<div class="neighbours">${links.slice(0,40).map(edge=>{const other=edge.source_id===selected.node_id?edge.target_id:edge.source_id;const arrow=edge.source_id===selected.node_id?"\u2192":"\u2190";return `<button type="button" class="neighbour" data-id="${escape(other)}"><span>${arrow} ${escape(edge.relation)} \u00b7 ${escape(other)}</span><b>${weight(edge).toFixed(3)}</b></button>`}).join("")}</div>`:"");
       const reseed=document.getElementById("reseed");
       if(reseed)reseed.addEventListener("click",()=>{els.seeds.value=selected.node_id;load(selected.node_id)});
       els.detail.querySelectorAll(".neighbour").forEach(row=>row.addEventListener("click",()=>select(row.dataset.id)));
