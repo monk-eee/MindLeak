@@ -114,6 +114,10 @@ pub(crate) mod key {
     /// the time this was drafted -- checked via `migration-audit.mjs` and a
     /// direct `gh pr view` before picking this number, not guessed.
     pub(crate) const CONSTITUTION_PROPOSALS: i64 = 38;
+    /// `migrations/0044_delegation_use_receipts.sql`. Key 43 reached the
+    /// shared development database after this slice first audited it; a second
+    /// audit plus a live-ledger check confirmed 44 was the next safe key.
+    pub(crate) const DELEGATION_USE_RECEIPTS: i64 = 44;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

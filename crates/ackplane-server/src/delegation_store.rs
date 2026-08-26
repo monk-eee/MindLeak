@@ -13,6 +13,7 @@ use tokio_postgres::{Client, NoTls};
 const MIGRATION: &str = include_str!("../migrations/0022_human_delegation.sql");
 const EVENT_PAYLOAD_MIGRATION: &str =
     include_str!("../migrations/0023_human_delegation_event_payloads.sql");
+const USE_RECEIPT_MIGRATION: &str = include_str!("../migrations/0044_delegation_use_receipts.sql");
 pub(super) const PROJECTION_COLUMNS: &str =
     "delegation_id, issuer_principal_id, delegatee_session_id, \
     project_id, task_id, goal_id, goal_digest, policy_version, policy_digest, \
@@ -25,11 +26,16 @@ pub(super) const EVENT_COLUMNS: &str = "delegation_id, stream_position, event_ki
     max_actions_per_session, source_protocol_version, effective_at, expires_at, revocation_reason, \
     expected_prior_version, resulting_version, idempotency_key, payload_digest, schema_version, recorded_at";
 
+mod authorization;
 mod model;
 mod read;
 mod replay;
 
 pub use ackplane_protocol::delegation::DelegatedAction;
+pub use authorization::{
+    DelegationUseError, DelegationUseOutcome, DelegationUseReceipt, DelegationUseReceiptCursor,
+    DelegationUseReceiptPage, DelegationUseRefusal, DelegationUseRequest, DelegationUseStatus,
+};
 pub use model::{
     DelegationEvent, DelegationEventKind, DelegationEventPayload, DelegationGrantPayload,
     DelegationGrantRequest, DelegationOutcome, DelegationProjection, DelegationProjectionStatus,
@@ -82,6 +88,12 @@ impl DelegationStore {
             &mut client,
             crate::migration_lock::key::HUMAN_DELEGATION_EVENT_PAYLOADS,
             EVENT_PAYLOAD_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::DELEGATION_USE_RECEIPTS,
+            USE_RECEIPT_MIGRATION,
         )
         .await?;
         Ok(Self { client })

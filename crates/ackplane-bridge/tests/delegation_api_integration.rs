@@ -6,7 +6,10 @@ use std::{sync::Arc, time::SystemTime};
 use ackplane_bridge::delegation_api::{delegation_routes, DelegationApiState};
 use ackplane_protocol::delegation::DelegatedAction;
 use ackplane_server::{
-    delegation_store::{DelegationGrantRequest, DelegationRevocationRequest, DelegationStore},
+    delegation_store::{
+        DelegationGrantRequest, DelegationProjection, DelegationRevocationRequest, DelegationStore,
+        DelegationUseRequest,
+    },
     enrollment::{activation_challenge_bytes, public_key_fingerprint},
     enrollment_store::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
@@ -137,6 +140,30 @@ fn grant_request(tenant_id: &str, repository_id: &str, label: &str) -> Delegatio
     }
 }
 
+fn use_request(
+    tenant_id: &str,
+    repository_id: &str,
+    projection: &DelegationProjection,
+    idempotency_key: &str,
+) -> DelegationUseRequest {
+    DelegationUseRequest {
+        tenant_id: tenant_id.to_string(),
+        repository_id: repository_id.to_string(),
+        delegation_id: projection.delegation_id.clone(),
+        delegatee_session_id: projection.delegatee_session_id.clone(),
+        project_id: projection.project_id.clone(),
+        task_id: projection.task_id.clone(),
+        goal_id: projection.goal_id.clone(),
+        policy_version: projection.policy_version.clone(),
+        policy_digest: projection.policy_digest.clone(),
+        constitution_version: projection.constitution_version.clone(),
+        constitution_digest: projection.constitution_digest.clone(),
+        action: DelegatedAction::RetrieveContext,
+        reserved_token_budget: 20,
+        idempotency_key: idempotency_key.to_string(),
+    }
+}
+
 async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
     let delegations = Arc::new(
         DelegationStore::connect(database_url)
@@ -183,6 +210,29 @@ async fn delegation_view_projects_authority_and_history_without_cross_tenant_or_
         .grant(grant_request(&tenant_id, &repository_id, "active"))
         .await
         .expect("grant active delegation");
+    let authorized_use = store
+        .authorize_use(
+            use_request(
+                &tenant_id,
+                &repository_id,
+                &active.projection,
+                &format!("delegation-api-use-authorized-{unique}"),
+            ),
+            SystemTime::now(),
+        )
+        .await
+        .expect("authorize active delegation use");
+    let mut refused_use = use_request(
+        &tenant_id,
+        &repository_id,
+        &active.projection,
+        &format!("delegation-api-use-refused-{unique}"),
+    );
+    refused_use.delegatee_session_id = "session:v1:outside-delegation".to_string();
+    let refused_use = store
+        .authorize_use(refused_use, SystemTime::now())
+        .await
+        .expect("record refused delegation use");
     let revoked = store
         .revoke(DelegationRevocationRequest {
             tenant_id: tenant_id.clone(),
@@ -386,6 +436,86 @@ async fn delegation_view_projects_authority_and_history_without_cross_tenant_or_
         assert!(entry.get("payload").is_none());
         assert!(entry.get("payload_digest").is_none());
     }
+
+    let first_use_page = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/repositories/{repository_id}/delegations/{}/use-receipts?limit=1",
+                    active.projection.delegation_id
+                ))
+                .body(Body::empty())
+                .expect("build delegation use receipt request"),
+        )
+        .await
+        .expect("serve delegation use receipt request");
+    assert_eq!(first_use_page.status(), StatusCode::OK);
+    let first_use_page = body_json(first_use_page).await;
+    assert_eq!(first_use_page["effective_limit"], json!(1));
+    assert_eq!(first_use_page["entries"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        first_use_page["entries"][0]["receipt_id"],
+        json!(authorized_use.receipt.receipt_id)
+    );
+    assert_eq!(first_use_page["entries"][0]["status"], json!("authorized"));
+    assert_eq!(
+        first_use_page["next_after_receipt_id"],
+        json!(authorized_use.receipt.receipt_id)
+    );
+    assert!(
+        !first_use_page
+            .to_string()
+            .contains("delegation-api-use-authorized"),
+        "Bridge must never expose delegation-use idempotency identities"
+    );
+    assert!(first_use_page["entries"][0].get("payload_digest").is_none());
+    assert!(first_use_page["entries"][0].get("policy_digest").is_none());
+    assert!(first_use_page["entries"][0]
+        .get("constitution_digest")
+        .is_none());
+
+    let second_use_page = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/repositories/{repository_id}/delegations/{}/use-receipts?limit=1&after_receipt_id={}",
+                    active.projection.delegation_id,
+                    authorized_use.receipt.receipt_id
+                ))
+                .body(Body::empty())
+                .expect("build second delegation use receipt request"),
+        )
+        .await
+        .expect("serve second delegation use receipt request");
+    assert_eq!(second_use_page.status(), StatusCode::OK);
+    let second_use_page = body_json(second_use_page).await;
+    assert_eq!(
+        second_use_page["entries"][0]["receipt_id"],
+        json!(refused_use.receipt.receipt_id)
+    );
+    assert_eq!(second_use_page["entries"][0]["status"], json!("refused"));
+    assert_eq!(
+        second_use_page["entries"][0]["refusal_reason"],
+        json!("delegatee_session_mismatch")
+    );
+    assert_eq!(second_use_page["next_after_receipt_id"], Value::Null);
+
+    let malformed_use_cursor = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/repositories/{repository_id}/delegations/{}/use-receipts?after_receipt_id=0",
+                    active.projection.delegation_id
+                ))
+                .body(Body::empty())
+                .expect("build malformed delegation use receipt request"),
+        )
+        .await
+        .expect("serve malformed delegation use receipt request");
+    assert_eq!(malformed_use_cursor.status(), StatusCode::BAD_REQUEST);
 
     let foreign = application(&database_url, &format!("foreign-{tenant_id}")).await;
     for (method, route, expected) in [
