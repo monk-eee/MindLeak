@@ -2,7 +2,7 @@
 // transiently. npm's fetch retry loop helps individual requests, but a proxy
 // outage can outlast it and leave the whole installation half-written.
 //
-// Platform-agnostic: resolve npm's JavaScript CLI from Node's own installation.
+// Platform-agnostic: resolve npm's JavaScript CLI from Node's installation.
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 
@@ -37,14 +37,16 @@ export function npmExitCode(result) {
   return typeof result.status === "number" ? result.status : 1;
 }
 
-export function npmCliPath(nodeExecutable = process.execPath) {
-  return join(
-    dirname(nodeExecutable),
-    "node_modules",
-    "npm",
-    "bin",
-    "npm-cli.js",
-  );
+export function npmCliPath(
+  nodeExecutable = process.execPath,
+  platform = process.platform,
+) {
+  const npmRoot =
+    platform === "win32"
+      ? dirname(nodeExecutable)
+      : join(dirname(nodeExecutable), "..", "lib");
+
+  return join(npmRoot, "node_modules", "npm", "bin", "npm-cli.js");
 }
 
 export function runNpmCi({

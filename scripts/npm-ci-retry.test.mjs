@@ -24,10 +24,14 @@ test("recognizes only known transient npm network failures", () => {
   assert.equal(isTransientNpmFailure(result(0, "npm error code E503")), false);
 });
 
-test("resolves npm's JavaScript CLI beside the Node executable", () => {
+test("resolves npm's JavaScript CLI from each supported Node layout", () => {
   assert.match(
-    npmCliPath("C:/tool/node.exe").replace(/\\/g, "/"),
+    npmCliPath("C:/tool/node.exe", "win32").replace(/\\/g, "/"),
     /C:\/tool\/node_modules\/npm\/bin\/npm-cli\.js$/,
+  );
+  assert.equal(
+    npmCliPath("/tool/bin/node", "linux").replace(/\\/g, "/"),
+    "/tool/lib/node_modules/npm/bin/npm-cli.js",
   );
 });
 
