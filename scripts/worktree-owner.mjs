@@ -63,6 +63,16 @@ export function refusalMessage({ owner, session }) {
 const capture = (args, cwd) =>
   execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
+// Deliberately not the trimming `capture` above: `.trim()` on a multi-line
+// `git status --porcelain` result strips only the very start and end of the
+// whole string, which eats the first line's leading status-code space and
+// shifts every subsequent slice on that line by one column. Reproduced for
+// real: " M tracked.txt\n?? x.sql" trims to "M tracked.txt\n?? x.sql", and
+// slicing the (now one-column-short) first line at a fixed offset silently
+// drops its leading character.
+const captureUntrimmed = (args, cwd) =>
+  execFileSync("git", args, { cwd, encoding: "utf8" });
+
 const ghCapture = (args, cwd) =>
   execFileSync("gh", args, { cwd, encoding: "utf8" }).trim();
 
@@ -127,6 +137,70 @@ export function existingPullRequestWarning({ branch, checked, pullRequests }) {
   );
 }
 
+// The adopt path's only pre-flight was a *remote* lookup (the PR check
+// above), and that leaves local state completely unconsulted -- an
+// ownership-transfer command whose only safety check is a remote lookup will
+// happily take *local* work, because the two are independent
+// (gaps.d/adopt-worktree-takes-a-peers-uncommitted-work.md). Observed for
+// real: a worktree left clean and idle after a claim refusal was adopted by
+// a peer who began writing there; roughly twenty minutes later its original
+// creator ran --adopt-worktree believing it was still their own idle
+// worktree, and the peer's five modified files plus one untracked migration
+// were about to transfer ownership silently -- caught only because `git
+// switch` in the same command happened to refuse for an unrelated reason.
+// `git status --porcelain` sees exactly that: staged, unstaged, and
+// untracked changes alike, with no dependency on what branch or commit is
+// checked out.
+export function checkWorkingTreeDirty({
+  cwd = process.cwd(),
+  capture: gitCall = captureUntrimmed,
+} = {}) {
+  let raw;
+  try {
+    raw = gitCall(["status", "--porcelain"], cwd);
+  } catch {
+    return { checked: false, paths: [] };
+  }
+  const paths = raw
+    .split("\n")
+    .map((line) => line.replace(/\r$/, ""))
+    .filter((line) => line.length > 0)
+    // `git status --porcelain` prefixes each line with a two-character status
+    // code and a space; trimming the whole line first would eat a leading
+    // space status (e.g. " M path") and shift this slice, so only the
+    // extracted path itself is trimmed.
+    .map((line) => line.slice(3).trim());
+  return { checked: true, paths };
+}
+
+/// Render the dirty-tree pre-flight as a message for the rescuer, or `null`
+/// when there is nothing to say. Pure, so every case is testable without git.
+///
+/// Deliberately advisory, exactly like `existingPullRequestWarning`: a
+/// worktree can be genuinely, legitimately dirty at handover (mid-fix,
+/// waiting on a human decision), and refusing outright would break the
+/// rescue case gaps.d/rescuing-a-lapsed-lease-can-duplicate-a-published-pr.md
+/// exists to support. The point is to make an invisible transfer loud, not
+/// to gate it -- tightening this into a refusal is the ADR-sized decision
+/// the gap fragment names and defers.
+export function dirtyWorkingTreeWarning({ checked, paths }) {
+  if (!checked) {
+    return (
+      "worktree-owner: could not check whether this worktree has uncommitted changes\n" +
+      "  (git status failed) -- adopting anyway. Verify by hand: git status"
+    );
+  }
+  if (!paths || paths.length === 0) return null;
+  const named = paths.slice(0, 10).join(", ");
+  const more = paths.length > 10 ? ` (+${paths.length - 10} more)` : "";
+  return (
+    `worktree-owner: this worktree has uncommitted changes: ${named}${more}\n` +
+    "  Adopting it can take over a peer's live, unfinished work rather than a genuinely\n" +
+    "  idle worktree (gaps.d/adopt-worktree-takes-a-peers-uncommitted-work.md). Confirm\n" +
+    "  no one else is actively writing here before committing."
+  );
+}
+
 /// Resolve the verdict for a working tree, recording ownership when it is
 /// unclaimed. Returns the verdict so callers decide how loudly to fail.
 export function checkWorktreeOwnership({
@@ -169,11 +243,13 @@ if (
   const verdict = checkWorktreeOwnership({ adopt });
   if (adopt) {
     const branch = capture(["branch", "--show-current"], process.cwd());
-    const warning = existingPullRequestWarning({
+    const prWarning = existingPullRequestWarning({
       branch,
       ...checkExistingPullRequests({ branch }),
     });
-    if (warning) console.error(warning);
+    if (prWarning) console.error(prWarning);
+    const dirtyWarning = dirtyWorkingTreeWarning(checkWorkingTreeDirty());
+    if (dirtyWarning) console.error(dirtyWarning);
   }
   if (verdict.action === "refuse") {
     if (isPostCheckout) {
