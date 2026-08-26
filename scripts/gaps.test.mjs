@@ -7,12 +7,14 @@ import { test } from "node:test";
 
 import {
   ageDays,
-  hasTaskLink,
   isFragmentName,
   parseFirstAddedLog,
   readFragments,
   render,
   renderTriage,
+  trackingStatusesFromBoard,
+  trackingTaskId,
+  trackingTaskIds,
   triageReport,
 } from "./gaps.mjs";
 
@@ -130,18 +132,49 @@ test("trailing whitespace is trimmed so joined output cannot drift", () => {
 
 // --- Reliability scorecard: backlog age + task linkage ---------------------
 
-test("a task reference is recognized by its task:<12 hex> shape, case-insensitively", () => {
-  assert.equal(hasTaskLink("no reference here"), false);
-  assert.equal(hasTaskLink("tracked under task:5ec2bab72a0a already"), true);
+test("only an explicit tracking metadata line names a current task", () => {
+  assert.equal(trackingTaskId("no reference here"), null);
   assert.equal(
-    hasTaskLink("tracked under TASK:5EC2BAB72A0A already"),
-    true,
-    "case-insensitive",
+    trackingTaskId("historical incident task:5ec2bab72a0a is already done"),
+    null,
+    "incident prose is not a current repair commitment",
   );
   assert.equal(
-    hasTaskLink("task:tooshort"),
-    false,
-    "must be exactly 12 hex digits",
+    trackingTaskId("Tracking: TASK:5EC2BAB72A0A"),
+    "task:5ec2bab72a0a",
+    "case-insensitive",
+  );
+  assert.equal(trackingTaskId("Tracking: task:tooshort"), null);
+});
+
+test("trackingTaskIds deduplicates only explicit metadata", () => {
+  const gaps = [
+    { body: "task:aaaaaaaaaaaa was historical\nTracking: task:bbbbbbbbbbbb" },
+    { body: "Tracking: task:bbbbbbbbbbbb" },
+    { body: "no current task" },
+  ];
+  assert.deepEqual(trackingTaskIds(gaps), ["task:bbbbbbbbbbbb"]);
+});
+
+test("trackingStatusesFromBoard retains requested task statuses and rejects unreadable boards", () => {
+  const tracked = ["task:aaaaaaaaaaaa", "task:bbbbbbbbbbbb"];
+  const statuses = trackingStatusesFromBoard(tracked, {
+    tasks: [
+      { id: "task:aaaaaaaaaaaa", status: "claimed" },
+      { id: "task:cccccccccccc", status: "done" },
+      { id: "task:bbbbbbbbbbbb", status: "done" },
+    ],
+  });
+  assert.deepEqual(
+    [...statuses],
+    [
+      ["task:aaaaaaaaaaaa", "claimed"],
+      ["task:bbbbbbbbbbbb", "done"],
+    ],
+  );
+  assert.throws(
+    () => trackingStatusesFromBoard(tracked, "not a board"),
+    /unreadable task board/,
   );
 });
 
@@ -183,12 +216,12 @@ test("triageReport sorts oldest-first, counts orphans, and reports median/oldest
   const gaps = [
     {
       name: "young.md",
-      body: "- **Recent — OPEN.** tracked by task:aaaaaaaaaaaa.",
+      body: "- **Recent — OPEN.**\n\nTracking: task:aaaaaaaaaaaa",
     },
     { name: "old.md", body: "- **Ancient — OPEN.** no task yet." },
     {
       name: "middle.md",
-      body: "- **Mid-age — OPEN.** tracked by task:bbbbbbbbbbbb.",
+      body: "- **Mid-age — OPEN.**\n\nTracking: task:bbbbbbbbbbbb",
     },
   ];
   const nowMs = 10 * 86_400_000;
@@ -198,7 +231,15 @@ test("triageReport sorts oldest-first, counts orphans, and reports median/oldest
     "gaps.d/middle.md": 5 * 86_400, // 5 days old
   };
 
-  const report = triageReport(gaps, firstSeen, nowMs);
+  const report = triageReport(
+    gaps,
+    firstSeen,
+    nowMs,
+    new Map([
+      ["task:aaaaaaaaaaaa", "claimed"],
+      ["task:bbbbbbbbbbbb", "done"],
+    ]),
+  );
 
   assert.deepEqual(
     report.rows.map((row) => row.name),
@@ -206,8 +247,12 @@ test("triageReport sorts oldest-first, counts orphans, and reports median/oldest
     "oldest first",
   );
   assert.equal(report.total, 3);
-  assert.equal(report.withTaskLink, 2);
-  assert.equal(report.orphaned, 1);
+  assert.equal(report.withLiveTracking, 1);
+  assert.equal(
+    report.orphaned,
+    2,
+    "a terminal tracking task is not a live repair",
+  );
   assert.equal(report.oldestAgeDays, 10);
   assert.equal(report.medianAgeDays, 5);
 });
@@ -234,19 +279,20 @@ test("renderTriage prints every row plus the three summary numbers", () => {
       { name: "old.md", body: "- **Ancient — OPEN.** no task yet." },
       {
         name: "new.md",
-        body: "- **Recent — OPEN.** tracked by task:aaaaaaaaaaaa.",
+        body: "- **Recent — OPEN.**\n\nTracking: task:aaaaaaaaaaaa",
       },
     ],
     { "gaps.d/old.md": 0, "gaps.d/new.md": 86_400 },
     2 * 86_400_000,
+    new Map([["task:aaaaaaaaaaaa", "claimed"]]),
   );
 
   const text = renderTriage(report);
 
-  assert.match(text, /2d\s+task=no\s+old\.md/);
-  assert.match(text, /1d\s+task=yes\s+new\.md/);
+  assert.match(text, /2d\s+task=none\s+old\.md/);
+  assert.match(text, /1d\s+task=live\s+new\.md/);
   assert.match(text, /total: 2 open fragment\(s\)/);
-  assert.match(text, /tracked by a task: 1 \(1 orphaned/);
+  assert.match(text, /tracked by a live task: 1 \(1 orphaned/);
   // For an even-sized backlog the upper-middle observed age is reported
   // (never an interpolated fraction of a day), so [1, 2] medians to 2.
   assert.match(text, /oldest: 2 day\(s\); median: 2 day\(s\)/);
