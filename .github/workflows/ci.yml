@@ -16,6 +16,12 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # The hosted npm proxy can return short-lived 503s during `npm ci`. Keep
+  # retries bounded and platform-neutral so a transient fetch outage does not
+  # fail an otherwise unrelated Windows or Linux verification job.
+  NPM_CONFIG_FETCH_RETRIES: "5"
+  NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "10000"
+  NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "60000"
 
 jobs:
   # The backstop for silently stranded work. A merged pull request whose commits
