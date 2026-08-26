@@ -617,6 +617,19 @@ claim lifecycle, and ledger records remain behind Ackplane's typed service
 boundaries. Current routes, each 404 on a repository the tenant has not
 enrolled rather than leaking a distinguishable error:
 
+`administration.rs` is the ADR-0105 decision 6 "Backup / export / reset" parity
+row, scoped by ADR-0119's accepted policy rather than a mechanical copy of the
+VSIX's `mindleak.backup`/`mindleak.export`/`mindleak.resetMemory` commands.
+Status/inspection (projection freshness, ledger position, and a durability
+report that stays `not_reported` rather than inferring health from a missing
+published record) and ADR-0111's claim recovery are the only capabilities the
+loopback developer profile can authorize today; snapshot, export, recovery
+execution, and lifecycle purge are reported `refused`/`unavailable` with the
+missing authorization named, because ADR-0119 requires a verified principal
+and an adopted policy before any of those privileged classes may run, and the
+current profile has neither. Reaching that policy basis, not this route
+table, is what unblocks them.
+
 | Route | Serves |
 |---|---|
 | `GET /` | The Fleet page (static HTML/JS). |
@@ -640,6 +653,8 @@ enrolled rather than leaking a distinguishable error:
 | `GET /constitution` | A static, visible-refresh-only tenant Constitution page. It renders the selected repository's published version, source/digest provenance, and bounded clauses through the existing constitution endpoint, plus (ADR-0126) a propose-a-clause form and a rendered pending/withdrawn proposal list; it does not inspect local Lodestar storage, and every mutation it can make targets the proposals sub-resource above, never the published constitution endpoint itself. |
 | `GET /api/v1/repositories/:repository_id/telemetry` | Its per-name current health (`TelemetryStore::read`, ADR-0105 decision 6) — lifetime `calls`/`errors` alongside `currently_failing`, derived from the most recent success/error rather than the lifetime count, so a resolved past error stops reading as an active fault once a later call succeeds. Rendered as tenant-scoped health cards, grouped by kind, at `GET /telemetry` (static HTML/JS), including bounded bucketed sparkline history and a newest-first diagnostic sample of at most 50 recent accepted telemetry events from the same authoritative store. |
 | `POST /api/v1/repositories/:repository_id/tasks/:task_id/recover` | Bridge's first claim **mutation** (ADR-0111): recovers a stranded claim by calling `ClaimStore::recover` directly, tenant-scoped and reason-required. `delegate`, `release`, and `renew` remain node-signed-only and are not exposed here. The handler resolves `expected_owner` itself via the new `FleetStore::claim_owner` (unlike `active_work`, this does not filter out an already-expired lease), rather than trusting a caller-supplied value. |
+| `GET /administration` | The Administration page (static HTML/JS): tenant-scoped status, the operation-capability list, and — only when `claim_recovery` reports `available` — the stranded-claim recovery workflow above, reusing the same `/stranded-claims` and `/recover` routes rather than a second implementation. |
+| `GET /api/v1/repositories/:repository_id/administration/status` | ADR-0119's status/inspection class: projection freshness and ledger position (`FleetStore::repository`), an honestly `not_reported` durability report, and the fixed six-operation capability list (`status_inspection`, `snapshot`, `export`, `claim_recovery`, `recovery_inspection`, `lifecycle_purge`) naming which are available, refused, or unavailable and why under the current loopback profile. |
 | `GET /static/shared/chrome.css` / `GET /static/shared/chrome.js` | The one shared brand-mark and grouped-nav asset every static page loads (ADR-0124), served by `shared_assets.rs` with the correct `Content-Type`. `chrome.js`'s `NAV_ITEMS` is the single declared list of every ADR-0105 decision 5 capability; `chrome.css` styles it through six neutral `--chrome-*` custom properties that each page bridges onto its own palette. A page's entire brand/nav footprint is two mount points (`[data-bridge-brand]`, `[data-bridge-nav]`) plus these two tags — never its own copy of the nav's markup, CSS, or disclosure script. |
 
 ### `editors/vscode` (extension)
