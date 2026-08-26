@@ -397,8 +397,16 @@ MindLeak/
 
 ## Commands (identical on every OS)
 
-Prefer the Unit Test MCP tools for test runs where available; otherwise these
-work the same on Linux, macOS, and Windows:
+Run these directly rather than through the Unit Test MCP tool. Four separate
+gap fragments (`gaps.d/unit-test-mcp-*.md`,
+`gaps.d/the-unit-test-mcp-cargo-adapter-hides-the.md`) measured it reporting
+`PASSED` for `scripts/*.test.mjs` suites it never executes, silently running
+Cargo instead of Vitest for the extension (and vice versa), hiding a failing
+test's own name and assertion behind a bare compile-error-shaped message, and
+ignoring `test_pattern` while its shortened run time reads exactly like the
+filter worked. None of that is fixed upstream, so it is not safe to treat as
+a verdict of record here — these commands are, and they work the same on
+Linux, macOS, and Windows:
 
 ```bash
 make setup          # install pre-commit hooks + extension deps
