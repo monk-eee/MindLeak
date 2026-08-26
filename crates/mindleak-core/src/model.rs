@@ -12,6 +12,11 @@ pub enum NodeType {
     Artifact,
     /// Terminal command / process run with an exit code.
     Execution,
+    /// One agent tool call, captured passively (ADR-0127): the tool name and
+    /// a bounded excerpt of its arguments -- for a terminal-executing tool,
+    /// the command string itself. Distinct from `Execution`: this is about
+    /// what the agent asked to run, not the terminal's own observed result.
+    ToolInvocation,
     /// High-level human/agent intent: commit, decision, tradeoff.
     Intent,
     /// An AI agent / client session (optional attribution).
@@ -30,6 +35,7 @@ impl NodeType {
             NodeType::Symbol => "symbol",
             NodeType::Artifact => "artifact",
             NodeType::Execution => "execution",
+            NodeType::ToolInvocation => "tool_invocation",
             NodeType::Intent => "intent",
             NodeType::Agent => "agent",
             NodeType::Package => "package",
@@ -42,6 +48,7 @@ impl NodeType {
             "symbol" => Some(NodeType::Symbol),
             "artifact" => Some(NodeType::Artifact),
             "execution" => Some(NodeType::Execution),
+            "tool_invocation" => Some(NodeType::ToolInvocation),
             "intent" => Some(NodeType::Intent),
             "agent" => Some(NodeType::Agent),
             "package" => Some(NodeType::Package),

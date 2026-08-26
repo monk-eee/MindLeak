@@ -29,30 +29,35 @@ vi.mock("vscode", () => ({
 
 import { TerminalSensor } from "./terminalSensor";
 
+function makeSensor(callTool: ReturnType<typeof vi.fn>) {
+  let pathChanged: ((path: string) => void) | undefined;
+  const health = vi.fn();
+  const sensor = new TerminalSensor(
+    { isReady: () => true, callTool },
+    "/workspace",
+    {
+      onDidChange: (handler) => {
+        pathChanged = handler;
+        return { dispose: vi.fn() };
+      },
+    },
+    () => ({
+      enabled: true,
+      captureOutput: true,
+      maxOutputChars: 256,
+      maxChangedFiles: 200,
+      excludedPathPrefixes: [],
+    }),
+    vi.fn(),
+    health
+  );
+  return { sensor, health, notifyPathChanged: () => pathChanged?.("src/changed.ts") };
+}
+
 describe("TerminalSensor", () => {
   it("turns shell start/end events into bounded, redacted execution evidence", async () => {
     const callTool = vi.fn().mockResolvedValue({});
-    const health = vi.fn();
-    let pathChanged: ((path: string) => void) | undefined;
-    const sensor = new TerminalSensor(
-      { isReady: () => true, callTool },
-      "/workspace",
-      {
-        onDidChange: (handler) => {
-          pathChanged = handler;
-          return { dispose: vi.fn() };
-        },
-      },
-      () => ({
-        enabled: true,
-        captureOutput: true,
-        maxOutputChars: 256,
-        maxChangedFiles: 200,
-        excludedPathPrefixes: [],
-      }),
-      vi.fn(),
-      health
-    );
+    const { sensor, notifyPathChanged } = makeSensor(callTool);
     const execution = {
       commandLine: { value: "npm test", confidence: 2, isTrusted: true },
       cwd: { scheme: "file", fsPath: "/workspace" },
@@ -62,19 +67,107 @@ describe("TerminalSensor", () => {
     };
 
     vscodeMock.handlers.start({ execution });
-    pathChanged?.("src/changed.ts");
+    notifyPathChanged();
     vscodeMock.handlers.end({ execution, exitCode: 1 });
 
-    await vi.waitFor(() => expect(callTool).toHaveBeenCalledOnce());
-    expect(callTool).toHaveBeenCalledWith(
-      "ingest_execution",
-      expect.objectContaining({
-        command: "npm test",
-        exit_code: 1,
-        output: "failed token=[REDACTED]",
-        changed_files: ["src/changed.ts"],
-      })
+    await vi.waitFor(() =>
+      expect(callTool).toHaveBeenCalledWith("ingest_execution", expect.anything())
     );
+    expect(callTool).toHaveBeenCalledWith("ingest_execution", {
+      command: "npm test",
+      exit_code: 1,
+      output: "failed token=[REDACTED]",
+      cwd: "/workspace",
+      changed_files: ["src/changed.ts"],
+      timestamp: expect.any(Number),
+    });
+    sensor.dispose();
+  });
+
+  it("also reports the same command as a passive tool invocation (ADR-0127)", async () => {
+    const callTool = vi.fn().mockResolvedValue({ node_ids: ["tool_invocation:abc"] });
+    const { sensor } = makeSensor(callTool);
+    const execution = {
+      commandLine: { value: "git status --short", confidence: 2, isTrusted: true },
+      cwd: { scheme: "file", fsPath: "/workspace" },
+      async *read() {
+        yield "";
+      },
+    };
+
+    vscodeMock.handlers.start({ execution });
+    vscodeMock.handlers.end({ execution, exitCode: 0 });
+
+    await vi.waitFor(() =>
+      expect(callTool).toHaveBeenCalledWith("ingest_tool_invocation", expect.anything())
+    );
+    expect(callTool).toHaveBeenCalledWith("ingest_tool_invocation", {
+      tool_name: "run_in_terminal",
+      argument_excerpt: "git status --short",
+      timestamp: expect.any(Number),
+    });
+    expect(callTool).not.toHaveBeenCalledWith("observe_control", expect.anything());
+    sensor.dispose();
+  });
+
+  it("reports a classified shell-hygiene violation to the new control", async () => {
+    const callTool = vi.fn().mockImplementation((name: string) => {
+      if (name === "ingest_tool_invocation") {
+        return Promise.resolve({
+          node_ids: ["tool_invocation:violation123"],
+          violation: "piped_powershell_cmdlet",
+        });
+      }
+      return Promise.resolve({});
+    });
+    const { sensor } = makeSensor(callTool);
+    const execution = {
+      commandLine: { value: "cargo test | Select-Object -Last 20", confidence: 2, isTrusted: true },
+      cwd: { scheme: "file", fsPath: "/workspace" },
+      async *read() {
+        yield "";
+      },
+    };
+
+    vscodeMock.handlers.start({ execution });
+    vscodeMock.handlers.end({ execution, exitCode: 0 });
+
+    await vi.waitFor(() =>
+      expect(callTool).toHaveBeenCalledWith("observe_control", expect.anything())
+    );
+    expect(callTool).toHaveBeenCalledWith("observe_control", {
+      control_id: "control:agent-command-hygiene",
+      status: "fail",
+      scope: "tool_invocation:violation123",
+      evidence_refs: ["tool_invocation:violation123"],
+      measurements: "piped_powershell_cmdlet",
+    });
+    sensor.dispose();
+  });
+
+  it("degrades quietly when the tool-invocation report itself fails, without affecting execution ingestion", async () => {
+    const callTool = vi.fn().mockImplementation((name: string) => {
+      if (name === "ingest_tool_invocation") {
+        return Promise.reject(new Error("mcp unreachable"));
+      }
+      return Promise.resolve({});
+    });
+    const { sensor, health } = makeSensor(callTool);
+    const execution = {
+      commandLine: { value: "git status", confidence: 2, isTrusted: true },
+      cwd: { scheme: "file", fsPath: "/workspace" },
+      async *read() {
+        yield "";
+      },
+    };
+
+    vscodeMock.handlers.start({ execution });
+    vscodeMock.handlers.end({ execution, exitCode: 0 });
+
+    await vi.waitFor(() =>
+      expect(health).toHaveBeenCalledWith("terminal capture degraded: shell-hygiene report failed")
+    );
+    expect(callTool).toHaveBeenCalledWith("ingest_execution", expect.anything());
     sensor.dispose();
   });
 });
