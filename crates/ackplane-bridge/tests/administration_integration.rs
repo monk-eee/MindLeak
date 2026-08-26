@@ -39,6 +39,7 @@ async fn administration_state(
         Arc::from(tenant_id.to_string()),
         Arc::new(Mutex::new(administration)),
         None,
+        None,
     )
 }
 
@@ -242,7 +243,7 @@ async fn returns_an_honest_status_for_the_tenant_and_hides_it_from_another_tenan
             "capabilities": [
                 {"operation":"status_inspection","state":"available","reason":"Tenant-scoped projection and capability status are readable."},
                 {"operation":"snapshot","state":"unavailable","reason":"ACKPLANE_SNAPSHOT_DIR is not configured for this deployment."},
-                {"operation":"export","state":"refused","reason":"A verified principal now exists (ADR-0128); export itself is not implemented yet."},
+                {"operation":"export","state":"unavailable","reason":"ACKPLANE_EXPORT_DIR is not configured for this deployment."},
                 {"operation":"claim_recovery","state":"available","reason":"Only an expired claim can be recovered; the next owner and a reason are recorded, and live claims refuse."},
                 {"operation":"recovery_inspection","state":"unavailable","reason":"ACKPLANE_SNAPSHOT_DIR is not configured for this deployment, so no Snapshot artifact can exist to inspect."},
                 {"operation":"lifecycle_purge","state":"refused","reason":"No adopted policy authorizes a Lifecycle purge yet; adopt one via POST /api/v1/administration/policies (ADR-0119 decision 2)."},
@@ -324,6 +325,7 @@ async fn a_snapshot_request_with_no_adopted_policy_is_refused_with_a_named_reaso
             pg_dump_path: "pg_dump".to_string(),
             pg_restore_path: "pg_restore".to_string(),
         })),
+        None,
     );
     let router = administration_routes(state);
 
@@ -379,6 +381,7 @@ async fn adopting_a_policy_then_requesting_a_platform_snapshot_succeeds_and_repl
             pg_dump_path: "pg_dump".to_string(),
             pg_restore_path: "pg_restore".to_string(),
         })),
+        None,
     );
     let router = administration_routes(state);
 
@@ -469,6 +472,7 @@ async fn adopting_a_policy_then_requesting_a_platform_snapshot_succeeds_and_repl
         ),
         Arc::from(format!("foreign-{tenant_id}")),
         Arc::new(Mutex::new(foreign_administration)),
+        None,
         None,
     ));
     let foreign_receipt_response = foreign_router

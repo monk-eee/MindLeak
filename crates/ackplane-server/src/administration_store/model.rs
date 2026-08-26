@@ -9,6 +9,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio_postgres::Row;
 
+use super::export_model::{MAX_EXPORT_RECORDS, MAX_PURPOSE_BYTES, MAX_SCHEMA_VERSION_BYTES};
+
 const MAX_IDENTIFIER_BYTES: usize = 256;
 const MAX_CLASSIFICATION_BYTES: usize = 256;
 const MAX_RETENTION_BYTES: usize = 4_096;
@@ -255,10 +257,18 @@ pub enum AdministrationStoreError {
     UnknownRequest { request_id: String },
     #[error("the confirmation window must be positive")]
     InvalidConfirmationWindow,
-    #[error("unknown purge data category: {value}")]
+    #[error("unknown data category: {value}")]
     UnknownDataCategory { value: i16 },
     #[error("unknown purge request: {request_id}")]
     UnknownPurgeRequest { request_id: String },
+    #[error("purpose must be between 1 and {MAX_PURPOSE_BYTES} bytes")]
+    InvalidPurpose,
+    #[error("max_records must be between 1 and {MAX_EXPORT_RECORDS}")]
+    InvalidMaxRecords,
+    #[error("schema_version must be between 1 and {MAX_SCHEMA_VERSION_BYTES} bytes")]
+    InvalidSchemaVersion,
+    #[error("unknown export request: {request_id}")]
+    UnknownExportRequest { request_id: String },
 }
 
 fn is_identifier(value: &str) -> bool {

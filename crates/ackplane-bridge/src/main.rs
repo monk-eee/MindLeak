@@ -22,6 +22,7 @@ use ackplane_server::context_packet_store::ContextPacketStore;
 use ackplane_server::delegation_store::DelegationStore;
 use ackplane_server::design_materialization_store::MaterializationStore;
 use ackplane_server::design_store::DesignStore;
+use ackplane_server::export_provider::ExportProviderConfig;
 use ackplane_server::fleet::{FleetStore, RepositoryFreshness};
 use ackplane_server::knowledge_store::KnowledgeStore;
 use ackplane_server::live_feed_store::LiveFeedStore;
@@ -240,6 +241,13 @@ async fn main() {
         config.database_url().to_string(),
     )
     .map(Arc::new);
+    // Same "refuse, never guess" rule as Snapshot: `None` unless an operator
+    // has set `ACKPLANE_EXPORT_DIR`.
+    let export_config = ExportProviderConfig::resolve(
+        |key| std::env::var(key).ok(),
+        config.database_url().to_string(),
+    )
+    .map(Arc::new);
     let tenant_id: Arc<str> = Arc::from(config.development_tenant_token.clone());
     let evidence_api_state =
         EvidenceApiState::new(evidence_store, fleet_store.clone(), tenant_id.clone());
@@ -261,6 +269,7 @@ async fn main() {
         tenant_id.clone(),
         administration_store,
         snapshot_config,
+        export_config,
     );
     let live_feed_api_state =
         LiveFeedApiState::new(live_feed_store, fleet_store.clone(), tenant_id.clone());

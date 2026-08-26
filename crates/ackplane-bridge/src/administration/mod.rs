@@ -15,8 +15,11 @@
 //! (telemetry events) today. `recovery_inspection` (`recovery` submodule) is
 //! read-only against one identified Snapshot artifact -- ADR-0119 decision 2
 //! never lists it among the privileged classes, so it needs no adopted
-//! policy, only an existing succeeded Snapshot to inspect. Export and
-//! recovery execution remain unimplemented and report so honestly.
+//! policy, only an existing succeeded Snapshot to inspect. `Export`
+//! (`export` submodule) is the fourth: a single request-then-receipt flow
+//! producing a bounded, redacted representation of one closed data category
+//! (telemetry events again) for a named purpose. Recovery execution remains
+//! unimplemented and reports so honestly.
 
 use std::{
     sync::Arc,
@@ -24,12 +27,11 @@ use std::{
 };
 
 use ackplane_server::administration_store::{
-    AdministrationOperation, AdministrationPolicy, AdministrationScope, AdministrationStore,
-    AdministrationStoreError, NewSnapshotReceipt, NewSnapshotRequest, PolicyAdoptionRequest,
-    SnapshotOutcome, SnapshotReceipt,
+    AdministrationOperation, AdministrationScope, AdministrationStore, AdministrationStoreError,
 };
+use ackplane_server::export_provider::ExportProviderConfig;
 use ackplane_server::fleet::{FleetStore, RepositoryFreshness};
-use ackplane_server::snapshot_provider::{self, SnapshotProviderConfig, SnapshotProviderError};
+use ackplane_server::snapshot_provider::SnapshotProviderConfig;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -37,14 +39,10 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::sync::Mutex;
 
 const ADMINISTRATION_PAGE: &str = include_str!("../../static/administration.html");
-/// ADR-0119 decision 2 bounds a policy's lifetime; this bounds how long a
-/// caller may request one for in a single call, so a single adoption cannot
-/// silently grant authority for years.
-const MAX_POLICY_LIFETIME_SECONDS: u64 = 30 * 24 * 60 * 60;
 
 /// Dependencies injected by the Bridge entry point when it merges the
 /// Administration sub-router into the application.
@@ -57,6 +55,9 @@ pub struct AdministrationApiState {
     /// reports `unavailable` rather than attempting to run `pg_dump` against
     /// a location nobody chose.
     pub snapshot: Option<Arc<SnapshotProviderConfig>>,
+    /// `None` when `ACKPLANE_EXPORT_DIR` is not configured -- Export then
+    /// reports `unavailable` rather than guessing a location.
+    pub export: Option<Arc<ExportProviderConfig>>,
 }
 
 impl AdministrationApiState {
@@ -65,12 +66,14 @@ impl AdministrationApiState {
         tenant_id: Arc<str>,
         administration: Arc<Mutex<AdministrationStore>>,
         snapshot: Option<Arc<SnapshotProviderConfig>>,
+        export: Option<Arc<ExportProviderConfig>>,
     ) -> Self {
         Self {
             fleet,
             tenant_id,
             administration,
             snapshot,
+            export,
         }
     }
 }
@@ -85,15 +88,15 @@ pub fn administration_routes(state: AdministrationApiState) -> Router {
         )
         .route(
             "/api/v1/administration/policies",
-            post(adopt_administration_policy),
+            post(policy::adopt_administration_policy),
         )
         .route(
             "/api/v1/administration/snapshots",
-            post(request_platform_snapshot),
+            post(snapshot::request_platform_snapshot),
         )
         .route(
             "/api/v1/administration/snapshots/:request_id",
-            get(platform_snapshot_receipt),
+            get(snapshot::platform_snapshot_receipt),
         )
         .route(
             "/api/v1/repositories/:repository_id/administration/purges",
@@ -111,11 +114,22 @@ pub fn administration_routes(state: AdministrationApiState) -> Router {
             "/api/v1/administration/snapshots/:request_id/inspect",
             post(recovery::inspect_snapshot).get(recovery::latest_snapshot_inspection),
         )
+        .route(
+            "/api/v1/repositories/:repository_id/administration/exports",
+            post(export::request_export),
+        )
+        .route(
+            "/api/v1/repositories/:repository_id/administration/exports/:request_id",
+            get(export::export_receipt),
+        )
         .with_state(state)
 }
 
+mod export;
+mod policy;
 mod purge;
 mod recovery;
+mod snapshot;
 
 #[derive(Serialize)]
 struct AdministrationStatusResponse {
@@ -250,6 +264,43 @@ async fn capabilities(state: &AdministrationApiState) -> Vec<AdministrationCapab
             }
         }
     };
+    let export = match &state.export {
+        None => AdministrationCapability {
+            operation: "export",
+            state: "unavailable",
+            reason: "ACKPLANE_EXPORT_DIR is not configured for this deployment.".to_string(),
+        },
+        Some(_) => {
+            let mut administration = state.administration.lock().await;
+            let active = administration
+                .active_policy(
+                    AdministrationOperation::Export,
+                    &AdministrationScope::Tenant(state.tenant_id.to_string()),
+                    SystemTime::now(),
+                )
+                .await;
+            match active {
+                Ok(Some(_)) => AdministrationCapability {
+                    operation: "export",
+                    state: "available",
+                    reason: "A verified principal (ADR-0128) and an adopted tenant policy authorize a bounded, redacted Export.".to_string(),
+                },
+                Ok(None) => AdministrationCapability {
+                    operation: "export",
+                    state: "refused",
+                    reason: "No adopted policy authorizes an Export yet; adopt one via POST /api/v1/administration/policies (ADR-0119 decision 2).".to_string(),
+                },
+                Err(error) => {
+                    tracing::error!(%error, "Bridge Administration policy lookup failed");
+                    AdministrationCapability {
+                        operation: "export",
+                        state: "unavailable",
+                        reason: "The adopted-policy store could not be read.".to_string(),
+                    }
+                }
+            }
+        }
+    };
     vec![
         AdministrationCapability {
             operation: "status_inspection",
@@ -257,11 +308,7 @@ async fn capabilities(state: &AdministrationApiState) -> Vec<AdministrationCapab
             reason: "Tenant-scoped projection and capability status are readable.".to_string(),
         },
         snapshot,
-        AdministrationCapability {
-            operation: "export",
-            state: "refused",
-            reason: "A verified principal now exists (ADR-0128); export itself is not implemented yet.".to_string(),
-        },
+        export,
         AdministrationCapability {
             operation: "claim_recovery",
             state: "available",
@@ -284,307 +331,6 @@ async fn capabilities(state: &AdministrationApiState) -> Vec<AdministrationCapab
     ]
 }
 
-#[derive(Deserialize)]
-struct AdoptPolicyRequest {
-    /// One of `snapshot`, `export`, `recovery_execution`, `lifecycle_purge`.
-    operation: String,
-    /// `platform`, or `tenant` with `tenant_id` set.
-    scope: String,
-    tenant_id: Option<String>,
-    data_classification: String,
-    retention_basis: String,
-    idempotency_key: String,
-    lifetime_seconds: u64,
-}
-
-#[derive(Serialize)]
-struct AdoptPolicyResponse {
-    policy_id: String,
-    operation: &'static str,
-    scope: &'static str,
-    tenant_id: Option<String>,
-    data_classification: String,
-    retention_basis: String,
-    adopted_by: String,
-    effective_at_seconds: Option<u64>,
-    expires_at_seconds: Option<u64>,
-    idempotent_replay: bool,
-}
-
-async fn adopt_administration_policy(
-    State(state): State<AdministrationApiState>,
-    Json(request): Json<AdoptPolicyRequest>,
-) -> Result<Json<AdoptPolicyResponse>, StatusCode> {
-    let operation = parse_operation(&request.operation).ok_or(StatusCode::BAD_REQUEST)?;
-    let scope = parse_scope(&request.scope, request.tenant_id).ok_or(StatusCode::BAD_REQUEST)?;
-    if request.lifetime_seconds == 0 || request.lifetime_seconds > MAX_POLICY_LIFETIME_SECONDS {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    let now = SystemTime::now();
-    let policy_request = PolicyAdoptionRequest {
-        operation,
-        scope,
-        data_classification: request.data_classification,
-        retention_basis: request.retention_basis,
-        adopted_by: state.tenant_id.to_string(),
-        idempotency_key: request.idempotency_key,
-        effective_at: now,
-        expires_at: now + std::time::Duration::from_secs(request.lifetime_seconds),
-    };
-
-    let mut administration = state.administration.lock().await;
-    let outcome = administration
-        .adopt_policy(&policy_request)
-        .await
-        .map_err(administration_error_status)?;
-    Ok(Json(policy_response(
-        outcome.policy,
-        outcome.idempotent_replay,
-    )))
-}
-
-fn policy_response(policy: AdministrationPolicy, idempotent_replay: bool) -> AdoptPolicyResponse {
-    AdoptPolicyResponse {
-        policy_id: policy.policy_id,
-        operation: operation_label(policy.operation),
-        scope: scope_label(&policy.scope),
-        tenant_id: policy.scope.tenant_id_owned(),
-        data_classification: policy.data_classification,
-        retention_basis: policy.retention_basis,
-        adopted_by: policy.adopted_by,
-        effective_at_seconds: unix_seconds(Some(policy.effective_at)),
-        expires_at_seconds: unix_seconds(Some(policy.expires_at)),
-        idempotent_replay,
-    }
-}
-
-#[derive(Deserialize)]
-struct SnapshotRequestBody {
-    policy_id: String,
-    idempotency_key: String,
-}
-
-#[derive(Serialize)]
-struct SnapshotRequestResponse {
-    request_id: String,
-    idempotent_replay: bool,
-    receipt: Option<SnapshotReceiptResponse>,
-}
-
-#[derive(Serialize)]
-struct SnapshotReceiptResponse {
-    receipt_id: String,
-    outcome: &'static str,
-    reason: String,
-    artifact_path: Option<String>,
-    manifest_digest_hex: Option<String>,
-    encryption_key_id: Option<String>,
-    size_bytes: Option<i64>,
-    verified: bool,
-    occurred_at_seconds: Option<u64>,
-}
-
-impl From<SnapshotReceipt> for SnapshotReceiptResponse {
-    fn from(receipt: SnapshotReceipt) -> Self {
-        Self {
-            receipt_id: receipt.receipt_id,
-            outcome: outcome_label(receipt.outcome),
-            reason: receipt.reason,
-            artifact_path: receipt.artifact_path,
-            manifest_digest_hex: receipt.manifest_digest.map(hex_encode),
-            encryption_key_id: receipt.encryption_key_id,
-            size_bytes: receipt.size_bytes,
-            verified: receipt.verified,
-            occurred_at_seconds: unix_seconds(Some(receipt.occurred_at)),
-        }
-    }
-}
-
-/// Requests, then synchronously executes, a platform Snapshot. ADR-0119
-/// decision 3's `running` state describes an asynchronous execution path
-/// this first implementation does not have yet; today's request either
-/// completes with a `succeeded`/`failed` receipt before the response returns,
-/// or is refused before any request row exists at all (no active policy).
-async fn request_platform_snapshot(
-    State(state): State<AdministrationApiState>,
-    Json(request): Json<SnapshotRequestBody>,
-) -> Result<Json<SnapshotRequestResponse>, StatusCode> {
-    let Some(snapshot_config) = state.snapshot.clone() else {
-        return Err(StatusCode::SERVICE_UNAVAILABLE);
-    };
-    let now = SystemTime::now();
-    let requested_by = state.tenant_id.to_string();
-    let new_request = NewSnapshotRequest {
-        policy_id: request.policy_id,
-        requested_by,
-        scope: AdministrationScope::Platform,
-        idempotency_key: request.idempotency_key,
-    };
-
-    let outcome = {
-        let mut administration = state.administration.lock().await;
-        administration
-            .request_snapshot(&new_request, now)
-            .await
-            .map_err(administration_error_status)?
-    };
-
-    // A replay of a request that already has a receipt must return that
-    // receipt again, not run `pg_dump` a second time for the same identity.
-    let existing_receipt = {
-        let mut administration = state.administration.lock().await;
-        administration
-            .snapshot_receipt_for_request(&outcome.request.request_id)
-            .await
-            .map_err(administration_error_status)?
-    };
-    if let Some(receipt) = existing_receipt {
-        return Ok(Json(SnapshotRequestResponse {
-            request_id: outcome.request.request_id,
-            idempotent_replay: true,
-            receipt: Some(receipt.into()),
-        }));
-    }
-
-    let receipt =
-        execute_and_record_snapshot(&state, &snapshot_config, &outcome.request.request_id).await?;
-    Ok(Json(SnapshotRequestResponse {
-        request_id: outcome.request.request_id,
-        idempotent_replay: outcome.idempotent_replay,
-        receipt: Some(receipt.into()),
-    }))
-}
-
-async fn execute_and_record_snapshot(
-    state: &AdministrationApiState,
-    snapshot_config: &SnapshotProviderConfig,
-    request_id: &str,
-) -> Result<SnapshotReceipt, StatusCode> {
-    let now = SystemTime::now();
-    let new_receipt =
-        match snapshot_provider::create_platform_snapshot(snapshot_config, request_id).await {
-            Ok(artifact) => NewSnapshotReceipt {
-                request_id: request_id.to_string(),
-                outcome: SnapshotOutcome::Succeeded,
-                reason: "pg_dump completed and the artifact was encrypted.".to_string(),
-                artifact_path: Some(artifact.artifact_path),
-                manifest_digest: Some(artifact.manifest_digest),
-                encryption_key_id: Some(artifact.encryption_key_id),
-                size_bytes: Some(artifact.size_bytes),
-                verified: true,
-                occurred_at: now,
-            },
-            Err(error) => {
-                tracing::error!(%error, "Bridge platform Snapshot execution failed");
-                NewSnapshotReceipt {
-                    request_id: request_id.to_string(),
-                    outcome: SnapshotOutcome::Failed,
-                    reason: snapshot_error_reason(&error),
-                    artifact_path: None,
-                    manifest_digest: None,
-                    encryption_key_id: None,
-                    size_bytes: None,
-                    verified: false,
-                    occurred_at: now,
-                }
-            }
-        };
-
-    let mut administration = state.administration.lock().await;
-    administration
-        .record_snapshot_receipt(&new_receipt, now)
-        .await
-        .map_err(administration_error_status)
-}
-
-async fn platform_snapshot_receipt(
-    State(state): State<AdministrationApiState>,
-    Path(request_id): Path<String>,
-) -> Result<Json<SnapshotReceiptResponse>, StatusCode> {
-    let mut administration = state.administration.lock().await;
-    // The request itself names its `requested_by` principal; a receipt is
-    // only disclosed to the tenant token that made the request, not to any
-    // caller who can guess or enumerate a request id.
-    let request = administration
-        .snapshot_request(&request_id)
-        .await
-        .map_err(administration_error_status)?
-        .ok_or(StatusCode::NOT_FOUND)?;
-    if request.requested_by != state.tenant_id.as_ref() {
-        return Err(StatusCode::NOT_FOUND);
-    }
-    let receipt = administration
-        .snapshot_receipt_for_request(&request_id)
-        .await
-        .map_err(administration_error_status)?
-        .ok_or(StatusCode::NOT_FOUND)?;
-    Ok(Json(receipt.into()))
-}
-
-fn snapshot_error_reason(error: &SnapshotProviderError) -> String {
-    match error {
-        SnapshotProviderError::PgDumpFailed { .. } => {
-            "pg_dump exited with a non-zero status; see the server log for its stderr.".to_string()
-        }
-        SnapshotProviderError::Spawn { .. } => {
-            "pg_dump could not be started on this deployment.".to_string()
-        }
-        SnapshotProviderError::RestoreSpawn { .. } => {
-            "pg_restore could not be started on this deployment.".to_string()
-        }
-        SnapshotProviderError::Io(_) => {
-            "the snapshot directory or key could not be prepared.".to_string()
-        }
-        SnapshotProviderError::Encryption => {
-            "the snapshot artifact could not be encrypted.".to_string()
-        }
-    }
-}
-
-fn parse_operation(value: &str) -> Option<AdministrationOperation> {
-    match value {
-        "snapshot" => Some(AdministrationOperation::Snapshot),
-        "export" => Some(AdministrationOperation::Export),
-        "recovery_execution" => Some(AdministrationOperation::RecoveryExecution),
-        "lifecycle_purge" => Some(AdministrationOperation::LifecyclePurge),
-        _ => None,
-    }
-}
-
-fn operation_label(operation: AdministrationOperation) -> &'static str {
-    match operation {
-        AdministrationOperation::Snapshot => "snapshot",
-        AdministrationOperation::Export => "export",
-        AdministrationOperation::RecoveryExecution => "recovery_execution",
-        AdministrationOperation::LifecyclePurge => "lifecycle_purge",
-    }
-}
-
-fn parse_scope(value: &str, tenant_id: Option<String>) -> Option<AdministrationScope> {
-    match (value, tenant_id) {
-        ("platform", None) => Some(AdministrationScope::Platform),
-        ("tenant", Some(tenant_id)) if !tenant_id.is_empty() => {
-            Some(AdministrationScope::Tenant(tenant_id))
-        }
-        _ => None,
-    }
-}
-
-fn scope_label(scope: &AdministrationScope) -> &'static str {
-    match scope {
-        AdministrationScope::Platform => "platform",
-        AdministrationScope::Tenant(_) => "tenant",
-    }
-}
-
-fn outcome_label(outcome: SnapshotOutcome) -> &'static str {
-    match outcome {
-        SnapshotOutcome::Succeeded => "succeeded",
-        SnapshotOutcome::Failed => "failed",
-        SnapshotOutcome::Refused => "refused",
-    }
-}
-
 fn administration_error_status(error: AdministrationStoreError) -> StatusCode {
     match error {
         AdministrationStoreError::NoActivePolicy
@@ -601,10 +347,14 @@ fn administration_error_status(error: AdministrationStoreError) -> StatusCode {
         | AdministrationStoreError::InvalidReceiptTime
         | AdministrationStoreError::InvalidTimestamp
         | AdministrationStoreError::InvalidConfirmationWindow
+        | AdministrationStoreError::InvalidPurpose
+        | AdministrationStoreError::InvalidMaxRecords
+        | AdministrationStoreError::InvalidSchemaVersion
         | AdministrationStoreError::InconsistentScope => StatusCode::BAD_REQUEST,
         AdministrationStoreError::UnknownPolicy { .. }
         | AdministrationStoreError::UnknownRequest { .. }
-        | AdministrationStoreError::UnknownPurgeRequest { .. } => StatusCode::NOT_FOUND,
+        | AdministrationStoreError::UnknownPurgeRequest { .. }
+        | AdministrationStoreError::UnknownExportRequest { .. } => StatusCode::NOT_FOUND,
         error @ (AdministrationStoreError::Database(_)
         | AdministrationStoreError::UnknownOperation { .. }
         | AdministrationStoreError::UnknownOutcome { .. }
@@ -613,10 +363,6 @@ fn administration_error_status(error: AdministrationStoreError) -> StatusCode {
             StatusCode::INTERNAL_SERVER_ERROR
         }
     }
-}
-
-fn hex_encode(bytes: Vec<u8>) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn freshness_label(freshness: RepositoryFreshness) -> &'static str {
@@ -648,42 +394,5 @@ mod tests {
         assert!(!ADMINISTRATION_PAGE.contains("DROP DATABASE"));
         assert!(!ADMINISTRATION_PAGE.contains("TRUNCATE"));
         assert!(!ADMINISTRATION_PAGE.contains("database credentials"));
-    }
-
-    #[test]
-    fn parse_operation_accepts_only_the_closed_vocabulary() {
-        assert_eq!(
-            parse_operation("snapshot"),
-            Some(AdministrationOperation::Snapshot)
-        );
-        assert_eq!(
-            parse_operation("export"),
-            Some(AdministrationOperation::Export)
-        );
-        assert_eq!(
-            parse_operation("recovery_execution"),
-            Some(AdministrationOperation::RecoveryExecution)
-        );
-        assert_eq!(
-            parse_operation("lifecycle_purge"),
-            Some(AdministrationOperation::LifecyclePurge)
-        );
-        assert_eq!(parse_operation("reset"), None);
-        assert_eq!(parse_operation(""), None);
-    }
-
-    #[test]
-    fn parse_scope_requires_scope_and_tenant_id_to_agree() {
-        assert_eq!(
-            parse_scope("platform", None),
-            Some(AdministrationScope::Platform)
-        );
-        assert_eq!(parse_scope("platform", Some("t".to_string())), None);
-        assert_eq!(
-            parse_scope("tenant", Some("t".to_string())),
-            Some(AdministrationScope::Tenant("t".to_string()))
-        );
-        assert_eq!(parse_scope("tenant", None), None);
-        assert_eq!(parse_scope("tenant", Some(String::new())), None);
     }
 }

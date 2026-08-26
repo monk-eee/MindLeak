@@ -152,7 +152,9 @@ pub async fn create_platform_snapshot(
     sealed.extend_from_slice(&ciphertext);
 
     let manifest_digest = Sha256::digest(&sealed).to_vec();
-    let artifact_path = config.snapshot_dir.join(format!("{request_id}.pgdump.enc"));
+    let artifact_path = config
+        .snapshot_dir
+        .join(format!("{}.pgdump.enc", filesystem_safe_id(request_id)));
     write_atomically(&artifact_path, &sealed).await?;
 
     Ok(SnapshotArtifact {
@@ -328,6 +330,15 @@ async fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
         file.sync_all().await?;
     }
     fs::rename(&temp_path, path).await
+}
+
+/// Node ids embed a `namespace:hex` request id (see
+/// `administration_store::model::hex_id`), and `:` is invalid in a Windows
+/// filename (reserved for drive letters) even though it is fine on Linux and
+/// macOS -- replaced so an artifact path stays valid on every platform this
+/// toolchain runs on.
+fn filesystem_safe_id(id: &str) -> String {
+    id.replace(':', "_")
 }
 
 #[cfg(test)]

@@ -46,6 +46,7 @@ pub mod envelope_signature;
 pub mod evidence_service;
 pub mod evidence_signature;
 pub mod evidence_store;
+pub mod export_provider;
 pub mod fleet;
 pub mod knowledge_service;
 pub mod knowledge_signature;

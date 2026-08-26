@@ -129,6 +129,10 @@ pub(crate) mod key {
     /// see because this branch's own source already accounts for that key)
     /// before picking 46.
     pub(crate) const ADMINISTRATION_RECOVERY_INSPECTION: i64 = 46;
+    /// `migrations/0047_administration_export.sql`. Checked directly against
+    /// `ackplane_schema_migrations` (only 46 applied above 42 at the time
+    /// this was drafted) before picking 47.
+    pub(crate) const ADMINISTRATION_EXPORT: i64 = 47;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

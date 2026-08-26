@@ -657,7 +657,21 @@ in-process with the installation's own key, and runs `pg_restore --list`
 against the decrypted archive purely to confirm it is well-formed -- a
 tampered, undecryptable, or corrupt artifact is a reported finding
 (`integrity_verified`/`decryption_verified`/`archive_valid`, each independently
-false), never an error. Export remains unimplemented and reports so honestly.
+false), never an error. Export (`administration/export.rs`) is the fourth and
+last privileged class this ADR names: a single request-then-receipt flow
+(unlike Purge's two-phase preview/confirm) producing a bounded, redacted
+representation of the same `telemetry_events` category for a named purpose,
+requiring its own adopted, tenant-scoped `Export` policy.
+`export_provider::create_telemetry_export` queries at most the caller's
+requested record count, strips every internal identifier
+(`telemetry_id`/`node_id`/`agent_session_id`) the same way a `TelemetryEvents`
+purge scopes its `DELETE`, and writes a schema-versioned JSON document --
+unencrypted, unlike a Snapshot artifact, because the whole point is that it
+is already bounded and redacted rather than a second copy of production
+state needing the same custody controls as a full-database backup.
+Administration policy adoption (`administration/policy.rs`) and the platform
+Snapshot request/receipt flow (`administration/snapshot.rs`) are their own
+files for the same module-length reason Purge/Recovery/Export already are.
 ADR-0111's claim recovery is unchanged.
 
 | Route | Serves |
@@ -693,6 +707,8 @@ ADR-0111's claim recovery is unchanged.
 | `GET /api/v1/repositories/:repository_id/administration/purges/:request_id` | The receipt recorded for one prior purge request, if any, under the same ownership rule as confirm. |
 | `POST /api/v1/administration/snapshots/:request_id/inspect` | ADR-0119 decision 6: inspects the Snapshot artifact recorded for `request_id` -- digest integrity, decryptability with the installation's own key, and `pg_restore --list` archive validity -- and durably records a new report. Refuses (`409`) when the request has no `succeeded` receipt to inspect. Needs no adopted policy: inspection is read-only and never touches production authority. |
 | `GET /api/v1/administration/snapshots/:request_id/inspect` | The most recently recorded inspection report for a Snapshot request, if any, tenant-scoped like every other Snapshot/purge read. |
+| `POST /api/v1/repositories/:repository_id/administration/exports` | ADR-0119 decision 5: requests, then synchronously executes, a bounded/redacted Export of `telemetry_events` -- refuses (`409`, no request row created) without an active tenant-scoped `Export` policy, otherwise queries at most `max_records` rows, redacts every internal identifier, and records a `succeeded`/`failed` receipt naming its schema version, record count, and exactly which fields were redacted. Idempotent like Snapshot: a replayed request returns the original receipt rather than re-running the query. |
+| `GET /api/v1/repositories/:repository_id/administration/exports/:request_id` | The receipt recorded for one prior Export request, if any, tenant- and repository-scoped like every other Snapshot/purge/export read. |
 | `GET /static/shared/chrome.css` / `GET /static/shared/chrome.js` | The one shared brand-mark and grouped-nav asset every static page loads (ADR-0124), served by `shared_assets.rs` with the correct `Content-Type`. `chrome.js`'s `NAV_ITEMS` is the single declared list of every ADR-0105 decision 5 capability; `chrome.css` styles it through six neutral `--chrome-*` custom properties that each page bridges onto its own palette. A page's entire brand/nav footprint is two mount points (`[data-bridge-brand]`, `[data-bridge-nav]`) plus these two tags — never its own copy of the nav's markup, CSS, or disclosure script. |
 
 ### `editors/vscode` (extension)
