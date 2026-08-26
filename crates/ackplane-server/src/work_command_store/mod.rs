@@ -12,7 +12,7 @@ use crate::migration_lock;
 const MIGRATION: &str = include_str!("../../migrations/0037_work_commands.sql");
 const WORK_MIGRATION: &str = include_str!("../../migrations/0028_work.sql");
 const EXECUTION_MIGRATION: &str =
-    include_str!("../../migrations/0038_work_task_command_execution.sql");
+    include_str!("../../migrations/0039_work_task_command_execution.sql");
 
 mod execute;
 mod model;
