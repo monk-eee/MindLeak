@@ -4,7 +4,9 @@
 // updates at a time. Every other behaviour exists to stop that invariant from
 // wedging the queue.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -15,9 +17,14 @@ import {
   isQueued,
   nextAction,
   queueOrder,
+  readWatcherHeartbeat,
   sweepAnnouncement,
   sweepArgs,
+  unattendedQueueNote,
   updateBranchMismatch,
+  watcherCheckedIn,
+  WATCHER_STALE_MS,
+  writeWatcherHeartbeat,
 } from "./delivery-queue.mjs";
 
 const NOW = Date.parse("2026-07-28T12:00:00Z");
@@ -466,4 +473,95 @@ test("a silent sweep says nothing at all", () => {
   // call. Whitespace must not read as news.
   assert.equal(sweepAnnouncement("", null), null);
   assert.equal(sweepAnnouncement("\n  \n", null), null);
+});
+
+// --- is anybody watching? --------------------------------------------------
+
+const armedQueue = () => nextAction([pr(1), pr(2)], NOW);
+
+/// The reason this exists. "Armed means finished" (ADR-0045, ADR-0062) rests on
+/// something taking the turns, and a watcher nobody started looks exactly like
+/// a watcher with nothing to do: silence. Measured over two days on this board,
+/// armed pull requests sat BEHIND for hours because `make queue-watch` was
+/// simply not running and nothing anywhere said so.
+test("armed work waiting with no heartbeat at all says so, and says nothing has ever checked in", () => {
+  const note = unattendedQueueNote(armedQueue(), null, NOW);
+  assert.match(note, /no delivery-queue watcher has checked in/);
+  assert.match(note, /nothing has ever checked in here/);
+  assert.match(note, /2 armed pull requests are waiting/);
+  assert.match(note, /make queue-watch/);
+});
+
+/// The note must not claim a watcher is not RUNNING, because it cannot know
+/// that: a watcher too old to write a beat is silent in exactly the same way as
+/// no watcher at all. Measured while this shipped -- two `--watch` processes
+/// were genuinely running with no heartbeat file in existence, and an earlier
+/// draft asserted flatly that none was running. So the note has to survive being
+/// read by somebody who already has a watcher up, which means naming the restart
+/// remedy beside the start one.
+test("the note claims only that nothing checked in, and offers restarting as well as starting", () => {
+  const note = unattendedQueueNote(armedQueue(), null, NOW);
+  assert.doesNotMatch(note, /watcher is running/);
+  assert.match(note, /restart/);
+  assert.match(note, /older than this heartbeat cannot be seen/);
+});
+
+/// A watcher that stopped and one that never checked in here need different
+/// things done about them, so the note must not collapse them into one sentence.
+test("a stale heartbeat says how long ago the watcher last checked in", () => {
+  const note = unattendedQueueNote(armedQueue(), NOW - 90 * 60_000, NOW);
+  assert.match(note, /no delivery-queue watcher has checked in/);
+  assert.match(note, /last check-in 90m ago/);
+});
+
+/// The note has to be silent in the ordinary case or it stops being read.
+test("a fresh heartbeat says nothing, because a watcher is taking the turns", () => {
+  assert.equal(unattendedQueueNote(armedQueue(), NOW - 30_000, NOW), null);
+});
+
+/// An empty queue needs no watcher. Firing here would make the note appear on
+/// every idle run, which is how a diagnostic becomes noise nobody reads.
+test("nothing armed means nothing to say, however long the watcher has been down", () => {
+  const idle = nextAction([pr(1, { autoMergeRequest: null })], NOW);
+  assert.equal(idle.queued.length, 0);
+  assert.equal(unattendedQueueNote(idle, null, NOW), null);
+  assert.equal(unattendedQueueNote(idle, NOW - 10 * 60 * 60_000, NOW), null);
+});
+
+test("a heartbeat counts as checked in right up to the stale threshold, and not past it", () => {
+  assert.equal(watcherCheckedIn(NOW - WATCHER_STALE_MS + 1, NOW), true);
+  assert.equal(watcherCheckedIn(NOW - WATCHER_STALE_MS, NOW), false);
+  // A clock that reads ahead is a clock problem, not evidence that nothing is
+  // running -- a beat from the future must not report the watcher as stopped.
+  assert.equal(watcherCheckedIn(NOW + 60_000, NOW), true);
+  assert.equal(watcherCheckedIn(null, NOW), false);
+  assert.equal(watcherCheckedIn("1787700000000", NOW), false);
+});
+
+/// The one seam every pure test above assumes and none of them exercises: the
+/// reader has to understand what the writer actually wrote. A shape mismatch
+/// here would report "no watcher" forever while every other test stayed green.
+test("a heartbeat the watcher wrote is a heartbeat the one-shot can read", () => {
+  const dir = mkdtempSync(join(tmpdir(), "queue-heartbeat-"));
+  try {
+    writeWatcherHeartbeat(dir, NOW);
+    assert.equal(readWatcherHeartbeat(dir), NOW);
+    assert.equal(
+      unattendedQueueNote(armedQueue(), readWatcherHeartbeat(dir), NOW),
+      null,
+    );
+
+    // Absent and corrupt both read as "nothing has checked in": the safe
+    // direction, since a note nobody needed costs one line and a missing one
+    // costs a stalled queue.
+    assert.equal(readWatcherHeartbeat(join(dir, "nowhere")), null);
+    writeFileSync(
+      join(dir, "delivery-queue-watcher.json"),
+      "{not json",
+      "utf8",
+    );
+    assert.equal(readWatcherHeartbeat(dir), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
