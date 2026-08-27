@@ -65,6 +65,14 @@ CREATE TABLE IF NOT EXISTS maintenance_leases (
     last_attempt_at  INTEGER NOT NULL
 );
 
+-- Durable, one-time database maintenance. A state is advanced only after each
+-- physical step succeeds, allowing a later open to finish work interrupted by a
+-- crash or an active WAL reader without paying a VACUUM cost on every open.
+CREATE TABLE IF NOT EXISTS database_maintenance (
+    name  TEXT PRIMARY KEY,
+    state TEXT NOT NULL CHECK (state IN ('vacuum', 'checkpoint', 'complete'))
+);
+
 -- Full-text index over node label + content for semantic-ish seed lookup.
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
     id UNINDEXED,

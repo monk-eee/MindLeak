@@ -1,0 +1,1 @@
+- **Fixed:** Embeddings-table cleanup now persists its vacuum/checkpoint progress, retries an interrupted reclamation on a later open, and truncates the WAL after reclaiming orphaned-vector storage. The optional semantic index also skips nodes deleted while an embedding batch is in flight instead of failing the entire batch.

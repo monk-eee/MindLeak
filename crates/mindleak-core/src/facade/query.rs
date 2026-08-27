@@ -119,8 +119,20 @@ impl MindLeak {
             let texts: Vec<String> = chunk.iter().map(|(_, text)| text.clone()).collect();
             let vectors = self.embedder.embed_batch(&texts)?;
             for ((id, _), vector) in chunk.iter().zip(vectors) {
-                embed::upsert(&self.store.conn, id, self.embedder.model(), &vector, now)?;
-                indexed += 1;
+                if embed::upsert_if_node_exists(
+                    &self.store.conn,
+                    id,
+                    self.embedder.model(),
+                    &vector,
+                    now,
+                )? {
+                    indexed += 1;
+                } else {
+                    tracing::debug!(
+                        node_id = %id,
+                        "skipping embedding for a node deleted during indexing"
+                    );
+                }
             }
         }
         Ok(indexed)
@@ -344,7 +356,33 @@ fn bound_impact(impact: Subgraph) -> (Vec<PreflightNode>, Vec<WeightedEdge>, usi
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{mpsc, Mutex};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
     use super::{parse_embed_batch, DEFAULT_EMBED_BATCH};
+    use crate::{MindLeak, Result, TextEmbedder};
+
+    /// Blocks after candidates are selected so a second engine can delete them.
+    struct BlockingEmbedder {
+        started: mpsc::Sender<()>,
+        resume: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl TextEmbedder for BlockingEmbedder {
+        fn model(&self) -> &str {
+            "blocking"
+        }
+
+        fn embed(&self, _text: &str) -> Result<Vec<f32>> {
+            Ok(vec![1.0])
+        }
+
+        fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+            self.started.send(()).unwrap();
+            self.resume.lock().unwrap().recv().unwrap();
+            Ok(texts.iter().map(|_| vec![1.0]).collect())
+        }
+    }
 
     #[test]
     fn an_absent_setting_keeps_the_shipped_default() {
@@ -375,5 +413,61 @@ mod tests {
                 "{raw:?} should fall back"
             );
         }
+    }
+
+    /// Regression: index selected a node, waited for the optional model, then
+    /// tried to insert after another process had deleted that node. The new
+    /// foreign key correctly rejected the orphan but caused the entire optional
+    /// index pass to fail instead of skipping the no-longer-current candidate.
+    #[test]
+    fn index_skips_candidates_deleted_while_embedding_is_in_flight() {
+        let _serialized = crate::db::serialize_db_test();
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "mindleak-index-deletion-race-{}-{unique}.db",
+            std::process::id()
+        ));
+        let database = path.to_string_lossy().into_owned();
+        let cleanup = || {
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(format!("{database}-wal"));
+            let _ = std::fs::remove_file(format!("{database}-shm"));
+        };
+        cleanup();
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let engine = MindLeak::open(&database)
+            .unwrap()
+            .with_embedder(Box::new(BlockingEmbedder {
+                started: started_tx,
+                resume: Mutex::new(resume_rx),
+            }));
+        engine
+            .ingest_file("src/deleted-during-index.rs", "fn pending() {}\n")
+            .unwrap();
+
+        let indexing = std::thread::spawn(move || engine.index_nodes(50));
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("index should select candidates before the test deletes them");
+
+        let deleting_engine = MindLeak::open(&database).unwrap();
+        deleting_engine
+            .forget_file("src/deleted-during-index.rs")
+            .unwrap();
+        resume_tx.send(()).unwrap();
+
+        assert_eq!(
+            indexing.join().unwrap().unwrap(),
+            0,
+            "deleted candidates are no longer current and must be skipped"
+        );
+
+        drop(deleting_engine);
+        cleanup();
     }
 }
