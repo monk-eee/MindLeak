@@ -45,6 +45,9 @@ pub use identity::{
     IdentityError, DEFAULT_KEY_PATH, KEY_PATH_ENV,
 };
 
+pub mod node_sync;
+pub use node_sync::NodeSyncConnection;
+
 pub use ackplane_protocol::v1::{
     ClaimLeaseOutcome, ClaimLeaseRequest, ClaimLeaseResult, ClaimRecoverRequest,
     ClaimReleaseRequest, ClaimReleaseResult, ClaimRenewRequest, EnrollmentState,
@@ -63,6 +66,34 @@ pub enum ClientError {
     Unreachable(#[from] tonic::transport::Error),
     #[error("Ackplane rejected the request: {0}")]
     Rejected(#[from] tonic::Status),
+    /// The `Synchronize` stream closed before completing the connection
+    /// handshake (Hello -> ConnectionChallenge -> ChallengeResponse ->
+    /// HelloAccepted -> FlowControl) -- distinct from [`Self::Rejected`],
+    /// which carries a gRPC-level status, and from
+    /// [`Self::ConnectionRefused`], which carries the server's own typed
+    /// application-level reason.
+    #[error("the Synchronize stream closed before completing the connection handshake")]
+    HandshakeStreamClosed,
+    /// The server sent a frame this step of the handshake was not expecting.
+    /// Naming both `expected` and `got` here, rather than only logging them,
+    /// is what lets a caller tell a protocol violation apart from a
+    /// transport failure.
+    #[error("expected {expected} during the connection handshake, got {got}")]
+    UnexpectedHandshakeFrame {
+        expected: &'static str,
+        got: &'static str,
+    },
+    /// Ackplane's own application-level refusal of the whole connection
+    /// (ADR-0098 decision 1), e.g. an unknown `signing_key_id`, a bad
+    /// challenge-response signature, or a revoked key. Distinguishable from a
+    /// bare `tonic::Status` because the caller needs the typed reason, not
+    /// only a string.
+    #[error("Ackplane refused this connection ({reason:?}, retryable={retryable}): {diagnostic}")]
+    ConnectionRefused {
+        reason: ackplane_protocol::v1::RejectionReason,
+        retryable: bool,
+        diagnostic: String,
+    },
 }
 
 /// A live connection to one Ackplane deployment's claim-delegation service.

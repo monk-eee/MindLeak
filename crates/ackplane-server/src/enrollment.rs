@@ -90,43 +90,17 @@ pub fn verify_activation_proof(
         .is_ok()
 }
 
-// Its own domain, distinct from activation and envelope signing (ADR-0098
-// decision 1): a signature over one of those must never verify as a
-// connection challenge response, or a replayed activation/envelope signature
-// could open a live stream it was never meant to authenticate.
-const CONNECTION_DOMAIN: &[u8] = b"mindleak.ackplane.v1.node_sync.connection\0";
-
-/// The immutable values a `Synchronize` connection's challenge binds together.
-pub struct ConnectionChallengeBinding<'a> {
-    pub nonce: &'a [u8],
-    pub tenant_id: &'a str,
-    pub repository_id: &'a str,
-    pub producer_id: &'a str,
-    pub signing_key_id: &'a str,
-}
-
-/// Encode the exact domain-separated bytes a node signs to prove it holds the
-/// key it named in `Hello`, over this connection's nonce. Same
-/// length-delimited construction as [`activation_challenge_bytes`], so no
-/// field can be reinterpreted as part of an adjacent one.
-pub fn connection_challenge_bytes(binding: &ConnectionChallengeBinding<'_>) -> Vec<u8> {
-    let fields = [
-        binding.nonce,
-        binding.tenant_id.as_bytes(),
-        binding.repository_id.as_bytes(),
-        binding.producer_id.as_bytes(),
-        binding.signing_key_id.as_bytes(),
-    ];
-    let mut bytes = Vec::with_capacity(
-        CONNECTION_DOMAIN.len() + fields.iter().map(|field| 4 + field.len()).sum::<usize>(),
-    );
-    bytes.extend_from_slice(CONNECTION_DOMAIN);
-    for field in fields {
-        bytes.extend_from_slice(&(field.len() as u32).to_be_bytes());
-        bytes.extend_from_slice(field);
-    }
-    bytes
-}
+// The connection-challenge byte layout and its binding type moved to
+// `ackplane_protocol::connection_challenge_auth`: a genuinely separate crate
+// (`ackplane-client`'s `NodeSyncClient`, ADR-0116) now needs to *produce*
+// these bytes, not just verify them, and the two sides must never be able to
+// drift into incompatible encodings of the same signed fields. Re-exported
+// here so every existing caller of `ackplane_server::enrollment::{
+// ConnectionChallengeBinding, connection_challenge_bytes}` keeps working
+// unchanged.
+pub use ackplane_protocol::connection_challenge_auth::{
+    connection_challenge_bytes, ConnectionChallengeBinding,
+};
 
 /// Verify a node's proof of possession of the enrolled key it named, over the
 /// nonce this connection issued.
