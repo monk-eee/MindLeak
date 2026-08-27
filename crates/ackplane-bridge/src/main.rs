@@ -9,6 +9,7 @@ use ackplane_bridge::delegation_api::{delegation_routes, DelegationApiState};
 use ackplane_bridge::design_api::{design_routes, DesignApiState};
 use ackplane_bridge::evidence::BridgeEvidenceStore;
 use ackplane_bridge::evidence_api::{evidence_routes, EvidenceApiState};
+use ackplane_bridge::human_decision_api::{human_decision_routes, HumanDecisionApiState};
 use ackplane_bridge::knowledge_api::{knowledge_routes, KnowledgeApiState};
 use ackplane_bridge::live_feed::{live_feed_routes, LiveFeedApiState};
 use ackplane_bridge::shared_assets::shared_asset_routes;
@@ -24,6 +25,7 @@ use ackplane_server::design_materialization_store::MaterializationStore;
 use ackplane_server::design_store::DesignStore;
 use ackplane_server::export_provider::ExportProviderConfig;
 use ackplane_server::fleet::{FleetStore, RepositoryFreshness};
+use ackplane_server::human_decision_store::HumanDecisionStore;
 use ackplane_server::knowledge_store::KnowledgeStore;
 use ackplane_server::live_feed_store::LiveFeedStore;
 use ackplane_server::projection::Projector;
@@ -193,6 +195,13 @@ async fn main() {
             return;
         }
     };
+    let human_decision_store = match HumanDecisionStore::connect(config.database_url()).await {
+        Ok(decisions) => Arc::new(decisions),
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not connect to Ackplane human decisions: {error}");
+            return;
+        }
+    };
     let delegation_store = match DelegationStore::connect(config.database_url()).await {
         Ok(delegations) => Arc::new(delegations),
         Err(error) => {
@@ -263,6 +272,8 @@ async fn main() {
         ContextApiState::new(context_packet_store, fleet_store.clone(), tenant_id.clone());
     let delegation_api_state =
         DelegationApiState::new(delegation_store, fleet_store.clone(), tenant_id.clone());
+    let human_decision_api_state =
+        HumanDecisionApiState::new(human_decision_store, fleet_store.clone(), tenant_id.clone());
     let work_api_state =
         WorkApiState::new(work_store.clone(), fleet_store.clone(), tenant_id.clone());
     let administration_api_state = AdministrationApiState::with_claims(
@@ -354,6 +365,7 @@ async fn main() {
         .merge(knowledge_routes(knowledge_api_state))
         .merge(context_routes(context_api_state))
         .merge(delegation_routes(delegation_api_state))
+        .merge(human_decision_routes(human_decision_api_state))
         .merge(administration_routes(administration_api_state))
         .merge(supervisor_routes(supervisor_api_state))
         .merge(live_feed_routes(live_feed_api_state))

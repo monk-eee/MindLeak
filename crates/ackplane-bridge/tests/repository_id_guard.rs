@@ -98,6 +98,7 @@ const EVIDENCE_API_BOARD_RS: &str = include_str!("../src/evidence_api/board.rs")
 const EVIDENCE_API_DETAIL_RS: &str = include_str!("../src/evidence_api/detail.rs");
 const EVIDENCE_API_EXPORT_RS: &str = include_str!("../src/evidence_api/export.rs");
 const EVIDENCE_API_PAGE_RS: &str = include_str!("../src/evidence_api/page.rs");
+const HUMAN_DECISION_API_RS: &str = include_str!("../src/human_decision_api.rs");
 const KNOWLEDGE_API_RS: &str = include_str!("../src/knowledge_api.rs");
 const LIVE_FEED_RS: &str = include_str!("../src/live_feed.rs");
 const SUPERVISOR_API_RS: &str = include_str!("../src/supervisor_api.rs");
@@ -144,6 +145,7 @@ const ROUTE_HANDLERS_WITHOUT_A_STORE_QUERY: &[&str] = &[
     "administration_page",
     "context_page",
     "delegations_page",
+    "decisions_page",
     "design_page",
     "evidence_page",
     "knowledge_page",
@@ -189,6 +191,7 @@ const HANDLER_SOURCES: &[&str] = &[
     EVIDENCE_API_DETAIL_RS,
     EVIDENCE_API_EXPORT_RS,
     EVIDENCE_API_PAGE_RS,
+    HUMAN_DECISION_API_RS,
     KNOWLEDGE_API_RS,
     LIVE_FEED_RS,
     SUPERVISOR_API_RS,
@@ -211,6 +214,7 @@ const ROUTE_SOURCES: &[&str] = &[
     DELEGATION_API_RS,
     DESIGN_API_RS,
     EVIDENCE_API_RS,
+    HUMAN_DECISION_API_RS,
     KNOWLEDGE_API_RS,
     LIVE_FEED_RS,
     SUPERVISOR_API_RS,

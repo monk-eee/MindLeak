@@ -15,6 +15,7 @@ pub mod delegation_api;
 pub mod design_api;
 pub mod evidence;
 pub mod evidence_api;
+pub mod human_decision_api;
 pub mod knowledge_api;
 pub mod live_feed;
 pub mod shared_assets;

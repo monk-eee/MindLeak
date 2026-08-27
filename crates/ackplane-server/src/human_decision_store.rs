@@ -26,6 +26,7 @@ pub(super) const EVENT_COLUMNS: &str =
     resulting_version, idempotency_key, payload_digest, schema_version, recorded_at";
 
 mod model;
+mod read;
 mod replay;
 
 pub use model::{
@@ -34,6 +35,7 @@ pub use model::{
     HumanDecisionResolutionOutcome, HumanDecisionResolutionRequest, HumanDecisionStatus,
     HumanDecisionStoreError, SafeBehavior,
 };
+pub use read::{HumanDecisionListCursor, HumanDecisionListPage};
 
 use model::{
     event_schema_version, normalize_timestamp, projection_at_event, request_payload_digest,
@@ -512,5 +514,101 @@ mod tests {
             .await
             .expect_err("a request expiring in the past must be rejected");
         assert!(matches!(error, HumanDecisionStoreError::InvalidTimeWindow));
+    }
+
+    /// The read surface is what a human queue is built on, so its tenant
+    /// scoping is load-bearing: one tenant must never list or fetch another
+    /// tenant's escalations even when it knows the repository and decision id.
+    #[tokio::test]
+    async fn reads_stay_inside_their_tenant_and_can_narrow_to_one_status() {
+        let Some(database_url) = database_url() else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let mut store = HumanDecisionStore::connect(&database_url)
+            .await
+            .expect("store should connect");
+        let (tenant_id, repository_id) = unique_scope();
+        let waiting = store
+            .request(decision_request(
+                tenant_id.clone(),
+                repository_id.clone(),
+                "human-decision:request:read-waiting",
+            ))
+            .await
+            .expect("request should succeed");
+        let resolved = store
+            .request(decision_request(
+                tenant_id.clone(),
+                repository_id.clone(),
+                "human-decision:request:read-resolved",
+            ))
+            .await
+            .expect("request should succeed");
+        store
+            .resolve(HumanDecisionResolutionRequest {
+                tenant_id: tenant_id.clone(),
+                repository_id: repository_id.clone(),
+                decision_id: resolved.projection.decision_id.clone(),
+                verified_resolving_principal_id: "principal:human-reviewer".to_string(),
+                outcome: HumanDecisionResolutionOutcome::Approved,
+                rationale: "inside the approved envelope".to_string(),
+                expected_version: resolved.projection.version,
+                idempotency_key: "human-decision:resolve:read-resolved".to_string(),
+            })
+            .await
+            .expect("resolve should succeed");
+
+        let all = store
+            .list_page(&tenant_id, &repository_id, None, None, 10)
+            .await
+            .expect("list should succeed");
+        assert_eq!(all.entries.len(), 2);
+        assert!(all.next_after.is_none());
+
+        let pending = store
+            .list_page(
+                &tenant_id,
+                &repository_id,
+                Some(HumanDecisionStatus::Pending),
+                None,
+                10,
+            )
+            .await
+            .expect("filtered list should succeed");
+        assert_eq!(pending.entries.len(), 1);
+        assert_eq!(
+            pending.entries[0].decision_id,
+            waiting.projection.decision_id
+        );
+
+        let other_tenant = format!("{tenant_id}-other");
+        let leaked = store
+            .list_page(&other_tenant, &repository_id, None, None, 10)
+            .await
+            .expect("list should succeed");
+        assert!(
+            leaked.entries.is_empty(),
+            "another tenant must not list these escalations"
+        );
+        let leaked = store
+            .get(
+                &other_tenant,
+                &repository_id,
+                &waiting.projection.decision_id,
+            )
+            .await
+            .expect("get should succeed");
+        assert!(
+            leaked.is_none(),
+            "another tenant must not fetch this escalation by id"
+        );
+
+        let found = store
+            .get(&tenant_id, &repository_id, &waiting.projection.decision_id)
+            .await
+            .expect("get should succeed")
+            .expect("the owning tenant sees its own escalation");
+        assert_eq!(found.status, HumanDecisionStatus::Pending);
     }
 }

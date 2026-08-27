@@ -49,6 +49,7 @@
       items: [
         { id: "supervisors", label: "Supervisors", href: "/supervisors" },
         { id: "delegations", label: "Delegations", href: "/delegations" },
+        { id: "decisions", label: "Decisions", href: "/decisions" },
         { id: "administration", label: "Administration", href: "/administration" },
         { id: "design", label: "Design", href: "/design" },
         { id: "constitution", label: "Constitution", href: "/constitution" },
