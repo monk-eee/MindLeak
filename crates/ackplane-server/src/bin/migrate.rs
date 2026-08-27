@@ -23,6 +23,7 @@ use ackplane_server::delegation_store::DelegationStore;
 use ackplane_server::directive_store::DirectiveStore;
 use ackplane_server::enrollment_store::EnrollmentStore;
 use ackplane_server::evidence_store::EvidenceStore;
+use ackplane_server::human_decision_store::HumanDecisionStore;
 use ackplane_server::knowledge_store::KnowledgeStore;
 use ackplane_server::ledger::LedgerStore;
 use ackplane_server::live_feed_store::LiveFeedStore;
@@ -93,6 +94,9 @@ async fn migrate(database_url: &str) -> Result<(), String> {
     WorkStore::connect(database_url)
         .await
         .map_err(|error| format!("work schema failed: {error}"))?;
+    HumanDecisionStore::connect(database_url)
+        .await
+        .map_err(|error| format!("human decision schema failed: {error}"))?;
     Ok(())
 }
 
@@ -124,6 +128,7 @@ mod tests {
             "SupervisorStore",
             "LiveFeedStore",
             "WorkStore",
+            "HumanDecisionStore",
         ] {
             assert!(
                 SOURCE.contains(&format!("{store}::connect")),
