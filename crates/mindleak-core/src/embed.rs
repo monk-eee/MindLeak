@@ -252,17 +252,35 @@ pub fn upsert(
     vector: &[f32],
     now: i64,
 ) -> Result<()> {
+    if upsert_if_node_exists(conn, node_id, model, vector, now)? {
+        Ok(())
+    } else {
+        Err(MindLeakError::NotFound(node_id.to_string()))
+    }
+}
+
+/// Insert an embedding only if its node still exists, returning whether it was
+/// written. Indexing selects candidates before a model call, so a different
+/// process can legitimately delete one before this statement runs.
+pub(crate) fn upsert_if_node_exists(
+    conn: &Connection,
+    node_id: &str,
+    model: &str,
+    vector: &[f32],
+    now: i64,
+) -> Result<bool> {
     ensure_table(conn)?;
-    conn.execute(
+    let changed = conn.execute(
         "INSERT INTO embeddings (node_id, model, dim, vector, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+         SELECT ?1, ?2, ?3, ?4, ?5
+         WHERE EXISTS (SELECT 1 FROM nodes WHERE id = ?1)
          ON CONFLICT(node_id, model) DO UPDATE SET
              dim = excluded.dim,
              vector = excluded.vector,
              updated_at = excluded.updated_at",
         params![node_id, model, vector.len() as i64, to_blob(vector), now],
     )?;
-    Ok(())
+    Ok(changed == 1)
 }
 
 /// Candidates a field needs before its *shape* means anything.

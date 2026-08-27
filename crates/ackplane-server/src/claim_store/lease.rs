@@ -132,7 +132,7 @@ impl ClaimStore {
             .execute(
                 "UPDATE delegated_claims SET lease_expires_at = $5 \
                  WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 \
-                   AND owner_id = $4 AND lease_expires_at > $5",
+                   AND owner_id = $4 AND lease_expires_at >= $5",
                 &[&tenant_id, &repository_id, &task_id, &owner_id, &now],
             )
             .await?;

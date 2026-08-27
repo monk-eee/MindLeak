@@ -63,7 +63,7 @@ impl WorkStore {
                 "SELECT dc.task_id, dc.owner_id, dc.branch, dc.lease_expires_at, dc.paths, dc.symbols, \
                         COUNT(*) OVER()::BIGINT AS total_count \
                  FROM delegated_claims dc \
-                 WHERE dc.tenant_id = $1 AND dc.repository_id = $2 AND dc.lease_expires_at > $3 \
+                 WHERE dc.tenant_id = $1 AND dc.repository_id = $2 AND dc.lease_expires_at >= $3 \
                    AND NOT EXISTS ( \
                        SELECT 1 FROM work_tasks wt \
                        WHERE wt.tenant_id = dc.tenant_id AND wt.repository_id = dc.repository_id \
@@ -103,7 +103,7 @@ impl WorkStore {
             .query(
                 "SELECT dc.repository_id, dc.task_id \
                  FROM delegated_claims dc \
-                 WHERE dc.tenant_id = $1 AND dc.lease_expires_at > $2 \
+                 WHERE dc.tenant_id = $1 AND dc.lease_expires_at >= $2 \
                    AND NOT EXISTS ( \
                        SELECT 1 FROM work_tasks wt \
                        WHERE wt.tenant_id = dc.tenant_id AND wt.repository_id = dc.repository_id \
@@ -233,8 +233,19 @@ mod tests {
             .await
             .expect("delegate the other tenant's claim");
 
+        // A claim is still live at the exact expiry instant. Both the
+        // repository publication and cross-repository keys must retain the
+        // orphaned claim until that boundary has passed.
+        let at_expiry = now + Duration::from_secs(3_600);
+        let publication = work
+            .publication(&tenant_id, &orphan_repository_id, at_expiry)
+            .await
+            .expect("query repository publication");
+        assert_eq!(publication.claims_only_total, 1);
+        assert_eq!(publication.claims_only[0].task_id, orphan_task_id);
+
         let keys = work
-            .fleet_claims_only_keys(&tenant_id, now)
+            .fleet_claims_only_keys(&tenant_id, at_expiry)
             .await
             .expect("query fleet claims-only keys");
 

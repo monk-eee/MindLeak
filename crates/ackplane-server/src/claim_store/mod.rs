@@ -157,7 +157,7 @@ impl ClaimStore {
             .query(
                 "SELECT task_id, owner_id, branch, lease_expires_at, paths, symbols \
                  FROM delegated_claims \
-                 WHERE tenant_id = $1 AND repository_id = $2 AND lease_expires_at > $3 \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND lease_expires_at >= $3 \
                  ORDER BY task_id ASC",
                 &[&tenant_id, &repository_id, &now],
             )
@@ -251,7 +251,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_live_owner_can_release_before_expiry_and_a_different_owner_claims_immediately() {
+    async fn the_live_owner_can_release_at_expiry_and_a_different_owner_claims_immediately() {
         let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
@@ -272,22 +272,20 @@ mod tests {
             .unwrap();
         assert_eq!(still_live.outcome, ClaimLeaseOutcome::Rejected);
 
+        // Lodestar defines `lease_expires_at == now` as still live. Releasing at
+        // that inclusive boundary must agree rather than silently treating the
+        // claim as already stranded.
+        let at_expiry = now + Duration::from_secs(60);
         let released = store
-            .release(
-                &tenant_id,
-                "repository",
-                task_id,
-                "owner-one",
-                now + Duration::from_secs(2),
-            )
+            .release(&tenant_id, "repository", task_id, "owner-one", at_expiry)
             .await
             .unwrap();
-        assert!(released, "the live owner must be able to release");
+        assert!(released, "the live owner must be able to release at expiry");
 
         // Immediately grantable to a different owner, with no wait for the
         // original 60-second lease to naturally expire.
         let granted_after_release = store
-            .delegate(&second, now + Duration::from_secs(3))
+            .delegate(&second, at_expiry + Duration::from_secs(1))
             .await
             .unwrap();
         assert_eq!(granted_after_release.outcome, ClaimLeaseOutcome::Granted);
@@ -728,6 +726,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(still_active.len(), 1);
+
+        let at_expiry = store
+            .list_active(&tenant_id, "repository", now + Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert_eq!(
+            at_expiry.len(),
+            1,
+            "the inclusive expiry boundary is still a live claim"
+        );
 
         // Past the 60-second lease: nothing live remains to report.
         let after_expiry = store

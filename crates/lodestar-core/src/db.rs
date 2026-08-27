@@ -41,10 +41,26 @@ fn configure(conn: &Connection) -> Result<()> {
     // created before that migration runs. On an existing database the CREATE
     // TABLE statements are no-ops, so the pre-migration table shape is what the
     // index would be built against.
-    migrations::migrate(conn)?;
+    let rebuilt = migrations::migrate(conn)?;
     conn.execute_batch(INDEXES)?;
     functions::register(conn)?;
+    if rebuilt {
+        reclaim_free_pages(conn);
+    }
     Ok(())
+}
+
+/// Return the pages a table rebuild freed to the filesystem.
+///
+/// A rebuild parks the old table's pages on the freelist, so a migration that
+/// discards rows still leaves the file bigger than it found it until something
+/// vacuums. Best-effort, and last because VACUUM rebuilds indexes: the rows are
+/// already correct by here and the space stays reclaimable, so losing a lock
+/// race to another agent sharing this ledger must not fail an open.
+fn reclaim_free_pages(conn: &Connection) {
+    if let Err(error) = conn.execute_batch("VACUUM") {
+        eprintln!("lodestar: could not reclaim free pages after migrating: {error}");
+    }
 }
 
 #[cfg(test)]
@@ -101,6 +117,75 @@ mod tests {
             )
             .unwrap();
         assert_eq!(indexes, 1, "the index is created after the migration");
+    }
+
+    /// Bug: `knowledge_embeddings` is built lazily by the optional index pass,
+    /// away from `schema.sql`, and so was written without the cascade
+    /// `knowledge_sources` already carries onto the same parent. A decay prune
+    /// left its vector behind describing a lesson that no longer exists. The
+    /// Memory Plane shipped the identical defect and reached 48,502 orphans
+    /// holding 142.1 MiB; this ledger was still at zero when it was caught.
+    ///
+    /// Opening an affected ledger must rebuild the table with the cascade and
+    /// discard anything that already leaked, keeping every row still referenced.
+    #[test]
+    fn migrating_a_ledger_gives_knowledge_embeddings_its_cascade() {
+        let path = temporary_database("knowledge-embeddings-cascade");
+        {
+            let connection = open(path.to_str().unwrap()).unwrap();
+            connection
+                .execute_batch("DROP TABLE IF EXISTS knowledge_embeddings;")
+                .unwrap();
+            // The table as the index pass used to build it: no foreign key.
+            connection
+                .execute_batch(
+                    "CREATE TABLE knowledge_embeddings (
+                         knowledge_id TEXT NOT NULL,
+                         model        TEXT NOT NULL,
+                         dim          INTEGER NOT NULL,
+                         vector       BLOB NOT NULL,
+                         updated_at   INTEGER NOT NULL,
+                         PRIMARY KEY (knowledge_id, model)
+                     );
+                     INSERT INTO knowledge
+                         (id, statement, evidence, weight, half_life_hours,
+                          confirmed_at, created_at)
+                     VALUES ('knowledge:live', 'a lesson', '', 1.0, 720.0, 100, 100);
+                     INSERT INTO knowledge_embeddings
+                         (knowledge_id, model, dim, vector, updated_at)
+                     VALUES ('knowledge:live', 'm', 1, x'0000803f', 41),
+                            ('knowledge:already-pruned', 'm', 1, x'00000000', 42);
+                     DELETE FROM schema_migrations
+                      WHERE name = 'cascade_knowledge_embeddings_onto_knowledge';",
+                )
+                .unwrap();
+        }
+
+        let connection = open(path.to_str().unwrap()).unwrap();
+
+        let rows: Vec<(String, i64)> = connection
+            .prepare("SELECT knowledge_id, updated_at FROM knowledge_embeddings ORDER BY 1")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![("knowledge:live".to_string(), 41)],
+            "the orphan is discarded and the row still referenced is carried over intact"
+        );
+
+        // Declared is not the same as enforced, so make the constraint act.
+        connection
+            .execute("DELETE FROM knowledge WHERE id = 'knowledge:live'", [])
+            .unwrap();
+        let remaining: i64 = connection
+            .query_row("SELECT count(*) FROM knowledge_embeddings", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(remaining, 0, "the rebuilt table cascades");
     }
 
     /// ADR-0060 renamed the binding verb to link_goal_to_artifact; the store it

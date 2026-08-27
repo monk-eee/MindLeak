@@ -229,8 +229,10 @@ fn describe(outcome: &ExecutionOutcome, now: SystemTime) -> (WorkCommandOutcome,
         ExecutionOutcome::ClaimLeaseChanged {
             current_lease_expires_at,
         } => {
-            let detail = if *current_lease_expires_at <= now {
+            let detail = if *current_lease_expires_at < now {
                 "expired"
+            } else if *current_lease_expires_at == now {
+                "is still live"
             } else {
                 "was renewed"
             };
@@ -324,4 +326,28 @@ async fn lock_task(
             state: row.get("state"),
             version: row.get("version"),
         }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, SystemTime};
+
+    use super::*;
+
+    #[test]
+    fn a_changed_lease_at_its_exact_expiry_is_not_reported_as_expired() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let (outcome, reason) = describe(
+            &ExecutionOutcome::ClaimLeaseChanged {
+                current_lease_expires_at: now,
+            },
+            now,
+        );
+
+        assert_eq!(outcome, WorkCommandOutcome::Conflicted);
+        assert!(
+            reason.contains("is still live"),
+            "the local authority defines equality as live: {reason}"
+        );
+    }
 }
