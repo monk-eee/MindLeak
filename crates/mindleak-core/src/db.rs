@@ -2,7 +2,7 @@
 //! SQLite connection setup, migrations, and the `effective_weight` SQL function.
 
 use rusqlite::functions::FunctionFlags;
-use rusqlite::{Connection, ErrorCode};
+use rusqlite::{Connection, ErrorCode, OptionalExtension};
 use std::time::{Duration, Instant};
 
 use crate::error::{MindLeakError, Result};
@@ -18,6 +18,35 @@ const WAL_RETRY_DELAY: Duration = Duration::from_millis(25);
 // because the retry design itself was wrong.
 const OPEN_BUSY_BUDGET: Duration = Duration::from_secs(15);
 const DEFAULT_BUSY_TIMEOUT_MS: i64 = 15_000;
+const EMBEDDINGS_RECLAMATION: &str = "embeddings_reclamation_v1";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReclamationState {
+    Vacuum,
+    Checkpoint,
+    Complete,
+}
+
+impl ReclamationState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Vacuum => "vacuum",
+            Self::Checkpoint => "checkpoint",
+            Self::Complete => "complete",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "vacuum" => Ok(Self::Vacuum),
+            "checkpoint" => Ok(Self::Checkpoint),
+            "complete" => Ok(Self::Complete),
+            _ => Err(MindLeakError::Other(format!(
+                "unknown embeddings reclamation state: {value}"
+            ))),
+        }
+    }
+}
 
 /// Serializes the crate's file-backed database tests against each other.
 ///
@@ -76,14 +105,12 @@ fn configure(conn: &Connection) -> Result<()> {
     // Safe to re-run: every migration step is conditional, and a busy attempt
     // rolls its transaction back before returning.
     let rebuilt = retry_while_busy(conn, deadline, "migrating the schema", || migrate(conn))?;
-    if rebuilt {
-        reclaim_free_pages(conn);
-    }
+    reclaim_free_pages(conn, rebuilt);
     register_functions(conn)?;
     Ok(())
 }
 
-/// Return the pages a table rebuild freed to the filesystem.
+/// Return the pages an embeddings-table rebuild freed to the filesystem.
 ///
 /// A rebuild leaves the old table's pages on the freelist, so a migration that
 /// *shrinks* the data still grows the file. Measured on a 421.5 MiB copy of a
@@ -100,17 +127,100 @@ fn configure(conn: &Connection) -> Result<()> {
 /// next open, because by then the migration is done.
 ///
 /// Best-effort by design, and outside `migrate`'s transaction because VACUUM
-/// cannot run inside one. The rows are already correct by this point and the
-/// space stays reclaimable, so losing a lock race to another process sharing
-/// this database is not a reason to fail an open.
-fn reclaim_free_pages(conn: &Connection) {
-    if let Err(error) = conn.execute_batch("VACUUM") {
-        tracing::warn!(
+/// cannot run inside one. A durable state retains failed work for a later open:
+/// a migration may commit before this runs, and a WAL checkpoint may be blocked
+/// by an ordinary reader. The rows are already correct by this point, so either
+/// condition is logged rather than made an open failure.
+fn reclaim_free_pages(conn: &Connection, rebuilt: bool) {
+    match try_reclaim_free_pages(conn, rebuilt) {
+        Ok(true) => {}
+        Ok(false) => tracing::warn!(
+            target: "mindleak::db",
+            "could not truncate the WAL after reclaiming free pages; the next open will retry"
+        ),
+        Err(error) => tracing::warn!(
             target: "mindleak::db",
             %error,
-            "could not reclaim free pages after migrating; the data is correct and the space stays reclaimable"
-        );
+            "could not reclaim free pages after migrating; the data is correct and the next open will retry"
+        ),
     }
+}
+
+fn try_reclaim_free_pages(conn: &Connection, rebuilt: bool) -> Result<bool> {
+    match reclamation_state(conn, rebuilt)? {
+        ReclamationState::Complete => Ok(true),
+        ReclamationState::Vacuum => {
+            conn.execute_batch("VACUUM")?;
+            store_reclamation_state(conn, ReclamationState::Checkpoint)?;
+            truncate_wal(conn)
+        }
+        ReclamationState::Checkpoint => truncate_wal(conn),
+    }
+}
+
+/// Pick up a cascade rebuild that committed before its vacuum, including
+/// databases migrated by the first cascade release before physical reclamation
+/// was introduced.
+fn reclamation_state(conn: &Connection, rebuilt: bool) -> Result<ReclamationState> {
+    if rebuilt {
+        store_reclamation_state(conn, ReclamationState::Vacuum)?;
+        return Ok(ReclamationState::Vacuum);
+    }
+    if let Some(state) = stored_reclamation_state(conn)? {
+        return Ok(state);
+    }
+
+    let state = if embeddings_table_is_current(conn)? && free_page_count(conn)? > 0 {
+        ReclamationState::Vacuum
+    } else {
+        ReclamationState::Complete
+    };
+    store_reclamation_state(conn, state)?;
+    Ok(state)
+}
+
+fn stored_reclamation_state(conn: &Connection) -> Result<Option<ReclamationState>> {
+    conn.query_row(
+        "SELECT state FROM database_maintenance WHERE name = ?1",
+        [EMBEDDINGS_RECLAMATION],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()?
+    .map(|state| ReclamationState::parse(&state))
+    .transpose()
+}
+
+fn store_reclamation_state(conn: &Connection, state: ReclamationState) -> Result<()> {
+    conn.execute(
+        "INSERT INTO database_maintenance (name, state)
+         VALUES (?1, ?2)
+         ON CONFLICT(name) DO UPDATE SET state = excluded.state",
+        [EMBEDDINGS_RECLAMATION, state.as_str()],
+    )?;
+    Ok(())
+}
+
+fn embeddings_table_is_current(conn: &Connection) -> Result<bool> {
+    Ok(table_exists(conn, "embeddings")? && foreign_key_count(conn, "embeddings")? > 0)
+}
+
+fn free_page_count(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("PRAGMA freelist_count", [], |row| row.get(0))?)
+}
+
+/// Truncate only after a successful checkpoint. When a reader holds a snapshot,
+/// SQLite reports it in the first result column; retain the checkpoint state so
+/// a later open finishes the physical reclamation.
+fn truncate_wal(conn: &Connection) -> Result<bool> {
+    let (busy, log_frames, checkpointed_frames): (i64, i64, i64) =
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+    if busy != 0 || log_frames != checkpointed_frames {
+        return Ok(false);
+    }
+    store_reclamation_state(conn, ReclamationState::Complete)?;
+    Ok(true)
 }
 
 /// Retry `operation` while SQLite reports the database busy, until `deadline`.
@@ -688,6 +798,64 @@ mod tests {
         );
     }
 
+    /// Regression: the first cascade migration could complete before the
+    /// reclamation release shipped, or a best-effort vacuum could fail after the
+    /// migration committed. Both leave a current embeddings table and free pages.
+    /// A later open must reclaim them rather than treating the current foreign
+    /// key as evidence that no maintenance remains.
+    #[test]
+    fn a_migrated_embeddings_table_with_free_pages_is_compacted_on_a_later_open() {
+        let _serialized = serialize_db_test();
+        let path = temp_db("reclaim-existing");
+        cleanup(&path);
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(SCHEMA).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE embeddings (
+                     node_id    TEXT NOT NULL,
+                     model      TEXT NOT NULL,
+                     dim        INTEGER NOT NULL,
+                     vector     BLOB NOT NULL,
+                     updated_at INTEGER NOT NULL,
+                     PRIMARY KEY (node_id, model),
+                     FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+                 );
+                 WITH RECURSIVE seq(n) AS (
+                     SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 400
+                 )
+                 INSERT INTO nodes (id, type, label, content, created_at, last_accessed_at)
+                 SELECT 'artifact:pruned-' || n, 'artifact', 'pruned', NULL, 1, 1 FROM seq;
+                 WITH RECURSIVE seq(n) AS (
+                     SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 400
+                 )
+                 INSERT INTO embeddings (node_id, model, dim, vector, updated_at)
+                 SELECT 'artifact:pruned-' || n, 'm', 1024, zeroblob(4096), 1 FROM seq;
+                 DELETE FROM nodes;",
+            )
+            .unwrap();
+        let before: i64 = connection
+            .query_row("PRAGMA freelist_count", [], |row| row.get(0))
+            .unwrap();
+        assert!(
+            before > 0,
+            "the test database must contain pages left by the earlier migration"
+        );
+
+        configure(&connection).unwrap();
+
+        let after: i64 = connection
+            .query_row("PRAGMA freelist_count", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            after, 0,
+            "a later open must retry physical reclamation left pending by an earlier one"
+        );
+
+        drop(connection);
+        cleanup(&path);
+    }
+
     /// Bug: rebuilding a table leaves its old pages on the freelist, so the
     /// migration that *discards* 142 MiB of orphans handed back a file larger
     /// than it found. Measured on a 410.2 MiB copy of a real graph: 569.2 MiB
@@ -699,8 +867,8 @@ mod tests {
     #[test]
     fn the_rebuild_returns_the_pages_it_freed_to_the_filesystem() {
         let _serialized = serialize_db_test();
-        let path = std::env::temp_dir().join(format!("mindleak-reclaim-{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+        let path = temp_db("reclaim");
+        cleanup(&path);
         let connection = Connection::open(&path).unwrap();
         connection.execute_batch(SCHEMA).unwrap();
         connection
@@ -742,9 +910,19 @@ mod tests {
             after * 2 < before,
             "the file kept the pages the rebuild freed: {before} -> {after}"
         );
+        let wal_bytes = std::fs::metadata(format!("{path}-wal"))
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let page_size: i64 = connection
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .unwrap();
+        assert!(
+            wal_bytes <= page_size as u64 * 2,
+            "VACUUM must not retain its reclaimed allocation in the WAL: {wal_bytes} bytes"
+        );
 
         drop(connection);
-        let _ = std::fs::remove_file(&path);
+        cleanup(&path);
     }
 
     /// Bug: the Memory Plane carried the same forked identity the Intent Plane
