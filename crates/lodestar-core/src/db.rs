@@ -220,6 +220,67 @@ mod tests {
     use crate::model::{ClauseOrigin, GoalKind, TaskStatus, Verdict};
     use crate::store::{ConformanceAudit, LodestarStore};
 
+    /// Every table this crate creates at runtime rather than in `schema.sql`,
+    /// and the constraint each one must carry.
+    ///
+    /// Guard, not documentation. `knowledge_embeddings` is built by an
+    /// `ensure_table` call during the optional index pass, so it never appears
+    /// in the file where foreign keys live and no review of that file can see
+    /// it — which is exactly how it shipped without the cascade
+    /// `knowledge_sources` already carried onto the same parent. The Memory
+    /// Plane lost its `embeddings` table the same way, independently, and got
+    /// to 48,502 orphaned rows before anyone noticed; this one was caught at
+    /// zero only because its decay prune had not yet reached an embedded lesson.
+    ///
+    /// So this pins the *set*: adding another lazily-created table fails here
+    /// until someone says so deliberately, and that is the moment to ask whether
+    /// it needs a parent. Deliberately narrow — asserting that every table
+    /// anywhere declares a foreign key would need a long allowlist of legitimate
+    /// root tables and would decay into a rubber stamp.
+    #[test]
+    fn a_table_created_outside_the_schema_file_still_declares_its_parent() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(SCHEMA).unwrap();
+        let declared = table_names(&connection);
+
+        crate::embed::ensure_table(&connection).unwrap();
+
+        let created: Vec<String> = table_names(&connection)
+            .into_iter()
+            .filter(|table| !declared.contains(table))
+            .collect();
+        assert_eq!(
+            created,
+            vec!["knowledge_embeddings".to_string()],
+            "a table appeared that schema.sql never declares; give it a foreign \
+             key onto whatever it describes, then name it here"
+        );
+        for table in created {
+            let parents = connection
+                .prepare(&format!("PRAGMA foreign_key_list({table})"))
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(2))
+                .unwrap()
+                .collect::<std::result::Result<Vec<String>, _>>()
+                .unwrap();
+            assert!(
+                !parents.is_empty(),
+                "{table} is created outside schema.sql and declares no parent, \
+                 so nothing deletes its rows when what they describe goes"
+            );
+        }
+    }
+
+    fn table_names(connection: &Connection) -> Vec<String> {
+        connection
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap()
+    }
+
     /// Bug: indexes lived in `schema.sql` and therefore ran *before* migrations.
     /// On an existing database `CREATE TABLE IF NOT EXISTS` is a no-op, so the
     /// pre-migration table shape was still in place when

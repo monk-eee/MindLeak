@@ -382,7 +382,7 @@ fn model_error(
 mod tests {
     use super::*;
     use mindleak_model::test_support::{
-        cold_then_warm_json_endpoint, json_endpoint, status_endpoint,
+        cold_then_warm_json_endpoint, json_endpoint, status_endpoint, COLD_CLIENT_READ_TIMEOUT,
     };
 
     fn threshold_one_config() -> HttpConfig {
@@ -399,7 +399,7 @@ mod tests {
     fn model_test_config() -> HttpConfig {
         HttpConfig {
             connect_timeout: Duration::from_millis(100),
-            read_timeout: Duration::from_millis(100),
+            read_timeout: COLD_CLIENT_READ_TIMEOUT,
             retries: 1,
             breaker_threshold: 5,
             breaker_cooldown: Duration::from_secs(30),
