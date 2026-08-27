@@ -48,6 +48,7 @@ pub mod evidence_signature;
 pub mod evidence_store;
 pub mod export_provider;
 pub mod fleet;
+pub mod human_decision_store;
 pub mod knowledge_service;
 pub mod knowledge_signature;
 pub mod knowledge_store;
