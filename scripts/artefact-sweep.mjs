@@ -38,6 +38,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 
+import { removeTreeSafely } from "./fs-retry.mjs";
 import {
   ARTEFACT_KINDS,
   classifyArtefact,
@@ -157,7 +158,21 @@ export function applySweep(
       });
       continue;
     }
-    remove(candidate.path);
+    // A directory that still won't clear after removeTreeSafely's own retries
+    // is reported the same way a no-longer-eligible one is: this run leaves
+    // it for the next pass rather than crashing every other candidate queued
+    // behind it (worktree-reclaim.mjs hit exactly this uncaught -- see its
+    // `reclaimEntry`).
+    const result = remove(candidate.path);
+    if (result && result.ok === false) {
+      const detail =
+        result.error?.code ?? result.error?.message ?? "unknown error";
+      abandoned.push({
+        ...candidate,
+        reason: `removal failed: ${detail}`,
+      });
+      continue;
+    }
     removed.push(candidate);
   }
   return {
@@ -395,7 +410,7 @@ export function sweep({
         modifiedAt,
       };
     },
-    remove: (path) => rmSync(path, { recursive: true, force: true }),
+    remove: (path) => removeTreeSafely(path),
   });
   return { ...report, applied };
 }
