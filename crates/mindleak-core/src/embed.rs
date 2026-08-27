@@ -224,6 +224,11 @@ fn from_blob(bytes: &[u8]) -> Vec<f32> {
 }
 
 /// Create the embeddings table if it does not exist (idempotent, self-owned).
+///
+/// The foreign key is load-bearing: a vector describes exactly one node, so it
+/// must not outlive it. Every other child of `nodes` already cascades, and
+/// `db::cascade_embeddings_onto_nodes` rebuilds databases written before this
+/// one did.
 pub fn ensure_table(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS embeddings (
@@ -232,7 +237,8 @@ pub fn ensure_table(conn: &Connection) -> Result<()> {
              dim        INTEGER NOT NULL,
              vector     BLOB NOT NULL,
              updated_at INTEGER NOT NULL,
-             PRIMARY KEY (node_id, model)
+             PRIMARY KEY (node_id, model),
+             FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
          );",
     )?;
     Ok(())
@@ -316,7 +322,9 @@ fn kind_prior(kind: Option<NodeType>) -> f32 {
         Some(NodeType::Package) => 0.80,
         // Attribution, not knowledge; it answers no question a caller asks.
         Some(NodeType::Agent) => 0.70,
-        // Embedded but no longer in the graph: rank it as ordinary structure.
+        // A type tag this build does not recognise: rank it as ordinary
+        // structure rather than guessing. A missing node no longer reaches
+        // here, since `embeddings` cascades from `nodes`.
         None => 0.85,
     }
 }
@@ -379,8 +387,9 @@ pub fn recall(
     floor: f32,
 ) -> Result<Vec<(String, f32)>> {
     ensure_table(conn)?;
-    // LEFT JOIN: an embedding may outlive the node it described, and a caller
-    // asking a question is not the right moment to discover that.
+    // LEFT JOIN, though the cascade means a vector should always find its node:
+    // a caller asking a question is not the right moment to discover otherwise,
+    // and the type tag can still be one this build does not recognise.
     let mut stmt = conn.prepare(
         "SELECT e.node_id, e.vector, n.type
            FROM embeddings e
@@ -463,6 +472,41 @@ mod tests {
         assert_eq!(cosine(&[1.0, 0.0], &[1.0]), 0.0); // length mismatch
     }
 
+    /// Bug: `embeddings` is built here rather than in `schema.sql`, and so was
+    /// written without the foreign key every other child of `nodes` has. A
+    /// vector therefore outlived the node it described, and nothing ever swept
+    /// it — a prune, a re-ingest, or a structural snapshot replacement each left
+    /// one behind permanently. On a working graph the residue had reached 48,502
+    /// rows and 142.1 MiB, three times the size of the live data it sat beside.
+    ///
+    /// Fixed by declaring `ON DELETE CASCADE`. Against the un-fixed schema this
+    /// fails: the deleted node's row is still there.
+    #[test]
+    fn deleting_a_node_takes_its_embedding_with_it() {
+        let conn = db::open_in_memory().unwrap();
+        conn.execute_batch(
+            "INSERT INTO nodes (id, type, label, content, created_at, last_accessed_at)
+             VALUES ('artifact:pruned.rs', 'artifact', 'pruned.rs', NULL, 10, 10),
+                    ('artifact:kept.rs', 'artifact', 'kept.rs', NULL, 10, 10);",
+        )
+        .unwrap();
+        upsert(&conn, "artifact:pruned.rs", "stub", &[1.0, 0.0], 10).unwrap();
+        upsert(&conn, "artifact:kept.rs", "stub", &[0.0, 1.0], 10).unwrap();
+
+        conn.execute("DELETE FROM nodes WHERE id = 'artifact:pruned.rs'", [])
+            .unwrap();
+
+        // The whole surviving set, so an over-broad cascade fails this too.
+        let surviving: Vec<String> = conn
+            .prepare("SELECT node_id FROM embeddings ORDER BY node_id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(surviving, vec!["artifact:kept.rs".to_string()]);
+    }
+
     // A `TextEmbedder` that only implements the single-text `embed` still gets a
     // working `embed_batch` via the default fan-out, preserving input order — so
     // the batched `index` pass works with any embedder, live or stubbed.
@@ -511,9 +555,9 @@ mod tests {
     #[test]
     fn recall_ranks_by_cosine_similarity() {
         let conn = db::open_in_memory().unwrap();
-        upsert(&conn, "artifact:a", "m", &[1.0, 0.0, 0.0], 1).unwrap();
-        upsert(&conn, "artifact:b", "m", &[0.0, 1.0, 0.0], 1).unwrap();
-        upsert(&conn, "artifact:c", "m", &[0.9, 0.1, 0.0], 1).unwrap();
+        add_embedded_node(&conn, "artifact:a", NodeType::Artifact, &[1.0, 0.0, 0.0]);
+        add_embedded_node(&conn, "artifact:b", NodeType::Artifact, &[0.0, 1.0, 0.0]);
+        add_embedded_node(&conn, "artifact:c", NodeType::Artifact, &[0.9, 0.1, 0.0]);
         let hits = recall(&conn, &[1.0, 0.0, 0.0], "m", 2, 0.0).unwrap();
         assert_eq!(hits[0].0, "artifact:a");
         assert_eq!(hits[1].0, "artifact:c"); // closer than b
@@ -526,7 +570,7 @@ mod tests {
     #[test]
     fn recall_returns_nothing_when_nothing_clears_the_floor() {
         let conn = db::open_in_memory().unwrap();
-        upsert(&conn, "artifact:unrelated", "m", &[0.0, 1.0], 1).unwrap();
+        add_embedded_node(&conn, "artifact:unrelated", NodeType::Artifact, &[0.0, 1.0]);
 
         let hits = recall(&conn, &[1.0, 0.0], "m", 5, 0.5).unwrap();
 
@@ -536,8 +580,8 @@ mod tests {
     #[test]
     fn recall_keeps_only_what_clears_the_floor() {
         let conn = db::open_in_memory().unwrap();
-        upsert(&conn, "artifact:near", "m", &[1.0, 0.05], 1).unwrap();
-        upsert(&conn, "artifact:far", "m", &[0.2, 1.0], 1).unwrap();
+        add_embedded_node(&conn, "artifact:near", NodeType::Artifact, &[1.0, 0.05]);
+        add_embedded_node(&conn, "artifact:far", NodeType::Artifact, &[0.2, 1.0]);
 
         let hits = recall(&conn, &[1.0, 0.0], "m", 5, 0.9).unwrap();
 
@@ -555,6 +599,15 @@ mod tests {
         .unwrap();
     }
 
+    /// A vector needs its node. `embeddings` cascades from `nodes`, so an
+    /// embedding for an id the graph does not hold is not a state production
+    /// can reach — and a test that fabricated one was testing a shape the
+    /// schema now refuses.
+    fn add_embedded_node(conn: &Connection, id: &str, kind: NodeType, vector: &[f32]) {
+        add_node(conn, id, kind);
+        upsert(conn, id, "m", vector, 1).unwrap();
+    }
+
     /// The bug this whole change exists for. Ranking by cosine alone is the
     /// vector-only memory the governing goal forbids: it discards everything
     /// the graph knows and lets the embedding model decide by itself. Measured
@@ -566,17 +619,18 @@ mod tests {
     fn a_recorded_conclusion_outranks_a_structural_node_that_scores_higher() {
         let conn = db::open_in_memory().unwrap();
         // The symbol is the closer vector, and still must not win.
-        upsert(
+        add_embedded_node(
             &conn,
             "symbol:src/merge.rs:merge_import",
-            "m",
+            NodeType::Symbol,
             &[1.0, 0.10],
-            1,
-        )
-        .unwrap();
-        upsert(&conn, "intent:what-we-learned", "m", &[1.0, 0.45], 1).unwrap();
-        add_node(&conn, "symbol:src/merge.rs:merge_import", NodeType::Symbol);
-        add_node(&conn, "intent:what-we-learned", NodeType::Intent);
+        );
+        add_embedded_node(
+            &conn,
+            "intent:what-we-learned",
+            NodeType::Intent,
+            &[1.0, 0.45],
+        );
 
         let hits = recall(&conn, &[1.0, 0.0], "m", 5, 0.0).unwrap();
 
@@ -600,7 +654,12 @@ mod tests {
         let conn = db::open_in_memory().unwrap();
         for n in 0..12 {
             // A field that all resembles the query about equally.
-            upsert(&conn, &format!("artifact:{n}"), "m", &[1.0, 0.60], 1).unwrap();
+            add_embedded_node(
+                &conn,
+                &format!("artifact:{n}"),
+                NodeType::Artifact,
+                &[1.0, 0.60],
+            );
         }
 
         let hits = recall(&conn, &[1.0, 0.0], "m", 5, 0.5).unwrap();
@@ -617,9 +676,14 @@ mod tests {
     fn recall_returns_the_candidate_that_stands_out_from_an_otherwise_flat_field() {
         let conn = db::open_in_memory().unwrap();
         for n in 0..12 {
-            upsert(&conn, &format!("artifact:{n}"), "m", &[1.0, 0.60], 1).unwrap();
+            add_embedded_node(
+                &conn,
+                &format!("artifact:{n}"),
+                NodeType::Artifact,
+                &[1.0, 0.60],
+            );
         }
-        upsert(&conn, "artifact:answer", "m", &[1.0, 0.0], 1).unwrap();
+        add_embedded_node(&conn, "artifact:answer", NodeType::Artifact, &[1.0, 0.0]);
 
         let hits = recall(&conn, &[1.0, 0.0], "m", 5, 0.5).unwrap();
 
@@ -634,7 +698,12 @@ mod tests {
     fn a_field_too_small_to_have_a_shape_is_judged_by_the_floor_alone() {
         let conn = db::open_in_memory().unwrap();
         for n in 0..3 {
-            upsert(&conn, &format!("artifact:{n}"), "m", &[1.0, 0.60], 1).unwrap();
+            add_embedded_node(
+                &conn,
+                &format!("artifact:{n}"),
+                NodeType::Artifact,
+                &[1.0, 0.60],
+            );
         }
 
         let hits = recall(&conn, &[1.0, 0.0], "m", 5, 0.5).unwrap();
@@ -649,8 +718,9 @@ mod tests {
     #[test]
     fn upsert_replaces_vector_for_same_node_and_model() {
         let conn = db::open_in_memory().unwrap();
-        upsert(&conn, "n", "m", &[1.0, 0.0], 1).unwrap();
-        upsert(&conn, "n", "m", &[0.0, 1.0], 2).unwrap();
+        add_node(&conn, "artifact:n", NodeType::Artifact);
+        upsert(&conn, "artifact:n", "m", &[1.0, 0.0], 1).unwrap();
+        upsert(&conn, "artifact:n", "m", &[0.0, 1.0], 2).unwrap();
         let hits = recall(&conn, &[0.0, 1.0], "m", 5, 0.0).unwrap();
         assert_eq!(hits.len(), 1);
         assert!((hits[0].1 - 1.0).abs() < 1e-6);
